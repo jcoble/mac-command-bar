@@ -1,15 +1,15 @@
 <script lang="ts">
   /**
    * ShellSidebar.svelte — the tool column on the right of the shell: whichever
-   * one view the icon strip on the far right edge has open. Each view holds its
+   * one view the horizontal tabs above this pane have open. Each view holds its
    * own stack of collapsible panes (one dockview Paneview per view) and
    * remembers its own sizes, so arranging Explorer cannot disturb how Worktrees
    * was left.
    *
-   * The icon strip itself is NOT in here — it is a region of its own on the
-   * outer edge, so it stays exactly one icon wide however this column is
-   * resized. Which view is open is still decided here, and reported out so the
-   * strip can light up the icon for it.
+   * The tabs themselves are NOT in here. ShellFrame composes them above this
+   * component so this pane remains responsible only for view state and pane
+   * stacks. Which view is open is still decided here and reported out so the
+   * matching tab can be marked active.
    *
    * Every view's container stays mounted for the whole session; switching views
    * only flips which one is displayed. Nothing re-parents, so a terminal or a
@@ -108,8 +108,8 @@
       expandSourceControl(): void;
       selectView(id: SidebarViewId): void;
     }) => void;
-    /** Which view is open now — so the icon strip, which lives outside this
-     * component, can light up the right icon. Reported once at start-up (the
+    /** Which view is open now — so the horizontal picker, which lives outside
+     * this component, can mark the right tab. Reported once at start-up (the
      * remembered view) and on every change after that. */
     onActiveViewChange?: (id: SidebarViewId) => void;
     /** Can the user see source control right now? Reported when it changes, and

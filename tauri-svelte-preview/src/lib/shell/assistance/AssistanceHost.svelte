@@ -72,7 +72,10 @@
 </aside>
 
 <style>
-  .assistance-host { position: fixed; right: 16px; bottom: 80px; z-index: 56; display: grid; justify-items: end; gap: 0.5rem; pointer-events: none; }
+  /* Keep the floating action one full rail-width left of the 44px surface rail
+     and below the rail's stacking level. The 28px bottom resource summary is
+     cleared too, so neither control can claim the other's hit area. */
+  .assistance-host { position: fixed; right: calc(44px + 16px); bottom: calc(28px + 16px); z-index: 48; display: grid; justify-items: end; gap: 0.5rem; pointer-events: none; }
   .assistance-host :global(button), .assistance-host :global(section) { pointer-events: auto; }
   .assistance-trigger { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 36px; border: 0; border-radius: 999px; padding: 0.4rem 0.75rem; background: var(--color-accent); color: var(--color-on-accent); cursor: pointer; font: inherit; box-shadow: var(--shadow-md); }
   .assistance-trigger:hover, .assistance-trigger:focus-visible { filter: brightness(1.04); outline: none; box-shadow: var(--focus-ring); }

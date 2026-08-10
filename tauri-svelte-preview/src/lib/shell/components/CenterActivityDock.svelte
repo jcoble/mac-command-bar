@@ -2,17 +2,23 @@
   /**
    * CenterActivityDock.svelte — the center Dockview's permanent navigation.
    * Dockview remains the layout and activation state machine; this component
-   * only presents that state as a compact horizontal strip above the center.
+   * only presents that state as an icon rail on the far-right window edge.
    */
+  import { onMount } from 'svelte';
   import {
     Bot,
+    ChartNoAxesCombined,
+    Cpu,
     FileCode2,
     GitCompareArrows,
     Globe2,
     History,
-    SquareTerminal
+    MessagesSquare
   } from '@lucide/svelte';
 
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
+  import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import type { CenterPanelId } from '$lib/shell/layout/centerDock';
 
   interface Props {
@@ -25,10 +31,9 @@
   const surfaces: Array<{
     id: CenterPanelId;
     label: string;
-    icon: typeof SquareTerminal;
-    shortcut?: string;
+    icon: typeof MessagesSquare;
   }> = [
-    { id: 'session', label: 'Session', icon: SquareTerminal },
+    { id: 'session', label: 'Session', icon: MessagesSquare },
     { id: 'editor', label: 'Editor', icon: FileCode2 },
     { id: 'browser', label: 'Browser', icon: Globe2 },
     { id: 'diff', label: 'Diff', icon: GitCompareArrows },
@@ -36,118 +41,168 @@
     { id: 'agents', label: 'Agents', icon: Bot }
   ];
 
-  const tooltip = (label: string, shortcut?: string): string =>
-    shortcut ? `${label} (${shortcut})` : label;
+  let resourceMount: HTMLDivElement;
+  let usageMount: HTMLDivElement;
+
+  /**
+   * ResourcePopover and UsagePopover retain ownership of their open state and
+   * overlay content. Their legacy text triggers stay mounted as private event
+   * endpoints while the kit IconButton is the only visible/focusable control.
+   */
+  function popoverTrigger(host: HTMLDivElement): HTMLButtonElement | null {
+    return host.querySelector<HTMLButtonElement>('.trigger');
+  }
+
+  function activatePopover(host: HTMLDivElement): void {
+    popoverTrigger(host)?.click();
+  }
+
+  onMount(() => {
+    for (const host of [resourceMount, usageMount]) {
+      const trigger = popoverTrigger(host);
+      if (!trigger) continue;
+      trigger.tabIndex = -1;
+      trigger.setAttribute('aria-hidden', 'true');
+    }
+  });
 </script>
 
 <nav class="center-activity-dock" aria-label="Center surfaces" data-testid="center-activity-dock">
   <div class="surface-group">
     {#each surfaces as surface (surface.id)}
       {@const Icon = surface.icon}
-      <button
-        type="button"
-        class="dock-button"
+      <span
+        class="surface-action"
         class:active={surface.id === activeId}
         data-surface={surface.id}
-        data-tooltip={tooltip(surface.label, surface.shortcut)}
-        title={tooltip(surface.label, surface.shortcut)}
-        aria-label={tooltip(surface.label, surface.shortcut)}
-        aria-current={surface.id === activeId ? 'page' : undefined}
-        onclick={() => onSelect(surface.id)}
       >
-        <Icon size={16} strokeWidth={1.7} aria-hidden="true" />
-        <span class="dock-label">{surface.label}</span>
-      </button>
+        <IconButton
+          label={surface.label}
+          size="sm"
+          side="left"
+          class={surface.id === activeId
+            ? 'surface-button bg-secondary text-foreground'
+            : 'surface-button text-muted-foreground'}
+          onclick={() => onSelect(surface.id)}
+        >
+          <Icon class="size-4" strokeWidth={1.7} aria-hidden="true" />
+        </IconButton>
+      </span>
     {/each}
+  </div>
+
+  <div class="utility-group" aria-label="Workspace meters">
+    <div class="utility-popover" bind:this={resourceMount}>
+      <IconButton
+        label="Resources"
+        size="sm"
+        side="left"
+        class="utility-button text-muted-foreground"
+        onclick={() => activatePopover(resourceMount)}
+      >
+        <Cpu class="size-4" strokeWidth={1.7} aria-hidden="true" />
+      </IconButton>
+      <ResourcePopover />
+    </div>
+    <div class="utility-popover" bind:this={usageMount}>
+      <IconButton
+        label="Usage and Stats"
+        size="sm"
+        side="left"
+        class="utility-button text-muted-foreground"
+        onclick={() => activatePopover(usageMount)}
+      >
+        <ChartNoAxesCombined class="size-4" strokeWidth={1.7} aria-hidden="true" />
+      </IconButton>
+      <UsagePopover />
+    </div>
   </div>
 </nav>
 
 <style>
   .center-activity-dock {
     position: relative;
-    z-index: 4;
+    z-index: 60;
     display: flex;
-    align-items: center;
-    width: 100%;
-    height: 44px;
-    min-width: 0;
-    padding: 4px 8px;
-    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
-    background: var(--color-surface);
-    color: var(--color-text-3);
+    flex-direction: column;
+    justify-content: space-between;
+    width: 44px;
+    height: 100%;
+    padding: 8px;
+    border-left: 1px solid var(--border);
+    background: var(--background);
+    color: var(--muted-foreground);
     user-select: none;
   }
 
-  .surface-group {
-    display: flex;
-    align-items: center;
+  .surface-group,
+  .utility-group {
+    display: grid;
     gap: 2px;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
   }
 
-  .surface-group::-webkit-scrollbar {
-    display: none;
+  .utility-group {
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
   }
 
-  .dock-button {
+  .surface-action,
+  .utility-popover {
     position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    flex: 0 0 auto;
-    height: 36px;
-    padding: 0 11px;
-    border: 0;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--color-text-3);
-    font: inherit;
-    cursor: pointer;
-    transition:
-      color 140ms ease,
-      background-color 140ms ease;
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
   }
 
-  .dock-button:hover {
-    background: var(--color-hover);
-    color: var(--color-text);
-  }
-
-  .dock-button.active {
-    background: var(--color-selected);
-    color: var(--color-text);
-  }
-
-  .dock-button.active::after {
+  .surface-action.active::before {
     position: absolute;
-    right: 8px;
-    bottom: 0;
-    left: 8px;
-    height: 2px;
-    border-radius: var(--radius-pill) var(--radius-pill) 0 0;
-    background: var(--color-accent);
+    top: 6px;
+    bottom: 6px;
+    left: -8px;
+    width: 2px;
+    border-radius: 0 2px 2px 0;
+    background: var(--primary);
     content: '';
   }
 
-  .dock-label {
-    font-size: 12px;
-    font-weight: 540;
-    letter-spacing: 0.005em;
-    line-height: 1;
-    white-space: nowrap;
+  .utility-popover:has(:global(.trigger[aria-expanded='true'])) :global(.utility-button) {
+    background: var(--secondary);
+    color: var(--foreground);
   }
 
-  .dock-button:focus-visible {
-    outline: 2px solid var(--color-focus-solid);
-    outline-offset: -3px;
+  /* The popovers keep their own state machine, but their old text triggers are
+     no longer controls in the rail. IconButton supplies the 28px target,
+     tooltip, focus ring, and accessible name and forwards activation here. */
+  .utility-popover :global(aside) {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    width: 28px;
+    height: 28px;
+    pointer-events: none;
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .dock-button {
-      transition: none;
-    }
+  .utility-popover :global(.trigger) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .utility-popover :global(.usage-popover .card),
+  .utility-popover :global(.usage-popover .modal-backdrop) {
+    pointer-events: auto;
+  }
+
+  /* Open quota details inward and upward from the rail entry. ShellFrame lets
+     this anchored card cross the fixed 44px rail cell without clipping it. */
+  .utility-popover :global(.usage-popover .card) {
+    top: auto;
+    right: calc(100% + 12px);
+    bottom: 0;
   }
 </style>

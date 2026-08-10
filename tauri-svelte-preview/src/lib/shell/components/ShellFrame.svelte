@@ -36,9 +36,9 @@
       sessionLibrary: Snippet;
       agents: Snippet;
     };
-    /** The right column: whichever tool view the icon strip has open. */
+    /** The right column: whichever tool view the horizontal picker has open. */
     tools: Snippet;
-    /** The icon strip on the far right edge, which picks that view. */
+    /** The horizontal picker rendered above the right tool pane. */
     activity: Snippet;
     dock: Snippet;
     onSessionPanelLayout?: () => void;
@@ -199,11 +199,15 @@
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
   <div class="slot center-region" bind:this={centerRegionSlot}>
-    <CenterActivityDock activeId={activeCenterPanel} onSelect={selectCenterPanel} />
     <div class="center-dock-host" bind:this={centerSlot}></div>
   </div>
-  <div class="slot" bind:this={toolsSlot}>{@render tools()}</div>
-  <div class="slot" bind:this={activitySlot}>{@render activity()}</div>
+  <div class="slot tools-region" bind:this={toolsSlot}>
+    <div class="tools-tabs">{@render activity()}</div>
+    <div class="tools-pane">{@render tools()}</div>
+  </div>
+  <div class="slot activity-region" bind:this={activitySlot}>
+    <CenterActivityDock activeId={activeCenterPanel} onSelect={selectCenterPanel} />
+  </div>
   <div class="slot" bind:this={dockSlot}>{@render dock()}</div>
   <div class="slot" bind:this={sessionSlot}>{@render center.session()}</div>
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
@@ -246,9 +250,34 @@
   }
 
   .center-region {
-    display: grid;
-    grid-template-rows: 44px minmax(0, 1fr);
     background: var(--color-bg);
+  }
+
+  .tools-region {
+    display: grid;
+    grid-template-rows: 40px minmax(0, 1fr);
+    background: var(--background);
+  }
+
+  .tools-tabs,
+  .tools-pane {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* The quota card opens inward from the far-right rail. The rail's Gridview
+     cell is only 44px wide, so these three boundaries must allow that one
+     anchored overlay to paint over the adjacent tool pane. The shell root
+     still clips at the window edge. */
+  .activity-region,
+  .shell-frame :global(.shell-region-host-activity),
+  .shell-frame :global(.dv-view:has(.shell-region-host-activity)) {
+    overflow: visible;
+  }
+
+  .shell-frame :global(.dv-view:has(.shell-region-host-activity)) {
+    z-index: 20;
   }
 
   .center-dock-host {
@@ -301,7 +330,7 @@
   }
 
   /* Dockview still owns the six panels and their active state, while the
-     horizontal surface strip is their only visible navigation. */
+     far-right surface rail is their only visible navigation. */
   .shell-frame :global(.shell-center-dock .dv-tabs-and-actions-container) {
     display: none;
   }

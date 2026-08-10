@@ -1,9 +1,8 @@
 <script lang="ts">
   /**
-   * ActivityBar.svelte — the slim icon strip down the far right edge of the
-   * shell. One icon per view; clicking one opens that view in the tool column
-   * to its left. The gear at the bottom is not a view — it opens the settings
-   * dialog.
+   * ActivityBar.svelte — the horizontal line-tab picker above the right tool
+   * pane. One icon per view; clicking one opens that view directly below it.
+   * The gear is not a view — it opens the settings dialog.
    *
    * PRESENTATIONAL ONLY: no state, no IO, no knowledge of what a view contains.
    * The roster comes from `sidebarViews.ts` so the ids here and the ids the
@@ -12,8 +11,6 @@
   import {
     Activity,
     Bot,
-    ChartNoAxesCombined,
-    Cpu,
     Files,
     GitBranch,
     Layers,
@@ -22,12 +19,13 @@
     TriangleAlert
   } from '@lucide/svelte';
 
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import * as Tabs from '$lib/components/ui/tabs/index.js';
   import { settings } from '$lib/settingsStore.svelte';
-  import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
-  import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import {
     PROBLEMS_VIEW_ID,
     SIDEBAR_VIEWS,
+    isSidebarViewId,
     type SidebarViewId
   } from '$lib/shell/layout/sidebarViews';
 
@@ -39,7 +37,7 @@
   let { activeId, onSelect, onOpenSettings }: Props = $props();
 
   /** Icon per view. Keyed by id so adding a view to the roster without an icon
-   * is a type error rather than a blank button. */
+   * is a type error rather than a blank tab. */
   const ICONS: Record<SidebarViewId, typeof Files> = {
     explorer: Files,
     'source-control': GitBranch,
@@ -50,172 +48,98 @@
     problems: TriangleAlert
   };
 
-  /** The icons to draw. Problems has a container in the tool column at all
-   * times, but it only earns an icon here when the user has asked for it in
-   * this column — while it is in the strip along the bottom, a second way in
-   * would be two doors onto one list. */
+  /** Problems is always mounted by ShellSidebar, but it is offered here only
+   * when settings place it in the right pane rather than the bottom dock. */
   const shownViews = $derived(
     SIDEBAR_VIEWS.filter(
       (view) => view.id !== PROBLEMS_VIEW_ID || settings.panels.problemsLocation === 'right'
     )
   );
+
+  function selectView(value: string): void {
+    if (isSidebarViewId(value)) onSelect(value);
+  }
 </script>
 
-<nav class="activity-bar" aria-label="Views">
-  <div class="group">
-    {#each shownViews as view (view.id)}
-      {@const Icon = ICONS[view.id]}
-      <button
-        type="button"
-        class="icon-button"
-        class:active={view.id === activeId}
-        title={view.title}
-        aria-label={view.title}
-        aria-current={view.id === activeId ? 'true' : undefined}
-        onclick={() => onSelect(view.id)}
-      >
-        <Icon size={19} strokeWidth={1.6} />
-      </button>
-    {/each}
-  </div>
+<nav class="activity-tabs" aria-label="Right pane">
+  <Tabs.Root value={activeId} onValueChange={selectView} class="right-pane-tabs">
+    <Tabs.List variant="line" class="right-pane-tab-list" aria-label="Right pane views">
+      {#each shownViews as view (view.id)}
+        {@const Icon = ICONS[view.id]}
+        <Tabs.Trigger
+          value={view.id}
+          class="right-pane-tab"
+          title={view.title}
+          aria-label={view.title}
+        >
+          <Icon class="size-4" strokeWidth={1.6} aria-hidden="true" />
+        </Tabs.Trigger>
+      {/each}
+    </Tabs.List>
+  </Tabs.Root>
 
-  <div class="group utility-group" aria-label="Workspace meters and settings">
-    <div class="utility-action" title="Resources">
-      <Cpu size={19} strokeWidth={1.6} aria-hidden="true" />
-      <ResourcePopover />
-    </div>
-    <div class="utility-action" title="Stats and Usage">
-      <ChartNoAxesCombined size={19} strokeWidth={1.6} aria-hidden="true" />
-      <UsagePopover />
-    </div>
-    <button
-      type="button"
-      class="icon-button"
-      title="Settings"
-      aria-label="Settings"
+  <span class="settings-action">
+    <IconButton
+      label="Settings"
+      size="sm"
+      side="bottom"
+      class="text-muted-foreground"
       onclick={() => onOpenSettings()}
     >
-      <Settings size={19} strokeWidth={1.6} />
-    </button>
-  </div>
+      <Settings class="size-4" strokeWidth={1.6} aria-hidden="true" />
+    </IconButton>
+  </span>
 </nav>
 
 <style>
-  .activity-bar {
+  .activity-tabs {
     display: flex;
-    flex-direction: column;
-    justify-content: space-between; /* views at the top, the gear at the bottom */
-    flex: 0 0 44px;
-    width: 44px;
-    height: 100%;
-    padding: 6px 0;
-    background: var(--color-bg);
-    /* The strip is on the outer edge now, so its hairline faces the column it
-       opens rather than the middle of the shell. */
-    border-left: 1px solid var(--color-border);
+    width: 100%;
+    height: 40px;
+    min-width: 0;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px 4px 4px;
+    border-bottom: 1px solid var(--border);
+    background: var(--background);
     user-select: none;
   }
 
-  .group {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
+  :global(.right-pane-tabs) {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
   }
 
-  .icon-button {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 40px;
-    border: 0;
-    background: transparent;
-    color: var(--color-text-3);
-    cursor: pointer;
+  :global(.right-pane-tab-list) {
+    width: 100%;
+    height: 32px;
+    min-width: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
   }
 
-  .icon-button:hover {
-    color: var(--color-text);
-  }
-
-  .icon-button.active {
-    color: var(--color-text);
-  }
-
-  /* The teal edge marking the open view — the same accent the pane dividers
-     use. On the outer edge, so it does not sit on top of the hairline that
-     separates the strip from the column it opens. */
-  .icon-button.active::before {
-    content: '';
-    position: absolute;
-    right: 0;
-    top: 6px;
-    bottom: 6px;
-    width: 2px;
-    border-radius: 2px 0 0 2px;
-    background: var(--color-accent);
-  }
-
-  .icon-button:focus-visible {
-    outline: 2px solid var(--color-focus-solid);
-    outline-offset: -3px;
-  }
-
-  .utility-group {
-    padding-top: 6px;
-    border-top: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
-  }
-
-  .utility-action {
-    position: relative;
-    display: grid;
-    width: 44px;
-    height: 40px;
-    place-items: center;
-    color: var(--color-text-3);
-  }
-
-  .utility-action:hover,
-  .utility-action:has(:global(.trigger[aria-expanded='true'])) {
-    color: var(--color-text);
-  }
-
-  .utility-action :global(aside) {
-    position: absolute;
-    inset: 0;
-    z-index: 2;
-    width: 44px;
-    height: 40px;
-  }
-
-  .utility-action :global(.trigger) {
-    position: absolute;
-    inset: 0;
-    width: 44px;
-    height: 40px;
-    padding: 0;
-    border-radius: 0;
-    background: transparent;
-    color: transparent;
-    font-size: 0;
-  }
-
-  .utility-action :global(.trigger span) {
+  :global(.right-pane-tab-list::-webkit-scrollbar) {
     display: none;
   }
 
-  .utility-action:has(:global(.trigger:focus-visible)) {
-    outline: 2px solid var(--color-focus-solid);
-    outline-offset: -3px;
+  :global(.right-pane-tab) {
+    flex: 0 0 30px;
+    width: 30px;
+    min-width: 30px;
+    padding-right: 6px;
+    padding-left: 6px;
   }
 
-  /* The far-right strip opens its compact stats card inward and upward, never
-     beyond the window edge. The full stats workspace remains a fixed modal. */
-  .utility-action :global(.usage-popover .card) {
-    top: auto;
-    right: calc(100% + 10px);
-    bottom: 0;
+  .settings-action {
+    display: grid;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 28px;
+    padding-left: 4px;
+    border-left: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+    place-items: center end;
   }
 </style>
