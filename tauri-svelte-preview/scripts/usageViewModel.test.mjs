@@ -4,7 +4,7 @@ import { usagePercent, usageProviderLabel, usageResetLabel } from '../src/lib/sh
 import { usageSummaryLabel } from '../src/lib/shell/usage/usageAnalytics.ts';
 
 globalThis.$state = (value) => value;
-const { describeUsageError, usageState } = await import('../src/lib/shell/usage/usageStore.svelte.ts');
+const { describeUsageError, settleUsageRequest, usageState } = await import('../src/lib/shell/usage/usageStore.svelte.ts');
 
 function testUsageErrorsPreserveStringRejections() {
   // describeUsageError must pass Tauri string rejections through untouched.
@@ -22,6 +22,10 @@ usageState.historyLoading = true;
 assert.equal(usageState.loading, true);
 usageState.historyLoading = false;
 assert.equal(usageState.loading, false);
+await assert.rejects(
+  settleUsageRequest(new Promise(() => undefined), 5),
+  /Usage request timed out\./
+);
 
 assert.equal(usageProviderLabel('codex'), 'Codex');
 assert.equal(usagePercent({ usedPercent: 75 }), 75);
@@ -59,6 +63,8 @@ assert.match(usageStoreSource, /providerRollups/);
 assert.match(usageStoreSource, /readProviderDailyTotals/);
 assert.match(usageStoreSource, /readCostInputs/);
 assert.match(usageStoreSource, /get loading\(\) \{ return this\.currentLoading \|\| this\.historyLoading; \}/);
+assert.match(usageStoreSource, /finally \{\s*usageState\.currentLoading = false;/);
+assert.match(usageStoreSource, /finally \{\s*usageState\.historyLoading = false;/);
 assert.match(usageStoreSource, /readDailyTotals/);
 assert.match(usageStoreSource, /exactly three DB-side aggregate queries/);
 assert.match(usageStoreSource, /selectUsageRange/);

@@ -9,6 +9,7 @@
     usageTotalTokens
   } from './usageAnalytics.ts';
   import { estimateUsageCostMicros, USAGE_COST_RATE_VERSION } from './usageCostModel.ts';
+  import type { UsageCostEstimate } from './usageCostModel.ts';
   import { usagePercent, usageProviderLabel, usageQuotaWindowLabel, usageResetLabel } from './usageCurrent.ts';
   import { refreshUsageHistory, selectUsageRange, usageState } from './usageStore.svelte.ts';
   import type { UsageProviderSummaryRow } from './usageTypes.ts';
@@ -33,10 +34,10 @@
   let totalTokens = $derived(usageState.summary ? usageTotalTokens(usageState.summary) : 0);
   let cacheShare = $derived(usageState.summary ? usageCacheShare({ ...usageState.summary, totalTokens }) : 0);
   let heatmapDays = $derived(buildUsageHeatmap(usageState.dailyTotals, usageState.range));
-  let estimatedCostMicros = $derived(estimateUsageCostMicros(usageState.costInputs));
+  let estimatedCost = $derived(estimateUsageCostMicros(usageState.costInputs));
   let bestDay = $derived(usageState.dailyTotals[0]?.bestDay ?? null);
-  let providerCosts = $derived(providerNames.map((provider) => ({ provider, cost: selectedProviderCost(provider) })));
-  let knownProviderCostTotal = $derived(providerCosts.reduce((total, item) => total + (item.cost ?? 0), 0));
+  let providerCosts = $derived(providerNames.map((provider) => ({ provider, estimate: selectedProviderEstimate(provider) })));
+  let knownProviderCostTotal = $derived(providerCosts.reduce((total, item) => total + (item.estimate.estimateMicros ?? 0), 0));
 
   function visibleTokens(input: number): string {
     return compactNumberFormat.format(input);
@@ -46,6 +47,11 @@
     if (value == null) return 'Unavailable';
     const dollars = value / 1_000_000;
     return dollars >= 100 ? compactCurrency.format(dollars) : preciseCurrency.format(dollars);
+  }
+
+  function unpricedLabel(estimate: UsageCostEstimate): string | null {
+    if (estimate.estimateMicros == null || estimate.unpricedShare <= 0) return null;
+    return `excludes ${Math.max(1, Math.round(estimate.unpricedShare * 100))}% unpriced`;
   }
 
   function formatDay(day: string): string {
@@ -66,13 +72,13 @@
     return usageState.providerRollups[range].find((card) => card.provider === provider) ?? null;
   }
 
-  function selectedProviderCost(provider: string): number | null {
+  function selectedProviderEstimate(provider: string): UsageCostEstimate {
     const inputs = usageState.costInputs.filter((row) => row.provider === provider);
-    return inputs.length === 0 ? 0 : estimateUsageCostMicros(inputs);
+    return estimateUsageCostMicros(inputs);
   }
 
-  function providerCost(card: UsageProviderSummaryRow | null): number | null {
-    return card ? estimateUsageCostMicros(card.costInputs) : 0;
+  function providerEstimate(card: UsageProviderSummaryRow | null): UsageCostEstimate {
+    return estimateUsageCostMicros(card?.costInputs ?? []);
   }
 
   function providerShare(card: UsageProviderSummaryRow): number {
@@ -94,7 +100,7 @@
   }
 
   function donutLength(provider: string): number {
-    const cost = providerCosts.find((item) => item.provider === provider)?.cost ?? 0;
+    const cost = providerCosts.find((item) => item.provider === provider)?.estimate.estimateMicros ?? 0;
     return knownProviderCostTotal === 0 ? 0 : (cost / knownProviderCostTotal) * donutCircumference;
   }
 
@@ -134,7 +140,7 @@
     <div class="overview-grid">
       <section class="cost-panel" aria-labelledby="cost-title">
         <div class="donut-wrap">
-          <svg class="donut" viewBox="0 0 100 100" role="img" aria-label={`Estimated cost ${costLabel(estimatedCostMicros)}`}>
+          <svg class="donut" viewBox="0 0 100 100" role="img" aria-label={`Estimated cost ${costLabel(estimatedCost.estimateMicros)}${unpricedLabel(estimatedCost) ? `, ${unpricedLabel(estimatedCost)}` : ''}`}>
             <circle class="donut-track" cx="50" cy="50" r={donutRadius}></circle>
             {#each providerCosts as item (item.provider)}
               <circle
@@ -149,7 +155,8 @@
           </svg>
           <div class="donut-total">
             <span>Estimated</span>
-            <strong>{costLabel(estimatedCostMicros)}</strong>
+            <strong>{costLabel(estimatedCost.estimateMicros)}</strong>
+            {#if unpricedLabel(estimatedCost)}<small class="unpriced-note">{unpricedLabel(estimatedCost)}</small>{/if}
           </div>
         </div>
         <div class="cost-copy">
@@ -160,11 +167,12 @@
           <div class="cost-legend">
             {#each providerNames as provider (provider)}
               {@const card = selectedProviderCard(provider)}
+              {@const estimate = selectedProviderEstimate(provider)}
               <div>
                 <i class={provider}></i>
                 <span>{usageProviderLabel(provider)}</span>
-                <strong>{costLabel(selectedProviderCost(provider))}</strong>
-                <small>{visibleTokens(card?.totalTokens ?? 0)} tokens</small>
+                <strong>{costLabel(estimate.estimateMicros)}</strong>
+                <small>{visibleTokens(card?.totalTokens ?? 0)} tokens{unpricedLabel(estimate) ? ` · ${unpricedLabel(estimate)}` : ''}</small>
               </div>
             {/each}
           </div>
@@ -225,6 +233,7 @@
         {#each providerNames as provider (provider)}
           {@const card = selectedProviderCard(provider)}
           {@const snapshot = usageState.currentByProvider[provider] ?? null}
+          {@const selectedEstimate = selectedProviderEstimate(provider)}
           <article class="provider-card">
             <div class="provider-heading">
               <div><h4>{usageProviderLabel(provider)}</h4><span>{planLabel(provider)} · {card ? formatLastSeen(card.lastSeenAtMicros) : 'No history in this range'}</span></div>
@@ -247,7 +256,11 @@
 
             <div class="provider-metrics">
               <span><small>Tokens</small><strong>{visibleTokens(card?.totalTokens ?? 0)}</strong></span>
-              <span><small>Estimated cost</small><strong>{costLabel(selectedProviderCost(provider))}</strong></span>
+              <span>
+                <small>Estimated cost</small>
+                <strong>{costLabel(selectedEstimate.estimateMicros)}</strong>
+                {#if unpricedLabel(selectedEstimate)}<small class="unpriced-note">{unpricedLabel(selectedEstimate)}</small>{/if}
+              </span>
               <span><small>Sessions</small><strong>{integerFormat.format(card?.sessionCount ?? 0)}</strong></span>
               <span><small>Events / turns</small><strong>{integerFormat.format(card?.eventCount ?? 0)} / {integerFormat.format(card?.turnCount ?? 0)}</strong></span>
             </div>
@@ -263,10 +276,15 @@
             <div class="rollup-list">
               {#each rollupRanges as rollup (rollup.value)}
                 {@const rollupData = rollupCard(provider, rollup.value)}
+                {@const rollupEstimate = providerEstimate(rollupData)}
                 <details>
                   <summary>
                     <span>{rollup.label}</span>
-                    <span>{costLabel(providerCost(rollupData))} · {visibleTokens(rollupData?.totalTokens ?? 0)} tokens <ChevronDown size={14} aria-hidden="true" /></span>
+                    <span>
+                      {costLabel(rollupEstimate.estimateMicros)}
+                      {#if unpricedLabel(rollupEstimate)}<small class="unpriced-note">({unpricedLabel(rollupEstimate)})</small>{/if}
+                      · {visibleTokens(rollupData?.totalTokens ?? 0)} tokens <ChevronDown size={14} aria-hidden="true" />
+                    </span>
                   </summary>
                   <div class="rollup-detail">
                     <span><small>Sessions</small><strong>{integerFormat.format(rollupData?.sessionCount ?? 0)}</strong></span>
@@ -322,9 +340,10 @@
   .donut-segment { stroke-linecap: butt; transition: stroke-dasharray 180ms ease; }
   .donut-segment.codex { stroke: var(--color-accent); }
   .donut-segment.claude { stroke: var(--color-live); }
-  .donut-total { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+  .donut-total { position: absolute; inset: 0; display: grid; max-width: 92px; margin: auto; place-content: center; text-align: center; }
   .donut-total span { color: var(--color-text-3); font-size: 0.75rem; }
   .donut-total strong { font-size: 0.94rem; font-variant-numeric: tabular-nums; }
+  .unpriced-note { color: var(--color-text-3); font-size: 0.68rem; font-weight: 500; line-height: 1.25; }
   .cost-copy { display: grid; gap: 13px; }
   .cost-copy > div:first-child { display: grid; gap: 3px; }
   .cost-legend { display: grid; gap: 8px; }
@@ -401,7 +420,7 @@
   .rollup-list details { border-top: 1px solid color-mix(in srgb, var(--color-border) 28%, transparent); }
   .rollup-list summary { display: flex; justify-content: space-between; gap: 12px; padding: 9px 2px; border-radius: 5px; cursor: pointer; list-style: none; color: var(--color-text-2); font-size: 0.75rem; }
   .rollup-list summary::-webkit-details-marker { display: none; }
-  .rollup-list summary > span:last-child { display: inline-flex; align-items: center; gap: 4px; color: var(--color-text); font-variant-numeric: tabular-nums; text-align: right; }
+  .rollup-list summary > span:last-child { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px; color: var(--color-text); font-variant-numeric: tabular-nums; text-align: right; }
   .rollup-list details[open] summary :global(svg) { transform: rotate(180deg); }
   .rollup-detail { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; padding: 1px 2px 10px; }
   .rollup-detail > span { display: grid; gap: 1px; }
