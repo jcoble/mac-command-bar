@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::mem::ManuallyDrop;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,33 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use super::super::protocol::AgentProviderManifest;
 
 const STDERR_LINE_CAP: usize = 200;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SidecarEnvironment {
+    values: BTreeMap<String, Option<String>>,
+}
+
+impl SidecarEnvironment {
+    pub fn set(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.values.insert(name.into(), Some(value.into()));
+        self
+    }
+
+    pub fn remove(mut self, name: impl Into<String>) -> Self {
+        self.values.insert(name.into(), None);
+        self
+    }
+
+    fn apply(&self, command: &mut Command) {
+        for (name, value) in &self.values {
+            if let Some(value) = value {
+                command.env(name, value);
+            } else {
+                command.env_remove(name);
+            }
+        }
+    }
+}
 
 pub fn validated_conversation_cwd(value: &str) -> Result<PathBuf, String> {
     let value = value.trim();
@@ -79,10 +106,20 @@ pub struct SidecarProcessHandle {
 }
 
 impl SidecarProcess {
+    #[cfg(test)]
     pub fn spawn(
         manifest: &AgentProviderManifest,
         cwd: &Path,
         owned_id: &str,
+    ) -> Result<Self, String> {
+        Self::spawn_with_environment(manifest, cwd, owned_id, &SidecarEnvironment::default())
+    }
+
+    pub fn spawn_with_environment(
+        manifest: &AgentProviderManifest,
+        cwd: &Path,
+        owned_id: &str,
+        environment: &SidecarEnvironment,
     ) -> Result<Self, String> {
         let mut command = Command::new(&manifest.executable);
         command
@@ -93,6 +130,7 @@ impl SidecarProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        environment.apply(&mut command);
         command.as_std_mut().process_group(0);
         let mut child = command
             .spawn()

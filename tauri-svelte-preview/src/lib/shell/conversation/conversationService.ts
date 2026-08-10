@@ -388,6 +388,7 @@ export async function ensureStructuredConversation(input: {
   cwd: string;
   nativeSessionId?: string | null;
   nativeSessionMode?: 'resume' | 'load';
+  reasoningEffort?: string | null;
 }): Promise<AgentConversationConnection | null> {
   ensureConversationSession(input.ownedId, input.provider);
   if (!isTauri() || !input.cwd.trim()) return null;

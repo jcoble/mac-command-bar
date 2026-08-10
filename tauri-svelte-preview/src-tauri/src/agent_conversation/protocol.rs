@@ -438,6 +438,8 @@ pub struct EnsureAgentConversationRequest {
     pub native_session_id: Option<String>,
     #[serde(default)]
     pub native_session_mode: AgentNativeSessionMode,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

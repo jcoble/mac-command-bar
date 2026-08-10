@@ -58,36 +58,61 @@ impl UsageIndexer {
         let db = UsageDb::open(&self.database_path)?;
         let cursors = db.read_source_cursors()?;
         let mut count = 0_usize;
-        for source in discover_local_usage_sources() {
-            let source_key = source.path.to_string_lossy().to_string();
-            let opaque_key = opaque_source_key(&source_key);
-            let lookup = cursor_lookup_key(
-                &source.provider,
-                &source.provider_instance_id,
-                &source.source_kind,
-                &opaque_key,
-            );
-            let cursor = cursors.get(&lookup);
-            let incremental = read_incremental_jsonl(
-                &source.path,
-                cursor,
-                &source.provider,
-                &source.provider_instance_id,
-                &source.source_kind,
-                &source_key,
-            )?;
-            let context = read_source_context(&source.path, &source.provider);
-            let events = parse_usage_events_for_source_with_context(
-                &incremental.lines,
-                &source.provider,
-                &source.provider_instance_id,
-                &source.source_kind,
-                &source_key,
-                &context,
-            );
-            count = count.saturating_add(events.len());
-            db.insert_events_with_cursor(&events, Some(&incremental.next_cursor))?;
+        let mut rollups_dirty = false;
+        let ingest_result = (|| -> Result<(), String> {
+            for source in discover_local_usage_sources() {
+                let source_key = source.path.to_string_lossy().to_string();
+                let opaque_key = opaque_source_key(&source_key);
+                let lookup = cursor_lookup_key(
+                    &source.provider,
+                    &source.provider_instance_id,
+                    &source.source_kind,
+                    &opaque_key,
+                );
+                let cursor = cursors.get(&lookup);
+                let incremental = read_incremental_jsonl(
+                    &source.path,
+                    cursor,
+                    &source.provider,
+                    &source.provider_instance_id,
+                    &source.source_kind,
+                    &source_key,
+                )?;
+                let context = read_source_context(&source.path, &source.provider);
+                let events = parse_usage_events_for_source_with_context(
+                    &incremental.lines,
+                    &source.provider,
+                    &source.provider_instance_id,
+                    &source.source_kind,
+                    &source_key,
+                    &context,
+                );
+                if events.is_empty() && cursor == Some(&incremental.next_cursor) {
+                    continue;
+                }
+                db.insert_events_with_cursor_deferred_rollup(
+                    &events,
+                    Some(&incremental.next_cursor),
+                )?;
+                if !events.is_empty() {
+                    count = count.saturating_add(events.len());
+                    rollups_dirty = true;
+                }
+            }
+            Ok(())
+        })();
+        let rollup_result = if rollups_dirty {
+            db.rebuild_daily_rollups()
+        } else {
+            Ok(())
+        };
+        if let Err(error) = ingest_result {
+            if let Err(rollup_error) = rollup_result {
+                return Err(format!("{error}; {rollup_error}"));
+            }
+            return Err(error);
         }
+        rollup_result?;
         Ok(count)
     }
 }

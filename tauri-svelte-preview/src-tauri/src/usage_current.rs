@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::usage_sources::read_latest_local_quota;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -75,11 +75,19 @@ pub struct UnavailableProviderUsageReader;
 
 impl ProviderUsageReader for UnavailableProviderUsageReader {
     fn read(&self, provider: &str, instance_id: &str) -> ProviderUsageSnapshot {
-        unavailable_snapshot(provider, instance_id, "The provider has not advertised quota data")
+        unavailable_snapshot(
+            provider,
+            instance_id,
+            "The provider has not advertised quota data",
+        )
     }
 }
 
-pub fn unavailable_snapshot(provider: &str, instance_id: &str, reason: &str) -> ProviderUsageSnapshot {
+pub fn unavailable_snapshot(
+    provider: &str,
+    instance_id: &str,
+    reason: &str,
+) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
         provider: provider.trim().to_string(),
         account: None,
@@ -108,7 +116,9 @@ pub fn normalize_provider_usage(mut snapshot: ProviderUsageSnapshot) -> Provider
     }
     for window in &mut snapshot.windows {
         window.percent_consumed = window.percent_consumed.map(|value| value.clamp(0.0, 100.0));
-        window.percent_remaining = window.percent_remaining.map(|value| value.clamp(0.0, 100.0));
+        window.percent_remaining = window
+            .percent_remaining
+            .map(|value| value.clamp(0.0, 100.0));
         if window.semantics.trim().is_empty() {
             window.semantics = "Provider-defined quota window".to_string();
         }

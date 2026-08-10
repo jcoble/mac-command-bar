@@ -45,15 +45,18 @@
     validateProjectRoot
   } from '$lib/shell/newSession/newSessionBackend';
   import {
+    CLAUDE_SESSION_EFFORTS,
     LAUNCH_CATALOG,
     buildCommandPreview,
     buildNewSessionRequest,
+    isClaudeSessionEffort,
     resolveSessionTitle,
     selectLaunchAgent,
     suggestSessionTitle,
     validateNewSession,
     worktreeAddCommand,
     worktreeChoicesFor,
+    type ClaudeSessionEffort,
     type LaunchAgent,
     type NewSessionRequest
   } from '$lib/shell/newSession/newSessionFlow';
@@ -87,6 +90,7 @@
   let projectPath = $state('');
   let checkoutPath = $state('');
   let selectedLaunch = $state(selectLaunchAgent('codex'));
+  let reasoningEffort = $state<ClaudeSessionEffort | ''>('');
   let title = $state('');
 
   // ── What the screen is busy with ───────────────────────────────────────────
@@ -111,7 +115,12 @@
   const checkouts = $derived(worktreeChoicesFor({ projectRoot: projectPath, worktrees }));
   /** The folder the terminal actually opens in: the chosen checkout. */
   const cwd = $derived(checkoutPath || projectPath);
-  const draft = $derived({ cwd, title, ...selectedLaunch });
+  const draft = $derived({
+    cwd,
+    title,
+    ...selectedLaunch,
+    reasoningEffort: reasoningEffort || undefined
+  });
   const problems = $derived(validateNewSession(draft));
   const preview = $derived(buildCommandPreview({ cwd, command: selectedLaunch.command }));
   const titlePlaceholder = $derived(suggestSessionTitle({ cwd, agent: selectedLaunch.agent }));
@@ -122,6 +131,9 @@
   );
   const checkoutLabel = $derived(
     checkouts.find((choice) => choice.path === cwd)?.label ?? 'Choose a working copy'
+  );
+  const reasoningEffortLabel = $derived(
+    CLAUDE_SESSION_EFFORTS.find((effort) => effort.id === reasoningEffort)?.label ?? 'Default'
   );
   const readyToStart = $derived(problems.length === 0 && !starting);
 
@@ -140,6 +152,7 @@
     advancedOpen = false;
     newWorktreeBranch = '';
     copiedLabel = null;
+    reasoningEffort = '';
     pickAgent('codex');
     title = '';
     const path = initialRootPath();
@@ -191,6 +204,10 @@
   /** Choose what to run. Picking an agent rewrites the command box. */
   function pickAgent(next: LaunchAgent): void {
     selectedLaunch = selectLaunchAgent(next);
+  }
+
+  function pickReasoningEffort(value: string | undefined): void {
+    reasoningEffort = isClaudeSessionEffort(value) ? value : '';
   }
 
   /** Ask the system for a folder and add it to the list. */
@@ -346,6 +363,41 @@
           {/each}
         </div>
       </section>
+
+      {#if selectedLaunch.agent === 'claude'}
+        <section
+          class="flex flex-col gap-2"
+          aria-labelledby="new-session-claude-effort-label"
+          data-testid="new-session-claude-effort"
+        >
+          <div class="flex flex-col gap-1">
+            <h3
+              id="new-session-claude-effort-label"
+              class="text-[13px] leading-[1.3] font-medium"
+            >
+              Effort
+            </h3>
+            <p class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
+              Set the thinking budget for this session when it starts.
+            </p>
+          </div>
+          <Select.Root
+            type="single"
+            value={reasoningEffort || 'default'}
+            onValueChange={pickReasoningEffort}
+          >
+            <Select.Trigger class="w-full text-[13px]" aria-label="Claude effort">
+              {reasoningEffortLabel}
+            </Select.Trigger>
+            <Select.Content>
+              <Select.Item value="default" label="Default" />
+              {#each CLAUDE_SESSION_EFFORTS as effort (effort.id)}
+                <Select.Item value={effort.id} label={effort.label} />
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </section>
+      {/if}
 
       <!-- ── Working location ──────────────────────────────────────────── -->
       <section class="flex flex-col gap-3" aria-labelledby="new-session-location-label">

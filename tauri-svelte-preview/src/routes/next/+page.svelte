@@ -976,7 +976,8 @@
 
   async function selectOwned(
     ownedId: string,
-    propagateStructuredFailure = false
+    propagateStructuredFailure = false,
+    reasoningEffort?: string
   ): Promise<void> {
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
@@ -1036,7 +1037,8 @@
         provider,
         cwd: selected.cwd,
         nativeSessionId: selected.nativeSessionId,
-        nativeSessionMode: activation.nativeSessionMode
+        nativeSessionMode: activation.nativeSessionMode,
+        reasoningEffort
       });
       const connected = (): void => {
         updateOwnedSession(ownedId, { lastError: null });
@@ -1210,7 +1212,7 @@
       });
       frameControls?.showCenterPanel('session');
       try {
-        await selectOwned(owned.ownedId, true);
+        await selectOwned(owned.ownedId, true, request.reasoningEffort);
         updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
       } catch (error) {
         console.warn('mcb next: startNewSession failed', describeError(error));

@@ -77,7 +77,10 @@ mod tests {
 
     #[test]
     fn bounded_text_rejects_binary_and_oversized_models() {
-        assert_eq!(bounded_text(b"hello\n".to_vec()), Some("hello\n".to_string()));
+        assert_eq!(
+            bounded_text(b"hello\n".to_vec()),
+            Some("hello\n".to_string())
+        );
         assert_eq!(bounded_text(vec![b'a', 0, b'b']), None);
         assert_eq!(bounded_text(vec![b'a'; MAX_DIFF_MODEL_BYTES + 1]), None);
     }

@@ -3,13 +3,10 @@
   import {
     buildProviderUsageTrend,
     buildUsageHeatmap,
-    usageCacheShare,
     usageRangeLabel,
-    usageRangeOptions,
-    usageTotalTokens
+    usageRangeOptions
   } from './usageAnalytics.ts';
-  import { estimateUsageCostMicros, USAGE_COST_RATE_VERSION } from './usageCostModel.ts';
-  import type { UsageCostEstimate } from './usageCostModel.ts';
+  import { USAGE_COST_RATE_VERSION } from './usageCostModel.ts';
   import { usagePercent, usageProviderLabel, usageQuotaWindowLabel, usageResetLabel } from './usageCurrent.ts';
   import { refreshUsageHistory, selectUsageRange, usageState } from './usageStore.svelte.ts';
   import type { UsageProviderSummaryRow } from './usageTypes.ts';
@@ -31,13 +28,15 @@
   const donutRadius = 39;
   const donutCircumference = 2 * Math.PI * donutRadius;
 
-  let totalTokens = $derived(usageState.summary ? usageTotalTokens(usageState.summary) : 0);
-  let cacheShare = $derived(usageState.summary ? usageCacheShare({ ...usageState.summary, totalTokens }) : 0);
+  let totalTokens = $derived(usageState.summary?.totalTokens ?? 0);
+  let cacheShare = $derived(usageState.summary?.cacheSharePercent ?? 0);
   let heatmapDays = $derived(buildUsageHeatmap(usageState.dailyTotals, usageState.range));
-  let estimatedCost = $derived(estimateUsageCostMicros(usageState.costInputs));
+  let estimatedCost = $derived({
+    estimateMicros: usageState.providerSummary[0]?.rangeEstimatedCostMicros ?? null,
+    unpricedPercent: usageState.providerSummary[0]?.rangeUnpricedPercent ?? 0
+  });
   let bestDay = $derived(usageState.dailyTotals[0]?.bestDay ?? null);
-  let providerCosts = $derived(providerNames.map((provider) => ({ provider, estimate: selectedProviderEstimate(provider) })));
-  let knownProviderCostTotal = $derived(providerCosts.reduce((total, item) => total + (item.estimate.estimateMicros ?? 0), 0));
+  let knownProviderCostTotal = $derived(estimatedCost.estimateMicros ?? 0);
 
   function visibleTokens(input: number): string {
     return compactNumberFormat.format(input);
@@ -49,9 +48,9 @@
     return dollars >= 100 ? compactCurrency.format(dollars) : preciseCurrency.format(dollars);
   }
 
-  function unpricedLabel(estimate: UsageCostEstimate): string | null {
-    if (estimate.estimateMicros == null || estimate.unpricedShare <= 0) return null;
-    return `excludes ${Math.max(1, Math.round(estimate.unpricedShare * 100))}% unpriced`;
+  function unpricedLabel(estimate: { estimateMicros: number | null; unpricedPercent: number }): string | null {
+    if (estimate.estimateMicros == null || estimate.unpricedPercent <= 0) return null;
+    return `excludes ${estimate.unpricedPercent}% unpriced`;
   }
 
   function formatDay(day: string): string {
@@ -72,17 +71,17 @@
     return usageState.providerRollups[range].find((card) => card.provider === provider) ?? null;
   }
 
-  function selectedProviderEstimate(provider: string): UsageCostEstimate {
-    const inputs = usageState.costInputs.filter((row) => row.provider === provider);
-    return estimateUsageCostMicros(inputs);
+  function selectedProviderEstimate(provider: string): { estimateMicros: number | null; unpricedPercent: number } {
+    const card = selectedProviderCard(provider);
+    return { estimateMicros: card?.estimatedCostMicros ?? null, unpricedPercent: card?.unpricedPercent ?? 0 };
   }
 
-  function providerEstimate(card: UsageProviderSummaryRow | null): UsageCostEstimate {
-    return estimateUsageCostMicros(card?.costInputs ?? []);
+  function providerEstimate(card: UsageProviderSummaryRow | null): { estimateMicros: number | null; unpricedPercent: number } {
+    return { estimateMicros: card?.estimatedCostMicros ?? null, unpricedPercent: card?.unpricedPercent ?? 0 };
   }
 
   function providerShare(card: UsageProviderSummaryRow): number {
-    return card.rangeTotalTokens === 0 ? 0 : Math.round((card.totalTokens / card.rangeTotalTokens) * 100);
+    return card.rangeSharePercent;
   }
 
   function mixWidth(value: number): number {
@@ -100,7 +99,7 @@
   }
 
   function donutLength(provider: string): number {
-    const cost = providerCosts.find((item) => item.provider === provider)?.estimate.estimateMicros ?? 0;
+    const cost = selectedProviderCard(provider)?.estimatedCostMicros ?? 0;
     return knownProviderCostTotal === 0 ? 0 : (cost / knownProviderCostTotal) * donutCircumference;
   }
 
@@ -128,9 +127,9 @@
           >{option.label}</button>
         {/each}
       </div>
-      <button class="refresh" type="button" onclick={() => void refreshUsageHistory()} disabled={usageState.historyLoading}>
-        <RefreshCw size={14} class={usageState.historyLoading ? 'spinning' : undefined} aria-hidden="true" />
-        {usageState.historyLoading ? 'Indexing…' : 'Refresh'}
+      <button class="refresh" type="button" onclick={() => void refreshUsageHistory()} disabled={usageState.historyLoading || usageState.historyRefreshing}>
+        <RefreshCw size={14} class={usageState.historyRefreshing ? 'spinning' : undefined} aria-hidden="true" />
+        {usageState.historyRefreshing ? 'Refreshing…' : usageState.historyLoading ? 'Loading…' : 'Refresh'}
       </button>
       <button class="close" type="button" aria-label="Close Stats and Usage" onclick={onClose}><X size={17} aria-hidden="true" /></button>
     </div>
@@ -142,14 +141,14 @@
         <div class="donut-wrap">
           <svg class="donut" viewBox="0 0 100 100" role="img" aria-label={`Estimated cost ${costLabel(estimatedCost.estimateMicros)}${unpricedLabel(estimatedCost) ? `, ${unpricedLabel(estimatedCost)}` : ''}`}>
             <circle class="donut-track" cx="50" cy="50" r={donutRadius}></circle>
-            {#each providerCosts as item (item.provider)}
+            {#each providerNames as provider (provider)}
               <circle
-                class={`donut-segment ${item.provider}`}
+                class={`donut-segment ${provider}`}
                 cx="50"
                 cy="50"
                 r={donutRadius}
-                stroke-dasharray={`${donutLength(item.provider)} ${donutCircumference}`}
-                stroke-dashoffset={donutOffset(item.provider)}
+                stroke-dasharray={`${donutLength(provider)} ${donutCircumference}`}
+                stroke-dashoffset={donutOffset(provider)}
               ></circle>
             {/each}
           </svg>
@@ -289,7 +288,7 @@
                   <div class="rollup-detail">
                     <span><small>Sessions</small><strong>{integerFormat.format(rollupData?.sessionCount ?? 0)}</strong></span>
                     <span><small>Turns</small><strong>{integerFormat.format(rollupData?.turnCount ?? 0)}</strong></span>
-                    <span><small>Models</small><strong>{rollupData?.models.length ?? 0}</strong></span>
+                    <span><small>Models</small><strong>{rollupData?.modelCount ?? 0}</strong></span>
                   </div>
                 </details>
               {/each}

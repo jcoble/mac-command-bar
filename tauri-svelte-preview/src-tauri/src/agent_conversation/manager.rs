@@ -22,6 +22,7 @@ use super::protocol::{
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
+use super::providers::process::SidecarEnvironment;
 use super::providers::{
     AcpRuntimeAdapter, AgentConfigValue, AgentConversationConfigUpdate, AgentPrompt,
     AgentRuntimeAdapter, AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession,
@@ -31,6 +32,13 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 const SNAPSHOT_EVENT_CAP: usize = 2_000;
 const JOURNAL_EVENT_CAP: usize = 10_000;
+const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
+const CLAUDE_SESSION_EFFORTS: [(&str, &str); 4] = [
+    ("low", "4000"),
+    ("medium", "12000"),
+    ("high", "32000"),
+    ("max", "63999"),
+];
 
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
 
@@ -81,6 +89,7 @@ pub struct ManagedAgentSession {
     next_permission_id: u64,
     ordered_events: Option<UnboundedSender<OrderedSessionEvent>>,
     cwd: String,
+    spawn_reasoning_effort: Option<String>,
     config: AgentConversationConfigState,
     connection: AgentConversationConnection,
     frontend_events: VecDeque<AgentConversationEvent>,
@@ -214,6 +223,8 @@ impl AgentRuntimeManager {
             .display()
             .to_string();
         let native_session_id = normalized_optional_id(request.native_session_id);
+        let reasoning_effort =
+            normalized_session_start_effort(request.provider, request.reasoning_effort)?;
         if request.native_session_mode == AgentNativeSessionMode::Load
             && native_session_id.is_none()
         {
@@ -230,6 +241,7 @@ impl AgentRuntimeManager {
                     .as_ref()
                     .is_none_or(|native_id| current.native_session_id.as_ref() == Some(native_id))
                 && current.native_session_mode == request.native_session_mode
+                && current.spawn_reasoning_effort == reasoning_effort
                 && current.connection.state != ConversationConnectionState::Failed
             {
                 return Ok((current.connection.clone(), None));
@@ -280,6 +292,7 @@ impl AgentRuntimeManager {
                 next_permission_id: 0,
                 ordered_events: None,
                 cwd,
+                spawn_reasoning_effort: reasoning_effort,
                 config: connection.config.clone(),
                 connection: connection.clone(),
                 frontend_events: VecDeque::new(),
@@ -296,7 +309,7 @@ impl AgentRuntimeManager {
     ) -> Result<AgentConversationConnection, String> {
         let activation_lock = self.activation_lock(owned_id)?;
         let _activation = activation_lock.lock().await;
-        let (provider, cwd, native_session_id, native_session_mode) = {
+        let (provider, cwd, native_session_id, native_session_mode, reasoning_effort) = {
             let sessions = self
                 .sessions
                 .lock()
@@ -318,16 +331,23 @@ impl AgentRuntimeManager {
                 std::path::PathBuf::from(&session.cwd),
                 session.native_session_id.clone(),
                 session.native_session_mode,
+                session.spawn_reasoning_effort.clone(),
             )
         };
         let manifest = self.providers.manifest(provider)?;
-        let mut adapter = AcpRuntimeAdapter::new(manifest, owned_id.to_string(), cwd.clone());
+        let environment = session_spawn_environment(provider, reasoning_effort.as_deref());
+        let mut adapter = AcpRuntimeAdapter::with_environment(
+            manifest,
+            owned_id.to_string(),
+            cwd.clone(),
+            environment,
+        );
         let capabilities = adapter
             .initialize(InitializeAgentInput { provider })
             .await
             .map_err(|error| error.to_string())?;
         let expected_native_session_id = native_session_id.clone();
-        let started = match native_session_id {
+        let mut started = match native_session_id {
             Some(native_session_id) => {
                 let input = LoadAgentSession {
                     cwd,
@@ -341,6 +361,9 @@ impl AgentRuntimeManager {
             None => adapter.new_session(NewAgentSession { cwd }).await,
         }
         .map_err(|error| error.to_string())?;
+        if provider == AgentConversationProvider::Claude {
+            started.config = claude_session_config(started.config, reasoning_effort.as_deref());
+        }
         if let Some(expected_native_session_id) = expected_native_session_id {
             if started.native_session_id != expected_native_session_id {
                 let _ = adapter.detach_session().await;
@@ -648,6 +671,14 @@ impl AgentRuntimeManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session(&sessions, &request.owned_id, request.generation)?;
+            if session.provider == AgentConversationProvider::Claude
+                && update.reasoning_effort.is_some()
+            {
+                return Err(
+                    "Effort is set when the session starts. Start a new session to change it."
+                        .to_string(),
+                );
+            }
             validate_conversation_config_update(&session.config, &update)?;
             if update == AgentConversationConfigUpdate::default() {
                 return Ok(session.config.clone());
@@ -1996,6 +2027,56 @@ fn normalized_optional_id(value: Option<String>) -> Option<String> {
     })
 }
 
+fn normalized_session_start_effort(
+    provider: AgentConversationProvider,
+    value: Option<String>,
+) -> Result<Option<String>, String> {
+    let value = normalized_optional_id(value);
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if provider != AgentConversationProvider::Claude {
+        return Err("Session-start effort is only available for Claude sessions".to_string());
+    }
+    if CLAUDE_SESSION_EFFORTS
+        .iter()
+        .any(|(effort, _)| *effort == value)
+    {
+        Ok(Some(value))
+    } else {
+        Err("Claude session effort must be low, medium, high, or max".to_string())
+    }
+}
+
+fn session_spawn_environment(
+    provider: AgentConversationProvider,
+    reasoning_effort: Option<&str>,
+) -> SidecarEnvironment {
+    if provider != AgentConversationProvider::Claude {
+        return SidecarEnvironment::default();
+    }
+    let mut environment = SidecarEnvironment::default().remove(MAX_THINKING_TOKENS_ENV);
+    if let Some((_, tokens)) = CLAUDE_SESSION_EFFORTS
+        .iter()
+        .find(|(effort, _)| Some(*effort) == reasoning_effort)
+    {
+        environment = environment.set(MAX_THINKING_TOKENS_ENV, *tokens);
+    }
+    environment
+}
+
+fn claude_session_config(
+    mut config: AgentConversationConfigState,
+    reasoning_effort: Option<&str>,
+) -> AgentConversationConfigState {
+    config.reasoning_effort = reasoning_effort.map(str::to_string);
+    config.available_efforts = CLAUDE_SESSION_EFFORTS
+        .iter()
+        .map(|(effort, _)| (*effort).to_string())
+        .collect();
+    config
+}
+
 fn validate_conversation_config_update(
     current: &AgentConversationConfigState,
     update: &AgentConversationConfigUpdate,
@@ -2047,6 +2128,7 @@ mod tests {
             cwd: root.into(),
             native_session_id: None,
             native_session_mode: AgentNativeSessionMode::Resume,
+            reasoning_effort: None,
         }
     }
     fn temp_root() -> std::path::PathBuf {
@@ -2063,22 +2145,24 @@ mod tests {
     }
 
     async fn fixture_manager_with_acp_session(fixture: &str) -> FixtureManager {
+        fixture_manager_with_provider(fixture, AgentConversationProvider::Codex, None).await
+    }
+
+    async fn fixture_manager_with_provider(
+        fixture: &str,
+        provider: AgentConversationProvider,
+        reasoning_effort: Option<&str>,
+    ) -> FixtureManager {
         let root = temp_root();
         let log = root.join(format!("{fixture}.jsonl"));
         let manifest =
             super::super::providers::acp_client::tests::fixture_manifest_named(&log, fixture);
-        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
-            .expect("fixture provider");
+        let providers = ProviderRegistry::new([(provider, manifest)]).expect("fixture provider");
         let manager = AgentRuntimeManager::new(providers);
         let owned_id = format!("owned-{fixture}");
-        let connection = manager
-            .ensure_inner(request(
-                root.to_str().unwrap(),
-                &owned_id,
-                AgentConversationProvider::Codex,
-            ))
-            .expect("ensure")
-            .0;
+        let mut ensure_request = request(root.to_str().unwrap(), &owned_id, provider);
+        ensure_request.reasoning_effort = reasoning_effort.map(str::to_string);
+        let connection = manager.ensure_inner(ensure_request).expect("ensure").0;
         manager
             .activate(&owned_id, connection.generation)
             .await
@@ -2799,6 +2883,68 @@ mod tests {
                 .is_ok_and(|config| config.approval_policy.as_deref() == Some("plan"))
         })
         .await;
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_medium_effort_is_injected_at_spawn_and_exposed_as_session_config() {
+        let fixture = fixture_manager_with_provider(
+            "claude_medium_effort",
+            AgentConversationProvider::Claude,
+            Some("medium"),
+        )
+        .await;
+
+        let log = fs::read_to_string(fixture.root.join("claude_medium_effort.jsonl"))
+            .expect("Claude spawn log");
+        assert!(log.contains("MAX_THINKING_TOKENS=12000"));
+        let config = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("Claude config");
+        assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(config.available_efforts, ["low", "medium", "high", "max"]);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_default_effort_removes_spawn_env_and_rejects_live_changes() {
+        let fixture = fixture_manager_with_provider(
+            "claude_default_effort",
+            AgentConversationProvider::Claude,
+            None,
+        )
+        .await;
+
+        let log = fs::read_to_string(fixture.root.join("claude_default_effort.jsonl"))
+            .expect("Claude spawn log");
+        assert!(log.contains("MAX_THINKING_TOKENS=<unset>"));
+        let config = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("Claude config");
+        assert_eq!(config.reasoning_effort, None);
+        assert_eq!(config.available_efforts, ["low", "medium", "high", "max"]);
+
+        let error = fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: Some("high".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect_err("Claude effort cannot change after spawn");
+        assert_eq!(
+            error,
+            "Effort is set when the session starts. Start a new session to change it."
+        );
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();

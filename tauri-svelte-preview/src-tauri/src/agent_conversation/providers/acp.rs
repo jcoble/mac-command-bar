@@ -3,6 +3,7 @@ use super::super::protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentProviderManifest,
 };
 use super::acp_client::{AcpInbound, AcpTransport};
+use super::process::SidecarEnvironment;
 use super::{
     AcpClient, AgentConfigOption, AgentConfigValue, AgentConversationConfigUpdate, AgentPrompt,
     AgentRuntimeAdapter, AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession,
@@ -17,9 +18,11 @@ pub struct AcpRuntimeAdapter {
     cwd: std::path::PathBuf,
     client: Option<AcpClient>,
     capabilities: Option<AgentCapabilities>,
+    environment: SidecarEnvironment,
 }
 
 impl AcpRuntimeAdapter {
+    #[cfg(test)]
     pub fn new(manifest: AgentProviderManifest, owned_id: String, cwd: std::path::PathBuf) -> Self {
         Self {
             manifest,
@@ -27,6 +30,23 @@ impl AcpRuntimeAdapter {
             cwd,
             client: None,
             capabilities: None,
+            environment: SidecarEnvironment::default(),
+        }
+    }
+
+    pub fn with_environment(
+        manifest: AgentProviderManifest,
+        owned_id: String,
+        cwd: std::path::PathBuf,
+        environment: SidecarEnvironment,
+    ) -> Self {
+        Self {
+            manifest,
+            owned_id,
+            cwd,
+            client: None,
+            capabilities: None,
+            environment,
         }
     }
 
@@ -68,7 +88,12 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
         &mut self,
         input: InitializeAgentInput,
     ) -> Result<AgentCapabilities, AgentRuntimeError> {
-        let mut client = AcpClient::spawn(&self.manifest, &self.cwd, &self.owned_id)?;
+        let mut client = AcpClient::spawn_with_environment(
+            &self.manifest,
+            &self.cwd,
+            &self.owned_id,
+            &self.environment,
+        )?;
         let capabilities = client.initialize(input.provider).await?;
         validate_capabilities(&capabilities)
             .map_err(|message| AgentRuntimeError::new("invalid-capabilities", message))?;

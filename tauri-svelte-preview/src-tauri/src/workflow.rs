@@ -513,6 +513,9 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     )))
                 }
             };
+            let spawn_reasoning_effort = (provider == AgentConversationProvider::Claude)
+                .then(|| request.effort.clone())
+                .flatten();
             let connection = self
                 .ensure_async(EnsureAgentConversationRequest {
                     owned_id: request.owned_id.clone(),
@@ -521,6 +524,7 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     native_session_id: None,
                     native_session_mode:
                         crate::agent_conversation::protocol::AgentNativeSessionMode::Resume,
+                    reasoning_effort: spawn_reasoning_effort,
                 })
                 .await
                 .map_err(WorkflowError::Runtime)?;
@@ -544,6 +548,11 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     request.permission.as_deref(),
                 ),
             ] {
+                if provider == AgentConversationProvider::Claude
+                    && categories.contains(&"thought_level")
+                {
+                    continue;
+                }
                 if let Some(value) = selected {
                     let option = capabilities
                         .config_options

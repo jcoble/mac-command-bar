@@ -16,6 +16,10 @@ const host = readFileSync(
   new URL('../src/lib/shell/components/newSession/NewSessionHost.svelte', import.meta.url),
   'utf8'
 );
+const conversationService = readFileSync(
+  new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
+  'utf8'
+);
 const sessionCard = readFileSync(
   new URL('../src/lib/shell/components/sessions/SessionCard.svelte', import.meta.url),
   'utf8'
@@ -73,6 +77,23 @@ for (const agent of ['codex', 'claude']) {
   assert.equal(startsStructuredSession(request), true, `${agent} must start structured`);
 }
 
+assert.deepEqual(
+  buildNewSessionRequest({
+    cwd: '/Users/me/dev/work/thing',
+    title: '',
+    ...selectLaunchAgent('claude'),
+    reasoningEffort: 'medium'
+  }),
+  {
+    cwd: '/Users/me/dev/work/thing',
+    title: 'Claude in thing',
+    agent: 'claude',
+    command: 'claude',
+    reasoningEffort: 'medium'
+  },
+  'Claude effort must survive the dialog request handoff'
+);
+
 assert.match(
   dialog,
   /aria-pressed=\{selectedLaunch\.agent === option\.agent\}[\s\S]*onclick=\{\(\) => pickAgent\(option\.agent\)\}/,
@@ -80,8 +101,13 @@ assert.match(
 );
 assert.match(
   dialog,
-  /const draft = \$derived\(\{ cwd, title, \.\.\.selectedLaunch \}\)/,
+  /const draft = \$derived\(\{[\s\S]*\.\.\.selectedLaunch,[\s\S]*reasoningEffort:/,
   'the submitted draft reads the same selectedLaunch value as the card'
+);
+assert.match(
+  dialog,
+  /\{#if selectedLaunch\.agent === 'claude'\}[\s\S]*data-testid="new-session-claude-effort"[\s\S]*<Select\.Item value="default" label="Default" \/>[\s\S]*CLAUDE_SESSION_EFFORTS/,
+  'the dialog offers Default and the bounded effort catalog only for Claude'
 );
 assert.match(
   dialog,
@@ -111,13 +137,32 @@ assert.match(
 );
 assert.match(
   startNewSession,
+  /await selectOwned\(owned\.ownedId, true, request\.reasoningEffort\);/,
+  'new Claude sessions forward their selected effort into structured activation'
+);
+assert.match(
+  selectOwned,
+  /reasoningEffort\?: string[\s\S]*ensureStructuredConversation\(\{[\s\S]*reasoningEffort/,
+  'structured activation forwards effort to the conversation service'
+);
+assert.match(
+  conversationService,
+  /reasoningEffort\?: string \| null;[\s\S]*const request = \{[\s\S]*\.\.\.input,[\s\S]*nativeSessionMode:/,
+  'the session-start invoke request carries the optional backend effort field'
+);
+
+assert.match(
+  startNewSession,
   /origin: startsStructuredSession\(request\) \? \('app' as const\) : \('external' as const\)/,
   'the same request predicate owns the persisted structured origin'
 );
 
 {
   const structuredBranch = startNewSession.indexOf("if (owned.origin === 'app')");
-  const structuredSelect = startNewSession.indexOf('await selectOwned(owned.ownedId, true);', structuredBranch);
+  const structuredSelect = startNewSession.indexOf(
+    'await selectOwned(owned.ownedId, true, request.reasoningEffort);',
+    structuredBranch
+  );
   const structuredFailure = startNewSession.indexOf("state: 'exited'", structuredBranch);
   assert.ok(structuredBranch >= 0 && structuredSelect >= 0 && structuredFailure >= 0);
   assert.ok(

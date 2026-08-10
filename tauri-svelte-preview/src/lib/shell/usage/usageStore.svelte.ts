@@ -1,6 +1,5 @@
 import type {
   ProviderUsageSnapshot,
-  UsageCostInputRow,
   UsageDailyRow,
   UsageDailyTotalsRow,
   UsageProviderDailyTotalsRow,
@@ -30,12 +29,12 @@ export const usageState = $state<{
   providerSummary: UsageProviderSummaryRow[];
   providerRollups: Record<'today' | 'yesterday' | '30-days', UsageProviderSummaryRow[]>;
   providerDailyTotals: UsageProviderDailyTotalsRow[];
-  costInputs: UsageCostInputRow[];
   daily: UsageDailyRow[];
   dailyTotals: UsageDailyTotalsRow[];
   readonly loading: boolean;
   currentLoading: boolean;
   historyLoading: boolean;
+  historyRefreshing: boolean;
   error: string | null;
   unavailableReason: string | null;
   range: UsageRange;
@@ -46,12 +45,12 @@ export const usageState = $state<{
   providerSummary: [],
   providerRollups: { today: [], yesterday: [], '30-days': [] },
   providerDailyTotals: [],
-  costInputs: [],
   daily: [],
   dailyTotals: [],
-  get loading() { return this.currentLoading || this.historyLoading; },
+  get loading() { return this.currentLoading || this.historyLoading || this.historyRefreshing; },
   currentLoading: false,
   historyLoading: false,
+  historyRefreshing: false,
   error: null,
   unavailableReason: null,
   range: '30-days'
@@ -92,13 +91,15 @@ export async function refreshCurrentUsage(provider: string | null, instanceId: s
   }
 }
 
-async function loadUsageHistory(range: UsageRange, refreshIndex: boolean): Promise<UsageSummary | null> {
-  if (usageState.historyLoading) return usageState.summary;
+let historyLoadRequest: Promise<UsageSummary | null> | null = null;
+let historyRefreshRequest: Promise<void> | null = null;
+
+async function loadUsageHistory(range: UsageRange): Promise<UsageSummary | null> {
+  if (historyLoadRequest) return historyLoadRequest;
   usageState.historyLoading = true;
   usageState.error = null;
   usageState.range = range;
-  try {
-    if (refreshIndex) await settleUsageRequest(usageService.refreshHistory());
+  const request = (async () => {
     const query = usageRangeQuery(range);
     const heatmapQuery = usageHeatmapQuery(range);
     const rollupRanges = ['today', 'yesterday', '30-days'] as const;
@@ -108,15 +109,14 @@ async function loadUsageHistory(range: UsageRange, refreshIndex: boolean): Promi
     const selectedProviderSummary = range === 'all'
       ? usageService.readProviderSummary({ ...query, limit: 20, offset: 0 })
       : rollupRequests[rollupRanges.indexOf(range)];
-    // The selected-range core remains exactly three DB-side aggregate queries;
-    // fixed provider rollups, cost inputs, and daily trends are also DB-shaped.
-    const [summary, providerSummary, dailyTotals, providerDailyTotals, costInputs, ...rollups] = await settleUsageRequest(
+    // Every displayed metric is returned as a bounded DB-side aggregate. No
+    // event or turn rows cross IPC, and no displayed totals are summed in JS.
+    const [summary, providerSummary, dailyTotals, providerDailyTotals, ...rollups] = await settleUsageRequest(
       Promise.all([
         usageService.readSummary(query),
         selectedProviderSummary,
         usageService.readDailyTotals({ ...heatmapQuery, limit: 42, offset: 0 }),
         usageService.readProviderDailyTotals({ ...usageRangeQuery('30-days'), limit: 200, offset: 0 }),
-        usageService.readCostInputs({ ...query, limit: 200, offset: 0 }),
         ...rollupRequests
       ])
     );
@@ -124,26 +124,46 @@ async function loadUsageHistory(range: UsageRange, refreshIndex: boolean): Promi
     usageState.providerSummary = providerSummary ?? [];
     usageState.dailyTotals = dailyTotals ?? [];
     usageState.providerDailyTotals = providerDailyTotals ?? [];
-    usageState.costInputs = costInputs ?? [];
     usageState.providerRollups = {
       today: rollups[0] ?? [],
       yesterday: rollups[1] ?? [],
       '30-days': rollups[2] ?? []
     };
     return summary;
-  } catch (error) {
+  })().catch((error) => {
     usageState.error = describeUsageError(error);
     return null;
-  } finally {
+  }).finally(() => {
     usageState.historyLoading = false;
-  }
+    historyLoadRequest = null;
+  });
+  historyLoadRequest = request;
+  return request;
+}
+
+function refreshUsageIndexInBackground(): void {
+  if (historyRefreshRequest) return;
+  usageState.historyRefreshing = true;
+  historyRefreshRequest = usageService.refreshHistory()
+    .then(async () => {
+      await loadUsageHistory(usageState.range);
+    })
+    .catch((error) => {
+      usageState.error = describeUsageError(error);
+    })
+    .finally(() => {
+      usageState.historyRefreshing = false;
+      historyRefreshRequest = null;
+    });
 }
 
 export async function refreshUsageHistory(): Promise<UsageSummary | null> {
-  return loadUsageHistory(usageState.range, true);
+  const cached = await loadUsageHistory(usageState.range);
+  refreshUsageIndexInBackground();
+  return cached;
 }
 
 export async function selectUsageRange(range: UsageRange): Promise<UsageSummary | null> {
   if (range === usageState.range && usageState.summary) return usageState.summary;
-  return loadUsageHistory(range, false);
+  return loadUsageHistory(range);
 }

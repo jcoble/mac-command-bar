@@ -24,6 +24,26 @@ import type { ProjectWorktree } from '../../tauriSource.ts';
 /** The three ways to start a session. `shell` is a terminal and nothing else. */
 export type LaunchAgent = 'claude' | 'codex' | 'shell';
 
+export const CLAUDE_SESSION_EFFORTS = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'max', label: 'Max' }
+] as const;
+
+export type ClaudeSessionEffort = (typeof CLAUDE_SESSION_EFFORTS)[number]['id'];
+
+export function isClaudeSessionEffort(value: string | undefined): value is ClaudeSessionEffort {
+  return CLAUDE_SESSION_EFFORTS.some((effort) => effort.id === value);
+}
+
+/** Spawn-time effort choices are available only for new Claude conversations. */
+export function sessionEffortsFor(
+  agent: LaunchAgent
+): readonly (typeof CLAUDE_SESSION_EFFORTS)[number][] {
+  return agent === 'claude' ? CLAUDE_SESSION_EFFORTS : [];
+}
+
 export type LaunchOption = {
   /** Which of the three this is. */
   agent: LaunchAgent;
@@ -130,6 +150,7 @@ export type NewSessionDraft = {
   command: string;
   agent: LaunchAgent;
   title: string;
+  reasoningEffort?: ClaudeSessionEffort;
 };
 
 /** Something standing between the draft and the Start button. */
@@ -190,6 +211,7 @@ export type NewSessionRequest = {
   title: string;
   agent: AgentKind;
   command: string | null;
+  reasoningEffort?: ClaudeSessionEffort;
 };
 
 /** Whether this request belongs to the structured conversation runtime. */
@@ -210,11 +232,13 @@ export function startsStructuredSession(
 export function buildNewSessionRequest(draft: NewSessionDraft): NewSessionRequest | null {
   if (validateNewSession(draft).length > 0) return null;
   const command = draft.command.trim();
+  const reasoningEffort = draft.agent === 'claude' ? draft.reasoningEffort : undefined;
   return {
     cwd: normalizeRootPath(draft.cwd),
     title: resolveSessionTitle({ cwd: draft.cwd, agent: draft.agent, title: draft.title }),
     agent: agentKindFor(draft.agent),
-    command: command || null
+    command: command || null,
+    ...(reasoningEffort ? { reasoningEffort } : {})
   };
 }
 

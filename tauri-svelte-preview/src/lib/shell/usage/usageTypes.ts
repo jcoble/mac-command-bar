@@ -63,6 +63,8 @@ export type UsageSummary = {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   reasoningTokens: number;
+  totalTokens: number;
+  cacheSharePercent: number;
   estimatedCostMicros: number | null;
 };
 
@@ -81,7 +83,7 @@ export type UsageBreakdownRow = {
 
 export type UsageProviderSummaryRow = {
   provider: string;
-  models: string[];
+  modelCount: number;
   eventCount: number;
   sessionCount: number;
   turnCount: number;
@@ -92,13 +94,16 @@ export type UsageProviderSummaryRow = {
   cacheWriteTokens: number;
   reasoningTokens: number;
   estimatedCostMicros: number | null;
+  unpricedPercent: number;
   totalTokens: number;
   rangeTotalTokens: number;
+  rangeEstimatedCostMicros: number | null;
+  rangeUnpricedPercent: number;
+  rangeSharePercent: number;
   lastModel: string;
   lastSessionId: string | null;
   lastProjectId: string | null;
   lastSeenAtMicros: number | null;
-  costInputs: UsageCostInputRow[];
 };
 
 export type UsageDailyRow = {

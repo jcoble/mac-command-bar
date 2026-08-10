@@ -15,7 +15,9 @@ use super::super::protocol::{
     AgentConversationProvider, AgentImplementation, AgentInteractionCapabilities,
     AgentPromptCapabilities, AgentProviderManifest, AgentSessionCapabilities,
 };
-use super::process::{SidecarProcess, SidecarProcessHandle, SidecarReadHalf, SidecarWriteHalf};
+use super::process::{
+    SidecarEnvironment, SidecarProcess, SidecarProcessHandle, SidecarReadHalf, SidecarWriteHalf,
+};
 use super::{
     AgentConversationConfigUpdate, AgentPrompt, AgentRuntimeError, GeneratedText,
     StartedAgentSession,
@@ -416,12 +418,22 @@ enum ConversationConfigProtocol {
 }
 
 impl AcpClient {
+    #[cfg(test)]
     pub fn spawn(
         manifest: &AgentProviderManifest,
         cwd: &Path,
         owned_id: &str,
     ) -> Result<Self, AgentRuntimeError> {
-        let process = SidecarProcess::spawn(manifest, cwd, owned_id)
+        Self::spawn_with_environment(manifest, cwd, owned_id, &SidecarEnvironment::default())
+    }
+
+    pub fn spawn_with_environment(
+        manifest: &AgentProviderManifest,
+        cwd: &Path,
+        owned_id: &str,
+        environment: &SidecarEnvironment,
+    ) -> Result<Self, AgentRuntimeError> {
+        let process = SidecarProcess::spawn_with_environment(manifest, cwd, owned_id, environment)
             .map_err(|message| AgentRuntimeError::new("sidecar-spawn", message))?;
         let (transport, inbound) = AcpTransport::start(process);
         Ok(Self {
@@ -949,6 +961,11 @@ pub(crate) mod tests {
         let script = format!(
             r#"log={log}
 fixture={fixture}
+if [ "${{MAX_THINKING_TOKENS+x}}" = "x" ]; then
+  printf 'MAX_THINKING_TOKENS=%s\n' "$MAX_THINKING_TOKENS" >> "$log"
+else
+  printf 'MAX_THINKING_TOKENS=<unset>\n' >> "$log"
+fi
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
