@@ -30,10 +30,27 @@ import { activate as activateWorktrees } from "./worktrees/worktreeManagerServic
 import type { WorktreeSessionInput } from "./worktrees/worktreeManagerRows.ts";
 import { activateBrowser } from "./browser/browserStore.svelte.ts";
 import { isNativeTauriRuntime } from "$lib/tauriSource.ts";
+import {
+  languageIntelligenceOn,
+  readLanguageIntelligenceChoices,
+} from "./editor/languageIntelligenceMode.ts";
 
 function warmNativeCsharpOnWorkspaceSelection(root: string | null): void {
   const selectedRoot = root?.trim();
   if (!selectedRoot || !isNativeTauriRuntime()) return;
+  // Read mode is the default, so selecting a project starts nothing. Only a
+  // project whose language-intelligence switch is on gets its server warmed —
+  // the desktop app refuses either way, but there is no reason to ask.
+  if (
+    !languageIntelligenceOn(
+      readLanguageIntelligenceChoices(
+        typeof localStorage === "undefined" ? null : localStorage
+      ),
+      selectedRoot
+    )
+  ) {
+    return;
+  }
   void import("./editor/csharpLanguageClient.ts")
     .then(({ ensureNativeCsharpLanguageClient }) =>
       ensureNativeCsharpLanguageClient(selectedRoot)

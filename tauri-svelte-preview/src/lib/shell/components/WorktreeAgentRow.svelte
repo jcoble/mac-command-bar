@@ -2,23 +2,39 @@
   /**
    * Compact left-rail row for one owned session. It is presentational: all
    * state and actions arrive through props, so hover/focus never starts IO.
+   *
+   * Two lines — title on top, meta underneath — with the presence marker
+   * leading the title and the quick-jump buttons trailing it. The presence
+   * marker is itself a button: it opens the session on the Session tab, which
+   * is the one thing a working row is almost always clicked for. Editor and
+   * source control sit beside it, so getting to the right surface never means a
+   * click on the left edge followed by another on the far right.
    */
   import Bot from '@lucide/svelte/icons/bot';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Check from '@lucide/svelte/icons/check';
-  import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
+  import FileCode2 from '@lucide/svelte/icons/file-code-2';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Undo2 from '@lucide/svelte/icons/undo-2';
   import Terminal from '@lucide/svelte/icons/terminal';
 
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { presentAgentError } from '$lib/shell/errorPresentation';
   import { sessionLabel } from '$lib/shell/sessionStrip';
   import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
+  import {
+    deriveSessionPresence,
+    EMPTY_SESSION_PRESENCE_HISTORY,
+    sessionPresenceHistory
+  } from '$lib/shell/conversation/sessionPresence.ts';
   import SessionPresenceIndicator from './conversation/SessionPresenceIndicator.svelte';
+  import { myWorkProject } from './myWorkViewOptions';
+  import { sessionRowJump } from './sessionRowJump';
 
   interface Props {
     session: OwnedSession;
@@ -58,61 +74,146 @@
   const conversation = $derived(conversationSessions[session.ownedId] ?? null);
   const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
 
+  /** The second line: where this session lives, in the fewest words. */
+  const meta = $derived(
+    [myWorkProject(session).label, session.branch, providerLabel].filter(Boolean).join(' · ')
+  );
+
+  const pendingApprovalCount = $derived(
+    conversation
+      ? Object.keys(conversation.pendingApprovals).length
+        + conversation.timeline.filter((item) => item.kind === 'approval' && item.state === 'requested').length
+      : 0
+  );
+  const runtimeState = $derived(
+    conversation ? (session.runtimeState === 'starting' ? 'starting' : null) : session.runtimeState
+  );
+  const connectionState = $derived(session.origin === 'app' ? conversation?.connectionState ?? null : null);
+  const activeTurnId = $derived(conversation?.activeTurnId ?? session.activeTurnId ?? null);
+
+  /**
+   * The same answer the indicator draws, worked out here for two decisions the
+   * row owns: a disconnected session keeps the indicator's own restart button,
+   * so the marker is only wrapped in a jump button when it is not one already;
+   * and a row that is working or waiting keeps its jump buttons on screen
+   * instead of hiding them until the pointer arrives.
+   */
+  const presence = $derived(
+    deriveSessionPresence(
+      {
+        terminalState: session.state,
+        connectionState,
+        activeTurnId,
+        sending: conversation?.sending,
+        pendingApprovalCount,
+        runtimeState
+      },
+      $sessionPresenceHistory[session.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY,
+      0
+    ).state
+  );
+  const presenceIsRestart = $derived(presence === 'disconnected');
+  const busy = $derived(presence === 'working' || presence === 'needs-attention');
+
   function stopPropagation(event: MouseEvent, action?: () => void): void {
     event.stopPropagation();
     action?.();
+  }
+
+  function jump(event: MouseEvent, surface: 'session' | 'editor' | 'source-control'): void {
+    event.stopPropagation();
+    // The rail is mounted by the page, which registers the one host that can do
+    // both halves of a jump. A false answer means no host — the row click still
+    // selects the session, so nothing is lost.
+    if (!sessionRowJump(session.ownedId, surface)) onSelect?.();
   }
 </script>
 
 <li
   data-testid="worktree-agent-row"
   class:active
-  class="group relative min-w-0 list-none border-b border-[var(--color-border)]/35"
+  class="row group relative min-w-0 list-none border-b border-[var(--color-border)]/35"
   title={`${location} · ${providerLabel}`}
 >
-  <div class="relative flex min-h-[32px] w-full min-w-0 items-center gap-1 px-1 py-0.5">
+  <div class="row-body">
+    <span data-testid="worktree-agent-runtime" class="row-presence">
+      {#if presenceIsRestart}
+        <SessionPresenceIndicator
+          ownedId={session.ownedId}
+          terminalState={session.state}
+          {connectionState}
+          {activeTurnId}
+          sending={conversation?.sending}
+          {pendingApprovalCount}
+          {runtimeState}
+          onRestart={session.state === 'exited' ? onRestart : onSelect}
+        />
+      {:else}
+        <button
+          data-testid="worktree-agent-jump-session"
+          type="button"
+          class="presence-jump"
+          aria-label={`Open session ${label}`}
+          title="Open session"
+          onclick={(event) => jump(event, 'session')}
+        >
+          <SessionPresenceIndicator
+            ownedId={session.ownedId}
+            terminalState={session.state}
+            {connectionState}
+            {activeTurnId}
+            sending={conversation?.sending}
+            {pendingApprovalCount}
+            {runtimeState}
+          />
+        </button>
+      {/if}
+    </span>
+
     <button
       data-testid="worktree-agent-select"
       type="button"
-      class="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1.5 py-1 text-left outline-none
-        hover:bg-[var(--color-elevated)] focus-visible:bg-[var(--color-elevated)] focus-visible:ring-2
-        focus-visible:ring-[var(--color-focus)]"
+      class="row-select"
       aria-current={active ? 'true' : undefined}
       onclick={() => onSelect?.()}
     >
-      {#if session.viaCmux}
-        <Terminal data-testid="worktree-agent-provider-icon" class="size-3 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
-      {:else}
-        <Bot data-testid="worktree-agent-provider-icon" class="size-3 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
-      {/if}
-      <span data-testid="worktree-agent-title" class="min-w-0 flex-1 truncate text-[13px] text-[var(--color-text)]">
-        {label}
+      <span class="row-title-line">
+        {#if session.viaCmux}
+          <Terminal data-testid="worktree-agent-provider-icon" class="size-3 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
+        {:else}
+          <Bot data-testid="worktree-agent-provider-icon" class="size-3 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
+        {/if}
+        <span data-testid="worktree-agent-title" class="row-title">{label}</span>
       </span>
+      <span data-testid="worktree-agent-meta" class="row-meta">{meta}</span>
     </button>
 
-    <span data-testid="worktree-agent-runtime" class="shrink-0">
-      <SessionPresenceIndicator
-        ownedId={session.ownedId}
-        terminalState={session.state}
-        connectionState={session.origin === 'app' ? conversation?.connectionState : null}
-        activeTurnId={conversation?.activeTurnId ?? session.activeTurnId}
-        sending={conversation?.sending}
-        pendingApprovalCount={conversation
-          ? Object.keys(conversation.pendingApprovals).length
-            + conversation.timeline.filter((item) => item.kind === 'approval' && item.state === 'requested').length
-          : 0}
-        runtimeState={conversation
-          ? session.runtimeState === 'starting' ? 'starting' : null
-          : session.runtimeState}
-        onRestart={session.state === 'exited' ? onRestart : onSelect}
-      />
+    <span data-testid="worktree-agent-jump" class="row-jump" class:always-on={busy}>
+      <span data-testid="worktree-agent-jump-editor">
+        <IconButton
+          label="Open editor"
+          size="xs"
+          side="bottom"
+          class="text-[var(--color-text-2)]"
+          onclick={(event) => jump(event, 'editor')}
+        >
+          <FileCode2 class="size-3.5" aria-hidden="true" />
+        </IconButton>
+      </span>
+      <span data-testid="worktree-agent-jump-source-control">
+        <IconButton
+          label="Open source control"
+          size="xs"
+          side="bottom"
+          class="text-[var(--color-text-2)]"
+          onclick={(event) => jump(event, 'source-control')}
+        >
+          <GitBranch class="size-3.5" aria-hidden="true" />
+        </IconButton>
+      </span>
     </span>
 
-    <span
-      data-testid="worktree-agent-actions"
-      class="row-actions flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity
-        group-hover:opacity-100 group-focus-within:opacity-100"
-    >
+    <span data-testid="worktree-agent-actions" class="row-actions">
       {#if shelf === 'working' && onComplete}
         <button
           data-testid="worktree-agent-mark-done"
@@ -221,8 +322,142 @@
 </li>
 
 <style>
+  .row {
+    position: relative;
+    background: transparent;
+  }
+
+  .row:hover {
+    background: var(--color-hover);
+  }
+
   .active {
-    background: color-mix(in srgb, var(--color-selected) 70%, transparent);
+    background: var(--color-selected);
+  }
+
+  /* The selected row says so twice — a filled surface and a bar down its left
+     edge — so it stays obvious against a hovered neighbour. */
+  .active::before {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 2px;
+    background: var(--color-selected-border);
+    content: '';
+  }
+
+  .active:hover {
+    background: color-mix(in srgb, var(--color-selected) 82%, var(--color-hover));
+  }
+
+  .row-body {
+    display: flex;
+    min-width: 0;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .row-presence {
+    display: inline-flex;
+    min-height: 18px;
+    flex-shrink: 0;
+    align-items: center;
+  }
+
+  .presence-jump {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 4px;
+    padding: 0 2px;
+    outline: none;
+  }
+
+  .presence-jump:hover,
+  .presence-jump:focus-visible {
+    background: var(--color-elevated);
+    box-shadow: 0 0 0 2px var(--color-focus);
+  }
+
+  .row-select {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    border-radius: 4px;
+    text-align: left;
+    outline: none;
+  }
+
+  .row-select:focus-visible {
+    box-shadow: 0 0 0 2px var(--color-focus);
+  }
+
+  .row-title-line {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .row-title {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    color: var(--color-text);
+    font-size: 13px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .active .row-title {
+    font-weight: 600;
+  }
+
+  .row-meta {
+    overflow: hidden;
+    color: var(--color-text-3);
+    font-size: 12px;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row-meta:empty {
+    display: none;
+  }
+
+  .row-jump,
+  .row-actions {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+  }
+
+  /* A row that is doing something, or waiting on you, keeps its jumps on
+     screen — those are the rows you reach for without aiming first. */
+  .row-jump.always-on,
+  .group:hover .row-jump,
+  .group:hover .row-actions,
+  .group:focus-within .row-jump,
+  .group:focus-within .row-actions {
+    opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .row {
+      transition: background 140ms ease;
+    }
+
+    .row-jump,
+    .row-actions {
+      transition: opacity 140ms ease;
+    }
   }
 
   .action-button {

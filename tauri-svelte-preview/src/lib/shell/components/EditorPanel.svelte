@@ -16,6 +16,11 @@
    *    requests when it mounts (free, no backend), and Monaco itself is only
    *    downloaded once a file is actually opened. The language server is
    *    warmed on the first file opened per project, never before.
+   *  - **Read mode is the default.** Opening a file colours it and stops
+   *    there. A language server starts only for a project whose switch in this
+   *    header has been turned on, and turning it off stops that server. The
+   *    choice belongs to the project — one server serves every session and
+   *    every view on it — and is remembered between launches.
    *  - **No `$effect` calls the backend.** Every read is started by a user
    *    action: a file-open request, or a click in the strip.
    */
@@ -30,6 +35,17 @@
   } from './editor/languageServerStatus.ts';
   import FileIcon from './explorer/FileIcon.svelte';
   import LanguageServerStatusChip from './LanguageServerStatusChip.svelte';
+  import { Switch } from '$lib/components/ui/switch/index.js';
+  import {
+    languageIntelligenceLabel,
+    languageIntelligenceOn,
+    launchRestoreFor,
+    readLanguageIntelligenceChoices,
+    withLanguageIntelligenceChoice,
+    writeLanguageIntelligenceChoices,
+    workspaceKey,
+    type LanguageIntelligenceChoices
+  } from '$lib/shell/editor/languageIntelligenceMode';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import { hasBackendCapability } from '$lib/shell/backendCapabilities';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
@@ -59,6 +75,7 @@
     isNativeTauriRuntime,
     readSourceFromTauri,
     readSourceLspStatusFromTauri,
+    setWorkspaceLanguageIntelligenceFromTauri,
     warmSourceLspForRootFromTauri,
     writeSourceToTauri
   } from '$lib/tauriSource';
@@ -107,9 +124,52 @@
   /** Projects whose language server has already been pointed at the project. */
   const warmedProjectRoots = new Set<string>();
 
+  /** Where the remembered per-project choices live, when there is anywhere. */
+  function modeStorage(): Storage | null {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  }
+
+  /** The remembered choices. Read once; every change writes them back. */
+  let languageIntelligenceChoices = $state<LanguageIntelligenceChoices>(
+    readLanguageIntelligenceChoices(modeStorage())
+  );
+  /** What the desktop app last said about this project's mode. */
+  let languageIntelligenceNote = $state<string | null>(null);
+  /** True while a switch is being acted on, so it cannot be flipped twice. */
+  let languageIntelligenceBusy = $state(false);
+  /** Language-server processes the desktop app reports for this project. */
+  let languageServerPids = $state<number[]>([]);
+  /**
+   * Projects whose saved choice has been handed to the desktop app, with the
+   * handing-over itself so callers can wait for it. One project at a time and
+   * only when it is opened: restoring the whole remembered list at launch would
+   * wake servers for projects nobody is looking at.
+   */
+  const modeRestores = new Map<string, Promise<void>>();
+
   let destroyed = false;
 
   const activeFile = $derived(activeEditorFile());
+  /** Is this project in full mode — language server allowed to run? */
+  const fullMode = $derived(
+    languageIntelligenceOn(languageIntelligenceChoices, editorState.projectRoot)
+  );
+  /**
+   * The sentence on hover: what the mode means for this project, and the
+   * process numbers behind it so they can be found in the resource view.
+   */
+  const languageIntelligenceTitle = $derived.by(() => {
+    if (!editorState.projectRoot) return 'Open a file in a project to switch this on.';
+    const note =
+      languageIntelligenceNote ??
+      (fullMode
+        ? 'Language intelligence is on for this project. One language server serves every session and view on it.'
+        : 'Read mode: files open with colouring only, and no language server is started.');
+    if (languageServerPids.length === 0) return note;
+    const numbers = languageServerPids.join(', ');
+    const noun = languageServerPids.length === 1 ? 'Process' : 'Processes';
+    return `${note} ${noun} ${numbers}.`;
+  });
   const nativeCsharpActive = $derived(
     activeFile?.language === 'csharp' &&
       nativeCsharpRoot === editorState.projectRoot &&
@@ -331,6 +391,8 @@
       if (root) {
         try {
           const editorServices = await import('$lib/shell/editor/csharpLanguageClient');
+          // Preparing the editor services starts no server — it is what lets
+          // Monaco open a file at all — so it runs in both modes.
           await editorServices.prepareNativeCsharpEditorServices(root);
           if (isNativeTauriRuntime()) native = editorServices;
         } catch (error) {
@@ -371,6 +433,10 @@
     ) {
       return;
     }
+    // Attaching the document is what brings Roslyn up. In read mode the file is
+    // shown with colouring and nothing is started.
+    await applySavedModeForProject(root);
+    if (destroyed || !languageIntelligenceOn(languageIntelligenceChoices, root)) return;
     const native = loadedNative ?? (await import('$lib/shell/editor/csharpLanguageClient'));
     const ensured = await native.ensureNativeCsharpDocument(root, path);
     if (
@@ -404,16 +470,122 @@
   }
 
   /**
-   * Tell the language server which project this file belongs to, once per
-   * project. A no-op unless a server is already running for that language.
+   * Hand the desktop app this project's remembered choice, once per project.
+   *
+   * Called when a file in the project is opened — never at start-up for every
+   * project that was ever switched on. Saying "on" starts nothing by itself;
+   * the file being opened is what does that, and only in full mode.
    */
-  function warmLanguageServer(projectRoot: string | null): void {
-    if (!projectRoot || warmedProjectRoots.has(projectRoot)) return;
+  function applySavedModeForProject(projectRoot: string): Promise<void> {
+    const root = workspaceKey(projectRoot);
+    const already = modeRestores.get(root);
+    if (already) return already;
+    const restore = (async () => {
+      const decision = launchRestoreFor(languageIntelligenceChoices, root);
+      if (!decision || !isNativeTauriRuntime()) return;
+      countInvoke('set_workspace_language_intelligence');
+      try {
+        const answer = await setWorkspaceLanguageIntelligenceFromTauri(
+          decision.root,
+          decision.enabled
+        );
+        if (destroyed || !answer) return;
+        if (editorState.projectRoot && workspaceKey(editorState.projectRoot) === root) {
+          languageServerPids = answer.serverPids;
+        }
+      } catch {
+        // A desktop build that has never heard of the switch leaves every
+        // project in read mode, which is the safe half of the choice.
+      }
+    })();
+    modeRestores.set(root, restore);
+    return restore;
+  }
+
+  /**
+   * Tell the language server which project this file belongs to, once per
+   * project. A no-op unless a server is already running for that language,
+   * and never called at all for a project in read mode.
+   */
+  async function warmLanguageServer(projectRoot: string | null): Promise<void> {
+    if (!projectRoot) return;
+    await applySavedModeForProject(projectRoot);
+    if (destroyed || !languageIntelligenceOn(languageIntelligenceChoices, projectRoot)) return;
+    if (warmedProjectRoots.has(projectRoot)) return;
     warmedProjectRoots.add(projectRoot);
     countInvoke('warm_source_lsp_for_root');
-    void warmSourceLspForRootFromTauri(projectRoot).catch(() => {
+    try {
+      await warmSourceLspForRootFromTauri(projectRoot);
+    } catch {
       // Warming is best effort: a failure costs nothing but a cold first lookup.
-    });
+    }
+  }
+
+  /**
+   * Turn language intelligence on or off for the project on screen.
+   *
+   * Off closes this project's language client first — that is what sends the
+   * server its goodbye — and then asks the desktop app to stop the process and
+   * reclaim its memory. On records the choice; the server starts with the file
+   * already open, or the next one.
+   */
+  async function switchLanguageIntelligence(enabled: boolean): Promise<void> {
+    const root = editorState.projectRoot;
+    if (!root || languageIntelligenceBusy) return;
+    languageIntelligenceBusy = true;
+    try {
+      if (!enabled && isNativeTauriRuntime()) {
+        try {
+          const native = await import('$lib/shell/editor/csharpLanguageClient');
+          await native.stopNativeCsharpLanguageClient(root);
+        } catch {
+          // No client to close, or it could not be closed cleanly. The desktop
+          // app stops the process either way.
+        }
+        nativeCsharpRoot = null;
+        nativeCsharpPath = null;
+        stopNativeCsharpActions?.();
+        stopNativeCsharpActions = null;
+        stopNativeCsharpDiagnostics?.();
+        stopNativeCsharpDiagnostics = null;
+      }
+
+      // Remembered first, so the switch keeps its position even if the desktop
+      // app is an older build that cannot act on it.
+      languageIntelligenceChoices = withLanguageIntelligenceChoice(
+        languageIntelligenceChoices,
+        root,
+        enabled
+      );
+      writeLanguageIntelligenceChoices(languageIntelligenceChoices, modeStorage());
+      modeRestores.set(workspaceKey(root), Promise.resolve());
+      if (!enabled) {
+        warmedProjectRoots.delete(root);
+        diagnosticsByPath = {};
+      }
+
+      countInvoke('set_workspace_language_intelligence');
+      const answer = await setWorkspaceLanguageIntelligenceFromTauri(root, enabled);
+      if (destroyed) return;
+      languageIntelligenceNote = answer?.message ?? null;
+      languageServerPids = answer?.serverPids ?? [];
+
+      if (enabled) {
+        // The file already on screen is the one the reader wants answered, so
+        // start the server for it now rather than at the next open.
+        await warmLanguageServer(root);
+        if (destroyed) return;
+        void ensureCodeEditor();
+        await ensureNativeCsharpForActiveFile().catch(() => undefined);
+      }
+      if (!destroyed) void refreshEditorIntelligenceForActiveFile();
+    } catch (error) {
+      if (!destroyed) {
+        languageIntelligenceNote = `The switch could not be changed: ${describeError(error)}`;
+      }
+    } finally {
+      if (!destroyed) languageIntelligenceBusy = false;
+    }
   }
 
   /** Keep the lookup service pointed at whatever is on screen. */
@@ -439,7 +611,12 @@
     readsInFlight.add(record.path);
     markEditorFileLoading(record.path);
     if (record.language !== 'csharp' || !isNativeTauriRuntime()) {
-      warmLanguageServer(editorState.projectRoot);
+      void warmLanguageServer(editorState.projectRoot);
+    } else {
+      // C# warms through its own client, but the saved choice still has to
+      // reach the desktop app before anything asks it for an endpoint.
+      const root = editorState.projectRoot;
+      if (root) void applySavedModeForProject(root);
     }
     try {
       // The record has to be built first: the read wrapper copies the relative
@@ -666,6 +843,22 @@
         language={activeFile?.language ?? null}
         status={languageServerStatus}
       />
+
+      <!-- The project's editor mode. Off is read mode: colouring only, nothing
+           started. On runs the project's one language server, shared by every
+           session and view on it, and its cost shows in the resource view. -->
+      <div class="intelligence" title={languageIntelligenceTitle}>
+        <span class="intelligence-name">Language intelligence</span>
+        <Switch
+          checked={fullMode}
+          disabled={languageIntelligenceBusy || !editorState.projectRoot}
+          onCheckedChange={(checked) => void switchLanguageIntelligence(checked)}
+          aria-label="Language intelligence"
+        />
+        <span class="intelligence-state" class:on={fullMode}>
+          {languageIntelligenceLabel(fullMode)}
+        </span>
+      </div>
     </div>
 
     <div class="editor-canvas">
@@ -832,6 +1025,33 @@
 
   .file-name:hover,
   .file-close:hover {
+    color: var(--color-text);
+  }
+
+  /* The project's editor mode, pinned to the right of the header beside the
+   * status chip. It does not scroll with the file strip: which mode a project
+   * is in has to be readable however many files are open. */
+  .intelligence {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    padding-left: 4px;
+  }
+
+  .intelligence-name {
+    color: var(--color-text-2);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .intelligence-state {
+    color: var(--color-text-3);
+    font-size: 13px;
+    min-width: 22px;
+  }
+
+  .intelligence-state.on {
     color: var(--color-text);
   }
 

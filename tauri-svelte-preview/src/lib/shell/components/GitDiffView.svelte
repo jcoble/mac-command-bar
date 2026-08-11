@@ -15,6 +15,7 @@
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { parseUnifiedDiff, summarizeParsedDiff } from '$lib/shell/git/parseUnifiedDiff';
   import NativeGitDiffEditor from '$lib/shell/components/git/NativeGitDiffEditor.svelte';
+  import { requestOpenFile } from '$lib/shell/openFileBus';
 
   /** Long diffs are trimmed so one huge file cannot stall the panel. */
   const MAX_RENDERED_LINES = 2000;
@@ -50,6 +51,31 @@
 
   function lineNumber(value: number | null): string {
     return value === null ? '' : String(value);
+  }
+
+  /**
+   * Open the changed file itself, at the line that was clicked.
+   *
+   * The diff shows what changed; the editor is where it is read properly and,
+   * if the project has language intelligence on, where its meaning is. Which
+   * mode the file opens in is the project's own setting — nothing here starts
+   * a language server.
+   */
+  function openAtLine(line: number | null): void {
+    const root = gitPanel.root;
+    const relativePath = diff?.relativePath ?? gitPanel.selectedPath;
+    if (!root || !relativePath) return;
+    const path = `${root.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}`;
+    requestOpenFile({
+      path,
+      projectRoot: root,
+      line: line && line > 0 ? line : undefined
+    });
+  }
+
+  /** The line a diff row points at in the file as it is now. */
+  function currentLineOf(line: { afterLine: number | null; beforeLine: number | null }): number | null {
+    return line.afterLine ?? line.beforeLine;
   }
 
   function marker(kind: string): string {
@@ -88,6 +114,7 @@
           relativePath={diff.relativePath}
           originalContent={diff.originalContent ?? ''}
           modifiedContent={diff.modifiedContent ?? ''}
+          onOpenLine={openAtLine}
         />
       </div>
     {:else}
@@ -97,13 +124,22 @@
             <p class="section-label">{section.label}</p>
           {/if}
           {#each section.hunks as hunk, hunkIndex (hunkIndex)}
-            <p class="hunk-head" title={hunk.header}>
+            <button
+              type="button"
+              class="hunk-head"
+              title={`${hunk.header} — open this file in the editor at line ${hunk.afterStart}`}
+              onclick={() => openAtLine(hunk.afterStart)}
+            >
               Lines {hunk.beforeStart}–{hunk.beforeStart + Math.max(hunk.beforeCount - 1, 0)}
               {#if hunk.heading}<span class="hunk-heading">{hunk.heading}</span>{/if}
-            </p>
+            </button>
             <div class="hunk">
               {#each hunk.lines as line, index (index)}
-                <div class="line {line.kind}">
+                <div
+                  class="line {line.kind}"
+                  role="presentation"
+                  ondblclick={() => openAtLine(currentLineOf(line))}
+                >
                   <span class="gutter">{lineNumber(line.beforeLine)}</span>
                   <span class="gutter">{lineNumber(line.afterLine)}</span>
                   <span class="marker">{marker(line.kind)}</span>
@@ -199,13 +235,33 @@
     text-transform: uppercase;
   }
 
+  /* A hunk heading is the way into the file: clicking it opens the editor at
+   * that hunk's first line. It stays a quiet line of text until it is pointed
+   * at, so the diff still reads as a diff. */
   .hunk-head {
     display: flex;
     gap: 8px;
     margin: 0;
     padding: 6px 10px 4px;
+    width: 100%;
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
     color: #4c4c5a;
+    cursor: pointer;
+    font: inherit;
     font-size: 12px;
+    text-align: left;
+  }
+
+  .hunk-head:hover {
+    background: #17171d;
+    color: #9a9aad;
+  }
+
+  .hunk-head:focus-visible {
+    outline: 2px solid #5d5d6b;
+    outline-offset: -2px;
   }
 
   .hunk-heading {

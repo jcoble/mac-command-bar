@@ -240,6 +240,18 @@ export function bridgeGitBackend(): GitBackend {
     stage: refuse,
     unstage: refuse,
     commit: refuse,
+    amend: refuse,
+    // Discarding, branching and stashing all change the repository, so the
+    // browser refuses them for the same reason it refuses a commit — and a
+    // discard in particular must never be reachable from a tab left open.
+    discard: refuse,
+    discardAll: refuse,
+    createBranch: refuse,
+    switchBranch: refuse,
+    stash: refuse,
+    popStash: refuse,
+    listBranches: async () => null,
+    listStashes: async () => null,
     fetch: refuse,
     pull: refuse,
     push: refuse

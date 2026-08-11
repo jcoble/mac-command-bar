@@ -29,7 +29,17 @@ import type {
 } from '../../tauriSource.ts';
 
 /** The working-tree action currently running, or '' when nothing is running. */
-export type GitActionKind = 'stage' | 'unstage' | 'commit' | 'fetch' | 'pull' | 'push';
+export type GitActionKind =
+  | 'stage'
+  | 'unstage'
+  | 'commit'
+  | 'amend'
+  | 'discard'
+  | 'branch'
+  | 'stash'
+  | 'fetch'
+  | 'pull'
+  | 'push';
 
 export interface GitPanelState {
   // ── which repository the panel is pointed at ─────────────────────────────

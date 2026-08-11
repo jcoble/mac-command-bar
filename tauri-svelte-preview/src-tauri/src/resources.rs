@@ -17,10 +17,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{ProcessesToUpdate, System};
 use tauri::State;
 
+use crate::debug_log::stderr_log;
+
+/// How many samples each history series keeps. At the panel's three second
+/// cadence that is the last three minutes, which is long enough for a spike or
+/// a leak to read as a shape.
+pub const RESOURCE_HISTORY_CAPACITY: usize = 60;
+
+/// A series nobody has sent a sample for in five minutes is dropped, so a
+/// finished session does not hold its numbers forever.
+const RESOURCE_HISTORY_IDLE_MS: u128 = 5 * 60 * 1_000;
+
+/// How long a stopped process is given to exit on its own before the harder
+/// signal follows.
+const RESOURCE_STOP_GRACE_SECONDS: u64 = 5;
+
 pub struct ResourceRegistry {
     generation: AtomicU64,
     active_source_root: Arc<Mutex<Option<PathBuf>>>,
     sample_system: Arc<Mutex<System>>,
+    history: Arc<Mutex<ResourceHistoryStore>>,
 }
 
 impl Default for ResourceRegistry {
@@ -29,8 +45,112 @@ impl Default for ResourceRegistry {
             generation: AtomicU64::default(),
             active_source_root: Arc::new(Mutex::new(None)),
             sample_system: Arc::new(Mutex::new(System::new())),
+            history: Arc::new(Mutex::new(ResourceHistoryStore::default())),
         }
     }
+}
+
+/// The recent past of one row in the panel: two equal-length lists, oldest
+/// first, so the row can draw a sparkline without doing any arithmetic itself.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceSampleHistory {
+    pub cpu_percent: Vec<f32>,
+    pub rss_bytes: Vec<u64>,
+}
+
+#[derive(Debug, Default)]
+struct ResourceHistorySeries {
+    last_seen_ms: u128,
+    points: VecDeque<(f32, u64)>,
+}
+
+#[derive(Debug, Default)]
+pub struct ResourceHistoryStore {
+    series: HashMap<String, ResourceHistorySeries>,
+}
+
+impl ResourceHistoryStore {
+    fn record(&mut self, key: &str, cpu_percent: f32, rss_bytes: u64, now_ms: u128) {
+        let series = self.series.entry(key.to_string()).or_default();
+        series.last_seen_ms = now_ms;
+        series.points.push_back((cpu_percent, rss_bytes));
+        while series.points.len() > RESOURCE_HISTORY_CAPACITY {
+            series.points.pop_front();
+        }
+    }
+
+    fn read(&self, key: &str) -> ResourceSampleHistory {
+        let Some(series) = self.series.get(key) else {
+            return ResourceSampleHistory::default();
+        };
+        ResourceSampleHistory {
+            cpu_percent: series.points.iter().map(|(cpu, _)| *cpu).collect(),
+            rss_bytes: series.points.iter().map(|(_, rss)| *rss).collect(),
+        }
+    }
+
+    fn prune(&mut self, now_ms: u128) {
+        self.series.retain(|_, series| {
+            now_ms.saturating_sub(series.last_seen_ms) <= RESOURCE_HISTORY_IDLE_MS
+        });
+    }
+}
+
+fn app_history_key() -> String {
+    "app".to_string()
+}
+
+fn workspace_history_key(workspace: &str) -> String {
+    format!("workspace\u{1f}{workspace}")
+}
+
+fn session_history_key(workspace: &str, session: &ResourceSampleSession) -> String {
+    let identity = session.owned_id.as_deref().unwrap_or(&session.label);
+    format!("session\u{1f}{workspace}\u{1f}{identity}")
+}
+
+/// Fold the sample just taken into the ring buffers, then hand every row the
+/// series it belongs to. Doing both here keeps the newest reading as the last
+/// point of the line the panel draws.
+fn attach_resource_history(sample: &mut ResourceSample, store: &mut ResourceHistoryStore) {
+    let now_ms = sample.generated_at_ms;
+    let app_cpu = sample
+        .app
+        .parts
+        .iter()
+        .map(|part| part.cpu_percent)
+        .sum::<f32>();
+    let app_rss = sample.app.parts.iter().map(|part| part.rss_bytes).sum();
+    store.record(&app_history_key(), app_cpu, app_rss, now_ms);
+    sample.app.history = store.read(&app_history_key());
+
+    for group in &mut sample.groups {
+        let mut workspace_cpu = 0.0f32;
+        let mut workspace_rss = 0u64;
+        for session in &mut group.sessions {
+            let cpu = session
+                .processes
+                .iter()
+                .map(|process| process.cpu_percent)
+                .sum::<f32>();
+            let rss = session
+                .processes
+                .iter()
+                .map(|process| process.rss_bytes)
+                .sum::<u64>();
+            workspace_cpu += cpu;
+            workspace_rss += rss;
+            let key = session_history_key(&group.workspace, session);
+            store.record(&key, cpu, rss, now_ms);
+            session.history = store.read(&key);
+        }
+        let key = workspace_history_key(&group.workspace);
+        store.record(&key, workspace_cpu, workspace_rss, now_ms);
+        group.history = store.read(&key);
+    }
+
+    store.prune(now_ms);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +174,7 @@ pub struct ResourceSampleTotals {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSampleApp {
     pub parts: Vec<ResourceSampleAppPart>,
+    pub history: ResourceSampleHistory,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +191,7 @@ pub struct ResourceSampleAppPart {
 pub struct ResourceSampleGroup {
     pub workspace: String,
     pub sessions: Vec<ResourceSampleSession>,
+    pub history: ResourceSampleHistory,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,7 +201,11 @@ pub struct ResourceSampleSession {
     pub owned_id: Option<String>,
     pub label: String,
     pub kind: ResourceSampleSessionKind,
+    /// The process the app itself started for this session. Every stop request
+    /// names this pid so the backend can prove the tree is one the app owns.
+    pub root_pid: u32,
     pub processes: Vec<ResourceSampleProcess>,
+    pub history: ResourceSampleHistory,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
@@ -272,13 +398,16 @@ pub async fn read_resource_sample(
     registry: State<'_, ResourceRegistry>,
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
+    lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
 ) -> Result<ResourceSample, String> {
     let system = Arc::clone(&registry.sample_system);
+    let history = Arc::clone(&registry.history);
     let terminal_registry = terminal_registry.inner().clone();
     let agent_runtime = agent_runtime.inner().clone();
+    let lsp_registry = lsp_registry.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let owners = resource_sample_owners(&terminal_registry, &agent_runtime)?;
+        let owners = resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?;
         let mut system = system
             .lock()
             .map_err(|_| "Resource sampler is unavailable".to_string())?;
@@ -294,12 +423,17 @@ pub async fn read_resource_sample(
                 rss_bytes: process.memory(),
             })
             .collect::<Vec<_>>();
-        Ok(build_resource_sample(
+        let mut sample = build_resource_sample(
             resource_sample_timestamp_millis(),
             std::process::id(),
             &processes,
             &owners,
-        ))
+        );
+        let mut history = history
+            .lock()
+            .map_err(|_| "Resource history is unavailable".to_string())?;
+        attach_resource_history(&mut sample, &mut history);
+        Ok(sample)
     })
     .await
     .map_err(|error| format!("Resource sampling task failed: {error}"))?
@@ -308,6 +442,7 @@ pub async fn read_resource_sample(
 fn resource_sample_owners(
     terminal_registry: &crate::terminal::TerminalRegistry,
     agent_runtime: &crate::agent_conversation::manager::AgentRuntimeManager,
+    lsp_registry: &crate::lsp::SourceLspRegistry,
 ) -> Result<Vec<ResourceSampleOwner>, String> {
     let mut sessions = crate::terminal::list_terminal_sessions(terminal_registry)?;
     sessions.sort_by_key(|session| session.started_at);
@@ -389,6 +524,24 @@ fn resource_sample_owners(
                 workspace: resource_workspace_label(&conversation.cwd),
             }),
     );
+
+    // A language server is the most expensive thing the editor starts, and it
+    // belongs to a project rather than to a session. Naming its process here is
+    // what puts that cost under the project's own heading instead of leaving it
+    // as an unnamed app helper — which is the whole reason the editor's switch
+    // is worth having.
+    owners.extend(
+        lsp_registry
+            .running_language_server_processes()
+            .into_iter()
+            .map(|server| ResourceSampleOwner {
+                root_pid: server.pid,
+                owned_id: None,
+                label: format!("{} language server", server.server_name),
+                kind: ResourceSampleSessionKind::Other,
+                workspace: resource_workspace_label(&server.root),
+            }),
+    );
     Ok(owners)
 }
 
@@ -402,6 +555,58 @@ fn resource_workspace_label(cwd: &str) -> String {
         (_, Some(workspace)) => workspace,
         _ => cwd.to_string(),
     }
+}
+
+/// A workspace folder the disk section can measure, named the way the rest of
+/// the panel names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResourceWorkspaceRoot {
+    pub label: String,
+    pub path: PathBuf,
+}
+
+/// The workspace folders behind the sessions that are running right now, one
+/// entry per folder. A checkout is preferred over a subfolder inside it, so
+/// three terminals in the same repository measure that repository once.
+pub(crate) fn resource_workspace_roots(
+    terminal_registry: &crate::terminal::TerminalRegistry,
+    agent_runtime: &crate::agent_conversation::manager::AgentRuntimeManager,
+) -> Result<Vec<ResourceWorkspaceRoot>, String> {
+    let mut working_directories = crate::terminal::list_terminal_sessions(terminal_registry)?
+        .into_iter()
+        .filter(|session| !session.exited)
+        .map(|session| session.cwd)
+        .collect::<Vec<_>>();
+    working_directories.extend(
+        agent_runtime
+            .resource_roots()
+            .into_iter()
+            .map(|agent| agent.cwd),
+    );
+
+    let mut roots = Vec::<ResourceWorkspaceRoot>::new();
+    for cwd in working_directories {
+        let path = resource_workspace_root_path(&cwd);
+        if roots.iter().any(|root| root.path == path) {
+            continue;
+        }
+        roots.push(ResourceWorkspaceRoot {
+            label: resource_workspace_label(&cwd),
+            path,
+        });
+    }
+    roots.sort_by(|left, right| left.label.cmp(&right.label));
+    Ok(roots)
+}
+
+/// The checkout a working directory belongs to, or the folder itself when it is
+/// not in a repository.
+fn resource_workspace_root_path(cwd: &str) -> PathBuf {
+    let path = PathBuf::from(cwd);
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+    git_rev_parse_path(&canonical, "--show-toplevel")
+        .and_then(|root| root.canonicalize().ok())
+        .unwrap_or(canonical)
 }
 
 fn resource_sample_timestamp_millis() -> u128 {
@@ -540,7 +745,9 @@ fn build_resource_sample(
                 owned_id: owner.owned_id.clone(),
                 label: owner.label.clone(),
                 kind: owner.kind,
+                root_pid: owner.root_pid,
                 processes: owned_processes,
+                history: ResourceSampleHistory::default(),
             });
     }
     let groups = sessions_by_workspace
@@ -548,6 +755,7 @@ fn build_resource_sample(
         .map(|(workspace, sessions)| ResourceSampleGroup {
             workspace,
             sessions,
+            history: ResourceSampleHistory::default(),
         })
         .collect::<Vec<_>>();
 
@@ -585,7 +793,10 @@ fn build_resource_sample(
             rss_bytes: included.iter().map(|process| process.rss_bytes).sum(),
             process_count: included.len(),
         },
-        app: ResourceSampleApp { parts: app_parts },
+        app: ResourceSampleApp {
+            parts: app_parts,
+            history: ResourceSampleHistory::default(),
+        },
         groups,
     }
 }
@@ -863,6 +1074,253 @@ pub fn stop_owned_resource(
         registry_generation: snapshot.generation,
         signal: "SIGTERM".to_string(),
     })
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceStopTreeRequest {
+    /// The row the person pressed stop on: either a session's root process or
+    /// one process inside that session's tree.
+    pub root_pid: u32,
+    /// The session the row belongs to, when the panel knows it.
+    pub owned_id: Option<String>,
+    /// Exactly the process ids the confirmation dialog named.
+    pub expected_pids: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceStopTreeReceipt {
+    pub action: String,
+    pub root_pid: u32,
+    pub owned_id: Option<String>,
+    pub signal: String,
+    pub follow_up_signal: String,
+    pub grace_seconds: u64,
+    pub stopped_pids: Vec<u32>,
+    pub already_gone_pids: Vec<u32>,
+    pub message: String,
+}
+
+/// What a stop request resolves to before any signal is sent. Keeping the
+/// choice of targets separate from the sending is what lets it be tested
+/// without a real process anywhere near it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceStopPlan {
+    pub owner_index: usize,
+    pub root_pid: u32,
+    /// Deepest process first, so children get the signal before their parent
+    /// can restart them.
+    pub targets: Vec<u32>,
+    /// Process ids the dialog named that have already exited.
+    pub already_gone: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceStopTargetError {
+    ProtectedPid,
+    UnownedRoot,
+    RootGone,
+    RequestedOutsideTree,
+}
+
+fn resource_stop_target_message(error: ResourceStopTargetError) -> String {
+    match error {
+        ResourceStopTargetError::ProtectedPid => {
+            "That process is the app itself and cannot be stopped from here".to_string()
+        }
+        ResourceStopTargetError::UnownedRoot => {
+            "Only processes the app started can be stopped from this panel".to_string()
+        }
+        ResourceStopTargetError::RootGone => {
+            "That process has already exited; refresh the panel".to_string()
+        }
+        ResourceStopTargetError::RequestedOutsideTree => {
+            "The process tree changed since it was listed; refresh and try again".to_string()
+        }
+    }
+}
+
+/// Work out which process ids a stop request may signal.
+///
+/// The rules, in order: the app's own process is never a target; the row has to
+/// sit inside a tree the app started; the tree is re-read now rather than
+/// trusted from the panel; and every still-running process the dialog named has
+/// to still belong to that tree, which is what catches a process id that was
+/// reused by something else between the sample and the click.
+fn select_stop_targets(
+    root_pid: u32,
+    app_pid: u32,
+    owners: &[ResourceSampleOwner],
+    processes: &[ObservedProcess],
+    requested: &[u32],
+) -> Result<ResourceStopPlan, ResourceStopTargetError> {
+    if root_pid <= 1 || root_pid == app_pid {
+        return Err(ResourceStopTargetError::ProtectedPid);
+    }
+
+    let mut targets = descendant_distances(root_pid, processes);
+    if targets.is_empty() {
+        return Err(ResourceStopTargetError::RootGone);
+    }
+
+    let owner_index = owners
+        .iter()
+        .enumerate()
+        .filter_map(|(index, owner)| {
+            descendant_distances(owner.root_pid, processes)
+                .into_iter()
+                .find(|(pid, _)| *pid == root_pid)
+                .map(|(_, distance)| (distance, index))
+        })
+        .min()
+        .map(|(_, index)| index)
+        .ok_or(ResourceStopTargetError::UnownedRoot)?;
+
+    if targets.iter().any(|(pid, _)| *pid == app_pid) {
+        return Err(ResourceStopTargetError::ProtectedPid);
+    }
+    targets.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    let target_pids = targets.iter().map(|(pid, _)| *pid).collect::<Vec<_>>();
+    let target_set = target_pids.iter().copied().collect::<HashSet<_>>();
+
+    let alive = processes
+        .iter()
+        .map(|process| process.pid)
+        .collect::<HashSet<_>>();
+    let mut already_gone = Vec::new();
+    for pid in requested {
+        if !alive.contains(pid) {
+            already_gone.push(*pid);
+        } else if !target_set.contains(pid) {
+            return Err(ResourceStopTargetError::RequestedOutsideTree);
+        }
+    }
+    already_gone.sort_unstable();
+
+    Ok(ResourceStopPlan {
+        owner_index,
+        root_pid,
+        targets: target_pids,
+        already_gone,
+    })
+}
+
+/// Stop one session's process tree, or one stray process inside it.
+///
+/// Nothing here runs on its own: the panel only ever calls this after a person
+/// has read a dialog naming the exact process ids. Each target is asked to stop
+/// first, and only a process still running five seconds later is forced.
+#[tauri::command]
+pub async fn stop_resource_process_tree(
+    request: ResourceStopTreeRequest,
+    registry: State<'_, ResourceRegistry>,
+    terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
+    agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
+    lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
+) -> Result<ResourceStopTreeReceipt, String> {
+    let system = Arc::clone(&registry.sample_system);
+    let terminal_registry = terminal_registry.inner().clone();
+    let agent_runtime = agent_runtime.inner().clone();
+    let lsp_registry = lsp_registry.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        // The same owner list the panel was drawn from, language servers
+        // included, so a row a person can see is a row they can act on.
+        let owners = resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?;
+        let processes = {
+            let mut system = system
+                .lock()
+                .map_err(|_| "Resource sampler is unavailable".to_string())?;
+            system.refresh_processes(ProcessesToUpdate::All, true);
+            system
+                .processes()
+                .values()
+                .map(|process| ObservedProcess {
+                    pid: process.pid().as_u32(),
+                    parent_pid: process.parent().map(|pid| pid.as_u32()),
+                    name: process.name().to_string_lossy().into_owned(),
+                    cpu_percent: process.cpu_usage(),
+                    rss_bytes: process.memory(),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let plan = select_stop_targets(
+            request.root_pid,
+            std::process::id(),
+            &owners,
+            &processes,
+            &request.expected_pids,
+        )
+        .map_err(resource_stop_target_message)?;
+
+        let owner = &owners[plan.owner_index];
+        if let (Some(expected), Some(actual)) = (request.owned_id.as_deref(), owner.owned_id.as_deref())
+        {
+            if expected != actual {
+                return Err("The session that owns this process changed; refresh first".to_string());
+            }
+        }
+
+        let mut stopped = Vec::new();
+        for pid in &plan.targets {
+            if unsafe { libc::kill(*pid as i32, libc::SIGTERM) } == 0 {
+                stopped.push(*pid);
+            } else {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    continue;
+                }
+                stderr_log!("resources: could not stop process {pid}: {error}");
+            }
+        }
+        if stopped.is_empty() {
+            return Err("Nothing was left to stop; refresh the panel".to_string());
+        }
+
+        force_stop_survivors_after_grace(stopped.clone());
+
+        let message = format!(
+            "Asked {} {} to stop; anything still running in {RESOURCE_STOP_GRACE_SECONDS}s is forced.",
+            stopped.len(),
+            if stopped.len() == 1 {
+                "process"
+            } else {
+                "processes"
+            }
+        );
+        Ok(ResourceStopTreeReceipt {
+            action: "stop-resource-process-tree".to_string(),
+            root_pid: plan.root_pid,
+            owned_id: owner.owned_id.clone(),
+            signal: "SIGTERM".to_string(),
+            follow_up_signal: "SIGKILL".to_string(),
+            grace_seconds: RESOURCE_STOP_GRACE_SECONDS,
+            stopped_pids: stopped,
+            already_gone_pids: plan.already_gone,
+            message,
+        })
+    })
+    .await
+    .map_err(|error| format!("Resource stop task failed: {error}"))?
+}
+
+/// Wait out the grace period on a thread of its own, then force whatever is
+/// still running. A process that already exited is left alone: its id could
+/// belong to something else by then, so the check comes first.
+fn force_stop_survivors_after_grace(pids: Vec<u32>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(RESOURCE_STOP_GRACE_SECONDS));
+        for pid in pids {
+            if unsafe { libc::kill(pid as i32, 0) } != 0 {
+                continue;
+            }
+            if unsafe { libc::kill(pid as i32, libc::SIGKILL) } == 0 {
+                stderr_log!("resources: forced process {pid} after the stop grace period");
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -1218,5 +1676,125 @@ mod tests {
             HashSet::from([11, 12])
         );
         assert_eq!(sample.totals.process_count, 4);
+    }
+
+    /// The tree used by every stop test: the app owns a terminal (10) with a
+    /// child (11) and a grandchild (12), and something unrelated runs at 99.
+    fn stop_fixture() -> (Vec<ObservedProcess>, Vec<ResourceSampleOwner>) {
+        let processes = vec![
+            observed(1, None, "app", 0.0, 1),
+            observed(10, Some(1), "zsh", 0.0, 1),
+            observed(11, Some(10), "cargo", 0.0, 1),
+            observed(12, Some(11), "rustc", 0.0, 1),
+            observed(99, None, "external", 0.0, 1),
+        ];
+        let owners = vec![owner(
+            10,
+            "terminal-a",
+            "Terminal 1",
+            ResourceSampleSessionKind::Terminal,
+            "project / workspace",
+        )];
+        (processes, owners)
+    }
+
+    #[test]
+    fn stop_targets_cover_the_session_tree_deepest_process_first() {
+        let (processes, owners) = stop_fixture();
+
+        let plan = select_stop_targets(10, 1, &owners, &processes, &[10, 11, 12])
+            .expect("an owned session root should resolve to a stop plan");
+
+        assert_eq!(plan.owner_index, 0);
+        assert_eq!(plan.root_pid, 10);
+        assert_eq!(plan.targets, vec![12, 11, 10]);
+        assert!(plan.already_gone.is_empty());
+    }
+
+    #[test]
+    fn stop_targets_accept_one_process_inside_an_owned_tree() {
+        let (processes, owners) = stop_fixture();
+
+        let plan = select_stop_targets(11, 1, &owners, &processes, &[11, 12])
+            .expect("a process inside an owned tree should resolve to a stop plan");
+
+        assert_eq!(plan.targets, vec![12, 11]);
+    }
+
+    #[test]
+    fn stop_targets_report_processes_that_already_exited() {
+        let (processes, owners) = stop_fixture();
+
+        let plan = select_stop_targets(10, 1, &owners, &processes, &[10, 11, 12, 77])
+            .expect("a named process that has exited should not fail the plan");
+
+        assert_eq!(plan.already_gone, vec![77]);
+        assert_eq!(plan.targets, vec![12, 11, 10]);
+    }
+
+    #[test]
+    fn stop_targets_refuse_the_app_unowned_trees_and_strangers_in_the_list() {
+        let (processes, owners) = stop_fixture();
+
+        assert_eq!(
+            select_stop_targets(1, 1, &owners, &processes, &[1]),
+            Err(ResourceStopTargetError::ProtectedPid)
+        );
+        assert_eq!(
+            select_stop_targets(99, 1, &owners, &processes, &[99]),
+            Err(ResourceStopTargetError::UnownedRoot)
+        );
+        assert_eq!(
+            select_stop_targets(10, 1, &owners, &processes, &[10, 99]),
+            Err(ResourceStopTargetError::RequestedOutsideTree)
+        );
+        let empty = Vec::new();
+        assert_eq!(
+            select_stop_targets(10, 1, &owners, &empty, &[10]),
+            Err(ResourceStopTargetError::RootGone)
+        );
+    }
+
+    #[test]
+    fn history_keeps_the_last_sixty_samples_per_row_and_drops_idle_rows() {
+        let mut store = ResourceHistoryStore::default();
+        let processes = vec![
+            observed(1, None, "app", 1.0, 100),
+            observed(10, Some(1), "zsh", 2.0, 200),
+        ];
+        let owners = vec![owner(
+            10,
+            "terminal-a",
+            "Terminal 1",
+            ResourceSampleSessionKind::Terminal,
+            "workspace",
+        )];
+
+        for tick in 0..RESOURCE_HISTORY_CAPACITY as u128 + 5 {
+            let mut sample = build_resource_sample(tick, 1, &processes, &owners);
+            attach_resource_history(&mut sample, &mut store);
+        }
+
+        let mut sample = build_resource_sample(
+            RESOURCE_HISTORY_CAPACITY as u128 + 5,
+            1,
+            &processes,
+            &owners,
+        );
+        attach_resource_history(&mut sample, &mut store);
+        let session = &sample.groups[0].sessions[0];
+        assert_eq!(session.history.cpu_percent.len(), RESOURCE_HISTORY_CAPACITY);
+        assert_eq!(session.history.rss_bytes.len(), RESOURCE_HISTORY_CAPACITY);
+        assert_eq!(session.history.rss_bytes.last(), Some(&200));
+        assert_eq!(sample.groups[0].history.rss_bytes.last(), Some(&200));
+        assert_eq!(sample.app.history.rss_bytes.last(), Some(&100));
+
+        // A row nobody has sampled for longer than the idle window is dropped.
+        let mut later = build_resource_sample(RESOURCE_HISTORY_IDLE_MS + 10_000, 1, &[], &[]);
+        attach_resource_history(&mut later, &mut store);
+        assert!(store
+            .read(&session_history_key("workspace", session))
+            .rss_bytes
+            .is_empty());
     }
 }

@@ -132,7 +132,12 @@
     type ShellRegionId
   } from '$lib/shell/layout/frame';
   import type { CenterDockSnapshot } from '$lib/shell/layout/centerDock';
-  import { DEFAULT_SIDEBAR_VIEW, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
+  import {
+    DEFAULT_SIDEBAR_VIEW,
+    isSidebarViewId,
+    type SidebarViewId
+  } from '$lib/shell/layout/sidebarViews';
+  import { registerSessionRowJumpTarget } from '$lib/shell/components/sessionRowJump';
   import {
     startsStructuredSession,
     type NewSessionRequest
@@ -680,6 +685,18 @@
     showProblemsAtBottom: () => {
       settings.panels.problemsLocation = 'bottom';
       applyProblemsLocation('bottom');
+    }
+  });
+
+  /** The rail rows' quick-jump buttons. A jump is a session AND a surface, and
+   * this page is the only place that can do both — the center tabs belong to
+   * the frame and the views to the tool column. Bookkeeping like the palette
+   * actions above; nothing runs until a row button is clicked. */
+  registerSessionRowJumpTarget({
+    selectSession: (ownedId) => void selectOwned(ownedId),
+    showCenterPanel: (id) => frameControls?.showCenterPanel(id),
+    showSidebarView: (id) => {
+      if (isSidebarViewId(id)) sidebarControls?.selectView(id);
     }
   });
 

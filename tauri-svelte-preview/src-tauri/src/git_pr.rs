@@ -400,7 +400,7 @@ fn read_pull_request_status_for_ref(
     })
 }
 
-fn summarize_checks(value: Option<&Value>) -> (String, String) {
+pub(crate) fn summarize_checks(value: Option<&Value>) -> (String, String) {
     let Some(Value::Array(checks)) = value else {
         return ("none".to_string(), "No checks reported".to_string());
     };
@@ -543,7 +543,7 @@ fn bounded_diff(diff: &str) -> String {
     bounded
 }
 
-fn format_gh_spawn_error(error: std::io::Error) -> String {
+pub(crate) fn format_gh_spawn_error(error: std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::NotFound {
         "GitHub CLI (`gh`) is not installed or not on PATH".to_string()
     } else {
@@ -551,7 +551,7 @@ fn format_gh_spawn_error(error: std::io::Error) -> String {
     }
 }
 
-fn format_process_failure(command: &str, stderr: &[u8], stdout: &[u8]) -> String {
+pub(crate) fn format_process_failure(command: &str, stderr: &[u8], stdout: &[u8]) -> String {
     let stderr = String::from_utf8_lossy(stderr).trim().to_string();
     if !stderr.is_empty() {
         return format!("{command} failed: {stderr}");

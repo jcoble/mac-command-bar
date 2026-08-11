@@ -41,9 +41,17 @@
   } from '$lib/tauriSource';
 
   import ChangesPane from './ChangesPane.svelte';
+  import DiscardConfirmDialog from './DiscardConfirmDialog.svelte';
   import GraphPane from './GraphPane.svelte';
   import RepoPane from './RepoPane.svelte';
+  import PullRequestList from './pr/PullRequestList.svelte';
   import PullRequestPanel from './pr/PullRequestPanel.svelte';
+  import {
+    describeDiscardQuestion,
+    type DiscardQuestion,
+    type DiscardTarget
+  } from './discardConfirm';
+  import { isGitFileUntracked } from '$lib/shell/git/gitPanelStore.svelte';
 
   interface Props {
     /** The working-copy service. The shell's singleton unless a page says otherwise. */
@@ -100,6 +108,41 @@
   const agentUnavailableReason = 'No active agent session is running. Start an agent conversation to generate this message.';
   let showPullRequest = $state(false);
 
+  /**
+   * THE ONLY ROUTE TO A DISCARD IN THIS SHELL.
+   *
+   * The panes never call `discardPaths` or `discardAll`; they hand a request up
+   * here, this decides what the question says, and only pressing the button in
+   * the dialog runs anything. Keeping the pending request in one place is what
+   * makes that true — there is no second path a later change can add by
+   * accident without going through this file.
+   */
+  let pendingDiscard = $state<{ question: DiscardQuestion; run: () => void } | null>(null);
+
+  function askToDiscardFiles(targets: DiscardTarget[]): void {
+    if (targets.length === 0) return;
+    pendingDiscard = {
+      question: describeDiscardQuestion({ scope: 'file', targets }),
+      run: () => void service.discardPaths(targets.map((target) => target.relativePath))
+    };
+  }
+
+  function askToDiscardAll(): void {
+    const files = panel.status?.files ?? [];
+    if (files.length === 0) return;
+    const untrackedCount = files.filter(isGitFileUntracked).length;
+    pendingDiscard = {
+      question: describeDiscardQuestion({ scope: 'all', targets: [], untrackedCount }),
+      run: () => void service.discardAll(untrackedCount > 0)
+    };
+  }
+
+  function confirmDiscard(): void {
+    const pending = pendingDiscard;
+    pendingDiscard = null;
+    pending?.run();
+  }
+
   async function generateCommitMessage(): Promise<string> {
     const root = panel.root;
     const agent = activeAgent;
@@ -152,6 +195,7 @@
       This folder is not a git repository.
     </p>
   {:else}
+    <PullRequestList root={panel.root} />
     <ChangesPane
       {panel}
       {service}
@@ -160,8 +204,19 @@
       onGenerateCommitMessage={generateCommitMessage}
       agentAvailable={activeAgent !== null}
       {agentUnavailableReason}
+      onRequestDiscard={askToDiscardFiles}
+      onRequestDiscardAll={askToDiscardAll}
       {onShowDiff}
     />
     <GraphPane {panel} {service} {commitFiles} files={commitFilesState} {onShowDiff} />
   {/if}
+
+  <DiscardConfirmDialog
+    question={pendingDiscard?.question ?? null}
+    open={pendingDiscard !== null}
+    onOpenChange={(next) => {
+      if (!next) pendingDiscard = null;
+    }}
+    onConfirm={confirmDiscard}
+  />
 </div>

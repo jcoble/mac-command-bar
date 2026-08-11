@@ -27,8 +27,17 @@
 import { bridgeGitBackend, canChangeRepository, hasGitBridge } from './gitBackendExtra.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
+  amendGitCommitFromTauri,
   commitGitRepositoryFromTauri,
+  createGitBranchFromTauri,
+  discardAllGitChangesFromTauri,
+  discardGitPathsFromTauri,
   fetchGitRepositoryFromTauri,
+  listGitBranchesFromTauri,
+  listGitStashesFromTauri,
+  popGitStashFromTauri,
+  stashGitChangesFromTauri,
+  switchGitBranchFromTauri,
   pullGitRepositoryFromTauri,
   pushGitRepositoryFromTauri,
   readGitCommitHistoryFromTauri,
@@ -37,7 +46,9 @@ import {
   stageGitPathsFromTauri,
   unstageGitPathsFromTauri,
   type GitActionResult,
+  type GitBranchList,
   type GitCommitHistoryEntry,
+  type GitStashEntry,
   type ProjectGitFileStatus,
   type ProjectGitStatus,
   type SourceGitDiff
@@ -80,12 +91,23 @@ export const DESKTOP_ONLY_MESSAGE =
   'Source control runs in the desktop app only. Nothing is loaded here.';
 
 /**
- * The nine git commands this panel can issue. Named as an interface so the node
+ * Every git command this panel can issue. Named as an interface so the node
  * test can drive the service with a stub and prove the superseded-request
  * handling, exactly as `terminalService.ts` does with its terminal backend.
  */
 export interface GitBackend {
   readStatus(root: string): Promise<ProjectGitStatus | null>;
+  /** Throw away the named files' changes. Deletes untracked files. */
+  discard(root: string, paths: string[]): Promise<GitActionResult | null>;
+  /** Throw away the whole working copy. */
+  discardAll(root: string, includeUntracked: boolean): Promise<GitActionResult | null>;
+  listBranches(root: string): Promise<GitBranchList | null>;
+  createBranch(root: string, name: string, checkout: boolean): Promise<GitActionResult | null>;
+  switchBranch(root: string, name: string): Promise<GitActionResult | null>;
+  stash(root: string, includeUntracked: boolean, message: string): Promise<GitActionResult | null>;
+  popStash(root: string, index: number | null): Promise<GitActionResult | null>;
+  listStashes(root: string): Promise<GitStashEntry[] | null>;
+  amend(root: string, message: string): Promise<GitActionResult | null>;
   readDiff(root: string, absolutePath: string): Promise<SourceGitDiff | null>;
   readHistory(root: string, limit: number): Promise<GitCommitHistoryEntry[] | null>;
   stage(root: string, paths: string[]): Promise<GitActionResult | null>;
@@ -105,6 +127,42 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
     readStatus(root) {
       count('project_git_status');
       return readProjectGitStatusFromTauri(root);
+    },
+    discard(root, paths) {
+      count('discard_git_paths');
+      return discardGitPathsFromTauri(root, paths);
+    },
+    discardAll(root, includeUntracked) {
+      count('discard_all_git_changes');
+      return discardAllGitChangesFromTauri(root, includeUntracked);
+    },
+    listBranches(root) {
+      count('list_git_branches');
+      return listGitBranchesFromTauri(root);
+    },
+    createBranch(root, name, checkout) {
+      count('create_git_branch');
+      return createGitBranchFromTauri(root, name, checkout);
+    },
+    switchBranch(root, name) {
+      count('switch_git_branch');
+      return switchGitBranchFromTauri(root, name);
+    },
+    stash(root, includeUntracked, message) {
+      count('stash_git_changes');
+      return stashGitChangesFromTauri(root, includeUntracked, message);
+    },
+    popStash(root, index) {
+      count('pop_git_stash');
+      return popGitStashFromTauri(root, index);
+    },
+    listStashes(root) {
+      count('list_git_stashes');
+      return listGitStashesFromTauri(root);
+    },
+    amend(root, message) {
+      count('amend_git_commit');
+      return amendGitCommitFromTauri(root, message);
     },
     readDiff(root, absolutePath) {
       count('read_source_git_diff');
@@ -208,6 +266,27 @@ export interface GitService {
   unstagePaths(paths: string[]): Promise<void>;
   /** Commit the staged changes using `state.commitMessage` unless one is given. */
   commit(message?: string): Promise<void>;
+  /**
+   * Rewrite the last commit with the staged changes. The panel asks first —
+   * amending a commit that is already pushed rewrites shared history.
+   */
+  amendCommit(message?: string): Promise<void>;
+  /**
+   * Throw away the named files' changes. THE CALLER MUST HAVE ASKED FIRST:
+   * nothing in this service confirms anything, and git keeps no copy.
+   */
+  discardPaths(paths: string[]): Promise<void>;
+  /** Throw away every change in the working copy. Same rule as above. */
+  discardAll(includeUntracked: boolean): Promise<void>;
+  /** The local branches, newest commit first. `null` outside the desktop app. */
+  listBranches(): Promise<GitBranchList | null>;
+  createBranch(name: string, checkout: boolean): Promise<void>;
+  switchBranch(name: string): Promise<void>;
+  /** Put the working copy aside. */
+  stashChanges(includeUntracked: boolean, message: string): Promise<void>;
+  /** Bring a stash back. `null` index means the most recent one. */
+  popStash(index: number | null): Promise<void>;
+  listStashes(): Promise<GitStashEntry[] | null>;
   runRemoteAction(action: 'fetch' | 'pull' | 'push'): Promise<void>;
 }
 
@@ -532,6 +611,68 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       await runAction('commit', (root) => backend.commit(root, text), { reloadHistory: true });
       // Only clear the box on a commit that actually happened.
       if (state.actionError === '' && state.status !== before) state.commitMessage = '';
+    },
+
+    async amendCommit(message?: string): Promise<void> {
+      const text = (message ?? state.commitMessage).trim();
+      const before = state.status;
+      await runAction('amend', (root) => backend.amend(root, text), { reloadHistory: true });
+      if (state.actionError === '' && state.status !== before) state.commitMessage = '';
+    },
+
+    async discardPaths(paths: string[]): Promise<void> {
+      const wanted = cleanPaths(paths);
+      if (wanted.length === 0) return;
+      await runAction('discard', (root) => backend.discard(root, wanted), {
+        reloadHistory: false
+      });
+    },
+
+    async discardAll(includeUntracked: boolean): Promise<void> {
+      await runAction('discard', (root) => backend.discardAll(root, includeUntracked), {
+        reloadHistory: false
+      });
+    },
+
+    async listBranches(): Promise<GitBranchList | null> {
+      const root = state.root;
+      if (!root) return null;
+      return backend.listBranches(root);
+    },
+
+    async createBranch(name: string, checkout: boolean): Promise<void> {
+      const wanted = name.trim();
+      if (wanted === '') {
+        state.actionError = 'Type a branch name first.';
+        return;
+      }
+      await runAction('branch', (root) => backend.createBranch(root, wanted, checkout), {
+        reloadHistory: checkout
+      });
+    },
+
+    async switchBranch(name: string): Promise<void> {
+      const wanted = name.trim();
+      if (wanted === '') return;
+      await runAction('branch', (root) => backend.switchBranch(root, wanted), {
+        reloadHistory: true
+      });
+    },
+
+    async stashChanges(includeUntracked: boolean, message: string): Promise<void> {
+      await runAction('stash', (root) => backend.stash(root, includeUntracked, message.trim()), {
+        reloadHistory: false
+      });
+    },
+
+    async popStash(index: number | null): Promise<void> {
+      await runAction('stash', (root) => backend.popStash(root, index), { reloadHistory: false });
+    },
+
+    async listStashes(): Promise<GitStashEntry[] | null> {
+      const root = state.root;
+      if (!root) return null;
+      return backend.listStashes(root);
     },
 
     async runRemoteAction(action: 'fetch' | 'pull' | 'push'): Promise<void> {

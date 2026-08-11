@@ -17,10 +17,17 @@ assert.deepEqual(
   [
     ['open-diff', 'Open diff', 'pick-file', true],
     ['unstage', 'Unstage changes', 'run-file-action', true],
+    ['discard', 'Discard changes…', 'ask-to-discard', true],
     ['open-file', 'Open file in editor', 'open-in-editor', true],
     ['copy-path', 'Copy path', 'copy-path', true]
   ],
-  'a staged row maps to the existing diff, unstage, editor, and path handlers'
+  'a staged row maps to the existing diff, unstage, discard, editor, and path handlers'
+);
+
+assert.equal(
+  staged.find((item) => item.id === 'discard')?.handler,
+  'ask-to-discard',
+  'discard goes through the ask-first handler, never straight to the service'
 );
 
 const changed = sourceControlFileContextMenuItems({
@@ -42,8 +49,27 @@ const unavailable = sourceControlFileContextMenuItems({
 });
 assert.deepEqual(
   Object.fromEntries(unavailable.map((item) => [item.id, item.enabled])),
-  { 'open-diff': false, stage: false, 'open-file': false, 'copy-path': true },
+  {
+    'open-diff': false,
+    stage: false,
+    discard: false,
+    'open-file': false,
+    'copy-path': true
+  },
   'deleted/read-only rows disable actions that cannot apply and keep copying available'
+);
+
+const deletedButWritable = sourceControlFileContextMenuItems({
+  groupAction: 'stage',
+  canWrite: true,
+  busy: false,
+  deleted: true,
+  hasRoot: true
+});
+assert.equal(
+  deletedButWritable.find((item) => item.id === 'discard')?.enabled,
+  true,
+  'a deleted file can still be brought back, so its discard stays available'
 );
 
 assert.deepEqual(

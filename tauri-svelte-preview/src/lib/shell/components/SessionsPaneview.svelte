@@ -283,7 +283,11 @@
   }
   .pane-stack-host { min-width: 0; min-height: 0; flex: 1 1 auto; overflow: hidden; }
   .parking-stage { display: none; }
-  .pane-slot { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+  /* `min-height`, never `height` + `overflow: hidden`: this slot is the only
+     child of the scrollable pane body, so a fixed, clipped slot swallows every
+     row past the pane's own height and leaves the body with nothing to scroll.
+     Filling the pane and then growing past it is what lets the body scroll. */
+  .pane-slot { width: 100%; min-width: 0; min-height: 100%; }
   .sessions-paneview :global(.pane-body-host) { position: absolute; inset: 0; overflow: auto; }
   .finder-action {
     display: inline-flex;

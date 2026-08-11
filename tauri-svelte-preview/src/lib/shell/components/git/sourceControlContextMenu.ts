@@ -4,12 +4,14 @@ export type SourceControlFileAction =
   | 'open-diff'
   | 'stage'
   | 'unstage'
+  | 'discard'
   | 'open-file'
   | 'copy-path';
 
 export type SourceControlFileHandler =
   | 'pick-file'
   | 'run-file-action'
+  | 'ask-to-discard'
   | 'open-in-editor'
   | 'copy-path';
 
@@ -49,6 +51,16 @@ export function sourceControlFileContextMenuItems(
       label: indexAction === 'stage' ? 'Stage changes' : 'Unstage changes',
       enabled: options.canWrite && !options.busy,
       handler: 'run-file-action'
+    },
+    {
+      id: 'discard',
+      // "Discard changes" is git's own phrase and the one the confirmation
+      // repeats. The item is never disabled for being destructive — it is
+      // disabled only when the repository cannot be written to at all, because
+      // an item you cannot press teaches nothing about what it would do.
+      label: 'Discard changes…',
+      enabled: options.canWrite && !options.busy,
+      handler: 'ask-to-discard'
     },
     {
       id: 'open-file',

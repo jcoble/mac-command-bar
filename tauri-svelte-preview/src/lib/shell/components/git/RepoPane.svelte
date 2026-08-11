@@ -20,7 +20,6 @@
   import CloudDownload from '@lucide/svelte/icons/cloud-download';
   import CloudUpload from '@lucide/svelte/icons/cloud-upload';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
-  import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import RefreshCcwDot from '@lucide/svelte/icons/refresh-ccw-dot';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -33,6 +32,8 @@
   } from '$lib/shell/git/gitPanelStore.svelte';
   import type { GitService } from '$lib/shell/git/gitService';
   import { cn } from '$lib/utils';
+
+  import BranchMenu from './BranchMenu.svelte';
 
   interface Props {
     panel: GitPanelState;
@@ -48,7 +49,6 @@
 
   const busy = $derived(panel.actionBusy !== '');
   const name = $derived(repositoryLabel(panel.root) || 'Source control');
-  const branch = $derived(panel.status?.branch ?? '');
   const ahead = $derived(panel.status?.ahead ?? 0);
   const behind = $derived(panel.status?.behind ?? 0);
   const hasUpstream = $derived(panel.status?.hasUpstream ?? false);
@@ -106,17 +106,18 @@
     </button>
   </div>
 
-  <!-- The branch name wraps rather than being cut off: a name shortened to
-       `codex/outbound-rule-generat…` cannot be told apart from the next one like
-       it. The hover text carries the full name and spells the counts out, for
-       the case where even wrapping runs out of room. -->
+  <!-- The branch name IS the control that changes branches, because that is
+       what a person looks at when they want to change it. It truncates rather
+       than wraps now that it is a button, so the hover text on this row carries
+       the full name and spells the ahead/behind counts out as sentences — a
+       name cut off at `codex/outbound-rule-generat…` cannot be told apart from
+       the next one like it. -->
   <div
-    class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 pl-5
+    class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 pl-3
            text-[12px] leading-[16px] text-[var(--color-text-2)]"
     title={branchTitle}
   >
-    <GitBranch class="size-3 shrink-0" aria-hidden="true" />
-    <span class="min-w-0 break-words">{branch || 'no branch checked out'}</span>
+    <BranchMenu {panel} {service} {canWrite} {readOnlyReason} />
     {#if !hasUpstream}
       <span class="{CHIP} text-[var(--color-text-3)]">no remote branch</span>
     {:else if ahead === 0 && behind === 0}

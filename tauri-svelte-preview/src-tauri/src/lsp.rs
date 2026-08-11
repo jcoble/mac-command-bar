@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -47,6 +47,14 @@ const MAX_LSP_WORKSPACES_PER_LANGUAGE: usize = 5;
 const MAX_LSP_PRELOAD_DISCOVERY_DEPTH: usize = 4;
 const MAX_LSP_PRELOAD_DISCOVERY_ENTRIES: usize = 20_000;
 const MAX_NATIVE_CSHARP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+/// How long a language server gets to act on the goodbye it was just sent
+/// before its process group is stopped. Long enough for a server that means to
+/// leave, short enough that turning full mode off feels immediate.
+const LSP_SHUTDOWN_GRACE: Duration = Duration::from_millis(1500);
+/// How often the goodbye wait checks whether the server has gone.
+const LSP_SHUTDOWN_POLL: Duration = Duration::from_millis(25);
+/// The same grace for Roslyn behind the native C# bridge.
+const NATIVE_CSHARP_SHUTDOWN_GRACE: Duration = Duration::from_millis(1500);
 const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
     "csharp",
     "typescript",
@@ -108,6 +116,108 @@ pub(crate) fn set_csharp_language_server_enabled(enabled: bool) -> bool {
     }
     changed
 }
+
+/// Which workspaces the reader has turned language intelligence on for.
+///
+/// Read mode is the default and the whole point: opening a file — from a diff
+/// hunk, the file tree, or anywhere else — colours it and stops there. Nothing
+/// starts a language server until the reader turns full mode on for that
+/// workspace, and turning it off again stops the process it started.
+///
+/// This is plain data with no processes in it, so the start/stop rules can be
+/// read and tested on their own. [`SourceLspRegistry`] does the stopping.
+#[derive(Debug, Default)]
+pub(crate) struct LanguageIntelligenceModes {
+    full_mode_roots: std::collections::HashSet<String>,
+}
+
+/// What a request to change one workspace's mode actually did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LanguageIntelligenceChange {
+    AlreadyOff,
+    AlreadyOn,
+    TurnedOn,
+    TurnedOff,
+}
+
+impl LanguageIntelligenceChange {
+    /// Did this move the workspace from one mode to the other?
+    pub(crate) fn changed(self) -> bool {
+        matches!(self, Self::TurnedOn | Self::TurnedOff)
+    }
+
+    /// Must the caller stop this workspace's servers now?
+    pub(crate) fn must_stop_servers(self) -> bool {
+        matches!(self, Self::TurnedOff)
+    }
+
+    /// May a server for this workspace be started after this change?
+    pub(crate) fn may_start_servers(self) -> bool {
+        matches!(self, Self::TurnedOn | Self::AlreadyOn)
+    }
+}
+
+impl LanguageIntelligenceModes {
+    /// Is full mode on for this workspace? Unknown workspaces are in read mode.
+    pub(crate) fn is_on(&self, root: &str) -> bool {
+        self.full_mode_roots.contains(root)
+    }
+
+    /// Turn full mode on or off for one workspace, and say what that did.
+    pub(crate) fn set(&mut self, root: &str, enabled: bool) -> LanguageIntelligenceChange {
+        let was_on = self.is_on(root);
+        if enabled {
+            if was_on {
+                return LanguageIntelligenceChange::AlreadyOn;
+            }
+            self.full_mode_roots.insert(root.to_string());
+            return LanguageIntelligenceChange::TurnedOn;
+        }
+        if !was_on {
+            return LanguageIntelligenceChange::AlreadyOff;
+        }
+        self.full_mode_roots.remove(root);
+        LanguageIntelligenceChange::TurnedOff
+    }
+}
+
+fn language_intelligence_modes() -> &'static Mutex<LanguageIntelligenceModes> {
+    static MODES: OnceLock<Mutex<LanguageIntelligenceModes>> = OnceLock::new();
+    MODES.get_or_init(|| Mutex::new(LanguageIntelligenceModes::default()))
+}
+
+/// One spelling per workspace, so the same folder written two ways is one
+/// entry. A folder that is not on disk keeps the text it was given: a saved
+/// choice must survive a workspace that is temporarily unmounted or renamed.
+pub(crate) fn language_intelligence_key(root: &str) -> String {
+    normalized_lsp_root(root).unwrap_or_else(|| root.trim_end_matches('/').to_string())
+}
+
+/// Is full mode on for this workspace?
+pub(crate) fn language_intelligence_on(root: &str) -> bool {
+    locked(language_intelligence_modes()).is_on(&language_intelligence_key(root))
+}
+
+/// Turn full mode on or off for one workspace. Turning it ON starts nothing by
+/// itself — the next file opened in that workspace does that — which is what
+/// lets a saved choice be restored at launch without waking any servers.
+pub(crate) fn set_language_intelligence(root: &str, enabled: bool) -> LanguageIntelligenceChange {
+    let key = language_intelligence_key(root);
+    let change = locked(language_intelligence_modes()).set(&key, enabled);
+    if change.changed() && !enabled {
+        record_language_server_state(
+            "csharp",
+            &key,
+            LanguageServerState::Disabled,
+            Some(READ_MODE_DETAIL.to_string()),
+        );
+    }
+    change
+}
+
+/// What the editor says when a workspace is in read mode.
+const READ_MODE_DETAIL: &str =
+    "Language intelligence is off for this workspace. Files open with colouring only.";
 
 /// May a server for this language be started or reused right now?
 fn language_server_allowed(language_id: &str) -> bool {
@@ -1350,6 +1460,10 @@ impl LspConnection {
             "method": "exit"
         }));
         if let Some(child) = locked(&self.child).as_mut() {
+            // A server that takes its own goodbye leaves cleanly, flushing
+            // whatever it was holding. Only one that ignores it gets stopped,
+            // and only ever this app's own child.
+            wait_for_lsp_exit(child, LSP_SHUTDOWN_GRACE);
             stop_lsp_process_tree(child);
         }
     }
@@ -1465,6 +1579,8 @@ struct NativeCsharpSession {
     last_used: AtomicU64,
     shutdown: Mutex<Option<oneshot::Sender<()>>>,
     stop_clients: broadcast::Sender<()>,
+    /// The same counter the bridge writes Roslyn's pid into. 0 means no server.
+    roslyn_pid: Arc<AtomicU32>,
 }
 
 impl Drop for NativeCsharpSession {
@@ -1483,11 +1599,24 @@ struct NativeCsharpBridgeState {
     server: ResolvedLspServer,
     connected: Arc<AtomicBool>,
     stop_clients: broadcast::Sender<()>,
+    /// The Roslyn process serving this workspace, or 0 while none is running.
+    /// Shared with the registry so the resource view can charge its CPU and
+    /// memory to this workspace instead of leaving it as an unnamed app helper.
+    roslyn_pid: Arc<AtomicU32>,
 }
 
 #[derive(Deserialize)]
 struct NativeCsharpAuth {
     token: String,
+}
+
+/// One running language-server process and the workspace it serves.
+#[derive(Debug, Clone)]
+pub(crate) struct LanguageServerProcess {
+    pub(crate) pid: u32,
+    pub(crate) language_id: String,
+    pub(crate) root: String,
+    pub(crate) server_name: String,
 }
 
 /// A warm language-server slot belongs to both a language and a workspace root.
@@ -1534,6 +1663,12 @@ impl SourceLspRegistry {
         }
         let root = normalized_lsp_root(root)
             .ok_or_else(|| "Project root is not a directory".to_string())?;
+        // The one place a C# server can be started from. Read mode stops here,
+        // so no amount of clicking in a workspace the reader has not switched on
+        // can bring Roslyn up behind their back.
+        if !language_intelligence_on(&root) {
+            return Err(READ_MODE_DETAIL.to_string());
+        }
         let use_tick = self.next_use.fetch_add(1, Ordering::Relaxed) + 1;
 
         let mut sessions = self
@@ -1562,12 +1697,14 @@ impl SourceLspRegistry {
         };
         let (shutdown_sender, shutdown_receiver) = oneshot::channel();
         let (stop_clients, _) = broadcast::channel(1);
+        let roslyn_pid = Arc::new(AtomicU32::new(0));
         let state = NativeCsharpBridgeState {
             token: Arc::<str>::from(token),
             root: Arc::new(PathBuf::from(&root)),
             server,
             connected: Arc::new(AtomicBool::new(false)),
             stop_clients: stop_clients.clone(),
+            roslyn_pid: Arc::clone(&roslyn_pid),
         };
         let listener = TcpListener::from_std(listener)
             .map_err(|error| format!("Could not start native C# bridge: {error}"))?;
@@ -1588,6 +1725,7 @@ impl SourceLspRegistry {
             last_used: AtomicU64::new(use_tick),
             shutdown: Mutex::new(Some(shutdown_sender)),
             stop_clients,
+            roslyn_pid,
         });
         let evicted = if sessions.len() >= MAX_LSP_WORKSPACES_PER_LANGUAGE {
             sessions
@@ -2064,6 +2202,12 @@ impl SourceLspRegistry {
         if !legacy_language_server_allowed(&key.language) {
             return Ok(None);
         }
+        // Read mode is the default, and it is the reason a file can be opened in
+        // every project at once: a workspace nobody has turned full mode on for
+        // never starts a server, however many lookups arrive for it.
+        if !language_intelligence_on(&key.root) {
+            return Ok(None);
+        }
 
         let Some(server) = resolve_server_for_language(&preview.language) else {
             return Ok(None);
@@ -2201,6 +2345,126 @@ impl SourceLspRegistry {
         Ok(0)
     }
 
+    /// Stop every language server this workspace has running, whichever
+    /// language it belongs to. This is what turning full mode off does.
+    ///
+    /// Same two halves as [`Self::stop_servers_for_language`]: the handles come
+    /// out from under the registry lock and are dropped after it is released,
+    /// because the goodbye handshake waits on the child.
+    ///
+    /// Servers are per workspace, so this stops the one process that was
+    /// serving every session and every editor view on that workspace — and
+    /// leaves other workspaces' servers alone.
+    pub(crate) fn stop_servers_for_root(&self, root: &str) -> Result<usize, String> {
+        let root = language_intelligence_key(root);
+        let stopped = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Language server registry lock poisoned".to_string())?;
+            let keys = sessions
+                .keys()
+                .filter(|key| key.root == root)
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| sessions.remove(&key).map(|session| (key, session)))
+                .collect::<Vec<_>>()
+        };
+        let stopped_native = {
+            let mut sessions = self
+                .native_csharp_sessions
+                .lock()
+                .map_err(|_| "Native C# registry lock poisoned".to_string())?;
+            sessions
+                .remove(&root)
+                .map(|session| (root.clone(), session))
+        };
+
+        let mut languages = stopped
+            .iter()
+            .map(|(key, _)| key.language.clone())
+            .collect::<Vec<_>>();
+        if stopped_native.is_some() {
+            languages.push("csharp".to_string());
+        }
+        languages.sort();
+        languages.dedup();
+
+        let stopped_count = stopped.len() + usize::from(stopped_native.is_some());
+        drop(stopped);
+        drop(stopped_native);
+
+        for language in languages {
+            record_language_server_state(
+                &language,
+                &root,
+                LanguageServerState::Disabled,
+                Some(READ_MODE_DETAIL.to_string()),
+            );
+        }
+        Ok(stopped_count)
+    }
+
+    /// Every language-server process running right now, with the workspace it
+    /// serves. The resource view uses this to charge a server's CPU and memory
+    /// to its project instead of leaving it as an unnamed app helper.
+    ///
+    /// Never blocks: a session busy answering a question is skipped for this
+    /// sample rather than made to wait. It will be in the next one.
+    pub(crate) fn running_language_server_processes(&self) -> Vec<LanguageServerProcess> {
+        let mut running = Vec::new();
+
+        let entries = match self.sessions.lock() {
+            Ok(sessions) => sessions
+                .iter()
+                .map(|(key, session)| (key.clone(), Arc::clone(session)))
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        };
+        for (key, session) in entries {
+            let Ok(guard) = session.try_lock() else {
+                continue;
+            };
+            let Ok(child) = guard.connection.child.try_lock() else {
+                continue;
+            };
+            let Some(pid) = child.as_ref().map(|child| child.id()) else {
+                continue;
+            };
+            running.push(LanguageServerProcess {
+                pid,
+                language_id: key.language.clone(),
+                root: key.root.clone(),
+                server_name: server_spec_for_language(&key.language)
+                    .map(|spec| spec.server_name.to_string())
+                    .unwrap_or_else(|| key.language.clone()),
+            });
+        }
+
+        if let Ok(sessions) = self.native_csharp_sessions.lock() {
+            for (root, session) in sessions.iter() {
+                let pid = session.roslyn_pid.load(Ordering::Acquire);
+                if pid == 0 {
+                    continue;
+                }
+                running.push(LanguageServerProcess {
+                    pid,
+                    language_id: "csharp".to_string(),
+                    root: root.clone(),
+                    server_name: "roslyn-language-server".to_string(),
+                });
+            }
+        }
+
+        running.sort_by(|left, right| {
+            left.root
+                .cmp(&right.root)
+                .then_with(|| left.language_id.cmp(&right.language_id))
+        });
+        running
+    }
+
     fn remove_session(
         &self,
         preview: &SourceLspPreview,
@@ -2228,6 +2492,10 @@ impl SourceLspRegistry {
         let Some(root) = normalized_lsp_root(root) else {
             return Ok(0);
         };
+        // Warming is a start in disguise. A workspace in read mode warms nothing.
+        if !language_intelligence_on(&root) {
+            return Ok(0);
+        }
         let mut languages = {
             let sessions = self
                 .sessions
@@ -2391,6 +2659,9 @@ async fn proxy_native_csharp_lsp(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start Roslyn for native C# client: {error}"))?;
+    state
+        .roslyn_pid
+        .store(child.id().unwrap_or(0), Ordering::Release);
     let mut roslyn_stdin = child
         .stdin
         .take()
@@ -2448,8 +2719,15 @@ async fn proxy_native_csharp_lsp(
     tokio::select! {
         result = browser_to_roslyn => result?,
         result = roslyn_to_browser => result?,
-        _ = stop_clients.recv() => {},
+        _ = stop_clients.recv() => {
+            // Turning full mode off closes the language client first, which
+            // sends Roslyn the shutdown request. Give it that moment to leave
+            // on its own before the group is stopped; the kill below is the
+            // backstop for a server that ignores its own goodbye.
+            let _ = tokio::time::timeout(NATIVE_CSHARP_SHUTDOWN_GRACE, child.wait()).await;
+        },
         status = child.wait() => {
+            state.roslyn_pid.store(0, Ordering::Release);
             let status = status.map_err(|error| format!("Could not wait for Roslyn: {error}"))?;
             return Err(format!("Roslyn exited with {status}"));
         }
@@ -2460,6 +2738,7 @@ async fn proxy_native_csharp_lsp(
         unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
     }
     let _ = child.wait().await;
+    state.roslyn_pid.store(0, Ordering::Release);
     record_language_server_state(
         "csharp",
         &state.root.display().to_string(),
@@ -2576,6 +2855,20 @@ impl Drop for SourceLspSession {
 /// workspace switch or app shutdown.
 fn configure_lsp_process_group(command: &mut Command) {
     command.process_group(0);
+}
+
+/// Wait up to `grace` for a server to exit by itself. Returns whether it did.
+fn wait_for_lsp_exit(child: &mut Child, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(LSP_SHUTDOWN_POLL);
+    }
 }
 
 /// Stop the complete language-server process tree and reap its direct child.
@@ -2794,6 +3087,16 @@ fn describe_language_server_activity(
                 "{} is not installed, or it is not on the list of places this app looks for programs.",
                 spec.command
             )),
+        );
+    }
+    // Read mode is a choice, not a failure, so it says so in those words rather
+    // than leaving the chip looking like a server that would not start. It is
+    // read after the checks above because a missing program is a fact about the
+    // machine, true in either mode, and more use to the reader than the mode is.
+    if !language_intelligence_on(&root.display().to_string()) {
+        return (
+            LanguageServerState::Disabled,
+            Some(READ_MODE_DETAIL.to_string()),
         );
     }
 
@@ -4441,6 +4744,111 @@ fn percent_decode_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read mode is the default, and it is per workspace. A workspace nobody
+    /// has switched on must never look like one that has been.
+    #[test]
+    fn language_intelligence_starts_off_for_every_workspace() {
+        let modes = LanguageIntelligenceModes::default();
+        assert!(!modes.is_on("/projects/one"));
+        assert!(!modes.is_on("/projects/two"));
+    }
+
+    #[test]
+    fn turning_language_intelligence_on_and_off_says_what_it_did() {
+        let mut modes = LanguageIntelligenceModes::default();
+
+        let turned_on = modes.set("/projects/one", true);
+        assert_eq!(turned_on, LanguageIntelligenceChange::TurnedOn);
+        assert!(turned_on.changed());
+        assert!(turned_on.may_start_servers());
+        assert!(!turned_on.must_stop_servers());
+        assert!(modes.is_on("/projects/one"));
+
+        let again = modes.set("/projects/one", true);
+        assert_eq!(again, LanguageIntelligenceChange::AlreadyOn);
+        assert!(!again.changed(), "asking twice must not restart anything");
+        assert!(again.may_start_servers());
+        assert!(!again.must_stop_servers());
+
+        let turned_off = modes.set("/projects/one", false);
+        assert_eq!(turned_off, LanguageIntelligenceChange::TurnedOff);
+        assert!(turned_off.changed());
+        assert!(
+            turned_off.must_stop_servers(),
+            "turning full mode off is what stops the workspace's server"
+        );
+        assert!(!turned_off.may_start_servers());
+        assert!(!modes.is_on("/projects/one"));
+
+        let already_off = modes.set("/projects/one", false);
+        assert_eq!(already_off, LanguageIntelligenceChange::AlreadyOff);
+        assert!(
+            !already_off.must_stop_servers(),
+            "a workspace that was already in read mode has nothing to stop"
+        );
+    }
+
+    /// One workspace's choice is its own. Turning the editor on for one project
+    /// must not start anything for the project beside it.
+    #[test]
+    fn each_workspace_keeps_its_own_mode() {
+        let mut modes = LanguageIntelligenceModes::default();
+        modes.set("/projects/one", true);
+        assert!(modes.is_on("/projects/one"));
+        assert!(!modes.is_on("/projects/two"));
+
+        modes.set("/projects/two", true);
+        modes.set("/projects/one", false);
+        assert!(!modes.is_on("/projects/one"));
+        assert!(
+            modes.is_on("/projects/two"),
+            "stopping one workspace's server must leave the other's alone"
+        );
+    }
+
+    /// The same folder written two ways is one workspace, so a server started
+    /// under one spelling is reused — never duplicated — under the other.
+    #[test]
+    fn workspace_keys_are_one_spelling_per_folder() {
+        assert_eq!(
+            language_intelligence_key("/projects/one/"),
+            language_intelligence_key("/projects/one")
+        );
+    }
+
+    /// The promise of read mode, tested against the registry rather than the
+    /// state machine: a workspace in read mode starts nothing, however it is
+    /// asked, and says why in words rather than looking broken.
+    #[test]
+    fn a_read_mode_workspace_starts_no_language_server() {
+        let root = unique_lsp_temp_root("mcb-lsp-read-mode");
+        std::fs::write(root.join("App.csproj"), "<Project />").unwrap();
+        let root_text = root.display().to_string();
+        set_language_intelligence(&root_text, false);
+
+        let registry = SourceLspRegistry::default();
+        assert_eq!(
+            registry.warm_running_servers_for_root(&root_text).unwrap(),
+            0,
+            "warming a read-mode workspace must start nothing"
+        );
+        assert!(
+            registry.ensure_native_csharp_endpoint(&root_text).is_err(),
+            "the C# endpoint is the one way Roslyn starts, and read mode closes it"
+        );
+        assert_eq!(registry.session_count().unwrap(), 0);
+        assert!(registry.running_language_server_processes().is_empty());
+
+        let status = read_source_lsp_status_sync(root.clone(), "csharp".to_string()).unwrap();
+        assert_eq!(status.state, LanguageServerState::Disabled.as_str());
+        assert_eq!(status.detail.as_deref(), Some(READ_MODE_DETAIL));
+
+        // Turning full mode off again when nothing is running stops nothing.
+        assert_eq!(registry.stop_servers_for_root(&root_text).unwrap(), 0);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn command_search_paths_include_cargo_bin_so_rust_analyzer_resolves() {
@@ -6491,6 +6899,9 @@ mod tests {
             .parent()
             .expect("tauri preview root")
             .to_path_buf();
+        // A real server is what this test is about, so the workspace is in full
+        // mode — the mode a person would have put it in to get these answers.
+        set_language_intelligence(&root.display().to_string(), true);
         let file_path = root.join("src/lib/MonacoSourceEditor.svelte");
         let content = match std::fs::read_to_string(&file_path) {
             Ok(content) => content,
@@ -7056,6 +7467,10 @@ mod tests {
             args: &[],
         };
         let root = env::temp_dir();
+        // This test is about the wording for a server's own state, so the
+        // workspace is in full mode. Read mode has its own sentence and its own
+        // test (`a_read_mode_workspace_starts_no_language_server`).
+        set_language_intelligence(&root.display().to_string(), true);
 
         let (state, detail) = describe_language_server_activity(spec, &root, true, true, false);
         assert_eq!(state, LanguageServerState::Disabled);
@@ -7130,6 +7545,13 @@ mod tests {
         );
     }
 
+    /// A throwaway workspace for a test, in full mode.
+    ///
+    /// Full mode is set here rather than in each test because the app's default
+    /// is read mode — no server, ever — and a test that means to watch a real
+    /// server work has to be a workspace someone switched on. The tests that
+    /// assert nothing starts still assert exactly that; they simply prove it
+    /// against the harder case where the mode is not what is holding it back.
     fn unique_lsp_temp_root(prefix: &str) -> PathBuf {
         let mut root = env::temp_dir();
         let nonce = std::time::SystemTime::now()
@@ -7138,6 +7560,7 @@ mod tests {
             .as_nanos();
         root.push(format!("{prefix}-{nonce}"));
         std::fs::create_dir_all(&root).unwrap();
+        set_language_intelligence(&root.display().to_string(), true);
         root
     }
 

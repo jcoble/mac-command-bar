@@ -27,9 +27,11 @@ mod claude_quota;
 mod debug_log;
 mod git_diff_models;
 mod git_pr;
+mod git_workspace;
 mod lsp;
 mod orchestration;
 mod resources;
+mod resources_disk;
 mod terminal;
 mod usage_current;
 mod usage_db;
@@ -353,6 +355,21 @@ struct ProcessKillResult {
 #[serde(rename_all = "camelCase")]
 struct CsharpLanguageServerToggleResult {
     enabled: bool,
+    stopped_servers: usize,
+    message: String,
+}
+
+/// Whether one workspace is in full mode, and what the editor should say.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceLanguageIntelligence {
+    root: String,
+    enabled: bool,
+    /// Language-server processes running for this workspace right now.
+    running_servers: usize,
+    /// Their process ids, so a reader can find the same numbers in the
+    /// resource view.
+    server_pids: Vec<u32>,
     stopped_servers: usize,
     message: String,
 }
@@ -848,6 +865,12 @@ async fn ensure_native_csharp_language_client(
     if !lsp::workspace_has_csharp_project_marker(&root) {
         return Ok(None);
     }
+    // Read mode: no endpoint, and so no Roslyn. "Nothing here" rather than an
+    // error, because a workspace the reader has not switched on is the ordinary
+    // case, not a failure worth showing them.
+    if !lsp::language_intelligence_on(&root) {
+        return Ok(None);
+    }
     registry.ensure_native_csharp_endpoint(&root).map(Some)
 }
 
@@ -887,6 +910,108 @@ async fn set_csharp_language_server_enabled(
     })
     .await
     .map_err(|error| format!("C# language server switch task failed: {error}"))?
+}
+
+/// What full mode is doing for one workspace right now.
+///
+/// Reading costs nothing and starts nothing: the editor asks this when it
+/// points at a workspace so the switch shows the right position.
+#[tauri::command]
+async fn read_workspace_language_intelligence(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<WorkspaceLanguageIntelligence, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = lsp::language_intelligence_key(&root);
+        let enabled = lsp::language_intelligence_on(&key);
+        let server_pids = workspace_language_server_pids(&registry, &key);
+        Ok(WorkspaceLanguageIntelligence {
+            enabled,
+            running_servers: server_pids.len(),
+            message: describe_workspace_language_intelligence(enabled, server_pids.len(), 0),
+            server_pids,
+            stopped_servers: 0,
+            root: key,
+        })
+    })
+    .await
+    .map_err(|error| format!("Language intelligence read task failed: {error}"))?
+}
+
+/// Turn language intelligence on or off for one workspace.
+///
+/// On starts nothing by itself — the next file opened in that workspace does —
+/// which is what lets a saved choice be restored at launch without waking a
+/// server for a project nobody is looking at. Off stops the workspace's
+/// servers now and gives their memory back.
+#[tauri::command]
+async fn set_workspace_language_intelligence(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+    enabled: bool,
+) -> Result<WorkspaceLanguageIntelligence, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = lsp::language_intelligence_key(&root);
+        let change = lsp::set_language_intelligence(&key, enabled);
+        let stopped_servers = if change.must_stop_servers() {
+            registry.stop_servers_for_root(&key)?
+        } else {
+            0
+        };
+        // What the switch now says is what the state machine decided, not what
+        // the caller asked for — the two only differ if something else changed
+        // this workspace in between, and the reader should see the truth.
+        let enabled = change.may_start_servers();
+        let server_pids = workspace_language_server_pids(&registry, &key);
+        Ok(WorkspaceLanguageIntelligence {
+            enabled,
+            running_servers: server_pids.len(),
+            message: describe_workspace_language_intelligence(
+                enabled,
+                server_pids.len(),
+                stopped_servers,
+            ),
+            server_pids,
+            stopped_servers,
+            root: key,
+        })
+    })
+    .await
+    .map_err(|error| format!("Language intelligence switch task failed: {error}"))?
+}
+
+/// The process ids of the language servers serving one workspace.
+fn workspace_language_server_pids(registry: &lsp::SourceLspRegistry, root: &str) -> Vec<u32> {
+    registry
+        .running_language_server_processes()
+        .into_iter()
+        .filter(|process| process.root == root)
+        .map(|process| process.pid)
+        .collect()
+}
+
+fn describe_workspace_language_intelligence(
+    enabled: bool,
+    running_servers: usize,
+    stopped_servers: usize,
+) -> String {
+    if enabled {
+        return if running_servers > 0 {
+            "Language intelligence is on for this project, and its language server is running."
+                .to_string()
+        } else {
+            "Language intelligence is on for this project. Its language server starts with the next file you open, and takes a moment to read the project."
+                .to_string()
+        };
+    }
+    if stopped_servers > 0 {
+        return "Language intelligence is off for this project and its language server has been stopped, freeing that memory. Files still open with colouring."
+            .to_string();
+    }
+    "Language intelligence is off for this project. Files open with colouring only, and nothing is started in the background."
+        .to_string()
 }
 
 fn describe_csharp_language_server_toggle(
@@ -1242,7 +1367,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 27] = [
+const BACKEND_CAPABILITIES: [&str; 28] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1260,6 +1385,10 @@ const BACKEND_CAPABILITIES: [&str; 27] = [
     "worktreePruneSingle",
     // `set_csharp_language_server_enabled` turns the C# language server off and on.
     "csharpLanguageServerToggle",
+    // `read_workspace_language_intelligence` and
+    // `set_workspace_language_intelligence` read and set one project's editor
+    // mode: read mode (colouring only, nothing started) or full mode.
+    "workspaceLanguageIntelligence",
     // `find_source_lsp_document_symbols` lists a file's symbols using the language
     // server, which is what gives Rust and Svelte margin counts.
     "lspDocumentSymbols",
@@ -5444,6 +5573,8 @@ fn main() {
             ensure_native_csharp_language_client,
             mark_native_csharp_language_client_ready,
             set_csharp_language_server_enabled,
+            read_workspace_language_intelligence,
+            set_workspace_language_intelligence,
             find_source_lsp_definitions,
             find_source_lsp_completions,
             find_source_lsp_implementations,
@@ -5479,6 +5610,16 @@ fn main() {
             git_pr::generate_pull_request_details,
             git_pr::create_pull_request,
             git_pr::read_pull_request_status,
+            git_workspace::discard_git_paths,
+            git_workspace::discard_all_git_changes,
+            git_workspace::list_git_branches,
+            git_workspace::create_git_branch,
+            git_workspace::switch_git_branch,
+            git_workspace::stash_git_changes,
+            git_workspace::pop_git_stash,
+            git_workspace::list_git_stashes,
+            git_workspace::amend_git_commit,
+            git_workspace::list_open_pull_requests,
             list_project_worktrees,
             remove_project_worktree,
             archive_project_worktree,
@@ -5494,6 +5635,9 @@ fn main() {
             resources::read_resource_disk_scan,
             resources::cleanup_workspace_disk_entry,
             resources::stop_owned_resource,
+            resources::stop_resource_process_tree,
+            resources_disk::read_resource_disk_usage,
+            resources_disk::reclaim_resource_disk_entry,
             resources::restart_language_server_root,
             resources::set_active_source_root,
             resources::apply_resource_memory_pressure,
@@ -8352,6 +8496,7 @@ mod tests {
                 "processKill".to_string(),
                 "worktreePruneSingle".to_string(),
                 "csharpLanguageServerToggle".to_string(),
+                "workspaceLanguageIntelligence".to_string(),
                 "lspDocumentSymbols".to_string(),
                 "lspStatusEvents".to_string(),
                 "lspLog".to_string(),

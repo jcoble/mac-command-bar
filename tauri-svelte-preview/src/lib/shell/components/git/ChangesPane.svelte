@@ -24,16 +24,22 @@
   import SquareArrowOutUpRight from '@lucide/svelte/icons/square-arrow-out-up-right';
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+  import Undo2 from '@lucide/svelte/icons/undo-2';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import WandSparkles from '@lucide/svelte/icons/wand-sparkles';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import { Switch } from '$lib/components/ui/switch/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import {
     buildGitStatusFileGroups,
     describeGitStatusGroups,
     gitFileTitle,
     gitStatusGroupActionLabel,
+    hasGitFileUnstagedChanges,
     hasStagedChanges,
     isGitFileDeleted,
+    isGitFileUntracked,
     type GitPanelState,
     type GitStatusFileGroup
   } from '$lib/shell/git/gitPanelStore.svelte';
@@ -44,6 +50,8 @@
     sourceControlFileContextMenuItems,
     type SourceControlFileAction
   } from './sourceControlContextMenu';
+  import { describeCommitSuggestion, suggestCommitMessage } from './commitSuggestion';
+  import type { DiscardTarget } from './discardConfirm';
   import { cn } from '$lib/utils';
   import type { ProjectGitFileStatus } from '$lib/tauriSource';
 
@@ -61,6 +69,14 @@
     agentAvailable?: boolean;
     /** Plain explanation for a disabled generation action. */
     agentUnavailableReason?: string;
+    /**
+     * Ask for these files' changes to be thrown away. THE PANE NEVER DISCARDS
+     * ANYTHING ITSELF — it hands the request up, the shell asks the person, and
+     * only that answer reaches the service.
+     */
+    onRequestDiscard?: (targets: DiscardTarget[]) => void;
+    /** Same, for the whole working copy. */
+    onRequestDiscardAll?: () => void;
   }
   let {
     panel,
@@ -70,7 +86,9 @@
     onShowDiff,
     onGenerateCommitMessage,
     agentAvailable = false,
-    agentUnavailableReason = 'No active agent session is running. Start an agent conversation to generate this message.'
+    agentUnavailableReason = 'No active agent session is running. Start an agent conversation to generate this message.',
+    onRequestDiscard,
+    onRequestDiscardAll
   }: Props = $props();
 
   /** Pick a file's changes, and ask for wherever they are drawn to come forward. */
@@ -82,24 +100,51 @@
   let open = $state(true);
   let generatingCommitMessage = $state(false);
   let generationError = $state('');
+  /**
+   * Amend rewrites the last commit instead of adding one. It is off every time
+   * the panel is looked at afresh, and it is a switch rather than a second
+   * button so the label on the one Commit button always says what will happen.
+   */
+  let amend = $state(false);
 
   const groups = $derived(buildGitStatusFileGroups(panel.status?.files ?? []));
   const summary = $derived(describeGitStatusGroups(groups));
   const busy = $derived(panel.actionBusy !== '');
   const branch = $derived(panel.status?.branch ?? 'this branch');
-  const canCommit = $derived(
-    canWrite && !busy && panel.commitMessage.trim() !== '' && hasStagedChanges(panel.status)
+  const staged = $derived(hasStagedChanges(panel.status));
+  const files = $derived(panel.status?.files ?? []);
+  /** Everything not yet staged, changed or brand new — what "Stage all" takes. */
+  const unstagedPaths = $derived(
+    files.filter(hasGitFileUnstagedChanges).map((file) => file.relativePath)
   );
+  const untrackedCount = $derived(files.filter(isGitFileUntracked).length);
+  const canCommit = $derived(
+    canWrite && !busy && panel.commitMessage.trim() !== '' && staged
+  );
+  /**
+   * An amend with nothing staged is still a real thing to do: it is how the
+   * last commit's message gets fixed. So the only thing it insists on is a
+   * message, and it says in its hover text that it rewrites the last commit.
+   */
+  const canAmend = $derived(canWrite && !busy && panel.commitMessage.trim() !== '');
+  const canStageAll = $derived(canWrite && !busy && unstagedPaths.length > 0);
+  const canDiscardAll = $derived(canWrite && !busy && files.length > 0);
+  const suggestion = $derived(suggestCommitMessage(files));
+  const suggestionHint = $derived(describeCommitSuggestion(files));
 
   /** Why the Commit button is off, in the words that fit this moment. */
   const commitHint = $derived(
     !canWrite
       ? readOnlyReason
-      : !hasStagedChanges(panel.status)
-        ? 'Stage a file first — a commit records the staged files.'
-        : panel.commitMessage.trim() === ''
-          ? 'Say what you changed, then commit.'
-          : `Commit the staged files on ${branch}`
+      : amend
+        ? panel.commitMessage.trim() === ''
+          ? 'Say what the last commit should say, then amend it.'
+          : `Rewrite the last commit on ${branch}. Do not amend a commit that is already pushed and shared.`
+        : !staged
+          ? 'Stage a file first — a commit records the staged files.'
+          : panel.commitMessage.trim() === ''
+            ? 'Say what you changed, then commit.'
+            : `Commit the staged files on ${branch}`
   );
 
   /** The colour a status letter gets, so the eye can sort the list without reading it. */
@@ -151,14 +196,62 @@
   ): void {
     if (action === 'open-diff') pickFile(file);
     else if (action === 'stage' || action === 'unstage') runFileAction(group, file);
+    else if (action === 'discard') askToDiscardFile(file);
     else if (action === 'open-file') openInEditor(file);
     else copyPath(file);
   }
 
-  function commitOnShortcut(event: KeyboardEvent): void {
+  /** Stage every changed and new file in one press. */
+  function stageAll(): void {
+    if (!canStageAll) return;
+    void service.stagePaths(unstagedPaths);
+  }
+
+  /** Run the one thing the Commit button currently promises. */
+  function runCommit(): void {
+    if (amend) {
+      if (canAmend) void service.amendCommit();
+      return;
+    }
+    if (canCommit) void service.commit();
+  }
+
+  /**
+   * ⌘Enter commits, as the box's placeholder promises. Adding Shift stages
+   * everything first, which is the pair of actions this box is used for over
+   * and over.
+   */
+  async function commitOnShortcut(event: KeyboardEvent): Promise<void> {
     if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
     event.preventDefault();
-    if (canCommit) void service.commit();
+    if (event.shiftKey) {
+      if (!canStageAll && !staged) return;
+      if (canStageAll) await service.stagePaths(unstagedPaths);
+      runCommit();
+      return;
+    }
+    runCommit();
+  }
+
+  /** Put the cheap suggested subject in the box, leaving it there to be edited. */
+  function useSuggestion(): void {
+    if (suggestion === '') return;
+    panel.commitMessage = suggestion;
+  }
+
+  function discardTarget(file: ProjectGitFileStatus): DiscardTarget {
+    return { relativePath: file.relativePath, untracked: isGitFileUntracked(file) };
+  }
+
+  /** Ask the shell to ask the person. Nothing is thrown away from in here. */
+  function askToDiscardFile(file: ProjectGitFileStatus): void {
+    if (!canWrite || busy) return;
+    onRequestDiscard?.([discardTarget(file)]);
+  }
+
+  function askToDiscardGroup(group: GitStatusFileGroup): void {
+    if (!canWrite || busy) return;
+    onRequestDiscard?.(group.files.map(discardTarget));
   }
 
   async function generateCommitMessage(): Promise<void> {
@@ -211,13 +304,28 @@
                  focus-visible:border-[var(--color-accent)] focus-visible:ring-3
                  focus-visible:ring-ring/50 outline-none disabled:opacity-60"
           rows="2"
-          placeholder="Message (⌘Enter to commit on '{branch}')"
+          placeholder="Message (⌘Enter commits on '{branch}', ⇧⌘Enter stages everything first)"
           aria-label="Commit message"
           disabled={!canWrite}
           title={canWrite ? '' : readOnlyReason}
           bind:value={panel.commitMessage}
           onkeydown={commitOnShortcut}
         ></textarea>
+        <div class="flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          class={cn(
+            buttonVariants({ variant: 'ghost', size: 'xs' }),
+            'w-fit gap-1 px-1.5 text-[12px] text-[var(--color-text-2)]'
+          )}
+          disabled={!canWrite || suggestion === ''}
+          title={canWrite ? suggestionHint : readOnlyReason}
+          onclick={useSuggestion}
+          data-testid="suggest-commit-message"
+        >
+          <WandSparkles class="size-3" aria-hidden="true" />
+          Suggest
+        </button>
         <button
           type="button"
           class={cn(
@@ -237,6 +345,7 @@
             Generate commit message
           {/if}
         </button>
+        </div>
         {#if !agentAvailable && onGenerateCommitMessage}
           <p class="text-[12px] leading-[16px] text-[var(--color-text-3)]" data-testid="commit-agent-unavailable">
             {agentUnavailableReason}
@@ -247,15 +356,62 @@
         {/if}
       </div>
 
+      <label
+        class="flex shrink-0 items-center gap-1.5 text-[12px] leading-[16px] text-[var(--color-text-2)]"
+        title="Rewrite the last commit instead of adding one. Never do this to a commit that is already pushed and shared."
+      >
+        <Switch size="sm" disabled={!canWrite} bind:checked={amend} data-testid="amend-toggle" />
+        Amend the last commit
+      </label>
+
       <button
         type="button"
         class={cn(buttonVariants({ variant: 'default', size: 'xs' }), 'w-full shrink-0 text-[12px]')}
-        disabled={!canCommit}
+        disabled={amend ? !canAmend : !canCommit}
         title={commitHint}
-        onclick={() => void service.commit()}
+        onclick={runCommit}
+        data-testid="commit-button"
       >
-        {panel.actionBusy === 'commit' ? 'Committing…' : 'Commit'}
+        {#if amend}
+          {panel.actionBusy === 'amend' ? 'Amending…' : 'Amend last commit'}
+        {:else}
+          {panel.actionBusy === 'commit' ? 'Committing…' : 'Commit'}
+        {/if}
       </button>
+
+      <div class="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          class={cn(buttonVariants({ variant: 'secondary', size: 'xs' }), 'flex-1 gap-1 text-[12px] font-normal')}
+          disabled={!canStageAll}
+          title={canWrite
+            ? unstagedPaths.length > 0
+              ? `Stage all ${unstagedPaths.length} changed and new files`
+              : 'Everything is already staged'
+            : readOnlyReason}
+          onclick={stageAll}
+          data-testid="stage-all"
+        >
+          <Plus class="size-3" aria-hidden="true" />
+          Stage all
+        </button>
+        <button
+          type="button"
+          class={cn(
+            buttonVariants({ variant: 'ghost', size: 'xs' }),
+            'flex-1 gap-1 text-[12px] font-normal text-[var(--color-bad)] hover:text-[var(--color-bad)]'
+          )}
+          disabled={!canDiscardAll}
+          title={canWrite
+            ? 'Throw away every change in this working copy. You will be asked first.'
+            : readOnlyReason}
+          onclick={() => onRequestDiscardAll?.()}
+          data-testid="discard-all"
+        >
+          <Trash2 class="size-3" aria-hidden="true" />
+          Discard all
+        </button>
+      </div>
 
       {#if groups.length === 0}
         <p class="px-1 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
@@ -284,6 +440,21 @@
               onclick={() => runGroupAction(group)}
             >
               {gitStatusGroupActionLabel(group)}
+            </button>
+            <button
+              type="button"
+              class="rounded-[4px] px-1 py-px text-[12px] leading-[16px]
+                     text-[var(--color-text-3)] transition-colors
+                     hover:bg-[var(--color-elevated)] hover:text-[var(--color-bad)]
+                     focus-visible:ring-3 focus-visible:ring-ring/50 outline-none
+                     disabled:opacity-40"
+              disabled={!canWrite || busy}
+              title={canWrite
+                ? `Throw away the changes in these ${group.files.length} files. You will be asked first.`
+                : readOnlyReason}
+              onclick={() => askToDiscardGroup(group)}
+            >
+              Discard
             </button>
           </div>
 
@@ -343,6 +514,18 @@
                     {:else}
                       <Minus class="size-3" aria-hidden="true" />
                     {/if}
+                  </button>
+                  <button
+                    type="button"
+                    class={cn(ROW_ACTION, 'hover:text-[var(--color-bad)]')}
+                    disabled={!canWrite || busy}
+                    aria-label="Discard changes to {parts.name}"
+                    title={canWrite
+                      ? 'Throw away this file\u2019s changes. You will be asked first.'
+                      : readOnlyReason}
+                    onclick={() => askToDiscardFile(file)}
+                  >
+                    <Undo2 class="size-3" aria-hidden="true" />
                   </button>
 
                   <span

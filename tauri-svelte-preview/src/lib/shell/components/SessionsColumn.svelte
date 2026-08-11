@@ -190,7 +190,7 @@
     <div class="flex h-full w-full flex-col items-center gap-1 overflow-hidden bg-[var(--color-bg)] py-2">
       {@render action('open the sessions column', 'Open the sessions column', PanelLeftOpen, () => onCollapse(false))}
 
-      <div class="mt-1 flex w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
+      <div class="mt-1 flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
         {#each cells as cell (cell.ownedId)}
           {@const CellIcon = AGENT_ICONS[cell.agent]}
           <Tooltip.Root>

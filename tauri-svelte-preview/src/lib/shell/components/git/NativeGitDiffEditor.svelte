@@ -6,12 +6,18 @@
     root,
     relativePath,
     originalContent,
-    modifiedContent
+    modifiedContent,
+    onOpenLine
   }: {
     root: string;
     relativePath: string;
     originalContent: string;
     modifiedContent: string;
+    /**
+     * Double-clicking a line asks for the real file at that line. Left out,
+     * the diff behaves exactly as it did: a double click selects a word.
+     */
+    onOpenLine?: (line: number) => void;
   } = $props();
 
   let host: HTMLDivElement;
@@ -21,6 +27,7 @@
   let modifiedModel: Monaco.editor.ITextModel | null = null;
   let renderedKey = '';
   let disposed = false;
+  let openLineListener: Monaco.IDisposable | null = null;
 
   function absolutePath(): string {
     return `${root.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}`;
@@ -110,6 +117,14 @@
         fontSize: 12,
         lineHeight: 19
       });
+      // Double click, not single: a single click in a diff is how a person
+      // selects and reads, and jumping away on every click would make the diff
+      // unusable. The line taken is the one in the file as it is now.
+      openLineListener = editor.getModifiedEditor().onMouseUp((event) => {
+        if (!onOpenLine || event.event.detail < 2) return;
+        const line = event.target.position?.lineNumber;
+        if (typeof line === 'number' && line > 0) onOpenLine(line);
+      });
       renderModels();
     })().catch((error) => {
       console.error('Could not open the native Git diff editor.', error);
@@ -118,6 +133,8 @@
 
   onDestroy(() => {
     disposed = true;
+    openLineListener?.dispose();
+    openLineListener = null;
     clearModels();
     editor?.dispose();
     editor = null;

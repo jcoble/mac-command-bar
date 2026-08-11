@@ -163,6 +163,35 @@ export type PullRequestStatus = {
   checkSummary: string;
 };
 
+export type PullRequestSummary = {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  headBranch: string;
+  isDraft: boolean;
+  checks: 'none' | 'pending' | 'passing' | 'failing' | string;
+  checkSummary: string;
+};
+
+export type GitBranchSummary = {
+  name: string;
+  isCurrent: boolean;
+  upstream: string;
+  subject: string;
+};
+
+export type GitBranchList = {
+  current: string;
+  branches: GitBranchSummary[];
+};
+
+export type GitStashEntry = {
+  index: number;
+  label: string;
+  description: string;
+};
+
 export type SourceGitDiff = {
   relativePath: string;
   status: string;
@@ -714,6 +743,47 @@ export async function ensureNativeCsharpLanguageClientFromTauri(
   return invoke<{ wsUrl: string; root: string }>('ensure_native_csharp_language_client', { root });
 }
 
+/** What the desktop app says about one project's editor mode. */
+export interface WorkspaceLanguageIntelligence {
+  root: string;
+  enabled: boolean;
+  /** Language-server processes running for this project right now. */
+  runningServers: number;
+  /** Their process ids — the same numbers the resource view shows. */
+  serverPids: number[];
+  /** How many were stopped by this call. */
+  stoppedServers: number;
+  message: string;
+}
+
+/**
+ * Read whether full mode is on for a project. Costs nothing and starts nothing.
+ * `null` outside the desktop app: a browser tab has no language servers at all.
+ */
+export async function readWorkspaceLanguageIntelligenceFromTauri(
+  root: string
+): Promise<WorkspaceLanguageIntelligence | null> {
+  if (!isTauriRuntime() || !root.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkspaceLanguageIntelligence>('read_workspace_language_intelligence', { root });
+}
+
+/**
+ * Turn full mode on or off for a project. On starts nothing by itself — the
+ * next file opened does that. Off stops that project's language server now.
+ */
+export async function setWorkspaceLanguageIntelligenceFromTauri(
+  root: string,
+  enabled: boolean
+): Promise<WorkspaceLanguageIntelligence | null> {
+  if (!isTauriRuntime() || !root.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkspaceLanguageIntelligence>('set_workspace_language_intelligence', {
+    root,
+    enabled
+  });
+}
+
 export async function markNativeCsharpLanguageClientReadyFromTauri(root: string): Promise<void> {
   if (!isTauriRuntime()) return;
   const { invoke } = await import('@tauri-apps/api/core');
@@ -907,6 +977,121 @@ export async function pushGitRepositoryFromTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<GitActionResult>('push_git_repository', { root });
+}
+
+export async function discardGitPathsFromTauri(
+  root: string,
+  paths: string[]
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('discard_git_paths', { root, paths });
+}
+
+export async function discardAllGitChangesFromTauri(
+  root: string,
+  includeUntracked: boolean
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('discard_all_git_changes', { root, includeUntracked });
+}
+
+export async function listGitBranchesFromTauri(root: string): Promise<GitBranchList | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitBranchList>('list_git_branches', { root });
+}
+
+export async function createGitBranchFromTauri(
+  root: string,
+  name: string,
+  checkout: boolean
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('create_git_branch', { root, name, checkout });
+}
+
+export async function switchGitBranchFromTauri(
+  root: string,
+  name: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('switch_git_branch', { root, name });
+}
+
+export async function stashGitChangesFromTauri(
+  root: string,
+  includeUntracked: boolean,
+  message: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('stash_git_changes', { root, includeUntracked, message });
+}
+
+export async function popGitStashFromTauri(
+  root: string,
+  index: number | null
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('pop_git_stash', { root, index });
+}
+
+export async function listGitStashesFromTauri(root: string): Promise<GitStashEntry[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitStashEntry[]>('list_git_stashes', { root });
+}
+
+export async function amendGitCommitFromTauri(
+  root: string,
+  message: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('amend_git_commit', { root, message });
+}
+
+export async function listOpenPullRequestsFromTauri(
+  root: string
+): Promise<PullRequestSummary[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestSummary[]>('list_open_pull_requests', { root });
 }
 
 export async function generateCommitMessageFromTauri(

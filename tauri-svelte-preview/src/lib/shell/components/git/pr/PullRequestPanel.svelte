@@ -10,9 +10,11 @@
   import X from '@lucide/svelte/icons/x';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import {
     createPullRequestFromTauri,
     generatePullRequestDetailsFromTauri,
+    listGitBranchesFromTauri,
     readPullRequestContextFromTauri,
     readPullRequestStatusFromTauri,
     type ProjectGitStatus,
@@ -58,6 +60,8 @@
 
   let model = $state<PullRequestFlowModel>(createPullRequestFlowModel());
   let context = $state<PullRequestContext | null>(null);
+  /** The branches this pull request could be opened against. Read once, on open. */
+  let baseChoices = $state<string[]>([]);
   let disposed = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -82,9 +86,28 @@
       if (!loaded) throw new Error(READ_ONLY_IN_BROWSER_MESSAGE);
       context = loaded;
       model = setPullRequestContext(model, loaded);
+      void loadBaseChoices(loaded.base);
       await generateDetails();
     } catch (error) {
       model = failPullRequest(model, error);
+    }
+  }
+
+  /**
+   * The base is picked from the repository's own branches rather than typed.
+   * A native `<select>` cannot be styled and comes out as the OS control, so
+   * the kit's menu does the job — see the kit's DESIGN.md.
+   */
+  async function loadBaseChoices(base: string): Promise<void> {
+    if (!root) return;
+    try {
+      const list = await listGitBranchesFromTauri(root);
+      const names = (list?.branches ?? []).map((branch) => branch.name);
+      baseChoices = names.includes(base) ? names : [base, ...names];
+    } catch {
+      // A branch list that cannot be read is not worth an error here: the base
+      // git worked out is already in the model, and it stays the only choice.
+      baseChoices = [base];
     }
   }
 
@@ -151,8 +174,8 @@
     model.description = (event.currentTarget as HTMLTextAreaElement).value;
   }
 
-  function updateBase(event: Event): void {
-    model.base = (event.currentTarget as HTMLSelectElement).value;
+  function updateBase(base: string): void {
+    model.base = base;
   }
 
   function toggleDraft(event: Event): void {
@@ -189,19 +212,24 @@
         {model.branch || status?.branch || 'current branch'}
       </span>
       <span class="shrink-0 text-[var(--color-text-3)]" aria-hidden="true">→</span>
-      <label class="min-w-0 flex-1">
-        <span class="sr-only">Base branch</span>
-        <select
-          class="w-full rounded-[7px] bg-[var(--color-bg)] px-2.5 py-2 font-mono text-[var(--color-text)] outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-          value={model.base}
-          onchange={updateBase}
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger
+          class="min-w-0 flex-1 truncate rounded-[7px] bg-[var(--color-bg)] px-2.5 py-2 text-left font-mono text-[13px] text-[var(--color-text)] outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-60"
           disabled={busy || model.state === 'created'}
+          aria-label="Base branch"
+          title="Which branch this pull request merges into"
           data-testid="pr-base-select"
         >
-          <option value={model.base}>{model.base}</option>
-          {#if model.base !== 'main'}<option value="main">main</option>{/if}
-        </select>
-      </label>
+          {model.base}
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content class="max-h-[240px] w-[240px] overflow-y-auto" align="end">
+          {#each baseChoices.length > 0 ? baseChoices : [model.base] as choice (choice)}
+            <DropdownMenu.Item onSelect={() => updateBase(choice)}>
+              <span class="min-w-0 truncate font-mono">{choice}</span>
+            </DropdownMenu.Item>
+          {/each}
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
     </div>
 
     {#if model.state === 'generating'}

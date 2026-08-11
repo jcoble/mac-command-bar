@@ -439,7 +439,9 @@ async function startClient(
     requestedRoot
   );
   if (!endpoint)
-    throw new Error("Native C# is available only in the Tauri desktop app.");
+    throw new Error(
+      "No C# endpoint for this project: it is in read mode, has no C# project, or this is not the desktop app."
+    );
   const root = normalizedPath(endpoint.root);
   const existing = clients.get(root);
   if (existing) {
@@ -622,4 +624,38 @@ export function subscribeNativeCsharpDiagnostics(
 
 export function nativeCsharpClientIsWarm(root: string): boolean {
   return clients.has(normalizedPath(root));
+}
+
+/**
+ * Close this project's C# language client and say goodbye to its server.
+ *
+ * Turning full mode off calls this BEFORE asking the desktop app to stop the
+ * server: disposing the client sends the language protocol's own shutdown
+ * request down the same connection, which is what lets Roslyn leave cleanly.
+ * The desktop app's stop is the backstop for a server that ignores it.
+ *
+ * Returns whether there was a client to close.
+ */
+export async function stopNativeCsharpLanguageClient(
+  root: string
+): Promise<boolean> {
+  const key = normalizedPath(root);
+  const inFlight = pending.get(key);
+  if (inFlight) {
+    // A start that is still in flight would otherwise register its client
+    // straight after this and leave a server running with nothing driving it.
+    await inFlight.catch(() => undefined);
+  }
+  const slot = clients.get(key);
+  if (!slot) return false;
+  clients.delete(key);
+  slot.codeLensDisposable.dispose();
+  try {
+    await slot.wrapper.dispose();
+  } catch {
+    // A client that cannot be disposed cleanly is still on its way out; the
+    // desktop app stops the process either way.
+  }
+  recordNativeCsharpDiagnostics(slot.root, []);
+  return true;
 }
