@@ -9,6 +9,7 @@
 
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import type { AgentSession } from '$lib/tauriSource';
   import type { LayoutStorage } from '$lib/shell/layout/layoutStorage';
   import { createPaneStack, type PaneStack } from '$lib/shell/layout/paneStack';
@@ -219,16 +220,17 @@
         <span class="text-[13px]">Find a session</span>
         <span class="ml-auto pl-2 text-[12px] text-[var(--color-text-2)]">{resumable.length}</span>
       </button>
-      <button
-        data-testid="session-finder-rescan"
-        type="button"
-        class="finder-action"
-        aria-label="look for agent sessions again"
-        title={scanning ? 'Looking…' : 'Look again'}
-        onclick={() => onRescan?.()}
-      >
-        <RefreshCw class={scanning ? 'size-3.5 animate-spin' : 'size-3.5'} aria-hidden="true" />
-      </button>
+      <span data-testid="session-finder-rescan">
+        <IconButton
+          label={scanning ? 'Looking for agent sessions' : 'Look for agent sessions again'}
+          size="xs"
+          side="top"
+          class="text-[var(--color-text-2)]"
+          onclick={() => onRescan?.()}
+        >
+          <RefreshCw class={scanning ? 'size-3.5 animate-spin' : 'size-3.5'} aria-hidden="true" />
+        </IconButton>
+      </span>
     </div>
   </div>
 </div>
@@ -289,15 +291,4 @@
      Filling the pane and then growing past it is what lets the body scroll. */
   .pane-slot { width: 100%; min-width: 0; min-height: 100%; }
   .sessions-paneview :global(.pane-body-host) { position: absolute; inset: 0; overflow: auto; }
-  .finder-action {
-    display: inline-flex;
-    height: 24px;
-    width: 24px;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    color: var(--color-text-2);
-  }
-  .finder-action:hover,
-  .finder-action:focus-visible { background: var(--color-elevated); color: var(--color-text); }
 </style>

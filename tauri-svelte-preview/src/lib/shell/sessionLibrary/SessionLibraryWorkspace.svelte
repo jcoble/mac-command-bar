@@ -73,6 +73,8 @@
   }: Props = $props();
 
   let collapseState = $state<SessionHistoryCollapseState>(createSessionHistoryCollapseState());
+  /** Rows the reader has opened to see everything the history holds on them. */
+  let expandedRows = $state<string[]>([]);
   let contextMenu = $state<ContextMenuState | null>(null);
   let now = $state(new Date());
 
@@ -101,6 +103,39 @@
   function providerFilterLabel(): string {
     if (!store.provider) return 'All providers';
     return history.providers.find((provider) => provider.value === store.provider)?.label ?? store.provider;
+  }
+
+  function rowIsExpanded(key: string): boolean {
+    return expandedRows.includes(key);
+  }
+
+  function toggleRow(key: string): void {
+    expandedRows = rowIsExpanded(key)
+      ? expandedRows.filter((candidate) => candidate !== key)
+      : [...expandedRows, key];
+  }
+
+  /**
+   * Everything the history already knows about a session, in reading order.
+   * Nothing here is fetched — a row that has no value for a line drops it.
+   */
+  function rowDetails(row: SessionHistoryRow): Array<{ label: string; value: string }> {
+    const record = row.record;
+    const lines: Array<{ label: string; value: string | null | undefined }> = [
+      { label: 'Title', value: record.title || row.displayTitle },
+      { label: 'Project', value: record.projectPath },
+      { label: 'Worktree', value: record.canonicalCwd },
+      { label: 'Branch', value: record.owned?.branch },
+      { label: 'Provider', value: row.providerLabel },
+      { label: 'Model', value: record.model },
+      { label: 'Session id', value: sessionId(record) },
+      { label: 'Turns', value: countLabel(record) },
+      { label: 'Last activity', value: record.lastActivity || record.updatedAt },
+      { label: 'First prompt', value: record.firstPrompt || row.excerpt }
+    ];
+    return lines
+      .map((line) => ({ label: line.label, value: (line.value ?? '').trim() }))
+      .filter((line) => line.value !== '');
   }
 
   function setGroupOpen(level: 'project' | 'worktree', key: string, open: boolean): void {
@@ -214,14 +249,30 @@
 </script>
 
 {#snippet sessionRow(row: SessionHistoryRow)}
+  {@const open = rowIsExpanded(row.record.key)}
   <article
     data-testid="session-history-row"
     data-session-key={row.record.key}
-    class="group grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-lg
+    data-expanded={open ? 'true' : 'false'}
+    class="group grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 rounded-lg
            border-t border-border/60 first:border-t-0 hover:bg-accent/45 focus-within:bg-accent/45"
     role="listitem"
     oncontextmenu={(event) => openRowMenu(row.record, event)}
   >
+    <span data-testid="session-history-row-expand" class="ml-1 inline-flex">
+      <IconButton
+        label={open ? 'Hide session details' : 'Show session details'}
+        size="xs"
+        side="right"
+        onclick={() => toggleRow(row.record.key)}
+      >
+        {#if open}
+          <ChevronDown class="size-4" aria-hidden="true" />
+        {:else}
+          <ChevronRight class="size-4" aria-hidden="true" />
+        {/if}
+      </IconButton>
+    </span>
     <Button
       data-testid="session-history-row-trigger"
       variant="ghost"
@@ -256,6 +307,19 @@
         <MoreHorizontal class="size-4" aria-hidden="true" />
       </IconButton>
     </span>
+
+    {#if open}
+      <dl
+        data-testid="session-history-row-details"
+        class="col-span-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 pt-0 pb-2.5
+               text-[13px] leading-5"
+      >
+        {#each rowDetails(row) as line (line.label)}
+          <dt class="text-muted-foreground">{line.label}</dt>
+          <dd class="min-w-0 break-words text-foreground">{line.value}</dd>
+        {/each}
+      </dl>
+    {/if}
   </article>
 {/snippet}
 

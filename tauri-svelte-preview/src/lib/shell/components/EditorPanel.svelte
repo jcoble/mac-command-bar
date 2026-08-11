@@ -35,6 +35,13 @@
   } from './editor/languageServerStatus.ts';
   import FileIcon from './explorer/FileIcon.svelte';
   import LanguageServerStatusChip from './LanguageServerStatusChip.svelte';
+  import {
+    isMarkdownFile,
+    markdownPreviewDefault,
+    type MarkdownView
+  } from './editor/markdownPreview.ts';
+  import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import {
     languageIntelligenceLabel,
@@ -170,6 +177,37 @@
     const noun = languageServerPids.length === 1 ? 'Process' : 'Processes';
     return `${note} ${noun} ${numbers}.`;
   });
+  /**
+   * Which view each Markdown file is on. A file is written in here the first
+   * time it opens — rendered when it was reached from a jump, source when it
+   * was picked in the strip — and the toggle in the header writes it again.
+   * Keyed by path so switching tabs comes back to what was on screen.
+   */
+  let markdownViewByPath = $state<Record<string, MarkdownView>>({});
+  const activeFileIsMarkdown = $derived(isMarkdownFile(activeFile?.fileName));
+  const markdownView = $derived(
+    activeFile && activeFileIsMarkdown ? (markdownViewByPath[activeFile.path] ?? 'raw') : 'raw'
+  );
+  const MARKDOWN_VIEW_ITEMS = [
+    { value: 'raw', label: 'Source' },
+    { value: 'rendered', label: 'Preview' }
+  ] as const;
+
+  /** Record the first view for a file, without overwriting a person's choice. */
+  function rememberMarkdownDefault(path: string, fileName: string, origin: 'jump' | 'strip'): void {
+    if (!isMarkdownFile(fileName) || markdownViewByPath[path]) return;
+    markdownViewByPath = {
+      ...markdownViewByPath,
+      [path]: markdownPreviewDefault(fileName, origin)
+    };
+  }
+
+  function setMarkdownView(view: MarkdownView): void {
+    const path = activeFile?.path;
+    if (!path) return;
+    markdownViewByPath = { ...markdownViewByPath, [path]: view };
+  }
+
   const nativeCsharpActive = $derived(
     activeFile?.language === 'csharp' &&
       nativeCsharpRoot === editorState.projectRoot &&
@@ -687,12 +725,14 @@
   function openPath(
     path: string,
     line?: number | null,
-    projectRoot?: string
+    projectRoot?: string,
+    origin: 'jump' | 'strip' = 'jump'
   ): boolean {
     if (!path.trim()) return false;
     activateEditor(projectRoot);
     const record = recordForPath(path);
     const entry = openEditorFile(record);
+    rememberMarkdownDefault(record.path, entry.fileName, origin);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
     syncIntelligenceWithActiveFile();
     void ensureCodeEditor();
@@ -711,6 +751,9 @@
     syncIntelligenceWithActiveFile();
     void refreshEditorIntelligenceForActiveFile();
     const entry = editorFileFor(path);
+    // A file restored into the strip never went through `openPath`, so this is
+    // where it gets its first view. Picking a tab is editing, not reading.
+    if (entry) rememberMarkdownDefault(path, entry.fileName, 'strip');
     if (entry?.language === 'csharp') void ensureCodeEditor();
     if (entry && needsRead(entry)) {
       void readFileIntoEditor(recordForPath(path));
@@ -844,6 +887,20 @@
         status={languageServerStatus}
       />
 
+      <!-- Markdown reads two ways, so the file says which one it is on. Source
+           is the ordinary editor; Preview is the same document rendered. -->
+      {#if activeFileIsMarkdown}
+        <span data-testid="markdown-view-toggle" class="shrink-0">
+          <SegmentedControl
+            size="sm"
+            items={MARKDOWN_VIEW_ITEMS}
+            value={markdownView}
+            aria-label="Markdown view"
+            onValueChange={(value) => setMarkdownView(value as MarkdownView)}
+          />
+        </span>
+      {/if}
+
       <!-- The project's editor mode. Off is read mode: colouring only, nothing
            started. On runs the project's one language server, shared by every
            session and view on it, and its cost shows in the resource view. -->
@@ -875,6 +932,13 @@
             Try again
           </button>
         </div>
+      {:else if activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
+        <SourceMarkdownPreview
+          content={activeFile.draftContent ?? activeFile.preview.content}
+          fileName={activeFile.fileName}
+          relativePath={activeFile.relativePath}
+          dirty={activeFile.dirty ?? false}
+        />
       {:else if activeFile?.preview}
         {#if CodeEditor}
           <CodeEditor

@@ -1,39 +1,33 @@
 <script lang="ts">
-  import AssistanceAction from './AssistanceAction.svelte';
+  /**
+   * AssistanceHost.svelte — where an assistance proposal is shown, and nothing
+   * else.
+   *
+   * This used to carry a floating chip with a menu of every recipe in the app.
+   * It was a section of its own in the corner of the window, disconnected from
+   * whatever a person was actually doing, and it is gone: a recipe now belongs
+   * to the surface it helps with, offered as a small button in that surface's
+   * own header (the commit-message buttons in the source-control panel are the
+   * first of those). This file keeps the one thing that has nowhere else to
+   * live — the proposal card, which floats above the shell because it can be
+   * raised from any surface — and the store and service behind it are
+   * unchanged.
+   */
   import AssistanceProposal from './AssistanceProposal.svelte';
   import {
     clearAssistance,
     assistanceState,
     setAssistanceError
   } from './assistanceStore.svelte.ts';
-  import type { AssistanceProposal as AssistanceProposalType, AssistanceRecipeId, AssistanceSurface } from './assistanceTypes.ts';
+  import type { AssistanceProposal as AssistanceProposalType } from './assistanceTypes.ts';
 
   interface Props {
     proposal?: AssistanceProposalType | null;
-    onRequest?: (recipeId: AssistanceRecipeId, surface: AssistanceSurface) => void;
     onApply?: (selectedPatchIds: string[]) => void;
     onRetry?: () => void;
   }
 
-  let { proposal = null, onRequest, onApply, onRetry }: Props = $props();
-  let open = $state(false);
-
-  const contextualActions: Array<{ recipeId: AssistanceRecipeId; surface: AssistanceSurface; label: string }> = [
-    { recipeId: 'workspace-summary', surface: 'conversation', label: 'Explain this conversation' },
-    { recipeId: 'commit', surface: 'git', label: 'Draft a commit message' },
-    { recipeId: 'diff-explanation', surface: 'diff', label: 'Explain this diff' },
-    { recipeId: 'problem-explanation', surface: 'problems', label: 'Explain this problem' },
-    { recipeId: 'run-config-review', surface: 'run-configuration', label: 'Review this run configuration' },
-    { recipeId: 'browser-feedback', surface: 'browser', label: 'Draft browser feedback' },
-    { recipeId: 'workspace-summary', surface: 'context', label: 'Summarize context' },
-    { recipeId: 'form-suggestion', surface: 'form', label: 'Suggest a form value' },
-    { recipeId: 'save-spec-review', surface: 'save', label: 'Review before saving' },
-    { recipeId: 'worktree-cleanup', surface: 'worktree', label: 'Plan worktree cleanup' }
-  ];
-
-  function request(recipeId: AssistanceRecipeId, surface: AssistanceSurface): void {
-    onRequest?.(recipeId, surface);
-  }
+  let { proposal = null, onApply, onRetry }: Props = $props();
 
   function applySelected(selectedPatchIds: string[]): void {
     if (onApply) onApply(selectedPatchIds);
@@ -41,8 +35,8 @@
   }
 </script>
 
-<aside class="assistance-host" data-testid="assistance-host" aria-label="Assistance">
-  {#if proposal || assistanceState.proposal}
+{#if proposal || assistanceState.proposal}
+  <aside class="assistance-host" data-testid="assistance-host" aria-label="Assistance">
     <AssistanceProposal
       proposal={proposal ?? assistanceState.proposal!}
       onApply={applySelected}
@@ -50,35 +44,13 @@
       onRetry={() => onRetry?.()}
       onContinue={clearAssistance}
     />
-  {:else}
-    <button
-      type="button"
-      class="assistance-trigger"
-      data-testid="assistance-trigger"
-      aria-expanded={open}
-      onclick={() => (open = !open)}
-    >
-      <span aria-hidden="true">✦</span>
-      Assistance
-    </button>
-    {#if open}
-      <div class="assistance-menu" role="menu" data-testid="assistance-contextual-actions">
-        {#each contextualActions as item (item.surface)}
-          <AssistanceAction {...item} onRequest={request} />
-        {/each}
-      </div>
-    {/if}
-  {/if}
-</aside>
+  </aside>
+{/if}
 
 <style>
-  /* Keep the floating action one full rail-width left of the 44px surface rail
-     and below the rail's stacking level. The 28px bottom resource summary is
+  /* Keep the proposal one full rail-width left of the 44px surface rail and
+     below the rail's stacking level. The 28px bottom resource summary is
      cleared too, so neither control can claim the other's hit area. */
   .assistance-host { position: fixed; right: calc(44px + 16px); bottom: calc(28px + 16px); z-index: 48; display: grid; justify-items: end; gap: 0.5rem; pointer-events: none; }
   .assistance-host :global(button), .assistance-host :global(section) { pointer-events: auto; }
-  .assistance-trigger { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 36px; border: 0; border-radius: 999px; padding: 0.4rem 0.75rem; background: var(--color-accent); color: var(--color-on-accent); cursor: pointer; font: inherit; box-shadow: var(--shadow-md); }
-  .assistance-trigger:hover, .assistance-trigger:focus-visible { filter: brightness(1.04); outline: none; box-shadow: var(--focus-ring); }
-  .assistance-menu { display: grid; gap: 0.35rem; width: min(300px, calc(100vw - 32px)); padding: 0.6rem; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface); box-shadow: var(--shadow-md); }
-  .assistance-menu :global(.assistance-action) { justify-content: flex-start; width: 100%; }
 </style>

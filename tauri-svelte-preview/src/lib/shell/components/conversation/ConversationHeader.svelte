@@ -34,4 +34,16 @@
   </div>
 </header>
 
-<style>.conversation-header{display:flex;justify-content:space-between;align-items:center;min-height:46px;padding:8px 18px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 75%,transparent)}.identity{display:flex;align-items:baseline;gap:9px;min-width:0}.identity strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.identity span{color:var(--color-text-2);font-size:12px}.header-actions{display:flex;align-items:center;gap:9px}.header-actions button{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.header-actions button:hover{background:var(--color-hover)}</style>
+<style>
+  .conversation-header{display:flex;justify-content:space-between;align-items:center;min-height:46px;padding:8px 18px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 62%,transparent);background:color-mix(in srgb,var(--color-surface) 45%,var(--color-bg) 55%)}
+  .identity{display:flex;align-items:baseline;gap:9px;min-width:0}
+  .identity strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+  .identity span{color:var(--color-text-2);font-size:12px}
+  .header-actions{display:flex;align-items:center;gap:9px}
+  .header-actions button{border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-elevated) 85%,transparent);color:inherit;padding:5px 10px;font-size:13px}
+  .header-actions button:hover{background:var(--color-hover)}
+  .header-actions button:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
+  @media (prefers-reduced-motion:no-preference){
+    .header-actions button{transition:background .14s ease,border-color .14s ease}
+  }
+</style>

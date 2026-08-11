@@ -1208,7 +1208,7 @@ fn dispatch_event(
     }
 }
 
-fn prompt_params(native_session_id: String, input: AgentPrompt) -> Value {
+pub(crate) fn prompt_params(native_session_id: String, input: AgentPrompt) -> Value {
     let mut prompt = Vec::new();
     if !input.text.is_empty() {
         prompt.push(serde_json::json!({ "type": "text", "text": input.text }));

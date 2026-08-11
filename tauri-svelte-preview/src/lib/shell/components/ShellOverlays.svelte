@@ -16,6 +16,7 @@
   import PalettePanel from './PalettePanel.svelte';
   import SettingsHost from './SettingsHost.svelte';
   import BrowserOverlayHost from './browser/BrowserOverlayHost.svelte';
+  import SessionBrowserOverlay from '$lib/shell/browser/SessionBrowserOverlay.svelte';
   import WorkbenchActionFab from './WorkbenchActionFab.svelte';
   import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
@@ -222,6 +223,9 @@
   onMinimize={browserOverlayHandlers.onMinimize}
   devtoolsAvailable={false}
 />
+<!-- The session's own browser, over the whole window including the sessions
+     column. It reads the active session itself and takes no props. -->
+<SessionBrowserOverlay />
 <WorkbenchActionFab actions={browserActions} context={workbenchActionContext} />
 <AssistanceHost />
 <div

@@ -3,19 +3,20 @@ pub mod capabilities;
 pub mod handoff;
 pub mod journal;
 pub mod manager;
+pub mod prompt_content;
 pub mod protocol;
 pub mod providers;
 pub mod terminal_projection;
 mod transcript;
 
 use manager::AgentRuntimeManager;
+use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentConversationConfigState, AgentConversationConnection, AgentConversationSnapshot,
     EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
     SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
     StopAgentConversationTurnRequest,
 };
-use providers::AgentPrompt;
 
 #[tauri::command]
 pub async fn ensure_agent_conversation(
@@ -39,19 +40,9 @@ pub async fn send_agent_conversation_message(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: SendAgentConversationMessageRequest,
 ) -> Result<(), String> {
-    let text = request.text.trim();
-    if text.is_empty() {
-        return Err("Message cannot be empty".to_string());
-    }
+    let prompt = prompt_from_blocks(request.text.trim(), request.content)?;
     manager
-        .prompt(
-            &request.owned_id,
-            request.generation,
-            AgentPrompt {
-                text: text.to_string(),
-                images: Vec::new(),
-            },
-        )
+        .prompt(&request.owned_id, request.generation, prompt)
         .await
 }
 

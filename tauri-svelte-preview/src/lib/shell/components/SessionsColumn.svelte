@@ -28,6 +28,7 @@
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import type { AgentSession } from '$lib/tauriSource';
   import type { AgentKind, OwnedSession } from '$lib/shell/ownedSessions';
@@ -167,28 +168,27 @@
   const TOOLTIP_ARROW_CLASS = 'bg-[var(--color-surface)] fill-[var(--color-surface)]';
 </script>
 
-{#snippet action(label: string, tip: string, Icon: typeof Bot, run: () => void)}
-  <Tooltip.Root>
-    <Tooltip.Trigger
-      class={cn(buttonVariants({ variant: 'ghost', size: 'icon-xs' }), ACTION_CLASS)}
-      aria-label={label}
-      onclick={(event: MouseEvent) => {
-        event.stopPropagation();
-        run();
-      }}
-    >
-      <Icon aria-hidden="true" />
-    </Tooltip.Trigger>
-    <Tooltip.Content side="top" class={TOOLTIP_CLASS} arrowClasses={TOOLTIP_ARROW_CLASS}>
-      {tip}
-    </Tooltip.Content>
-  </Tooltip.Root>
+<!-- Every icon-only control in this column is the same kit button at the same
+     size, so they all say what they do on hover and light up the same way. -->
+{#snippet action(tip: string, Icon: typeof Bot, run: () => void)}
+  <IconButton
+    label={tip}
+    size="sm"
+    side="bottom"
+    class={ACTION_CLASS}
+    onclick={(event: MouseEvent) => {
+      event.stopPropagation();
+      run();
+    }}
+  >
+    <Icon class="size-4" aria-hidden="true" />
+  </IconButton>
 {/snippet}
 
 <Tooltip.Provider delayDuration={250}>
   {#if collapsed}
     <div class="flex h-full w-full flex-col items-center gap-1 overflow-hidden bg-[var(--color-bg)] py-2">
-      {@render action('open the sessions column', 'Open the sessions column', PanelLeftOpen, () => onCollapse(false))}
+      {@render action('Open the sessions column', PanelLeftOpen, () => onCollapse(false))}
 
       <div class="mt-1 flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
         {#each cells as cell (cell.ownedId)}
@@ -230,7 +230,7 @@
                   <DropdownMenu.Trigger
                     {...props}
                     data-testid="my-work-view-options-trigger"
-                    class={cn(buttonVariants({ variant: 'ghost', size: 'icon-xs' }), ACTION_CLASS)}
+                    class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), ACTION_CLASS)}
                     aria-label="My Work view options"
                   >
                     <SlidersHorizontal aria-hidden="true" />
@@ -307,8 +307,8 @@
               </div>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
-          {@render action('start a new session', 'New session', Plus, onNewSession)}
-          {@render action('fold the sessions column up', 'Fold this column up', PanelLeftClose, () => onCollapse(true))}
+          {@render action('New session', Plus, onNewSession)}
+          {@render action('Fold this column up', PanelLeftClose, () => onCollapse(true))}
         </div>
       </header>
 

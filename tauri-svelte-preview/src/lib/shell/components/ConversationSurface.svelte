@@ -39,7 +39,6 @@
     type AgentConversationConfigRequest
   } from '$lib/shell/conversation/conversationConfig.ts';
   import {
-    filterConversationCommandCatalog,
     mergeConversationCommandCatalog,
     type ConversationCommand
   } from '$lib/shell/conversation/conversationCommandCatalog.ts';
@@ -103,8 +102,6 @@
     return items.sort((left, right) => left.timestampMs - right.timestampMs);
   });
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
-  const commandQuery = $derived(conversation?.draft.trimStart().startsWith('/') ? conversation.draft.trimStart().slice(1) : '');
-  const matchingCommands = $derived(filterConversationCommandCatalog(commandCatalog, commandQuery));
   const remainingContext = $derived.by(() => {
     const used = conversation?.metadata.usedTokens;
     const window = conversation?.metadata.contextWindow;
@@ -196,10 +193,20 @@
     const files = [...(event.clipboardData?.files ?? [])];
     if (files.length === 0) return;
     event.preventDefault();
+    await attachImages(files, 'The clipboard file is not a supported image.');
+  }
+
+  /** Files dragged onto the composer take the same path as a paste. */
+  async function dropFiles(files: File[]): Promise<void> {
+    await attachImages(files, 'That file is not a supported image.');
+  }
+
+  async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
+    if (!active || !conversation || conversation.selectedChildId) return;
     const images = files.filter((file) => file.type.startsWith('image/'));
     attachmentError = '';
     if (images.length === 0) {
-      attachmentError = 'The clipboard file is not a supported image.';
+      attachmentError = rejectedMessage;
       return;
     }
     const saved = [];
@@ -340,12 +347,13 @@
           configState={conversation.agentConfig}
           pendingConfig={conversation.pendingAgentConfig}
           configError={conversation.agentConfigError}
-          commands={matchingCommands}
+          commands={commandCatalog}
           {attachmentError}
           onDraftChange={(value) => setConversationDraft(active.ownedId, value)}
           onSend={send}
           onStop={() => { if (activeOwnedId) void stopStructuredTurn(activeOwnedId).catch(() => undefined); }}
           onPaste={paste}
+          onDropFiles={dropFiles}
           onRemoveAttachment={removeAttachment}
           onCommandSelected={selectCommand}
           onConfigChange={(optionId, value) => void changeConfig(optionId, value)}

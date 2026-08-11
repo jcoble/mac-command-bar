@@ -76,6 +76,7 @@
   import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import RunButton from '$lib/shell/components/run/RunButton.svelte';
+  import SessionBrowserButton from '$lib/shell/browser/SessionBrowserButton.svelte';
   import SessionLibraryWorkspace from '$lib/shell/sessionLibrary/SessionLibraryWorkspace.svelte';
   import WorkflowControlCenter from '$lib/shell/components/workflows/WorkflowControlCenter.svelte';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
@@ -1772,6 +1773,7 @@
        beside it, since it is a plain flex row. -->
   <div class="top-bar">
     <RunButton />
+    <SessionBrowserButton />
   </div>
 
   <div class="frame-area">

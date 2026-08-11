@@ -448,6 +448,9 @@ pub struct SendAgentConversationMessageRequest {
     pub owned_id: String,
     pub generation: u64,
     pub text: String,
+    /// Ordered prompt blocks from the composer, including pasted images.
+    #[serde(default)]
+    pub content: Vec<super::prompt_content::AgentPromptContentBlock>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]

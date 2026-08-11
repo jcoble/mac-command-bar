@@ -25,6 +25,7 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import {
     describeGitBranchTitle,
     repositoryLabel,
@@ -91,19 +92,16 @@
     >
       {name}
     </h2>
-    <button
-      type="button"
-      class="flex size-6 shrink-0 items-center justify-center rounded-[4px]
-             text-[var(--color-text-2)] transition-colors hover:bg-[var(--color-elevated)]
-             hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50
-             outline-none disabled:opacity-45"
-      aria-label="Read this repository again"
-      title="Read the changed files and the history again"
+    <IconButton
+      label="Read the changed files and the history again"
+      size="xs"
+      side="bottom"
+      class="shrink-0 text-[var(--color-text-2)]"
       disabled={!panel.activated || panel.statusLoading}
       onclick={() => void service.refresh()}
     >
       <RefreshCw class={cn('size-3.5', panel.statusLoading && 'animate-spin')} aria-hidden="true" />
-    </button>
+    </IconButton>
   </div>
 
   <!-- The branch name IS the control that changes branches, because that is

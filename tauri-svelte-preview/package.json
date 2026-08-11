@@ -12,12 +12,14 @@
     "check:rust": "RUSTFLAGS=\"-D warnings\" cargo check --manifest-path src-tauri/Cargo.toml",
     "check:svelte": "svelte-kit sync && node scripts/checkSvelteNext.mjs",
     "orch:event": "node scripts/orchestrationEvent.mjs",
+    "test:session-browser-state": "node --experimental-strip-types scripts/sessionBrowserState.test.mjs",
     "test:paste-cleanup": "node --experimental-strip-types scripts/pasteCleanup.test.mjs",
     "test:agent-session-focus": "node --experimental-strip-types scripts/agentSessionFocus.test.mjs",
     "test:agent-conversation-protocol": "node --experimental-strip-types scripts/agentConversationProtocol.test.mjs",
     "test:agent-conversation-store": "node --experimental-strip-types scripts/agentConversationStore.test.mjs",
     "test:agent-conversation-handoff": "node --experimental-strip-types scripts/agentConversationHandoff.test.mjs",
     "test:conversation-session-isolation": "node --experimental-strip-types scripts/conversationSessionIsolation.test.mjs",
+    "test:composer-slash-commands": "node --experimental-strip-types scripts/composerSlashCommands.test.mjs",
     "test:git-graph-view-model": "node --experimental-strip-types scripts/gitGraphViewModel.test.mjs",
     "test:git-task-links": "node --experimental-strip-types scripts/gitTaskLinks.test.mjs",
     "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
@@ -104,7 +106,10 @@
     "test:resource-disk-view-model": "node --experimental-strip-types scripts/resourceDiskViewModel.test.mjs",
     "test:usage-view-model": "node --experimental-strip-types scripts/usageViewModel.test.mjs",
     "test:space-view-model": "node --experimental-strip-types scripts/spaceViewModel.test.mjs",
-    "test:session-row-actions": "node --experimental-strip-types scripts/sessionRowActions.test.mjs"
+    "test:session-row-actions": "node --experimental-strip-types scripts/sessionRowActions.test.mjs",
+    "test:collapse-tool-output": "node --experimental-strip-types scripts/collapseToolOutput.test.mjs",
+    "test:code-highlight": "node --experimental-strip-types scripts/codeHighlight.test.mjs",
+    "test:markdown-preview": "node --experimental-strip-types scripts/markdownPreview.test.mjs"
   },
   "dependencies": {
     "@codingame/monaco-vscode-api": "25.1.2",

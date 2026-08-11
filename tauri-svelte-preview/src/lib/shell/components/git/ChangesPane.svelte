@@ -29,6 +29,7 @@
   import WandSparkles from '@lucide/svelte/icons/wand-sparkles';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import {
@@ -275,24 +276,62 @@
     'focus-visible:ring-3 focus-visible:ring-ring/50 outline-none disabled:opacity-40';
 </script>
 
-<section class={cn('flex min-h-0 flex-col', open ? 'flex-1' : 'shrink-0')}>
-  <button
-    type="button"
-    class="flex w-full shrink-0 items-center gap-1 px-2 py-1 text-left
-           text-[12px] tracking-[0.06em] text-[var(--color-text-2)] uppercase
-           transition-colors hover:text-[var(--color-text)]
-           focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
-    aria-expanded={open}
-    onclick={() => (open = !open)}
-  >
+<!-- Open, this section is as tall as what is in it and no taller, capped at
+     three-fifths of the panel. Taking a fixed half of the panel left a band of
+     empty space above the commit history whenever there was little to show. -->
+<section class={cn('flex min-h-0 shrink-0 flex-col', open && 'max-h-[60%]')}>
+  <div class="flex w-full shrink-0 items-center gap-1 pr-1.5 pl-2">
+    <button
+      type="button"
+      class="flex min-w-0 flex-1 items-center gap-1 py-1 text-left
+             text-[12px] tracking-[0.06em] text-[var(--color-text-2)] uppercase
+             transition-colors hover:text-[var(--color-text)]
+             focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
+      aria-expanded={open}
+      onclick={() => (open = !open)}
+    >
+      {#if open}
+        <ChevronDown class="size-3 shrink-0" aria-hidden="true" />
+      {:else}
+        <ChevronRight class="size-3 shrink-0" aria-hidden="true" />
+      {/if}
+      <span>Changes</span>
+      <span class="ml-auto normal-case text-[var(--color-text-3)]">{summary}</span>
+    </button>
+
+    <!-- Help with the commit message lives here, as two small buttons on the
+         section that needs it, rather than in a floating panel of its own. -->
     {#if open}
-      <ChevronDown class="size-3 shrink-0" aria-hidden="true" />
-    {:else}
-      <ChevronRight class="size-3 shrink-0" aria-hidden="true" />
+      <span data-testid="suggest-commit-message">
+        <IconButton
+          label={`Suggest a commit message. ${suggestionHint}`}
+          size="xs"
+          side="bottom"
+          class="text-[var(--color-text-2)]"
+          disabled={!canWrite || suggestion === ''}
+          onclick={useSuggestion}
+        >
+          <WandSparkles class="size-3.5" aria-hidden="true" />
+        </IconButton>
+      </span>
+      <span data-testid="generate-commit-message">
+        <IconButton
+          label="Ask the active agent to write the commit message"
+          size="xs"
+          side="bottom"
+          class="text-[var(--color-text-2)]"
+          disabled={!canWrite || !agentAvailable || generatingCommitMessage}
+          onclick={() => void generateCommitMessage()}
+        >
+          {#if generatingCommitMessage}
+            <LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />
+          {:else}
+            <Sparkles class="size-3.5" aria-hidden="true" />
+          {/if}
+        </IconButton>
+      </span>
     {/if}
-    <span>Changes</span>
-    <span class="ml-auto normal-case text-[var(--color-text-3)]">{summary}</span>
-  </button>
+  </div>
 
   {#if open}
     <div class="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-2 pt-0.5 pb-2">
@@ -311,41 +350,6 @@
           bind:value={panel.commitMessage}
           onkeydown={commitOnShortcut}
         ></textarea>
-        <div class="flex flex-wrap items-center gap-1">
-        <button
-          type="button"
-          class={cn(
-            buttonVariants({ variant: 'ghost', size: 'xs' }),
-            'w-fit gap-1 px-1.5 text-[12px] text-[var(--color-text-2)]'
-          )}
-          disabled={!canWrite || suggestion === ''}
-          title={canWrite ? suggestionHint : readOnlyReason}
-          onclick={useSuggestion}
-          data-testid="suggest-commit-message"
-        >
-          <WandSparkles class="size-3" aria-hidden="true" />
-          Suggest
-        </button>
-        <button
-          type="button"
-          class={cn(
-            buttonVariants({ variant: 'ghost', size: 'xs' }),
-            'w-fit gap-1 px-1.5 text-[12px] text-[var(--color-text-2)]'
-          )}
-          disabled={!canWrite || !agentAvailable || generatingCommitMessage}
-          title={!canWrite ? readOnlyReason : agentAvailable ? 'Ask the active agent to write a commit message from this diff' : agentUnavailableReason}
-          onclick={() => void generateCommitMessage()}
-          data-testid="generate-commit-message"
-        >
-          {#if generatingCommitMessage}
-            <LoaderCircle class="size-3 animate-spin" aria-hidden="true" />
-            Generating…
-          {:else}
-            <Sparkles class="size-3" aria-hidden="true" />
-            Generate commit message
-          {/if}
-        </button>
-        </div>
         {#if !agentAvailable && onGenerateCommitMessage}
           <p class="text-[12px] leading-[16px] text-[var(--color-text-3)]" data-testid="commit-agent-unavailable">
             {agentUnavailableReason}
