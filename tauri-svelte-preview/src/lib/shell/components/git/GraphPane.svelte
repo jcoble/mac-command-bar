@@ -35,6 +35,7 @@
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { buildGitCommitGraphRows } from '$lib/gitGraphViewModel';
   import {
     assignGitGraphLanes,
@@ -216,19 +217,16 @@
         {historyCount}
       </span>
     </button>
-    <button
-      type="button"
-      class="flex size-5 shrink-0 items-center justify-center rounded-[4px]
-             text-[var(--color-text-2)] transition-colors hover:bg-[var(--color-elevated)]
-             hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50
-             outline-none disabled:opacity-45"
-      aria-label="Read the commit history again"
-      title="Read the commit history again"
+    <IconButton
+      label="Read the commit history again"
+      size="sm"
+      side="bottom"
+      class="shrink-0 text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
       disabled={!panel.activated || panel.historyLoading}
       onclick={() => void service.refreshHistory()}
     >
-      <RefreshCw class={cn('size-3', panel.historyLoading && 'animate-spin')} aria-hidden="true" />
-    </button>
+      <RefreshCw class={cn('size-3.5', panel.historyLoading && 'animate-spin')} aria-hidden="true" />
+    </IconButton>
   </div>
 
   {#if open}

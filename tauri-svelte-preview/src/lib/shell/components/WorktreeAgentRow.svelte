@@ -15,6 +15,7 @@
   import Check from '@lucide/svelte/icons/check';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import GitBranch from '@lucide/svelte/icons/git-branch';
+  import Play from '@lucide/svelte/icons/play';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Archive from '@lucide/svelte/icons/archive';
   import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -32,6 +33,7 @@
     EMPTY_SESSION_PRESENCE_HISTORY,
     sessionPresenceHistory
   } from '$lib/shell/conversation/sessionPresence.ts';
+  import { requestSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
   import SessionPresenceIndicator from './conversation/SessionPresenceIndicator.svelte';
   import { myWorkProject } from './myWorkViewOptions';
   import { sessionRowJump } from './sessionRowJump';
@@ -93,10 +95,10 @@
 
   /**
    * The same answer the indicator draws, worked out here for two decisions the
-   * row owns: a disconnected session keeps the indicator's own restart button,
-   * so the marker is only wrapped in a jump button when it is not one already;
-   * and a row that is working or waiting keeps its jump buttons on screen
-   * instead of hiding them until the pointer arrives.
+   * row owns: a stopped session gets one compact Start action in the overlay,
+   * so the marker is not another restart button; and a row that is working or
+   * waiting keeps its jump buttons on screen instead of hiding them until the
+   * pointer arrives.
    */
   const presence = $derived(
     deriveSessionPresence(
@@ -112,12 +114,19 @@
       0
     ).state
   );
-  const presenceIsRestart = $derived(presence === 'disconnected');
+  const presenceIsRestart = $derived(presence === 'disconnected' || session.state === 'exited');
   const busy = $derived(presence === 'working' || presence === 'needs-attention');
 
   function stopPropagation(event: MouseEvent, action?: () => void): void {
     event.stopPropagation();
     action?.();
+  }
+
+  function startSession(event: MouseEvent): void {
+    event.stopPropagation();
+    const handled = requestSessionRestart(session.ownedId, session.state === 'exited');
+    if (handled) return;
+    (session.state === 'exited' ? onRestart : onSelect)?.();
   }
 
   function jump(event: MouseEvent, surface: 'session' | 'editor' | 'source-control'): void {
@@ -170,22 +179,15 @@
   <div class="row-body">
     <span data-testid="worktree-agent-runtime" class="row-presence">
       {#if presenceIsRestart}
-        <SessionPresenceIndicator
-          ownedId={session.ownedId}
-          terminalState={session.state}
-          {connectionState}
-          {activeTurnId}
-          sending={conversation?.sending}
-          {pendingApprovalCount}
-          {runtimeState}
-          onRestart={session.state === 'exited' ? onRestart : onSelect}
-        />
+        <span data-testid="worktree-agent-stopped" aria-label="Session stopped" title="Session stopped">
+          Stopped
+        </span>
       {:else}
         <span data-testid="worktree-agent-jump-session">
           <IconButton
             label="Open session"
             size="xs"
-            side="bottom"
+            side="top"
             class="text-[var(--color-text-2)]"
             onclick={(event) => jump(event, 'session')}
           >
@@ -228,14 +230,27 @@
     <span
       data-testid="worktree-agent-overlay"
       class="row-overlay"
-      class:always-on={busy}
+      class:always-on={busy || presenceIsRestart}
     >
+      {#if presenceIsRestart}
+        <span data-testid="worktree-agent-start">
+          <IconButton
+            label="Start session"
+            size="sm"
+            side="top"
+            class="text-[var(--color-text-2)]"
+            onclick={startSession}
+          >
+            <Play class="size-3.5" aria-hidden="true" />
+          </IconButton>
+        </span>
+      {/if}
       <span data-testid="worktree-agent-jump" class="row-cluster">
         <span data-testid="worktree-agent-jump-editor">
           <IconButton
             label="Open editor"
             size="xs"
-            side="bottom"
+            side="top"
             class="text-[var(--color-text-2)]"
             onclick={(event) => jump(event, 'editor')}
           >
@@ -246,7 +261,7 @@
           <IconButton
             label="Open source control"
             size="xs"
-            side="bottom"
+            side="top"
             class="text-[var(--color-text-2)]"
             onclick={(event) => jump(event, 'source-control')}
           >
@@ -260,8 +275,8 @@
           <span data-testid="worktree-agent-mark-done">
             <IconButton
               label="Mark done"
-              size="xs"
-              side="bottom"
+              size="sm"
+              side="top"
               class="text-[var(--color-text-2)]"
               onclick={(event) => stopPropagation(event, onComplete)}
             >
@@ -272,8 +287,8 @@
           <span data-testid="worktree-agent-reopen">
             <IconButton
               label="Move back to Working"
-              size="xs"
-              side="bottom"
+              size="sm"
+              side="top"
               class="text-[var(--color-text-2)]"
               onclick={(event) => stopPropagation(event, onReopen)}
             >
@@ -285,8 +300,8 @@
           <span data-testid="worktree-agent-settle">
             <IconButton
               label="Move to Settled"
-              size="xs"
-              side="bottom"
+              size="sm"
+              side="top"
               class="text-[var(--color-text-2)]"
               onclick={(event) => stopPropagation(event, onSettle)}
             >
@@ -297,8 +312,8 @@
           <span data-testid="worktree-agent-unsettle">
             <IconButton
               label="Move back to Done"
-              size="xs"
-              side="bottom"
+              size="sm"
+              side="top"
               class="text-[var(--color-text-2)]"
               onclick={(event) => stopPropagation(event, onUnsettle)}
             >
@@ -310,8 +325,8 @@
           <span data-testid="worktree-agent-remove">
             <IconButton
               label="Remove from sessions"
-              size="xs"
-              side="bottom"
+              size="sm"
+              side="top"
               class="text-[var(--color-text-2)]"
               onclick={(event) => stopPropagation(event, onAskRemove)}
             >
@@ -323,8 +338,8 @@
           <span data-testid="worktree-agent-close">
             <IconButton
               label="Close terminal"
-              size="xs"
-              side="bottom"
+              size="sm"
+              side="top"
               class="text-[var(--color-text-2)]"
               onclick={(event) => stopPropagation(event, onClose)}
             >
@@ -336,8 +351,8 @@
           <span data-testid="worktree-agent-expand">
             <IconButton
               label={expanded ? 'Hide details' : 'Show details'}
-              size="xs"
-              side="bottom"
+              size="sm"
+              side="top"
               class="text-[var(--color-text-2)]"
               onclick={(event) => stopPropagation(event, onToggle)}
             >
@@ -493,7 +508,7 @@
     position: absolute;
     z-index: 2;
     top: 4px;
-    right: 4px;
+    right: 2px;
     display: inline-flex;
     align-items: center;
     gap: 2px;
@@ -501,6 +516,7 @@
     padding: 0 2px;
     background: var(--color-elevated);
     box-shadow: var(--shadow-sm);
+    isolation: isolate;
     opacity: 0;
     pointer-events: none;
   }
@@ -509,8 +525,9 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    left: -20px;
-    width: 20px;
+    z-index: -1;
+    left: -24px;
+    width: 24px;
     background: linear-gradient(to right, transparent, var(--color-elevated));
     content: '';
   }

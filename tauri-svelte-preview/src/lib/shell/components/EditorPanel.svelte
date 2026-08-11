@@ -25,6 +25,7 @@
    *    action: a file-open request, or a click in the strip.
    */
   import { onMount } from 'svelte';
+  import X from '@lucide/svelte/icons/x';
 
   import { upgradeUnknownLanguage } from './editor/editorLanguage.ts';
   import {
@@ -40,6 +41,7 @@
     markdownPreviewDefault,
     type MarkdownView
   } from './editor/markdownPreview.ts';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
@@ -867,15 +869,15 @@
               {#if file.loading}<span class="chip-note">reading</span>{/if}
               {#if file.error}<span class="chip-note error">failed</span>{/if}
             </button>
-            <button
-              type="button"
-              class="file-close"
-              aria-label={`Close ${file.fileName}`}
-              title={`Close ${file.fileName}`}
+            <IconButton
+              label={`Close ${file.fileName}`}
+              size="sm"
+              side="bottom"
+              class="file-close text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
               onclick={() => closeOpenFileAt(file.path)}
             >
-              ×
-            </button>
+              <X class="size-3.5" aria-hidden="true" />
+            </IconButton>
           </div>
         {/each}
       </div>
@@ -1057,8 +1059,7 @@
     border-color: var(--color-border);
   }
 
-  .file-name,
-  .file-close {
+  .file-name {
     background: transparent;
     border: none;
     color: var(--color-text-2);
@@ -1077,18 +1078,11 @@
     gap: 5px;
   }
 
-  .file-close {
-    padding: 3px 7px 3px 3px;
-    font-size: 13px;
-    line-height: 1;
-  }
-
   .file-chip.active .file-name {
     color: var(--color-text);
   }
 
-  .file-name:hover,
-  .file-close:hover {
+  .file-name:hover {
     color: var(--color-text);
   }
 

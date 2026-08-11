@@ -18,6 +18,7 @@
     type SidePaneRegistration
   } from '$lib/shell/layout/sidePaneRegistry';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import { deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
   import MyWorkSessionList from './MyWorkSessionList.svelte';
   import {
@@ -132,6 +133,22 @@
     )
   );
   const visibleSessions = $derived(prepareMyWorkSessions(sessions, viewOptions));
+  const statusContentSignature = $derived(
+    visibleSessions.map((session) => `${session.ownedId}:${deriveOwnedLibraryState(session)}`).join('|')
+  );
+
+  /** The pane body owns its header and rows, so measure that whole body when
+   * it is mounted. The fallback only covers the first layout before Svelte has
+   * painted the rows; the reactive refit below replaces it with scrollHeight.
+   */
+  function paneContentSize(id: string): number {
+    const count = visibleSessions.filter((session) => deriveOwnedLibraryState(session) === id).length;
+    const fallback = 30 + Math.max(1, count) * 56;
+    const measured = typeof document !== 'undefined'
+      ? document.querySelector<HTMLElement>(`[data-testid="${id}-pane"]`)?.scrollHeight ?? 0
+      : 0;
+    return Math.max(74, measured || fallback);
+  }
 
   /** The context panel and the old row now activate the full center tab. */
   export function openFinder(): void {
@@ -149,11 +166,13 @@
         ['done', doneSlot],
         ['settled', settledSlot]
       ]);
+      const paneSpecs = sidePaneRegistrationsToPaneSpecs(LEFT_PANE_REGISTRATIONS, paneElements)
+        .map((pane) => ({ ...pane, contentSize: () => paneContentSize(pane.id) }));
       stack = createPaneStack(host, {
         layoutStore: injectedStore,
         storageKey,
         layoutId: 'left-rail',
-        panes: sidePaneRegistrationsToPaneSpecs(LEFT_PANE_REGISTRATIONS, paneElements)
+        panes: paneSpecs
       });
       const refit = (): void => {
         if (!host) return;
@@ -174,6 +193,14 @@
       stack?.dispose();
       stack = null;
     };
+  });
+
+  $effect(() => {
+    // Keep this dependency tied to both membership and status changes. The
+    // pane children paint first; the microtask then measures their full body.
+    statusContentSignature;
+    if (viewOptions.groupBy !== 'status' || !stack) return;
+    queueMicrotask(() => stack?.fitContent());
   });
 </script>
 

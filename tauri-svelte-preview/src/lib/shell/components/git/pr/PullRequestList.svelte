@@ -18,7 +18,7 @@
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
-  import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { READ_ONLY_IN_BROWSER_MESSAGE } from '$lib/shell/git/gitBackendExtra';
   import { listOpenPullRequestsFromTauri } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
@@ -90,11 +90,11 @@
       <span>Open pull requests</span>
     </button>
     {#if open}
-      <button
-        type="button"
-        class={buttonVariants({ variant: 'ghost', size: 'icon-xs' })}
-        aria-label="Read the open pull requests again"
-        title="Read the open pull requests again"
+      <IconButton
+        label="Read the open pull requests again"
+        size="sm"
+        side="bottom"
+        class="shrink-0 text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
         disabled={model.state === 'loading' || !root}
         onclick={() => void load()}
       >
@@ -102,7 +102,7 @@
           class={cn('size-3.5', model.state === 'loading' && 'animate-spin')}
           aria-hidden="true"
         />
-      </button>
+      </IconButton>
     {/if}
   </div>
 

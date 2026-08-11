@@ -14,8 +14,25 @@
 
   let { x, y, items, onSelect, onClose }: Props = $props();
 
-  const menuLeft = $derived(Math.max(8, Math.min(x, (typeof window === 'undefined' ? x : window.innerWidth) - 224)));
-  const menuTop = $derived(Math.max(8, Math.min(y, (typeof window === 'undefined' ? y : window.innerHeight) - 284)));
+  const MENU_WIDTH = 224;
+  const MENU_HEIGHT = 284;
+  const MENU_GAP = 8;
+  const viewportWidth = $derived(typeof window === 'undefined' ? x + MENU_WIDTH : window.innerWidth);
+  const viewportHeight = $derived(typeof window === 'undefined' ? y + MENU_HEIGHT : window.innerHeight);
+  const menuLeft = $derived(
+    Math.max(8, Math.min(x, viewportWidth - MENU_WIDTH - 8))
+  );
+  const menuTop = $derived(
+    Math.max(
+      8,
+      Math.min(
+        y + MENU_GAP + MENU_HEIGHT <= viewportHeight - 8
+          ? y + MENU_GAP
+          : y - MENU_HEIGHT - MENU_GAP,
+        viewportHeight - MENU_HEIGHT - 8
+      )
+    )
+  );
 </script>
 
 <div

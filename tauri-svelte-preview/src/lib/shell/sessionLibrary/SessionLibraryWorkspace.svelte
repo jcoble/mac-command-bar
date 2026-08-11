@@ -171,12 +171,13 @@
   }
 
   function menuPoint(event: MouseEvent): { x: number; y: number } {
-    const rect = (event.currentTarget as HTMLElement | null)
-      ?.closest('.dv-render-overlay')
-      ?.getBoundingClientRect();
+    const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+    const row = target?.closest<HTMLElement>('[data-testid="session-history-row"]');
+    const anchor = row ?? target;
+    const rect = anchor?.getBoundingClientRect();
     return {
-      x: Math.max(8, Math.min(event.clientX - (rect?.left ?? 0), (rect?.width ?? window.innerWidth) - 224)),
-      y: event.clientY - (rect?.top ?? 0)
+      x: rect ? rect.right + 8 : event.clientX,
+      y: rect ? rect.top : event.clientY
     };
   }
 
@@ -262,7 +263,7 @@
     <span data-testid="session-history-row-expand" class="ml-1 inline-flex">
       <IconButton
         label={open ? 'Hide session details' : 'Show session details'}
-        size="xs"
+        size="sm"
         side="right"
         onclick={() => toggleRow(row.record.key)}
       >
@@ -300,6 +301,7 @@
     <span data-testid="session-history-row-menu" class="mr-1 inline-flex">
       <IconButton
         label={`More actions for ${row.displayTitle}`}
+        size="sm"
         class="opacity-70 group-hover:opacity-100 group-focus-within:opacity-100"
         side="left"
         onclick={(event) => openRowMenu(row.record, event)}

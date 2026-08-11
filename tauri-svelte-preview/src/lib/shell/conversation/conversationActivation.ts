@@ -2,7 +2,7 @@ import type {
   AgentConversationProvider,
   ConversationConnectionState
 } from './conversationTypes.ts';
-import type { AgentExecutionOwner } from '../ownedSessions.ts';
+import type { AgentExecutionOwner, OwnedSessionState } from '../ownedSessions.ts';
 
 export type ConversationActivationDecision =
   | { kind: 'view' }
@@ -23,6 +23,34 @@ interface ConversationConnection {
   state?: ConversationConnectionState;
   connectionState?: ConversationConnectionState;
   nativeSessionId?: string | null;
+}
+
+export interface ConversationSendState {
+  sessionState?: OwnedSessionState;
+  executionOwner?: AgentExecutionOwner;
+  connectionState?: ConversationConnectionState | null;
+  generation: number;
+}
+
+const DEAD_CONNECTION_STATES: readonly ConversationConnectionState[] = [
+  'disconnected',
+  'failed',
+  'closed'
+];
+
+/** A send must not be attempted against a stopped rail record or dead conversation connection. */
+export function shouldReviveBeforeSend(state: ConversationSendState): boolean {
+  return state.sessionState === 'exited'
+    || state.executionOwner === 'stopped'
+    || state.generation < 1
+    || state.connectionState == null
+    || DEAD_CONNECTION_STATES.includes(state.connectionState);
+}
+
+/** Select only a strictly newer activation generation for the outgoing request. */
+export function generationForSend(previousGeneration: number, activationGeneration: number): number | null {
+  if (!Number.isInteger(previousGeneration) || !Number.isInteger(activationGeneration)) return null;
+  return activationGeneration > previousGeneration ? activationGeneration : null;
 }
 
 function connectedSessionMatches(

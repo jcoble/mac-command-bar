@@ -40,6 +40,8 @@ export interface PaneSpec {
   /** Optional body-size limits supplied by the side-pane registry. */
   minimumSize?: number;
   maximumSize?: number | null;
+  /** Body height needed by the current content; used to cap empty slack. */
+  contentSize?: number | (() => number);
   /** Whether this pane is included in the persisted roster. */
   persistent?: boolean;
 }
@@ -64,6 +66,7 @@ export interface PaneStack {
   api: PaneviewApi;
   resetLayout(): void;
   layout(width: number, height: number): void;
+  fitContent(): void;
   dispose(): void;
 }
 
@@ -323,6 +326,7 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   });
 
   const addPaneFor = (pane: PaneSpec): void => {
+    const contentSize = typeof pane.contentSize === 'function' ? pane.contentSize() : pane.contentSize;
     api.addPanel({
       id: pane.id,
       component: COMPONENT,
@@ -330,7 +334,7 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
       params: { paneId: pane.id },
       size: pane.size,
       minimumBodySize: pane.minimumSize,
-      maximumBodySize: pane.maximumSize ?? undefined,
+      maximumBodySize: contentSize ?? pane.maximumSize ?? undefined,
       // The add option is spelled `isExpanded`; the SERIALIZED field is
       // `expanded`. Setting it here is enough — a pane built collapsed reports
       // a maximum size of just its header, so there is no second step and no
@@ -341,6 +345,65 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
 
   const buildDefault = (): void => {
     for (const pane of options.panes) addPaneFor(pane);
+  };
+
+  /**
+   * Keep a small pane from inheriting all of the stack's spare height. A
+   * stored layout can be wildly out of date after grouping or filtering, so
+   * every content-sized pane gets a live maximum and a fair share when the
+   * requested content is taller than the available stack.
+   */
+  const fitContent = (): void => {
+    if (disposed || api.height <= 0) return;
+    const expanded = api.panels.filter((panel) => panel.isExpanded());
+    if (expanded.length === 0) return;
+
+    const collapsedHeight = api.panels
+      .filter((panel) => !panel.isExpanded())
+      .reduce((total, panel) => total + panel.minimumSize, 0);
+    const panes = expanded.map((panel) => {
+      const spec = specs.get(panel.id);
+      const requested = typeof spec?.contentSize === 'function' ? spec.contentSize() : spec?.contentSize;
+      const bodySize = Number.isFinite(requested) ? Math.max(panel.minimumBodySize, requested as number) : panel.maximumBodySize;
+      const headerSize = Math.max(0, panel.minimumSize - panel.minimumBodySize);
+      const desiredSize = headerSize + bodySize;
+      panel.api.setConstraints({ maximumSize: desiredSize });
+      return {
+        panel,
+        minimumSize: panel.minimumSize,
+        desiredSize
+      };
+    });
+
+    const available = Math.max(0, api.height - collapsedHeight);
+    const minimumTotal = panes.reduce((total, pane) => total + pane.minimumSize, 0);
+    const desiredTotal = panes.reduce((total, pane) => total + pane.desiredSize, 0);
+    const sizes = panes.map((pane) => pane.desiredSize);
+
+    if (desiredTotal > available) {
+      sizes.splice(0, sizes.length, ...panes.map((pane) => pane.minimumSize));
+      let remaining = Math.max(0, available - minimumTotal);
+      const capacity = panes.map((pane) => Math.max(0, pane.desiredSize - pane.minimumSize));
+      while (remaining > 0) {
+        const open = capacity.reduce((count, amount) => count + (amount > 0 ? 1 : 0), 0);
+        if (open === 0) break;
+        const share = remaining / open;
+        let used = 0;
+        for (let index = 0; index < capacity.length; index += 1) {
+          if (capacity[index] <= 0) continue;
+          const amount = Math.min(capacity[index], share);
+          sizes[index] += amount;
+          capacity[index] -= amount;
+          used += amount;
+        }
+        if (used <= 0) break;
+        remaining -= used;
+      }
+    }
+
+    panes.forEach(({ panel }, index) => {
+      panel.api.setSize({ size: Math.round(sizes[index]) });
+    });
   };
 
   /**
@@ -424,6 +487,7 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
     }
     buildDefault();
   });
+  fitContent();
 
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;
@@ -471,6 +535,10 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
     },
     layout(width: number, height: number): void {
       api.layout(width, height);
+      fitContent();
+    },
+    fitContent(): void {
+      fitContent();
     },
     dispose(): void {
       disposed = true; // body-part dispose() no-ops: page teardown owns the DOM now

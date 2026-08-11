@@ -94,9 +94,9 @@
     </h2>
     <IconButton
       label="Read the changed files and the history again"
-      size="xs"
+      size="sm"
       side="bottom"
-      class="shrink-0 text-[var(--color-text-2)]"
+      class="shrink-0 text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
       disabled={!panel.activated || panel.statusLoading}
       onclick={() => void service.refresh()}
     >

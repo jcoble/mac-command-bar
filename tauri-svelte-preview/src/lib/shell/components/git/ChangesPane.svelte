@@ -270,10 +270,9 @@
   }
 
   const ROW_ACTION =
-    'flex size-5 shrink-0 items-center justify-center rounded-[4px] text-[var(--color-text-2)] ' +
+    'text-[var(--color-text-2)] ' +
     'opacity-0 transition-colors group-hover:opacity-100 focus-visible:opacity-100 ' +
-    'hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)] ' +
-    'focus-visible:ring-3 focus-visible:ring-ring/50 outline-none disabled:opacity-40';
+    'hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]';
 </script>
 
 <!-- Open, this section is as tall as what is in it and no taller, capped at
@@ -305,9 +304,9 @@
       <span data-testid="suggest-commit-message">
         <IconButton
           label={`Suggest a commit message. ${suggestionHint}`}
-          size="xs"
+          size="sm"
           side="bottom"
-          class="text-[var(--color-text-2)]"
+          class="text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
           disabled={!canWrite || suggestion === ''}
           onclick={useSuggestion}
         >
@@ -317,9 +316,9 @@
       <span data-testid="generate-commit-message">
         <IconButton
           label="Ask the active agent to write the commit message"
-          size="xs"
+          size="sm"
           side="bottom"
-          class="text-[var(--color-text-2)]"
+          class="text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
           disabled={!canWrite || !agentAvailable || generatingCommitMessage}
           onclick={() => void generateCommitMessage()}
         >
@@ -492,45 +491,39 @@
                     {/if}
                   </button>
 
-                  <button
-                    type="button"
+                  <IconButton
+                    label={`Open ${parts.name} in the editor`}
+                    size="xs"
+                    side="left"
                     class={ROW_ACTION}
-                    aria-label="Open {parts.name}"
-                    title="Open this file in the editor"
                     onclick={() => openInEditor(file)}
                   >
-                    <SquareArrowOutUpRight class="size-3" aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
+                    <SquareArrowOutUpRight class="size-3.5" aria-hidden="true" />
+                  </IconButton>
+                  <IconButton
+                    label={`${group.action === 'stage' ? 'Stage' : 'Unstage'} ${parts.name}`}
+                    size="xs"
+                    side="left"
                     class={ROW_ACTION}
                     disabled={!canWrite || busy}
-                    aria-label="{group.action === 'stage' ? 'Stage' : 'Unstage'} {parts.name}"
-                    title={canWrite
-                      ? group.action === 'stage'
-                        ? 'Stage this file'
-                        : 'Unstage this file'
-                      : readOnlyReason}
                     onclick={() => runFileAction(group, file)}
                   >
                     {#if group.action === 'stage'}
-                      <Plus class="size-3" aria-hidden="true" />
+                      <Plus class="size-3.5" aria-hidden="true" />
                     {:else}
-                      <Minus class="size-3" aria-hidden="true" />
+                      <Minus class="size-3.5" aria-hidden="true" />
                     {/if}
-                  </button>
-                  <button
-                    type="button"
-                    class={cn(ROW_ACTION, 'hover:text-[var(--color-bad)]')}
+                  </IconButton>
+                  <IconButton
+                    label={`Throw away ${parts.name}'s changes`}
+                    size="xs"
+                    side="left"
+                    class={ROW_ACTION}
                     disabled={!canWrite || busy}
-                    aria-label="Discard changes to {parts.name}"
-                    title={canWrite
-                      ? 'Throw away this file\u2019s changes. You will be asked first.'
-                      : readOnlyReason}
                     onclick={() => askToDiscardFile(file)}
                   >
-                    <Undo2 class="size-3" aria-hidden="true" />
-                  </button>
+                    <Undo2 class="size-3.5" aria-hidden="true" />
+                  </IconButton>
 
                   <span
                     class={cn(

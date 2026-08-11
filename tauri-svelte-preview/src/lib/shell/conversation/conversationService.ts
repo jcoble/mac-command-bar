@@ -44,7 +44,12 @@ import {
 import { writeTerminalSessionFromTauri } from '$lib/tauriSource';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
-import { updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import { rail, updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import {
+  decideConversationActivation,
+  generationForSend,
+  shouldReviveBeforeSend
+} from './conversationActivation.ts';
 
 let unlisten: UnlistenFn | null = null;
 const resyncing = new Map<string, Promise<void>>();
@@ -418,12 +423,65 @@ export async function sendStructuredMessage(
   text: string,
   ptySessionId?: string | null
 ): Promise<void> {
-  const state = getConversationSession(ownedId);
+  let state = getConversationSession(ownedId);
   if (!state) return;
   if (!text.trim() && state.attachments.length === 0) return;
   setConversationSending(ownedId, true);
   try {
-    if (ptySessionId) {
+    let terminalSessionId = ptySessionId;
+    const owned = rail.owned.find((session) => session.ownedId === ownedId) ?? null;
+    const terminalStillOwnsSession = Boolean(
+      terminalSessionId
+      && owned
+      && owned.origin === 'external'
+      && owned.state !== 'exited'
+      && owned.executionOwner !== 'stopped'
+    );
+
+    if (
+      owned
+      && !terminalStillOwnsSession
+      && shouldReviveBeforeSend({
+        sessionState: owned.state,
+        executionOwner: owned.executionOwner,
+        connectionState: state.connectionState,
+        generation: state.generation
+      })
+    ) {
+      const provider: AgentConversationProvider | null = owned.agent === 'codex' || owned.agent === 'claude'
+        ? owned.agent
+        : null;
+      if (!provider) throw new Error('This stopped session cannot be revived as a conversation');
+
+      const previousGeneration = state.generation;
+      const activation = decideConversationActivation(owned, state);
+      if (activation.kind === 'terminal') {
+        throw new Error('This stopped session must be started from its session row');
+      }
+      const nativeSessionMode = activation.kind === 'structured' ? activation.nativeSessionMode : 'resume';
+      const activated = await ensureStructuredConversation({
+        ownedId,
+        provider,
+        cwd: owned.cwd,
+        nativeSessionId: owned.nativeSessionId,
+        nativeSessionMode
+      });
+      const nextGeneration = generationForSend(previousGeneration, activated?.generation ?? -1);
+      const revived = getConversationSession(ownedId);
+      if (nextGeneration === null || !revived || revived.generation !== nextGeneration) {
+        throw new Error('The session did not start a new conversation generation');
+      }
+      state = revived;
+      terminalSessionId = null;
+      updateOwnedSession(ownedId, {
+        state: 'live',
+        executionOwner: 'structured',
+        runtimeState: 'ready',
+        lastError: null
+      });
+    }
+
+    if (terminalSessionId) {
       if (state.writerLease.ownedId !== ownedId
         || state.writerLease.generation !== state.generation
         || state.writerLease.owner !== 'terminal') {
@@ -437,11 +495,11 @@ export async function sendStructuredMessage(
       // both in one PTY write makes Claude's TUI treat Enter as part of its
       // multiline paste buffer, leaving the prompt staged but never submitted.
       const pasted = await writeTerminalSessionFromTauri(
-        ptySessionId,
+        terminalSessionId,
         `\u001b[200~${outgoingText}\u001b[201~`
       );
       if (!pasted) throw new Error('The terminal session is no longer running');
-      const submitted = await writeTerminalSessionFromTauri(ptySessionId, '\r');
+      const submitted = await writeTerminalSessionFromTauri(terminalSessionId, '\r');
       if (!submitted) throw new Error('The terminal session is no longer running');
       setConversationSending(ownedId, false);
       state.attachments.forEach(cleanupConversationAttachmentPreview);
