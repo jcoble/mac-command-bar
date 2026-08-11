@@ -171,7 +171,7 @@ textarea,
  * Drop the UA outline only where our ring already shows focus,
  * so keyboard users always keep a clear indicator.
  * ------------------------------------------------------------------ */
-:focus-visible {
+:focus-visible:not([data-testid='conversation-composer-input']) {
   outline: none;
   box-shadow: var(--focus-ring);
 }

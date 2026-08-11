@@ -408,8 +408,12 @@ pub struct AcpClient {
     transport: Arc<AcpTransport>,
     inbound: Option<mpsc::UnboundedReceiver<AcpInbound>>,
     native_session_id: Option<String>,
+    provider: Option<AgentConversationProvider>,
     conversation_config_protocol: ConversationConfigProtocol,
 }
+
+const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 4] =
+    ["opus", "claude-opus-5", "fable", "claude-fable-5"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConversationConfigProtocol {
@@ -440,6 +444,7 @@ impl AcpClient {
             transport,
             inbound: Some(inbound),
             native_session_id: None,
+            provider: None,
             conversation_config_protocol: ConversationConfigProtocol::Metadata,
         })
     }
@@ -466,7 +471,7 @@ impl AcpClient {
         let request = acp::InitializeRequest::new(ProtocolVersion::V1);
         let result = self.request("initialize", &request).await?;
         let implementation = result.get("agentInfo").or_else(|| result.get("agent_info"));
-        Ok(AgentCapabilities {
+        let capabilities = AgentCapabilities {
             revision: 1,
             provider,
             implementation: AgentImplementation {
@@ -526,7 +531,9 @@ impl AcpClient {
             },
             config_options: parse_config_options(result.get("sessionConfigOptions")),
             commands: Vec::<AgentCommandDescriptor>::new(),
-        })
+        };
+        self.provider = Some(provider);
+        Ok(capabilities)
     }
 
     pub async fn new_session(
@@ -728,7 +735,7 @@ impl AcpClient {
             .to_string();
         let metadata_config = parse_conversation_config(result.get("_meta"))?;
         let (config, protocol) = if metadata_config == AgentConversationConfigState::default() {
-            let standard_config = parse_standard_conversation_config(&result);
+            let standard_config = parse_standard_conversation_config(&result, self.provider);
             if standard_config == AgentConversationConfigState::default() {
                 (metadata_config, ConversationConfigProtocol::Metadata)
             } else {
@@ -902,10 +909,13 @@ fn parse_conversation_config(
         .map(Option::unwrap_or_default)
 }
 
-fn parse_standard_conversation_config(value: &Value) -> AgentConversationConfigState {
+fn parse_standard_conversation_config(
+    value: &Value,
+    provider: Option<AgentConversationProvider>,
+) -> AgentConversationConfigState {
     let models = value.get("models");
     let modes = value.get("modes");
-    AgentConversationConfigState {
+    let mut config = AgentConversationConfigState {
         model: models
             .and_then(|models| models.get("currentModelId"))
             .and_then(Value::as_str)
@@ -932,7 +942,19 @@ fn parse_standard_conversation_config(value: &Value) -> AgentConversationConfigS
             .filter_map(|mode| mode.get("id").and_then(Value::as_str))
             .map(str::to_string)
             .collect(),
+    };
+    if provider == Some(AgentConversationProvider::Claude) {
+        for model_id in CLAUDE_VERIFIED_EXTRA_MODELS {
+            if !config
+                .available_models
+                .iter()
+                .any(|available| available == model_id)
+            {
+                config.available_models.push(model_id.to_string());
+            }
+        }
     }
+    config
 }
 
 fn serialization_error(error: serde_json::Error) -> AgentRuntimeError {
@@ -1351,7 +1373,15 @@ done"#,
             started.config,
             AgentConversationConfigState {
                 model: Some("default".into()),
-                available_models: vec!["default".into(), "sonnet".into(), "haiku".into()],
+                available_models: vec![
+                    "default".into(),
+                    "sonnet".into(),
+                    "haiku".into(),
+                    "opus".into(),
+                    "claude-opus-5".into(),
+                    "fable".into(),
+                    "claude-fable-5".into(),
+                ],
                 reasoning_effort: None,
                 available_efforts: Vec::new(),
                 approval_policy: Some("default".into()),
@@ -1367,14 +1397,14 @@ done"#,
 
         let configured = client
             .set_conversation_config(&AgentConversationConfigUpdate {
-                model: Some("sonnet".into()),
+                model: Some("claude-fable-5".into()),
                 reasoning_effort: None,
                 approval_policy: Some("bypassPermissions".into()),
             })
             .await
             .unwrap();
 
-        assert_eq!(configured.model.as_deref(), Some("sonnet"));
+        assert_eq!(configured.model.as_deref(), Some("claude-fable-5"));
         assert_eq!(
             configured.approval_policy.as_deref(),
             Some("bypassPermissions")
@@ -1382,7 +1412,7 @@ done"#,
         client.close().await.unwrap();
         let frames = std::fs::read_to_string(&log).unwrap();
         assert!(frames.contains(r#""method":"session/set_model""#));
-        assert!(frames.contains(r#""modelId":"sonnet""#));
+        assert!(frames.contains(r#""modelId":"claude-fable-5""#));
         assert!(frames.contains(r#""method":"session/set_mode""#));
         assert!(frames.contains(r#""modeId":"bypassPermissions""#));
         assert!(!frames.contains("session/set_config_option"));
