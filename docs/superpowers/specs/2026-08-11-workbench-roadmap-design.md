@@ -25,6 +25,11 @@ Monaco with Roslyn/LSP already exists in the app. What is new is the control:
   diagnostics. Turning it off terminates the server process and reclaims its memory.
 - The toggle is per workspace/project, visible in the Editor surface, and its resource
   cost shows in the Resource Manager (the LSP process attributes to its workspace).
+- **Servers are shared, never per-session.** One language-server process serves a
+  workspace, following the existing sharing architecture; every session and editor view
+  on that workspace reuses it, so a second session on the same project adds no new
+  process. Turning full mode on/off acts on the workspace's shared server. Sessions on
+  different workspaces get their own server only when full mode is on for each.
 - Diff → editor: clicking a diff hunk opens the real editor at that line in whichever
   mode the workspace currently has.
 
