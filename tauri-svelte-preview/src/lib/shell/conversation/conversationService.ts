@@ -47,8 +47,8 @@ import { shouldClearConversationSending } from './conversationReducer.ts';
 import { rail, updateOwnedSession } from '../stores/sessionRailStore.svelte';
 import {
   decideConversationActivation,
-  generationForSend,
-  shouldReviveBeforeSend
+  shouldReviveBeforeSend,
+  validateStructuredSendGeneration
 } from './conversationActivation.ts';
 
 let unlisten: UnlistenFn | null = null;
@@ -426,6 +426,7 @@ export async function sendStructuredMessage(
   let state = getConversationSession(ownedId);
   if (!state) return;
   if (!text.trim() && state.attachments.length === 0) return;
+  let expectedGeneration = state.generation;
   setConversationSending(ownedId, true);
   try {
     let terminalSessionId = ptySessionId;
@@ -466,19 +467,14 @@ export async function sendStructuredMessage(
         nativeSessionId: owned.nativeSessionId,
         nativeSessionMode
       });
-      const nextGeneration = generationForSend(previousGeneration, activated?.generation ?? -1);
       const revived = getConversationSession(ownedId);
-      if (nextGeneration === null || !revived || revived.generation !== nextGeneration) {
-        throw new Error('The session did not start a new conversation generation');
+      const nextGeneration = validateStructuredSendGeneration(previousGeneration, activated, revived);
+      if (nextGeneration === null || !revived) {
+        throw new Error('The ensured conversation is not connected at the current generation');
       }
       state = revived;
+      expectedGeneration = nextGeneration;
       terminalSessionId = null;
-      updateOwnedSession(ownedId, {
-        state: 'live',
-        executionOwner: 'structured',
-        runtimeState: 'ready',
-        lastError: null
-      });
     }
 
     if (terminalSessionId) {
@@ -518,8 +514,27 @@ export async function sendStructuredMessage(
     const liveConversationEvents = await hasBackendCapability(
       ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY
     );
+    const validatedState = getConversationSession(ownedId);
+    const validatedGeneration = validateStructuredSendGeneration(
+      expectedGeneration,
+      { state: state.connectionState, generation: expectedGeneration },
+      validatedState
+    );
+    if (validatedGeneration === null || !validatedState) {
+      throw new Error('The conversation generation changed before sending');
+    }
+    state = validatedState;
+    if (owned) {
+      updateOwnedSession(ownedId, {
+        state: 'live',
+        executionOwner: 'structured',
+        runtimeState: 'ready',
+        lastError: null,
+        nativeSessionId: state.nativeSessionId ?? owned.nativeSessionId
+      });
+    }
     await invoke('send_agent_conversation_message', {
-      request: { ownedId, generation: state.generation, text: prompt.text, content: prompt.content }
+      request: { ownedId, generation: validatedGeneration, text: prompt.text, content: prompt.content }
     });
     if (!liveConversationEvents) await resyncConversation(ownedId);
     state.attachments.forEach(cleanupConversationAttachmentPreview);

@@ -227,6 +227,20 @@ export function canRestorePaneLayout(stored: unknown, paneIds: Iterable<string>)
   return panelSetMatches(paneviewPanelIds(stored), paneIds);
 }
 
+/** Resolve the body maximum that a live content measurement should apply. */
+export function resolvePaneBodyMaximum(
+  minimumBodySize: number,
+  requestedContentSize: number | undefined,
+  currentMaximumBodySize: number
+): number {
+  const requested = Number.isFinite(requestedContentSize)
+    ? requestedContentSize as number
+    : currentMaximumBodySize;
+  return Number.isFinite(requested)
+    ? Math.max(minimumBodySize, requested)
+    : Number.POSITIVE_INFINITY;
+}
+
 export function createPaneStack(container: HTMLElement, options: PaneStackOptions): PaneStack {
   const specs = new Map(options.panes.map((pane) => [pane.id, pane]));
   if (specs.size !== options.panes.length) {
@@ -364,10 +378,13 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
     const panes = expanded.map((panel) => {
       const spec = specs.get(panel.id);
       const requested = typeof spec?.contentSize === 'function' ? spec.contentSize() : spec?.contentSize;
-      const bodySize = Number.isFinite(requested) ? Math.max(panel.minimumBodySize, requested as number) : panel.maximumBodySize;
+      const bodySize = resolvePaneBodyMaximum(panel.minimumBodySize, requested, panel.maximumBodySize);
       const headerSize = Math.max(0, panel.minimumSize - panel.minimumBodySize);
       const desiredSize = headerSize + bodySize;
-      panel.api.setConstraints({ maximumSize: desiredSize });
+      // dockview's pane API emits whole-pane constraints but does not wire the
+      // event back to PaneviewPanel.maximumBodySize. Set the supported body
+      // maximum directly, then lay out the stack against the new limits.
+      (panel as unknown as { maximumBodySize: number }).maximumBodySize = bodySize;
       return {
         panel,
         minimumSize: panel.minimumSize,
@@ -401,6 +418,7 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
       }
     }
 
+    api.layout(api.width, api.height);
     panes.forEach(({ panel }, index) => {
       panel.api.setSize({ size: Math.round(sizes[index]) });
     });

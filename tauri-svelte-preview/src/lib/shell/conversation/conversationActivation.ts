@@ -47,10 +47,30 @@ export function shouldReviveBeforeSend(state: ConversationSendState): boolean {
     || DEAD_CONNECTION_STATES.includes(state.connectionState);
 }
 
-/** Select only a strictly newer activation generation for the outgoing request. */
+/** Select a usable activation generation that is not older than the pre-ensure state. */
 export function generationForSend(previousGeneration: number, activationGeneration: number): number | null {
   if (!Number.isInteger(previousGeneration) || !Number.isInteger(activationGeneration)) return null;
-  return activationGeneration > previousGeneration ? activationGeneration : null;
+  if (activationGeneration < 1 || activationGeneration < previousGeneration) return null;
+  return activationGeneration;
+}
+
+/**
+ * Validate the connection returned by ensure immediately before a send.
+ *
+ * The current state must still describe that same connected generation. A
+ * later activation is therefore rejected rather than sending with a stale
+ * generation, while an idempotent ensure remains valid.
+ */
+export function validateStructuredSendGeneration(
+  previousGeneration: number,
+  activation: { generation: number; state?: ConversationConnectionState; connectionState?: ConversationConnectionState } | null | undefined,
+  current: Pick<ConversationSendState, 'connectionState' | 'generation'> | null | undefined
+): number | null {
+  const activatedState = activation?.state ?? activation?.connectionState;
+  const nextGeneration = generationForSend(previousGeneration, activation?.generation ?? -1);
+  if (nextGeneration === null || activatedState !== 'connected') return null;
+  if (!current || current.connectionState !== 'connected' || current.generation !== nextGeneration) return null;
+  return nextGeneration;
 }
 
 function connectedSessionMatches(

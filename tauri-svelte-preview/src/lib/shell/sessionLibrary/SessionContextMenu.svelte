@@ -1,41 +1,93 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   import type {
     SessionContextMenuAction,
     SessionContextMenuItem
   } from './sessionLibraryContextMenu';
 
+  export interface SessionContextMenuAnchor {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+  }
+
   interface Props {
-    x: number;
-    y: number;
+    anchor: SessionContextMenuAnchor;
     items: SessionContextMenuItem[];
     onSelect(action: SessionContextMenuAction): void;
     onClose(): void;
   }
 
-  let { x, y, items, onSelect, onClose }: Props = $props();
+  let { anchor, items, onSelect, onClose }: Props = $props();
 
-  const MENU_WIDTH = 224;
-  const MENU_HEIGHT = 284;
   const MENU_GAP = 8;
-  const viewportWidth = $derived(typeof window === 'undefined' ? x + MENU_WIDTH : window.innerWidth);
-  const viewportHeight = $derived(typeof window === 'undefined' ? y + MENU_HEIGHT : window.innerHeight);
-  const menuLeft = $derived(
-    Math.max(8, Math.min(x, viewportWidth - MENU_WIDTH - 8))
-  );
-  const menuTop = $derived(
-    Math.max(
-      8,
-      Math.min(
-        y + MENU_GAP + MENU_HEIGHT <= viewportHeight - 8
-          ? y + MENU_GAP
-          : y - MENU_HEIGHT - MENU_GAP,
-        viewportHeight - MENU_HEIGHT - 8
-      )
-    )
-  );
+  const VIEWPORT_PADDING = 8;
+  let menuElement: HTMLDivElement | null = null;
+  let measuredWidth = $state(0);
+  let measuredHeight = $state(0);
+  let viewportWidth = $state(typeof window === 'undefined' ? 0 : window.innerWidth);
+  let viewportHeight = $state(typeof window === 'undefined' ? 0 : window.innerHeight);
+
+  const menuLeft = $derived.by(() => {
+    const width = measuredWidth;
+    const availableWidth = viewportWidth || anchor.right + VIEWPORT_PADDING;
+    const rightPosition = anchor.right + MENU_GAP;
+    const leftPosition = anchor.left - width - MENU_GAP;
+    if (width === 0 || rightPosition + width <= availableWidth - VIEWPORT_PADDING) {
+      return Math.max(VIEWPORT_PADDING, rightPosition);
+    }
+    if (leftPosition >= VIEWPORT_PADDING) return leftPosition;
+    return Math.max(
+      VIEWPORT_PADDING,
+      Math.min(rightPosition, availableWidth - width - VIEWPORT_PADDING)
+    );
+  });
+
+  const menuTop = $derived.by(() => {
+    const height = measuredHeight;
+    const availableHeight = viewportHeight || anchor.bottom + VIEWPORT_PADDING;
+    const belowPosition = anchor.bottom + MENU_GAP;
+    const abovePosition = anchor.top - height - MENU_GAP;
+    if (height === 0 || belowPosition + height <= availableHeight - VIEWPORT_PADDING) {
+      return Math.max(VIEWPORT_PADDING, belowPosition);
+    }
+    if (abovePosition >= VIEWPORT_PADDING) return abovePosition;
+    return Math.max(
+      VIEWPORT_PADDING,
+      Math.min(belowPosition, availableHeight - height - VIEWPORT_PADDING)
+    );
+  });
+
+  onMount(() => {
+    const measure = (): void => {
+      const rect = menuElement?.getBoundingClientRect();
+      if (!rect) return;
+      measuredWidth = rect.width;
+      measuredHeight = rect.height;
+    };
+    const updateViewport = (): void => {
+      viewportWidth = window.innerWidth;
+      viewportHeight = window.innerHeight;
+      measure();
+    };
+    measure();
+    window.addEventListener('resize', updateViewport);
+    let observer: ResizeObserver | null = null;
+    if (menuElement && typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(measure);
+      observer.observe(menuElement);
+    }
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateViewport);
+    };
+  });
 </script>
 
 <div
+  bind:this={menuElement}
   data-testid="session-context-menu"
   class="session-context-menu"
   role="menu"

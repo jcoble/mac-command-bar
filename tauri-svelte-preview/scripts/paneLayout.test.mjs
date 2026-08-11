@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   canRestorePaneLayout,
   migrateLegacyPaneLayout,
-  migrateViewPaneLayouts
+  migrateViewPaneLayouts,
+  resolvePaneBodyMaximum
 } from '../src/lib/shell/layout/paneStack.ts';
 import { viewPanesKey } from '../src/lib/shell/layout/sidebarViews.ts';
 
@@ -30,6 +31,21 @@ function storedLayout(panes) {
 }
 
 const SECTIONS = ['sessions', 'files', 'source-control'];
+
+// The project has no DOM test harness for dockview's paneview. This pure pin
+// covers the body-constraint contract that fitContent applies to the live
+// panel: adding content raises the maximum and removing it lowers it again.
+{
+  let contentSize = 116;
+  const bodyMaximum = () => resolvePaneBodyMaximum(74, contentSize, Number.POSITIVE_INFINITY);
+  assert.equal(bodyMaximum(), 116, 'initial content establishes the body maximum');
+  contentSize = 308;
+  assert.equal(bodyMaximum(), 308, 'adding rows grows the live body maximum');
+  contentSize = 92;
+  assert.equal(bodyMaximum(), 92, 'removing rows shrinks the live body maximum');
+  contentSize = 41;
+  assert.equal(bodyMaximum(), 74, 'an empty pane remains at its body minimum');
+}
 
 function memoryStorage() {
   const map = new Map();

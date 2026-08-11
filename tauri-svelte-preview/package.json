@@ -18,6 +18,8 @@
     "test:agent-conversation-protocol": "node --experimental-strip-types scripts/agentConversationProtocol.test.mjs",
     "test:agent-conversation-store": "node --experimental-strip-types scripts/agentConversationStore.test.mjs",
     "test:agent-conversation-handoff": "node --experimental-strip-types scripts/agentConversationHandoff.test.mjs",
+    "test:conversation-send-recovery": "node --experimental-strip-types scripts/conversationSendRecovery.test.mjs",
+    "test:conversation-activation": "node --experimental-strip-types scripts/conversationActivation.test.mjs",
     "test:conversation-session-isolation": "node --experimental-strip-types scripts/conversationSessionIsolation.test.mjs",
     "test:composer-slash-commands": "node --experimental-strip-types scripts/composerSlashCommands.test.mjs",
     "test:git-graph-view-model": "node --experimental-strip-types scripts/gitGraphViewModel.test.mjs",

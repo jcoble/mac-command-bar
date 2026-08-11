@@ -58,8 +58,12 @@
   type ContextMenuState = {
     target: 'session' | 'center-tab';
     record: SessionLibraryRecord | null;
-    x: number;
-    y: number;
+    anchor: {
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+    };
     items: SessionContextMenuItem[];
   };
 
@@ -170,15 +174,14 @@
     await navigator.clipboard.writeText(value);
   }
 
-  function menuPoint(event: MouseEvent): { x: number; y: number } {
+  function menuPoint(event: MouseEvent): ContextMenuState['anchor'] {
     const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
     const row = target?.closest<HTMLElement>('[data-testid="session-history-row"]');
     const anchor = row ?? target;
     const rect = anchor?.getBoundingClientRect();
-    return {
-      x: rect ? rect.right + 8 : event.clientX,
-      y: rect ? rect.top : event.clientY
-    };
+    return rect
+      ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+      : { left: event.clientX, right: event.clientX, top: event.clientY, bottom: event.clientY };
   }
 
   function openRowMenu(record: SessionLibraryRecord, event: MouseEvent): void {
@@ -188,7 +191,7 @@
     contextMenu = {
       target: 'session',
       record,
-      ...menuPoint(event),
+      anchor: menuPoint(event),
       items: sessionContextMenuRoster({ target: 'session', record })
     };
   }
@@ -203,7 +206,7 @@
     contextMenu = {
       target: 'center-tab',
       record: null,
-      ...menuPoint(event),
+      anchor: menuPoint(event),
       items: sessionContextMenuRoster({ target: 'center-tab' })
     };
   }
@@ -487,8 +490,7 @@
 
 {#if contextMenu}
   <SessionContextMenu
-    x={contextMenu.x}
-    y={contextMenu.y}
+    anchor={contextMenu.anchor}
     items={contextMenu.items}
     onSelect={(action) => void selectContextAction(action)}
     onClose={closeContextMenu}

@@ -273,6 +273,14 @@
     'text-[var(--color-text-2)] ' +
     'opacity-0 transition-colors group-hover:opacity-100 focus-visible:opacity-100 ' +
     'hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]';
+  const DISCARD_ROW_ACTION =
+    ROW_ACTION + ' hover:bg-[var(--color-bad-bg)] hover:text-[var(--color-bad)]';
+
+  function rowActionHint(label: string): string {
+    if (!canWrite) return readOnlyReason;
+    if (busy) return 'Wait for the current source-control action to finish.';
+    return label;
+  }
 </script>
 
 <!-- Open, this section is as tall as what is in it and no taller, capped at
@@ -500,30 +508,42 @@
                   >
                     <SquareArrowOutUpRight class="size-3.5" aria-hidden="true" />
                   </IconButton>
-                  <IconButton
-                    label={`${group.action === 'stage' ? 'Stage' : 'Unstage'} ${parts.name}`}
-                    size="xs"
-                    side="left"
-                    class={ROW_ACTION}
-                    disabled={!canWrite || busy}
-                    onclick={() => runFileAction(group, file)}
+                  <span
+                    class="inline-flex"
+                    title={rowActionHint(`${group.action === 'stage' ? 'Stage' : 'Unstage'} ${parts.name}`)}
                   >
-                    {#if group.action === 'stage'}
-                      <Plus class="size-3.5" aria-hidden="true" />
-                    {:else}
-                      <Minus class="size-3.5" aria-hidden="true" />
-                    {/if}
-                  </IconButton>
-                  <IconButton
-                    label={`Throw away ${parts.name}'s changes`}
-                    size="xs"
-                    side="left"
-                    class={ROW_ACTION}
-                    disabled={!canWrite || busy}
-                    onclick={() => askToDiscardFile(file)}
+                    <IconButton
+                      label={`${group.action === 'stage' ? 'Stage' : 'Unstage'} ${parts.name}`}
+                      size="xs"
+                      side="left"
+                      tooltip={false}
+                      class={ROW_ACTION}
+                      disabled={!canWrite || busy}
+                      onclick={() => runFileAction(group, file)}
+                    >
+                      {#if group.action === 'stage'}
+                        <Plus class="size-3.5" aria-hidden="true" />
+                      {:else}
+                        <Minus class="size-3.5" aria-hidden="true" />
+                      {/if}
+                    </IconButton>
+                  </span>
+                  <span
+                    class="inline-flex"
+                    title={rowActionHint(`Throw away ${parts.name}'s changes. You will be asked first.`)}
                   >
-                    <Undo2 class="size-3.5" aria-hidden="true" />
-                  </IconButton>
+                    <IconButton
+                      label={`Throw away ${parts.name}'s changes`}
+                      size="xs"
+                      side="left"
+                      tooltip={false}
+                      class={DISCARD_ROW_ACTION}
+                      disabled={!canWrite || busy}
+                      onclick={() => askToDiscardFile(file)}
+                    >
+                      <Undo2 class="size-3.5" aria-hidden="true" />
+                    </IconButton>
+                  </span>
 
                   <span
                     class={cn(

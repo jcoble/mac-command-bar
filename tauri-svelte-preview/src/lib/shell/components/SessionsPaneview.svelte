@@ -157,6 +157,7 @@
 
   onMount(() => {
     let observer: ResizeObserver | null = null;
+    let refitFrame: number | null = null;
     try {
       const injectedStore =
         layoutStore ??
@@ -174,15 +175,28 @@
         layoutId: 'left-rail',
         panes: paneSpecs
       });
-      const refit = (): void => {
+      const refitNow = (): void => {
         if (!host) return;
         const width = host.clientWidth;
         const height = host.clientHeight;
         if (width > 0 && height > 0) stack?.layout(width, height);
       };
-      refit();
-      observer = new ResizeObserver(refit);
+      const scheduleRefit = (): void => {
+        if (refitFrame !== null) return;
+        refitFrame = requestAnimationFrame(() => {
+          refitFrame = null;
+          refitNow();
+        });
+      };
+      refitNow();
+      observer = new ResizeObserver(scheduleRefit);
       observer.observe(host);
+      for (const pane of paneElements.values()) {
+        const paneBody = pane.parentElement;
+        if (paneBody) observer.observe(paneBody);
+        const content = pane.querySelector<HTMLElement>('.pane-section');
+        if (content) observer.observe(content);
+      }
       onReady?.({ resetLayout: () => stack?.resetLayout() });
     } catch (error) {
       onError?.(error instanceof Error ? error.message : String(error));
@@ -190,6 +204,7 @@
 
     return () => {
       observer?.disconnect();
+      if (refitFrame !== null) cancelAnimationFrame(refitFrame);
       stack?.dispose();
       stack = null;
     };

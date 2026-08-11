@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 
 import {
   generationForSend,
+  validateStructuredSendGeneration,
   shouldReviveBeforeSend
 } from '../src/lib/shell/conversation/conversationActivation.ts';
+import { readFileSync } from 'node:fs';
 
 const connected = {
   sessionState: 'live',
@@ -36,13 +38,70 @@ assert.equal(
 );
 assert.equal(
   generationForSend(4, 4),
-  null,
-  'send rejects an activation response that did not create a new generation'
+  4,
+  'an idempotent connected ensure remains usable for send'
 );
 assert.equal(
   generationForSend(4, 3),
   null,
   'send rejects an older activation generation'
+);
+
+assert.equal(
+  validateStructuredSendGeneration(
+    4,
+    { state: 'connected', generation: 4 },
+    { connectionState: 'connected', generation: 4 }
+  ),
+  4,
+  'a successful connected ensure can validate an idempotent send generation'
+);
+assert.equal(
+  validateStructuredSendGeneration(
+    4,
+    { state: 'connected', generation: 4 },
+    { connectionState: 'connected', generation: 5 }
+  ),
+  null,
+  'a generation replacement between ensure and send fails before the request'
+);
+{
+  const stateAfterEnsure = { connectionState: 'connected', generation: 4 };
+  const expectedGeneration = stateAfterEnsure.generation;
+  stateAfterEnsure.generation = 5;
+  assert.equal(
+    validateStructuredSendGeneration(
+      expectedGeneration,
+      { state: 'connected', generation: expectedGeneration },
+      stateAfterEnsure
+    ),
+    null,
+    'a store mutation cannot replace the captured generation after ensure'
+  );
+}
+assert.equal(
+  validateStructuredSendGeneration(
+    4,
+    { state: 'disconnected', generation: 4 },
+    { connectionState: 'connected', generation: 4 }
+  ),
+  null,
+  'a non-connected ensure response cannot authorize a send'
+);
+
+const serviceSource = readFileSync(
+  new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
+  'utf8'
+);
+assert.match(
+  serviceSource,
+  /const validatedState = getConversationSession\(ownedId\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
+  'the service must re-read the conversation immediately before the send request'
+);
+assert.match(
+  serviceSource,
+  /validateStructuredSendGeneration\([\s\S]*?if \(validatedGeneration === null[\s\S]*?throw new Error\([^)]*generation/,
+  'the service must reject a stale generation before invoking the send request'
 );
 
 console.log('conversationSendRecovery.test.mjs passed');
