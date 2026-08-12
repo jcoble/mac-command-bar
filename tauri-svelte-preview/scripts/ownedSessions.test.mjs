@@ -200,6 +200,41 @@ const scanRecord = {
   assert.equal(owned[2].executionOwner, 'stopped');
   assert.deepEqual(reattachable.map((s) => s.ownedId), ['a']);
 }
+{ // a structured session without a PTY stays resumable after reload
+  const structured = {
+    ...adoptAgentSession(scanRecord, () => 'structured-app'),
+    origin: 'app',
+    ptySessionId: null,
+    state: 'live',
+    executionOwner: 'structured',
+    runtimeState: 'ready'
+  };
+  const { owned, reattachable } = reconcileOwnedSessions([structured], []);
+  assert.equal(owned[0].state, 'background');
+  assert.equal(owned[0].executionOwner, 'structured');
+  assert.equal(owned[0].runtimeState, 'closed');
+  assert.deepEqual(reattachable, []);
+
+  const staleStopped = {
+    ...structured,
+    state: 'exited',
+    executionOwner: 'stopped',
+    runtimeState: 'closed'
+  };
+  const recovered = reconcileOwnedSessions([staleStopped], []).owned[0];
+  assert.equal(recovered.state, 'background');
+  assert.equal(recovered.executionOwner, 'structured');
+
+  const failed = {
+    ...staleStopped,
+    runtimeState: 'failed',
+    lastError: 'structured connection failed'
+  };
+  const retainedFailure = reconcileOwnedSessions([failed], []).owned[0];
+  assert.equal(retainedFailure.state, 'exited');
+  assert.equal(retainedFailure.executionOwner, 'stopped');
+  assert.equal(retainedFailure.runtimeState, 'failed');
+}
 { // a pre-runtime record migrates without claiming structured ownership
   const current = adoptAgentSession(scanRecord, mint);
   const {

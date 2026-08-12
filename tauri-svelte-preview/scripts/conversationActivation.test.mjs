@@ -79,5 +79,15 @@ assert.match(
   /console\.(?:debug|warn)\('mcb next: conversation activation'/,
   'each activation attempt must be visible in future frontend logs'
 );
+assert.match(
+  page,
+  /const sessionReasoningEffort = reasoningEffort \?\? conversation\?\.agentConfig\.reasoningEffort/,
+  're-entry must retain the session-start effort when it reconnects an app session'
+);
+assert.match(
+  page,
+  /reasoningEffort: getConversationSession\(ownedId\)\?\.agentConfig\.reasoningEffort/,
+  'restart must retain the session-start effort when it reconnects an app session'
+);
 
 console.log('conversationActivation.test.mjs passed');

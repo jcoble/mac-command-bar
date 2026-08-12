@@ -412,8 +412,7 @@ pub struct AcpClient {
     conversation_config_protocol: ConversationConfigProtocol,
 }
 
-const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 4] =
-    ["opus", "claude-opus-5", "fable", "claude-fable-5"];
+const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 3] = ["opus", "claude-opus-5", "claude-fable-5"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConversationConfigProtocol {
@@ -1379,7 +1378,6 @@ done"#,
                     "haiku".into(),
                     "opus".into(),
                     "claude-opus-5".into(),
-                    "fable".into(),
                     "claude-fable-5".into(),
                 ],
                 reasoning_effort: None,

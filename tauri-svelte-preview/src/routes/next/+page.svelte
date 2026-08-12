@@ -1050,13 +1050,14 @@
       setConversationMode(ownedId, 'structured');
       if (activation.kind === 'view') return;
 
+      const sessionReasoningEffort = reasoningEffort ?? conversation?.agentConfig.reasoningEffort;
       const structuredActivation = ensureStructuredConversation({
         ownedId,
         provider,
         cwd: selected.cwd,
         nativeSessionId: selected.nativeSessionId,
         nativeSessionMode: activation.nativeSessionMode,
-        reasoningEffort
+        reasoningEffort: sessionReasoningEffort
       });
       const connected = (): void => {
         updateOwnedSession(ownedId, { lastError: null });
@@ -1336,19 +1337,37 @@
         restarting.delete(ownedId);
         return;
       }
-      updateOwnedSession(ownedId, { state: 'live', lastError: null });
+      updateOwnedSession(ownedId, {
+        state: 'live',
+        executionOwner: 'structured',
+        runtimeState: 'starting',
+        ptySessionId: null,
+        lastError: null
+      });
       try {
         await ensureStructuredConversation({
           ownedId,
           provider,
           cwd: session.cwd,
           nativeSessionId: session.nativeSessionId,
-          nativeSessionMode: 'resume'
+          nativeSessionMode: 'resume',
+          reasoningEffort: getConversationSession(ownedId)?.agentConfig.reasoningEffort
         });
         await selectOwned(ownedId);
+        updateOwnedSession(ownedId, {
+          state: 'live',
+          executionOwner: 'structured',
+          runtimeState: 'ready',
+          lastError: null
+        });
         frameControls?.showCenterPanel('session');
       } catch (error) {
-        updateOwnedSession(ownedId, { state: 'exited', lastError: describeError(error) });
+        updateOwnedSession(ownedId, {
+          state: 'exited',
+          executionOwner: 'stopped',
+          runtimeState: 'failed',
+          lastError: describeError(error)
+        });
         if (!disposed) rail.error = `could not retry ${provider} session: ${describeError(error)}`;
       } finally {
         restarting.delete(ownedId);

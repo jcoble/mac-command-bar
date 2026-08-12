@@ -73,7 +73,9 @@
   const project = $derived(canonicalCwd(session.projectPath) || 'No project recorded');
   const location = $derived(canonicalCwd(session.cwd || session.projectPath) || 'No worktree recorded');
   const providerLabel = $derived(session.viaCmux ? `cmux · ${session.agent}` : session.agent);
-  const conversation = $derived(conversationSessions[session.ownedId] ?? null);
+  const conversation = $derived(
+    session.state === 'exited' ? null : conversationSessions[session.ownedId] ?? null
+  );
   const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
 
   /** The second line: where this session lives, in the fewest words. */
@@ -94,28 +96,27 @@
   const activeTurnId = $derived(conversation?.activeTurnId ?? session.activeTurnId ?? null);
 
   /**
-   * The same answer the indicator draws, worked out here for two decisions the
-   * row owns: a stopped session gets one compact Start action in the overlay,
-   * so the marker is not another restart button; and a row that is working or
-   * waiting keeps its jump buttons on screen instead of hiding them until the
-   * pointer arrives.
+   * The same answer the indicator draws, worked out here so a stopped session
+   * gets one compact marker and one Start action in the hover/focus overlay.
    */
   const presence = $derived(
-    deriveSessionPresence(
-      {
-        terminalState: session.state,
-        connectionState,
-        activeTurnId,
-        sending: conversation?.sending,
-        pendingApprovalCount,
-        runtimeState
-      },
-      $sessionPresenceHistory[session.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY,
-      0
-    ).state
+    session.state === 'exited'
+      ? 'disconnected'
+      : deriveSessionPresence(
+          {
+            terminalState: session.state,
+            connectionState,
+            activeTurnId,
+            sending: conversation?.sending,
+            pendingApprovalCount,
+            runtimeState
+          },
+          $sessionPresenceHistory[session.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY,
+          0
+        ).state
   );
   const presenceIsRestart = $derived(presence === 'disconnected' || session.state === 'exited');
-  const busy = $derived(presence === 'working' || presence === 'needs-attention');
+  let overlayVisible = $state(false);
 
   function stopPropagation(event: MouseEvent, action?: () => void): void {
     event.stopPropagation();
@@ -164,24 +165,50 @@
   function hideCard(): void {
     cardPlacement = null;
   }
+
+  function showOverlay(event: { currentTarget: EventTarget | null }): void {
+    overlayVisible = true;
+    placeCard(event);
+  }
+
+  function hideOverlay(): void {
+    overlayVisible = false;
+    hideCard();
+  }
+
+  function handleFocusOut(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    if (
+      next instanceof Node &&
+      event.currentTarget instanceof Node &&
+      event.currentTarget.contains(next)
+    ) {
+      return;
+    }
+    hideOverlay();
+  }
 </script>
 
 <li
   data-testid="worktree-agent-row"
   class:active
-  class="row group relative min-w-0 list-none border-b border-[var(--color-border)]/35"
+  class="row relative min-w-0 list-none border-b border-[var(--color-border)]/35"
   title={`${location} · ${providerLabel}`}
-  onmouseenter={placeCard}
-  onmouseleave={hideCard}
-  onfocusin={placeCard}
-  onfocusout={hideCard}
+  onmouseenter={showOverlay}
+  onmouseleave={hideOverlay}
+  onfocusin={showOverlay}
+  onfocusout={handleFocusOut}
 >
   <div class="row-body">
     <span data-testid="worktree-agent-runtime" class="row-presence">
       {#if presenceIsRestart}
-        <span data-testid="worktree-agent-stopped" aria-label="Session stopped" title="Session stopped">
-          Stopped
-        </span>
+        <span
+          data-testid="worktree-agent-stopped"
+          class="stopped-mark"
+          role="img"
+          aria-label="Session stopped"
+          title="Session stopped"
+        ></span>
       {:else}
         <span data-testid="worktree-agent-jump-session">
           <IconButton
@@ -223,145 +250,141 @@
       <span data-testid="worktree-agent-meta" class="row-meta">{meta}</span>
     </button>
 
-    <!-- Every control the row offers, pinned to its right edge and lifted out
-         of the flow. The title keeps the full width of the row until the
-         pointer arrives, and then these slide over the end of it instead of
-         reserving a permanent strip of empty space beside it. -->
-    <span
-      data-testid="worktree-agent-overlay"
-      class="row-overlay"
-      class:always-on={busy || presenceIsRestart}
-    >
-      {#if presenceIsRestart}
-        <span data-testid="worktree-agent-start">
-          <IconButton
-            label="Start session"
-            size="sm"
-            side="top"
-            class="text-[var(--color-text-2)]"
-            onclick={startSession}
-          >
-            <Play class="size-3.5" aria-hidden="true" />
-          </IconButton>
+    <!-- Controls are mounted only while the row is hovered or focused. They
+         sit over the end of the title instead of reserving permanent width. -->
+    {#if overlayVisible}
+      <span data-testid="worktree-agent-overlay" class="row-overlay">
+        {#if presenceIsRestart}
+          <span data-testid="worktree-agent-start">
+            <IconButton
+              label="Start session"
+              size="sm"
+              side="top"
+              class="text-[var(--color-text-2)]"
+              onclick={startSession}
+            >
+              <Play class="size-3.5" aria-hidden="true" />
+            </IconButton>
+          </span>
+        {/if}
+        <span data-testid="worktree-agent-jump" class="row-cluster">
+          <span data-testid="worktree-agent-jump-editor">
+            <IconButton
+              label="Open editor"
+              size="xs"
+              side="top"
+              class="text-[var(--color-text-2)]"
+              onclick={(event) => jump(event, 'editor')}
+            >
+              <FileCode2 class="size-3.5" aria-hidden="true" />
+            </IconButton>
+          </span>
+          <span data-testid="worktree-agent-jump-source-control">
+            <IconButton
+              label="Open source control"
+              size="xs"
+              side="top"
+              class="text-[var(--color-text-2)]"
+              onclick={(event) => jump(event, 'source-control')}
+            >
+              <GitBranch class="size-3.5" aria-hidden="true" />
+            </IconButton>
+          </span>
         </span>
-      {/if}
-      <span data-testid="worktree-agent-jump" class="row-cluster">
-        <span data-testid="worktree-agent-jump-editor">
-          <IconButton
-            label="Open editor"
-            size="xs"
-            side="top"
-            class="text-[var(--color-text-2)]"
-            onclick={(event) => jump(event, 'editor')}
-          >
-            <FileCode2 class="size-3.5" aria-hidden="true" />
-          </IconButton>
-        </span>
-        <span data-testid="worktree-agent-jump-source-control">
-          <IconButton
-            label="Open source control"
-            size="xs"
-            side="top"
-            class="text-[var(--color-text-2)]"
-            onclick={(event) => jump(event, 'source-control')}
-          >
-            <GitBranch class="size-3.5" aria-hidden="true" />
-          </IconButton>
-        </span>
-      </span>
 
-      <span data-testid="worktree-agent-actions" class="row-cluster">
-        {#if shelf === 'working' && onComplete}
-          <span data-testid="worktree-agent-mark-done">
-            <IconButton
-              label="Mark done"
-              size="sm"
-              side="top"
-              class="text-[var(--color-text-2)]"
-              onclick={(event) => stopPropagation(event, onComplete)}
-            >
-              <Check class="size-3.5" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {:else if shelf === 'done' && onReopen}
-          <span data-testid="worktree-agent-reopen">
-            <IconButton
-              label="Move back to Working"
-              size="sm"
-              side="top"
-              class="text-[var(--color-text-2)]"
-              onclick={(event) => stopPropagation(event, onReopen)}
-            >
-              <Undo2 class="size-3.5" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-        {#if shelf === 'done' && onSettle}
-          <span data-testid="worktree-agent-settle">
-            <IconButton
-              label="Move to Settled"
-              size="sm"
-              side="top"
-              class="text-[var(--color-text-2)]"
-              onclick={(event) => stopPropagation(event, onSettle)}
-            >
-              <Archive class="size-3.5" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {:else if shelf === 'settled' && onUnsettle}
-          <span data-testid="worktree-agent-unsettle">
-            <IconButton
-              label="Move back to Done"
-              size="sm"
-              side="top"
-              class="text-[var(--color-text-2)]"
-              onclick={(event) => stopPropagation(event, onUnsettle)}
-            >
-              <RotateCcw class="size-3.5" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-        {#if shelf === 'done' && onAskRemove}
-          <span data-testid="worktree-agent-remove">
-            <IconButton
-              label="Remove from sessions"
-              size="sm"
-              side="top"
-              class="text-[var(--color-text-2)]"
-              onclick={(event) => stopPropagation(event, onAskRemove)}
-            >
-              <Trash2 class="size-3.5" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-        {#if onClose && session.state !== 'exited'}
-          <span data-testid="worktree-agent-close">
-            <IconButton
-              label="Close terminal"
-              size="sm"
-              side="top"
-              class="text-[var(--color-text-2)]"
-              onclick={(event) => stopPropagation(event, onClose)}
-            >
-              <Terminal class="size-3.5" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-        {#if onToggle}
-          <span data-testid="worktree-agent-expand">
-            <IconButton
-              label={expanded ? 'Hide details' : 'Show details'}
-              size="sm"
-              side="top"
-              class="text-[var(--color-text-2)]"
-              onclick={(event) => stopPropagation(event, onToggle)}
-            >
-              <ChevronRight class={expanded ? 'size-3.5 rotate-90' : 'size-3.5'} aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
+        <span data-testid="worktree-agent-actions" class="row-cluster">
+          {#if shelf === 'working' && onComplete}
+            <span data-testid="worktree-agent-mark-done">
+              <IconButton
+                label="Mark done"
+                size="sm"
+                side="top"
+                class="text-[var(--color-text-2)]"
+                onclick={(event) => stopPropagation(event, onComplete)}
+              >
+                <Check class="size-3.5" aria-hidden="true" />
+              </IconButton>
+            </span>
+          {:else if shelf === 'done' && onReopen}
+            <span data-testid="worktree-agent-reopen">
+              <IconButton
+                label="Move back to Working"
+                size="sm"
+                side="top"
+                class="text-[var(--color-text-2)]"
+                onclick={(event) => stopPropagation(event, onReopen)}
+              >
+                <Undo2 class="size-3.5" aria-hidden="true" />
+              </IconButton>
+            </span>
+          {/if}
+          {#if shelf === 'done' && onSettle}
+            <span data-testid="worktree-agent-settle">
+              <IconButton
+                label="Move to Settled"
+                size="sm"
+                side="top"
+                class="text-[var(--color-text-2)]"
+                onclick={(event) => stopPropagation(event, onSettle)}
+              >
+                <Archive class="size-3.5" aria-hidden="true" />
+              </IconButton>
+            </span>
+          {:else if shelf === 'settled' && onUnsettle}
+            <span data-testid="worktree-agent-unsettle">
+              <IconButton
+                label="Move back to Done"
+                size="sm"
+                side="top"
+                class="text-[var(--color-text-2)]"
+                onclick={(event) => stopPropagation(event, onUnsettle)}
+              >
+                <RotateCcw class="size-3.5" aria-hidden="true" />
+              </IconButton>
+            </span>
+          {/if}
+          {#if shelf === 'done' && onAskRemove}
+            <span data-testid="worktree-agent-remove">
+              <IconButton
+                label="Remove from sessions"
+                size="sm"
+                side="top"
+                class="text-[var(--color-text-2)]"
+                onclick={(event) => stopPropagation(event, onAskRemove)}
+              >
+                <Trash2 class="size-3.5" aria-hidden="true" />
+              </IconButton>
+            </span>
+          {/if}
+          {#if onClose && session.state !== 'exited' && session.ptySessionId}
+            <span data-testid="worktree-agent-close">
+              <IconButton
+                label="Close terminal"
+                size="sm"
+                side="top"
+                class="text-[var(--color-text-2)]"
+                onclick={(event) => stopPropagation(event, onClose)}
+              >
+                <Terminal class="size-3.5" aria-hidden="true" />
+              </IconButton>
+            </span>
+          {/if}
+          {#if onToggle}
+            <span data-testid="worktree-agent-expand">
+              <IconButton
+                label={expanded ? 'Hide details' : 'Show details'}
+                size="sm"
+                side="top"
+                class="text-[var(--color-text-2)]"
+                onclick={(event) => stopPropagation(event, onToggle)}
+              >
+                <ChevronRight class={expanded ? 'size-3.5 rotate-90' : 'size-3.5'} aria-hidden="true" />
+              </IconButton>
+            </span>
+          {/if}
+        </span>
       </span>
-    </span>
+    {/if}
   </div>
 
   {#if cardPlacement}
@@ -450,6 +473,14 @@
     align-items: center;
   }
 
+  .stopped-mark {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--color-text-2);
+  }
+
   .row-select {
     display: flex;
     min-width: 0;
@@ -517,8 +548,8 @@
     background: var(--color-elevated);
     box-shadow: var(--shadow-sm);
     isolation: isolate;
-    opacity: 0;
-    pointer-events: none;
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .row-overlay::before {
@@ -538,22 +569,9 @@
     gap: 2px;
   }
 
-  /* A row that is doing something, or waiting on you, keeps its controls on
-     screen — those are the rows you reach for without aiming first. */
-  .row-overlay.always-on,
-  .group:hover .row-overlay,
-  .group:focus-within .row-overlay {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
   @media (prefers-reduced-motion: no-preference) {
     .row {
       transition: background 140ms ease;
-    }
-
-    .row-overlay {
-      transition: opacity 140ms ease;
     }
   }
 

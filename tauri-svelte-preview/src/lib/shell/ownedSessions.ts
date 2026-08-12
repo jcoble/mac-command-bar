@@ -328,6 +328,20 @@ export function reconcileOwnedSessions(
   const reattachable: OwnedSession[] = [];
 
   for (const session of stored) {
+    // Structured sessions do not own a PTY. A reload must leave their native
+    // record resumable instead of treating the absent terminal as proof that
+    // the session stopped; otherwise the row paints the stopped affordance and
+    // a later restart keeps the stale stopped owner.
+    if (session.origin === 'app' && session.ptySessionId === null) {
+      const failed = session.state === 'exited' && (session.runtimeState === 'failed' || session.lastError !== null);
+      if (failed) {
+        owned.push({ ...session, state: 'exited', executionOwner: 'stopped', runtimeState: 'failed' });
+      } else {
+        owned.push({ ...session, state: 'background', executionOwner: 'structured', runtimeState: 'closed' });
+      }
+      continue;
+    }
+
     const match = session.ptySessionId ? liveById.get(session.ptySessionId) : undefined;
     if (match && !match.exited) {
       const next: OwnedSession = {

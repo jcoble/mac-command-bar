@@ -39,6 +39,14 @@ function humanSummary(raw: string): string {
     return "This session's history is missing, so it can't be resumed.";
   }
 
+  if (
+    normalized.includes('authentication required')
+    || normalized.includes('auth_required')
+    || normalized.includes('please run /login')
+  ) {
+    return 'Agent login required. Run `claude /login` in a terminal, then try again.';
+  }
+
   if (code === 'invalid-response' || normalized.includes('did not include sessionid')) {
     return 'The agent sent an unexpected reply.';
   }

@@ -103,5 +103,10 @@ assert.match(
   /validateStructuredSendGeneration\([\s\S]*?if \(validatedGeneration === null[\s\S]*?throw new Error\([^)]*generation/,
   'the service must reject a stale generation before invoking the send request'
 );
+assert.match(
+  serviceSource,
+  /nativeSessionMode,[\s\S]*?reasoningEffort: state\.agentConfig\.reasoningEffort/,
+  'revival must retain the session-start effort when it creates a new adapter process'
+);
 
 console.log('conversationSendRecovery.test.mjs passed');

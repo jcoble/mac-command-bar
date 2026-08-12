@@ -1,0 +1,1451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Session rail redesign — mockup</title>
+<style>
+/* ============================================================
+   Token values copied from tauri-svelte-preview/src/lib/shell/styles/nextTokens.css
+   so this mockup renders in the app's real palette.
+   ============================================================ */
+:root {
+  color-scheme: dark;
+
+  --color-bg: #161719;
+  --color-surface: #1d1f22;
+  --color-elevated: #25282d;
+
+  --color-text: #f1f3f5;
+  --color-text-2: #b3b7bf;
+  --color-text-3: #8b919b;
+  --color-disabled-text: #7f858e;
+
+  --color-accent: #6ed8be;
+  --color-border: rgba(241, 243, 245, 0.12);
+  --color-focus: rgba(110, 216, 190, 0.42);
+
+  --color-selected: #263734;
+  --color-selected-border: #5cb29b;
+  --color-hover: #292c31;
+
+  --color-live: #74b6d8;
+  --color-good: #85c79a;
+  --color-bad: #e28a98;
+  --color-attention: #d7b77e;
+  --color-idle: #969ca6;
+
+  --color-on-accent: #10201b;
+  --color-live-bg: rgba(116, 182, 216, 0.12);
+  --color-good-bg: rgba(133, 199, 154, 0.12);
+  --color-bad-bg: rgba(226, 138, 152, 0.12);
+  --color-attention-bg: rgba(215, 183, 126, 0.12);
+
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.26), 0 1px 3px rgba(0, 0, 0, 0.16);
+  --shadow-lg: 0 16px 42px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.2);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 40px 48px 96px;
+  background: #101113;
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page { max-width: 1614px; margin: 0 auto; }
+
+/* ---------- page furniture ---------- */
+.page-head { margin-bottom: 40px; max-width: 860px; }
+.page-head h1 { margin: 0 0 10px; font-size: 24px; font-weight: 650; letter-spacing: -0.01em; }
+.page-head p { margin: 0; color: var(--color-text-2); font-size: 14px; line-height: 1.6; }
+
+section { margin-bottom: 56px; }
+
+.sec-head { margin-bottom: 18px; max-width: 900px; }
+.sec-head h2 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+.sec-head h3 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
+.sec-head p { margin: 0; color: var(--color-text-2); font-size: 13px; line-height: 1.6; }
+
+.stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
+  padding: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: #131416;
+}
+
+.notes { max-width: 420px; }
+.notes h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.notes p { margin: 0 0 14px; color: var(--color-text-2); font-size: 13px; line-height: 1.62; }
+.notes ul { margin: 0 0 14px; padding-left: 18px; color: var(--color-text-2); font-size: 13px; line-height: 1.62; }
+.notes li { margin-bottom: 6px; }
+.notes strong { color: var(--color-text); font-weight: 600; }
+.notes code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--color-text);
+  background: var(--color-elevated);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.caption {
+  margin-top: 10px;
+  color: var(--color-text-3);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* ============================================================
+   THE RAIL
+   ============================================================ */
+.rail {
+  width: 300px;
+  flex: 0 0 300px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+.rail-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.rail-title { flex: 1 1 auto; font-size: 13px; font-weight: 600; }
+.rail-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.rail-btn:hover { background: var(--color-hover); color: var(--color-text); }
+.rail-btn.primary { color: var(--color-accent); }
+
+.rail-body { padding-bottom: 8px; }
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 14px 12px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.group-count {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--color-text-3);
+  background: var(--color-elevated);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+/* ---------- one row ---------- */
+.row {
+  position: relative;
+  display: block;
+  padding: 8px 10px 9px 12px;
+  cursor: default;
+  transition: background 140ms ease;
+}
+.row + .row { box-shadow: inset 0 1px 0 rgba(241, 243, 245, 0.045); }
+.row:hover { background: var(--color-hover); }
+
+.row.selected { background: var(--color-selected); }
+.row.selected::before {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 2px;
+  background: var(--color-selected-border);
+}
+.row.selected:hover { background: color-mix(in srgb, var(--color-selected) 82%, var(--color-hover)); }
+.row.selected .row-title { font-weight: 600; }
+
+.row-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.row-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.38;
+  color: var(--color-text);
+}
+.row-meta-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 4px 0 0 22px;
+}
+.row-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--color-text-3);
+}
+.row-meta .sep { opacity: 0.55; padding: 0 1px; }
+.row-meta .branch { font-family: var(--mono); font-size: 11.5px; }
+.row-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--color-text-3);
+  opacity: 0.85;
+}
+
+/* provider glyph in front of the title */
+.provider {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-3);
+}
+.provider svg { width: 14px; height: 14px; }
+
+/* model chip on the meta line */
+.chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 17px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--color-elevated);
+  color: var(--color-text-2);
+  font-size: 11px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.chip svg { width: 11px; height: 11px; opacity: 0.8; }
+.chip.project { background: rgba(241, 243, 245, 0.07); }
+
+/* ---------- presence marker ---------- */
+.presence {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-idle);
+}
+.presence.working .dot { background: var(--color-accent); }
+.presence.working::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--color-accent);
+  opacity: 0.45;
+  animation: pulse 1.8s ease-out infinite;
+}
+@keyframes pulse {
+  0%   { transform: scale(0.6); opacity: 0.55; }
+  70%  { transform: scale(1);   opacity: 0; }
+  100% { transform: scale(1);   opacity: 0; }
+}
+.presence.attention .dot { background: var(--color-attention); }
+.presence.attention::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 999px;
+  border: 1.5px solid var(--color-attention);
+  opacity: 0.35;
+}
+.presence.idle .dot { background: var(--color-idle); opacity: 0.85; }
+.presence.stopped .dot {
+  width: 7px;
+  height: 7px;
+  background: transparent;
+  border: 1.5px solid var(--color-text-3);
+  opacity: 0.6;
+}
+.presence.done .dot { background: var(--color-good); }
+.presence.failed .dot { background: var(--color-bad); }
+
+@media (prefers-reduced-motion: reduce) {
+  .presence.working::after { animation: none; opacity: 0.4; }
+}
+
+/* ---------- hover action cluster ---------- */
+.row .cluster { display: none; }
+.row:hover .cluster,
+.row.is-hovered .cluster { display: inline-flex; }
+.row.is-hovered { background: var(--color-hover); }
+.row.is-hovered.selected { background: color-mix(in srgb, var(--color-selected) 82%, var(--color-hover)); }
+
+.cluster {
+  position: absolute;
+  z-index: 3;
+  top: 5px;
+  right: 4px;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--color-elevated);
+  box-shadow: var(--shadow-sm), inset 0 0 0 1px rgba(241, 243, 245, 0.06);
+  isolation: isolate;
+}
+.cluster::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 0; bottom: 0; left: -32px;
+  width: 32px;
+  background: linear-gradient(to right, transparent, var(--color-elevated) 78%);
+}
+.act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.act svg { width: 16px; height: 16px; }
+.act:hover { background: rgba(241, 243, 245, 0.1); color: var(--color-text); }
+.act.session:hover { background: rgba(110, 216, 190, 0.16); color: var(--color-accent); }
+.act.editor:hover  { background: var(--color-live-bg); color: var(--color-live); }
+.act.git:hover     { background: var(--color-good-bg); color: var(--color-good); }
+.act.more:hover    { background: rgba(241, 243, 245, 0.12); color: var(--color-text); }
+
+/* ============================================================
+   HOVER DETAIL CARD
+   ============================================================ */
+.card {
+  width: 336px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  padding: 14px 15px 13px;
+}
+.card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-text);
+  line-height: 1.4;
+  margin-bottom: 3px;
+}
+.card-sub {
+  font-size: 12px;
+  color: var(--color-text-3);
+  margin-bottom: 12px;
+}
+.card-lines { display: flex; flex-direction: column; gap: 9px; }
+.card-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+.card-line svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--color-text-3); }
+.card-line .val {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+.card-line .val.mono { font-family: var(--mono); font-size: 12.5px; }
+.card-line .muted { color: var(--color-text-3); }
+.card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 13px;
+  padding-top: 11px;
+  border-top: 1px solid var(--color-border);
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+.card-foot .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 19px;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 550;
+}
+.pill.working { background: rgba(110, 216, 190, 0.14); color: var(--color-accent); }
+.pill.attention { background: var(--color-attention-bg); color: var(--color-attention); }
+
+/* card anchored beside a live rail */
+.rail-with-card { position: relative; display: flex; align-items: flex-start; gap: 0; }
+.card-anchor { margin-left: 8px; margin-top: 96px; }
+
+/* ============================================================
+   NEW SESSION IN-THREAD
+   ============================================================ */
+.thread {
+  width: 760px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  overflow: visible;
+}
+.thread-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12.5px;
+  color: var(--color-text-3);
+}
+.thread-top .tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 550;
+}
+.thread-top .tab svg { width: 13px; height: 13px; color: var(--color-accent); }
+
+.thread-body { padding: 44px 40px 24px; text-align: center; }
+.thread-h {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+}
+.thread-h .proj { color: var(--color-accent); }
+.thread-p { margin: 0 auto 26px; max-width: 460px; color: var(--color-text-3); font-size: 13px; line-height: 1.6; }
+
+.composer {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: 14px 14px 10px;
+  text-align: left;
+  box-shadow: var(--shadow-sm);
+}
+.composer:focus-within { box-shadow: 0 0 0 2px var(--color-focus); }
+.composer-input {
+  min-height: 76px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-text-3);
+}
+.composer-input .typed { color: var(--color-text); }
+.caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 16px;
+  vertical-align: -3px;
+  background: var(--color-accent);
+}
+
+.pills {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--color-border);
+}
+.pill-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-2);
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+  font-family: inherit;
+}
+.pill-btn:hover { background: var(--color-hover); color: var(--color-text); }
+.pill-btn svg { width: 14px; height: 14px; opacity: 0.85; }
+.pill-btn .chev { width: 12px; height: 12px; opacity: 0.55; }
+.pill-btn.open {
+  background: var(--color-elevated);
+  border-color: rgba(110, 216, 190, 0.4);
+  color: var(--color-text);
+}
+.pill-btn .k { color: var(--color-text-3); font-weight: 500; }
+.send {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: 12.5px;
+  font-weight: 650;
+  font-family: inherit;
+  cursor: pointer;
+}
+.send svg { width: 14px; height: 14px; }
+
+/* model menu */
+.menu-wrap { position: relative; }
+.menu {
+  position: absolute;
+  z-index: 20;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 292px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  text-align: left;
+}
+.menu-group {
+  padding: 8px 8px 4px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--color-text-2);
+  cursor: pointer;
+}
+.menu-item:hover { background: var(--color-hover); color: var(--color-text); }
+.menu-item.on { background: var(--color-selected); color: var(--color-text); }
+.menu-item .name { flex: 1 1 auto; }
+.menu-item .hint { font-size: 11.5px; color: var(--color-text-3); }
+.menu-item .tick { width: 14px; height: 14px; color: var(--color-accent); }
+.menu-item .tick.hide { visibility: hidden; }
+.menu-sep { height: 1px; margin: 5px 4px; background: var(--color-border); }
+
+/* ============================================================
+   EDGE STATES
+   ============================================================ */
+.edge-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+.edge-col { width: 300px; }
+.edge-label {
+  margin-bottom: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-2);
+}
+.edge-frame {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+/* run group */
+.run-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 9px 12px;
+  cursor: default;
+}
+.run-head:hover { background: var(--color-hover); }
+.run-title { flex: 1 1 auto; font-size: 13px; font-weight: 600; }
+.run-progress { font-size: 11.5px; color: var(--color-text-3); }
+.twist { width: 13px; height: 13px; color: var(--color-text-3); flex: 0 0 auto; }
+.step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px 6px 30px;
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+.step:hover { background: var(--color-hover); }
+.step .sname { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step .stime { font-size: 11.5px; color: var(--color-text-3); }
+.step .presence { width: 12px; height: 12px; }
+.step .dot { width: 7px; height: 7px; }
+.run-bar {
+  height: 2px;
+  margin: 2px 12px 8px 30px;
+  border-radius: 999px;
+  background: rgba(241, 243, 245, 0.08);
+  overflow: hidden;
+}
+.run-bar i { display: block; height: 100%; width: 60%; background: var(--color-accent); }
+
+/* tooltip rendering used in captions */
+.tip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--color-elevated);
+  box-shadow: var(--shadow-sm);
+  color: var(--color-text);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.tip-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.tip-row .lab { width: 62px; font-size: 12px; color: var(--color-text-3); }
+
+/* ---------- legend ---------- */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: #131416;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 236px;
+  font-size: 12.5px;
+  color: var(--color-text-2);
+}
+.legend-item b { color: var(--color-text); font-weight: 600; }
+
+/* ---------- before / after toggle ---------- */
+.toggle {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface);
+  margin-bottom: 16px;
+}
+.toggle button {
+  height: 27px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-text-2);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.toggle button:hover { color: var(--color-text); }
+.toggle button[aria-pressed="true"] { background: var(--color-elevated); color: var(--color-text); }
+
+/* the "today" rail, shown for contrast */
+.old-row { padding: 8px; display: flex; gap: 8px; align-items: flex-start; }
+.old-row + .old-row { border-top: 1px solid rgba(241, 243, 245, 0.05); }
+.old-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.old-meta { font-size: 12px; color: var(--color-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.old-stopped {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--color-text-3);
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.old-strip { display: flex; gap: 2px; flex: 0 0 auto; }
+.old-strip i {
+  display: block;
+  width: 3px;
+  height: 3px;
+  margin-top: 7px;
+  border-radius: 999px;
+  background: rgba(241, 243, 245, 0.35);
+}
+.hidden { display: none; }
+</style>
+</head>
+<body>
+
+<!-- ============ icon sprite ============ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-base" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></g>
+  </defs>
+  <symbol id="bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 5V3"/><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M9 12h.01M15 12h.01M9.5 16h5"/>
+  </symbol>
+  <symbol id="terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m5 8 4 4-4 4M12 17h7"/><rect x="2" y="3" width="20" height="18" rx="3" opacity="0.35"/>
+  </symbol>
+  <symbol id="sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 4 12.6 8.4 17 10l-4.4 1.6L11 16l-1.6-4.4L5 10l4.4-1.6z"/><path d="M18 4.5v3M19.5 6h-3"/>
+  </symbol>
+  <symbol id="git-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 4v11"/><circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="4" r="0.01"/><circle cx="18" cy="7" r="2.5"/><path d="M18 9.5c0 3-3 4-6 4.5"/>
+  </symbol>
+  <symbol id="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h9A1.5 1.5 0 0 1 21 10v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18z"/>
+  </symbol>
+  <symbol id="laptop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="5" width="16" height="11" rx="1.6"/><path d="M2 19h20"/>
+  </symbol>
+  <symbol id="cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/>
+    <path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/>
+  </symbol>
+  <symbol id="clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/>
+  </symbol>
+  <symbol id="coins" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="9" cy="7" rx="6" ry="3"/><path d="M3 7v5c0 1.7 2.7 3 6 3s6-1.3 6-3"/>
+    <path d="M15 10.2c3.2.2 6 1.4 6 2.8v4c0 1.7-2.7 3-6 3s-6-1.3-6-3v-2"/>
+  </symbol>
+  <symbol id="message" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 15a2.5 2.5 0 0 1-2.5 2.5H8L4 21V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5z"/>
+  </symbol>
+  <symbol id="file-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>
+    <path d="m10.5 12.5-2 2 2 2M13.5 12.5l2 2-2 2"/>
+  </symbol>
+  <symbol id="more" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M6 12h.01M12 12h.01M18 12h.01"/>
+  </symbol>
+  <symbol id="plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+    <path d="M12 5v14M5 12h14"/>
+  </symbol>
+  <symbol id="chev-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m6 9 6 6 6-6"/>
+  </symbol>
+  <symbol id="chev-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m9 6 6 6-6 6"/>
+  </symbol>
+  <symbol id="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m5 12.5 4.5 4.5L19 7"/>
+  </symbol>
+  <symbol id="send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 12h13M11.5 6.5 17 12l-5.5 5.5"/>
+  </symbol>
+  <symbol id="gauge" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 14 3.5-3.5"/>
+  </symbol>
+  <symbol id="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 3.5 5 6v6c0 4 3 7 7 8.5 4-1.5 7-4.5 7-8.5V6z"/>
+  </symbol>
+  <symbol id="search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>
+  </symbol>
+  <symbol id="list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>
+  </symbol>
+</svg>
+
+<div class="page">
+
+<header class="page-head">
+  <h1>Session rail redesign</h1>
+  <p>
+    Every row states three things and stops: what the session is, where it lives, and whether it
+    wants you. Everything else — actions, machine, full paths, cost — appears on hover and takes no
+    width when it is not needed. Rendered in the shell's own palette (<code>nextTokens.css</code>),
+    at 300px rail width.
+  </p>
+</header>
+
+<!-- ============================================================
+     1. THE RAIL
+     ============================================================ -->
+<section>
+  <div class="sec-head">
+    <h2>1 · The rail</h2>
+    <h3>Two-line rows, three groups, nothing always-on</h3>
+    <p>
+      Presence is a dot, never a word. A stopped session shows a hollow ring and says "Stopped" only
+      in its tooltip, so the title keeps the full width. Clicking a row loads and readies the
+      conversation, so there is no Start button — and no close-terminal button when no terminal is
+      open.
+    </p>
+  </div>
+
+  <div class="toggle" role="group" aria-label="Compare">
+    <button id="btn-after" aria-pressed="true" onclick="showRail('after')">Proposed</button>
+    <button id="btn-before" aria-pressed="false" onclick="showRail('before')">Today</button>
+  </div>
+
+  <div class="stage">
+    <!-- ===== proposed rail ===== -->
+    <div class="rail" id="rail-after">
+      <div class="rail-top">
+        <span class="rail-title">Sessions</span>
+        <button class="rail-btn" title="Search sessions"><svg width="15" height="15"><use href="#search"/></svg></button>
+        <button class="rail-btn" title="View options"><svg width="15" height="15"><use href="#list"/></svg></button>
+        <button class="rail-btn primary" title="New session"><svg width="16" height="16"><use href="#plus"/></svg></button>
+      </div>
+
+      <div class="rail-body">
+        <div class="group-head">Working <span class="group-count">4</span></div>
+
+        <!-- selected + working -->
+        <div class="row selected">
+          <div class="row-title-line">
+            <span class="presence working" title="Working"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#bot"/></svg></span>
+            <span class="row-title">Rail redesign — hover cards and action cluster</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">mac-command-bar<span class="sep">·</span><span class="branch">tsk-808-rail</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>GPT-5.6-Luna</span>
+            <span class="row-time">now</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+
+        <!-- hovered row, cluster pinned open -->
+        <div class="row is-hovered">
+          <div class="row-title-line">
+            <span class="presence attention" title="Waiting on you"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#bot"/></svg></span>
+            <span class="row-title">Approve write to config/agents.json</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">mac-command-bar<span class="sep">·</span><span class="branch">tsk-810-acp</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>Claude</span>
+            <span class="row-time">2m</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+
+        <div class="row">
+          <div class="row-title-line">
+            <span class="presence working" title="Working"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#terminal"/></svg></span>
+            <span class="row-title">Backfill invoice totals in one query</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">EdiPlatform<span class="sep">·</span><span class="branch">tsk-77-totals</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>Codex</span>
+            <span class="row-time">6m</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+
+        <div class="row">
+          <div class="row-title-line">
+            <span class="presence idle" title="Idle"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#bot"/></svg></span>
+            <span class="row-title">Lease renewal reminder emails</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">Rental Command<span class="sep">·</span><span class="branch">tsk-142-renewals</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>GPT-5.6-Luna</span>
+            <span class="row-time">18m</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+
+        <div class="group-head">Done <span class="group-count">3</span></div>
+
+        <div class="row">
+          <div class="row-title-line">
+            <span class="presence done" title="Finished"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#bot"/></svg></span>
+            <span class="row-title">Worktree cleanup sweep</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">mac-command-bar<span class="sep">·</span><span class="branch">tsk-806-cleanup</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>Claude</span>
+            <span class="row-time">1h</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+
+        <!-- stopped but resumable: ring only, no text label -->
+        <div class="row">
+          <div class="row-title-line">
+            <span class="presence stopped" title="Stopped — click to resume"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#terminal"/></svg></span>
+            <span class="row-title">Split the shipment importer</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">EdiPlatform<span class="sep">·</span><span class="branch">tsk-71-importer</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>Codex</span>
+            <span class="row-time">3h</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+
+        <div class="row">
+          <div class="row-title-line">
+            <span class="presence failed" title="Ended with an error"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#bot"/></svg></span>
+            <span class="row-title">Health export nightly job</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">HealthAggregator<span class="sep">·</span><span class="branch">tsk-33-export</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>Claude</span>
+            <span class="row-time">5h</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+
+        <div class="group-head">Settled <span class="group-count">2</span></div>
+
+        <div class="row">
+          <div class="row-title-line">
+            <span class="presence stopped" title="Stopped — click to resume"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#bot"/></svg></span>
+            <span class="row-title">Audit trail dedupe</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">EdiPlatform<span class="sep">·</span><span class="branch">tsk-78-audit</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>GPT-5.6-Luna</span>
+            <span class="row-time">2d</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+
+        <div class="row">
+          <div class="row-title-line">
+            <span class="presence done" title="Finished"><span class="dot"></span></span>
+            <span class="provider"><svg><use href="#terminal"/></svg></span>
+            <span class="row-title">Portfolio site copy pass</span>
+          </div>
+          <div class="row-meta-line">
+            <span class="row-meta">Portfolio Work<span class="sep">·</span><span class="branch">main</span></span>
+            <span class="chip"><svg><use href="#sparkles"/></svg>Claude</span>
+            <span class="row-time">4d</span>
+          </div>
+          <span class="cluster">
+            <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+            <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+            <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+            <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== today's rail, for contrast ===== -->
+    <div class="rail hidden" id="rail-before">
+      <div class="rail-top"><span class="rail-title">Sessions (today)</span></div>
+      <div class="rail-body" style="padding-top:6px">
+        <div class="old-row">
+          <span style="width:7px;height:7px;border-radius:999px;background:var(--color-text-2);margin-top:5px;flex:0 0 auto"></span>
+          <span style="min-width:0;flex:1 1 auto">
+            <span class="old-title" style="display:block">Rail redesign — hover cards and act…</span>
+            <span class="old-meta" style="display:block">No project recorded · tsk-808-rail · c…</span>
+          </span>
+          <span class="old-stopped">Stopped</span>
+          <span class="old-strip"><i></i><i></i><i></i><i></i><i></i></span>
+        </div>
+        <div class="old-row">
+          <span style="width:7px;height:7px;border-radius:999px;background:var(--color-text-2);margin-top:5px;flex:0 0 auto"></span>
+          <span style="min-width:0;flex:1 1 auto">
+            <span class="old-title" style="display:block">Approve write to config/agents.jso…</span>
+            <span class="old-meta" style="display:block">No project recorded · tsk-810-acp · cl…</span>
+          </span>
+          <span class="old-stopped">Stopped</span>
+          <span class="old-strip"><i></i><i></i><i></i><i></i><i></i></span>
+        </div>
+        <div class="old-row">
+          <span style="width:7px;height:7px;border-radius:999px;background:var(--color-text-2);margin-top:5px;flex:0 0 auto"></span>
+          <span style="min-width:0;flex:1 1 auto">
+            <span class="old-title" style="display:block">Backfill invoice totals in one que…</span>
+            <span class="old-meta" style="display:block">No project recorded · tsk-77-totals · c…</span>
+          </span>
+          <span class="old-stopped">Stopped</span>
+          <span class="old-strip"><i></i><i></i><i></i><i></i><i></i></span>
+        </div>
+      </div>
+      <p class="caption" style="padding:10px 12px 12px;margin:0">
+        What the rail does today: a "Stopped" label eating a third of the width, "No project
+        recorded" on every row, a permanent strip of near-invisible dot-sized icons, and titles cut
+        off under it.
+      </p>
+    </div>
+
+    <div class="notes">
+      <h4>What changed</h4>
+      <ul>
+        <li><strong>Presence is a dot.</strong> Working pulses in the mint accent, needs-attention is
+          amber, idle is a solid grey, stopped is a hollow ring. The word "Stopped" lives in the
+          tooltip only.</li>
+        <li><strong>No always-on controls.</strong> The four action icons appear only on hover or
+          keyboard focus, in a rounded cluster flush to the right edge, with a gradient that fades
+          the title underneath instead of clipping it.</li>
+        <li><strong>16px glyphs with real surfaces.</strong> Each button is 26x26 with its own hover
+          fill and a colored accent — mint for Session, blue for Editor, green for Git.</li>
+        <li><strong>No Start button.</strong> Clicking a row loads and readies the conversation; a
+          stopped session resumes on the first send. No close-terminal button unless a terminal is
+          actually open — it moves into the Details menu.</li>
+        <li><strong>Meta line reads left to right:</strong> project, branch, model chip, then last
+          activity right-aligned.</li>
+      </ul>
+      <h4>Tooltips on the cluster</h4>
+      <div class="tip-row"><span class="lab">Session</span><span class="tip">Open the conversation</span></div>
+      <div class="tip-row"><span class="lab">Editor</span><span class="tip">Open the worktree in the editor</span></div>
+      <div class="tip-row"><span class="lab">Git</span><span class="tip">Open source control</span></div>
+      <div class="tip-row"><span class="lab">Details</span><span class="tip">Mark done, settle, close terminal, remove</span></div>
+      <p class="caption">
+        Hover any row above to see the cluster appear. The second row is pinned open so the resting
+        state is visible without a pointer.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     LEGEND
+     ============================================================ -->
+<section>
+  <div class="sec-head">
+    <h2>Legend</h2>
+    <h3>Presence states</h3>
+    <p>Six markers, each with a tooltip. No state is ever spelled out in the row itself.</p>
+  </div>
+  <div class="legend">
+    <div class="legend-item"><span class="presence working"><span class="dot"></span></span><span><b>Working</b> — a turn is running</span></div>
+    <div class="legend-item"><span class="presence attention"><span class="dot"></span></span><span><b>Waiting on you</b> — approval or question</span></div>
+    <div class="legend-item"><span class="presence idle"><span class="dot"></span></span><span><b>Idle</b> — connected, nothing running</span></div>
+    <div class="legend-item"><span class="presence stopped"><span class="dot"></span></span><span><b>Stopped</b> — resumes when you click</span></div>
+    <div class="legend-item"><span class="presence done"><span class="dot"></span></span><span><b>Finished</b> — last turn completed</span></div>
+    <div class="legend-item"><span class="presence failed"><span class="dot"></span></span><span><b>Error</b> — ended badly, detail on hover</span></div>
+  </div>
+</section>
+
+<!-- ============================================================
+     2. HOVER DETAIL CARD
+     ============================================================ -->
+<section>
+  <div class="sec-head">
+    <h2>2 · Hover detail card</h2>
+    <h3>Everything the row could not say, to the right of the row</h3>
+    <p>
+      The card is placed in window coordinates beside the hovered row, never below it, so it never
+      covers the neighbouring rows you are comparing against. Icon plus 13px text, one fact per
+      line. It falls to the left side of the rail when the window has no room on the right.
+    </p>
+  </div>
+
+  <div class="stage">
+    <div class="rail-with-card">
+      <div class="rail" style="width:300px;flex:0 0 300px">
+        <div class="rail-body" style="padding-top:6px">
+          <div class="row">
+            <div class="row-title-line">
+              <span class="presence idle"><span class="dot"></span></span>
+              <span class="provider"><svg><use href="#bot"/></svg></span>
+              <span class="row-title">Lease renewal reminder emails</span>
+            </div>
+            <div class="row-meta-line">
+              <span class="row-meta">Rental Command<span class="sep">·</span><span class="branch">tsk-142-renewals</span></span>
+              <span class="chip"><svg><use href="#sparkles"/></svg>GPT-5.6-Luna</span>
+            </div>
+          </div>
+          <div class="row is-hovered">
+            <div class="row-title-line">
+              <span class="presence working"><span class="dot"></span></span>
+              <span class="provider"><svg><use href="#bot"/></svg></span>
+              <span class="row-title">Rail redesign — hover cards and action cluster</span>
+            </div>
+            <div class="row-meta-line">
+              <span class="row-meta">mac-command-bar<span class="sep">·</span><span class="branch">tsk-808-rail</span></span>
+              <span class="chip"><svg><use href="#sparkles"/></svg>GPT-5.6-Luna</span>
+            </div>
+            <span class="cluster">
+              <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+              <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+              <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+              <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+            </span>
+          </div>
+          <div class="row">
+            <div class="row-title-line">
+              <span class="presence stopped"><span class="dot"></span></span>
+              <span class="provider"><svg><use href="#terminal"/></svg></span>
+              <span class="row-title">Split the shipment importer</span>
+            </div>
+            <div class="row-meta-line">
+              <span class="row-meta">EdiPlatform<span class="sep">·</span><span class="branch">tsk-71-importer</span></span>
+              <span class="chip"><svg><use href="#sparkles"/></svg>Codex</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-anchor">
+        <div class="card">
+          <div class="card-title">Rail redesign — hover cards and action cluster</div>
+          <div class="card-sub">Working · started 12 minutes ago</div>
+          <div class="card-lines">
+            <div class="card-line"><svg><use href="#folder"/></svg><span class="val">~/dev/work/worktrees/mac-command-bar/tsk-808-rail</span></div>
+            <div class="card-line"><svg><use href="#laptop"/></svg><span class="val">Jesse's MacBook Air</span></div>
+            <div class="card-line"><svg><use href="#git-branch"/></svg><span class="val mono">tsk-808-rail-redesign</span></div>
+            <div class="card-line"><svg><use href="#cpu"/></svg><span class="val">GPT-5.6-Luna <span class="muted">· effort max</span></span></div>
+            <div class="card-line"><svg><use href="#clock"/></svg><span class="val">Last activity 8 seconds ago</span></div>
+            <div class="card-line"><svg><use href="#coins"/></svg><span class="val">184k tokens <span class="muted">· $2.41</span></span></div>
+          </div>
+          <div class="card-foot">
+            <span class="pill working"><span class="presence working" style="width:10px;height:10px"><span class="dot" style="width:6px;height:6px"></span></span>Working</span>
+            <span>Turn 14 · editing 3 files</span>
+          </div>
+        </div>
+        <p class="caption" style="max-width:336px">
+          Lines the app does not know are simply left out — the card shrinks rather than printing a
+          placeholder sentence.
+        </p>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h4>Rules</h4>
+      <ul>
+        <li>Appears after a short delay on hover, immediately on keyboard focus, and is not
+          interactive — the pointer passes through it.</li>
+        <li>336px wide, 13px body text, 15px icons at <code>--color-text-3</code> so the values read
+          as the content and the icons as the label.</li>
+        <li>Values that would wrap (paths, branch names) truncate with an ellipsis; the full text is
+          available in the Details panel.</li>
+        <li>Cost and token lines appear only when the provider reports them.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     3. NEW SESSION IN-THREAD
+     ============================================================ -->
+<section>
+  <div class="sec-head">
+    <h2>3 · New session, in the thread</h2>
+    <h3>The separate form goes away</h3>
+    <p>
+      Pressing + opens a fresh thread pane instead of a dialog. You type the work first; the
+      settings sit under the composer as pills and stay editable until you send. The session is
+      created on the first send, with whatever the pills say at that moment.
+    </p>
+  </div>
+
+  <div class="stage" style="align-items:flex-start">
+    <div class="thread">
+      <div class="thread-top">
+        <span class="tab"><svg><use href="#plus"/></svg>New session</span>
+        <span>unsaved — nothing has been started yet</span>
+      </div>
+      <div class="thread-body">
+        <h3 class="thread-h">What should we build in <span class="proj">mac-command-bar</span>?</h3>
+        <p class="thread-p">
+          Describe the work. The session starts when you send, on the branch and model shown below.
+        </p>
+
+        <div class="composer">
+          <div class="composer-input">
+            <span class="typed">Redesign the session rail rows so presence is a dot, actions appear on hover, and the project name falls back to the repo folder</span><span class="caret"></span>
+          </div>
+          <div class="pills">
+            <span class="menu-wrap">
+              <button class="pill-btn open" type="button">
+                <svg><use href="#cpu"/></svg>GPT-5.6-Luna<svg class="chev"><use href="#chev-down"/></svg>
+              </button>
+              <div class="menu">
+                <div class="menu-group">OpenAI</div>
+                <div class="menu-item on"><svg class="tick"><use href="#check"/></svg><span class="name">GPT-5.6-Luna</span><span class="hint">max effort</span></div>
+                <div class="menu-item"><svg class="tick hide"><use href="#check"/></svg><span class="name">GPT-5.6-Sol</span><span class="hint">reviews</span></div>
+                <div class="menu-sep"></div>
+                <div class="menu-group">Anthropic</div>
+                <div class="menu-item"><svg class="tick hide"><use href="#check"/></svg><span class="name">Claude Opus 5</span><span class="hint">1M context</span></div>
+                <div class="menu-item"><svg class="tick hide"><use href="#check"/></svg><span class="name">Claude Sonnet 5</span><span class="hint">wide sweeps</span></div>
+                <div class="menu-item"><svg class="tick hide"><use href="#check"/></svg><span class="name">Claude Haiku 4.5</span><span class="hint">lookups</span></div>
+                <div class="menu-sep"></div>
+                <div class="menu-group">Local</div>
+                <div class="menu-item"><svg class="tick hide"><use href="#check"/></svg><span class="name">Codex CLI</span><span class="hint">terminal</span></div>
+              </div>
+            </span>
+
+            <button class="pill-btn" type="button"><svg><use href="#gauge"/></svg><span class="k">Effort</span> Max<svg class="chev"><use href="#chev-down"/></svg></button>
+            <button class="pill-btn" type="button"><svg><use href="#shield"/></svg><span class="k">Access</span> Workspace write<svg class="chev"><use href="#chev-down"/></svg></button>
+            <button class="pill-btn" type="button"><svg><use href="#folder"/></svg>mac-command-bar<svg class="chev"><use href="#chev-down"/></svg></button>
+            <button class="pill-btn" type="button"><svg><use href="#git-branch"/></svg>tsk-808-rail <span class="k">· new worktree</span><svg class="chev"><use href="#chev-down"/></svg></button>
+
+            <button class="send" type="button">Send<svg><use href="#send"/></svg></button>
+          </div>
+        </div>
+
+        <p class="caption" style="text-align:left">
+          The model pill is shown open: providers are grouped headings, the current pick carries a
+          tick, and the right-hand hint says what each one is for. Effort, access, project and
+          branch open the same way.
+        </p>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h4>Behaviour</h4>
+      <ul>
+        <li><strong>Nothing is created on open.</strong> The pane is a draft — no worktree, no
+          process, no rail row — until you send.</li>
+        <li><strong>Pills stay editable until then</strong> and each remembers the last value you
+          used for that project.</li>
+        <li><strong>The branch pill carries the "new worktree" toggle</strong>, so choosing where the
+          work happens is one control rather than two.</li>
+        <li><strong>On send</strong> the draft becomes a real session, the pane keeps its scroll
+          position and content, and a row slides into <em>Working</em>.</li>
+        <li>The title on the rail row is generated from the first message, so rows read like the work
+          rather than like a branch name.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================
+     4. EDGE STATES
+     ============================================================ -->
+<section>
+  <div class="sec-head">
+    <h2>4 · Edge states</h2>
+    <h3>Unknown project, grouped runs, and long titles</h3>
+    <p>Three cases the current rail handles badly.</p>
+  </div>
+
+  <div class="stage">
+    <div class="edge-grid">
+
+      <div class="edge-col">
+        <div class="edge-label">Project unknown</div>
+        <div class="edge-frame">
+          <div class="row">
+            <div class="row-title-line">
+              <span class="presence idle"><span class="dot"></span></span>
+              <span class="provider"><svg><use href="#terminal"/></svg></span>
+              <span class="row-title">Poke at the dotfiles</span>
+            </div>
+            <div class="row-meta-line">
+              <span class="row-meta">dotfiles<span class="sep">·</span><span class="branch">main</span></span>
+              <span class="chip"><svg><use href="#sparkles"/></svg>Codex</span>
+              <span class="row-time">9m</span>
+            </div>
+          </div>
+          <div class="row">
+            <div class="row-title-line">
+              <span class="presence stopped"><span class="dot"></span></span>
+              <span class="provider"><svg><use href="#bot"/></svg></span>
+              <span class="row-title">Scratch session</span>
+            </div>
+            <div class="row-meta-line">
+              <span class="row-meta">~/tmp/scratch</span>
+              <span class="chip"><svg><use href="#sparkles"/></svg>Claude</span>
+              <span class="row-time">1d</span>
+            </div>
+          </div>
+        </div>
+        <p class="caption">
+          With no registered project, the row shows the repository folder name — and with no repo at
+          all, the shortened working directory. The sentence "No project recorded" is gone; the
+          branch segment simply disappears when there is no branch.
+        </p>
+      </div>
+
+      <div class="edge-col">
+        <div class="edge-label">A recipe run, grouped by step</div>
+        <div class="edge-frame">
+          <div class="run-head">
+            <svg class="twist" style="transform:rotate(90deg)"><use href="#chev-right"/></svg>
+            <span class="presence working"><span class="dot"></span></span>
+            <span class="run-title">Ship TSK-808</span>
+            <span class="run-progress">3 of 5</span>
+          </div>
+          <div class="run-bar"><i></i></div>
+          <div class="step"><span class="presence done"><span class="dot"></span></span><span class="sname">Plan the rail rows</span><span class="stime">4m</span></div>
+          <div class="step"><span class="presence done"><span class="dot"></span></span><span class="sname">Implement WorktreeAgentRow</span><span class="stime">11m</span></div>
+          <div class="step"><span class="presence working"><span class="dot"></span></span><span class="sname">Playwright screenshots at 1710x990</span><span class="stime">now</span></div>
+          <div class="step"><span class="presence idle"><span class="dot"></span></span><span class="sname">Review the diff</span><span class="stime">—</span></div>
+          <div class="step"><span class="presence idle"><span class="dot"></span></span><span class="sname">Open the pull request</span><span class="stime">—</span></div>
+        </div>
+        <p class="caption">
+          A run collapses to one row carrying the aggregate presence and a step count. Expanded, each
+          step is a half-height row with its own dot — steps never get their own action cluster, only
+          the run does.
+        </p>
+      </div>
+
+      <div class="edge-col">
+        <div class="edge-label">Long title, hovered and not</div>
+        <div class="edge-frame">
+          <div class="row">
+            <div class="row-title-line">
+              <span class="presence working"><span class="dot"></span></span>
+              <span class="provider"><svg><use href="#bot"/></svg></span>
+              <span class="row-title">Move every aggregation in the invoice list page into a single SQL statement behind a covering index</span>
+            </div>
+            <div class="row-meta-line">
+              <span class="row-meta">EdiPlatform<span class="sep">·</span><span class="branch">tsk-91-invoice-aggregation-server-side</span></span>
+              <span class="chip"><svg><use href="#sparkles"/></svg>GPT-5.6-Luna</span>
+              <span class="row-time">22m</span>
+            </div>
+          </div>
+          <div class="row is-hovered">
+            <div class="row-title-line">
+              <span class="presence working"><span class="dot"></span></span>
+              <span class="provider"><svg><use href="#bot"/></svg></span>
+              <span class="row-title">Move every aggregation in the invoice list page into a single SQL statement behind a covering index</span>
+            </div>
+            <div class="row-meta-line">
+              <span class="row-meta">EdiPlatform<span class="sep">·</span><span class="branch">tsk-91-invoice-aggregation-server-side</span></span>
+              <span class="chip"><svg><use href="#sparkles"/></svg>GPT-5.6-Luna</span>
+              <span class="row-time">22m</span>
+            </div>
+            <span class="cluster">
+              <button class="act session" title="Session"><svg><use href="#message"/></svg></button>
+              <button class="act editor" title="Editor"><svg><use href="#file-code"/></svg></button>
+              <button class="act git" title="Git"><svg><use href="#git-branch"/></svg></button>
+              <button class="act more" title="Details"><svg><use href="#more"/></svg></button>
+            </span>
+          </div>
+        </div>
+        <p class="caption">
+          The title truncates with an ellipsis and never wraps to a third line, so row height stays
+          constant. On hover the cluster covers the tail of the title, with a gradient easing the
+          edge — and the full title is on the detail card a few pixels to the right.
+        </p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+</div>
+
+<script>
+function showRail(which) {
+  var after = document.getElementById('rail-after');
+  var before = document.getElementById('rail-before');
+  var isAfter = which === 'after';
+  after.classList.toggle('hidden', !isAfter);
+  before.classList.toggle('hidden', isAfter);
+  document.getElementById('btn-after').setAttribute('aria-pressed', String(isAfter));
+  document.getElementById('btn-before').setAttribute('aria-pressed', String(!isAfter));
+}
+</script>
+</body>
+</html>

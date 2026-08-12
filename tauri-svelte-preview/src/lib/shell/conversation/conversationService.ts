@@ -465,7 +465,8 @@ export async function sendStructuredMessage(
         provider,
         cwd: owned.cwd,
         nativeSessionId: owned.nativeSessionId,
-        nativeSessionMode
+        nativeSessionMode,
+        reasoningEffort: state.agentConfig.reasoningEffort
       });
       const revived = getConversationSession(ownedId);
       const nextGeneration = validateStructuredSendGeneration(previousGeneration, activated, revived);

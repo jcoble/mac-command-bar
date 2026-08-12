@@ -119,6 +119,7 @@
   let doneSlot: HTMLElement;
   let settledSlot: HTMLElement;
   let stack: PaneStack | null = null;
+  let runWithResizeObserverPaused: (work: () => void) => void = (work) => work();
 
   const adoptedIds = $derived(
     new Set(
@@ -158,6 +159,7 @@
   onMount(() => {
     let observer: ResizeObserver | null = null;
     let refitFrame: number | null = null;
+    let lastHostSize: { width: number; height: number } | null = null;
     try {
       const injectedStore =
         layoutStore ??
@@ -175,28 +177,73 @@
         layoutId: 'left-rail',
         panes: paneSpecs
       });
-      const refitNow = (): void => {
+      const lastObservedSizes = new WeakMap<Element, { width: number; height: number }>();
+      const observeTargets = (): void => {
+        if (!observer) return;
+        const targets = [
+          host,
+          ...[...paneElements.values()].flatMap((pane) => {
+            const paneBody = pane.parentElement;
+            const content = pane.querySelector<HTMLElement>('.pane-section');
+            return [paneBody, content].filter((target): target is HTMLElement => target !== null);
+          })
+        ];
+        for (const target of targets) {
+          const rect = target.getBoundingClientRect();
+          lastObservedSizes.set(target, { width: rect.width, height: rect.height });
+          observer.observe(target);
+        }
+      };
+      const withResizeObserverPaused = (work: () => void): void => {
+        observer?.disconnect();
+        try {
+          work();
+        } finally {
+          observeTargets();
+        }
+      };
+      runWithResizeObserverPaused = withResizeObserverPaused;
+      const refitNow = (force = false): void => {
         if (!host) return;
         const width = host.clientWidth;
         const height = host.clientHeight;
-        if (width > 0 && height > 0) stack?.layout(width, height);
+        if (width <= 0 || height <= 0) return;
+        if (
+          !force &&
+          lastHostSize &&
+          Math.abs(width - lastHostSize.width) < 1 &&
+          Math.abs(height - lastHostSize.height) < 1
+        ) {
+          return;
+        }
+        lastHostSize = { width, height };
+        withResizeObserverPaused(() => stack?.layout(width, height));
       };
-      const scheduleRefit = (): void => {
+      const scheduleRefit = (entries: ResizeObserverEntry[] = []): void => {
+        if (entries.length > 0) {
+          const changed = entries.some((entry) => {
+            const width = entry.contentRect.width;
+            const height = entry.contentRect.height;
+            const previous = lastObservedSizes.get(entry.target);
+            lastObservedSizes.set(entry.target, { width, height });
+            return (
+              !previous ||
+              Math.abs(width - previous.width) >= 1 ||
+              Math.abs(height - previous.height) >= 1
+            );
+          });
+          if (!changed) return;
+        }
         if (refitFrame !== null) return;
         refitFrame = requestAnimationFrame(() => {
           refitFrame = null;
-          refitNow();
+          const contentChanged = entries.some((entry) => entry.target !== host);
+          refitNow(contentChanged);
         });
       };
-      refitNow();
       observer = new ResizeObserver(scheduleRefit);
-      observer.observe(host);
-      for (const pane of paneElements.values()) {
-        const paneBody = pane.parentElement;
-        if (paneBody) observer.observe(paneBody);
-        const content = pane.querySelector<HTMLElement>('.pane-section');
-        if (content) observer.observe(content);
-      }
+      refitNow();
+      observeTargets();
       onReady?.({ resetLayout: () => stack?.resetLayout() });
     } catch (error) {
       onError?.(error instanceof Error ? error.message : String(error));
@@ -205,6 +252,7 @@
     return () => {
       observer?.disconnect();
       if (refitFrame !== null) cancelAnimationFrame(refitFrame);
+      runWithResizeObserverPaused = (work) => work();
       stack?.dispose();
       stack = null;
     };
@@ -215,7 +263,7 @@
     // pane children paint first; the microtask then measures their full body.
     statusContentSignature;
     if (viewOptions.groupBy !== 'status' || !stack) return;
-    queueMicrotask(() => stack?.fitContent());
+    queueMicrotask(() => runWithResizeObserverPaused(() => stack?.fitContent()));
   });
 </script>
 
