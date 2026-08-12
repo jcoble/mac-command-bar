@@ -91,7 +91,7 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     padding: 14px 15px 13px;
-    color: var(--color-text-2);
+    color: var(--color-text);
     background: var(--color-surface);
     box-shadow: var(--shadow-lg);
     pointer-events: none;
@@ -108,10 +108,10 @@
   }
 
   .session-card-sub {
-    margin-top: 3px;
-    margin-bottom: 12px;
+    margin: 0 0 12px;
     color: var(--color-text-3);
     font-size: 12px;
+    line-height: 18px;
   }
 
   .session-card-lines {
@@ -159,16 +159,19 @@
     border-top: 1px solid var(--color-border);
     color: var(--color-text-3);
     font-size: 12px;
+    line-height: 18px;
   }
 
   .status-pill {
     display: inline-flex;
     align-items: center;
+    gap: 5px;
     height: 19px;
     padding: 0 7px;
     border-radius: 5px;
     font-size: 11.5px;
     font-weight: 550;
+    line-height: 17.25px;
     white-space: nowrap;
   }
 

@@ -13,8 +13,9 @@ use serde_json::Value;
 
 use super::capabilities::{validate_manifest, CLAUDE_AGENT_ACP_VERSION, CODEX_ACP_VERSION};
 use super::protocol::{
-    AgentApprovalResponse, AgentCapabilities, AgentConfigOption, AgentConversationConfigState,
-    AgentConversationProvider, AgentProviderManifest, ProviderSource, ProviderTransport,
+    AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor, AgentConfigOption,
+    AgentConversationConfigState, AgentConversationProvider, AgentProviderManifest, ProviderSource,
+    ProviderTransport,
 };
 
 #[derive(Clone, Debug)]
@@ -50,10 +51,11 @@ pub struct AgentPrompt {
 pub type AgentConfigValue = Value;
 pub type PermissionResponse = AgentApprovalResponse;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StartedAgentSession {
     pub native_session_id: String,
     pub config: AgentConversationConfigState,
+    pub commands: Vec<AgentCommandDescriptor>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]

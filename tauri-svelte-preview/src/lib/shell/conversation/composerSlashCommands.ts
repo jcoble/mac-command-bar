@@ -32,6 +32,17 @@ export function slashCommandQuery(draft: string): string | null {
   return rest;
 }
 
+export function remainingContextPercent(
+  usedTokens: number | null | undefined,
+  contextWindow: number | null | undefined
+): number | null {
+  if (!Number.isFinite(usedTokens) || !Number.isFinite(contextWindow) || (contextWindow ?? 0) <= 0) {
+    return null;
+  }
+  const remaining = ((contextWindow as number) - (usedTokens as number)) / (contextWindow as number) * 100;
+  return Math.max(0, Math.min(100, Math.round(remaining)));
+}
+
 function rank(command: ConversationCommand, query: string): number {
   const name = command.name.toLowerCase();
   if (name.startsWith(query)) return 0;

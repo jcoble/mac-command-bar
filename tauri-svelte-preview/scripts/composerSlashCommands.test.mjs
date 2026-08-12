@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   draftAfterSlashCommand,
   moveSlashMenuIndex,
+  remainingContextPercent,
   slashCommandQuery,
   slashMenuState
 } from '../src/lib/shell/conversation/composerSlashCommands.ts';
@@ -36,6 +37,9 @@ assert.equal(slashCommandQuery('  /rev'), 'rev', 'leading spaces still count as 
 assert.equal(slashCommandQuery('/Review'), 'Review', 'the raw text is returned, not lowercased');
 assert.equal(slashCommandQuery('/review please'), null, 'once arguments start the menu closes');
 assert.equal(slashCommandQuery('/review\n'), null, 'a newline ends the command word');
+
+const firstCharacterMenu = slashMenuState('/', catalog, { activeIndex: 0, dismissed: false });
+assert.equal(firstCharacterMenu.open, true, 'the first slash character opens the menu');
 
 // ── What the menu lists ────────────────────────────────────────────────────
 const opened = slashMenuState('/', catalog, { activeIndex: 0, dismissed: false });
@@ -64,6 +68,19 @@ assert.equal(dismissed.open, false, 'Escape keeps the menu shut while the draft 
 const ranked = slashMenuState('/compact', catalog, { activeIndex: 0, dismissed: false });
 assert.deepEqual(ranked.commands.map((command) => command.name), ['compact']);
 
+const longProviderCatalog = mergeConversationCommandCatalog(
+  Array.from({ length: 14 }, (_, index) => ({
+    id: `custom-${index + 1}`,
+    label: `Custom ${index + 1}`,
+    description: `Description ${index + 1}`
+  })),
+  [],
+  [{ id: 'assembly-built-in', name: 'built-in', label: 'Built-in', description: 'Built-in action' }]
+);
+assert.equal(longProviderCatalog.length, 15, 'all provider and built-in commands survive the merge');
+assert.equal(longProviderCatalog[13].description, 'Description 14');
+assert.equal(longProviderCatalog[14].source, 'assembly');
+
 // ── Keyboard movement ──────────────────────────────────────────────────────
 assert.equal(moveSlashMenuIndex(0, 3, 'ArrowDown'), 1);
 assert.equal(moveSlashMenuIndex(2, 3, 'ArrowDown'), 0, 'the list wraps to the top');
@@ -76,5 +93,12 @@ const review = catalog.find((command) => command.name === 'review');
 assert.equal(draftAfterSlashCommand('/rev', review), '/review ');
 assert.equal(draftAfterSlashCommand('   /rev', review), '/review ', 'the rewritten draft drops stray leading space');
 assert.equal(draftAfterSlashCommand('anything', review), '/review ');
+
+// ── Context math ─────────────────────────────────────────────────────────
+assert.equal(remainingContextPercent(120, 400), 70);
+assert.equal(remainingContextPercent(401, 400), 0, 'usage over the window clamps to zero');
+assert.equal(remainingContextPercent(-1, 400), 100, 'negative usage clamps to the full window');
+assert.equal(remainingContextPercent(1, 0), null, 'an absent context window hides the indicator');
+assert.equal(remainingContextPercent(null, 400), null);
 
 console.log('composerSlashCommands.test.mjs passed');

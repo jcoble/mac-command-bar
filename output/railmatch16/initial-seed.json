@@ -1,0 +1,10 @@
+{
+  "key": "mac-command-bar.next.owned-sessions",
+  "viewKey": "mac-command-bar.next.my-work-view-options",
+  "count": 13,
+  "groups": {
+    "working": 10,
+    "done": 1,
+    "settled": 2
+  }
+}

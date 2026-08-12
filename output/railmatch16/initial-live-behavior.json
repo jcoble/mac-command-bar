@@ -1,0 +1,18 @@
+{
+  "overlayHiddenAtRest": true,
+  "cardHiddenBeforeDelay": true,
+  "cardVisibleAfterDelay": true,
+  "cardRightOfRow": true,
+  "row": {
+    "x": 1,
+    "y": 170.6875,
+    "width": 298,
+    "height": 56.1875
+  },
+  "card": {
+    "x": 307,
+    "y": 170.6875,
+    "width": 336,
+    "height": 226.890625
+  }
+}

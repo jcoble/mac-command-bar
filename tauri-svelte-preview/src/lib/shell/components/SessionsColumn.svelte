@@ -12,7 +12,6 @@
   import Check from '@lucide/svelte/icons/check';
   import CircleDot from '@lucide/svelte/icons/circle-dot';
   import Gem from '@lucide/svelte/icons/gem';
-  import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Plus from '@lucide/svelte/icons/plus';
   import Search from '@lucide/svelte/icons/search';
@@ -171,12 +170,12 @@
 
 <!-- Every icon-only control in this column is the same kit button at the same
      size, so they all say what they do on hover and light up the same way. -->
-{#snippet action(tip: string, Icon: typeof Bot, run: () => void)}
+{#snippet action(tip: string, Icon: typeof Bot, run: () => void, extraClass = '')}
   <IconButton
     label={tip}
     size="sm"
     side="bottom"
-    class={ACTION_CLASS}
+    class={cn(ACTION_CLASS, extraClass)}
     onclick={(event: MouseEvent) => {
       event.stopPropagation();
       run();
@@ -219,11 +218,10 @@
       </div>
     </div>
   {:else}
-    <div class="flex h-full min-h-0 flex-col bg-[var(--color-bg)] text-[var(--color-text)]">
-      <header class="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-2">
+    <div data-testid="sessions-column" class="sessions-column flex h-full min-h-0 flex-col bg-[var(--color-bg)] text-[var(--color-text)]">
+      <header class="sessions-header">
         <h2 class="text-[13px] font-semibold text-[var(--color-text)]">Sessions</h2>
-        <span class="text-[12px] text-[var(--color-text-2)]">{owned.length}</span>
-        <div class="ml-auto flex items-center gap-1">
+        <div class="header-actions ml-auto flex items-center gap-2">
           <IconButton
             label="Search sessions"
             size="xs"
@@ -317,8 +315,7 @@
               </div>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
-          {@render action('New session', Plus, onNewSession)}
-          {@render action('Fold this column up', PanelLeftClose, () => onCollapse(true))}
+          {@render action('New session', Plus, onNewSession, 'text-[var(--color-accent)]')}
         </div>
       </header>
 
@@ -375,4 +372,46 @@
   .state-dot[data-state='live'],
   .state-dot[data-state='background'] { background: var(--color-live); }
   .state-dot[data-state='exited'] { background: transparent; box-shadow: inset 0 0 0 1px var(--color-text-2); }
+
+  .sessions-column {
+    box-sizing: border-box;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    font-size: 13px;
+    line-height: 19.5px;
+  }
+
+  .sessions-header {
+    display: flex;
+    flex: 0 0 40px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px 0 12px;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 13px;
+    line-height: 19.5px;
+  }
+
+  .sessions-header :global(h2) {
+    flex: 1 1 auto;
+    font-size: 13px;
+    line-height: 19.5px;
+  }
+
+  .sessions-header :global(button) {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 7px;
+    font-size: 13.3333px;
+    line-height: normal;
+  }
+
+  .sessions-header .header-actions { gap: 8px; }
+
+  .sessions-header :global(button svg) {
+    width: 15px;
+    height: 15px;
+  }
 </style>

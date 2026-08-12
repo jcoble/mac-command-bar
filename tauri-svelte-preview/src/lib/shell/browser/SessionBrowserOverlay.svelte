@@ -67,12 +67,12 @@
     stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
   import {
-    filterConversationCommandCatalog,
     mergeConversationCommandCatalog,
     type ConversationCommand
   } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import type { AgentConversationConfigField } from '$lib/shell/conversation/conversationConfig.ts';
   import { setAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
+  import { remainingContextPercent } from '$lib/shell/conversation/composerSlashCommands.ts';
 
   interface Props {
     /** Return the center workbench to its previous surface after closing. */
@@ -88,10 +88,11 @@
   const commandCatalog = $derived(
     mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? [])
   );
-  const commandQuery = $derived(
-    conversation?.draft.trimStart().startsWith('/') ? conversation.draft.trimStart().slice(1) : ''
+  const remainingContext = $derived(
+    conversation?.provider === 'codex'
+      ? remainingContextPercent(conversation.metadata.usedTokens, conversation.metadata.contextWindow)
+      : null
   );
-  const matchingCommands = $derived(filterConversationCommandCatalog(commandCatalog, commandQuery));
   const noteCount = $derived(view.annotations.length);
 
   let address = $state('');
@@ -388,7 +389,8 @@
           configState={conversation.agentConfig}
           pendingConfig={conversation.pendingAgentConfig}
           configError={conversation.agentConfigError}
-          commands={matchingCommands}
+          commands={commandCatalog}
+          contextRemainingPercent={remainingContext}
           {attachmentError}
           onDraftChange={editDraft}
           onSend={send}

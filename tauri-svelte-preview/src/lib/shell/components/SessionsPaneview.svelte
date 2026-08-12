@@ -63,7 +63,7 @@
       minimumSize: 74,
       preferredSize: 180,
       maximumSize: null,
-      defaultExpanded: false,
+      defaultExpanded: true,
       persistent: true,
       order: 2
     }
@@ -372,6 +372,9 @@
     flex-direction: column;
     overflow: hidden;
     background: var(--color-bg);
+    color: var(--color-text);
+    font-size: 13px;
+    line-height: 19.5px;
   }
   .pane-stack-host { min-width: 0; min-height: 0; flex: 1 1 auto; overflow: hidden; }
   .parking-stage { display: none; }
@@ -385,4 +388,5 @@
      renders its own count-bearing shelf heading, so keeping both creates a
      duplicate "Working" line and spends one row of the 300px column. */
   .sessions-paneview :global(.dv-pane-header) { display: none; }
+  .sessions-paneview :global(.finder) { display: none; }
 </style>

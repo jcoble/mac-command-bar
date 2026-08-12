@@ -529,7 +529,12 @@ impl AcpClient {
                 subagents: true,
             },
             config_options: parse_config_options(result.get("sessionConfigOptions")),
-            commands: Vec::<AgentCommandDescriptor>::new(),
+            commands: parse_command_descriptors(
+                result
+                    .get("availableCommands")
+                    .or_else(|| result.get("available_commands"))
+                    .or_else(|| result.pointer("/agentCapabilities/commands")),
+            ),
         };
         self.provider = Some(provider);
         Ok(capabilities)
@@ -743,12 +748,20 @@ impl AcpClient {
         } else {
             (metadata_config, ConversationConfigProtocol::Metadata)
         };
+        let commands = parse_command_descriptors(
+            result
+                .get("availableCommands")
+                .or_else(|| result.get("available_commands"))
+                .or_else(|| result.pointer("/_meta/availableCommands"))
+                .or_else(|| result.pointer("/_meta/available_commands")),
+        );
         self.native_session_id = Some(native_session_id.clone());
         self.transport.replace_conversation_config(config.clone());
         self.conversation_config_protocol = protocol;
         Ok(StartedAgentSession {
             native_session_id,
             config,
+            commands,
         })
     }
 
@@ -892,6 +905,62 @@ fn parse_config_options(value: Option<&Value>) -> Vec<AgentConfigOption> {
         .unwrap_or_default()
 }
 
+fn parse_command_descriptors(value: Option<&Value>) -> Vec<AgentCommandDescriptor> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry
+                .get("id")
+                .or_else(|| entry.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?
+                .to_string();
+            let label = entry
+                .get("label")
+                .or_else(|| entry.get("name"))
+                .or_else(|| entry.get("id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&id)
+                .to_string();
+            let description = entry
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let input = entry.get("input");
+            let input_hint = entry
+                .get("inputHint")
+                .or_else(|| entry.get("input_hint"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    input
+                        .and_then(|input| input.get("hint"))
+                        .and_then(Value::as_str)
+                })
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let provider_metadata = entry
+                .get("providerMetadata")
+                .or_else(|| entry.get("provider_metadata"))
+                .and_then(|metadata| serde_json::from_value(metadata.clone()).ok());
+            Some(AgentCommandDescriptor {
+                id,
+                label,
+                description,
+                input_hint,
+                provider_metadata,
+            })
+        })
+        .collect()
+}
+
 fn parse_conversation_config(
     value: Option<&Value>,
 ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
@@ -993,7 +1062,11 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id" ;;
     *'"method":"session/new"'*)
-      if [ "$fixture" = "standard_config" ]; then
+      if [ "$fixture" = "command_capture" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","availableCommands":[{{"name":"initial","description":"Initial command","input":{{"hint":"path"}}}}]}}}}\n' "$id"
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"available_commands_update","availableCommands":[{{"name":"updated","description":"Updated command"}}]}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"usage_update","used":120,"size":4096}}}}}}\n'
+      elif [ "$fixture" = "standard_config" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","models":{{"availableModels":[{{"modelId":"default","name":"Default (recommended)","description":"Opus 4.6 · Most capable for complex work"}},{{"modelId":"sonnet","name":"Sonnet","description":"Sonnet 4.5 · Best for everyday tasks"}},{{"modelId":"haiku","name":"Haiku","description":"Haiku 4.5 · Fastest for quick answers"}}],"currentModelId":"default"}},"modes":{{"currentModeId":"default","availableModes":[{{"id":"default","name":"Default","description":"Standard behavior, prompts for dangerous operations"}},{{"id":"acceptEdits","name":"Accept Edits","description":"Auto-accept file edit operations"}},{{"id":"plan","name":"Plan Mode","description":"Planning mode, no actual tool execution"}},{{"id":"dontAsk","name":"Dont Ask","description":"Deny operations that are not pre-approved"}},{{"id":"bypassPermissions","name":"Bypass Permissions","description":"Bypass all permission checks"}}]}}}}}}\n' "$id"
       else
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id"
@@ -1414,6 +1487,65 @@ done"#,
         assert!(frames.contains(r#""method":"session/set_mode""#));
         assert!(frames.contains(r#""modeId":"bypassPermissions""#));
         assert!(!frames.contains("session/set_config_option"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parses_initial_command_descriptors_from_a_session_result() {
+        let commands = parse_command_descriptors(Some(&json!([
+            { "name": "review", "description": "Review the change", "input": { "hint": "path" } },
+            { "id": "status", "label": "Status" }
+        ])));
+        assert_eq!(
+            commands,
+            vec![
+                AgentCommandDescriptor {
+                    id: "review".into(),
+                    label: "review".into(),
+                    description: Some("Review the change".into()),
+                    input_hint: Some("path".into()),
+                    provider_metadata: None,
+                },
+                AgentCommandDescriptor {
+                    id: "status".into(),
+                    label: "Status".into(),
+                    description: None,
+                    input_hint: None,
+                    provider_metadata: None,
+                }
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn captures_initial_commands_and_forwards_the_update_notification() {
+        let root = fixture_root();
+        let log = root.join("commands.jsonl");
+        let mut client = AcpClient::spawn(
+            &fixture_manifest_named(&log, "command_capture"),
+            &root,
+            "commands",
+        )
+        .unwrap();
+        client
+            .initialize(AgentConversationProvider::Codex)
+            .await
+            .unwrap();
+        let started = client.new_session(&root).await.unwrap();
+        assert_eq!(started.commands[0].id, "initial");
+        let mut inbound = client.take_inbound().unwrap();
+        let update = inbound.recv().await.expect("command update");
+        match update {
+            AcpInbound::SessionUpdate(params) => {
+                assert_eq!(
+                    params["update"]["sessionUpdate"],
+                    "available_commands_update"
+                );
+                assert_eq!(params["update"]["availableCommands"][0]["name"], "updated");
+            }
+            other => panic!("expected command update, got {other:?}"),
+        }
+        client.close().await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 

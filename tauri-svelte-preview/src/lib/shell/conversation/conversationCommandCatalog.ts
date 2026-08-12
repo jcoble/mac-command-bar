@@ -17,7 +17,7 @@ export interface AssemblyConversationCommand {
   action?: ConversationCommandAction;
 }
 
-/** TUI settings and debug rows do not belong in the structured slash menu. */
+/** Local assembly settings and debug rows do not belong in the structured slash menu. */
 export const TUI_ONLY_COMMAND_NAMES = new Set([
   'theme',
   'themes',
@@ -66,7 +66,7 @@ export function isExcludedConversationCommand(value: string): boolean {
 
 function providerCommand(command: AgentCommandDescriptor, source: 'provider' | 'skill'): ConversationCommand | null {
   const name = commandName(command.id || command.label);
-  if (isExcludedConversationCommand(name)) return null;
+  if (!name) return null;
   return {
     ...command,
     name,

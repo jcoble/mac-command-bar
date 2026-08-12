@@ -95,13 +95,14 @@
     min-height: 35px;
     align-items: center;
     gap: 7px;
-    padding: 10px 12px 6px;
+    padding: 14px 12px 6px;
     border: 0;
     color: var(--color-text-3);
     background: transparent;
-    font-size: 12px;
+    font-size: calc(12px - 1px);
     font-weight: 600;
     letter-spacing: 0.08em;
+    line-height: 16.5px;
     text-align: left;
     text-transform: uppercase;
     outline: none;
@@ -113,9 +114,10 @@
     border-radius: 999px;
     color: var(--color-text-3);
     background: var(--color-elevated);
-    font-size: 12px;
+    font-size: calc(12px - 1px);
     font-weight: 600;
     letter-spacing: 0;
+    line-height: 16.5px;
   }
   .empty-state { margin: 0; padding: 10px 12px; color: var(--color-text-3); font-size: 13px; }
 </style>

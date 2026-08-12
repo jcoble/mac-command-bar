@@ -166,7 +166,7 @@
   let cardPlacement = $state<{ top: number; left: number } | null>(null);
   let cardTimer: ReturnType<typeof setTimeout> | null = null;
   const CARD_WIDTH = 336;
-  const CARD_HEIGHT = 248;
+  const CARD_HEIGHT = 300;
 
   function clearCardTimer(): void {
     if (cardTimer !== null) {
@@ -189,10 +189,6 @@
     const row = event.currentTarget;
     if (!(row instanceof HTMLElement)) return;
     clearCardTimer();
-    if (event.type === 'focusin') {
-      placeCard(row);
-      return;
-    }
     cardTimer = setTimeout(() => {
       cardTimer = null;
       placeCard(row);
@@ -218,6 +214,13 @@
   function stopPropagation(event: MouseEvent, action?: () => void): void {
     event.stopPropagation();
     action?.();
+  }
+
+  function selectRow(event: MouseEvent): void {
+    onSelect?.();
+    if (event.detail > 0 && event.currentTarget instanceof HTMLButtonElement) {
+      event.currentTarget.blur();
+    }
   }
 
   function startSession(event: MouseEvent): void {
@@ -275,7 +278,7 @@
       type="button"
       class="row-select"
       aria-current={active ? 'true' : undefined}
-      onclick={() => onSelect?.()}
+      onclick={selectRow}
     >
       <span class="row-title-line">
         <span
@@ -473,12 +476,18 @@
 <style>
   .row {
     position: relative;
+    display: block;
     min-width: 0;
     list-style: none;
+    padding: 8px 10px 9px 12px;
     background: transparent;
-    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 38%, transparent);
+    color: var(--color-text);
+    font-size: 13px;
+    line-height: 19.5px;
     transition: background 140ms ease;
   }
+
+  .row:not(:first-child) { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text) 4.5%, transparent); }
 
   .row:hover,
   .row:focus-within { background: var(--color-hover); }
@@ -497,7 +506,7 @@
   .row-body {
     position: relative;
     min-width: 0;
-    padding: 8px 10px 9px 12px;
+    padding: 0;
   }
 
   .row-select {
@@ -506,7 +515,7 @@
     min-width: 0;
     flex-direction: column;
     align-items: stretch;
-    gap: 4px;
+    gap: 0;
     padding: 0;
     border: 0;
     border-radius: 4px;
@@ -526,7 +535,7 @@
   }
 
   .row-title-line { gap: 8px; }
-  .row-meta-line { gap: 6px; margin-left: 22px; }
+  .row-meta-line { gap: 6px; margin: 4px 0 0 22px; line-height: 17.25px; }
 
   :global(.provider-icon) {
     width: 14px;
@@ -577,7 +586,7 @@
     height: 7px;
     border: 1.5px solid var(--color-text-3);
     background: transparent;
-    opacity: 0.7;
+    opacity: 0.6;
   }
   .presence.done .presence-dot { background: var(--color-good); }
   .presence.failed .presence-dot { background: var(--color-bad); }
@@ -595,7 +604,7 @@
   .active .row-title { font-weight: 600; }
 
   .row-meta {
-    display: inline-flex;
+    display: block;
     min-width: 0;
     flex: 1 1 auto;
     gap: 5px;
@@ -607,7 +616,7 @@
     white-space: nowrap;
   }
   .row-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .meta-separator { flex: 0 0 auto; opacity: 0.55; }
+  .meta-separator { flex: 0 0 auto; padding: 0 1px; opacity: 0.55; }
   .branch {
     overflow: hidden;
     flex: 0 1 auto;
@@ -628,18 +637,20 @@
     overflow: hidden;
     border-radius: 5px;
     color: var(--color-text-2);
-    background: color-mix(in srgb, var(--color-text) 7%, transparent);
-    font-size: 12px;
+    background: var(--color-elevated);
+    font-size: calc(12px - 1px);
     font-weight: 550;
     letter-spacing: 0.01em;
+    line-height: 16.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  :global(.model-mark) { width: 12px; height: 12px; flex: 0 0 auto; color: var(--color-text-3); }
+  :global(.model-mark) { width: 11px; height: 11px; flex: 0 0 auto; color: var(--color-text-3); }
   .row-time {
     margin-left: auto;
     color: var(--color-text-3);
     font-size: 11.5px;
+    line-height: 17.25px;
     opacity: 0.85;
     white-space: nowrap;
   }
@@ -655,21 +666,28 @@
     padding: 2px;
     border-radius: 9px;
     background: var(--color-elevated);
-    box-shadow: var(--shadow-sm), inset 0 0 0 1px color-mix(in srgb, var(--color-border) 50%, transparent);
+    box-shadow: var(--shadow-sm), inset 0 0 0 1px color-mix(in srgb, var(--color-text) 6%, transparent);
     isolation: isolate;
     transform: translateY(-50%);
   }
   .row-overlay::before {
     position: absolute;
     z-index: -1;
-    inset: 0 auto 0 -36px;
-    width: 36px;
+    inset: 0 auto 0 -32px;
+    width: 32px;
     background: linear-gradient(to right, transparent, var(--color-elevated) 78%);
     content: '';
   }
   .row-cluster { display: inline-flex; align-items: center; gap: 1px; }
   .action,
   .secondary-action { color: var(--color-text-2); }
+  .row-overlay :global(button.action) {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 7px;
+  }
   .action :global(svg),
   .secondary-action :global(svg) { width: 16px; height: 16px; }
   .action:hover { color: var(--color-text); background: color-mix(in srgb, var(--color-text) 10%, transparent); }

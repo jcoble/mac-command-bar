@@ -441,7 +441,9 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
   if (!raw) return;
   const eventType: string = 'type' in event
     ? event.type
-    : payload.kind === 'approval' ? 'approval.requested' : payload.kind === 'error' ? 'runtime.error' : '';
+    : payload.kind === 'approval' ? 'approval.requested'
+      : payload.kind === 'error' ? 'runtime.error'
+        : payload.kind === 'usage' ? 'usage.updated' : '';
   const requestIdFromEvent = 'requestId' in event ? event.requestId : undefined;
   const turnIdFromEvent = 'turnId' in event ? event.turnId : undefined;
   const itemIdFromEvent = 'itemId' in event ? event.itemId : undefined;
@@ -455,6 +457,29 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
   if (commands) {
     current.availableCommands = commands;
     if (current.capabilities) current.capabilities = { ...current.capabilities, commands };
+  }
+  if (eventType === 'usage.updated' || payload.kind === 'usage') {
+    const inputTokens = typeof payload.inputTokens === 'number' && Number.isFinite(payload.inputTokens)
+      ? payload.inputTokens : undefined;
+    const outputTokens = typeof payload.outputTokens === 'number' && Number.isFinite(payload.outputTokens)
+      ? payload.outputTokens : undefined;
+    const usedTokens = typeof payload.usedTokens === 'number' && Number.isFinite(payload.usedTokens)
+      ? payload.usedTokens : undefined;
+    const contextWindow = typeof payload.contextWindow === 'number' && Number.isFinite(payload.contextWindow)
+      ? payload.contextWindow : undefined;
+    current.usage = {
+      inputTokens: inputTokens ?? current.usage?.inputTokens,
+      outputTokens: outputTokens ?? current.usage?.outputTokens,
+      usedTokens: usedTokens ?? current.usage?.usedTokens,
+      contextWindow: contextWindow ?? current.usage?.contextWindow
+    };
+    if (usedTokens !== undefined || contextWindow !== undefined) {
+      current.metadata = {
+        ...current.metadata,
+        usedTokens: usedTokens ?? current.metadata.usedTokens,
+        contextWindow: contextWindow ?? current.metadata.contextWindow
+      };
+    }
   }
   if (eventType === 'plan.updated' || payload.kind === 'plan') {
     const entries = Array.isArray(payload.items) ? payload.items : payload.entries;

@@ -241,6 +241,7 @@ export type AgentEventType =
   | 'plan.updated'
   | 'tasks.updated'
   | 'children.updated'
+  | 'commands.updated'
   | 'usage.updated'
   | 'rate-limits.updated'
   | 'runtime.warning'
@@ -419,7 +420,17 @@ export type AgentConversationPayload =
       _meta?: Record<string, AgentConfigValue>;
     }
   | { kind: 'turn'; turnId: string; state: TurnState }
-  | { kind: 'usage'; inputTokens?: number; outputTokens?: number }
+  | {
+      kind: 'availableCommandsUpdate';
+      availableCommands: AgentCommandDescriptor[];
+    }
+  | {
+      kind: 'usage';
+      inputTokens?: number;
+      outputTokens?: number;
+      usedTokens?: number;
+      contextWindow?: number;
+    }
   | { kind: 'error'; code: string; message: string; recoverable: boolean };
 
 /**
@@ -552,6 +563,8 @@ export type ConversationTimelineEntry =
 export interface ConversationUsage {
   inputTokens?: number;
   outputTokens?: number;
+  usedTokens?: number;
+  contextWindow?: number;
 }
 
 export interface ConversationMetadata {

@@ -200,6 +200,8 @@ pub enum AgentEventType {
     TasksUpdated,
     #[serde(rename = "children.updated")]
     ChildrenUpdated,
+    #[serde(rename = "commands.updated")]
+    CommandsUpdated,
     #[serde(rename = "usage.updated")]
     UsageUpdated,
     #[serde(rename = "rate-limits.updated")]
@@ -405,11 +407,18 @@ pub enum AgentConversationPayload {
         turn_id: String,
         state: TurnState,
     },
+    AvailableCommandsUpdate {
+        available_commands: Vec<AgentCommandDescriptor>,
+    },
     Usage {
         #[serde(skip_serializing_if = "Option::is_none")]
         input_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         output_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        used_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_window: Option<u64>,
     },
     Error {
         code: String,

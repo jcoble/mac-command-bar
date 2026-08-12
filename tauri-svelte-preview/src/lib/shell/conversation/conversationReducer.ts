@@ -187,7 +187,12 @@ export function applyConversationEvent(
     case 'usage':
       return {
         ...next,
-        usage: { inputTokens: payload.inputTokens, outputTokens: payload.outputTokens }
+        usage: {
+          inputTokens: payload.inputTokens ?? next.usage?.inputTokens,
+          outputTokens: payload.outputTokens ?? next.usage?.outputTokens,
+          usedTokens: payload.usedTokens ?? next.usage?.usedTokens,
+          contextWindow: payload.contextWindow ?? next.usage?.contextWindow
+        }
       };
 
     case 'error':

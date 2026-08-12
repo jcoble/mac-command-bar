@@ -1,0 +1,15 @@
+{
+  "labels": [
+    "Start session",
+    "Open session",
+    "Open editor",
+    "Open source control",
+    "Details — session actions"
+  ],
+  "overlay": {
+    "x": 147,
+    "y": 464.21875,
+    "width": 138,
+    "height": 30
+  }
+}

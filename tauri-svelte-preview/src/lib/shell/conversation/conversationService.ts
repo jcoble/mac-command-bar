@@ -23,7 +23,6 @@ import type {
   AgentConversationEvent,
   AgentEvent,
   AgentConversationProvider,
-  AgentConversationSnapshot,
   AgentConfigOption,
   AgentConfigValue,
   AgentUserInputResponse,
@@ -41,7 +40,11 @@ import {
   createConversationHandoffRequest,
   handoffGenerationMatches
 } from './conversationTypes.ts';
-import { writeTerminalSessionFromTauri } from '$lib/tauriSource';
+import {
+  readAgentConversationCapabilitiesFromTauri,
+  readAgentConversationSnapshotFromTauri,
+  writeTerminalSessionFromTauri
+} from '$lib/tauriSource';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
 import { rail, updateOwnedSession } from '../stores/sessionRailStore.svelte';
@@ -212,7 +215,8 @@ export async function loadConversationCapabilities(
 ): Promise<AgentCapabilities | null> {
   if (!isTauri()) return null;
   try {
-    const capabilities = await invoke<AgentCapabilities>('read_agent_conversation_capabilities', { ownedId });
+    const capabilities = await readAgentConversationCapabilitiesFromTauri(ownedId);
+    if (!capabilities) return null;
     if (capabilities.provider !== provider) throw new Error('Capability provider does not match this session');
     setConversationCapabilities(ownedId, capabilities);
     return capabilities;
@@ -349,10 +353,7 @@ async function resyncConversation(ownedId: string): Promise<void> {
   if (existing) return existing;
   const work = (async () => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const snapshot = await invoke<AgentConversationSnapshot | null>(
-        'read_agent_conversation_snapshot',
-        { ownedId }
-      );
+      const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
       if (!snapshot) return;
       const sequenceBeforeApply = getConversationSession(ownedId)?.lastSequence ?? 0;
       applyAgentConversationSnapshot(snapshot);

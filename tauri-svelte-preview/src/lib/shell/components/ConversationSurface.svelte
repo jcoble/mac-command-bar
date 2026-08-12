@@ -48,6 +48,7 @@
     typedConversationTimeline,
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { remainingContextPercent } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { requestOpenFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import { requestSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
@@ -102,12 +103,11 @@
     return items.sort((left, right) => left.timestampMs - right.timestampMs);
   });
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
-  const remainingContext = $derived.by(() => {
-    const used = conversation?.metadata.usedTokens;
-    const window = conversation?.metadata.contextWindow;
-    if (used == null || window == null || window <= 0) return null;
-    return Math.max(0, Math.round(((window - used) / window) * 100));
-  });
+  const remainingContext = $derived(
+    conversation?.provider === 'codex'
+      ? remainingContextPercent(conversation.metadata.usedTokens, conversation.metadata.contextWindow)
+      : null
+  );
 
   let attachmentError = $state('');
   let capabilityRequest = $state('');
@@ -348,6 +348,7 @@
           pendingConfig={conversation.pendingAgentConfig}
           configError={conversation.agentConfigError}
           commands={commandCatalog}
+          contextRemainingPercent={remainingContext}
           {attachmentError}
           onDraftChange={(value) => setConversationDraft(active.ownedId, value)}
           onSend={send}

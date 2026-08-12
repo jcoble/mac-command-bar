@@ -1,0 +1,69 @@
+{
+  "rows": [
+    {
+      "title": "Review the long session title that should ellipsize",
+      "state": "working",
+      "label": "Working"
+    },
+    {
+      "title": "Build session rail surface 2",
+      "state": "idle",
+      "label": "Idle"
+    },
+    {
+      "title": "Build session rail surface 3",
+      "state": "idle",
+      "label": "Idle"
+    },
+    {
+      "title": "Build session rail surface 4",
+      "state": "idle",
+      "label": "Idle"
+    },
+    {
+      "title": "Build session rail surface 5",
+      "state": "idle",
+      "label": "Idle"
+    },
+    {
+      "title": "Investigate failed workspace handoff",
+      "state": "failed",
+      "label": "Error"
+    },
+    {
+      "title": "Resume the stopped terminal session",
+      "state": "stopped",
+      "label": "Stopped"
+    },
+    {
+      "title": "Build session rail surface 6",
+      "state": "idle",
+      "label": "Idle"
+    },
+    {
+      "title": "Build session rail surface 7",
+      "state": "idle",
+      "label": "Idle"
+    },
+    {
+      "title": "Build session rail surface 8",
+      "state": "idle",
+      "label": "Idle"
+    },
+    {
+      "title": "Confirm completed rail redesign",
+      "state": "done",
+      "label": "Finished"
+    },
+    {
+      "title": "Archive stopped terminal session",
+      "state": "idle",
+      "label": "Idle"
+    },
+    {
+      "title": "Keep a settled reference visible",
+      "state": "idle",
+      "label": "Idle"
+    }
+  ]
+}

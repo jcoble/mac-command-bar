@@ -11,13 +11,13 @@ use super::handoff::{
 };
 use super::journal::AgentEventJournal;
 use super::protocol::{
-    AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentConversationConfigState,
-    AgentConversationConnection, AgentConversationEvent, AgentConversationPayload,
-    AgentConversationProvider, AgentConversationSnapshot, AgentEvent, AgentEventType,
-    AgentExecutionOwner, AgentImplementation, AgentInteractionCapabilities, AgentNativeSessionMode,
-    AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities,
-    AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
-    ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
+    AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor,
+    AgentConversationConfigState, AgentConversationConnection, AgentConversationEvent,
+    AgentConversationPayload, AgentConversationProvider, AgentConversationSnapshot, AgentEvent,
+    AgentEventType, AgentExecutionOwner, AgentImplementation, AgentInteractionCapabilities,
+    AgentNativeSessionMode, AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState,
+    AgentSessionCapabilities, AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition,
+    ApprovalState, ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
     SetAgentConversationConfigRequest, ToolState,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
@@ -387,6 +387,9 @@ impl AgentRuntimeManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = current_session_mut(&mut sessions, owned_id, generation)?;
         session.capabilities = capabilities;
+        if !started.commands.is_empty() {
+            session.capabilities.commands = started.commands.clone();
+        }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
         session.connection.state = ConversationConnectionState::Connected;
@@ -1153,6 +1156,9 @@ fn record_payload_for_session(
             session.native_session_id = native_session_id.clone();
         }
     }
+    if let AgentConversationPayload::AvailableCommandsUpdate { available_commands } = &payload {
+        session.capabilities.commands = available_commands.clone();
+    }
     let timestamp_ms = timestamp_millis();
     let frontend_event = AgentConversationEvent {
         owned_id: session.owned_id.clone(),
@@ -1313,6 +1319,25 @@ async fn pump_inbound(
                 if let Some(mode_id) = current_mode_update(&params) {
                     session.config.approval_policy = Some(mode_id.to_string());
                     session.connection.config = session.config.clone();
+                    continue;
+                }
+                if is_session_state_update(&params) {
+                    if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                        continue;
+                    }
+                    let Some(payload) = payload_from_session_update_for_turn(
+                        &params,
+                        session.active_turn_id.as_deref(),
+                    ) else {
+                        continue;
+                    };
+                    if let Err(error) =
+                        record_payload_for_session_and_dispatch(session, &emitter, payload)
+                    {
+                        crate::debug_log::stderr_log!(
+                            "Could not record ACP session state update: {error}"
+                        );
+                    }
                     continue;
                 }
                 let replay = is_replay_session_update(&params);
@@ -1739,6 +1764,7 @@ fn canonical_event(
         AgentConversationPayload::Tool { .. } => AgentEventType::ItemUpdated,
         AgentConversationPayload::Approval { .. } => AgentEventType::ApprovalRequested,
         AgentConversationPayload::Plan { .. } => AgentEventType::PlanUpdated,
+        AgentConversationPayload::AvailableCommandsUpdate { .. } => AgentEventType::CommandsUpdated,
         AgentConversationPayload::Turn {
             state: super::protocol::TurnState::Started,
             ..
@@ -1779,18 +1805,167 @@ fn canonical_event(
     })
 }
 
+fn session_update_kind(params: &Value) -> Option<&str> {
+    let update = params.get("update").unwrap_or(params);
+    update
+        .get("sessionUpdate")
+        .or_else(|| update.get("session_update"))
+        .or_else(|| update.get("type"))
+        .and_then(Value::as_str)
+}
+
+fn is_session_state_update(params: &Value) -> bool {
+    matches!(
+        session_update_kind(params),
+        Some(
+            "available_commands_update"
+                | "available-commands-update"
+                | "usage_update"
+                | "usage-update"
+                | "token_count"
+                | "token-count"
+        )
+    )
+}
+
+fn parse_command_descriptors(value: Option<&Value>) -> Vec<AgentCommandDescriptor> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry
+                .get("id")
+                .or_else(|| entry.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?
+                .to_string();
+            let label = entry
+                .get("label")
+                .or_else(|| entry.get("name"))
+                .or_else(|| entry.get("id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(&id)
+                .to_string();
+            let description = entry
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let input = entry.get("input");
+            let input_hint = entry
+                .get("inputHint")
+                .or_else(|| entry.get("input_hint"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    input
+                        .and_then(|input| input.get("hint"))
+                        .and_then(Value::as_str)
+                })
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let provider_metadata = entry
+                .get("providerMetadata")
+                .or_else(|| entry.get("provider_metadata"))
+                .and_then(|metadata| serde_json::from_value(metadata.clone()).ok());
+            Some(AgentCommandDescriptor {
+                id,
+                label,
+                description,
+                input_hint,
+                provider_metadata,
+            })
+        })
+        .collect()
+}
+
+fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+}
+
+fn first_u64(value: &Value, paths: &[&[&str]]) -> Option<u64> {
+    paths
+        .iter()
+        .find_map(|path| value_at(value, path).and_then(Value::as_u64))
+}
+
+fn parse_usage_payload(update: &Value) -> Option<AgentConversationPayload> {
+    let usage = update.get("usage").unwrap_or(update);
+    let used_tokens = first_u64(
+        update,
+        &[
+            &["used"],
+            &["usedTokens"],
+            &["used_tokens"],
+            &["totalTokens"],
+            &["total_tokens"],
+            &["info", "total_token_usage", "total_tokens"],
+        ],
+    )
+    .or_else(|| {
+        first_u64(
+            usage,
+            &[
+                &["used"],
+                &["usedTokens"],
+                &["used_tokens"],
+                &["totalTokens"],
+                &["total_tokens"],
+            ],
+        )
+    });
+    let context_window = first_u64(
+        update,
+        &[
+            &["size"],
+            &["contextWindow"],
+            &["context_window"],
+            &["modelContextWindow"],
+            &["model_context_window"],
+            &["info", "model_context_window"],
+        ],
+    )
+    .or_else(|| {
+        first_u64(
+            usage,
+            &[
+                &["size"],
+                &["contextWindow"],
+                &["context_window"],
+                &["modelContextWindow"],
+                &["model_context_window"],
+            ],
+        )
+    });
+    let input_tokens = first_u64(update, &[&["inputTokens"], &["input_tokens"]])
+        .or_else(|| first_u64(usage, &[&["inputTokens"], &["input_tokens"]]));
+    let output_tokens = first_u64(update, &[&["outputTokens"], &["output_tokens"]])
+        .or_else(|| first_u64(usage, &[&["outputTokens"], &["output_tokens"]]));
+    (used_tokens.is_some()
+        || context_window.is_some()
+        || input_tokens.is_some()
+        || output_tokens.is_some())
+    .then_some(AgentConversationPayload::Usage {
+        input_tokens,
+        output_tokens,
+        used_tokens,
+        context_window,
+    })
+}
+
 fn payload_from_session_update_for_turn(
     params: &Value,
     active_turn_id: Option<&str>,
 ) -> Option<AgentConversationPayload> {
     let update = params.get("update").unwrap_or(params);
     let replay = is_replay_session_update(params);
-    let Some(kind) = update
-        .get("sessionUpdate")
-        .or_else(|| update.get("session_update"))
-        .or_else(|| update.get("type"))
-        .and_then(Value::as_str)
-    else {
+    let Some(kind) = session_update_kind(params) else {
         crate::debug_log::stderr_log!("Ignoring ACP session update without a kind");
         return None;
     };
@@ -1805,6 +1980,18 @@ fn payload_from_session_update_for_turn(
     });
 
     match kind {
+        "available_commands_update" | "available-commands-update" => {
+            Some(AgentConversationPayload::AvailableCommandsUpdate {
+                available_commands: parse_command_descriptors(
+                    update
+                        .get("availableCommands")
+                        .or_else(|| update.get("available_commands")),
+                ),
+            })
+        }
+        "usage_update" | "usage-update" | "token_count" | "token-count" => {
+            parse_usage_payload(update)
+        }
         "agent_message_chunk" if replay => Some(AgentConversationPayload::AssistantMessage {
             item_id: update
                 .get("messageId")
@@ -2200,6 +2387,7 @@ mod tests {
             AgentConversationPayload::Approval { .. } => "approval",
             AgentConversationPayload::Plan { .. } => "plan",
             AgentConversationPayload::Turn { .. } => "turn",
+            AgentConversationPayload::AvailableCommandsUpdate { .. } => "availableCommandsUpdate",
             AgentConversationPayload::Usage { .. } => "usage",
             AgentConversationPayload::Error { .. } => "error",
         }
@@ -2357,6 +2545,47 @@ mod tests {
             ),
             None
         );
+        let commands = json!({ "update": {
+            "sessionUpdate": "available_commands_update",
+            "availableCommands": [
+                { "name": "review", "description": "Review the change", "input": { "hint": "path" } },
+                { "id": "status", "label": "Status" }
+            ]
+        }});
+        assert_eq!(
+            payload_from_session_update_for_turn(&commands, None),
+            Some(AgentConversationPayload::AvailableCommandsUpdate {
+                available_commands: vec![
+                    AgentCommandDescriptor {
+                        id: "review".into(),
+                        label: "review".into(),
+                        description: Some("Review the change".into()),
+                        input_hint: Some("path".into()),
+                        provider_metadata: None,
+                    },
+                    AgentCommandDescriptor {
+                        id: "status".into(),
+                        label: "Status".into(),
+                        description: None,
+                        input_hint: None,
+                        provider_metadata: None,
+                    }
+                ]
+            })
+        );
+        let usage = json!({ "update": {
+            "sessionUpdate": "usage_update", "used": 120, "size": 4096,
+            "inputTokens": 100, "outputTokens": 20
+        }});
+        assert_eq!(
+            payload_from_session_update_for_turn(&usage, None),
+            Some(AgentConversationPayload::Usage {
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                used_tokens: Some(120),
+                context_window: Some(4096),
+            })
+        );
         assert_eq!(
             payload_from_session_update_for_turn(
                 &json!({ "update": {
@@ -2366,6 +2595,52 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn captures_session_commands_and_usage_without_an_active_turn() {
+        let fixture = fixture_manager_with_acp_session("command_capture").await;
+        wait_until(|| {
+            fixture
+                .manager
+                .capabilities(&fixture.owned_id, fixture.generation)
+                .map(|capabilities| {
+                    capabilities
+                        .commands
+                        .iter()
+                        .any(|command| command.id == "updated")
+                })
+                .unwrap_or(false)
+        })
+        .await;
+        let capabilities = fixture
+            .manager
+            .capabilities(&fixture.owned_id, fixture.generation)
+            .expect("capabilities");
+        assert_eq!(capabilities.commands[0].id, "updated");
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .expect("snapshot")
+            .expect("active snapshot");
+        assert!(snapshot.events.iter().any(|event| matches!(
+            event.payload,
+            AgentConversationPayload::AvailableCommandsUpdate { .. }
+        )));
+        assert!(snapshot.events.iter().any(|event| matches!(
+            event.payload,
+            AgentConversationPayload::Usage {
+                used_tokens: Some(120),
+                context_window: Some(4096),
+                ..
+            }
+        )));
+        fixture
+            .manager
+            .close(&fixture.owned_id)
+            .await
+            .expect("close");
+        fs::remove_dir_all(fixture.root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

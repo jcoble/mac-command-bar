@@ -102,6 +102,8 @@ export type UsageBreakdownRow = import('./shell/usage/usageTypes.ts').UsageBreak
 export type UsageProviderSummaryRow = import('./shell/usage/usageTypes.ts').UsageProviderSummaryRow;
 export type UsageDailyRow = import('./shell/usage/usageTypes.ts').UsageDailyRow;
 export type UsageDailyTotalsRow = import('./shell/usage/usageTypes.ts').UsageDailyTotalsRow;
+export type AgentConversationCapabilities = import('./shell/conversation/conversationTypes.ts').AgentCapabilities;
+export type AgentConversationSnapshot = import('./shell/conversation/conversationTypes.ts').AgentConversationSnapshot;
 
 export type TerminalOutputPayload = {
   sessionId: string;
@@ -1204,6 +1206,22 @@ export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | nul
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<AgentSession[]>('list_agent_sessions');
+}
+
+export async function readAgentConversationCapabilitiesFromTauri(
+  ownedId: string
+): Promise<AgentConversationCapabilities | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationCapabilities>('read_agent_conversation_capabilities', { ownedId });
+}
+
+export async function readAgentConversationSnapshotFromTauri(
+  ownedId: string
+): Promise<AgentConversationSnapshot | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', { ownedId });
 }
 
 export async function listAgentSessionsFromLocalBridge(): Promise<AgentSession[] | null> {

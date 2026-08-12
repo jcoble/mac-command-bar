@@ -1,0 +1,105 @@
+{
+  "viewport": {
+    "width": 1710,
+    "height": 990
+  },
+  "styles": {
+    "[data-testid=\"worktree-agent-row\"].active": {
+      "tag": "li",
+      "className": "row svelte-1kstpgx active",
+      "text": "Review the long session title that should ellipsize mac-command-bar · tsk-810-rail 5.6 Luna now",
+      "rect": {
+        "x": 1,
+        "y": 114.5,
+        "width": 298,
+        "height": 56.1875
+      },
+      "style": {
+        "display": "block",
+        "position": "relative",
+        "padding": "8px 10px 9px 12px",
+        "paddingTop": "8px",
+        "paddingRight": "10px",
+        "paddingBottom": "9px",
+        "paddingLeft": "12px",
+        "margin": "0px",
+        "marginTop": "0px",
+        "marginRight": "0px",
+        "marginBottom": "0px",
+        "marginLeft": "0px",
+        "gap": "normal",
+        "width": "298px",
+        "height": "56.1875px",
+        "minHeight": "0px",
+        "fontFamily": "ui-sans-serif, system-ui, -apple-system, \"system-ui\", \"Segoe UI\", \"Helvetica Neue\", Arial, sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "400",
+        "lineHeight": "19.5px",
+        "letterSpacing": "normal",
+        "color": "rgb(241, 243, 245)",
+        "backgroundColor": "color(srgb 0.151137 0.207922 0.201804)",
+        "border": "0px none rgba(241, 243, 245, 0.12)",
+        "borderRadius": "0px",
+        "boxShadow": "none",
+        "opacity": "1",
+        "transform": "none",
+        "overflow": "visible",
+        "textOverflow": "clip",
+        "whiteSpace": "normal",
+        "zIndex": "auto"
+      }
+    },
+    "[data-testid=\"worktree-agent-row\"].active .row-title": {
+      "tag": "span",
+      "className": "row-title svelte-1kstpgx",
+      "text": "Review the long session title that should ellipsize",
+      "rect": {
+        "x": 57,
+        "y": 122.5,
+        "width": 232,
+        "height": 17.9375
+      },
+      "style": {
+        "display": "block",
+        "position": "static",
+        "padding": "0px",
+        "paddingTop": "0px",
+        "paddingRight": "0px",
+        "paddingBottom": "0px",
+        "paddingLeft": "0px",
+        "margin": "0px",
+        "marginTop": "0px",
+        "marginRight": "0px",
+        "marginBottom": "0px",
+        "marginLeft": "0px",
+        "gap": "normal",
+        "width": "232px",
+        "height": "17.9375px",
+        "minHeight": "auto",
+        "fontFamily": "ui-sans-serif, system-ui, -apple-system, \"system-ui\", \"Segoe UI\", \"Helvetica Neue\", Arial, sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "600",
+        "lineHeight": "17.94px",
+        "letterSpacing": "normal",
+        "color": "rgb(241, 243, 245)",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "border": "0px none rgba(241, 243, 245, 0.12)",
+        "borderRadius": "0px",
+        "boxShadow": "none",
+        "opacity": "1",
+        "transform": "none",
+        "overflow": "hidden",
+        "textOverflow": "ellipsis",
+        "whiteSpace": "nowrap",
+        "zIndex": "auto"
+      }
+    },
+    "[data-testid=\"worktree-agent-row\"].active::before": null
+  },
+  "selectedTitle": "Review the long session title that should ellipsize",
+  "selectedPseudo": {
+    "width": "2px",
+    "backgroundColor": "rgb(92, 178, 155)",
+    "inset": "0px 296px 0px 0px"
+  }
+}

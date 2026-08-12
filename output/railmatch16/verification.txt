@@ -1,0 +1,22 @@
+Desktop browser proof: 1710x990, Chrome channel, raw Playwright API
+Seed: 13 rows; keys mac-command-bar.next.owned-sessions and mac-command-bar.next.my-work-view-options
+
+pnpm run check:svelte
+Files the /next shell owns: 0 error(s), 0 warning(s).
+Elsewhere in the project (not checked by this gate): 16 error(s) — the old shell's own backlog.
+
+pnpm exec node scripts/sessionRowActions.test.mjs
+sessionRowActions: ok
+pnpm exec node scripts/ownedSessions.test.mjs
+ownedSessions tests passed
+pnpm exec node scripts/myWorkViewOptions.test.mjs
+myWorkViewOptions: grouping, sorting, filters, project identity, and persistence passed
+pnpm exec node scripts/paneLayout.test.mjs
+paneLayout: all tests passed
+pnpm exec node scripts/centerDock.test.mjs
+centerDock: 32px far-right rail, global anchored utilities, right-pane line tabs, and pure switching verified
+pnpm exec node scripts/errorPresentation.test.mjs
+22 passed, 0 failed
+
+Behavior receipt: final-live-behavior.json
+Stopped action order receipt: final-live-stopped-actions.json

@@ -13,7 +13,7 @@ const catalog = mergeConversationCommandCatalog([
   { id: 'status', label: 'Status' }
 ], [{ id: 'review', label: 'Duplicate skill' }, { id: 'mcp', label: 'MCP' }]);
 
-assert.deepEqual(catalog.filter((entry) => entry.source === 'provider').map((entry) => entry.name), ['review', 'status']);
+assert.deepEqual(catalog.filter((entry) => entry.source === 'provider').map((entry) => entry.name), ['review', 'model', 'theme', 'status']);
 assert.deepEqual(catalog.filter((entry) => entry.source === 'skill').map((entry) => entry.name), ['mcp']);
 assert.ok(catalog.some((entry) => entry.source === 'assembly' && entry.name === 'terminal'), 'external sessions retain /terminal');
 assert.ok(catalog.some((entry) => entry.source === 'assembly' && entry.name === 'conversation'), 'external sessions retain /conversation');
