@@ -33,7 +33,7 @@ export interface ShellCommandHooks {
    * lets that view read anything, so this is the entry point for somebody who
    * has not got the column open at all. */
   showView(id: SidebarViewId): void;
-  /** Open the new-session dialog. */
+  /** Open the new-session thread pane. */
   openNewSession(): void;
   /** Put the Problems list back in the strip along the bottom. Hiding the list
    * removes the buttons that would put it back, so this is a way in from the

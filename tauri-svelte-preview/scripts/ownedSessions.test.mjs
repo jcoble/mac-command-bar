@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeProvider, adoptAgentSession, createFreshSession,
   serializeOwnedSessions, parseStoredOwnedSessions, reconcileOwnedSessions,
+  resolveOwnedSessionProject,
 } from '../src/lib/shell/ownedSessions.ts';
 
 const mint = () => 'owned-1';
@@ -19,6 +20,35 @@ const scanRecord = {
   assert.deepEqual(normalizeProvider('CMUX-Claude '), { agent: 'claude', viaCmux: true });
   assert.deepEqual(normalizeProvider('cmux-rovo'), { agent: 'other', viaCmux: true });
   assert.deepEqual(normalizeProvider(''), { agent: 'other', viaCmux: false });
+}
+{ // project labels never expose the old placeholder
+  assert.deepEqual(
+    resolveOwnedSessionProject({
+      projectPath: '/workspaces/mac-command-bar',
+      cwd: '/worktrees/other',
+      agent: 'codex',
+      viaCmux: false
+    }),
+    { path: '/workspaces/mac-command-bar', label: 'mac-command-bar' }
+  );
+  assert.deepEqual(
+    resolveOwnedSessionProject({
+      projectPath: null,
+      cwd: '/worktrees/rail-redesign',
+      agent: 'claude',
+      viaCmux: false
+    }),
+    { path: '/worktrees/rail-redesign', label: 'rail-redesign' }
+  );
+  assert.deepEqual(
+    resolveOwnedSessionProject({
+      projectPath: 'No Project recorded',
+      cwd: '   ',
+      agent: 'opencode',
+      viaCmux: true
+    }),
+    { path: '', label: 'opencode session' }
+  );
 }
 { // adoptAgentSession
   const owned = adoptAgentSession(scanRecord, mint);

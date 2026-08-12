@@ -3,7 +3,7 @@
  * this module owns the durable option shape plus filtering, sorting and grouping.
  */
 import { loadLayout, saveLayout, type LayoutStorage } from '../layout/layoutStorage.ts';
-import type { OwnedSession } from '../ownedSessions';
+import { resolveOwnedSessionProject, type OwnedSession } from '../ownedSessions.ts';
 
 export type MyWorkGrouping = 'none' | 'status' | 'project';
 export type MyWorkSort = 'recent' | 'name';
@@ -24,7 +24,7 @@ export interface MyWorkGroup {
 export const MY_WORK_VIEW_OPTIONS_KEY = 'mac-command-bar.next.my-work-view-options';
 export const MY_WORK_STATUSES: readonly MyWorkStatus[] = ['working', 'done', 'settled'];
 export const DEFAULT_MY_WORK_VIEW_OPTIONS: MyWorkViewOptions = {
-  groupBy: 'none',
+  groupBy: 'status',
   sortBy: 'recent',
   visibleStatuses: [...MY_WORK_STATUSES]
 };
@@ -45,12 +45,13 @@ export function myWorkStatus(
 
 /** Folder basename used as the project identity shown in the rail. */
 export function myWorkProject(
-  session: Pick<OwnedSession, 'projectPath' | 'cwd'>
+  session: Pick<OwnedSession, 'projectPath' | 'cwd' | 'agent' | 'viaCmux'>
 ): { key: string; label: string } {
-  const path = (session.projectPath || session.cwd || '').trim().replace(/\/+$/, '');
-  if (!path) return { key: '', label: 'Other' };
-  const parts = path.split('/').filter(Boolean);
-  return { key: path, label: parts.at(-1) || path };
+  const resolved = resolveOwnedSessionProject(session);
+  return {
+    key: resolved.path || `provider:${resolved.label}`,
+    label: resolved.label
+  };
 }
 
 function activityRank(session: OwnedSession): number {

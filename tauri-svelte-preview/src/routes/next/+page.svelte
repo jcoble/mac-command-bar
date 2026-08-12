@@ -42,9 +42,11 @@
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import {
     captureConversationWorkspace,
+    conversationSessions,
     getConversationSession,
     removeConversationSession,
     restoreConversationWorkspace,
+    setConversationAgentConfigState,
     setConversationMode
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
@@ -53,6 +55,7 @@
     ensureStructuredConversation,
     prepareConversationHandoff,
     rollbackConversationHandoff,
+    sendStructuredMessage,
     startConversationEvents,
     startConversationTerminalProjection,
     stopConversationTerminalProjection,
@@ -64,6 +67,7 @@
     AgentConversationHandoffMode,
     AgentConversationProvider
   } from '$lib/shell/conversation/conversationTypes';
+  import { setAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
   import {
     editorState,
     resetEditorState,
@@ -97,10 +101,10 @@
     type SidebarViewId
   } from '$lib/shell/layout/sidebarViews';
   import { registerSessionRowJumpTarget } from '$lib/shell/components/sessionRowJump';
-  import {
-    startsStructuredSession,
-    type NewSessionRequest
-  } from '$lib/shell/newSession/newSessionFlow';
+  import type {
+    ThreadStartProviderConfig,
+    ThreadStartRequest
+  } from '$lib/shell/newSession/threadStartFlow.ts';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import {
     adoptAgentSession,
@@ -151,6 +155,7 @@
   import { loadXtermModules, makeTerminalView } from '$lib/shell/xtermFactory';
   import {
     listAgentSessionsFromLocalBridge,
+    isNativeTauriRuntime,
     listAgentSessionsFromTauri,
     type AgentSession
   } from '$lib/tauriSource';
@@ -209,6 +214,24 @@
   let activeCenterPanelId = $state('session');
   /** The overlay layer, for opening the dialogs it owns. */
   let overlays: { openSettings(): void; openNewSession(): void } | null = null;
+  /** Provider settings already fetched for existing structured sessions. A
+   * fresh pane consumes these snapshots without starting a hidden session just
+   * to populate its menus. */
+  const providerConfigs = $derived.by((): ThreadStartProviderConfig[] => {
+    return (['codex', 'claude'] as const).map((provider) => {
+      const existing = Object.values(conversationSessions).find((session) => session.provider === provider);
+      const config = existing?.agentConfig;
+      return {
+        provider,
+        model: config?.model ?? null,
+        availableModels: config?.availableModels ?? [],
+        reasoningEffort: config?.reasoningEffort ?? null,
+        availableEfforts: config?.availableEfforts ?? [],
+        approvalPolicy: config?.approvalPolicy ?? null,
+        availableApprovalPolicies: config?.availableApprovalPolicies ?? []
+      };
+    });
+  });
   /** The sessions column, for opening its "Find a session" drawer from the
    * context panel's "Search all sessions" link. */
   let sessionsColumn: { openFinder(): void } | null = null;
@@ -807,63 +830,71 @@
   }
 
   /**
-   * EXPLICIT IO: start a session the user described in the new-session dialog.
-   *
-   * Mirrors `adopt` step for step; the difference is where the description comes
-   * from. `createFreshSession` makes a plain shell — agent 'other', nothing to
-   * replay — and the dialog knows better on both counts, so BOTH are set before
-   * `startOwned`: that is the call which types the command in.
+   * EXPLICIT IO: turn the thread-first draft into one app-owned conversation.
+   * Opening the pane does nothing; this function runs only after the first
+   * prompt is sent. The existing ensure/select/send path remains the single
+   * session creation authority.
    */
-  async function startNewSession(request: NewSessionRequest): Promise<void> {
-    console.warn('mcb next: startNewSession', { agent: request.agent, cwd: request.cwd, disposed });
-    if (disposed) return;
-    if (!startsStructuredSession(request) && !service) {
-      throw new Error('The terminal service is not ready yet.');
-    }
+  async function startNewSession(request: ThreadStartRequest): Promise<boolean> {
+    console.warn('mcb next: thread-start submit', {
+      provider: request.provider,
+      cwd: request.cwd,
+      branch: request.branch,
+      disposed
+    });
+    if (disposed) return false;
     const owned = {
       ...createFreshSession({ cwd: request.cwd, title: request.title }),
-      agent: request.agent,
-      resumeCommand: request.command,
-      origin: startsStructuredSession(request) ? ('app' as const) : ('external' as const)
+      agent: request.provider,
+      projectPath: request.projectPath,
+      branch: request.branch,
+      resumeCommand: null,
+      origin: 'app' as const
     };
     addOwnedSession(owned);
-    if (owned.origin === 'app') {
-      updateOwnedSession(owned.ownedId, {
-        state: 'live',
-        executionOwner: 'structured',
-        runtimeState: 'starting',
-        lastError: null
-      });
-      frameControls?.showCenterPanel('session');
-      try {
-        await selectOwned(owned.ownedId, true, request.reasoningEffort);
-        updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
-      } catch (error) {
-        console.warn('mcb next: startNewSession failed', describeError(error));
-        updateOwnedSession(owned.ownedId, {
-          state: 'exited',
-          executionOwner: 'stopped',
-          runtimeState: 'failed',
-          lastError: describeError(error)
-        });
-        rail.error = `could not start ${owned.agent} session: ${describeError(error)}`;
-      }
-      return;
-    }
-
-    const terminalService = service;
-    if (!terminalService) throw new Error('The terminal service is not ready yet.');
-    const host = await hostFor(owned.ownedId);
-    if (!host) { rail.error = `no terminal host for "${owned.title}"`; return; }
-    const ptySessionId = await terminalService.startOwned(owned, host);
-    if (!ptySessionId) {
-      updateOwnedSession(owned.ownedId, { state: 'exited' });
-      rail.error = `failed to start a terminal for "${owned.title}"`;
-      return;
-    }
-    updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
-    await selectOwned(owned.ownedId);
+    updateOwnedSession(owned.ownedId, {
+      state: 'live',
+      executionOwner: 'structured',
+      runtimeState: 'starting',
+      lastError: null
+    });
     frameControls?.showCenterPanel('session');
+
+    try {
+      // Effort is a start-time field, so it travels through ensure exactly once.
+      await selectOwned(owned.ownedId, true, request.reasoningEffort ?? undefined);
+      const conversation = getConversationSession(owned.ownedId);
+      if (!conversation || conversation.generation < 1) {
+        throw new Error('The structured conversation runtime is unavailable in this build.');
+      }
+
+      // Model and access are mutable provider settings. Do not make a hidden
+      // session to fetch them: the connection returned by ensure already owns
+      // the generation and validates the advertised values.
+      if (isNativeTauriRuntime() && (request.model || request.approvalPolicy)) {
+        const config = await setAgentConversationConfig({
+          ownedId: owned.ownedId,
+          generation: conversation.generation,
+          model: request.model ?? undefined,
+          approvalPolicy: request.approvalPolicy ?? undefined
+        });
+        setConversationAgentConfigState(owned.ownedId, config);
+      }
+
+      await sendStructuredMessage(owned.ownedId, request.prompt);
+      updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
+      return true;
+    } catch (error) {
+      console.warn('mcb next: thread-start failed', describeError(error));
+      updateOwnedSession(owned.ownedId, {
+        state: 'exited',
+        executionOwner: 'stopped',
+        runtimeState: 'failed',
+        lastError: describeError(error)
+      });
+      rail.error = `could not start ${owned.agent} session: ${describeError(error)}`;
+      return false;
+    }
   }
 
   /**
@@ -1460,6 +1491,7 @@
     onResetLayout={resetLayout}
     onRescanSessions={scanRail}
     onStartNewSession={startNewSession}
+    {providerConfigs}
     newSessionRoots={rail.owned.map((session) => session.cwd)}
     message={[layoutError, activeCenterPanelId === 'session' ? rail.error : null].filter(Boolean).join('; ') || null}
     onProblemsLocationChange={applyProblemsLocation}

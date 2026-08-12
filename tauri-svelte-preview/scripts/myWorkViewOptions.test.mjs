@@ -45,6 +45,10 @@ function storage() {
     myWorkProject(session('two', { projectPath: null, cwd: '/work/fallback' })),
     { key: '/work/fallback', label: 'fallback' }
   );
+  assert.deepEqual(
+    myWorkProject(session('three', { projectPath: 'No Project recorded', cwd: ' ', agent: 'codex', viaCmux: false })),
+    { key: 'provider:codex', label: 'codex' }
+  );
 }
 
 // Recent activity uses the transcript stamp first, then lifecycle stamps, and
@@ -114,7 +118,7 @@ function storage() {
   const fake = storage();
   fake.setItem(MY_WORK_VIEW_OPTIONS_KEY, JSON.stringify({ groupBy: 'wrong', sortBy: 'name' }));
   assert.deepEqual(readMyWorkViewOptions(fake), {
-    groupBy: 'none',
+    groupBy: 'status',
     sortBy: 'name',
     visibleStatuses: ['working', 'done', 'settled']
   });

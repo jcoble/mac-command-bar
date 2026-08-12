@@ -57,13 +57,20 @@
 <style>
   .pane-section { display: flex; min-height: 0; flex-direction: column; }
   .pane-heading {
-    display: flex; min-height: 30px; align-items: center; justify-content: space-between;
-    padding: 4px 8px; color: var(--color-text-2); font-size: 12px; font-weight: 600;
+    display: flex; min-height: 35px; align-items: center; justify-content: space-between;
+    padding: 10px 12px 6px; color: var(--color-text-3); font-size: 12px; font-weight: 600;
     letter-spacing: 0.08em; text-transform: uppercase;
   }
   .pane-heading-label { display: inline-flex; align-items: center; gap: 6px; }
-  .pane-heading-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--color-live); }
-  .pane-count { color: var(--color-text-3); font-weight: 400; }
+  .pane-heading-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--color-accent); }
+  .pane-count {
+    padding: 1px 6px;
+    border-radius: 999px;
+    color: var(--color-text-3);
+    background: var(--color-elevated);
+    font-weight: 600;
+    letter-spacing: 0;
+  }
   .pane-list { min-width: 0; margin: 0; padding: 0; list-style: none; }
   .pane-empty { padding: 8px; color: var(--color-text-3); font-size: 13px; }
 </style>

@@ -1,6 +1,4 @@
 <script lang="ts">
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
-
   import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { buildMyWorkGroups, type MyWorkViewOptions } from './myWorkViewOptions';
   import WorktreeAgentRow from './WorktreeAgentRow.svelte';
@@ -51,19 +49,14 @@
     <section data-testid="my-work-group" data-group-key={group.key}>
       {#if options.groupBy !== 'none'}
         <button
+          data-testid="my-work-group-toggle"
           type="button"
-          class="flex min-h-7 w-full items-center gap-1.5 px-2 py-1 text-left text-[13px]
-            font-medium text-[var(--color-text-2)] outline-none hover:bg-[var(--color-elevated)]
-            hover:text-[var(--color-text)] focus-visible:ring-2 focus-visible:ring-[var(--color-focus)]"
+          class="group-head"
           aria-expanded={collapsedGroups[group.key] !== true}
           onclick={() => toggleGroup(group.key)}
         >
-          <ChevronRight
-            class={collapsedGroups[group.key] === true ? 'size-3.5' : 'size-3.5 rotate-90'}
-            aria-hidden="true"
-          />
-          <span class="min-w-0 flex-1 truncate">{group.label}</span>
-          <span class="text-[12px] font-normal text-[var(--color-text-3)]">{group.sessions.length}</span>
+          <span class="min-w-0 truncate">{group.label}</span>
+          <span class="group-count">{group.sessions.length}</span>
         </button>
       {/if}
 
@@ -91,6 +84,38 @@
   {/each}
 
   {#if groups.every((group) => group.sessions.length === 0)}
-    <p class="m-0 px-2 py-3 text-[13px] text-[var(--color-text-3)]">No work matches these filters</p>
+    <p class="empty-state">No work matches these filters</p>
   {/if}
 </div>
+
+<style>
+  .group-head {
+    display: flex;
+    width: 100%;
+    min-height: 35px;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 12px 6px;
+    border: 0;
+    color: var(--color-text-3);
+    background: transparent;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-align: left;
+    text-transform: uppercase;
+    outline: none;
+  }
+  .group-head:hover,
+  .group-head:focus-visible { color: var(--color-text-2); background: var(--color-hover); }
+  .group-count {
+    padding: 1px 6px;
+    border-radius: 999px;
+    color: var(--color-text-3);
+    background: var(--color-elevated);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0;
+  }
+  .empty-state { margin: 0; padding: 10px 12px; color: var(--color-text-3); font-size: 13px; }
+</style>

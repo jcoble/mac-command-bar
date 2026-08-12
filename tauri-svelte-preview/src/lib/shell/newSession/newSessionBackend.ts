@@ -1,11 +1,11 @@
 /**
- * newSessionBackend.ts — the ONLY place the new-session dialog talks to the
+ * newSessionBackend.ts — the ONLY place the new-session thread pane talks to the
  * outside world.
  *
  * Three questions, three functions: which folder did the user choose in the
  * system dialog, is a typed-in folder really a project, and which checkouts
  * does this project have. Nothing here runs at import, nothing polls, nothing
- * runs from an `$effect`; the dialog calls them when the user does something.
+ * runs from an `$effect`; the thread pane calls them when the user does something.
  *
  * Every call is counted with `countInvoke('<command name>')` so the development
  * call counter stays honest.
@@ -13,7 +13,7 @@
  * Each function answers with a small result rather than throwing, because all
  * three have a perfectly ordinary "not available here" answer: the web build
  * has no system folder dialog and no git commands behind it, and saying so is
- * the dialog's job. A `null` from a `…FromTauri` wrapper means nothing was
+ * the pane's job. A `null` from a `…FromTauri` wrapper means nothing was
  * invoked at all — see `tauriSource.ts`.
  */
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
@@ -34,7 +34,7 @@ export type BackendAnswer<T> =
   | { status: 'unavailable'; message: string }
   | { status: 'failed'; message: string };
 
-/** Shown wherever a step of this dialog needs the desktop app to work. */
+/** Shown wherever a step of this pane needs the desktop app to work. */
 export const DESKTOP_ONLY_MESSAGE = 'This works in the desktop app only.';
 
 function describeError(error: unknown): string {
@@ -108,7 +108,7 @@ export async function validateProjectRoot(
  * worktrees of it.
  *
  * Only ever READS. There is no command here that makes a worktree, and this
- * lane never adds one: the dialog offers what already exists and hands over the
+ * lane never adds one: the pane offers what already exists and hands over the
  * `git worktree add` line for anything else.
  */
 export async function listWorktrees(root: string): Promise<BackendAnswer<ProjectWorktree[]>> {

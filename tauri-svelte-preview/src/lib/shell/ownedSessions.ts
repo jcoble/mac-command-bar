@@ -45,6 +45,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   viaCmux: boolean;
   source: 'scanned' | 'fresh';
   title: string;
+  /** Model reported by the session scanner, when one was available. */
+  model?: string | null;
   projectPath: string | null;
   cwd: string;
   resumeCommand: string | null;
@@ -106,6 +108,13 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   lastActivity: string | null;
 };
 
+export interface OwnedSessionProject {
+  /** The best path we have for this session, used by detail views. */
+  path: string;
+  /** A compact label that is always useful in the rail. */
+  label: string;
+}
+
 const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'gemini', 'opencode'];
 const KNOWN_STATES: OwnedSessionState[] = ['live', 'background', 'exited'];
 const KNOWN_EXECUTION_OWNERS: AgentExecutionOwner[] = [
@@ -138,6 +147,41 @@ export function normalizeProvider(provider: string): { agent: AgentKind; viaCmux
   return { agent, viaCmux };
 }
 
+function cleanSessionPath(value: string | null | undefined): string {
+  const cleaned = (value ?? '').trim().replaceAll('\\', '/').replace(/\/+$/, '');
+  const normalized = cleaned.toLowerCase();
+  return normalized === 'no project recorded' || normalized === 'no project' ? '' : cleaned;
+}
+
+function folderName(value: string): string {
+  const parts = value.split('/').filter(Boolean);
+  return parts.at(-1) ?? '';
+}
+
+function providerFallback(agent: AgentKind | null | undefined, viaCmux: boolean): string {
+  const name = (agent ?? '').trim();
+  if (!name) return 'Session';
+  return viaCmux ? `${name} session` : name;
+}
+
+/**
+ * Resolve the project identity once, at the session-record boundary.
+ *
+ * The scanner's recorded project wins. If it has no project, a worktree/cwd
+ * folder is still more useful than a placeholder. A provider label is the
+ * final truthful fallback when neither path exists.
+ */
+export function resolveOwnedSessionProject(
+  session: Pick<OwnedSession, 'projectPath' | 'cwd'> &
+    Partial<Pick<OwnedSession, 'agent' | 'viaCmux'>>
+): OwnedSessionProject {
+  const recorded = cleanSessionPath(session.projectPath);
+  const worktree = cleanSessionPath(session.cwd);
+  const path = recorded || worktree;
+  const label = folderName(path) || providerFallback(session.agent, session.viaCmux === true);
+  return { path, label };
+}
+
 export function adoptAgentSession(record: AgentSession, mintId: () => string = defaultMintId): OwnedSession {
   const { agent, viaCmux } = normalizeProvider(record.provider);
   return {
@@ -147,6 +191,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     viaCmux,
     source: 'scanned',
     title: record.title,
+    model: isNonEmptyString(record.model) ? record.model : null,
     projectPath: record.projectPath,
     cwd: record.projectPath ?? '',
     resumeCommand: record.resumeCommands[0] ?? null,
@@ -184,6 +229,7 @@ export function createFreshSession(
     viaCmux: false,
     source: 'fresh',
     title: opts.title ?? defaultTitle,
+    model: null,
     projectPath: null,
     cwd: opts.cwd,
     resumeCommand: null,
@@ -277,6 +323,7 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       viaCmux: candidate.viaCmux === true,
       source: candidate.source === 'fresh' ? 'fresh' : 'scanned',
       title: isNonEmptyString(candidate.title) ? candidate.title : '',
+      model: isNonEmptyString(candidate.model) ? candidate.model : null,
       projectPath: isNonEmptyString(candidate.projectPath) ? candidate.projectPath : null,
       cwd: candidate.cwd,
       resumeCommand: isNonEmptyString(candidate.resumeCommand) ? candidate.resumeCommand : null,

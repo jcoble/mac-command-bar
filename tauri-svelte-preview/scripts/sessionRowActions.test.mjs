@@ -184,6 +184,13 @@ for (const label of ['Open session', 'Open editor', 'Open source control']) {
   assert.ok(row.includes(label), `the row must label its jump button "${label}"`);
 }
 
+assert.match(row, /SessionHoverCard/, 'hover details use the dedicated rail card');
+assert.match(row, /onmouseenter=\{showOverlay\}/, 'the action cluster opens on pointer hover');
+assert.match(row, /onfocusin=\{showOverlay\}/, 'the action cluster opens on keyboard focus');
+assert.match(row, /data-presence=\{presence\}/, 'presence stays a compact row state');
+assert.match(row, /label="Start session"/, 'stopped rows keep Start as the first hover action');
+assert.doesNotMatch(row, /No project recorded/i, 'the rail never renders the placeholder project sentence');
+
 assert.match(
   shellPage,
   /registerSessionRowJumpTarget\(\{[\s\S]*?selectSession[\s\S]*?showCenterPanel[\s\S]*?showSidebarView[\s\S]*?\}\)/,

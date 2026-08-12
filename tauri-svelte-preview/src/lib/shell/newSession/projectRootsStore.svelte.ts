@@ -1,5 +1,5 @@
 /**
- * projectRootsStore.svelte.ts — the project folders the new-session dialog offers.
+ * projectRootsStore.svelte.ts — the project folders the new-session thread pane offers.
  *
  * STATE ONLY, in the pattern `sessionRailStore.svelte.ts` set:
  *
@@ -15,7 +15,7 @@
  *    two hard-coded paths — see the note on `builtInRoots` below);
  *  - the folders the user added, kept here under this store's own key;
  *  - the folders the sessions on the rail are already running in, handed in by
- *    whoever opens the dialog via `setSessionRoots`.
+ *    whoever opens the pane via `setSessionRoots`.
  *
  * A storage failure never breaks the picker: the in-memory list keeps working
  * and the failure is reported on `projectRoots.error` rather than swallowed.
@@ -34,7 +34,7 @@ import {
 /** Where the folders the user added are kept. This lane's own key. */
 export const CUSTOM_PROJECT_ROOTS_STORAGE_KEY = 'mac-command-bar.next.new-session-custom-roots';
 
-/** Where the folder the dialog last started in is kept, so it opens there again. */
+/** Where the folder the pane last started in is kept, so it opens there again. */
 export const LAST_PROJECT_ROOT_STORAGE_KEY = 'mac-command-bar.next.new-session-last-root';
 
 /** What the user is told when the added folders could not be written down. */
@@ -48,7 +48,7 @@ export const projectRoots = $state<{
   custom: CustomRoot[];
   /** Folders the sessions on the rail run in. Never persisted — they are derived. */
   sessionPaths: string[];
-  /** The folder the dialog should open on, when it is still one of the known ones. */
+  /** The folder the pane should open on, when it is still one of the known ones. */
   lastUsedPath: string | null;
   /** Whether the stored folders have been read yet, so hydrate runs once. */
   hydrated: boolean;
@@ -88,7 +88,7 @@ export function knownRoots(): KnownRoot[] {
 }
 
 /**
- * The folder the dialog should open on: the one last started in when it is
+ * The folder the pane should open on: the one last started in when it is
  * still on the list, otherwise the first folder there, otherwise nothing.
  */
 export function initialRootPath(): string | null {
@@ -126,7 +126,7 @@ function persistLastUsed(): void {
       localStorage.removeItem(LAST_PROJECT_ROOT_STORAGE_KEY);
     }
   } catch {
-    // Which folder the dialog opens on is a convenience. Losing it is not an
+    // Which folder the pane opens on is a convenience. Losing it is not an
     // error anyone needs to read about.
   }
 }
@@ -184,7 +184,7 @@ export function removeCustomRoot(id: string): void {
 
 /**
  * Tell the store which folders the sessions on the rail are running in. Called
- * by whoever opens the dialog; the store never reaches into the rail itself.
+ * by whoever opens the pane; the store never reaches into the rail itself.
  */
 export function setSessionRoots(paths: string[]): void {
   projectRoots.sessionPaths = paths

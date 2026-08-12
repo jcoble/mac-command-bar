@@ -1,41 +1,45 @@
 <script lang="ts">
   /**
-   * Compact left-rail row for one owned session. It is presentational: all
-   * state and actions arrive through props, so hover/focus never starts IO.
+   * The compact, two-line session row used by every left-rail shelf.
    *
-   * Two lines — title on top, meta underneath — with the presence marker
-   * leading the title and the quick-jump buttons trailing it. The presence
-   * marker is itself a button: it opens the session on the Session tab, which
-   * is the one thing a working row is almost always clicked for. Editor and
-   * source control sit beside it, so getting to the right surface never means a
-   * click on the left edge followed by another on the far right.
+   * The row is intentionally presentational. Selection, restart, shelf
+   * transitions and surface jumps arrive through props; hover only reveals
+   * controls and a read-only detail card.
    */
+  import { onDestroy } from 'svelte';
+
   import Bot from '@lucide/svelte/icons/bot';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Check from '@lucide/svelte/icons/check';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import GitBranch from '@lucide/svelte/icons/git-branch';
+  import MessageCircle from '@lucide/svelte/icons/message-circle';
+  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
   import Play from '@lucide/svelte/icons/play';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Archive from '@lucide/svelte/icons/archive';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import Terminal from '@lucide/svelte/icons/terminal';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Undo2 from '@lucide/svelte/icons/undo-2';
-  import Terminal from '@lucide/svelte/icons/terminal';
 
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
-  import { presentAgentError } from '$lib/shell/errorPresentation';
-  import { sessionLabel } from '$lib/shell/sessionStrip';
-  import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
-  import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import { modelLabel } from '$lib/shell/conversation/agentConfigLabels.ts';
   import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
     deriveSessionPresence,
     EMPTY_SESSION_PRESENCE_HISTORY,
-    sessionPresenceHistory
+    sessionPresenceHistory,
+    synchronizeSessionPresenceWork
   } from '$lib/shell/conversation/sessionPresence.ts';
   import { requestSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
-  import SessionPresenceIndicator from './conversation/SessionPresenceIndicator.svelte';
-  import { myWorkProject } from './myWorkViewOptions';
+  import { presentAgentError } from '$lib/shell/errorPresentation';
+  import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
+  import {
+    resolveOwnedSessionProject,
+    type OwnedSession
+  } from '$lib/shell/ownedSessions';
+  import { sessionLabel } from '$lib/shell/sessionStrip';
+  import SessionHoverCard from './SessionHoverCard.svelte';
   import { sessionRowJump } from './sessionRowJump';
 
   interface Props {
@@ -52,6 +56,9 @@
     onClose?(): void;
     onAskRemove?(): void;
   }
+
+  type RowPresence = 'working' | 'attention' | 'idle' | 'stopped' | 'done' | 'failed';
+  type SessionRecordExtras = OwnedSession & { hostname?: string | null; machine?: string | null };
 
   let {
     session,
@@ -70,18 +77,14 @@
 
   const label = $derived(sessionLabel(session));
   const shelf = $derived(deriveOwnedLibraryState(session));
-  const project = $derived(canonicalCwd(session.projectPath) || 'No project recorded');
-  const location = $derived(canonicalCwd(session.cwd || session.projectPath) || 'No worktree recorded');
-  const providerLabel = $derived(session.viaCmux ? `cmux · ${session.agent}` : session.agent);
+  const projectInfo = $derived(resolveOwnedSessionProject(session));
+  const project = $derived(projectInfo.label);
+  const worktree = $derived(canonicalCwd(session.cwd || session.projectPath) || projectInfo.path || project);
+  const providerGlyph = $derived(session.viaCmux ? 'terminal' : 'agent');
   const conversation = $derived(
     session.state === 'exited' ? null : conversationSessions[session.ownedId] ?? null
   );
   const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
-
-  /** The second line: where this session lives, in the fewest words. */
-  const meta = $derived(
-    [myWorkProject(session).label, session.branch, providerLabel].filter(Boolean).join(' · ')
-  );
 
   const pendingApprovalCount = $derived(
     conversation
@@ -94,14 +97,9 @@
   );
   const connectionState = $derived(session.origin === 'app' ? conversation?.connectionState ?? null : null);
   const activeTurnId = $derived(conversation?.activeTurnId ?? session.activeTurnId ?? null);
-
-  /**
-   * The same answer the indicator draws, worked out here so a stopped session
-   * gets one compact marker and one Start action in the hover/focus overlay.
-   */
-  const presence = $derived(
+  const presenceSignals = $derived(
     session.state === 'exited'
-      ? 'disconnected'
+      ? 'stopped'
       : deriveSessionPresence(
           {
             terminalState: session.state,
@@ -115,8 +113,107 @@
           0
         ).state
   );
-  const presenceIsRestart = $derived(presence === 'disconnected' || session.state === 'exited');
+
+  // Keep the shared history current without mounting the old wordy indicator.
+  $effect(() => {
+    if (session.state === 'exited') return;
+    synchronizeSessionPresenceWork(
+      session.ownedId,
+      activeTurnId,
+      conversation?.sending === true || runtimeState === 'working'
+    );
+  });
+
+  const presence = $derived<RowPresence>(
+    shelf === 'done'
+      ? 'done'
+      : session.lastError || runtimeState === 'failed'
+        ? 'failed'
+        : session.state === 'exited' || session.executionOwner === 'stopped' || presenceSignals === 'disconnected'
+          ? 'stopped'
+          : pendingApprovalCount > 0
+          || runtimeState === 'waiting-approval'
+          || runtimeState === 'waiting-input'
+          || presenceSignals === 'needs-attention'
+            ? 'attention'
+            : presenceSignals === 'working'
+              ? 'working'
+              : 'idle'
+  );
+  const presenceLabel = $derived(
+    {
+      working: 'Working',
+      attention: 'Waiting on you',
+      idle: 'Idle',
+      stopped: 'Stopped',
+      done: 'Finished',
+      failed: 'Error'
+    }[presence]
+  );
+  const presenceIsRestart = $derived(presence === 'stopped');
+  const modelValue = $derived(conversation?.metadata.model ?? session.model ?? null);
+  const modelText = $derived(modelValue ? modelLabel(modelValue) : null);
+  const machine = $derived(
+    (session as SessionRecordExtras).hostname?.trim()
+      || (session as SessionRecordExtras).machine?.trim()
+      || null
+  );
+  const activity = $derived(formatActivity(session.lastActivity));
+  const usage = $derived(formatUsage(conversation?.metadata.usedTokens, conversation?.usage));
+  const metaProject = $derived(project);
+
   let overlayVisible = $state(false);
+  let cardPlacement = $state<{ top: number; left: number } | null>(null);
+  let cardTimer: ReturnType<typeof setTimeout> | null = null;
+  const CARD_WIDTH = 336;
+  const CARD_HEIGHT = 248;
+
+  function clearCardTimer(): void {
+    if (cardTimer !== null) {
+      clearTimeout(cardTimer);
+      cardTimer = null;
+    }
+  }
+
+  function placeCard(row: HTMLElement): void {
+    const rect = row.getBoundingClientRect();
+    const rightRoom = window.innerWidth - rect.right - 8;
+    cardPlacement = {
+      top: Math.max(8, Math.min(rect.top, window.innerHeight - CARD_HEIGHT - 8)),
+      left: rightRoom >= CARD_WIDTH ? rect.right + 8 : Math.max(8, rect.left - CARD_WIDTH - 8)
+    };
+  }
+
+  function showOverlay(event: { currentTarget: EventTarget | null; type?: string }): void {
+    overlayVisible = true;
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    clearCardTimer();
+    if (event.type === 'focusin') {
+      placeCard(row);
+      return;
+    }
+    cardTimer = setTimeout(() => {
+      cardTimer = null;
+      placeCard(row);
+    }, 160);
+  }
+
+  function hideOverlay(): void {
+    clearCardTimer();
+    overlayVisible = false;
+    cardPlacement = null;
+  }
+
+  function handleFocusOut(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    if (
+      next instanceof Node
+      && event.currentTarget instanceof Node
+      && event.currentTarget.contains(next)
+    ) return;
+    hideOverlay();
+  }
 
   function stopPropagation(event: MouseEvent, action?: () => void): void {
     event.stopPropagation();
@@ -132,106 +229,47 @@
 
   function jump(event: MouseEvent, surface: 'session' | 'editor' | 'source-control'): void {
     event.stopPropagation();
-    // The rail is mounted by the page, which registers the one host that can do
-    // both halves of a jump. A false answer means no host — the row click still
-    // selects the session, so nothing is lost.
     if (!sessionRowJump(session.ownedId, surface)) onSelect?.();
   }
 
-  /** Where the detail card sits while the pointer is on this row. */
-  let cardPlacement = $state<{ top: number; left: number } | null>(null);
-  const CARD_WIDTH = 320;
-  const CARD_HEIGHT = 150;
+  onDestroy(clearCardTimer);
 
-  /**
-   * The card is placed in window coordinates rather than inside the row.
-   * The sessions column scrolls, which clips anything that reaches past its
-   * own width, and this card is meant to leave the column entirely.
-   */
-  function placeCard(event: { currentTarget: EventTarget | null }): void {
-    const row = event.currentTarget;
-    if (!(row instanceof HTMLElement)) return;
-    const rect = row.getBoundingClientRect();
-    const roomOnTheRight = window.innerWidth - rect.right - 12;
-    cardPlacement = {
-      top: Math.max(8, Math.min(rect.top, window.innerHeight - CARD_HEIGHT - 8)),
-      left:
-        roomOnTheRight >= CARD_WIDTH
-          ? rect.right + 6
-          : Math.max(8, rect.left - CARD_WIDTH - 6)
-    };
+  function formatActivity(value: string | null): string | null {
+    if (!value) return null;
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return value;
+    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+    if (seconds < 60) return 'now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    const days = Math.floor(hours / 24);
+    return `${days}d`;
   }
 
-  function hideCard(): void {
-    cardPlacement = null;
-  }
-
-  function showOverlay(event: { currentTarget: EventTarget | null }): void {
-    overlayVisible = true;
-    placeCard(event);
-  }
-
-  function hideOverlay(): void {
-    overlayVisible = false;
-    hideCard();
-  }
-
-  function handleFocusOut(event: FocusEvent): void {
-    const next = event.relatedTarget;
-    if (
-      next instanceof Node &&
-      event.currentTarget instanceof Node &&
-      event.currentTarget.contains(next)
-    ) {
-      return;
-    }
-    hideOverlay();
+  function formatUsage(
+    metadataTokens: number | null | undefined,
+    eventUsage: { inputTokens?: number; outputTokens?: number } | undefined
+  ): string | null {
+    const total = metadataTokens
+      ?? ((eventUsage?.inputTokens ?? 0) + (eventUsage?.outputTokens ?? 0) || null);
+    return total && total > 0 ? `${total.toLocaleString()} tokens` : null;
   }
 </script>
 
 <li
   data-testid="worktree-agent-row"
+  data-presence={presence}
   class:active
-  class="row relative min-w-0 list-none border-b border-[var(--color-border)]/35"
-  title={`${location} · ${providerLabel}`}
+  class="row"
+  title={label}
   onmouseenter={showOverlay}
   onmouseleave={hideOverlay}
   onfocusin={showOverlay}
   onfocusout={handleFocusOut}
 >
   <div class="row-body">
-    <span data-testid="worktree-agent-runtime" class="row-presence">
-      {#if presenceIsRestart}
-        <span
-          data-testid="worktree-agent-stopped"
-          class="stopped-mark"
-          role="img"
-          aria-label="Session stopped"
-          title="Session stopped"
-        ></span>
-      {:else}
-        <span data-testid="worktree-agent-jump-session">
-          <IconButton
-            label="Open session"
-            size="xs"
-            side="top"
-            class="text-[var(--color-text-2)]"
-            onclick={(event) => jump(event, 'session')}
-          >
-            <SessionPresenceIndicator
-              ownedId={session.ownedId}
-              terminalState={session.state}
-              {connectionState}
-              {activeTurnId}
-              sending={conversation?.sending}
-              {pendingApprovalCount}
-              {runtimeState}
-            />
-          </IconButton>
-        </span>
-      {/if}
-    </span>
-
     <button
       data-testid="worktree-agent-select"
       type="button"
@@ -240,149 +278,107 @@
       onclick={() => onSelect?.()}
     >
       <span class="row-title-line">
-        {#if session.viaCmux}
-          <Terminal data-testid="worktree-agent-provider-icon" class="size-3 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
+        <span
+          data-testid="worktree-agent-runtime"
+          class="presence {presence}"
+          role="img"
+          aria-label={presenceLabel}
+          title={presenceLabel}
+        >
+          <span class="presence-dot" aria-hidden="true"></span>
+        </span>
+        {#if providerGlyph === 'terminal'}
+          <Terminal data-testid="worktree-agent-provider-icon" class="provider-icon" aria-hidden="true" />
         {:else}
-          <Bot data-testid="worktree-agent-provider-icon" class="size-3 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
+          <Bot data-testid="worktree-agent-provider-icon" class="provider-icon" aria-hidden="true" />
         {/if}
-        <span data-testid="worktree-agent-title" class="row-title">{label}</span>
+        <span data-testid="worktree-agent-title" class="row-title" title={label}>{label}</span>
       </span>
-      <span data-testid="worktree-agent-meta" class="row-meta">{meta}</span>
+
+      <span data-testid="worktree-agent-meta-line" class="row-meta-line">
+        <span data-testid="worktree-agent-meta" class="row-meta">
+          <span>{metaProject}</span>
+          {#if session.branch}
+            <span class="meta-separator" aria-hidden="true">·</span>
+            <span class="branch">{session.branch}</span>
+          {/if}
+        </span>
+        {#if modelText}
+          <span data-testid="worktree-agent-model" class="model-chip" title={modelValue ?? undefined}>
+            <Sparkles class="model-mark" aria-hidden="true" />{modelText}
+          </span>
+        {/if}
+        {#if activity}
+          <span data-testid="worktree-agent-activity" class="row-time">{activity}</span>
+        {/if}
+      </span>
     </button>
 
-    <!-- Controls are mounted only while the row is hovered or focused. They
-         sit over the end of the title instead of reserving permanent width. -->
     {#if overlayVisible}
       <span data-testid="worktree-agent-overlay" class="row-overlay">
         {#if presenceIsRestart}
           <span data-testid="worktree-agent-start">
             <IconButton
               label="Start session"
-              size="sm"
-              side="top"
-              class="text-[var(--color-text-2)]"
+              size="xs"
+              side="bottom"
+              class="action action-session"
               onclick={startSession}
             >
-              <Play class="size-3.5" aria-hidden="true" />
+              <Play class="action-icon" aria-hidden="true" />
             </IconButton>
           </span>
         {/if}
+
         <span data-testid="worktree-agent-jump" class="row-cluster">
+          <span data-testid="worktree-agent-jump-session">
+            <IconButton
+              label="Open session"
+              size="xs"
+              side="bottom"
+              class="action action-session"
+              onclick={(event) => jump(event, 'session')}
+            >
+              <MessageCircle class="action-icon" aria-hidden="true" />
+            </IconButton>
+          </span>
           <span data-testid="worktree-agent-jump-editor">
             <IconButton
               label="Open editor"
               size="xs"
-              side="top"
-              class="text-[var(--color-text-2)]"
+              side="bottom"
+              class="action action-editor"
               onclick={(event) => jump(event, 'editor')}
             >
-              <FileCode2 class="size-3.5" aria-hidden="true" />
+              <FileCode2 class="action-icon" aria-hidden="true" />
             </IconButton>
           </span>
           <span data-testid="worktree-agent-jump-source-control">
             <IconButton
               label="Open source control"
               size="xs"
-              side="top"
-              class="text-[var(--color-text-2)]"
+              side="bottom"
+              class="action action-git"
               onclick={(event) => jump(event, 'source-control')}
             >
-              <GitBranch class="size-3.5" aria-hidden="true" />
+              <GitBranch class="action-icon" aria-hidden="true" />
             </IconButton>
           </span>
         </span>
 
-        <span data-testid="worktree-agent-actions" class="row-cluster">
-          {#if shelf === 'working' && onComplete}
-            <span data-testid="worktree-agent-mark-done">
-              <IconButton
-                label="Mark done"
-                size="sm"
-                side="top"
-                class="text-[var(--color-text-2)]"
-                onclick={(event) => stopPropagation(event, onComplete)}
-              >
-                <Check class="size-3.5" aria-hidden="true" />
-              </IconButton>
-            </span>
-          {:else if shelf === 'done' && onReopen}
-            <span data-testid="worktree-agent-reopen">
-              <IconButton
-                label="Move back to Working"
-                size="sm"
-                side="top"
-                class="text-[var(--color-text-2)]"
-                onclick={(event) => stopPropagation(event, onReopen)}
-              >
-                <Undo2 class="size-3.5" aria-hidden="true" />
-              </IconButton>
-            </span>
-          {/if}
-          {#if shelf === 'done' && onSettle}
-            <span data-testid="worktree-agent-settle">
-              <IconButton
-                label="Move to Settled"
-                size="sm"
-                side="top"
-                class="text-[var(--color-text-2)]"
-                onclick={(event) => stopPropagation(event, onSettle)}
-              >
-                <Archive class="size-3.5" aria-hidden="true" />
-              </IconButton>
-            </span>
-          {:else if shelf === 'settled' && onUnsettle}
-            <span data-testid="worktree-agent-unsettle">
-              <IconButton
-                label="Move back to Done"
-                size="sm"
-                side="top"
-                class="text-[var(--color-text-2)]"
-                onclick={(event) => stopPropagation(event, onUnsettle)}
-              >
-                <RotateCcw class="size-3.5" aria-hidden="true" />
-              </IconButton>
-            </span>
-          {/if}
-          {#if shelf === 'done' && onAskRemove}
-            <span data-testid="worktree-agent-remove">
-              <IconButton
-                label="Remove from sessions"
-                size="sm"
-                side="top"
-                class="text-[var(--color-text-2)]"
-                onclick={(event) => stopPropagation(event, onAskRemove)}
-              >
-                <Trash2 class="size-3.5" aria-hidden="true" />
-              </IconButton>
-            </span>
-          {/if}
-          {#if onClose && session.state !== 'exited' && session.ptySessionId}
-            <span data-testid="worktree-agent-close">
-              <IconButton
-                label="Close terminal"
-                size="sm"
-                side="top"
-                class="text-[var(--color-text-2)]"
-                onclick={(event) => stopPropagation(event, onClose)}
-              >
-                <Terminal class="size-3.5" aria-hidden="true" />
-              </IconButton>
-            </span>
-          {/if}
-          {#if onToggle}
-            <span data-testid="worktree-agent-expand">
-              <IconButton
-                label={expanded ? 'Hide details' : 'Show details'}
-                size="sm"
-                side="top"
-                class="text-[var(--color-text-2)]"
-                onclick={(event) => stopPropagation(event, onToggle)}
-              >
-                <ChevronRight class={expanded ? 'size-3.5 rotate-90' : 'size-3.5'} aria-hidden="true" />
-              </IconButton>
-            </span>
-          {/if}
-        </span>
+        {#if onToggle}
+          <span data-testid="worktree-agent-details">
+            <IconButton
+              label="Details — session actions"
+              size="xs"
+              side="bottom"
+              class="action action-details"
+              onclick={(event) => stopPropagation(event, onToggle)}
+            >
+              <MoreHorizontal class="action-icon" aria-hidden="true" />
+            </IconButton>
+          </span>
+        {/if}
       </span>
     {/if}
   </div>
@@ -394,36 +390,82 @@
       role="tooltip"
       style="top: {cardPlacement.top}px; left: {cardPlacement.left}px"
     >
-    <strong>{label}</strong>
-    <span>{project} · {location}</span>
-    <span>{providerLabel} · {shelf}</span>
-    {#if session.branch || session.taskId || session.pullRequest}
-      <span>{[session.branch, session.taskId, session.pullRequest].filter(Boolean).join(' · ')}</span>
-    {/if}
-    {#if presentedError}<span data-testid="worktree-agent-error" class="error">{presentedError.summary}</span>{/if}
-    {#if session.lastActivity}<span>Last activity {session.lastActivity}</span>{/if}
+      <SessionHoverCard
+        title={label}
+        statusLabel={presenceLabel}
+        {project}
+        {worktree}
+        {machine}
+        branch={session.branch}
+        model={modelText}
+        lastActivity={activity}
+        {usage}
+        statusTone={presence}
+      />
     </div>
   {/if}
 
   {#if expanded}
-    <div data-testid="worktree-agent-detail" class="detail-grid px-8 pb-2 text-[12px] text-[var(--color-text-2)]">
-      <span>Worktree</span><span class="truncate" title={location}>{location}</span>
+    <div data-testid="worktree-agent-detail" class="detail-grid">
       <span>Project</span><span class="truncate" title={project}>{project}</span>
-      {#if session.branch}<span>Branch</span><span class="truncate">{session.branch}</span>{/if}
+      <span>Worktree</span><span class="truncate" title={worktree}>{worktree}</span>
+      {#if session.branch}<span>Branch</span><span class="truncate mono">{session.branch}</span>{/if}
       {#if session.taskId}<span>Task</span><span class="truncate">{session.taskId}</span>{/if}
       {#if session.pullRequest}<span>Pull request</span><span class="truncate">{session.pullRequest}</span>{/if}
-      {#if session.nativeSessionId}<span>Native session</span><span class="truncate">{session.nativeSessionId}</span>{/if}
+      {#if session.nativeSessionId}<span>Session</span><span class="truncate mono">{session.nativeSessionId}</span>{/if}
       {#if session.latestTurnPreview}<span>Last turn</span><span class="truncate" title={session.latestTurnPreview}>{session.latestTurnPreview}</span>{/if}
       {#if presentedError}
         <span>Error</span><span class="error">{presentedError.summary}</span>
         {#if presentedError.detail}
           <span></span>
-          <details data-testid="worktree-agent-error-detail" class="error-detail min-w-0">
+          <details data-testid="worktree-agent-error-detail" class="error-detail">
             <summary>Technical details</summary>
             <pre>{presentedError.detail}</pre>
           </details>
         {/if}
       {/if}
+      <div data-testid="worktree-agent-actions" class="detail-actions">
+        {#if shelf === 'working' && onComplete}
+          <span data-testid="worktree-agent-mark-done">
+            <IconButton label="Mark done" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onComplete)}>
+              <Check class="action-icon" aria-hidden="true" />
+            </IconButton>
+          </span>
+        {:else if shelf === 'done' && onReopen}
+          <span data-testid="worktree-agent-reopen">
+            <IconButton label="Move back to Working" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onReopen)}>
+              <Undo2 class="action-icon" aria-hidden="true" />
+            </IconButton>
+          </span>
+        {/if}
+        {#if shelf === 'done' && onSettle}
+          <span data-testid="worktree-agent-settle">
+            <IconButton label="Move to Settled" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onSettle)}>
+              <Archive class="action-icon" aria-hidden="true" />
+            </IconButton>
+          </span>
+        {:else if shelf === 'settled' && onUnsettle}
+          <span data-testid="worktree-agent-unsettle">
+            <IconButton label="Move back to Done" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onUnsettle)}>
+              <RotateCcw class="action-icon" aria-hidden="true" />
+            </IconButton>
+          </span>
+        {/if}
+        {#if shelf === 'done' && onAskRemove}
+          <span data-testid="worktree-agent-remove">
+            <IconButton label="Remove from sessions" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onAskRemove)}>
+              <Trash2 class="action-icon" aria-hidden="true" />
+            </IconButton>
+          </span>
+        {/if}
+        {#if onClose && session.state !== 'exited' && session.ptySessionId}
+          <span data-testid="worktree-agent-close">
+            <IconButton label="Close terminal" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onClose)}>
+              <Terminal class="action-icon" aria-hidden="true" />
+            </IconButton>
+          </span>
+        {/if}
+      </div>
     </div>
   {/if}
 </li>
@@ -431,77 +473,114 @@
 <style>
   .row {
     position: relative;
+    min-width: 0;
+    list-style: none;
     background: transparent;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 38%, transparent);
+    transition: background 140ms ease;
   }
 
-  .row:hover {
-    background: var(--color-hover);
-  }
+  .row:hover,
+  .row:focus-within { background: var(--color-hover); }
 
-  .active {
-    background: var(--color-selected);
-  }
-
-  /* The selected row says so twice — a filled surface and a bar down its left
-     edge — so it stays obvious against a hovered neighbour. */
+  .active { background: var(--color-selected); }
   .active::before {
     position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
+    inset: 0 auto 0 0;
     width: 2px;
     background: var(--color-selected-border);
     content: '';
   }
-
-  .active:hover {
-    background: color-mix(in srgb, var(--color-selected) 82%, var(--color-hover));
-  }
+  .active:hover,
+  .active:focus-within { background: color-mix(in srgb, var(--color-selected) 82%, var(--color-hover)); }
 
   .row-body {
-    display: flex;
+    position: relative;
     min-width: 0;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 8px;
-  }
-
-  .row-presence {
-    display: inline-flex;
-    min-height: 18px;
-    flex-shrink: 0;
-    align-items: center;
-  }
-
-  .stopped-mark {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 999px;
-    background: var(--color-text-2);
+    padding: 8px 10px 9px 12px;
   }
 
   .row-select {
     display: flex;
+    width: 100%;
     min-width: 0;
-    flex: 1 1 auto;
     flex-direction: column;
-    gap: 2px;
+    align-items: stretch;
+    gap: 4px;
+    padding: 0;
+    border: 0;
     border-radius: 4px;
+    color: inherit;
+    background: transparent;
     text-align: left;
     outline: none;
   }
 
-  .row-select:focus-visible {
-    box-shadow: 0 0 0 2px var(--color-focus);
-  }
+  .row-select:focus-visible { box-shadow: 0 0 0 2px var(--color-focus); }
 
-  .row-title-line {
+  .row-title-line,
+  .row-meta-line {
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 6px;
   }
+
+  .row-title-line { gap: 8px; }
+  .row-meta-line { gap: 6px; margin-left: 22px; }
+
+  :global(.provider-icon) {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    color: var(--color-text-3);
+  }
+
+  .presence {
+    position: relative;
+    display: inline-flex;
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .presence-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--color-idle);
+  }
+
+  .presence.working .presence-dot { background: var(--color-accent); }
+  .presence.working::after {
+    position: absolute;
+    inset: 0;
+    border: 1.5px solid var(--color-accent);
+    border-radius: 999px;
+    content: '';
+    opacity: 0.45;
+    animation: presence-pulse 1.8s ease-out infinite;
+  }
+  .presence.attention .presence-dot { background: var(--color-attention); }
+  .presence.attention::after {
+    position: absolute;
+    inset: 1px;
+    border: 1.5px solid var(--color-attention);
+    border-radius: 999px;
+    content: '';
+    opacity: 0.35;
+  }
+  .presence.idle .presence-dot { opacity: 0.85; }
+  .presence.stopped .presence-dot {
+    width: 7px;
+    height: 7px;
+    border: 1.5px solid var(--color-text-3);
+    background: transparent;
+    opacity: 0.7;
+  }
+  .presence.done .presence-dot { background: var(--color-good); }
+  .presence.failed .presence-dot { background: var(--color-bad); }
 
   .row-title {
     min-width: 0;
@@ -509,112 +588,127 @@
     overflow: hidden;
     color: var(--color-text);
     font-size: 13px;
+    line-height: 1.38;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .active .row-title { font-weight: 600; }
+
+  .row-meta {
+    display: inline-flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    gap: 5px;
+    overflow: hidden;
+    color: var(--color-text-3);
+    font-size: 12px;
     line-height: 1.35;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .active .row-title {
-    font-weight: 600;
-  }
-
-  .row-meta {
+  .row-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta-separator { flex: 0 0 auto; opacity: 0.55; }
+  .branch {
     overflow: hidden;
-    color: var(--color-text-3);
-    font-size: 12px;
-    line-height: 1.3;
+    flex: 0 1 auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .row-meta:empty {
-    display: none;
+  .model-chip {
+    display: inline-flex;
+    height: 17px;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    max-width: 118px;
+    padding: 0 6px;
+    overflow: hidden;
+    border-radius: 5px;
+    color: var(--color-text-2);
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+    font-size: 12px;
+    font-weight: 550;
+    letter-spacing: 0.01em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  :global(.model-mark) { width: 12px; height: 12px; flex: 0 0 auto; color: var(--color-text-3); }
+  .row-time {
+    margin-left: auto;
+    color: var(--color-text-3);
+    font-size: 11.5px;
+    opacity: 0.85;
+    white-space: nowrap;
   }
 
-  /* The controls sit over the end of the title rather than beside it. The
-     chip carries its own background so whatever is underneath stops at its
-     edge, and the strip to its left fades that edge out instead of cutting
-     the title with a hard line. */
   .row-overlay {
     position: absolute;
-    z-index: 2;
-    top: 4px;
-    right: 2px;
+    z-index: 3;
+    top: 50%;
+    right: 4px;
     display: inline-flex;
     align-items: center;
-    gap: 2px;
-    border-radius: 6px;
-    padding: 0 2px;
+    gap: 1px;
+    padding: 2px;
+    border-radius: 9px;
     background: var(--color-elevated);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-sm), inset 0 0 0 1px color-mix(in srgb, var(--color-border) 50%, transparent);
     isolation: isolate;
-    opacity: 1;
-    pointer-events: auto;
+    transform: translateY(-50%);
   }
-
   .row-overlay::before {
     position: absolute;
-    top: 0;
-    bottom: 0;
     z-index: -1;
-    left: -24px;
-    width: 24px;
-    background: linear-gradient(to right, transparent, var(--color-elevated));
+    inset: 0 auto 0 -36px;
+    width: 36px;
+    background: linear-gradient(to right, transparent, var(--color-elevated) 78%);
     content: '';
   }
+  .row-cluster { display: inline-flex; align-items: center; gap: 1px; }
+  .action,
+  .secondary-action { color: var(--color-text-2); }
+  .action :global(svg),
+  .secondary-action :global(svg) { width: 16px; height: 16px; }
+  .action:hover { color: var(--color-text); background: color-mix(in srgb, var(--color-text) 10%, transparent); }
+  .action-session:hover { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 16%, transparent); }
+  .action-editor:hover { color: var(--color-live); background: var(--color-live-bg); }
+  .action-git:hover { color: var(--color-good); background: var(--color-good-bg); }
+  .action-details:hover,
+  .secondary-action:hover { color: var(--color-text); background: color-mix(in srgb, var(--color-text) 12%, transparent); }
 
-  .row-cluster {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .row {
-      transition: background 140ms ease;
-    }
+  .hover-popover {
+    position: fixed;
+    z-index: 60;
+    pointer-events: none;
   }
 
   .detail-grid {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
-    gap: 3px 10px;
-  }
-
-  .error-detail summary {
-    cursor: pointer;
+    gap: 4px 10px;
+    padding: 0 12px 10px 34px;
     color: var(--color-text-2);
-  }
-
-  .error-detail pre {
-    margin: 4px 0 0;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-    color: var(--color-text-2);
-    font: inherit;
-  }
-
-  /* Out to the right of the rail, not down over the row underneath: a card
-     dropped below this row covers the next one, which is exactly the row you
-     are usually comparing it against. */
-  .hover-popover {
-    position: fixed;
-    z-index: 60;
-    display: flex;
-    width: 320px;
-    max-width: calc(100vw - 24px);
-    flex-direction: column;
-    gap: 3px;
-    border: 1px solid var(--color-border);
-    border-radius: 5px;
-    padding: 7px 8px;
-    color: var(--color-text-2);
-    background: var(--color-surface);
-    box-shadow: var(--shadow-md);
     font-size: 12px;
-    pointer-events: none;
+  }
+  .detail-grid > span:nth-child(odd) { color: var(--color-text-3); }
+  .detail-actions { display: flex; grid-column: 1 / -1; gap: 2px; padding-top: 4px; }
+  .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .error { color: var(--color-bad); }
+  .error-detail summary { cursor: pointer; color: var(--color-text-2); }
+  .error-detail pre { margin: 4px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; font: inherit; }
+
+  @keyframes presence-pulse {
+    0% { transform: scale(0.6); opacity: 0.55; }
+    70% { transform: scale(1); opacity: 0; }
+    100% { transform: scale(1); opacity: 0; }
   }
 
-  .hover-popover strong { color: var(--color-text); font-size: 13px; font-weight: 600; }
-  .hover-popover span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (prefers-reduced-motion: reduce) {
+    .row { transition: none; }
+    .presence.working::after { animation: none; opacity: 0.4; }
+  }
 </style>

@@ -2,26 +2,25 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
-  buildNewSessionRequest,
-  selectLaunchAgent,
-  startsStructuredSession
-} from '../src/lib/shell/newSession/newSessionFlow.ts';
+  buildThreadStartRequest,
+  validateThreadStart
+} from '../src/lib/shell/newSession/threadStartFlow.ts';
 
 const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
-const dialog = readFileSync(
-  new URL('../src/lib/shell/components/newSession/NewSessionDialog.svelte', import.meta.url),
+const thread = readFileSync(
+  new URL('../src/lib/shell/newSession/NewSessionThread.svelte', import.meta.url),
   'utf8'
 );
 const host = readFileSync(
-  new URL('../src/lib/shell/components/newSession/NewSessionHost.svelte', import.meta.url),
+  new URL('../src/lib/shell/newSession/ThreadStartHost.svelte', import.meta.url),
+  'utf8'
+);
+const overlays = readFileSync(
+  new URL('../src/lib/shell/components/ShellOverlays.svelte', import.meta.url),
   'utf8'
 );
 const conversationService = readFileSync(
   new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
-  'utf8'
-);
-const sessionCard = readFileSync(
-  new URL('../src/lib/shell/components/sessions/SessionCard.svelte', import.meta.url),
   'utf8'
 );
 
@@ -37,186 +36,54 @@ const startNewSession = functionSource(
   'async function startNewSession(',
   'async function onStartStack('
 );
-const selectOwned = functionSource(
-  'async function selectOwned(',
-  'function handoffInput('
-);
-const restartOwned = functionSource(
-  'async function restartOwned(',
-  'async function closeTerminal('
-);
 
-assert.match(
-  dialog,
-  /let selectedLaunch = \$state\(selectLaunchAgent\('codex'\)\)/,
-  'Codex is selected before the new-session dialog first opens'
-);
-assert.match(
-  dialog,
-  /export function reset[\s\S]*pickAgent\('codex'\)/,
-  'reopening the new-session dialog restores the Codex default'
-);
+assert.match(thread, /What should we build in <span>{projectName}<\/span>\?/);
+assert.match(thread, /data-testid="new-session-thread-input"/);
+assert.match(thread, /data-testid="new-session-thread-model"/);
+assert.match(thread, /data-testid="new-session-thread-effort"/);
+assert.match(thread, /data-testid="new-session-thread-access"/);
+assert.match(thread, /data-testid="new-session-thread-project"/);
+assert.match(thread, /data-testid="new-session-thread-branch"/);
+assert.match(thread, /data-testid="new-session-thread-new-worktree"/);
+assert.match(thread, /groupProviderModels\(providerConfigs\)/);
+assert.match(thread, /onSelect=\{\(\) => chooseModel\(group\.provider, model\.id\)\}/);
+assert.match(thread, /Nothing is created while this pane is a draft/);
 
-// The same selection value must paint the card and build the submitted request.
-// This is the regression path captured by the native new-session proof: changing
-// the selected card may not leave the request on its initial value.
-for (const agent of ['codex', 'claude']) {
-  const selection = selectLaunchAgent(agent);
-  const request = buildNewSessionRequest({
-    cwd: '/Users/me/dev/work/thing',
-    title: '',
-    ...selection
-  });
+assert.match(host, /import\('\.\/NewSessionThread\.svelte'\)/);
+assert.match(host, /onSend={submit}/);
+assert.match(overlays, /<ThreadStartHost/);
+assert.doesNotMatch(overlays, /NewSessionHost|NewSessionDialog/);
 
-  assert.deepEqual(request, {
-    cwd: '/Users/me/dev/work/thing',
-    title: `${agent === 'codex' ? 'Codex' : 'Claude'} in thing`,
-    agent,
-    command: agent
-  });
-  assert.equal(startsStructuredSession(request), true, `${agent} must start structured`);
-}
+// The first-send request keeps every chosen picker value and rejects the
+// unsupported worktree branch before any route-owned side effect can run.
+const request = buildThreadStartRequest({
+  prompt: 'Build the new thread pane',
+  provider: 'codex',
+  model: 'gpt-5.6-luna',
+  effort: 'max',
+  access: 'on-request',
+  projectPath: '/Users/me/dev/work/mac-command-bar',
+  cwd: '/Users/me/dev/work/worktrees/mac-command-bar/tsk-808-thread',
+  branch: 'tsk-808-thread',
+  createNewWorktree: false
+});
+assert.equal(request?.prompt, 'Build the new thread pane');
+assert.equal(request?.cwd.endsWith('tsk-808-thread'), true);
+assert.equal(request?.branch, 'tsk-808-thread');
+assert.equal(request?.model, 'gpt-5.6-luna');
+assert.equal(request?.reasoningEffort, 'max');
+assert.equal(request?.approvalPolicy, 'on-request');
+assert.deepEqual(validateThreadStart({ ...request, prompt: request.prompt }), []);
 
-assert.deepEqual(
-  buildNewSessionRequest({
-    cwd: '/Users/me/dev/work/thing',
-    title: '',
-    ...selectLaunchAgent('claude'),
-    reasoningEffort: 'medium'
-  }),
-  {
-    cwd: '/Users/me/dev/work/thing',
-    title: 'Claude in thing',
-    agent: 'claude',
-    command: 'claude',
-    reasoningEffort: 'medium'
-  },
-  'Claude effort must survive the dialog request handoff'
-);
-
-assert.match(
-  dialog,
-  /aria-pressed=\{selectedLaunch\.agent === option\.agent\}[\s\S]*onclick=\{\(\) => pickAgent\(option\.agent\)\}/,
-  'the selected card and its click handler share selectedLaunch'
-);
-assert.match(
-  dialog,
-  /const draft = \$derived\(\{[\s\S]*\.\.\.selectedLaunch,[\s\S]*reasoningEffort:/,
-  'the submitted draft reads the same selectedLaunch value as the card'
-);
-assert.match(
-  dialog,
-  /\{#if selectedLaunch\.agent === 'claude'\}[\s\S]*data-testid="new-session-claude-effort"[\s\S]*<Select\.Item value="default" label="Default" \/>[\s\S]*CLAUDE_SESSION_EFFORTS/,
-  'the dialog offers Default and the bounded effort catalog only for Claude'
-);
-assert.match(
-  dialog,
-  /`Start \$\{selectedLaunch\.agent\} session`/,
-  'the primary button names the agent that will be submitted'
-);
-assert.match(
-  host,
-  /<NewSessionDialog[\s\S]*\{onStart\}/,
-  'the host forwards the request callback without substituting an agent'
-);
-
-assert.doesNotMatch(
-  startNewSession,
-  /if \(!service \|\| disposed\) return;/,
-  'structured new sessions must not depend on the terminal service'
-);
-assert.match(
-  startNewSession,
-  /if \(disposed\) return;/,
-  'new-session submission still stops after page disposal'
-);
-assert.match(
-  startNewSession,
-  /if \(!startsStructuredSession\(request\) && !service\)/,
-  'only terminal launches require the terminal service'
-);
-assert.match(
-  startNewSession,
-  /await selectOwned\(owned\.ownedId, true, request\.reasoningEffort\);/,
-  'new Claude sessions forward their selected effort into structured activation'
-);
-assert.match(
-  selectOwned,
-  /reasoningEffort\?: string[\s\S]*ensureStructuredConversation\(\{[\s\S]*reasoningEffort/,
-  'structured activation forwards effort to the conversation service'
-);
-assert.match(
-  conversationService,
-  /reasoningEffort\?: string \| null;[\s\S]*const request = \{[\s\S]*\.\.\.input,[\s\S]*nativeSessionMode:/,
-  'the session-start invoke request carries the optional backend effort field'
-);
-
-assert.match(
-  startNewSession,
-  /origin: startsStructuredSession\(request\) \? \('app' as const\) : \('external' as const\)/,
-  'the same request predicate owns the persisted structured origin'
-);
-
-{
-  const structuredBranch = startNewSession.indexOf("if (owned.origin === 'app')");
-  const structuredSelect = startNewSession.indexOf(
-    'await selectOwned(owned.ownedId, true, request.reasoningEffort);',
-    structuredBranch
-  );
-  const structuredFailure = startNewSession.indexOf("state: 'exited'", structuredBranch);
-  assert.ok(structuredBranch >= 0 && structuredSelect >= 0 && structuredFailure >= 0);
-  assert.ok(
-    structuredSelect < structuredFailure,
-    'the new app-owned row must activate its structured surface before connection can reject'
-  );
-}
-assert.match(
-  selectOwned,
-  /const structuredActivation = ensureStructuredConversation\(\{[\s\S]*if \(!propagateStructuredFailure\)[\s\S]*await structuredActivation;[\s\S]*throw error;/,
-  'new-session activation must be able to await and propagate its structured connection failure'
-);
-
-assert.doesNotMatch(
-  restartOwned,
-  /if \(!service \|\| disposed \|\| restarting\.has\(ownedId\)\) return;/,
-  'structured restarts must not depend on the terminal service'
-);
-assert.match(
-  restartOwned,
-  /if \(disposed \|\| restarting\.has\(ownedId\)\) return;/,
-  'restart keeps the disposal and duplicate-click guards'
-);
-assert.match(
-  restartOwned,
-  /if \(!service\) \{/,
-  'the terminal service is checked only after the structured restart path'
-);
-assert.match(
-  restartOwned,
-  /nativeSessionMode: 'resume'/,
-  'the structured restart path explicitly resumes the native conversation'
-);
-
-assert.match(
-  dialog,
-  /console\.(?:debug|warn)\('mcb next: new-session submit'/,
-  'new-session submit attempts must be visible in future frontend logs'
-);
-
-assert.match(
-  startNewSession,
-  /updateOwnedSession\(owned\.ownedId, \{[\s\S]*state: 'exited',[\s\S]*lastError: describeError\(error\)[\s\S]*\}\);/,
-  'a rejected structured start must retain its diagnostic on the session record'
-);
-assert.match(
-  sessionCard,
-  /presentAgentError\(session\.lastError\)/,
-  'session cards must humanize retained structured-start errors'
-);
-assert.match(
-  sessionCard,
-  /data-testid="session-card-error"[\s\S]*\{presentedError\.summary\}/,
-  'session cards must render the humanized structured-start error summary'
-);
+assert.match(startNewSession, /async function startNewSession\(request: ThreadStartRequest\): Promise<boolean>/);
+assert.match(startNewSession, /createFreshSession\(\{ cwd: request\.cwd, title: request\.title \}\)/);
+assert.match(startNewSession, /projectPath: request\.projectPath/);
+assert.match(startNewSession, /branch: request\.branch/);
+assert.match(startNewSession, /await selectOwned\(owned\.ownedId, true, request\.reasoningEffort/);
+assert.match(startNewSession, /setAgentConversationConfig\(/);
+assert.match(startNewSession, /await sendStructuredMessage\(owned\.ownedId, request\.prompt\)/);
+assert.match(startNewSession, /return false;/);
+assert.match(conversationService, /reasoningEffort\?: string \| null;/);
+assert.match(conversationService, /nativeSessionMode: input\.nativeSessionMode \?\? 'resume'/);
 
 console.log('newSessionSubmission.test.mjs passed');

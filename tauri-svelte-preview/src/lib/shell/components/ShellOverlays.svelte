@@ -12,7 +12,7 @@
   import { onMount, tick } from 'svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
-  import NewSessionHost from './newSession/NewSessionHost.svelte';
+  import ThreadStartHost from '$lib/shell/newSession/ThreadStartHost.svelte';
   import PalettePanel from './PalettePanel.svelte';
   import SettingsHost from './SettingsHost.svelte';
   import SessionBrowserOverlay from '$lib/shell/browser/SessionBrowserOverlay.svelte';
@@ -21,7 +21,10 @@
   import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
   import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import type { ProblemsLocation } from '$lib/settingsStore.svelte';
-  import type { NewSessionRequest } from '$lib/shell/newSession/newSessionFlow';
+  import type {
+    ThreadStartProviderConfig,
+    ThreadStartRequest
+  } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
     RAIL_UTILITY_REQUEST_EVENT,
     RAIL_UTILITY_STATE_EVENT,
@@ -37,8 +40,10 @@
     onResetLayout: () => void;
     /** Look for agent sessions again. */
     onRescanSessions: () => void | Promise<void>;
-    /** Start the session the new-session dialog described. */
-    onStartNewSession: (request: NewSessionRequest) => void | Promise<void>;
+    /** Start the session described by the thread-first draft. */
+    onStartNewSession: (request: ThreadStartRequest) => void | Promise<boolean | void>;
+    /** Configuration snapshots already fetched for provider sessions. */
+    providerConfigs: ThreadStartProviderConfig[];
     /** The folders the sessions on the rail are running in, so the project
      * picker knows about projects nobody added by hand. */
     newSessionRoots: string[];
@@ -53,6 +58,7 @@
     onResetLayout,
     onRescanSessions,
     onStartNewSession,
+    providerConfigs,
     newSessionRoots,
     message,
     onProblemsLocationChange,
@@ -60,7 +66,10 @@
   }: Props = $props();
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
-  let newSessionHost: { open: (input?: { sessionRoots?: string[] }) => void } | null = null;
+  let newSessionHost: {
+    openNewSession: (input?: { sessionRoots?: string[] }) => void;
+    close(): void;
+  } | null = null;
   let resourcePopoverHost: HTMLDivElement | null = null;
   let usagePopoverHost: HTMLDivElement | null = null;
   let resourceAnchor = $state<RailUtilityAnchor | null>(null);
@@ -123,11 +132,11 @@
     settingsHost?.open();
   }
 
-  /** Open the new-session dialog from outside. Both ways in reach the same
+  /** Open the thread-first new-session pane from outside. Both ways in reach the same
    * instance: the "New session" button in the sessions column, and the palette
    * command the page registers. */
   export function openNewSession(): void {
-    newSessionHost?.open({ sessionRoots: newSessionRoots });
+    newSessionHost?.openNewSession({ sessionRoots: newSessionRoots });
   }
 </script>
 
@@ -137,7 +146,7 @@
   onOpenSettings={() => settingsHost?.open()}
 />
 <SettingsHost bind:this={settingsHost} {onProblemsLocationChange} />
-<NewSessionHost bind:this={newSessionHost} onStart={onStartNewSession} />
+<ThreadStartHost bind:this={newSessionHost} {providerConfigs} onStart={onStartNewSession} />
 <!-- The session's own browser, over the whole window including the sessions
      column. It reads the active session itself and takes no props. -->
 <SessionBrowserOverlay onClose={onSessionBrowserClose} />

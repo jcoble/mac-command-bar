@@ -144,7 +144,7 @@
    */
   function paneContentSize(id: string): number {
     const count = visibleSessions.filter((session) => deriveOwnedLibraryState(session) === id).length;
-    const fallback = 30 + Math.max(1, count) * 56;
+    const fallback = 35 + Math.max(1, count) * 56;
     const measured = typeof document !== 'undefined'
       ? document.querySelector<HTMLElement>(`[data-testid="${id}-pane"]`)?.scrollHeight ?? 0
       : 0;
@@ -381,4 +381,8 @@
      Filling the pane and then growing past it is what lets the body scroll. */
   .pane-slot { width: 100%; min-width: 0; min-height: 100%; }
   .sessions-paneview :global(.pane-body-host) { position: absolute; inset: 0; overflow: auto; }
+  /* Paneview supplies a draggable header for each shelf. The rail already
+     renders its own count-bearing shelf heading, so keeping both creates a
+     duplicate "Working" line and spends one row of the 300px column. */
+  .sessions-paneview :global(.dv-pane-header) { display: none; }
 </style>

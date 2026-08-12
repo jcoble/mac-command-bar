@@ -15,10 +15,11 @@
   import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Plus from '@lucide/svelte/icons/plus';
+  import Search from '@lucide/svelte/icons/search';
+  import List from '@lucide/svelte/icons/list';
   import SquareCode from '@lucide/svelte/icons/square-code';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Terminal from '@lucide/svelte/icons/terminal';
-  import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
   import { onMount } from 'svelte';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
@@ -220,9 +221,18 @@
   {:else}
     <div class="flex h-full min-h-0 flex-col bg-[var(--color-bg)] text-[var(--color-text)]">
       <header class="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-2">
-        <h2 class="text-[12px] font-semibold tracking-[0.09em] text-[var(--color-text-2)] uppercase">My work</h2>
+        <h2 class="text-[13px] font-semibold text-[var(--color-text)]">Sessions</h2>
         <span class="text-[12px] text-[var(--color-text-2)]">{owned.length}</span>
         <div class="ml-auto flex items-center gap-1">
+          <IconButton
+            label="Search sessions"
+            size="xs"
+            side="bottom"
+            class={ACTION_CLASS}
+            onclick={openFinder}
+          >
+            <Search class="size-3.5" aria-hidden="true" />
+          </IconButton>
           <DropdownMenu.Root>
             <Tooltip.Root>
               <Tooltip.Trigger>
@@ -231,14 +241,14 @@
                     {...props}
                     data-testid="my-work-view-options-trigger"
                     class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), ACTION_CLASS)}
-                    aria-label="My Work view options"
+                    aria-label="View session options"
                   >
-                    <SlidersHorizontal aria-hidden="true" />
+                    <List aria-hidden="true" />
                   </DropdownMenu.Trigger>
                 {/snippet}
               </Tooltip.Trigger>
               <Tooltip.Content side="bottom" class={TOOLTIP_CLASS} arrowClasses={TOOLTIP_ARROW_CLASS}>
-                My Work view options
+                View session options
               </Tooltip.Content>
             </Tooltip.Root>
 
