@@ -422,19 +422,10 @@ mod tests {
         let snapshot = runtime
             .block_on(read_claude_quota())
             .unwrap_or_else(|error| panic!("live quota failed: {}", error.reason()));
-        let windows = snapshot
-            .windows
-            .iter()
-            .map(|window| {
-                format!(
-                    "{}={:.1}% reset={}",
-                    window.label,
-                    window.used_percent,
-                    window.resets_at.as_deref().unwrap_or("unavailable")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        println!("LIVE CLAUDE STATE: available; windows: {windows}");
+        assert!(
+            !snapshot.windows.is_empty(),
+            "live quota response contained no quota windows"
+        );
+        crate::debug_log::stderr_log!("live usage request status=200");
     }
 }

@@ -98,6 +98,10 @@
     return usageState.currentByProvider[provider]?.account ?? 'Local history';
   }
 
+  function quotaUnavailableMessage(snapshot: { unavailableReason: string | null } | null): string {
+    return snapshot?.unavailableReason?.trim() || 'Live quota is unavailable.';
+  }
+
   function donutLength(provider: string): number {
     const cost = selectedProviderCard(provider)?.estimatedCostMicros ?? 0;
     return knownProviderCostTotal === 0 ? 0 : (cost / knownProviderCostTotal) * donutCircumference;
@@ -250,7 +254,7 @@
                 {/each}
               </div>
             {:else}
-              <div class="quota-empty"><span>Live quota</span><p>{provider === 'claude' ? 'Not advertised by this provider.' : 'Unavailable locally.'}</p></div>
+              <div class="quota-empty"><span>Live quota</span><p>{quotaUnavailableMessage(snapshot)}</p></div>
             {/if}
 
             <div class="provider-metrics">

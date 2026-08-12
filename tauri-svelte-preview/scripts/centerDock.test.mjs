@@ -21,12 +21,12 @@ const shellOverlays = readFileSync(
   new URL('../src/lib/shell/components/ShellOverlays.svelte', import.meta.url),
   'utf8'
 );
-const assistanceHost = readFileSync(
-  new URL('../src/lib/shell/assistance/AssistanceHost.svelte', import.meta.url),
+const sessionBrowserOverlay = readFileSync(
+  new URL('../src/lib/shell/browser/SessionBrowserOverlay.svelte', import.meta.url),
   'utf8'
 );
-const browserOverlayHost = readFileSync(
-  new URL('../src/lib/shell/components/browser/BrowserOverlayHost.svelte', import.meta.url),
+const assistanceHost = readFileSync(
+  new URL('../src/lib/shell/assistance/AssistanceHost.svelte', import.meta.url),
   'utf8'
 );
 const shellPage = readFileSync(
@@ -200,8 +200,8 @@ assert.match(
 
 assert.match(
   shellPage,
-  /function handleCenterPanelShown\(id: string\): void \{[\s\S]*?if \(id !== 'browser'\) deactivateBrowserWorkspace\(browserModelContext\(\)\);[\s\S]*?\n  \}/,
-  'switching away from Browser must explicitly hide its native workspace'
+  /function handleCenterPanelShown\(id: string\): void \{[\s\S]*?if \(id === 'browser'\) \{[\s\S]*?openSessionBrowserOverlay\(rail\.activeOwnedId\)[\s\S]*?frameControls\?\.showCenterPanel\('session'\);[\s\S]*?\n  \}/,
+  'the Browser center entry must open the session-owned overlay and return the dock to Session'
 );
 const centerSwitch = shellPage.match(
   /function handleCenterPanelShown\(id: string\): void \{([\s\S]*?)\n  \}/
@@ -224,13 +224,38 @@ assert.match(
 );
 assert.match(
   shellPage,
-  /browserSurfaceVisible=\{activeCenterPanelId === 'browser'\}/,
-  'the global overlay host must know whether Browser is the active center surface'
+  /<SessionBrowserButton \/>/,
+  'the top strip must expose the single session-owned browser entry'
 );
 assert.match(
-  browserOverlayHost,
-  /surfaceVisible && workspace\.presentation !== 'docked'/,
-  'floating browser chrome must be absent after switching away from Browser'
+  shellPage,
+  /<div class="browser-center-proxy"[^>]*data-testid="browser-center-proxy"/,
+  'the center Browser id must be a proxy, not a second embedded browser'
+);
+assert.match(
+  shellOverlays,
+  /<SessionBrowserOverlay onClose=\{onSessionBrowserClose\} \/>/,
+  'the global overlay layer must mount the session-owned browser once'
+);
+assert.doesNotMatch(
+  shellOverlays,
+  /BrowserOverlayHost|BrowserExpandedOverlay/,
+  'the retired browser overlay host must not remain reachable'
+);
+assert.match(
+  sessionBrowserOverlay,
+  /\.session-browser-overlay[\s\S]*?position:\s*fixed[\s\S]*?inset:\s*0[\s\S]*?z-index:\s*90/,
+  'the session browser must cover the complete window above the sessions rail'
+);
+assert.match(
+  sessionBrowserOverlay,
+  /data-testid="session-browser-frame"[\s\S]*?src=\{view\.url\}/,
+  'the browser preview must render the navigated session URL in the overlay'
+);
+assert.match(
+  sessionBrowserOverlay,
+  /session-browser-back[\s\S]*?session-browser-forward[\s\S]*?session-browser-reload/,
+  'the consolidated browser must expose back, forward, and reload controls'
 );
 
 console.log('centerDock: 32px far-right rail, global anchored utilities, right-pane line tabs, and pure switching verified');

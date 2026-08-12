@@ -21,6 +21,7 @@ import {
   removeSessionAnnotation,
   setSessionBrowserAnnotating,
   setSessionBrowserUrl,
+  stepSessionBrowserHistory,
   type SessionAnnotationInput,
   type SessionBrowserMap,
   type SessionBrowserView
@@ -60,6 +61,13 @@ export function toggleSessionBrowserOverlay(sessionId: string | null): void {
 
 export function setSessionBrowserAddress(sessionId: string | null, url: string): void {
   state.bySession = setSessionBrowserUrl(state.bySession, sessionId, url);
+}
+
+export function stepSessionBrowserAddress(
+  sessionId: string | null,
+  direction: 'back' | 'forward'
+): void {
+  state.bySession = stepSessionBrowserHistory(state.bySession, sessionId, direction);
 }
 
 export function setSessionBrowserAnnotateMode(sessionId: string | null, annotating: boolean): void {

@@ -39,6 +39,7 @@
   async function openStats(): Promise<void> {
     open = false;
     fullOpen = true;
+    void refreshCurrentUsage(provider, instanceId);
     void refreshUsageHistory();
     await tick();
     modalSurface?.focus();

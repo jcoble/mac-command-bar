@@ -12,6 +12,8 @@
    * component from the conversation surface, placed here rather than copied,
    * so a message typed over a page is the same message typed in the transcript.
    */
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import ArrowRight from '@lucide/svelte/icons/arrow-right';
   import Globe2 from '@lucide/svelte/icons/globe-2';
   import RotateCw from '@lucide/svelte/icons/rotate-cw';
   import SquarePen from '@lucide/svelte/icons/square-pen';
@@ -37,9 +39,19 @@
     removeSessionBrowserAnnotation,
     sessionBrowserView,
     setSessionBrowserAddress,
-    setSessionBrowserAnnotateMode
+    setSessionBrowserAnnotateMode,
+    stepSessionBrowserAddress
   } from './sessionBrowserState.svelte.ts';
-  import { browser, reloadBrowserFrame, setBrowserUrl } from './browserStore.svelte.ts';
+  import {
+    activateBrowser,
+    browser,
+    browserModelContext,
+    deactivateBrowserWorkspace,
+    reloadBrowserFrame,
+    setBrowserUrl
+  } from './browserStore.svelte.ts';
+  import { setBrowserPresentationMode } from './browserModel.ts';
+  import { isTauriRuntime } from '../../tauriSource.ts';
   import { normalizeBrowserUrl } from './normalizeBrowserUrl.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import {
@@ -62,6 +74,13 @@
   import type { AgentConversationConfigField } from '$lib/shell/conversation/conversationConfig.ts';
   import { setAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
 
+  interface Props {
+    /** Return the center workbench to its previous surface after closing. */
+    onClose?: () => void;
+  }
+
+  let { onClose }: Props = $props();
+
   const sessionId = $derived(rail.activeOwnedId);
   const session = $derived(rail.owned.find((item) => item.ownedId === sessionId) ?? null);
   const view = $derived(sessionBrowserView(sessionId));
@@ -78,6 +97,10 @@
   let address = $state('');
   let addressSession = $state<string | null>(null);
   let attachmentError = $state('');
+  let reloadVersion = $state(0);
+  let lastSyncedBrowserTarget = '';
+
+  const nativeBrowser = isTauriRuntime();
 
   /** The address box follows whichever session is showing, without an effect:
    * a session change is simply a different key, so the field is re-seeded. */
@@ -96,11 +119,22 @@
     if (!next) return;
     setSessionBrowserAddress(sessionId, next);
     addressSession = null;
-    setBrowserUrl(next);
   }
 
   function close(): void {
     closeSessionBrowserOverlay(sessionId);
+    lastSyncedBrowserTarget = '';
+    if (nativeBrowser) deactivateBrowserWorkspace();
+    onClose?.();
+  }
+
+  function stepHistory(direction: 'back' | 'forward'): void {
+    stepSessionBrowserAddress(sessionId, direction);
+  }
+
+  function reload(): void {
+    reloadVersion += 1;
+    if (nativeBrowser) reloadBrowserFrame();
   }
 
   function toggleAnnotating(): void {
@@ -183,6 +217,45 @@
       attachmentError = error instanceof Error ? error.message : String(error);
     }
   }
+
+  /**
+   * The browser preview uses the iframe below. In the desktop build the same
+   * address is handed to the native child webview and its bounds are kept in
+   * the page rectangle. The session store remains authoritative in both
+   * cases, so switching sessions never leaks an address or annotation.
+   */
+  function syncBrowserSurface(): void {
+    if (!sessionId || !view.open || !view.url) return;
+    const target = `${sessionId}:${view.url}`;
+    if (target === lastSyncedBrowserTarget) return;
+    lastSyncedBrowserTarget = target;
+    browser.workspace.ownedId = sessionId;
+    activateBrowser();
+    const active = browser.workspace.activeTabId
+      ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null
+      : null;
+    if (!active || active.url !== view.url) setBrowserUrl(view.url);
+    if (nativeBrowser && typeof window !== 'undefined') {
+      const pageTop = 44;
+      const composerReserve = 190;
+      setBrowserPresentationMode(browserModelContext(), 'maximized', {
+        window: { width: window.innerWidth, height: window.innerHeight },
+        bounds: {
+          x: 0,
+          y: pageTop,
+          width: window.innerWidth,
+          height: Math.max(160, window.innerHeight - pageTop - composerReserve)
+        }
+      });
+    }
+  }
+
+  $effect(() => {
+    sessionId;
+    view.open;
+    view.url;
+    syncBrowserSurface();
+  });
 </script>
 
 <svelte:window onkeydown={view.open ? handleKeydown : undefined} />
@@ -213,9 +286,27 @@
         />
       </form>
 
-      <IconButton label="Reload page" onclick={() => reloadBrowserFrame()}>
-        <RotateCw aria-hidden="true" />
-      </IconButton>
+      <div class="navigation-controls" aria-label="Page navigation">
+        <IconButton
+          label="Go back"
+          data-testid="session-browser-back"
+          disabled={view.historyIndex <= 0}
+          onclick={() => stepHistory('back')}
+        >
+          <ArrowLeft aria-hidden="true" />
+        </IconButton>
+        <IconButton
+          label="Go forward"
+          data-testid="session-browser-forward"
+          disabled={view.historyIndex < 0 || view.historyIndex >= view.history.length - 1}
+          onclick={() => stepHistory('forward')}
+        >
+          <ArrowRight aria-hidden="true" />
+        </IconButton>
+        <IconButton label="Reload page" data-testid="session-browser-reload" onclick={reload}>
+          <RotateCw aria-hidden="true" />
+        </IconButton>
+      </div>
 
       <button
         type="button"
@@ -260,13 +351,27 @@
 
     <div class="overlay-body">
       <div class="page-region" data-testid="session-browser-page">
-        <div class="page-placeholder">
-          <strong>{view.url || 'No address yet'}</strong>
-          <span>
-            The page itself is drawn by the desktop browser view, which sits in this rectangle.
-            Notes drawn here are recorded against this region.
-          </span>
-        </div>
+        {#if view.url}
+          {#if nativeBrowser}
+            <div class="native-page-host" data-testid="session-browser-native-page" aria-hidden="true"></div>
+          {:else}
+            {#key `${view.url}:${reloadVersion}`}
+              <iframe
+                class="browser-frame"
+                data-testid="session-browser-frame"
+                title="Session browser page"
+                src={view.url}
+                sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+                referrerpolicy="no-referrer"
+              ></iframe>
+            {/key}
+          {/if}
+        {:else}
+          <div class="page-placeholder">
+            <strong>No address yet</strong>
+            <span>Enter an http or https address above to open a page.</span>
+          </div>
+        {/if}
       </div>
       <SessionBrowserAnnotationLayer
         annotating={view.annotating}
@@ -352,6 +457,13 @@
     min-width: 0;
   }
 
+  .navigation-controls {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 2px;
+  }
+
   .overlay-header :global(.address-input) {
     width: 100%;
     font-family: ui-monospace, Menlo, monospace;
@@ -420,15 +532,29 @@
   .page-region {
     position: absolute;
     inset: 0;
-    display: grid;
-    place-items: center;
     background: var(--color-surface);
+  }
+
+  .browser-frame,
+  .native-page-host {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: var(--color-surface);
+  }
+
+  .native-page-host {
+    pointer-events: none;
   }
 
   .page-placeholder {
     display: flex;
+    width: 100%;
+    height: 100%;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 8px;
     max-width: 520px;
     padding: 32px;

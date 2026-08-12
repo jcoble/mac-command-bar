@@ -36,6 +36,7 @@
     tooltip?: boolean;
     disabled?: boolean;
     class?: string;
+    "data-testid"?: string;
     onclick?: (event: MouseEvent) => void;
   }
 
@@ -48,6 +49,7 @@
     tooltip = true,
     disabled = false,
     class: className,
+    "data-testid": dataTestId,
     onclick
   }: Props = $props();
 
@@ -68,6 +70,7 @@
             {variant}
             {disabled}
             {onclick}
+            data-testid={dataTestId}
             aria-label={label}
             class={className}
           >
@@ -85,6 +88,7 @@
     {variant}
     {disabled}
     {onclick}
+    data-testid={dataTestId}
     aria-label={label}
     class={className}
   >

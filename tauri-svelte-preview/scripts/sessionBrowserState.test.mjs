@@ -26,7 +26,8 @@ import {
   removeSessionAnnotation,
   sendButtonLabel,
   setSessionBrowserAnnotating,
-  setSessionBrowserUrl
+  setSessionBrowserUrl,
+  stepSessionBrowserHistory
 } from '../src/lib/shell/browser/sessionBrowserOps.ts';
 
 // ── A fresh view, and reading a session nobody has opened yet ──────────────
@@ -52,10 +53,25 @@ map = setSessionBrowserUrl(map, 'session-b', 'https://example.com/b');
 assert.equal(readSessionBrowserView(map, 'session-a').url, 'https://example.com/a');
 assert.equal(readSessionBrowserView(map, 'session-b').url, 'https://example.com/b');
 
+// Back and forward stay inside the session, and a new address replaces only
+// the forward branch just like a normal browser history.
+map = setSessionBrowserUrl(map, 'session-a', 'https://example.com/a/details');
+map = stepSessionBrowserHistory(map, 'session-a', 'back');
+assert.equal(readSessionBrowserView(map, 'session-a').url, 'https://example.com/a');
+map = stepSessionBrowserHistory(map, 'session-a', 'forward');
+assert.equal(readSessionBrowserView(map, 'session-a').url, 'https://example.com/a/details');
+map = stepSessionBrowserHistory(map, 'session-a', 'back');
+map = setSessionBrowserUrl(map, 'session-a', 'https://example.com/a/alternate');
+assert.deepEqual(readSessionBrowserView(map, 'session-a').history, [
+  'https://example.com/a',
+  'https://example.com/a/alternate'
+]);
+assert.equal(stepSessionBrowserHistory(map, 'session-a', 'forward'), map);
+
 // Closing hides the overlay but keeps everything the session had.
 map = closeSessionBrowser(map, 'session-a');
 assert.equal(readSessionBrowserView(map, 'session-a').open, false);
-assert.equal(readSessionBrowserView(map, 'session-a').url, 'https://example.com/a');
+assert.equal(readSessionBrowserView(map, 'session-a').url, 'https://example.com/a/alternate');
 assert.equal(readSessionBrowserView(map, 'session-b').open, true, 'the other session is untouched');
 
 // ── Drag rectangles ────────────────────────────────────────────────────────

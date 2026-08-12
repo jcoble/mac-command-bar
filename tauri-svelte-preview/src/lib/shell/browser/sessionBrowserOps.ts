@@ -40,6 +40,9 @@ export interface SessionBrowserView {
   /** Whether a drag over the page draws a note instead of scrolling. */
   annotating: boolean;
   url: string;
+  /** The session-owned address history used by the overlay's back/forward controls. */
+  history: string[];
+  historyIndex: number;
   annotations: SessionBrowserAnnotation[];
 }
 
@@ -59,7 +62,15 @@ export const MIN_ANNOTATION_SIDE = 8;
 export const MAX_SESSION_ANNOTATIONS = 24;
 
 export function createSessionBrowserView(url = ''): SessionBrowserView {
-  return { open: false, annotating: false, url, annotations: [] };
+  const normalized = url.trim();
+  return {
+    open: false,
+    annotating: false,
+    url: normalized,
+    history: normalized ? [normalized] : [],
+    historyIndex: normalized ? 0 : -1,
+    annotations: []
+  };
 }
 
 /**
@@ -98,7 +109,34 @@ export function setSessionBrowserUrl(
   sessionId: string | null,
   url: string
 ): SessionBrowserMap {
-  return withView(map, sessionId, { url: url.trim() });
+  const nextUrl = url.trim();
+  if (!sessionId) return map;
+  const current = readSessionBrowserView(map, sessionId);
+  if (current.url === nextUrl) return map;
+  const history = current.history.slice(0, current.historyIndex + 1);
+  history.push(nextUrl);
+  return withView(map, sessionId, {
+    url: nextUrl,
+    history,
+    historyIndex: history.length - 1
+  });
+}
+
+/** Move through the session's own address history without adding a new entry. */
+export function stepSessionBrowserHistory(
+  map: SessionBrowserMap,
+  sessionId: string | null,
+  direction: 'back' | 'forward'
+): SessionBrowserMap {
+  if (!sessionId) return map;
+  const current = readSessionBrowserView(map, sessionId);
+  const delta = direction === 'back' ? -1 : 1;
+  const nextIndex = current.historyIndex + delta;
+  if (nextIndex < 0 || nextIndex >= current.history.length) return map;
+  return withView(map, sessionId, {
+    url: current.history[nextIndex] ?? '',
+    historyIndex: nextIndex
+  });
 }
 
 export function setSessionBrowserAnnotating(

@@ -22,6 +22,7 @@ import {
   captureBrowserWorkspace,
   closeBrowserTab,
   createBrowserTab,
+  deactivateBrowserWorkspace as deactivateBrowserWorkspaceModel,
   navigateActiveBrowserTab,
   selectBrowserTab,
   setBrowserPresentationMode,
@@ -186,6 +187,16 @@ export function activateBrowser(): void {
     if (savedUrl && !browser.workspace.activeTabId) {
       createBrowserTab(modelContext(), { url: savedUrl });
     }
+    syncLegacy();
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+    syncLegacy();
+  }
+}
+
+export function deactivateBrowserWorkspace(): void {
+  try {
+    deactivateBrowserWorkspaceModel(modelContext());
     syncLegacy();
   } catch (error) {
     browser.workspace.error = error instanceof Error ? error.message : String(error);

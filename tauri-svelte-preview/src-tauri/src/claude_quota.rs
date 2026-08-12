@@ -20,6 +20,7 @@ const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const USER_PROFILE_SCOPE: &str = "user:profile";
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25_300;
+const ALLOW_KEYCHAIN_CREDENTIALS_ENV: &str = "MCB_ALLOW_KEYCHAIN_CREDENTIALS";
 
 pub struct ClaudeCredentials {
     owner: CredentialOwner,
@@ -97,7 +98,7 @@ impl CredentialStore for FileStore {
             if error.kind() == std::io::ErrorKind::NotFound {
                 CredentialStoreError::missing("credential file is missing")
             } else {
-                CredentialStoreError::missing("credential file could not be read")
+                CredentialStoreError::access("credential file could not be read")
             }
         })?;
         Ok(vec![StoredCredential {
@@ -209,11 +210,40 @@ impl CredentialStore for KeychainStore {
 struct ClaudeCredentialFields {
     access_token: String,
     refresh_token: Option<String>,
+    #[serde(deserialize_with = "deserialize_optional_timestamp")]
     expires_at: Option<u64>,
     #[serde(default)]
     scopes: Vec<String>,
     subscription_type: Option<String>,
     rate_limit_tier: Option<String>,
+}
+
+fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(Value::Number(number)) => timestamp_number(number.as_f64()),
+        Some(Value::String(text)) => timestamp_number(text.trim().parse::<f64>().ok()),
+        Some(_) => Err(serde::de::Error::custom(
+            "timestamp must be a number or string",
+        )),
+    }
+}
+
+fn timestamp_number<E>(value: Option<f64>) -> Result<Option<u64>, E>
+where
+    E: serde::de::Error,
+{
+    let Some(value) = value else {
+        return Err(E::custom("timestamp must be finite"));
+    };
+    if !value.is_finite() || value < 0.0 {
+        return Err(E::custom("timestamp must be finite and non-negative"));
+    }
+    Ok(Some(value.floor().min(u64::MAX as f64) as u64))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,11 +407,48 @@ impl ClaudeQuotaClient {
 }
 
 pub fn read_credentials() -> Result<ClaudeCredentials, ClaudeCredentialError> {
-    let file_store: Arc<dyn CredentialStore> = match credential_path() {
-        Ok(path) => Arc::new(FileStore::new(path)),
-        Err(_) => Arc::new(FileStore::unavailable()),
+    let file_path = credential_path().ok();
+    let file_store: Arc<dyn CredentialStore> = match file_path.clone() {
+        Some(path) => Arc::new(FileStore::new(path)),
+        None => Arc::new(FileStore::unavailable()),
     };
-    select_credentials(vec![Arc::new(KeychainStore::default()), file_store])
+    let refresh_store = Arc::clone(&file_store);
+    let stores =
+        if credential_file_is_missing(file_path.as_deref()) && keychain_credentials_enabled() {
+            vec![
+                file_store,
+                Arc::new(KeychainStore::default()) as Arc<dyn CredentialStore>,
+            ]
+        } else {
+            vec![file_store]
+        };
+    let mut credentials = select_credentials(stores)?;
+    credentials.owner.store = refresh_store;
+    credentials.owner.record_id = "file".to_string();
+    Ok(credentials)
+}
+
+fn credential_file_is_missing(path: Option<&Path>) -> bool {
+    path.is_none_or(|path| {
+        matches!(fs::metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+fn keychain_credentials_enabled() -> bool {
+    keychain_credentials_value_enabled(
+        std::env::var(ALLOW_KEYCHAIN_CREDENTIALS_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn keychain_credentials_value_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        )
+    })
 }
 
 fn credential_path() -> Result<PathBuf, ClaudeCredentialError> {
@@ -454,7 +521,6 @@ fn parse_credential(document: &[u8]) -> Result<ParsedCredential, &'static str> {
 fn select_credentials(
     stores: Vec<Arc<dyn CredentialStore>>,
 ) -> Result<ClaudeCredentials, ClaudeCredentialError> {
-    let mut selected: Option<ClaudeCredentials> = None;
     let mut skipped = Vec::new();
     for store in stores {
         let records = match store.read() {
@@ -479,13 +545,7 @@ fn select_credentials(
                     continue;
                 }
             };
-            if selected
-                .as_ref()
-                .is_some_and(|current| current.expires_at >= parsed.expires_at)
-            {
-                continue;
-            }
-            selected = Some(ClaudeCredentials {
+            return Ok(ClaudeCredentials {
                 owner: CredentialOwner {
                     store: Arc::clone(&store),
                     record_id: record.record_id,
@@ -499,7 +559,7 @@ fn select_credentials(
             });
         }
     }
-    selected.ok_or_else(|| {
+    Err({
         let reason = if skipped.is_empty() {
             "no credential sources returned a candidate".to_string()
         } else {
@@ -567,11 +627,11 @@ impl ClaudeCredentials {
 
 fn atomic_write_private_json(path: &Path, bytes: &[u8]) -> Result<(), ClaudeRequestError> {
     let parent = path.parent().ok_or(ClaudeRequestError::CredentialWrite)?;
-    let original_mode = fs::metadata(path)
-        .map_err(|_| ClaudeRequestError::CredentialWrite)?
-        .permissions()
-        .mode()
-        & 0o777;
+    let original_mode = match fs::metadata(path) {
+        Ok(metadata) => metadata.permissions().mode() & 0o777,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0o600,
+        Err(_) => return Err(ClaudeRequestError::CredentialWrite),
+    };
     let temp_name = format!(
         ".credentials.json.tmp-{}-{}",
         std::process::id(),
@@ -961,27 +1021,46 @@ mod tests {
     }
 
     #[test]
-    fn claude_quota_prefers_the_source_with_the_later_expiry() {
-        for (keychain_expiry, file_expiry, expected_label) in
-            [(200, 100, "Keychain fake"), (100, 200, "File fake")]
-        {
-            let keychain: Arc<dyn CredentialStore> = Arc::new(FakeStore::new(
-                "Keychain fake",
-                "keychain-record",
-                credential_fixture(
-                    "fixture-keychain-access",
-                    keychain_expiry,
-                    &["user:profile"],
-                ),
-            ));
-            let file: Arc<dyn CredentialStore> = Arc::new(FakeStore::new(
-                "File fake",
-                "file-record",
-                credential_fixture("fixture-file-access", file_expiry, &["user:profile"]),
-            ));
-            let selected = select_credentials(vec![keychain, file])
-                .expect("one valid credential should be selected");
-            assert_eq!(selected.owner.store.label(), expected_label);
+    fn quota_prefers_the_file_source_before_keychain() {
+        let keychain: Arc<dyn CredentialStore> = Arc::new(FakeStore::new(
+            "Keychain fake",
+            "keychain-record",
+            credential_fixture("fixture-keychain-access", 300, &["user:profile"]),
+        ));
+        let file: Arc<dyn CredentialStore> = Arc::new(FakeStore::new(
+            "File fake",
+            "file-record",
+            credential_fixture("fixture-file-access", 100, &["user:profile"]),
+        ));
+        let selected = select_credentials(vec![file, keychain])
+            .expect("one valid credential should be selected");
+        assert_eq!(selected.owner.store.label(), "File fake");
+    }
+
+    #[test]
+    fn quota_keychain_opt_in_is_disabled_by_default() {
+        assert!(!keychain_credentials_value_enabled(None));
+        assert!(!keychain_credentials_value_enabled(Some("0")));
+        assert!(keychain_credentials_value_enabled(Some("true")));
+    }
+
+    #[test]
+    fn quota_accepts_fractional_expiry_values() {
+        let expires_at = now_ms_u64() + 3_600_000;
+        for raw_expiry in [
+            serde_json::json!(expires_at as f64 + 0.441),
+            serde_json::json!(format!("{expires_at}.441")),
+        ] {
+            let document = serde_json::json!({
+                "claudeAiOauth": {
+                    "accessToken": "fixture-access",
+                    "refreshToken": "fixture-refresh",
+                    "expiresAt": raw_expiry,
+                    "scopes": ["user:profile"]
+                }
+            });
+            let credentials = fixture_credentials(document);
+            assert_eq!(credentials.expires_at, expires_at);
         }
     }
 
@@ -1015,9 +1094,7 @@ mod tests {
 
     #[test]
     fn claude_quota_writes_rotation_back_to_the_selected_owner() {
-        for (keychain_expiry, file_expiry, expected_keychain_writes, expected_file_writes) in
-            [(200, 100, 1, 0), (100, 200, 0, 1)]
-        {
+        for (keychain_expiry, file_expiry) in [(200, 100), (100, 200)] {
             let keychain = Arc::new(FakeStore::new(
                 "Keychain fake",
                 "keychain-record",
@@ -1034,7 +1111,7 @@ mod tests {
             ));
             let keychain_writes = Arc::clone(&keychain.writes);
             let file_writes = Arc::clone(&file.writes);
-            let stores: Vec<Arc<dyn CredentialStore>> = vec![keychain, file];
+            let stores: Vec<Arc<dyn CredentialStore>> = vec![file, keychain];
             let mut selected =
                 select_credentials(stores).expect("one valid credential should be selected");
             selected
@@ -1050,11 +1127,11 @@ mod tests {
                     .lock()
                     .expect("keychain writes should lock")
                     .len(),
-                expected_keychain_writes
+                0
             );
             assert_eq!(
                 file_writes.lock().expect("file writes should lock").len(),
-                expected_file_writes
+                1
             );
         }
     }

@@ -341,7 +341,8 @@ section { margin-bottom: 56px; }
 .cluster {
   position: absolute;
   z-index: 3;
-  top: 5px;
+  top: 50%;
+  transform: translateY(-50%);
   right: 4px;
   align-items: center;
   gap: 1px;
@@ -572,7 +573,7 @@ section { margin-bottom: 56px; }
 .menu {
   position: absolute;
   z-index: 20;
-  bottom: calc(100% + 8px);
+  top: calc(100% + 8px);
   left: 0;
   width: 292px;
   border: 1px solid var(--color-border);
@@ -1292,7 +1293,7 @@ section { margin-bottom: 56px; }
           </div>
         </div>
 
-        <p class="caption" style="text-align:left">
+        <p class="caption" style="text-align:left;margin-top:312px">
           The model pill is shown open: providers are grouped headings, the current pick carries a
           tick, and the right-hand hint says what each one is for. Effort, access, project and
           branch open the same way.

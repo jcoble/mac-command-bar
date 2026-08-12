@@ -15,19 +15,11 @@
   import NewSessionHost from './newSession/NewSessionHost.svelte';
   import PalettePanel from './PalettePanel.svelte';
   import SettingsHost from './SettingsHost.svelte';
-  import BrowserOverlayHost from './browser/BrowserOverlayHost.svelte';
   import SessionBrowserOverlay from '$lib/shell/browser/SessionBrowserOverlay.svelte';
   import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
   import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
   import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
-  import type {
-    BrowserFeedbackAttachment,
-    BrowserPresentationMode,
-    BrowserViewportPreset,
-    BrowserWorkspaceState
-  } from '$lib/shell/browser/browserTypes.ts';
-  import type { WorkbenchAction, WorkbenchActionContext } from '$lib/shell/overlay/actionSurfaceModel.ts';
   import type { ProblemsLocation } from '$lib/settingsStore.svelte';
   import type { NewSessionRequest } from '$lib/shell/newSession/newSessionFlow';
   import {
@@ -39,44 +31,6 @@
     type RailUtilityId,
     type RailUtilityRequest
   } from './railUtilityEvents';
-
-  export type BrowserMarkupTool =
-    | 'pen'
-    | 'highlighter'
-    | 'arrow'
-    | 'rectangle'
-    | 'text'
-    | 'undo'
-    | 'clear'
-    | 'crop';
-
-  /** All browser overlay callbacks are kept together so the actions array
-   * cannot be mistaken for a callback object. */
-  export interface BrowserOverlayHandlers {
-    onExpand?: () => void;
-    onSelectTab?: (id: string) => void;
-    onCloseTab?: (id: string) => void;
-    onCreateTab?: () => void;
-    onAddressInput?: (value: string) => void;
-    onNavigate?: (value: string) => void;
-    onReload?: () => void;
-    onBack?: () => void;
-    onForward?: () => void;
-    onGrab?: () => void;
-    onAnnotate?: () => void;
-    onDraw?: () => void;
-    onOpenDevtools?: () => void;
-    onOpenExternal?: () => void;
-    onViewport?: (preset: BrowserViewportPreset) => void;
-    onPresentation?: (mode: BrowserPresentationMode) => void;
-    onCollapse?: () => void;
-    onCancelFeedback?: () => void;
-    onMarkupTool?: (tool: BrowserMarkupTool) => void;
-    onRemoveFeedback?: (id: string) => void;
-    onCopyFeedback?: (attachment: BrowserFeedbackAttachment) => void;
-    onStageFeedback?: (attachment: BrowserFeedbackAttachment) => void;
-    onMinimize?: () => void;
-  }
 
   interface Props {
     /** Put every panel back where it started. */
@@ -93,13 +47,7 @@
     /** The user moved the Problems list from the settings dialog, which lives
      * here; the page is what opens or closes the strip along the bottom. */
     onProblemsLocationChange?: (location: ProblemsLocation) => void;
-    browserWorkspace: BrowserWorkspaceState;
-    /** Floating browser chrome exists outside Dockview, so it also needs the
-     * center surface's visibility signal. */
-    browserSurfaceVisible: boolean;
-    browserActions: WorkbenchAction[];
-    workbenchActionContext: WorkbenchActionContext;
-    browserOverlayHandlers: BrowserOverlayHandlers;
+    onSessionBrowserClose?: () => void;
   }
   let {
     onResetLayout,
@@ -108,9 +56,7 @@
     newSessionRoots,
     message,
     onProblemsLocationChange,
-    browserWorkspace,
-    browserSurfaceVisible,
-    browserOverlayHandlers
+    onSessionBrowserClose
   }: Props = $props();
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
@@ -192,37 +138,9 @@
 />
 <SettingsHost bind:this={settingsHost} {onProblemsLocationChange} />
 <NewSessionHost bind:this={newSessionHost} onStart={onStartNewSession} />
-<BrowserOverlayHost
-  workspace={browserWorkspace}
-  surfaceVisible={browserSurfaceVisible}
-  onExpand={browserOverlayHandlers.onExpand}
-  onSelectTab={browserOverlayHandlers.onSelectTab}
-  onCloseTab={browserOverlayHandlers.onCloseTab}
-  onCreateTab={browserOverlayHandlers.onCreateTab}
-  onAddressInput={browserOverlayHandlers.onAddressInput}
-  onNavigate={browserOverlayHandlers.onNavigate}
-  onReload={browserOverlayHandlers.onReload}
-  onBack={browserOverlayHandlers.onBack}
-  onForward={browserOverlayHandlers.onForward}
-  onGrab={browserOverlayHandlers.onGrab}
-  onAnnotate={browserOverlayHandlers.onAnnotate}
-  onDraw={browserOverlayHandlers.onDraw}
-  onOpenDevtools={browserOverlayHandlers.onOpenDevtools}
-  onOpenExternal={browserOverlayHandlers.onOpenExternal}
-  onViewport={browserOverlayHandlers.onViewport}
-  onPresentation={browserOverlayHandlers.onPresentation}
-  onCollapse={browserOverlayHandlers.onCollapse}
-  onCancelFeedback={browserOverlayHandlers.onCancelFeedback}
-  onMarkupTool={browserOverlayHandlers.onMarkupTool}
-  onRemoveFeedback={browserOverlayHandlers.onRemoveFeedback}
-  onCopyFeedback={browserOverlayHandlers.onCopyFeedback}
-  onStageFeedback={browserOverlayHandlers.onStageFeedback}
-  onMinimize={browserOverlayHandlers.onMinimize}
-  devtoolsAvailable={false}
-/>
 <!-- The session's own browser, over the whole window including the sessions
      column. It reads the active session itself and takes no props. -->
-<SessionBrowserOverlay />
+<SessionBrowserOverlay onClose={onSessionBrowserClose} />
 <AssistanceHost />
 <div
   bind:this={resourcePopoverHost}
@@ -289,7 +207,8 @@
   }
 
   .rail-popover-host :global(.usage-popover .card),
-  .rail-popover-host :global(.usage-popover .modal-backdrop) {
+  .rail-popover-host :global(.modal-backdrop),
+  .rail-popover-host :global(.modal-surface) {
     pointer-events: auto;
   }
 
