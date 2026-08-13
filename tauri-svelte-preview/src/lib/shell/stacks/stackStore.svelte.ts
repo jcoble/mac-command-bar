@@ -62,11 +62,11 @@ export interface StackEnvVar {
 /**
  * A saved run configuration: what to run, in which folder, under what name.
  *
- * `env` is the ONE field added after this shape first shipped, and it is
- * optional on purpose. A configuration with no environment variables is written
- * exactly as it was before the field existed, so a saved value never grows a
- * key nothing reads, and anything saved by an older build simply has no `env`
- * and loads with none. See `parseStackDefinitions`.
+ * EVERY field after `cwd` was added after this shape first shipped, and every
+ * one of them is optional for the same reason: a configuration that does not
+ * use one is written exactly as it was before that field existed, so a saved
+ * value never grows a key nothing reads, and anything saved by an older build
+ * loads unchanged. See `parseStackDefinitions`.
  */
 export interface StackDefinition {
   /** Minted here; the key everything else points at. */
@@ -79,6 +79,14 @@ export interface StackDefinition {
   cwd: string;
   /** Environment variables to set for the run; absent when there are none. */
   env?: StackEnvVar[];
+  /** The key combination that runs this action, as captured, e.g. "Cmd+Shift+R". Absent when none is set. */
+  keybinding?: string;
+  /** A page to open when this action runs. Absent when the action serves no page. */
+  previewUrl?: string;
+  /** Run this action automatically whenever a worktree is created. */
+  runOnWorktreeCreation?: boolean;
+  /** Open `previewUrl` in the Browser panel when this action runs. */
+  openPreviewOnRun?: boolean;
 }
 
 /** The terminal session a stack was last started in, and how it ended. */
@@ -185,13 +193,18 @@ function parseEnvList(value: unknown): StackEnvVar[] {
  * its four required fields, and a second row re-using an id are all simply
  * dropped — a bad saved value must never be able to stop the panel opening.
  *
- * MIGRATION. Environment variables arrived after this shape shipped, so a
- * configuration saved by an older build has no `env` key at all. That is not an
- * error and needs no conversion step: the field is optional, a missing or
- * unusable one reads as "no environment variables", and the record is left
- * WITHOUT the key rather than being given an empty list. An old saved value
- * therefore reads back byte-identical to what was written, and a user who never
- * sets a variable can move between builds in either direction.
+ * MIGRATION. Environment variables, the shortcut, the preview page and the two
+ * toggles all arrived after this shape shipped, so a configuration saved by an
+ * older build has none of those keys. That is not an error and needs no
+ * conversion step: every one of them is optional, a missing or unusable one
+ * reads as "not set", and the record is left WITHOUT the key rather than being
+ * given an empty value. An old saved value therefore reads back byte-identical
+ * to what was written, and a user can move between builds in either direction.
+ *
+ * A field that IS present but the wrong type — a number where the shortcut
+ * belongs, the word "yes" where a toggle belongs — is dropped on its own. The
+ * configuration itself survives, because losing a saved command over a bad
+ * toggle would be a far worse trade than losing the toggle.
  */
 export function parseStackDefinitions(raw: string | null | undefined): StackDefinition[] {
   const seen = new Set<string>();
@@ -206,8 +219,16 @@ export function parseStackDefinitions(raw: string | null | undefined): StackDefi
     if (!id || !name || !script || !cwd) continue;
     if (seen.has(id)) continue;
     seen.add(id);
+    const definition: StackDefinition = { id, name, script, cwd };
     const env = parseEnvList(row.env);
-    definitions.push(env.length > 0 ? { id, name, script, cwd, env } : { id, name, script, cwd });
+    if (env.length > 0) definition.env = env;
+    const keybinding = trimmedString(row.keybinding);
+    if (keybinding) definition.keybinding = keybinding;
+    const previewUrl = trimmedString(row.previewUrl);
+    if (previewUrl) definition.previewUrl = previewUrl;
+    if (row.runOnWorktreeCreation === true) definition.runOnWorktreeCreation = true;
+    if (row.openPreviewOnRun === true) definition.openPreviewOnRun = true;
+    definitions.push(definition);
   }
   return definitions;
 }
@@ -222,9 +243,15 @@ export function serializeStackDefinitions(definitions: StackDefinition[]): strin
         script: definition.script,
         cwd: definition.cwd
       };
-      // Only written when there is something to write — see the migration note
-      // on `parseStackDefinitions`.
+      // Each of these is only written when there is something to write — see
+      // the migration note on `parseStackDefinitions`.
       if (env.length > 0) row.env = env.map((entry) => ({ key: entry.key, value: entry.value }));
+      const keybinding = (definition.keybinding ?? '').trim();
+      if (keybinding) row.keybinding = keybinding;
+      const previewUrl = (definition.previewUrl ?? '').trim();
+      if (previewUrl) row.previewUrl = previewUrl;
+      if (definition.runOnWorktreeCreation === true) row.runOnWorktreeCreation = true;
+      if (definition.openPreviewOnRun === true) row.openPreviewOnRun = true;
       return row;
     })
   );
@@ -641,6 +668,15 @@ export interface StackDraft {
   script: string;
   cwd: string;
   env?: StackEnvVar[];
+  /**
+   * The key combination that starts this action, already written the way
+   * `keybindingCapture.ts` writes one. The capture field is the only thing that
+   * produces it, so this module stores the string and never parses it.
+   */
+  keybinding?: string;
+  previewUrl?: string;
+  runOnWorktreeCreation?: boolean;
+  openPreviewOnRun?: boolean;
 }
 
 /**
@@ -661,6 +697,10 @@ function cleanDraft(draft: StackDraft): {
   script: string;
   cwd: string;
   env: StackEnvVar[];
+  keybinding: string;
+  previewUrl: string;
+  runOnWorktreeCreation: boolean;
+  openPreviewOnRun: boolean;
 } {
   const cwd = draft.cwd.trim();
   // A trailing slash would make the same folder look like two different ones to
@@ -672,8 +712,24 @@ function cleanDraft(draft: StackDraft): {
     cwd: trimmedCwd,
     env: (draft.env ?? [])
       .filter((entry) => isEnvName(entry.key.trim()))
-      .map((entry) => ({ key: entry.key.trim(), value: entry.value }))
+      .map((entry) => ({ key: entry.key.trim(), value: entry.value })),
+    keybinding: (draft.keybinding ?? '').trim(),
+    previewUrl: (draft.previewUrl ?? '').trim(),
+    runOnWorktreeCreation: draft.runOnWorktreeCreation === true,
+    openPreviewOnRun: draft.openPreviewOnRun === true
   };
+}
+
+/** Copy the optional fields of a cleaned draft onto a record, omitting the empty ones. */
+function applyOptionalFields(
+  definition: StackDefinition,
+  clean: ReturnType<typeof cleanDraft>
+): void {
+  if (clean.env.length > 0) definition.env = clean.env;
+  if (clean.keybinding) definition.keybinding = clean.keybinding;
+  if (clean.previewUrl) definition.previewUrl = clean.previewUrl;
+  if (clean.runOnWorktreeCreation) definition.runOnWorktreeCreation = true;
+  if (clean.openPreviewOnRun) definition.openPreviewOnRun = true;
 }
 
 /**
@@ -694,7 +750,7 @@ export function addStack(draft: StackDraft): StackDefinition | null {
     script: clean.script,
     cwd: clean.cwd
   };
-  if (clean.env.length > 0) definition.env = clean.env;
+  applyOptionalFields(definition, clean);
   stacks.definitions = [...stacks.definitions, definition];
   stacks.notice = null;
   persistDefinitions();
@@ -727,7 +783,7 @@ export function updateStack(stackId: string, draft: StackDraft): StackDefinition
     script: clean.script,
     cwd: clean.cwd
   };
-  if (clean.env.length > 0) updated.env = clean.env;
+  applyOptionalFields(updated, clean);
   stacks.definitions = stacks.definitions.map((definition) =>
     definition.id === stackId ? updated : definition
   );
