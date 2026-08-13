@@ -719,7 +719,6 @@
       [ownedId]: captureWorkspace({
         openFiles: editorState.openFiles,
         activePath: editorState.activePath,
-        expandedFolderIds: explorer.expandedFolderIds,
         selectedPath: explorer.selectedPath,
         scrollTop: explorer.scrollTop,
         diffPath: gitPanel.selectedPath || null,
@@ -792,7 +791,6 @@
       restoringWorkspace = false;
     }
     if (!snapshot) return;
-    explorer.expandedFolderIds = new Set(snapshot.expandedFolderIds);
     selectPath(snapshot.selectedPath);
     setScrollTop(snapshot.scrollTop);
   }

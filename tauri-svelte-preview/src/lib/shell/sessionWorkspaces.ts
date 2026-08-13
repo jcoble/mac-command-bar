@@ -68,8 +68,6 @@ export interface SessionWorkspaceSnapshot {
   openPaths: string[];
   /** The tab that was showing. */
   activePath: string | null;
-  /** Ids of the folders open in the file tree. */
-  expandedFolderIds: string[];
   /** The highlighted file in the tree. */
   selectedPath: string | null;
   /** Scroll offset of the tree, in pixels. */
@@ -129,7 +127,6 @@ function cappedPaths(paths: string[], activePath: string | null): string[] {
 export function captureWorkspace(input: {
   openFiles: { path: string }[];
   activePath: string | null;
-  expandedFolderIds: Set<string>;
   selectedPath: string | null;
   scrollTop: number;
   /** What the Diff tab is showing, if the caller passes it. Optional so the
@@ -157,7 +154,6 @@ export function captureWorkspace(input: {
       activePath
     ),
     activePath,
-    expandedFolderIds: [...input.expandedFolderIds],
     selectedPath: input.selectedPath ?? null,
     scrollTop: Math.max(0, input.scrollTop),
     diffPath: bothKnown ? diffPath : null,
@@ -313,7 +309,6 @@ function snapshotOf(value: unknown): SessionWorkspaceSnapshot | null {
   const snapshot: SessionWorkspaceSnapshot = {
     openPaths: cappedPaths(stringsOf(entry.openPaths), activePath),
     activePath,
-    expandedFolderIds: stringsOf(entry.expandedFolderIds),
     selectedPath: pathOf(entry.selectedPath),
     scrollTop,
     diffPath: bothKnown ? diffPath : null,

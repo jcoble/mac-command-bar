@@ -35,22 +35,20 @@ function openFiles(...paths) {
 }
 
 // A capture is exactly what was on screen: the strip in order, the file showing,
-// the open folders as a list, the highlighted file, the scroll offset, and the
-// file the Diff tab was showing. A capture that says nothing about a diff still
-// carries both diff fields, as nulls — the Diff tab is one tab for the whole
+// the highlighted file, the scroll offset, and the file the Diff tab was
+// showing. A capture that says nothing about a diff still carries both diff
+// fields, as nulls — the Diff tab is one tab for the whole
 // shell, so "this session was not looking at one" is an answer it needs told.
 {
   const snapshot = captureWorkspace({
     openFiles: openFiles('/repo/a.ts', '/repo/b.ts'),
     activePath: '/repo/b.ts',
-    expandedFolderIds: new Set(['folder:src', 'folder:src/lib']),
     selectedPath: '/repo/b.ts',
     scrollTop: 120
   });
   assert.deepEqual(snapshot, {
     openPaths: ['/repo/a.ts', '/repo/b.ts'],
     activePath: '/repo/b.ts',
-    expandedFolderIds: ['folder:src', 'folder:src/lib'],
     selectedPath: '/repo/b.ts',
     scrollTop: 120,
     diffPath: null,
@@ -63,14 +61,12 @@ function openFiles(...paths) {
   const snapshot = captureWorkspace({
     openFiles: [],
     activePath: null,
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: 0
   });
   assert.deepEqual(snapshot, {
     openPaths: [],
     activePath: null,
-    expandedFolderIds: [],
     selectedPath: null,
     scrollTop: 0,
     diffPath: null,
@@ -85,7 +81,6 @@ function openFiles(...paths) {
   const snapshot = captureWorkspace({
     openFiles: openFiles(...paths),
     activePath: '/repo/file-19.ts',
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: 0
   });
@@ -101,7 +96,6 @@ function openFiles(...paths) {
   const snapshot = captureWorkspace({
     openFiles: openFiles(...paths),
     activePath: '/repo/file-0.ts',
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: 0
   });
@@ -119,7 +113,6 @@ function openFiles(...paths) {
   const snapshot = captureWorkspace({
     openFiles: openFiles('/repo/a.ts'),
     activePath: '/repo/gone.ts',
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: 0
   });
@@ -131,7 +124,6 @@ function openFiles(...paths) {
   const snapshot = captureWorkspace({
     openFiles: [],
     activePath: null,
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: -40
   });
@@ -145,7 +137,6 @@ function openFiles(...paths) {
     'owned-1': captureWorkspace({
       openFiles: openFiles('/repo/a.ts'),
       activePath: '/repo/a.ts',
-      expandedFolderIds: new Set(['folder:src']),
       selectedPath: '/repo/a.ts',
       scrollTop: 20
     })
@@ -195,7 +186,6 @@ function openFiles(...paths) {
     'owned-good': {
       openPaths: ['/repo/a.ts'],
       activePath: '/repo/a.ts',
-      expandedFolderIds: ['folder:src'],
       selectedPath: null,
       scrollTop: 12
     }
@@ -212,7 +202,6 @@ function openFiles(...paths) {
     'owned-1': {
       openPaths: ['/repo/a.ts', 7, null, '/repo/b.ts'],
       activePath: 42,
-      expandedFolderIds: 'folder:src',
       selectedPath: {},
       scrollTop: 'far down'
     }
@@ -221,7 +210,6 @@ function openFiles(...paths) {
   assert.deepEqual(all['owned-1'], {
     openPaths: ['/repo/a.ts', '/repo/b.ts'],
     activePath: null,
-    expandedFolderIds: [],
     selectedPath: null,
     scrollTop: 0,
     // Written before the Diff tab was remembered at all, so it reads back as
@@ -239,7 +227,6 @@ function openFiles(...paths) {
     'owned-1': {
       openPaths: paths,
       activePath: '/repo/file-29.ts',
-      expandedFolderIds: [],
       selectedPath: null,
       scrollTop: 0
     }
@@ -254,7 +241,6 @@ function openFiles(...paths) {
   const snapshot = captureWorkspace({
     openFiles: openFiles('/repo/a.ts'),
     activePath: '/repo/a.ts',
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: 0
   });
@@ -269,7 +255,6 @@ function openFiles(...paths) {
   const snapshot = captureWorkspace({
     openFiles: [],
     activePath: null,
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: 0
   });
@@ -285,7 +270,6 @@ function openFiles(...paths) {
     captureWorkspace({
       openFiles: [],
       activePath: null,
-      expandedFolderIds: new Set(),
       selectedPath: null,
       scrollTop: 0,
       diffPath,
@@ -375,7 +359,6 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
       stored[ownedId] = captureWorkspace({
         openFiles: editor.openFiles,
         activePath: editor.activePath,
-        expandedFolderIds: new Set(),
         selectedPath: null,
         scrollTop: 0
       });
@@ -477,7 +460,6 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
   const stored = captureWorkspace({
     openFiles: openFiles('/repo/one.ts', '/repo/two.ts', '/repo/three.ts'),
     activePath: '/repo/two.ts',
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: 0
   });
@@ -501,7 +483,6 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
   const stored = captureWorkspace({
     openFiles: openFiles('/repo/one.ts', '/repo/two.ts'),
     activePath: '/repo/two.ts',
-    expandedFolderIds: new Set(),
     selectedPath: null,
     scrollTop: 0
   });
@@ -601,7 +582,7 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
   const storage = storageStub({
     [SESSION_WORKSPACES_STORAGE_KEY]: JSON.stringify({
       current: {
-        openPaths: [], activePath: null, expandedFolderIds: [], selectedPath: null,
+        openPaths: [], activePath: null, selectedPath: null,
         scrollTop: 0, diffPath: null, diffRoot: null,
         conversation: {
           mode: 'structured', draft: 'keep', version: 1, generation: 4,
@@ -611,7 +592,7 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
         }
       },
       legacy: {
-        openPaths: [], activePath: null, expandedFolderIds: [], selectedPath: null,
+        openPaths: [], activePath: null, selectedPath: null,
         scrollTop: 0, diffPath: null, diffRoot: null,
         conversation: { mode: 'raw', draft: 'old', unknownLegacyField: 'preserved' }
       }

@@ -19,7 +19,6 @@ function sessionSnapshot(name, mode, panel) {
   return captureWorkspace({
     openFiles: [{ path: `/repo/${name}.cs` }],
     activePath: `/repo/${name}.cs`,
-    expandedFolderIds: new Set([`folder:${name}`]),
     selectedPath: `/repo/${name}.cs`,
     scrollTop: name.length,
     diffPath: `${name}.cs`,
@@ -88,7 +87,6 @@ storage.setItem(
     legacy: {
       openPaths: ['/repo/legacy.cs'],
       activePath: '/repo/legacy.cs',
-      expandedFolderIds: [],
       selectedPath: null,
       scrollTop: 0,
       diffPath: null,

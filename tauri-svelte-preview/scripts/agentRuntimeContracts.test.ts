@@ -44,7 +44,6 @@ const scanRecord = {
   } = current;
   const workspace = {
     openPaths: ['/tmp/runtime-fixture/a.ts'], activePath: '/tmp/runtime-fixture/a.ts',
-    expandedFolderIds: [], selectedPath: null, scrollTop: 0, diffPath: null, diffRoot: null,
     conversation: {
       mode: 'structured', draft: 'draft-a', attachmentIds: ['attachment-a'],
       unknownLegacyField: { retained: true }
@@ -124,7 +123,7 @@ const scanRecord = {
   const storage = storageStub();
   const snapshots = {
     'owned-a': {
-      openPaths: [], activePath: null, expandedFolderIds: [], selectedPath: null,
+      openPaths: [], activePath: null, selectedPath: null,
       scrollTop: 0, diffPath: null, diffRoot: null,
       conversation: {
         mode: 'structured', draft: 'a', generation: 3, owner: 'terminal', sequence: 9,
@@ -132,7 +131,7 @@ const scanRecord = {
       }
     },
     'owned-b': {
-      openPaths: [], activePath: null, expandedFolderIds: [], selectedPath: null,
+      openPaths: [], activePath: null, selectedPath: null,
       scrollTop: 0, diffPath: null, diffRoot: null,
       conversation: {
         mode: 'raw', draft: 'b', generation: 8, owner: 'stopped', sequence: 2,
