@@ -47,8 +47,8 @@ const browserPanelSource = readFileSync(
 );
 assert.match(
   browserPanelSource,
-  /openSessionBrowserOverlay\(ownedId\)/,
-  'The Browser panel should open the one session-owned overlay rather than a second browser surface'
+  /setBrowserPresentationMode\(browserModelContext\(\)/,
+  'The Browser panel should host the native browser view itself, by pushing its own bounds'
 );
 assert.doesNotMatch(
   nextPageSource,

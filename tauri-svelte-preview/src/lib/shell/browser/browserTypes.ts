@@ -6,7 +6,13 @@
 
 export type BrowserPresentationMode = 'docked' | 'floating' | 'maximized' | 'collapsed';
 
-export type BrowserInteractionMode = 'browse' | 'picking' | 'annotating' | 'drawing';
+/**
+ * What the pointer does over the page. `picking` is Select waiting for the
+ * element under the pointer; `region` drags a rectangle; `drawing` is freehand;
+ * `erasing` takes a mark away. The old `annotating` was `region` under another
+ * name and has folded into it.
+ */
+export type BrowserInteractionMode = 'browse' | 'picking' | 'region' | 'drawing' | 'erasing';
 
 export type BrowserViewportPreset =
   | 'responsive'
