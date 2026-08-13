@@ -184,13 +184,24 @@
     };
   }
 
-  function showOverlay(event: { currentTarget: EventTarget | null; type?: string }): void {
-    overlayVisible = true;
+  function showOverlay(event: {
+    currentTarget: EventTarget | null;
+    target?: EventTarget | null;
+    type?: string;
+  }): void {
     const row = event.currentTarget;
     if (!(row instanceof HTMLElement)) return;
     clearCardTimer();
+    if (
+      event.type === 'focusin'
+      && event.target instanceof Element
+      && event.target.matches(':focus-visible')
+    ) {
+      overlayVisible = true;
+    }
     cardTimer = setTimeout(() => {
       cardTimer = null;
+      overlayVisible = true;
       placeCard(row);
     }, 160);
   }
@@ -484,7 +495,6 @@
     color: var(--color-text);
     font-size: 13px;
     line-height: 19.5px;
-    transition: background 140ms ease;
   }
 
   .row:not(:first-child) { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text) 4.5%, transparent); }
@@ -568,8 +578,7 @@
     border: 1.5px solid var(--color-accent);
     border-radius: 999px;
     content: '';
-    opacity: 0.45;
-    animation: presence-pulse 1.8s ease-out infinite;
+    opacity: 0.35;
   }
   .presence.attention .presence-dot { background: var(--color-attention); }
   .presence.attention::after {
@@ -719,14 +728,7 @@
   .error-detail summary { cursor: pointer; color: var(--color-text-2); }
   .error-detail pre { margin: 4px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; font: inherit; }
 
-  @keyframes presence-pulse {
-    0% { transform: scale(0.6); opacity: 0.55; }
-    70% { transform: scale(1); opacity: 0; }
-    100% { transform: scale(1); opacity: 0; }
-  }
-
   @media (prefers-reduced-motion: reduce) {
-    .row { transition: none; }
-    .presence.working::after { animation: none; opacity: 0.4; }
+    .presence.working::after { opacity: 0.35; }
   }
 </style>

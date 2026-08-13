@@ -14,19 +14,35 @@
     toggleResourceManager
   } from './resourceSampleStore.svelte';
 
-  let nowMs = $state(Date.now());
-  let updatedLabel = $derived(
-    formatResourceUpdatedAgo(resourceSampleState.sample?.generatedAtMs ?? null, nowMs)
-  );
+  let updatedLabel = $derived.by(() => {
+    const generatedAtMs = resourceSampleState.sample?.generatedAtMs ?? null;
+    if (generatedAtMs === null) return formatResourceUpdatedAgo(null, Date.now());
+    return `sampled ${new Date(generatedAtMs).toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit'
+    })}`;
+  });
 
   onMount(() => {
     void refreshResourceSample();
-    const pollTimer = window.setInterval(() => void refreshResourceSample(), 3_000);
-    const clockTimer = window.setInterval(() => (nowMs = Date.now()), 1_000);
-    return () => {
-      window.clearInterval(pollTimer);
-      window.clearInterval(clockTimer);
+    const refreshWhenVisible = (): void => {
+      if (document.visibilityState === 'visible') void refreshResourceSample();
     };
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  });
+
+  // The history lines exist only while the manager is open. Sampling a hidden
+  // panel wastes a full process-tree read and keeps the otherwise idle shell
+  // waking every three seconds.
+  $effect(() => {
+    if (!resourceManagerState.open) return;
+    void refreshResourceSample();
+    const pollTimer = window.setInterval(() => void refreshResourceSample(), 3_000);
+    return () => window.clearInterval(pollTimer);
   });
 </script>
 
