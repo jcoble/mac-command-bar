@@ -1,24 +1,22 @@
 /**
  * sessionBrowserState.svelte.ts — where each session's browsing lives.
  *
- * Holds STATE ONLY, keyed by session id: whether that session's overlay is
- * showing, the address it is on, whether notes are being drawn, and the notes
- * themselves. Every decision is a plain function in `sessionBrowserOps.ts`;
- * this module assigns what those functions return, exactly like the editor
- * store does.
+ * Holds transient render state keyed by session id. Annotation persistence is
+ * exclusively the backend session store: activation loads it and mutations
+ * write it. The in-memory list only paints the current backend result.
  *
- * No backend call and no `$effect` here. Switching sessions needs no work at
- * all: the overlay reads the view for whichever session is active, so the
- * content swaps on its own.
+ * No polling, timers, local storage, or `$effect` performs persistence here.
  */
 import {
-  addSessionAnnotation,
-  clearSessionAnnotations,
+  appendSessionAnnotation,
   closeSessionBrowser,
   createSessionBrowserView,
+  isAnnotatableRect,
+  MAX_SESSION_ANNOTATIONS,
   openSessionBrowser,
   readSessionBrowserView,
   removeSessionAnnotation,
+  replaceSessionAnnotations,
   setSessionBrowserAnnotating,
   setSessionBrowserUrl,
   stepSessionBrowserHistory,
@@ -26,6 +24,12 @@ import {
   type SessionBrowserMap,
   type SessionBrowserView
 } from './sessionBrowserOps.ts';
+import {
+  addStoredSessionAnnotation,
+  deleteStoredSessionAnnotation,
+  listStoredSessionAnnotations,
+  presentStoredSessionAnnotation
+} from './sessionAnnotationPersistence.ts';
 
 export type {
   SessionAnnotationInput,
@@ -74,16 +78,50 @@ export function setSessionBrowserAnnotateMode(sessionId: string | null, annotati
   state.bySession = setSessionBrowserAnnotating(state.bySession, sessionId, annotating);
 }
 
-export function addSessionBrowserAnnotation(sessionId: string | null, input: SessionAnnotationInput): void {
-  state.bySession = addSessionAnnotation(state.bySession, sessionId, input);
+export async function loadSessionBrowserAnnotations(sessionId: string): Promise<void> {
+  const rows = await listStoredSessionAnnotations(sessionId);
+  state.bySession = replaceSessionAnnotations(
+    state.bySession,
+    sessionId,
+    rows.map((row, index) => presentStoredSessionAnnotation(row, index + 1))
+  );
 }
 
-export function removeSessionBrowserAnnotation(sessionId: string | null, annotationId: string): void {
+export async function addSessionBrowserAnnotation(
+  sessionId: string | null,
+  input: SessionAnnotationInput
+): Promise<void> {
+  if (!sessionId) return;
+  const comment = input.comment.trim();
+  const view = sessionBrowserView(sessionId);
+  if (
+    !comment ||
+    !isAnnotatableRect(input.rect) ||
+    view.annotations.length >= MAX_SESSION_ANNOTATIONS
+  ) return;
+  const row = await addStoredSessionAnnotation(sessionId, view.url, input.rect, comment);
+  state.bySession = appendSessionAnnotation(
+    state.bySession,
+    sessionId,
+    presentStoredSessionAnnotation(row, view.annotations.length + 1)
+  );
+}
+
+export async function removeSessionBrowserAnnotation(
+  sessionId: string | null,
+  annotationId: number
+): Promise<void> {
+  if (!sessionId) return;
+  await deleteStoredSessionAnnotation(annotationId);
   state.bySession = removeSessionAnnotation(state.bySession, sessionId, annotationId);
 }
 
-export function clearSessionBrowserAnnotations(sessionId: string | null): void {
-  state.bySession = clearSessionAnnotations(state.bySession, sessionId);
+export async function clearSessionBrowserAnnotations(sessionId: string | null): Promise<void> {
+  if (!sessionId) return;
+  for (const annotation of sessionBrowserView(sessionId).annotations) {
+    await deleteStoredSessionAnnotation(annotation.id);
+    state.bySession = removeSessionAnnotation(state.bySession, sessionId, annotation.id);
+  }
 }
 
 /** Used by tests and by a session being removed from the rail. */

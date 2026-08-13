@@ -23,7 +23,8 @@ export interface SessionBrowserPoint {
 }
 
 export interface SessionBrowserAnnotation {
-  id: string;
+  /** Database row identity. The frontend never manufactures annotation ids. */
+  id: number;
   /** The number shown on the page marker; always 1..n with no gaps. */
   marker: number;
   /** Where the note was drawn, in overlay coordinates. */
@@ -51,8 +52,6 @@ export type SessionBrowserMap = Record<string, SessionBrowserView>;
 export interface SessionAnnotationInput {
   rect: SessionBrowserRect;
   comment: string;
-  id?: string;
-  createdAt?: string;
 }
 
 /** A drag shorter than this on either side is a stray click, not a region. */
@@ -165,35 +164,30 @@ function renumber(annotations: SessionBrowserAnnotation[]): SessionBrowserAnnota
   return annotations.map((note, index) => ({ ...note, marker: index + 1 }));
 }
 
-/**
- * Add a note. A blank comment or a region too small to point at anything is
- * not a note, and the map comes back untouched.
- */
-export function addSessionAnnotation(
+/** Add one backend-owned row to transient render state. */
+export function appendSessionAnnotation(
   map: SessionBrowserMap,
   sessionId: string | null,
-  input: SessionAnnotationInput
+  note: SessionBrowserAnnotation
 ): SessionBrowserMap {
   if (!sessionId) return map;
-  const comment = input.comment.trim();
-  if (!comment || !isAnnotatableRect(input.rect)) return map;
   const current = readSessionBrowserView(map, sessionId);
   if (current.annotations.length >= MAX_SESSION_ANNOTATIONS) return map;
-  const note: SessionBrowserAnnotation = {
-    id: input.id ?? `annotation-${current.annotations.length + 1}-${Date.now()}`,
-    marker: current.annotations.length + 1,
-    rect: { ...input.rect },
-    comment,
-    url: current.url,
-    createdAt: input.createdAt ?? new Date().toISOString()
-  };
   return withView(map, sessionId, { annotations: renumber([...current.annotations, note]) });
+}
+
+export function replaceSessionAnnotations(
+  map: SessionBrowserMap,
+  sessionId: string | null,
+  annotations: SessionBrowserAnnotation[]
+): SessionBrowserMap {
+  return withView(map, sessionId, { annotations: renumber(annotations) });
 }
 
 export function removeSessionAnnotation(
   map: SessionBrowserMap,
   sessionId: string | null,
-  annotationId: string
+  annotationId: number
 ): SessionBrowserMap {
   if (!sessionId) return map;
   const current = readSessionBrowserView(map, sessionId);
