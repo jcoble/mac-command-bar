@@ -517,6 +517,10 @@ impl AcpClient {
                     .to_string(),
             },
             session: AgentSessionCapabilities {
+                multi_session: bool_at(
+                    &result,
+                    &["agentCapabilities", "sessionCapabilities", "multiSession"],
+                ),
                 list: bool_at(
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "list"],
@@ -618,6 +622,17 @@ impl AcpClient {
             .await
     }
 
+    pub async fn load_session_multi(
+        &mut self,
+        cwd: &Path,
+        native_session_id: &str,
+    ) -> Result<SessionId, AgentRuntimeError> {
+        Ok(self
+            .load_session(cwd, native_session_id)
+            .await?
+            .native_session_id)
+    }
+
     /// Send a one-shot prompt and retain only assistant text updates.
     ///
     /// The regular `prompt` call intentionally returns as soon as ACP accepts
@@ -625,14 +640,6 @@ impl AcpClient {
     /// Git actions need a direct result, so this narrow path consumes the same
     /// ACP transport until the prompt response arrives and ignores tool,
     /// reasoning, and lifecycle updates.
-    pub async fn prompt_once(
-        &mut self,
-        prompt: AgentPrompt,
-    ) -> Result<GeneratedText, AgentRuntimeError> {
-        let session_id = self.session_id()?;
-        self.prompt_on(&session_id, prompt).await
-    }
-
     /// Send a one-shot prompt to a specific native session.
     pub async fn prompt_on(
         &self,
@@ -682,12 +689,13 @@ impl AcpClient {
         Ok(GeneratedText { turn_id, text })
     }
 
-    pub async fn set_config(
-        &mut self,
+    pub async fn set_config_on(
+        &self,
+        session_id: &str,
         option_id: &str,
         value: Value,
     ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError> {
-        let session_id = self.session_id()?;
+        self.require_session(session_id)?;
         let result = self
             .transport
             .request(
@@ -700,14 +708,6 @@ impl AcpClient {
                 .get("configOptions")
                 .or_else(|| result.get("sessionConfigOptions")),
         ))
-    }
-
-    pub async fn set_conversation_config(
-        &mut self,
-        update: &AgentConversationConfigUpdate,
-    ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
-        let session_id = self.session_id()?;
-        self.set_conversation_config_on(&session_id, update).await
     }
 
     /// Update conversation configuration on a specific native session.
@@ -916,12 +916,6 @@ impl AcpClient {
         self.transport.request(method, params).await
     }
 
-    fn session_id(&self) -> Result<String, AgentRuntimeError> {
-        self.primary_session_id.clone().ok_or_else(|| {
-            AgentRuntimeError::new("session-not-started", "ACP session has not started")
-        })
-    }
-
     fn require_session(&self, session_id: &str) -> Result<AcpSessionSnapshot, AgentRuntimeError> {
         self.sessions
             .lock()
@@ -966,6 +960,13 @@ impl AcpClient {
             .get(session_id)
             .map(|state| state.commands.clone())
             .ok_or_else(|| session_not_found(session_id))
+    }
+
+    pub fn config_on(
+        &self,
+        session_id: &str,
+    ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+        Ok(self.require_session(session_id)?.config)
     }
 }
 
@@ -1342,7 +1343,9 @@ while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
 	  *'"method":"initialize"'*)
-	    if [ "${{fixture#suspend_}}" != "$fixture" ] && [ "$fixture" != "suspend_no_resume" ]; then
+	    if [ "$fixture" = "multiplex" ]; then
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true,"close":true,"multiSession":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
+	    elif [ "${{fixture#suspend_}}" != "$fixture" ] && [ "$fixture" != "suspend_no_resume" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    else
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
@@ -1371,7 +1374,10 @@ while IFS= read -r line; do
       fi
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
 	    *'"method":"session/resume"'*)
-	      if [ "$fixture" = "replay_on_resume" ]; then
+	      if [ "$fixture" = "resume_failure" ]; then
+	        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture resume failed"}}}}\n' "$id"
+	        continue
+	      elif [ "$fixture" = "replay_on_resume" ]; then
 	        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn"}}}}}}\n'
 	      elif [ "${{fixture#suspend_}}" != "$fixture" ]; then
 	        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id"
@@ -1638,12 +1644,15 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        client.new_session(&root).await.unwrap();
+        let session = client.new_session(&root).await.unwrap();
         let generated = client
-            .prompt_once(AgentPrompt {
-                text: "write".into(),
-                images: Vec::new(),
-            })
+            .prompt_on(
+                &session.native_session_id,
+                AgentPrompt {
+                    text: "write".into(),
+                    images: Vec::new(),
+                },
+            )
             .await
             .unwrap();
         assert_eq!(generated.turn_id.as_deref(), Some("turn-direct"));
@@ -1662,12 +1671,15 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        client.new_session(&root).await.unwrap();
+        let session = client.new_session(&root).await.unwrap();
         let generated = client
-            .prompt_once(AgentPrompt {
-                text: "write".into(),
-                images: Vec::new(),
-            })
+            .prompt_on(
+                &session.native_session_id,
+                AgentPrompt {
+                    text: "write".into(),
+                    images: Vec::new(),
+                },
+            )
             .await
             .unwrap();
         assert!(
@@ -1698,19 +1710,19 @@ done"#,
             .await
             .unwrap();
         assert!(capabilities.prompt.image);
-        assert_eq!(
-            adapter
-                .new_session(super::super::NewAgentSession { cwd: root.clone() })
-                .await
-                .unwrap()
-                .native_session_id,
-            "new-session"
-        );
+        let started = adapter
+            .new_session(super::super::NewAgentSession { cwd: root.clone() })
+            .await
+            .unwrap();
+        assert_eq!(started.native_session_id, "new-session");
         let generated = adapter
-            .prompt_once(super::super::AgentPrompt {
-                text: "write a commit subject".into(),
-                images: Vec::new(),
-            })
+            .prompt_once_on(
+                &started.native_session_id,
+                super::super::AgentPrompt {
+                    text: "write a commit subject".into(),
+                    images: Vec::new(),
+                },
+            )
             .await
             .unwrap();
         assert!(
@@ -1721,7 +1733,10 @@ done"#,
             "one-shot turn id should be client-minted"
         );
         assert_eq!(generated.text, "generated text");
-        let options = adapter.set_config("model", json!("new")).await.unwrap();
+        let options = adapter
+            .set_config_on(&started.native_session_id, "model", json!("new"))
+            .await
+            .unwrap();
         assert_eq!(options[0].value, json!("new"));
         let pid = adapter.process_id().unwrap();
         adapter.close_session().await.unwrap();
@@ -1782,11 +1797,14 @@ done"#,
         );
 
         let configured = client
-            .set_conversation_config(&AgentConversationConfigUpdate {
-                model: Some("claude-fable-5".into()),
-                reasoning_effort: None,
-                approval_policy: Some("bypassPermissions".into()),
-            })
+            .set_conversation_config_on(
+                &started.native_session_id,
+                &AgentConversationConfigUpdate {
+                    model: Some("claude-fable-5".into()),
+                    reasoning_effort: None,
+                    approval_policy: Some("bypassPermissions".into()),
+                },
+            )
             .await
             .unwrap();
 
@@ -1957,10 +1975,13 @@ done"#,
         assert_eq!(config.model.as_deref(), Some("gpt-5.6-terra"));
 
         let generated = client
-            .prompt_once(AgentPrompt {
-                text: "primary".into(),
-                images: Vec::new(),
-            })
+            .prompt_on(
+                &primary.native_session_id,
+                AgentPrompt {
+                    text: "primary".into(),
+                    images: Vec::new(),
+                },
+            )
             .await
             .unwrap();
 

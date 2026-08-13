@@ -92,12 +92,24 @@ pub struct SessionStore {
 
 impl SessionStore {
     pub fn open(path: &Path) -> Result<Self> {
-        let mut connection = Connection::open(path)
+        let connection = Connection::open(path)
             .map_err(|error| StoreError::sqlite("could not open the session database", error))?;
+        Self::from_connection(connection)
+    }
+
+    pub fn open_in_memory() -> Result<Self> {
+        let connection = Connection::open_in_memory().map_err(|error| {
+            StoreError::sqlite("could not open the in-memory session database", error)
+        })?;
+        Self::from_connection(connection)
+    }
+
+    fn from_connection(mut connection: Connection) -> Result<Self> {
         let journal_mode: String = connection
             .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
             .map_err(|error| StoreError::sqlite("could not enable WAL journal mode", error))?;
-        if !journal_mode.eq_ignore_ascii_case("wal") {
+        if !journal_mode.eq_ignore_ascii_case("wal") && !journal_mode.eq_ignore_ascii_case("memory")
+        {
             return Err(StoreError::message(
                 "the session database did not enable WAL journal mode",
             ));

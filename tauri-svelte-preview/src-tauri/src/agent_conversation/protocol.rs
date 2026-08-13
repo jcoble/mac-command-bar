@@ -28,7 +28,7 @@ pub enum AgentRuntimeState {
     Closed,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentConversationProvider {
     Codex,
@@ -130,6 +130,8 @@ pub struct AgentImplementation {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentSessionCapabilities {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub multi_session: bool,
     pub list: bool,
     pub load: bool,
     pub resume: bool,

@@ -2350,6 +2350,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "rand 0.8.6",
+ "rusqlite",
  "serde",
  "serde_json",
  "tree-sitter",

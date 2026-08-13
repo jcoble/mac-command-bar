@@ -1,8 +1,11 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use mcb_core::session_store::{EventRow, SessionRow, SessionStore};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -10,7 +13,6 @@ use super::handoff::{
     AgentConversationHandoffDirection, AgentConversationHandoffMode, AgentConversationHandoffPhase,
     AgentConversationHandoffReceipt, AgentConversationHandoffRequest,
 };
-use super::journal::AgentEventJournal;
 use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor,
     AgentConversationConfigState, AgentConversationConnection, AgentConversationEvent,
@@ -32,10 +34,9 @@ use super::providers::{
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 const SNAPSHOT_EVENT_CAP: usize = 2_000;
-const JOURNAL_EVENT_CAP: usize = 10_000;
-const IDLE_RUNTIME_SUSPEND_TICK: std::time::Duration = std::time::Duration::from_secs(60);
-// Ten minutes keeps recently viewed sessions warm while reclaiming long-idle adapter processes.
-const IDLE_RUNTIME_SUSPEND_AFTER_MS: u128 = 10 * 60 * 1_000;
+const STORE_EVENT_CAP: u32 = 10_000;
+const IDLE_RUNTIME_SUSPEND_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+const IDLE_RUNTIME_SUSPEND_AFTER_MS: u128 = 30 * 1_000;
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 const CLAUDE_SESSION_EFFORTS: [(&str, &str); 4] = [
     ("low", "4000"),
@@ -85,6 +86,19 @@ enum OrderedSessionEvent {
     },
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum AdapterPoolKey {
+    Shared(AgentConversationProvider),
+    Isolated(AgentConversationProvider, String),
+}
+
+struct AdapterPoolEntry {
+    runtime: Arc<AsyncMutex<StructuredRuntimeHandle>>,
+    transport: Arc<AcpTransport>,
+    capabilities: AgentCapabilities,
+    members: HashSet<String>,
+}
+
 pub struct ManagedAgentSession {
     pub owned_id: String,
     pub provider: AgentConversationProvider,
@@ -99,6 +113,7 @@ pub struct ManagedAgentSession {
     pub active_turn_id: Option<String>,
     prompt_once_active: bool,
     pub runtime: Option<Arc<AsyncMutex<StructuredRuntimeHandle>>>,
+    pool_key: Option<AdapterPoolKey>,
     transport: Option<Arc<AcpTransport>>,
     pub recent_events: VecDeque<AgentEvent>,
     pub writer_lease: AgentWriterLease,
@@ -113,8 +128,13 @@ pub struct ManagedAgentSession {
     config: AgentConversationConfigState,
     connection: AgentConversationConnection,
     frontend_events: VecDeque<AgentConversationEvent>,
-    journal: AgentEventJournal,
+    store: Arc<SessionStore>,
+    created_at_ms: u128,
     last_activity_ms: u128,
+    live_tool_calls: HashSet<String>,
+    background_work: HashSet<String>,
+    quiescent_since_ms: Option<u128>,
+    quiescence_generation: u64,
     suspending: bool,
 }
 
@@ -126,12 +146,15 @@ pub(crate) struct HandoffContext {
 
 #[derive(Clone)]
 pub struct AgentRuntimeManager {
+    /// Live process and request overlay. Durable identity, lifecycle state, and
+    /// conversation events are always reconstructed from `store` at startup.
     sessions: Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
     providers: Arc<ProviderRegistry>,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
-    active_owned_id: Arc<Mutex<Option<String>>>,
     idle_suspend_task_started: Arc<AtomicBool>,
+    store: Arc<SessionStore>,
+    adapter_pools: Arc<AsyncMutex<HashMap<AdapterPoolKey, AdapterPoolEntry>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,14 +173,31 @@ impl Default for AgentRuntimeManager {
 
 impl AgentRuntimeManager {
     pub fn new(providers: ProviderRegistry) -> Self {
-        Self {
-            sessions: Arc::new(Mutex::new(HashMap::new())),
+        let store = SessionStore::open_in_memory()
+            .expect("the in-memory session store must initialize for an unmanaged manager");
+        Self::with_store(providers, store).expect("the empty session store must recover")
+    }
+
+    pub fn open(providers: ProviderRegistry, database_path: &Path) -> Result<Self, String> {
+        let store = SessionStore::open(database_path).map_err(|error| error.to_string())?;
+        if let Some(directory) = database_path.parent() {
+            super::legacy_import::import_if_store_empty(&store, directory)?;
+        }
+        Self::with_store(providers, store)
+    }
+
+    pub fn with_store(providers: ProviderRegistry, store: SessionStore) -> Result<Self, String> {
+        let store = Arc::new(store);
+        let sessions = recover_sessions_from_store(&store)?;
+        Ok(Self {
+            sessions: Arc::new(Mutex::new(sessions)),
             providers: Arc::new(providers),
             emitter: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
-            active_owned_id: Arc::new(Mutex::new(None)),
             idle_suspend_task_started: Arc::new(AtomicBool::new(false)),
-        }
+            store,
+            adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
+        })
     }
 
     pub fn start_idle_suspension_task(&self) {
@@ -180,6 +220,97 @@ impl AgentRuntimeManager {
                 }
             }
         });
+    }
+
+    fn schedule_quiescent_suspend(&self, owned_id: &str, generation: u64) -> Result<(), String> {
+        let grace_generation = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            if !session_is_quiescent(session) || session.quiescent_since_ms.is_some() {
+                return Ok(());
+            }
+            session.quiescence_generation = session.quiescence_generation.saturating_add(1);
+            session.quiescent_since_ms = Some(timestamp_millis());
+            persist_session(session)?;
+            session.quiescence_generation
+        };
+        let manager = self.clone();
+        let owned_id = owned_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                IDLE_RUNTIME_SUSPEND_AFTER_MS as u64,
+            ))
+            .await;
+            let still_current = {
+                let sessions = manager
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                sessions.get(&owned_id).is_some_and(|session| {
+                    session.generation == generation
+                        && session.quiescence_generation == grace_generation
+                        && session_is_quiescent(session)
+                })
+            };
+            if still_current {
+                if let Err(error) = manager
+                    .suspend_if_idle(&owned_id, generation, timestamp_millis())
+                    .await
+                {
+                    crate::debug_log::stderr_log!(
+                        "Quiescent runtime suspension failed for {owned_id}: {error}"
+                    );
+                }
+            }
+        });
+        Ok(())
+    }
+
+    async fn release_pool_scope(
+        &self,
+        pool_key: &AdapterPoolKey,
+        owned_id: &str,
+        native_session_id: Option<&str>,
+        close_native_session: bool,
+    ) -> Result<(), String> {
+        let mut pools = self.adapter_pools.lock().await;
+        let Some(pool) = pools.get_mut(pool_key) else {
+            return Ok(());
+        };
+        pool.members.remove(owned_id);
+        if close_native_session {
+            if let Some(native_session_id) = native_session_id {
+                pool.runtime
+                    .lock()
+                    .await
+                    .close_native_session(native_session_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        if pool.members.is_empty() {
+            let runtime = Arc::clone(&pool.runtime);
+            if close_native_session {
+                runtime
+                    .lock()
+                    .await
+                    .close_session()
+                    .await
+                    .map_err(|error| error.to_string())?;
+            } else {
+                runtime
+                    .lock()
+                    .await
+                    .detach_session()
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            pools.remove(pool_key);
+        }
+        Ok(())
     }
 
     pub fn providers(&self) -> &ProviderRegistry {
@@ -327,6 +458,7 @@ impl AgentRuntimeManager {
             config: AgentConversationConfigState::default(),
         };
         let provider_instance_id = format!("{}-{generation}", provider_id(request.provider));
+        let created_at_ms = timestamp_millis();
         sessions.insert(
             owned_id.clone(),
             ManagedAgentSession {
@@ -337,12 +469,13 @@ impl AgentRuntimeManager {
                 native_session_mode: request.native_session_mode,
                 generation,
                 owner: AgentExecutionOwner::Stopped,
-                state: AgentRuntimeState::Closed,
+                state: AgentRuntimeState::Starting,
                 capabilities: empty_capabilities(request.provider),
                 next_sequence: 1,
                 active_turn_id: None,
                 prompt_once_active: false,
                 runtime: None,
+                pool_key: None,
                 transport: None,
                 recent_events: VecDeque::new(),
                 writer_lease: AgentWriterLease {
@@ -361,11 +494,20 @@ impl AgentRuntimeManager {
                 config: connection.config.clone(),
                 connection: connection.clone(),
                 frontend_events: VecDeque::new(),
-                journal: AgentEventJournal::new(JOURNAL_EVENT_CAP),
-                last_activity_ms: timestamp_millis(),
+                store: Arc::clone(&self.store),
+                created_at_ms,
+                last_activity_ms: created_at_ms,
+                live_tool_calls: HashSet::new(),
+                background_work: HashSet::new(),
+                quiescent_since_ms: None,
+                quiescence_generation: 0,
                 suspending: false,
             },
         );
+        let session = sessions
+            .get(&connection.owned_id)
+            .ok_or_else(|| "Conversation session was not inserted".to_string())?;
+        persist_session(session)?;
         Ok((connection, previous_runtime))
     }
 
@@ -376,10 +518,6 @@ impl AgentRuntimeManager {
     ) -> Result<AgentConversationConnection, String> {
         let activation_lock = self.activation_lock(owned_id)?;
         let _activation = activation_lock.lock().await;
-        *self
-            .active_owned_id
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owned_id.to_string());
         let (
             provider,
             cwd,
@@ -414,52 +552,143 @@ impl AgentRuntimeManager {
                 session.state == AgentRuntimeState::Suspended,
             )
         };
-        let manifest = self.providers.manifest(provider)?;
-        let environment = session_spawn_environment(provider, reasoning_effort.as_deref());
-        let mut adapter = AcpRuntimeAdapter::with_environment(
-            manifest,
-            owned_id.to_string(),
-            cwd.clone(),
-            environment,
-        );
-        let capabilities = adapter
-            .initialize(InitializeAgentInput { provider })
-            .await
-            .map_err(|error| error.to_string())?;
         let expected_native_session_id = native_session_id.clone();
-        let mut started = match native_session_id {
-            Some(native_session_id) => {
-                let input = LoadAgentSession {
-                    cwd,
-                    native_session_id,
+        let shared_key = AdapterPoolKey::Shared(provider);
+        let mut pools = self.adapter_pools.lock().await;
+        let (capabilities, started_result, runtime, transport, inbound, pool_key) =
+            if let Some(pool) = pools.get_mut(&shared_key) {
+                let runtime = Arc::clone(&pool.runtime);
+                let started = {
+                    let mut runtime = runtime.lock().await;
+                    match native_session_id.as_deref() {
+                        Some(native_session_id) => match native_session_mode {
+                            AgentNativeSessionMode::Resume => {
+                                runtime.resume_session_multi(&cwd, native_session_id).await
+                            }
+                            AgentNativeSessionMode::Load => {
+                                runtime.load_session_multi(&cwd, native_session_id).await
+                            }
+                        },
+                        None => runtime.new_session_multi(&cwd).await,
+                    }
                 };
-                match native_session_mode {
-                    AgentNativeSessionMode::Resume => adapter.resume_session(input).await,
-                    AgentNativeSessionMode::Load => adapter.load_session(input).await,
+                if started.is_ok() {
+                    pool.members.insert(owned_id.to_string());
                 }
+                (
+                    pool.capabilities.clone(),
+                    started,
+                    runtime,
+                    Arc::clone(&pool.transport),
+                    None,
+                    shared_key,
+                )
+            } else {
+                let manifest = self.providers.manifest(provider)?;
+                let environment = session_spawn_environment(provider, reasoning_effort.as_deref());
+                let mut adapter = AcpRuntimeAdapter::with_environment(
+                    manifest,
+                    format!("provider:{}", provider_id(provider)),
+                    cwd.clone(),
+                    environment,
+                );
+                let capabilities = adapter
+                    .initialize(InitializeAgentInput { provider })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let started = match native_session_id.as_ref() {
+                    Some(native_session_id) => {
+                        let input = LoadAgentSession {
+                            cwd: cwd.clone(),
+                            native_session_id: native_session_id.clone(),
+                        };
+                        match native_session_mode {
+                            AgentNativeSessionMode::Resume => adapter.resume_session(input).await,
+                            AgentNativeSessionMode::Load => adapter.load_session(input).await,
+                        }
+                    }
+                    None => {
+                        adapter
+                            .new_session(NewAgentSession { cwd: cwd.clone() })
+                            .await
+                    }
+                };
+                let runtime = Arc::new(AsyncMutex::new(StructuredRuntimeHandle::Acp(adapter)));
+                let (transport, inbound) = {
+                    let mut runtime = runtime.lock().await;
+                    let transport = runtime.transport().map_err(|error| error.to_string())?;
+                    let inbound = runtime.take_inbound().map_err(|error| error.to_string())?;
+                    (transport, inbound)
+                };
+                let pool_key = if provider_is_multi_session_safe(&capabilities) {
+                    shared_key
+                } else {
+                    AdapterPoolKey::Isolated(provider, owned_id.to_string())
+                };
+                let members = HashSet::from([owned_id.to_string()]);
+                pools.insert(
+                    pool_key.clone(),
+                    AdapterPoolEntry {
+                        runtime: Arc::clone(&runtime),
+                        transport: Arc::clone(&transport),
+                        capabilities: capabilities.clone(),
+                        members,
+                    },
+                );
+                (
+                    capabilities,
+                    started,
+                    runtime,
+                    transport,
+                    Some(inbound),
+                    pool_key,
+                )
+            };
+        drop(pools);
+        let mut started = match started_result {
+            Ok(started) => started,
+            Err(error) if expected_native_session_id.is_some() => {
+                let _ = self
+                    .release_pool_scope(&pool_key, owned_id, None, false)
+                    .await;
+                let mut sessions = self
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = current_session_mut(&mut sessions, owned_id, generation)?;
+                session.state = AgentRuntimeState::Suspended;
+                record_payload_for_session_and_dispatch(
+                    session,
+                    &self.emitter,
+                    AgentConversationPayload::Error {
+                        code: "session-resume-failed".to_string(),
+                        message: "The stored provider session could not be resumed".to_string(),
+                        recoverable: true,
+                    },
+                )?;
+                return Err(format!("Stored session could not be resumed: {error}"));
             }
-            None => adapter.new_session(NewAgentSession { cwd }).await,
-        }
-        .map_err(|error| error.to_string())?;
+            Err(error) => {
+                let _ = self
+                    .release_pool_scope(&pool_key, owned_id, None, false)
+                    .await;
+                return Err(error.to_string());
+            }
+        };
         if provider == AgentConversationProvider::Claude {
             started.config = claude_session_config(started.config, reasoning_effort.as_deref());
         }
         if let Some(expected_native_session_id) = expected_native_session_id {
             if started.native_session_id != expected_native_session_id {
-                let _ = adapter.detach_session().await;
+                let _ = self
+                    .release_pool_scope(&pool_key, owned_id, Some(&started.native_session_id), true)
+                    .await;
                 return Err(
                     "The provider resumed a different native session; handoff was rejected"
                         .to_string(),
                 );
             }
         }
-        let runtime = Arc::new(AsyncMutex::new(StructuredRuntimeHandle::Acp(adapter)));
-        let (transport, inbound) = {
-            let mut runtime = runtime.lock().await;
-            let transport = runtime.transport().map_err(|error| error.to_string())?;
-            let inbound = runtime.take_inbound().map_err(|error| error.to_string())?;
-            (transport, inbound)
-        };
         let (ordered_tx, ordered_rx) = mpsc::unbounded_channel();
         let mut sessions = self
             .sessions
@@ -488,8 +717,10 @@ impl AgentRuntimeManager {
         }
         session.state = AgentRuntimeState::Ready;
         session.runtime = Some(runtime);
+        session.pool_key = Some(pool_key);
         session.transport = Some(Arc::clone(&transport));
         session.ordered_events = Some(ordered_tx);
+        persist_session(session)?;
         if was_suspended {
             record_payload_for_session_and_dispatch(
                 session,
@@ -502,15 +733,24 @@ impl AgentRuntimeManager {
         }
         let connection = session.connection.clone();
         drop(sessions);
-        spawn_inbound_pump(
-            Arc::downgrade(&self.sessions),
-            Arc::downgrade(&self.emitter),
-            Arc::downgrade(&transport),
-            inbound,
-            ordered_rx,
-            owned_id.to_string(),
-            generation,
-        );
+        if let Some(inbound) = inbound {
+            spawn_inbound_pump(
+                self.clone(),
+                Arc::downgrade(&transport),
+                inbound,
+                ordered_rx,
+                owned_id.to_string(),
+                generation,
+            );
+        } else {
+            spawn_ordered_pump(
+                self.clone(),
+                Arc::downgrade(&transport),
+                ordered_rx,
+                owned_id.to_string(),
+                generation,
+            );
+        }
         Ok(connection)
     }
 
@@ -590,7 +830,7 @@ impl AgentRuntimeManager {
         input: AgentPrompt,
     ) -> Result<GeneratedText, String> {
         let runtime = self.runtime(owned_id, generation)?;
-        {
+        let native_session_id = {
             let mut sessions = self
                 .sessions
                 .lock()
@@ -609,8 +849,16 @@ impl AgentRuntimeManager {
                 return Err("The structured writer is not the current owner".to_string());
             }
             session.prompt_once_active = true;
-        }
-        let result = runtime.lock().await.prompt_once(input).await;
+            session
+                .native_session_id
+                .clone()
+                .ok_or_else(|| "Structured provider session has not started".to_string())?
+        };
+        let result = runtime
+            .lock()
+            .await
+            .prompt_once_on(&native_session_id, input)
+            .await;
         let mut sessions = self
             .sessions
             .lock()
@@ -655,6 +903,26 @@ impl AgentRuntimeManager {
         request_id: String,
         selection: PermissionSelection,
     ) -> Result<(), String> {
+        let _runtime_scope_is_live = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session(&sessions, owned_id, generation)?;
+            if session.runtime.is_none()
+                || matches!(
+                    session.state,
+                    AgentRuntimeState::Suspended
+                        | AgentRuntimeState::Failed
+                        | AgentRuntimeState::Closed
+                )
+            {
+                return Err(
+                    "Stale approval request: the original runtime scope is closed".to_string(),
+                );
+            }
+            true
+        };
         let runtime = self.runtime(&owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
@@ -722,6 +990,23 @@ impl AgentRuntimeManager {
         let owned_id = input.identity.owned_id.clone();
         let generation = input.identity.generation;
         let request_id = input.identity.request_id.clone();
+        {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session(&sessions, &owned_id, generation)?;
+            if session.runtime.is_none()
+                || matches!(
+                    session.state,
+                    AgentRuntimeState::Suspended
+                        | AgentRuntimeState::Failed
+                        | AgentRuntimeState::Closed
+                )
+            {
+                return Err("Stale input request: the original runtime scope is closed".to_string());
+            }
+        }
         let runtime = self.runtime(&owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
@@ -773,7 +1058,7 @@ impl AgentRuntimeManager {
         option_id: &str,
         value: AgentConfigValue,
     ) -> Result<Vec<super::protocol::AgentConfigOption>, String> {
-        {
+        let native_session_id = {
             let sessions = self
                 .sessions
                 .lock()
@@ -788,12 +1073,16 @@ impl AgentRuntimeManager {
                     "Config option was not advertised by the current provider".to_string()
                 })?;
             super::capabilities::validate_config_value(option, &value)?;
-        }
+            session
+                .native_session_id
+                .clone()
+                .ok_or_else(|| "Structured provider session has not started".to_string())?
+        };
         let runtime = self.runtime(owned_id, generation)?;
         let replacement = runtime
             .lock()
             .await
-            .set_config(option_id, value)
+            .set_config_on(&native_session_id, option_id, value)
             .await
             .map_err(|error| error.to_string())?;
         let mut sessions = self
@@ -805,6 +1094,7 @@ impl AgentRuntimeManager {
             &mut session.capabilities,
             replacement.clone(),
         )?;
+        persist_session(session)?;
         Ok(replacement)
     }
 
@@ -831,7 +1121,7 @@ impl AgentRuntimeManager {
             reasoning_effort: normalized_optional_id(request.reasoning_effort),
             approval_policy: normalized_optional_id(request.approval_policy),
         };
-        {
+        let native_session_id = {
             let sessions = self
                 .sessions
                 .lock()
@@ -849,12 +1139,16 @@ impl AgentRuntimeManager {
             if update == AgentConversationConfigUpdate::default() {
                 return Ok(session.config.clone());
             }
-        }
+            session
+                .native_session_id
+                .clone()
+                .ok_or_else(|| "Structured provider session has not started".to_string())?
+        };
         let runtime = self.runtime(&request.owned_id, request.generation)?;
         let config = runtime
             .lock()
             .await
-            .set_conversation_config(&update)
+            .set_conversation_config_on(&native_session_id, &update)
             .await
             .map_err(|error| error.to_string())?;
         let mut sessions = self
@@ -864,6 +1158,7 @@ impl AgentRuntimeManager {
         let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
         session.config = config.clone();
         session.connection.config = config.clone();
+        persist_session(session)?;
         Ok(config)
     }
 
@@ -933,12 +1228,31 @@ impl AgentRuntimeManager {
             }))
     }
 
-    pub async fn suspend_idle_sessions_at(&self, now_ms: u128) -> Result<Vec<String>, String> {
-        let active_owned_id = self
-            .active_owned_id
+    pub fn list_snapshots(&self) -> Result<Vec<AgentConversationSnapshot>, String> {
+        let rows = self
+            .store
+            .list_sessions()
+            .map_err(|error| error.to_string())?;
+        let sessions = self
+            .sessions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        rows.into_iter()
+            .map(|row| {
+                let session = sessions.get(&row.owned_id).ok_or_else(|| {
+                    "The stored session is missing its live runtime overlay".to_string()
+                })?;
+                Ok(AgentConversationSnapshot {
+                    connection: session.connection.clone(),
+                    suspended: session.state == AgentRuntimeState::Suspended,
+                    last_sequence: session.next_sequence.saturating_sub(1),
+                    events: session.frontend_events.iter().cloned().collect(),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn suspend_idle_sessions_at(&self, now_ms: u128) -> Result<Vec<String>, String> {
         let candidates = {
             let sessions = self
                 .sessions
@@ -946,9 +1260,7 @@ impl AgentRuntimeManager {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             sessions
                 .values()
-                .filter(|session| {
-                    idle_session_can_suspend(session, active_owned_id.as_deref(), now_ms)
-                })
+                .filter(|session| idle_session_can_suspend(session, now_ms))
                 .map(|session| (session.owned_id.clone(), session.generation))
                 .collect::<Vec<_>>()
         };
@@ -969,18 +1281,13 @@ impl AgentRuntimeManager {
         generation: u64,
         now_ms: u128,
     ) -> Result<bool, String> {
-        let active_owned_id = self
-            .active_owned_id
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let (runtime, transport, ordered_events) = {
+        let (runtime, transport, ordered_events, pool_key, native_session_id) = {
             let mut sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
-            if !idle_session_can_suspend(session, active_owned_id.as_deref(), now_ms) {
+            if !idle_session_can_suspend(session, now_ms) {
                 return Ok(false);
             }
             let Some(runtime) = session.runtime.take() else {
@@ -991,12 +1298,21 @@ impl AgentRuntimeManager {
                 runtime,
                 session.transport.take(),
                 session.ordered_events.take(),
+                session.pool_key.take(),
+                session.native_session_id.clone(),
             )
         };
 
-        let detach_result = {
-            let mut runtime_guard = runtime.lock().await;
-            runtime_guard.detach_session().await
+        let detach_result = if let Some(pool_key) = &pool_key {
+            self.release_pool_scope(pool_key, owned_id, native_session_id.as_deref(), false)
+                .await
+        } else {
+            runtime
+                .lock()
+                .await
+                .detach_session()
+                .await
+                .map_err(|error| error.to_string())
         };
         if let Err(error) = detach_result {
             let mut sessions = self
@@ -1008,8 +1324,9 @@ impl AgentRuntimeManager {
                 session.runtime = Some(runtime);
                 session.transport = transport;
                 session.ordered_events = ordered_events;
+                session.pool_key = pool_key;
             }
-            return Err(error.to_string());
+            return Err(error);
         }
 
         let mut sessions = self
@@ -1032,7 +1349,7 @@ impl AgentRuntimeManager {
     }
 
     pub async fn close(&self, owned_id: &str) -> Result<bool, String> {
-        let runtime = {
+        let (runtime, transport, pool_key, native_session_id, pending_permissions, pending_inputs) = {
             let mut sessions = self
                 .sessions
                 .lock()
@@ -1043,10 +1360,75 @@ impl AgentRuntimeManager {
             session.state = AgentRuntimeState::Closed;
             session.owner = AgentExecutionOwner::Stopped;
             session.writer_lease.owner = AgentWriterLeaseOwner::None;
-            session.transport = None;
-            session.runtime.take()
+            let transport = session.transport.take();
+            session.ordered_events = None;
+            session.quiescent_since_ms = None;
+            let pending_permission_rows = session.permission_requests.drain().collect::<Vec<_>>();
+            let mut pending_permissions = Vec::with_capacity(pending_permission_rows.len());
+            for (request_id, pending) in pending_permission_rows {
+                let _ = record_payload_for_session_and_dispatch(
+                    session,
+                    &self.emitter,
+                    AgentConversationPayload::Approval {
+                        request_id,
+                        state: ApprovalState::Expired,
+                        summary: pending.summary,
+                    },
+                );
+                pending_permissions.push(pending.wire_id);
+            }
+            let pending_input_rows = session.user_input_requests.drain().collect::<Vec<_>>();
+            let mut pending_inputs = Vec::with_capacity(pending_input_rows.len());
+            for (request_id, pending) in pending_input_rows {
+                let _ = record_payload_for_session_and_dispatch(
+                    session,
+                    &self.emitter,
+                    AgentConversationPayload::UserInputResolved {
+                        request_id,
+                        cancelled: true,
+                    },
+                );
+                pending_inputs.push(pending.wire_id);
+            }
+            record_payload_for_session_and_dispatch(
+                session,
+                &self.emitter,
+                AgentConversationPayload::Connection {
+                    state: ConversationConnectionState::Closed,
+                    native_session_id: session.native_session_id.clone(),
+                },
+            )?;
+            (
+                session.runtime.take(),
+                transport,
+                session.pool_key.take(),
+                session.native_session_id.clone(),
+                pending_permissions,
+                pending_inputs,
+            )
         };
-        if let Some(runtime) = runtime {
+        if let Some(transport) = transport {
+            for wire_id in pending_permissions {
+                let _ = transport
+                    .respond(
+                        wire_id,
+                        serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                    )
+                    .await;
+            }
+            for wire_id in pending_inputs {
+                let _ = transport
+                    .respond(
+                        wire_id,
+                        serde_json::json!({ "values": {}, "cancelled": true }),
+                    )
+                    .await;
+            }
+        }
+        if let Some(pool_key) = pool_key {
+            self.release_pool_scope(&pool_key, owned_id, native_session_id.as_deref(), true)
+                .await?;
+        } else if let Some(runtime) = runtime {
             runtime
                 .lock()
                 .await
@@ -1054,10 +1436,6 @@ impl AgentRuntimeManager {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(owned_id);
         Ok(true)
     }
 
@@ -1373,6 +1751,161 @@ impl Drop for AgentRuntimeManager {
     }
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredSessionExtra {
+    generation: u64,
+    native_session_mode: AgentNativeSessionMode,
+    owner: AgentExecutionOwner,
+    config: AgentConversationConfigState,
+    capabilities: AgentCapabilities,
+}
+
+fn persist_session(session: &ManagedAgentSession) -> Result<(), String> {
+    let extra = StoredSessionExtra {
+        generation: session.generation,
+        native_session_mode: session.native_session_mode,
+        owner: session.owner,
+        config: session.config.clone(),
+        capabilities: session.capabilities.clone(),
+    };
+    let row = SessionRow {
+        owned_id: session.owned_id.clone(),
+        native_session_id: session.native_session_id.clone(),
+        provider: enum_storage_value(session.provider)?,
+        model: session.config.model.clone(),
+        effort: session
+            .config
+            .reasoning_effort
+            .clone()
+            .or_else(|| session.spawn_reasoning_effort.clone()),
+        cwd: session.cwd.clone(),
+        worktree: Some(session.cwd.clone()),
+        branch: None,
+        title: None,
+        project: None,
+        state: enum_storage_value(session.state)?,
+        suspended: session.state == AgentRuntimeState::Suspended,
+        created_at_ms: store_timestamp(session.created_at_ms),
+        last_activity_at_ms: store_timestamp(session.last_activity_ms),
+        extra_json: serde_json::to_string(&extra)
+            .map_err(|error| format!("Could not encode stored session metadata: {error}"))?,
+    };
+    session
+        .store
+        .upsert_session(&row)
+        .map_err(|error| error.to_string())
+}
+
+fn recover_sessions_from_store(
+    store: &Arc<SessionStore>,
+) -> Result<HashMap<String, ManagedAgentSession>, String> {
+    let mut sessions = HashMap::new();
+    for row in store.list_sessions().map_err(|error| error.to_string())? {
+        let provider: AgentConversationProvider = enum_from_storage(&row.provider)?;
+        let stored: StoredSessionExtra = serde_json::from_str(&row.extra_json)
+            .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
+        let persisted_state: AgentRuntimeState = enum_from_storage(&row.state)?;
+        let recoverable = row.native_session_id.is_some()
+            && stored.capabilities.session.resume
+            && persisted_state != AgentRuntimeState::Closed;
+        let state = if recoverable {
+            AgentRuntimeState::Suspended
+        } else {
+            persisted_state
+        };
+        let connection_state = match state {
+            AgentRuntimeState::Suspended | AgentRuntimeState::Closed => {
+                ConversationConnectionState::Disconnected
+            }
+            AgentRuntimeState::Failed => ConversationConnectionState::Failed,
+            _ => ConversationConnectionState::Disconnected,
+        };
+        let events = store
+            .list_events(&row.owned_id, 0, STORE_EVENT_CAP)
+            .map_err(|error| error.to_string())?;
+        let frontend_events = events
+            .iter()
+            .filter_map(|event| serde_json::from_str(&event.payload_json).ok())
+            .collect::<VecDeque<AgentConversationEvent>>();
+        let next_sequence = store
+            .latest_seq(&row.owned_id)
+            .map_err(|error| error.to_string())?
+            .saturating_add(1) as u64;
+        let connection = AgentConversationConnection {
+            owned_id: row.owned_id.clone(),
+            provider,
+            generation: stored.generation,
+            native_session_id: row.native_session_id.clone(),
+            state: connection_state,
+            config: stored.config.clone(),
+        };
+        let session = ManagedAgentSession {
+            owned_id: row.owned_id.clone(),
+            provider,
+            provider_instance_id: format!("{}-{}", provider_id(provider), stored.generation),
+            native_session_id: row.native_session_id,
+            native_session_mode: AgentNativeSessionMode::Resume,
+            generation: stored.generation,
+            owner: stored.owner,
+            state,
+            capabilities: stored.capabilities,
+            next_sequence,
+            active_turn_id: None,
+            prompt_once_active: false,
+            runtime: None,
+            pool_key: None,
+            transport: None,
+            recent_events: VecDeque::new(),
+            writer_lease: AgentWriterLease {
+                owned_id: row.owned_id.clone(),
+                generation: stored.generation,
+                owner: AgentWriterLeaseOwner::Structured,
+            },
+            writer_lease_transition: None,
+            permission_requests: HashMap::new(),
+            next_permission_id: 0,
+            user_input_requests: HashMap::new(),
+            next_user_input_id: 0,
+            ordered_events: None,
+            cwd: row.cwd,
+            spawn_reasoning_effort: row.effort,
+            config: stored.config,
+            connection,
+            frontend_events,
+            store: Arc::clone(store),
+            created_at_ms: row.created_at_ms.max(0) as u128,
+            last_activity_ms: row.last_activity_at_ms.max(0) as u128,
+            live_tool_calls: HashSet::new(),
+            background_work: HashSet::new(),
+            quiescent_since_ms: None,
+            quiescence_generation: 0,
+            suspending: false,
+        };
+        persist_session(&session)?;
+        sessions.insert(row.owned_id, session);
+    }
+    Ok(sessions)
+}
+
+fn enum_storage_value<T: Serialize>(value: T) -> Result<String, String> {
+    let encoded = serde_json::to_value(value)
+        .map_err(|error| format!("Could not encode stored enum value: {error}"))?;
+    encoded
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "Stored enum value was not a string".to_string())
+}
+
+fn enum_from_storage<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T, String> {
+    serde_json::from_value(Value::String(value.to_string()))
+        .map_err(|error| format!("Could not decode stored enum value: {error}"))
+}
+
+fn store_timestamp(value: u128) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 fn current_session<'a>(
     sessions: &'a HashMap<String, ManagedAgentSession>,
     owned_id: &str,
@@ -1432,7 +1965,48 @@ fn record_payload_for_session(
         payload: payload.clone(),
     };
     let canonical = canonical_event(session, sequence, timestamp_ms, &payload)?;
-    session.journal.append(canonical.clone())?;
+    match &payload {
+        AgentConversationPayload::Tool { item_id, state, .. } => match state {
+            ToolState::Started | ToolState::Updated => {
+                session.live_tool_calls.insert(item_id.clone());
+            }
+            ToolState::Completed | ToolState::Failed => {
+                session.live_tool_calls.remove(item_id);
+            }
+        },
+        AgentConversationPayload::Turn { state, .. }
+            if matches!(
+                state,
+                super::protocol::TurnState::Completed
+                    | super::protocol::TurnState::Interrupted
+                    | super::protocol::TurnState::Failed
+            ) =>
+        {
+            session.live_tool_calls.clear();
+        }
+        _ => {}
+    }
+    session.quiescent_since_ms = None;
+    session.quiescence_generation = session.quiescence_generation.saturating_add(1);
+    let payload_json = serde_json::to_string(&frontend_event)
+        .map_err(|error| format!("Could not encode the stored conversation event: {error}"))?;
+    let kind = enum_storage_value(canonical.event_type)?;
+    session
+        .store
+        .append_event(&EventRow {
+            owned_id: session.owned_id.clone(),
+            seq: i64::try_from(sequence)
+                .map_err(|_| "Conversation event sequence exceeded the store limit".to_string())?,
+            turn_id: canonical.turn_id.clone(),
+            kind,
+            payload_json,
+            created_at_ms: store_timestamp(timestamp_ms),
+        })
+        .map_err(|error| error.to_string())?;
+    session
+        .store
+        .enforce_event_cap(&session.owned_id, STORE_EVENT_CAP)
+        .map_err(|error| error.to_string())?;
     session.recent_events.push_back(canonical);
     session.frontend_events.push_back(frontend_event.clone());
     while session.recent_events.len() > SNAPSHOT_EVENT_CAP {
@@ -1441,6 +2015,7 @@ fn record_payload_for_session(
     while session.frontend_events.len() > SNAPSHOT_EVENT_CAP {
         session.frontend_events.pop_front();
     }
+    persist_session(session)?;
     Ok(frontend_event)
 }
 
@@ -1505,8 +2080,7 @@ fn spawn_prompt_completion(
 }
 
 fn spawn_inbound_pump(
-    sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
-    emitter: Weak<Mutex<Option<ConversationEmitter>>>,
+    manager: AgentRuntimeManager,
     transport: Weak<AcpTransport>,
     inbound: mpsc::UnboundedReceiver<AcpInbound>,
     ordered_events: mpsc::UnboundedReceiver<OrderedSessionEvent>,
@@ -1514,8 +2088,7 @@ fn spawn_inbound_pump(
     generation: u64,
 ) {
     tokio::spawn(pump_inbound(
-        sessions,
-        emitter,
+        manager,
         transport,
         inbound,
         ordered_events,
@@ -1524,9 +2097,26 @@ fn spawn_inbound_pump(
     ));
 }
 
+fn spawn_ordered_pump(
+    manager: AgentRuntimeManager,
+    transport: Weak<AcpTransport>,
+    mut ordered_events: mpsc::UnboundedReceiver<OrderedSessionEvent>,
+    owned_id: String,
+    generation: u64,
+) {
+    tokio::spawn(async move {
+        while let Some(ordered) = ordered_events.recv().await {
+            if !handle_ordered_session_event(ordered, &manager, &transport, &owned_id, generation)
+                .await
+            {
+                return;
+            }
+        }
+    });
+}
+
 async fn pump_inbound(
-    sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
-    emitter: Weak<Mutex<Option<ConversationEmitter>>>,
+    manager: AgentRuntimeManager,
     transport: Weak<AcpTransport>,
     mut inbound: mpsc::UnboundedReceiver<AcpInbound>,
     mut ordered_events: mpsc::UnboundedReceiver<OrderedSessionEvent>,
@@ -1544,8 +2134,7 @@ async fn pump_inbound(
                         Some(ordered) => {
                             if !handle_ordered_session_event(
                                 ordered,
-                                &sessions,
-                                &emitter,
+                                &manager,
                                 &transport,
                                 &owned_id,
                                 generation,
@@ -1565,12 +2154,30 @@ async fn pump_inbound(
         let Some(inbound) = inbound else {
             return;
         };
-        if transport.upgrade().is_none() {
-            return;
-        }
-        let (Some(sessions), Some(emitter)) = (sessions.upgrade(), emitter.upgrade()) else {
+        let Some(transport_runtime) = transport.upgrade() else {
             return;
         };
+        if let AcpInbound::TransportClosed { reason } = &inbound {
+            settle_closed_transport(&manager, &transport_runtime, reason).await;
+            return;
+        }
+        let target = {
+            let sessions = manager
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            routed_session_for_inbound(&sessions, &transport_runtime, &inbound)
+        };
+        let Some((target_owned_id, target_generation)) = target else {
+            crate::debug_log::stderr_log!(
+                "Dropping an adapter event that did not identify one live session"
+            );
+            continue;
+        };
+        let owned_id = target_owned_id;
+        let generation = target_generation;
+        let sessions = Arc::clone(&manager.sessions);
+        let emitter = Arc::clone(&manager.emitter);
         match inbound {
             AcpInbound::SessionUpdate(params) => {
                 let mut sessions = sessions
@@ -1579,9 +2186,32 @@ async fn pump_inbound(
                 let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
                     return;
                 };
+                if update_raw_liveness(session, &params) {
+                    let manager = manager.clone();
+                    let quiescent_owned_id = owned_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            manager.schedule_quiescent_suspend(&quiescent_owned_id, generation)
+                        {
+                            crate::debug_log::stderr_log!(
+                                "Could not schedule quiescent suspension: {error}"
+                            );
+                        }
+                    });
+                }
+                if let Err(error) = persist_session(session) {
+                    crate::debug_log::stderr_log!(
+                        "Could not persist adapter liveness state: {error}"
+                    );
+                }
                 if let Some(mode_id) = current_mode_update(&params) {
                     session.config.approval_policy = Some(mode_id.to_string());
                     session.connection.config = session.config.clone();
+                    if let Err(error) = persist_session(session) {
+                        crate::debug_log::stderr_log!(
+                            "Could not persist adapter configuration: {error}"
+                        );
+                    }
                     continue;
                 }
                 if is_session_state_update(&params) {
@@ -1723,112 +2353,203 @@ async fn pump_inbound(
                     );
                 }
             }
-            AcpInbound::TransportClosed { reason } => {
-                let mut sessions = sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
-                    return;
-                };
-                if session.suspending {
-                    return;
-                }
-                if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
-                    let pending_permissions =
-                        session.permission_requests.drain().collect::<Vec<_>>();
-                    for (request_id, pending) in pending_permissions {
-                        if let Err(error) = record_payload_for_session_and_dispatch(
-                            session,
-                            &emitter,
-                            AgentConversationPayload::Approval {
-                                request_id,
-                                state: ApprovalState::Expired,
-                                summary: pending.summary,
-                            },
-                        ) {
-                            crate::debug_log::stderr_log!(
-                                "Could not record expired ACP permission request: {error}"
-                            );
-                        }
-                    }
-                    let pending_inputs = session.user_input_requests.drain().collect::<Vec<_>>();
-                    for (request_id, _pending) in pending_inputs {
-                        if let Err(error) = record_payload_for_session_and_dispatch(
-                            session,
-                            &emitter,
-                            AgentConversationPayload::UserInputResolved {
-                                request_id,
-                                cancelled: true,
-                            },
-                        ) {
-                            crate::debug_log::stderr_log!(
-                                "Could not record expired ACP user input request: {error}"
-                            );
-                        }
-                    }
-                    if let Some(turn_id) = session.active_turn_id.clone() {
-                        if let Err(error) = record_payload_for_session_and_dispatch(
-                            session,
-                            &emitter,
-                            AgentConversationPayload::Turn {
-                                turn_id,
-                                state: super::protocol::TurnState::Failed,
-                            },
-                        ) {
-                            crate::debug_log::stderr_log!(
-                                "Could not record failed ACP turn: {error}"
-                            );
-                        }
-                    }
-                    let native_session_id = session.native_session_id.clone();
-                    if let Err(error) = record_payload_for_session_and_dispatch(
-                        session,
-                        &emitter,
-                        AgentConversationPayload::Connection {
-                            state: ConversationConnectionState::Failed,
-                            native_session_id,
-                        },
-                    ) {
-                        crate::debug_log::stderr_log!(
-                            "Could not record ACP transport failure: {error}"
-                        );
-                    }
-                    if let Err(error) = record_payload_for_session_and_dispatch(
-                        session,
-                        &emitter,
-                        AgentConversationPayload::Error {
-                            code: "acp-transport".to_string(),
-                            message: reason,
-                            recoverable: true,
-                        },
-                    ) {
-                        crate::debug_log::stderr_log!(
-                            "Could not record ACP transport error: {error}"
-                        );
-                    }
-                } else {
-                    session.connection.state = ConversationConnectionState::Failed;
-                }
-                session.active_turn_id = None;
-                session.prompt_once_active = false;
-                session.state = AgentRuntimeState::Failed;
-                return;
-            }
+            AcpInbound::TransportClosed { .. } => unreachable!("handled before session routing"),
         }
     }
 }
 
+async fn settle_closed_transport(
+    manager: &AgentRuntimeManager,
+    transport: &Arc<AcpTransport>,
+    reason: &str,
+) {
+    let emitter = Arc::clone(&manager.emitter);
+    {
+        let mut sessions = manager
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for session in sessions.values_mut().filter(|session| {
+            session
+                .transport
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, transport))
+        }) {
+            session.runtime = None;
+            session.transport = None;
+            session.ordered_events = None;
+            session.pool_key = None;
+            if session.suspending {
+                continue;
+            }
+            for (request_id, pending) in session.permission_requests.drain().collect::<Vec<_>>() {
+                let _ = record_payload_for_session_and_dispatch(
+                    session,
+                    &emitter,
+                    AgentConversationPayload::Approval {
+                        request_id,
+                        state: ApprovalState::Expired,
+                        summary: pending.summary,
+                    },
+                );
+            }
+            for (request_id, _) in session.user_input_requests.drain().collect::<Vec<_>>() {
+                let _ = record_payload_for_session_and_dispatch(
+                    session,
+                    &emitter,
+                    AgentConversationPayload::UserInputResolved {
+                        request_id,
+                        cancelled: true,
+                    },
+                );
+            }
+            if let Some(turn_id) = session.active_turn_id.take() {
+                let _ = record_payload_for_session_and_dispatch(
+                    session,
+                    &emitter,
+                    AgentConversationPayload::Turn {
+                        turn_id,
+                        state: super::protocol::TurnState::Failed,
+                    },
+                );
+            }
+            session.prompt_once_active = false;
+            session.state = AgentRuntimeState::Failed;
+            let _ = record_payload_for_session_and_dispatch(
+                session,
+                &emitter,
+                AgentConversationPayload::Connection {
+                    state: ConversationConnectionState::Failed,
+                    native_session_id: session.native_session_id.clone(),
+                },
+            );
+            let _ = record_payload_for_session_and_dispatch(
+                session,
+                &emitter,
+                AgentConversationPayload::Error {
+                    code: "acp-transport".to_string(),
+                    message: reason.to_string(),
+                    recoverable: true,
+                },
+            );
+        }
+    }
+    manager
+        .adapter_pools
+        .lock()
+        .await
+        .retain(|_, pool| !Arc::ptr_eq(&pool.transport, transport));
+}
+
+fn routed_session_for_inbound(
+    sessions: &HashMap<String, ManagedAgentSession>,
+    transport: &Arc<AcpTransport>,
+    inbound: &AcpInbound,
+) -> Option<(String, u64)> {
+    let params = match inbound {
+        AcpInbound::SessionUpdate(params) | AcpInbound::AgentRequest { params, .. } => Some(params),
+        AcpInbound::TransportClosed { .. } => None,
+    };
+    let native_session_id = params.and_then(|params| {
+        params
+            .get("sessionId")
+            .or_else(|| params.get("session_id"))
+            .or_else(|| params.pointer("/update/sessionId"))
+            .or_else(|| params.pointer("/update/session_id"))
+            .and_then(Value::as_str)
+    });
+    let matching_transport = |session: &&ManagedAgentSession| {
+        session
+            .transport
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, transport))
+    };
+    if let Some(native_session_id) = native_session_id {
+        return sessions
+            .values()
+            .filter(matching_transport)
+            .find(|session| session.native_session_id.as_deref() == Some(native_session_id))
+            .map(|session| (session.owned_id.clone(), session.generation));
+    }
+    let matching = sessions
+        .values()
+        .filter(matching_transport)
+        .collect::<Vec<_>>();
+    if let [session] = matching.as_slice() {
+        return Some((session.owned_id.clone(), session.generation));
+    }
+    let mut active = matching
+        .into_iter()
+        .filter(|session| session.active_turn_id.is_some());
+    let session = active.next()?;
+    active
+        .next()
+        .is_none()
+        .then(|| (session.owned_id.clone(), session.generation))
+}
+
+fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> bool {
+    let update = params.get("update").unwrap_or(params);
+    let kind = update
+        .get("sessionUpdate")
+        .or_else(|| update.get("session_update"))
+        .or_else(|| update.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let state = update
+        .get("status")
+        .or_else(|| update.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let terminal = matches!(
+        state.as_str(),
+        "completed" | "failed" | "cancelled" | "canceled" | "stopped" | "done"
+    );
+    let identifier = update
+        .get("toolCallId")
+        .or_else(|| update.get("tool_call_id"))
+        .or_else(|| update.get("taskId"))
+        .or_else(|| update.get("task_id"))
+        .or_else(|| update.get("childSessionId"))
+        .or_else(|| update.get("child_session_id"))
+        .or_else(|| update.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let Some(identifier) = identifier else {
+        return false;
+    };
+    let target = if kind.contains("tool") {
+        &mut session.live_tool_calls
+    } else if kind.contains("task")
+        || kind.contains("child")
+        || kind.contains("subagent")
+        || kind.contains("background")
+    {
+        &mut session.background_work
+    } else {
+        return false;
+    };
+    if terminal {
+        target.remove(&identifier);
+    } else {
+        target.insert(identifier);
+        session.quiescent_since_ms = None;
+        session.quiescence_generation = session.quiescence_generation.saturating_add(1);
+    }
+    terminal && session_is_quiescent(session)
+}
+
 async fn handle_ordered_session_event(
     ordered: OrderedSessionEvent,
-    sessions: &Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
-    emitter: &Weak<Mutex<Option<ConversationEmitter>>>,
+    manager: &AgentRuntimeManager,
     transport: &Weak<AcpTransport>,
     owned_id: &str,
     generation: u64,
 ) -> bool {
-    let (Some(sessions), Some(emitter)) = (sessions.upgrade(), emitter.upgrade()) else {
-        return false;
-    };
+    let sessions = Arc::clone(&manager.sessions);
+    let emitter = Arc::clone(&manager.emitter);
     match ordered {
         OrderedSessionEvent::ApprovalResolved {
             request_id,
@@ -2033,6 +2754,11 @@ async fn handle_ordered_session_event(
                     }
                 }
             }
+            if let Err(error) = manager.schedule_quiescent_suspend(owned_id, generation) {
+                crate::debug_log::stderr_log!(
+                    "Could not schedule quiescent runtime suspension: {error}"
+                );
+            }
             true
         }
     }
@@ -2235,6 +2961,18 @@ fn canonical_event(
         provider_metadata: None,
         raw_frame_reference: None,
     })
+}
+
+pub(crate) fn frontend_payload_from_canonical(
+    event: &AgentEvent,
+) -> Result<AgentConversationPayload, String> {
+    let object = event
+        .payload
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    serde_json::from_value(Value::Object(object))
+        .map_err(|error| format!("Could not decode legacy conversation payload: {error}"))
 }
 
 fn session_update_kind(params: &Value) -> Option<&str> {
@@ -2593,6 +3331,7 @@ fn empty_capabilities(provider: AgentConversationProvider) -> AgentCapabilities 
             version: "0".into(),
         },
         session: AgentSessionCapabilities {
+            multi_session: false,
             list: false,
             load: false,
             resume: false,
@@ -2619,6 +3358,10 @@ fn empty_capabilities(provider: AgentConversationProvider) -> AgentCapabilities 
     }
 }
 
+fn provider_is_multi_session_safe(capabilities: &AgentCapabilities) -> bool {
+    capabilities.session.multi_session
+}
+
 fn provider_id(provider: AgentConversationProvider) -> &'static str {
     match provider {
         AgentConversationProvider::Codex => "codex",
@@ -2632,23 +3375,26 @@ fn timestamp_millis() -> u128 {
         .unwrap_or(0)
 }
 
-fn idle_session_can_suspend(
-    session: &ManagedAgentSession,
-    active_owned_id: Option<&str>,
-    now_ms: u128,
-) -> bool {
-    active_owned_id != Some(session.owned_id.as_str())
-        && session.runtime.is_some()
+fn idle_session_can_suspend(session: &ManagedAgentSession, now_ms: u128) -> bool {
+    session.runtime.is_some()
         && !session.suspending
         && session.native_session_id.is_some()
         && session.capabilities.session.resume
-        && session.state == AgentRuntimeState::Ready
+        && session_is_quiescent(session)
+        && session
+            .quiescent_since_ms
+            .is_some_and(|started| now_ms.saturating_sub(started) >= IDLE_RUNTIME_SUSPEND_AFTER_MS)
+}
+
+fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
+    session.state == AgentRuntimeState::Ready
         && session.active_turn_id.is_none()
         && !session.prompt_once_active
         && session.permission_requests.is_empty()
         && session.user_input_requests.is_empty()
         && session.writer_lease_transition.is_none()
-        && now_ms.saturating_sub(session.last_activity_ms) > IDLE_RUNTIME_SUSPEND_AFTER_MS
+        && session.live_tool_calls.is_empty()
+        && session.background_work.is_empty()
 }
 fn required_id(value: &str, label: &str) -> Result<String, String> {
     let value = value.trim();
@@ -3227,8 +3973,7 @@ mod tests {
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
-    fn age_session_for_suspend(fixture: &FixtureManager, active_owned_id: &str) {
-        *fixture.manager.active_owned_id.lock().unwrap() = Some(active_owned_id.to_string());
+    fn age_session_for_suspend(fixture: &FixtureManager) {
         fixture
             .manager
             .sessions
@@ -3236,23 +3981,202 @@ mod tests {
             .unwrap()
             .get_mut(&fixture.owned_id)
             .unwrap()
-            .last_activity_ms = timestamp_millis()
-            .saturating_sub(IDLE_RUNTIME_SUSPEND_AFTER_MS)
-            .saturating_sub(1);
+            .quiescent_since_ms = Some(
+            timestamp_millis()
+                .saturating_sub(IDLE_RUNTIME_SUSPEND_AFTER_MS)
+                .saturating_sub(1),
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn suspend_skips_active_session() {
-        let fixture = fixture_manager_with_acp_session("suspend_active").await;
-        age_session_for_suspend(&fixture, &fixture.owned_id);
-
-        assert!(fixture
-            .manager
+    async fn store_row_updated_on_every_lifecycle_transition() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let log = root.join("store-lifecycle.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "suspend_store_lifecycle",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::open(providers, &database).unwrap();
+        let connection = manager
+            .ensure_async(request(
+                root.to_str().unwrap(),
+                "owned-store-lifecycle",
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .store
+                .get_session(&connection.owned_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "starting"
+        );
+        manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .store
+                .get_session(&connection.owned_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "ready"
+        );
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            sessions
+                .get_mut(&connection.owned_id)
+                .unwrap()
+                .quiescent_since_ms = Some(
+                timestamp_millis()
+                    .saturating_sub(IDLE_RUNTIME_SUSPEND_AFTER_MS)
+                    .saturating_sub(1),
+            );
+        }
+        manager
             .suspend_idle_sessions_at(timestamp_millis())
             .await
+            .unwrap();
+        let suspended = manager
+            .store
+            .get_session(&connection.owned_id)
             .unwrap()
-            .is_empty());
-        assert_eq!(fixture.manager.resource_roots().len(), 1);
+            .unwrap();
+        assert_eq!(suspended.state, "suspended");
+        assert!(suspended.suspended);
+
+        manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .store
+                .get_session(&connection.owned_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "ready"
+        );
+        manager.close(&connection.owned_id).await.unwrap();
+        assert_eq!(
+            manager
+                .store
+                .get_session(&connection.owned_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "closed"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn events_persisted_and_capped() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-event-cap",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&connection.owned_id).unwrap();
+            for index in 0..=STORE_EVENT_CAP {
+                record_payload_for_session(
+                    session,
+                    AgentConversationPayload::Error {
+                        code: format!("event-{index}"),
+                        message: "fixture".into(),
+                        recoverable: true,
+                    },
+                )
+                .unwrap();
+            }
+        }
+        let events = manager
+            .store
+            .list_events(&connection.owned_id, 0, STORE_EVENT_CAP)
+            .unwrap();
+        assert_eq!(events.len(), STORE_EVENT_CAP as usize);
+        assert_eq!(events.first().unwrap().seq, 2);
+        assert_eq!(events.last().unwrap().seq, i64::from(STORE_EVENT_CAP) + 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn restart_recovers_sessions_from_store() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let log = root.join("restart.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "suspend_restart",
+        );
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Codex, manifest.clone())]).unwrap();
+        let manager = AgentRuntimeManager::open(providers, &database).unwrap();
+        let connection = manager
+            .ensure_async(request(
+                root.to_str().unwrap(),
+                "owned-restart",
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .unwrap();
+        manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        drop(manager);
+
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
+        let recovered = AgentRuntimeManager::open(providers, &database).unwrap();
+        let snapshots = recovered.list_snapshots().unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert!(snapshots[0].suspended);
+        recovered
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        assert!(
+            !recovered
+                .snapshot(&connection.owned_id)
+                .unwrap()
+                .unwrap()
+                .suspended
+        );
+        recovered.close(&connection.owned_id).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspend_after_30s_quiescence() {
+        let fixture = fixture_manager_with_acp_session("suspend_active").await;
+        age_session_for_suspend(&fixture);
+
+        assert_eq!(
+            fixture
+                .manager
+                .suspend_idle_sessions_at(timestamp_millis())
+                .await
+                .unwrap(),
+            [fixture.owned_id.clone()]
+        );
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
@@ -3261,7 +4185,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn suspend_skips_running_turn() {
         let fixture = fixture_manager_with_acp_session("suspend_running").await;
-        age_session_for_suspend(&fixture, "another-session");
+        age_session_for_suspend(&fixture);
         {
             let mut sessions = fixture.manager.sessions.lock().unwrap();
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
@@ -3282,9 +4206,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn suspend_skips_pending_permission() {
+    async fn approval_lease_never_expires() {
         let fixture = fixture_manager_with_acp_session("suspend_permission").await;
-        age_session_for_suspend(&fixture, "another-session");
+        age_session_for_suspend(&fixture);
         fixture
             .manager
             .sessions
@@ -3317,7 +4241,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn suspend_skips_pending_user_input() {
         let fixture = fixture_manager_with_acp_session("suspend_input").await;
-        age_session_for_suspend(&fixture, "another-session");
+        age_session_for_suspend(&fixture);
         fixture
             .manager
             .sessions
@@ -3343,7 +4267,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn suspend_closes_runtime_but_keeps_record_and_native_id() {
         let fixture = fixture_manager_with_acp_session("suspend_runtime").await;
-        age_session_for_suspend(&fixture, "another-session");
+        age_session_for_suspend(&fixture);
         let pid = fixture.manager.resource_roots()[0].pid;
         let native_session_id = fixture
             .manager
@@ -3388,7 +4312,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn ensure_after_suspend_resumes_with_same_native_session_id() {
         let fixture = fixture_manager_with_acp_session("suspend_resume").await;
-        age_session_for_suspend(&fixture, "another-session");
+        age_session_for_suspend(&fixture);
         let native_session_id = fixture
             .manager
             .snapshot(&fixture.owned_id)
@@ -3478,7 +4402,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn suspend_skips_provider_without_resume_capability() {
         let fixture = fixture_manager_with_acp_session("suspend_no_resume").await;
-        age_session_for_suspend(&fixture, "another-session");
+        age_session_for_suspend(&fixture);
         assert!(
             !fixture
                 .manager
@@ -3497,6 +4421,215 @@ mod tests {
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn grace_starts_only_at_quiescence() {
+        let fixture = fixture_manager_with_acp_session("grace_quiescence").await;
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            session.state = AgentRuntimeState::Working;
+            session.active_turn_id = Some("turn-live".into());
+            session.live_tool_calls.insert("tool-live".into());
+        }
+        fixture
+            .manager
+            .schedule_quiescent_suspend(&fixture.owned_id, fixture.generation)
+            .unwrap();
+        assert!(fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&fixture.owned_id)
+            .unwrap()
+            .quiescent_since_ms
+            .is_none());
+
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            session.state = AgentRuntimeState::Ready;
+            session.active_turn_id = None;
+            session.live_tool_calls.clear();
+        }
+        fixture
+            .manager
+            .schedule_quiescent_suspend(&fixture.owned_id, fixture.generation)
+            .unwrap();
+        assert!(fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&fixture.owned_id)
+            .unwrap()
+            .quiescent_since_ms
+            .is_some());
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rapid_followup_within_grace_keeps_runtime() {
+        let fixture = fixture_manager_with_acp_session("rapid_followup").await;
+        fixture
+            .manager
+            .schedule_quiescent_suspend(&fixture.owned_id, fixture.generation)
+            .unwrap();
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::UserMessage {
+                    item_id: "message-followup".into(),
+                    text: "follow up".into(),
+                    completed: true,
+                },
+            )
+            .unwrap();
+        }
+        assert!(fixture
+            .manager
+            .suspend_idle_sessions_at(
+                timestamp_millis()
+                    .saturating_add(IDLE_RUNTIME_SUSPEND_AFTER_MS)
+                    .saturating_add(1),
+            )
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(fixture.manager.resource_roots().len(), 1);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pool_shares_one_process_across_two_sessions() {
+        let root = temp_root();
+        let log = root.join("pool-multiplex.jsonl");
+        let manifest =
+            super::super::providers::acp_client::tests::fixture_manifest_named(&log, "multiplex");
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let first = manager
+            .ensure_async(request(
+                root.to_str().unwrap(),
+                "owned-pool-a",
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .unwrap();
+        let second = manager
+            .ensure_async(request(
+                root.to_str().unwrap(),
+                "owned-pool-b",
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .unwrap();
+        manager
+            .activate(&first.owned_id, first.generation)
+            .await
+            .unwrap();
+        manager
+            .activate(&second.owned_id, second.generation)
+            .await
+            .unwrap();
+
+        let roots = manager.resource_roots();
+        assert_eq!(roots.len(), 2, "each session overlays the shared root");
+        assert_eq!(roots[0].pid, roots[1].pid);
+        assert_eq!(
+            fs::read_to_string(&log)
+                .unwrap()
+                .matches(r#""method":"initialize""#)
+                .count(),
+            1
+        );
+
+        manager.close(&first.owned_id).await.unwrap();
+        assert!(process_is_alive(roots[0].pid));
+        manager
+            .prompt(
+                &second.owned_id,
+                second.generation,
+                test_prompt("still live"),
+            )
+            .await
+            .unwrap();
+        manager.close(&second.owned_id).await.unwrap();
+        wait_until(|| !process_is_alive(roots[0].pid)).await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn last_session_close_kills_process() {
+        let fixture =
+            fixture_manager_with_provider("multiplex", AgentConversationProvider::Codex, None)
+                .await;
+        let pid = fixture.manager.resource_roots()[0].pid;
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        wait_until(|| !process_is_alive(pid)).await;
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn load_failure_surfaces_resumability_error() {
+        let root = temp_root();
+        let log = root.join("resume-failure.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "resume_failure",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let mut ensure = request(
+            root.to_str().unwrap(),
+            "owned-resume-failure",
+            AgentConversationProvider::Codex,
+        );
+        ensure.native_session_id = Some("missing-native".into());
+        let connection = manager.ensure_inner(ensure).unwrap().0;
+        assert!(manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .unwrap_err()
+            .contains("could not be resumed"));
+        let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
+        assert!(snapshot.events.iter().any(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::Error { code, .. } if code == "session-resume-failed"
+        )));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn late_approval_gets_stale_result() {
+        let fixture = fixture_manager_with_acp_session("late_approval").await;
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        let error = fixture
+            .manager
+            .respond_permission(PermissionResponse {
+                identity: AgentRequestIdentity {
+                    owned_id: fixture.owned_id.clone(),
+                    generation: fixture.generation,
+                    request_id: "expired-request".into(),
+                    turn_id: None,
+                    item_id: None,
+                },
+                decision: AgentApprovalDecision::Accept,
+            })
+            .await
+            .unwrap_err();
+        assert!(error.starts_with("Stale approval request:"));
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -3773,10 +4906,15 @@ mod tests {
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         wait_until(|| !process_is_alive(pid)).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            seen.lock().unwrap().is_empty(),
-            "a closed session cannot emit from its stale pump"
-        );
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0].payload,
+            AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Closed,
+                ..
+            }
+        ));
         fs::remove_dir_all(fixture.root).unwrap();
     }
 

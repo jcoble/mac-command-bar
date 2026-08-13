@@ -601,12 +601,12 @@ mod tests {
     }
 
     #[test]
-    fn macos_process_marker_readback_uses_visible_marker() {
+    fn macos_process_marker_readback_preserves_provider_scope() {
         let current = current_identity();
-        let group = TestGroup::spawn(Some(("reaper-readback", &current)));
+        let group = TestGroup::spawn(Some(("provider:codex", &current)));
         let marker = read_adapter_marker(group.pid()).expect("read back adapter marker");
 
-        assert_eq!(marker.session_id, "reaper-readback");
+        assert_eq!(marker.session_id, "provider:codex");
         assert_eq!(marker.owner, Some(current));
     }
 }

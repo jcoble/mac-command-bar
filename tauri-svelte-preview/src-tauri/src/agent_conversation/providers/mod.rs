@@ -116,13 +116,6 @@ pub trait AgentRuntimeAdapter: Send + Sync {
         &mut self,
         input: ResumeAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError>;
-    async fn prompt_once(&mut self, input: AgentPrompt)
-        -> Result<GeneratedText, AgentRuntimeError>;
-    async fn set_config(
-        &mut self,
-        option_id: &str,
-        value: AgentConfigValue,
-    ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError>;
     /// Stop the transport without sending the destructive session/close
     /// request. The native session id remains valid for a later resume.
     async fn detach_session(&mut self) -> Result<(), AgentRuntimeError>;

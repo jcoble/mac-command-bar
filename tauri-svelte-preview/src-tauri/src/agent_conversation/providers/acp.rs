@@ -1,4 +1,4 @@
-use super::super::capabilities::{replace_config_options, validate_capabilities};
+use super::super::capabilities::validate_capabilities;
 use super::super::protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentProviderManifest,
 };
@@ -75,11 +75,81 @@ impl AcpRuntimeAdapter {
         self.client_mut()?.take_inbound()
     }
 
-    pub async fn set_conversation_config(
+    pub async fn new_session_multi(
         &mut self,
+        cwd: &std::path::Path,
+    ) -> Result<StartedAgentSession, AgentRuntimeError> {
+        let client = self.client_mut()?;
+        let native_session_id = client.new_session_multi(cwd).await?;
+        Ok(StartedAgentSession {
+            config: client.config_on(&native_session_id)?,
+            commands: client.commands_on(&native_session_id)?,
+            native_session_id,
+        })
+    }
+
+    pub async fn resume_session_multi(
+        &mut self,
+        cwd: &std::path::Path,
+        native_session_id: &str,
+    ) -> Result<StartedAgentSession, AgentRuntimeError> {
+        let client = self.client_mut()?;
+        let native_session_id = client.resume_session_multi(cwd, native_session_id).await?;
+        Ok(StartedAgentSession {
+            config: client.config_on(&native_session_id)?,
+            commands: client.commands_on(&native_session_id)?,
+            native_session_id,
+        })
+    }
+
+    pub async fn load_session_multi(
+        &mut self,
+        cwd: &std::path::Path,
+        native_session_id: &str,
+    ) -> Result<StartedAgentSession, AgentRuntimeError> {
+        let client = self.client_mut()?;
+        let native_session_id = client.load_session_multi(cwd, native_session_id).await?;
+        Ok(StartedAgentSession {
+            config: client.config_on(&native_session_id)?,
+            commands: client.commands_on(&native_session_id)?,
+            native_session_id,
+        })
+    }
+
+    pub async fn prompt_once_on(
+        &mut self,
+        native_session_id: &str,
+        input: AgentPrompt,
+    ) -> Result<GeneratedText, AgentRuntimeError> {
+        self.client_mut()?.prompt_on(native_session_id, input).await
+    }
+
+    pub async fn set_conversation_config_on(
+        &mut self,
+        native_session_id: &str,
         update: &AgentConversationConfigUpdate,
     ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
-        self.client_mut()?.set_conversation_config(update).await
+        self.client_mut()?
+            .set_conversation_config_on(native_session_id, update)
+            .await
+    }
+
+    pub async fn set_config_on(
+        &mut self,
+        native_session_id: &str,
+        option_id: &str,
+        value: AgentConfigValue,
+    ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError> {
+        self.client_mut()?
+            .set_config_on(native_session_id, option_id, value)
+            .await
+    }
+
+    pub async fn close_native_session(
+        &mut self,
+        native_session_id: &str,
+    ) -> Result<(), AgentRuntimeError> {
+        self.client_mut()?.close_session(native_session_id).await
     }
 }
 
@@ -124,25 +194,6 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
             .resume_session(&input.cwd, &input.native_session_id)
             .await
     }
-    async fn prompt_once(
-        &mut self,
-        input: AgentPrompt,
-    ) -> Result<GeneratedText, AgentRuntimeError> {
-        self.client_mut()?.prompt_once(input).await
-    }
-    async fn set_config(
-        &mut self,
-        option_id: &str,
-        value: AgentConfigValue,
-    ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError> {
-        let replacement = self.client_mut()?.set_config(option_id, value).await?;
-        if let Some(capabilities) = &mut self.capabilities {
-            replace_config_options(capabilities, replacement.clone())
-                .map_err(|message| AgentRuntimeError::new("invalid-config", message))?;
-        }
-        Ok(replacement)
-    }
-
     async fn detach_session(&mut self) -> Result<(), AgentRuntimeError> {
         if let Some(client) = &mut self.client {
             client.detach().await?;
@@ -188,29 +239,74 @@ impl StructuredRuntimeHandle {
         }
     }
 
-    pub async fn prompt_once(
+    pub async fn prompt_once_on(
         &mut self,
+        native_session_id: &str,
         input: AgentPrompt,
     ) -> Result<GeneratedText, AgentRuntimeError> {
         match self {
-            Self::Acp(adapter) => adapter.prompt_once(input).await,
+            Self::Acp(adapter) => adapter.prompt_once_on(native_session_id, input).await,
         }
     }
-    pub async fn set_config(
+    pub async fn set_config_on(
         &mut self,
+        native_session_id: &str,
         option_id: &str,
         value: AgentConfigValue,
     ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError> {
         match self {
-            Self::Acp(adapter) => adapter.set_config(option_id, value).await,
+            Self::Acp(adapter) => {
+                adapter
+                    .set_config_on(native_session_id, option_id, value)
+                    .await
+            }
         }
     }
-    pub async fn set_conversation_config(
+    pub async fn set_conversation_config_on(
         &mut self,
+        native_session_id: &str,
         update: &AgentConversationConfigUpdate,
     ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
         match self {
-            Self::Acp(adapter) => adapter.set_conversation_config(update).await,
+            Self::Acp(adapter) => {
+                adapter
+                    .set_conversation_config_on(native_session_id, update)
+                    .await
+            }
+        }
+    }
+    pub async fn new_session_multi(
+        &mut self,
+        cwd: &std::path::Path,
+    ) -> Result<StartedAgentSession, AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.new_session_multi(cwd).await,
+        }
+    }
+    pub async fn resume_session_multi(
+        &mut self,
+        cwd: &std::path::Path,
+        native_session_id: &str,
+    ) -> Result<StartedAgentSession, AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.resume_session_multi(cwd, native_session_id).await,
+        }
+    }
+    pub async fn load_session_multi(
+        &mut self,
+        cwd: &std::path::Path,
+        native_session_id: &str,
+    ) -> Result<StartedAgentSession, AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.load_session_multi(cwd, native_session_id).await,
+        }
+    }
+    pub async fn close_native_session(
+        &mut self,
+        native_session_id: &str,
+    ) -> Result<(), AgentRuntimeError> {
+        match self {
+            Self::Acp(adapter) => adapter.close_native_session(native_session_id).await,
         }
     }
     pub async fn close_session(&mut self) -> Result<(), AgentRuntimeError> {
