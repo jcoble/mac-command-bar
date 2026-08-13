@@ -1,7 +1,10 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { Button } from '$lib/components/ui/button/index.js';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
+    conversationRenderWindow,
+    discloseEarlierConversationItems,
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
   import {
@@ -17,6 +20,7 @@
   interface Props {
     items: readonly ConversationDisplayItem[];
     conversationId: string;
+    renderWindowId?: string;
     timelineRevision: number;
     anchorRequest?: ConversationSendAnchorRequest | null;
     assistantLabel?: string;
@@ -31,6 +35,7 @@
   let {
     items,
     conversationId,
+    renderWindowId = conversationId,
     timelineRevision,
     anchorRequest = null,
     assistantLabel = 'Assistant',
@@ -50,12 +55,28 @@
   let lastContentRevision = -1;
   let lastItemCount = -1;
   let userItemIds = $state<string[]>([]);
+  let windowConversationId = $state('');
+  let disclosedItems = $state(0);
+  let disclosureAnchorItemId = $state<string | null>(null);
+  const renderWindow = $derived(conversationRenderWindow(items, renderWindowId, {
+    conversationId: windowConversationId,
+    disclosedItems,
+    disclosureAnchorItemId
+  }));
+  const renderedItems = $derived(renderWindow.items);
 
   $effect(() => {
-    const itemCount = items.length;
+    if (windowConversationId === renderWindowId) return;
+    windowConversationId = renderWindowId;
+    disclosedItems = 0;
+    disclosureAnchorItemId = null;
+  });
+
+  $effect(() => {
+    const itemCount = renderedItems.length;
     if (itemCount === lastItemCount) return;
     lastItemCount = itemCount;
-    userItemIds = items.filter((item) => item.kind === 'user').map((item) => item.itemId);
+    userItemIds = renderedItems.filter((item) => item.kind === 'user').map((item) => item.itemId);
   });
 
   function prefersReducedMotion(): boolean {
@@ -121,6 +142,28 @@
     const itemTop = item.getBoundingClientRect().top;
     const paddingTop = Number.parseFloat(getComputedStyle(host).paddingTop) || 0;
     return host.scrollTop + itemTop - hostTop - paddingTop;
+  }
+
+  function itemViewportTop(itemId: string): number | null {
+    if (!host) return null;
+    const item = [...host.querySelectorAll<HTMLElement>('[data-item-id]')]
+      .find((candidate) => candidate.dataset.itemId === itemId);
+    return item?.getBoundingClientRect().top ?? null;
+  }
+
+  async function showEarlier(): Promise<void> {
+    if (!host || renderWindow.hiddenCount === 0 || renderedItems.length === 0) return;
+    const firstItemId = renderedItems[0].itemId;
+    const previousViewportTop = itemViewportTop(firstItemId);
+    const next = discloseEarlierConversationItems(items, renderWindowId, renderWindow.state);
+    windowConversationId = next.state.conversationId;
+    disclosedItems = next.state.disclosedItems;
+    disclosureAnchorItemId = next.state.disclosureAnchorItemId;
+    await tick();
+    const nextViewportTop = itemViewportTop(firstItemId);
+    if (previousViewportTop !== null && nextViewportTop !== null) {
+      host.scrollTop += nextViewportTop - previousViewportTop;
+    }
   }
 
   function perform(action: ConversationScrollAction): void {
@@ -223,20 +266,31 @@
     onscroll={handleScroll}
     use:userInputInterrupts
   >
-    {#if items.length === 0}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
+    {#if renderedItems.length === 0}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     <div class="timeline-list" data-testid="conversation-timeline-list">
-      {#each items as item (item.itemId)}
+      {#if renderWindow.hiddenCount > 0}
+        <div class="earlier-row" data-testid="conversation-show-earlier-row">
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="conversation-show-earlier"
+            onclick={() => void showEarlier()}
+          >Show earlier — {renderWindow.hiddenCount.toLocaleString()} more</Button>
+        </div>
+      {/if}
+      {#each renderedItems as item (item.itemId)}
         <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} />
       {/each}
     </div>
   </div>
-  {#if !follow && items.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" onclick={jumpToLatest}>Jump to latest</button>{/if}
+  {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" onclick={jumpToLatest}>Jump to latest</button>{/if}
 </div>
 
 <style>
   .timeline-wrap{position:relative;flex:1;min-height:0}
   .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;padding:30px 24px 206px;scrollbar-gutter:stable;overscroll-behavior:contain}
   .timeline-list{display:flex;flex-direction:column;gap:18px;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .earlier-row{display:flex;justify-content:center;min-height:28px}
   .empty{display:grid;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .jump-latest{position:absolute;right:24px;bottom:188px;min-height:28px;padding:6px 12px;border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);font-size:13px;box-shadow:var(--shadow-sm);cursor:pointer}
   .jump-latest:hover{background:var(--color-hover)}

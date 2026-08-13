@@ -82,6 +82,60 @@ export type ConversationDisplayItem =
   | { kind: 'input'; itemId: string; requestId: string; title: string; description?: string; fields: AgentUserInputField[]; timestampMs: number }
   | { kind: 'unknown'; itemId: string; text: string; timestampMs: number; metadata?: Record<string, AgentConfigValue> };
 
+export const CONVERSATION_RENDER_WINDOW = 120;
+
+export interface ConversationRenderWindowState {
+  conversationId: string;
+  disclosedItems: number;
+  disclosureAnchorItemId: string | null;
+}
+
+export interface ConversationRenderWindow<T> {
+  items: readonly T[];
+  hiddenCount: number;
+  state: ConversationRenderWindowState;
+}
+
+/** Returns a slice of the projection, preserving the projection's item objects. */
+export function conversationRenderWindow<T extends { readonly itemId: string }>(
+  items: readonly T[],
+  conversationId: string,
+  previous?: ConversationRenderWindowState
+): ConversationRenderWindow<T> {
+  const disclosedItems = previous?.conversationId === conversationId
+    ? Math.max(0, previous.disclosedItems)
+    : 0;
+  const disclosureAnchorItemId = previous?.conversationId === conversationId
+    ? previous.disclosureAnchorItemId
+    : null;
+  const disclosedStart = disclosureAnchorItemId
+    ? items.findIndex((item) => item.itemId === disclosureAnchorItemId)
+    : -1;
+  const hiddenCount = disclosedStart >= 0
+    ? disclosedStart
+    : Math.max(0, items.length - CONVERSATION_RENDER_WINDOW - disclosedItems);
+  return {
+    items: items.slice(hiddenCount),
+    hiddenCount,
+    state: { conversationId, disclosedItems, disclosureAnchorItemId }
+  };
+}
+
+/** Extends the explicit render window by one bounded page. */
+export function discloseEarlierConversationItems<T extends { readonly itemId: string }>(
+  items: readonly T[],
+  conversationId: string,
+  previous?: ConversationRenderWindowState
+): ConversationRenderWindow<T> {
+  const current = conversationRenderWindow(items, conversationId, previous);
+  const nextHiddenCount = Math.max(0, current.hiddenCount - CONVERSATION_RENDER_WINDOW);
+  return conversationRenderWindow(items, conversationId, {
+    conversationId,
+    disclosedItems: current.state.disclosedItems + Math.min(CONVERSATION_RENDER_WINDOW, current.hiddenCount),
+    disclosureAnchorItemId: items[nextHiddenCount]?.itemId ?? null
+  });
+}
+
 type ConversationEvent = AgentEvent | AgentConversationEvent;
 type StringRecord = Record<string, unknown>;
 
