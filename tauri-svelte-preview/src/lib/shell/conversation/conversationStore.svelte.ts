@@ -34,6 +34,7 @@ import {
   availableCommandsFromEvent,
   conversationEventAppendsItemContent,
   mergeAgentItem,
+  mergeAgentItemForReplay,
   permissionRequestFromEvent,
   type AgentPlanStep,
   type ConversationTask
@@ -339,7 +340,10 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   for (const event of events) {
     rebuilt = applyConversationEvent(rebuilt, event);
   }
-  conversationSessions[snapshot.connection.ownedId] = {
+  // Build the complete snapshot off the reactive graph. Publishing this object
+  // before replay made every event traverse Svelte's deep proxy machinery and
+  // invalidated subscribers 2,000 times during a read-only load.
+  const restored: ConversationWorkspaceState = {
     ...rebuilt,
     suspended: snapshot.suspended === true,
     draft: current.draft,
@@ -373,19 +377,27 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     agentConfigError: current.agentConfigError,
     recentEvents: []
   };
-  const restored = conversationSessions[snapshot.connection.ownedId];
+  const agentItemIndexes = new Map<string, number>();
   for (const event of events) {
-    appendRecentEvent(restored, event);
     const typedItem = agentItemFromEvent(event);
     if (typedItem) {
-      restored.agentItems = mergeAgentItem(
+      mergeAgentItemForReplay(
         restored.agentItems,
+        agentItemIndexes,
         typedItem,
         conversationEventAppendsItemContent(event)
       );
     }
     applyTypedEventPayload(restored, event);
   }
+  restored.recentEvents = events.slice(-CONVERSATION_RECENT_EVENT_CAP).map((event) => ({
+    sequence: event.sequence,
+    kind: String('type' in event ? event.type : event.payload.kind),
+    summary: summarizeRecentEvent(event),
+    timestampMs: event.timestampMs
+  }));
+  // One reactive publication: subscribers see only the finished snapshot.
+  conversationSessions[snapshot.connection.ownedId] = restored;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
