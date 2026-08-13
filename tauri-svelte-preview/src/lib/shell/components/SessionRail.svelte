@@ -41,6 +41,140 @@
 
   const groups = $derived(buildMyWorkGroups(sessions, options));
   let collapsedGroups = $state<Record<string, boolean>>({});
+  let groupOrders = $state<Record<string, string[]>>({});
+  let dragState = $state<{ groupKey: string; ownedId: string } | null>(null);
+  let dropTarget = $state<{
+    groupKey: string;
+    ownedId: string;
+    position: 'before' | 'after';
+  } | null>(null);
+  const loadedOrderKeys = new Set<string>();
+
+  /** A group owns one durable id array at `mcb.rail.order.<groupKey>`. */
+  function orderStorageKey(groupKey: string): string {
+    return `mcb.rail.order.${groupKey}`;
+  }
+
+  function parseStoredOrder(value: string | null): string[] {
+    if (!value) return [];
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((item): item is string => typeof item === 'string');
+    } catch {
+      return [];
+    }
+  }
+
+  $effect(() => {
+    if (typeof localStorage === 'undefined') return;
+    const next = { ...groupOrders };
+    let changed = false;
+    for (const group of groups) {
+      if (loadedOrderKeys.has(group.key)) continue;
+      loadedOrderKeys.add(group.key);
+      try {
+        next[group.key] = parseStoredOrder(localStorage.getItem(orderStorageKey(group.key)));
+      } catch {
+        next[group.key] = [];
+      }
+      changed = true;
+    }
+    if (changed) groupOrders = next;
+  });
+
+  function orderedSessions(groupKey: string, defaultSessions: OwnedSession[]): OwnedSession[] {
+    const byId = new Map(defaultSessions.map((session) => [session.ownedId, session]));
+    const savedIds = groupOrders[groupKey] ?? [];
+    const ordered = savedIds.flatMap((ownedId) => {
+      const session = byId.get(ownedId);
+      if (!session) return [];
+      byId.delete(ownedId);
+      return [session];
+    });
+    return [...ordered, ...byId.values()];
+  }
+
+  function sessionNeedsYou(session: OwnedSession): boolean {
+    return session.pendingPermission === true
+      || session.pendingInput === true
+      || session.runtimeState === 'waiting-approval'
+      || session.runtimeState === 'waiting-input';
+  }
+
+  function persistOrder(groupKey: string, ownedIds: string[]): void {
+    groupOrders = { ...groupOrders, [groupKey]: ownedIds };
+    try {
+      localStorage.setItem(orderStorageKey(groupKey), JSON.stringify(ownedIds));
+    } catch {
+      // Reordering still works for this visit when storage is unavailable.
+    }
+  }
+
+  function clearDrag(): void {
+    dragState = null;
+    dropTarget = null;
+  }
+
+  function handleDragStart(event: DragEvent, groupKey: string, ownedId: string): void {
+    const target = event.target;
+    if (target instanceof Element && target.closest("[data-slot='icon-button']")) {
+      event.preventDefault();
+      return;
+    }
+    if (!event.dataTransfer) return;
+    dragState = { groupKey, ownedId };
+    dropTarget = null;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', ownedId);
+    const quietImage = new Image(1, 1);
+    quietImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+    event.dataTransfer.setDragImage(quietImage, 0, 0);
+  }
+
+  function handleDragOver(event: DragEvent, groupKey: string, ownedId: string): void {
+    if (!dragState) return;
+    if (dragState.groupKey !== groupKey || dragState.ownedId === ownedId) {
+      if (dropTarget !== null) dropTarget = null;
+      return;
+    }
+    const row = event.currentTarget;
+    if (!(row instanceof HTMLElement)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    const bounds = row.getBoundingClientRect();
+    dropTarget = {
+      groupKey,
+      ownedId,
+      position: event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after'
+    };
+  }
+
+  function handleDrop(event: DragEvent, groupKey: string, ownedId: string): void {
+    const dragged = dragState;
+    if (!dragged || !dropTarget || dragged.groupKey !== groupKey || dropTarget.ownedId !== ownedId) {
+      clearDrag();
+      return;
+    }
+    event.preventDefault();
+    const group = groups.find((candidate) => candidate.key === groupKey);
+    if (!group) {
+      clearDrag();
+      return;
+    }
+    const reordered = orderedSessions(groupKey, group.sessions)
+      .map((session) => session.ownedId)
+      .filter((candidate) => candidate !== dragged.ownedId);
+    const targetIndex = reordered.indexOf(ownedId);
+    const insertAt = dropTarget.position === 'after' ? targetIndex + 1 : targetIndex;
+    reordered.splice(insertAt, 0, dragged.ownedId);
+    persistOrder(groupKey, reordered);
+    clearDrag();
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && dragState) clearDrag();
+  }
 
   function isOpen(key: string): boolean {
     return collapsedGroups[key] !== true;
@@ -51,8 +185,11 @@
   }
 </script>
 
+<svelte:window onkeydown={handleWindowKeydown} />
+
 <div data-testid="session-rail" class="session-scroll">
   {#each groups as group (group.key)}
+    {@const needsYouCount = group.sessions.filter(sessionNeedsYou).length}
     <section data-testid="session-rail-section" data-group-key={group.key} class:collapsed={!isOpen(group.key)}>
       {#if group.label}
         <button
@@ -67,15 +204,29 @@
           <ChevronRight class="chevron" aria-hidden="true" />
           <span class="name">{group.label}</span>
           <span data-testid="session-rail-section-count" class="count">{group.sessions.length}</span>
+          {#if needsYouCount > 0}
+            <span
+              data-testid="session-rail-needs-you-count"
+              class="needs-count"
+              aria-label={`${needsYouCount} ${needsYouCount === 1 ? 'session needs' : 'sessions need'} you`}
+              title={`${needsYouCount} ${needsYouCount === 1 ? 'session needs' : 'sessions need'} you`}
+            >
+              <span aria-hidden="true"></span>{needsYouCount}
+            </span>
+          {/if}
         </button>
       {/if}
 
       {#if isOpen(group.key)}
         <ul class="rows">
-          {#each group.sessions as session (session.ownedId)}
+          {#each orderedSessions(group.key, group.sessions) as session (session.ownedId)}
             <WorktreeAgentRow
               {session}
               active={session.ownedId === activeOwnedId}
+              dragging={dragState?.ownedId === session.ownedId && dragState?.groupKey === group.key}
+              dropPosition={dropTarget?.ownedId === session.ownedId && dropTarget?.groupKey === group.key
+                ? dropTarget.position
+                : null}
               onSelect={() => onSelect?.(session.ownedId)}
               onRestart={() => onRestart?.(session.ownedId)}
               onComplete={() => onComplete?.(session.ownedId)}
@@ -83,6 +234,10 @@
               onSettle={() => onSettle?.(session.ownedId)}
               onUnsettle={() => onUnsettle?.(session.ownedId)}
               onAskRemove={() => onAskRemove?.(session.ownedId)}
+              onDragStart={(event) => handleDragStart(event, group.key, session.ownedId)}
+              onDragOver={(event) => handleDragOver(event, group.key, session.ownedId)}
+              onDrop={(event) => handleDrop(event, group.key, session.ownedId)}
+              onDragEnd={clearDrag}
             />
           {/each}
         </ul>
@@ -148,6 +303,32 @@
     color: var(--color-text-3);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-variant-numeric: tabular-nums;
+  }
+
+  .needs-count {
+    min-width: 24px;
+    height: 20px;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 6px;
+    border: 1px solid color-mix(in srgb, var(--color-attention) 34%, transparent);
+    border-radius: var(--radius-sm);
+    background: var(--color-attention-bg);
+    color: var(--color-attention);
+    font-size: 12px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .needs-count > span {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--color-attention);
   }
 
   /* A shut section has nothing to stick to, so its heading joins the list. */
