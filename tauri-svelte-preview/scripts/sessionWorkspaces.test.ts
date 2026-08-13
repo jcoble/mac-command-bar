@@ -623,6 +623,8 @@ function shellStub({ cap = RETAINED_WORKSPACES_CAP } = {}) {
   assert.equal(restored.current.conversation.futureField.nested, true);
   assert.equal(restored.current.conversation.config.future, 'value');
   assert.equal(restored.legacy.conversation.unknownLegacyField, 'preserved');
+  assert.equal('draft' in restored.current.conversation, false, 'legacy drafts leave local storage');
+  assert.equal('draft' in restored.legacy.conversation, false, 'legacy drafts are not restored');
   assert.equal('version' in restored.legacy.conversation, false);
   assert.equal('generation' in restored.legacy.conversation, false);
   assert.equal('owner' in restored.legacy.conversation, false);

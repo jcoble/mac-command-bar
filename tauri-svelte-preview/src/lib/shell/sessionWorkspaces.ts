@@ -33,7 +33,6 @@ export const SESSION_CONVERSATION_WORKSPACE_VERSION = 1;
 
 export interface SessionConversationWorkspace {
   mode: 'structured' | 'raw';
-  draft: string;
   version?: number;
   generation?: number;
   owner?: AgentExecutionOwner;
@@ -196,7 +195,6 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
   return {
     ...preserved,
     mode: entry.mode === 'raw' ? 'raw' : 'structured',
-    draft: typeof entry.draft === 'string' ? entry.draft.slice(0, 20_000) : '',
     ...(nonNegativeInteger(entry.version) !== undefined
       ? { version: nonNegativeInteger(entry.version) }
       : {}),

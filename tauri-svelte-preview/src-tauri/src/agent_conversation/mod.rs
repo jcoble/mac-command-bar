@@ -49,6 +49,31 @@ pub async fn send_agent_conversation_message(
 }
 
 #[tauri::command]
+pub fn agent_conversation_set_session_draft(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    text: String,
+) -> Result<(), String> {
+    manager.set_session_draft(&owned_id, &text)
+}
+
+#[tauri::command]
+pub fn agent_conversation_get_session_draft(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> Result<Option<String>, String> {
+    manager.get_session_draft(&owned_id)
+}
+
+#[tauri::command]
+pub fn agent_conversation_clear_session_draft(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> Result<(), String> {
+    manager.clear_session_draft(&owned_id)
+}
+
+#[tauri::command]
 pub async fn respond_agent_conversation_approval(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: RespondAgentConversationApprovalRequest,

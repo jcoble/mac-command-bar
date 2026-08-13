@@ -250,7 +250,7 @@ const saved = store.captureConversationWorkspace('owned-b');
 store.setConversationDraft('owned-b', 'Changed');
 store.setConversationMode('owned-b', 'structured');
 store.restoreConversationWorkspace('owned-b', 'claude', saved);
-assert.equal(store.getConversationSession('owned-b').draft, 'Message B');
+assert.equal(store.getConversationSession('owned-b').draft, 'Changed');
 assert.equal(store.getConversationSession('owned-b').mode, 'raw');
 assert.equal(store.getConversationSession('owned-b').selectedChildId, null);
 assert.equal(saved.version, 1);
