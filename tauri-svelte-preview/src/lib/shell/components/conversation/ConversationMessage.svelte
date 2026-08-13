@@ -5,13 +5,12 @@
   interface Props {
     text: string;
     role: 'user' | 'assistant';
-    label: string;
     itemId?: string;
     completed?: boolean;
     onFileLink?(path: string): void;
   }
 
-  let { text, role, label, itemId = 'message', completed = true, onFileLink }: Props = $props();
+  let { text, role, itemId = 'message', completed = true, onFileLink }: Props = $props();
   const blocks = $derived(parseSafeMarkdown(text));
 </script>
 
@@ -22,7 +21,6 @@
   class:assistant={role === 'assistant'}
   class:streaming={!completed}
 >
-  <div class="turn-label" data-testid="conversation-message-label">{label}</div>
   <div class="turn-body" data-testid="conversation-message-body">
     {#each blocks as block, blockIndex}
       {#if block.kind === 'code'}
@@ -53,8 +51,10 @@
 {/snippet}
 
 <style>
-  article{max-width:790px;user-select:text;-webkit-user-select:text}
-  .turn-label{margin-bottom:7px;color:var(--color-text-2);font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+  /* Nothing announces who is speaking. The shape does: a reply runs the full
+     768px measure with no box around it, a prompt is a narrow bubble on the
+     right. That asymmetry is the only role marking in the transcript. */
+  article{max-width:768px;user-select:text;-webkit-user-select:text}
   .turn-body{font-size:14px;line-height:1.62}
 
   /* Paragraphs and headings: one rhythm, 12px between blocks, and a heading
@@ -76,10 +76,9 @@
   .turn-body li.task-row{list-style:none;margin-left:-18px;padding-left:0}
   .turn-body a{color:var(--color-accent);text-decoration:underline;text-underline-offset:2px}
   .file-link{border:0;background:transparent;color:var(--color-accent);padding:0;text-decoration:underline;text-underline-offset:2px;font:inherit;cursor:pointer}
-  .inline-code{padding:1.5px 5px;border-radius:5px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);background:color-mix(in srgb,var(--color-surface) 55%,var(--color-bg));font:13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}
+  .inline-code{padding:1.5px 5px;border-radius:6px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);background:color-mix(in srgb,var(--color-surface) 55%,var(--color-bg));font:13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}
 
-  .user{align-self:flex-end;max-width:min(690px,90%);margin-left:auto;padding:12px 15px;border:1px solid color-mix(in srgb,var(--color-accent) 18%,var(--color-border));border-radius:16px 16px 5px 16px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-accent) 22%)}
-  .user .turn-label{color:color-mix(in srgb,var(--color-accent) 72%,var(--color-text) 28%)}
+  .user{max-width:80%;margin-left:auto;padding:12px;border-radius:16px;background:color-mix(in srgb,var(--color-surface) 82%,var(--color-accent) 18%)}
 
   .table-scroll{overflow:auto;margin-bottom:12px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:8px}
   .table-scroll table{border-collapse:collapse;min-width:100%;font-size:13px}

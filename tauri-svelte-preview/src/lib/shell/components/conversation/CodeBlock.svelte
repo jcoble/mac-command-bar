@@ -1,6 +1,7 @@
 <script lang="ts">
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
+  import WrapText from '@lucide/svelte/icons/wrap-text';
   import {
     highlightCode,
     monacoLanguageForFence,
@@ -17,7 +18,10 @@
   let { value, info = '' }: Props = $props();
 
   const language = $derived(monacoLanguageForFence(info));
-  const label = $derived(info.trim().split(/\s+/)[0] || 'code');
+  /** The fence's info string names the block; it is one token or nothing. */
+  const label = $derived(info.trim() || 'code');
+  /** Long lines scroll sideways until someone asks for them to wrap. */
+  let wrapped = $state(false);
   /** Uncolored until the editor answers, so the code is readable immediately. */
   const plainLines = $derived(plainHighlightedLines(value));
   let coloredLines = $state<HighlightedLine[] | null>(null);
@@ -75,21 +79,33 @@
 <div class="code-wrap" data-testid="conversation-code-block" bind:this={host}>
   <div class="code-meta">
     <span class="code-language">{label}</span>
-    <button data-testid="copy-conversation-code" type="button" onclick={() => void copyCode()}>
+    <button
+      class="meta-action"
+      data-testid="wrap-conversation-code"
+      type="button"
+      aria-pressed={wrapped}
+      onclick={() => (wrapped = !wrapped)}
+    >
+      <WrapText size={13} strokeWidth={1.8} />{wrapped ? 'No wrap' : 'Wrap'}
+    </button>
+    <button class="meta-action" data-testid="copy-conversation-code" type="button" onclick={() => void copyCode()}>
       {#if copied}<Check size={13} strokeWidth={2.2} />Copied{:else}<Copy size={13} strokeWidth={1.8} />Copy{/if}
     </button>
   </div>
-  <pre data-testid="conversation-code-body"><code>{#each lines as line, index}{#if index > 0}{'\n'}{/if}{#each line as span}<span class={span.className}>{span.value}</span>{/each}{/each}</code></pre>
+  <pre class:wrapped data-testid="conversation-code-body"><code>{#each lines as line, index}{#if index > 0}{'\n'}{/if}{#each line as span}<span class={span.className}>{span.value}</span>{/each}{/each}</code></pre>
 </div>
 
 <style>
   .code-wrap{margin:12px 0}
-  .code-meta{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-bottom:0;border-radius:10px 10px 0 0;background:color-mix(in srgb,var(--color-surface) 62%,var(--color-bg));color:var(--color-text-2);font-size:12px}
-  .code-language{letter-spacing:.03em}
-  .code-meta button{display:inline-flex;align-items:center;gap:5px;min-height:22px;border:0;border-radius:6px;background:transparent;color:inherit;padding:2px 7px}
-  .code-meta button:hover{background:color-mix(in srgb,var(--color-hover) 70%,transparent);color:var(--color-text)}
-  .code-meta button:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:1px}
-  pre{overflow:auto;margin:0;padding:12px 14px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:0 0 10px 10px;background:color-mix(in srgb,var(--color-surface) 34%,var(--color-bg));font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* The header names the block and carries its two utilities; the name takes
+     the room, the actions sit at the end. */
+  .code-meta{display:flex;align-items:center;gap:4px;min-height:28px;padding:2px 6px 2px 10px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-bottom:0;border-radius:10px 10px 0 0;background:color-mix(in srgb,var(--color-surface) 62%,var(--color-bg));color:var(--color-text-3);font-size:12px}
+  .code-language{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.03em}
+  .meta-action{display:inline-flex;align-items:center;gap:4px;min-height:24px;border:0;border-radius:6px;background:transparent;color:inherit;padding:2px 8px;font:inherit;cursor:pointer}
+  .meta-action:hover{background:color-mix(in srgb,var(--color-hover) 70%,transparent);color:var(--color-text)}
+  .meta-action:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:1px}
+  pre{overflow:auto;margin:0;padding:12px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:0 0 10px 10px;background:color-mix(in srgb,var(--color-surface) 34%,var(--color-bg));font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+  pre.wrapped{white-space:pre-wrap;overflow-wrap:anywhere}
   code{user-select:text;-webkit-user-select:text}
   .keyword{color:var(--color-accent)}
   .string{color:var(--color-good)}
@@ -98,6 +114,6 @@
   .type{color:var(--color-live)}
   .plain{color:inherit}
   @media (prefers-reduced-motion:no-preference){
-    .code-meta button{transition:background .14s ease,color .14s ease}
+    .meta-action{transition:background .14s ease,color .14s ease}
   }
 </style>
