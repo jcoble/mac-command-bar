@@ -134,7 +134,7 @@
         <p class="headline-totals" aria-label="Combined CPU and memory usage">
           <span>{formatResourceCpu(resourceSampleState.sample.totals.cpuPercent)}</span>
           <span aria-hidden="true">·</span>
-          <strong>{formatResourceBytes(resourceSampleState.sample.totals.rssBytes)} Σ RSS</strong>
+          <strong>{formatResourceBytes(resourceSampleState.sample.totals.rssBytes)} Σ Memory</strong>
         </p>
       {/if}
       <button
@@ -158,7 +158,7 @@
     <span>Workspace / session / process</span>
     <span class="trend">Trend</span>
     <span>CPU%</span>
-    <span>RSS</span>
+    <span>Memory</span>
     <span></span>
   </div>
 

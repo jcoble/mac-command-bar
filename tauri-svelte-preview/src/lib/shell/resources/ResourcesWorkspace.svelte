@@ -27,10 +27,10 @@
 <section class="workspace" data-testid="resources-workspace" aria-label="Resource Manager">
   <header class="workspace-header"><div><p class="eyebrow">Owned process inventory</p><h2>Resource Manager</h2><p class="muted">Only terminal and agent trees rooted by this app are shown.</p></div><button type="button" onclick={() => void refreshResources()} disabled={resourceState.loading}>{resourceState.loading ? 'Refreshing…' : 'Refresh'}</button></header>
   {#if resourceState.snapshot}
-    <div class="summary"><div><strong>{resourceState.snapshot.processes.length}</strong><span>processes</span></div><div><strong>{resourceState.snapshot.totalCpuPercent.toFixed(1)}%</strong><span>CPU</span></div><div><strong>{formatBytes(resourceState.snapshot.totalRssBytes)}</strong><span>RSS</span></div></div>
+    <div class="summary"><div><strong>{resourceState.snapshot.processes.length}</strong><span>processes</span></div><div><strong>{resourceState.snapshot.totalCpuPercent.toFixed(1)}%</strong><span>CPU</span></div><div><strong>{formatBytes(resourceState.snapshot.totalRssBytes)}</strong><span>Memory</span></div></div>
     {#if groups.length === 0}<p class="empty">No owned sessions are active.</p>{/if}
     <div class="table" role="table">
-      <div class="row heading" role="row"><span>Project / workspace / session</span><span>Trend</span><span>CPU</span><span>RSS</span><span>Action</span></div>
+      <div class="row heading" role="row"><span>Project / workspace / session</span><span>Trend</span><span>CPU</span><span>Memory</span><span>Action</span></div>
       {#each groups as project (project.id)}
         <div class="row group project" role="row"><strong>{project.label}</strong><svg class="sparkline" viewBox="0 0 52 16" aria-label={`CPU history for ${project.label}`} role="img"><polyline points={resourceCpuSparklinePoints(project.workspaces.flatMap((workspace) => workspace.sessions.flatMap((session) => session.processes)), resourceState.cpuHistory)} /></svg><span>{project.totalCpuPercent.toFixed(1)}%</span><span>{formatBytes(project.totalRssBytes)}</span><span>{project.workspaces.length} workspaces</span></div>
         {#each project.workspaces as workspace (workspace.id)}

@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Keep the process inventory bounded and make the two operating-system reads
 /// visible in one place. Resource scans must not turn into one query per row.
+///
+/// `rss=` is still read here, but only as the fallback for a process whose
+/// footprint the kernel will not tell us about — see `phys_footprint_bytes`.
 pub const PS_COMMAND_ARGS: [&str; 2] = [
     "-axo",
     "pid=,ppid=,pgid=,%cpu=,rss=,etime=,user=,command=",
@@ -44,6 +47,11 @@ pub struct ResourceProcess {
     pub ppid: u32,
     pub pgid: u32,
     pub cpu_percent: f64,
+    /// Physical memory footprint in bytes: what Activity Monitor's "Memory"
+    /// column shows, which is the number people compare against. It is NOT
+    /// resident size — a process can hold far more compressed and private
+    /// memory than it has resident, and reporting resident size made this panel
+    /// disagree with Activity Monitor by an order of magnitude.
     pub rss_bytes: u64,
     pub elapsed_seconds: u64,
     pub user: String,
@@ -291,6 +299,62 @@ pub fn join_resource_identities(
         .collect()
 }
 
+/// The physical memory footprint of one process, or `None` when the kernel
+/// will not say — which it will not for a process belonging to another user
+/// without privileges we do not ask for.
+///
+/// `ps` cannot answer this: it reports resident size and has no footprint
+/// column at all. The footprint lives in `rusage_info`, and it has been in the
+/// v0 flavour of that struct since the call existed, so asking for v0 rather
+/// than "current" keeps this independent of which SDK built the binary.
+#[cfg(target_os = "macos")]
+fn phys_footprint_bytes(pid: u32) -> Option<u64> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct RusageInfoV0 {
+        ri_uuid: [u8; 16],
+        ri_user_time: u64,
+        ri_system_time: u64,
+        ri_pkg_idle_wkups: u64,
+        ri_interrupt_wkups: u64,
+        ri_pageins: u64,
+        ri_wired_size: u64,
+        ri_resident_size: u64,
+        ri_phys_footprint: u64,
+        ri_proc_start_abstime: u64,
+        ri_proc_exit_abstime: u64,
+    }
+
+    extern "C" {
+        fn proc_pid_rusage(
+            pid: std::os::raw::c_int,
+            flavor: std::os::raw::c_int,
+            buffer: *mut std::os::raw::c_void,
+        ) -> std::os::raw::c_int;
+    }
+
+    let mut info = RusageInfoV0::default();
+    // SAFETY: `info` is a live, correctly sized RusageInfoV0 and the flavour we
+    // pass is the one that describes it. The call only writes into that buffer.
+    let ok = unsafe {
+        proc_pid_rusage(
+            pid as std::os::raw::c_int,
+            0, // RUSAGE_INFO_V0
+            &mut info as *mut RusageInfoV0 as *mut std::os::raw::c_void,
+        )
+    } == 0;
+    if ok && info.ri_phys_footprint > 0 {
+        Some(info.ri_phys_footprint)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn phys_footprint_bytes(_pid: u32) -> Option<u64> {
+    None
+}
+
 pub fn scan_resource_snapshot(hints: &[ResourceOwnerHint], generation: u64) -> Result<ResourceSnapshot, String> {
     let ps = Command::new("ps")
         .args(PS_COMMAND_ARGS)
@@ -307,8 +371,18 @@ pub fn scan_resource_snapshot(hints: &[ResourceOwnerHint], generation: u64) -> R
         return Err(format!("lsof listener inventory exited with {}", lsof.status));
     }
 
+    // One syscall per process, not one subprocess per process: `ps` gave us the
+    // inventory in a single read, and this only replaces the memory number on
+    // the rows that survive the join.
+    let mut parsed = parse_ps_snapshot(&String::from_utf8_lossy(&ps.stdout))?;
+    for process in &mut parsed {
+        if let Some(footprint) = phys_footprint_bytes(process.pid) {
+            process.rss_bytes = footprint;
+        }
+    }
+
     let processes = join_resource_identities(
-        parse_ps_snapshot(&String::from_utf8_lossy(&ps.stdout))?,
+        parsed,
         parse_lsof_listeners(&String::from_utf8_lossy(&lsof.stdout)),
         hints,
     );
@@ -411,5 +485,32 @@ mod tests {
 
         assert_eq!(validate_resource_action(&external, 3, None), Err(ResourceActionError::External));
         assert_eq!(validate_resource_action(&external, 2, None), Err(ResourceActionError::StaleSnapshot));
+    }
+
+    /// The memory number has to be the footprint, and the only process we can
+    /// always ask about is this one.
+    ///
+    /// The assertion is deliberately only "a real number": footprint is not
+    /// resident size plus something, and it is not bounded by it in either
+    /// direction. It leaves out the shared, file-backed pages resident size
+    /// counts, and it adds the compressed and other private pages resident size
+    /// misses — this test binary reports 1.2 MB of footprint against 2.5 MB
+    /// resident, while a long-running browser helper reports the opposite by an
+    /// order of magnitude. That is exactly why the panel had to change: the two
+    /// numbers answer different questions, and the footprint is the one
+    /// Activity Monitor puts in its Memory column.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn our_own_footprint_is_reported() {
+        let footprint =
+            phys_footprint_bytes(std::process::id()).expect("a running process has a footprint");
+        assert!(footprint > 0, "a running process cannot occupy no memory");
+    }
+
+    /// A pid nobody is using answers nothing rather than zero, so the caller
+    /// keeps whatever `ps` said instead of reporting a process with no memory.
+    #[test]
+    fn an_unused_pid_reports_no_footprint() {
+        assert_eq!(phys_footprint_bytes(u32::MAX), None);
     }
 }
