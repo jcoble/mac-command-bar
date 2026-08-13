@@ -15,6 +15,10 @@ const host = readFileSync(
   new URL('../src/lib/shell/newSession/ThreadStartHost.svelte', import.meta.url),
   'utf8'
 );
+const flip = readFileSync(
+  new URL('../src/lib/shell/newSession/composerFlip.ts', import.meta.url),
+  'utf8'
+);
 const overlays = readFileSync(
   new URL('../src/lib/shell/components/ShellOverlays.svelte', import.meta.url),
   'utf8'
@@ -37,7 +41,8 @@ const startNewSession = functionSource(
   'async function onStartStack('
 );
 
-assert.match(thread, /What should we build in <span>{projectName}<\/span>\?/);
+assert.match(thread, /What should we build in/);
+assert.match(thread, /class="thread-start-project-trigger"/);
 assert.match(thread, /data-testid="new-session-thread-input"/);
 assert.match(thread, /data-testid="new-session-thread-model"/);
 assert.match(thread, /data-testid="new-session-thread-effort"/);
@@ -47,7 +52,15 @@ assert.match(thread, /data-testid="new-session-thread-branch"/);
 assert.match(thread, /data-testid="new-session-thread-new-worktree"/);
 assert.match(thread, /groupProviderModels\(providerConfigs\)/);
 assert.match(thread, /onSelect=\{\(\) => chooseModel\(group\.provider, model\.id\)\}/);
+assert.match(thread, /disabled=\{!model\.available\}/);
+assert.match(thread, /class="thread-start-menu-provider">\{group\.label\}/);
+assert.match(thread, /await dockComposer\(\);[\s\S]*?const result = await onSend\(request\)/);
+assert.match(thread, /data-composer-state=\{docked \? 'docked' : 'hero'\}/);
 assert.match(thread, /Nothing is created while this pane is a draft/);
+assert.match(flip, /node\.animate\(/);
+assert.match(flip, /duration: FLIP_DURATION_MS, easing: FLIP_EASING/);
+assert.match(flip, /prefers-reduced-motion: reduce/);
+assert.match(flip, /Math\.abs\(deltaX\) < 0\.5 && Math\.abs\(deltaY\) < 0\.5/);
 
 assert.match(host, /import\('\.\/NewSessionThread\.svelte'\)/);
 assert.match(host, /onSend={submit}/);

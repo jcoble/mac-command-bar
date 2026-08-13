@@ -23,6 +23,8 @@ export type ThreadStartModel = {
   id: string;
   label: string;
   hint: string;
+  available: boolean;
+  unavailableReason: string | null;
 };
 
 export type ThreadStartModelGroup = {
@@ -143,13 +145,25 @@ export function groupProviderModels(
   return PROVIDER_ORDER.map((provider) => {
     const configured = byProvider.get(provider) ?? [];
     const current = currentByProvider.get(provider);
+    const snapshots = configs.filter((config) => config.provider === provider);
+    const advertised = new Set(snapshots.flatMap((config) => unique(config.availableModels)));
+    const availabilityKnown = advertised.size > 0;
     const models = configured.length
       ? unique([current ?? '', ...configured])
       : [...FALLBACK_MODELS[provider]];
     return {
       provider,
       label: PROVIDER_LABELS[provider],
-      models: models.map((id) => ({ id, label: modelLabel(id), hint: modelHint(id) }))
+      models: models.map((id) => {
+        const available = !availabilityKnown || advertised.has(id);
+        return {
+          id,
+          label: modelLabel(id),
+          hint: modelHint(id),
+          available,
+          unavailableReason: available ? null : 'Unavailable in the current session service.'
+        };
+      })
     };
   });
 }
@@ -166,7 +180,12 @@ function firstConfiguredModel(
   configs: readonly ThreadStartProviderConfig[]
 ): string {
   const config = configForProvider(provider, configs);
-  return tidy(config?.model) || unique(config?.availableModels ?? [])[0] || FALLBACK_MODELS[provider][0];
+  const available = unique(config?.availableModels ?? []);
+  const current = tidy(config?.model);
+  return (current && (!available.length || available.includes(current)) ? current : '')
+    || available[0]
+    || current
+    || FALLBACK_MODELS[provider][0];
 }
 
 /** The values painted when the pane first opens. No session is created here. */

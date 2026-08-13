@@ -54,7 +54,6 @@
   const saving = $derived(Object.keys(pending).length > 0);
 
   /** Which individual controls have choices the agent can accept. */
-  const canChooseModel = $derived(state.availableModels.length > 0);
   const canChooseEffort = $derived(state.availableEfforts.length > 0);
   const canChooseApproval = $derived(state.availableApprovalPolicies.length > 0);
   const hasAgentSettings = $derived(hasAgentConversationConfig(state));
@@ -91,7 +90,7 @@
           data-testid="conversation-config-approval-policy"
           variant="ghost"
           size="xs"
-          class="text-muted-foreground hover:text-foreground gap-1 px-1.5 text-[12px] font-normal"
+          class="text-muted-foreground hover:text-foreground gap-1 px-1.5 text-[13px] font-normal"
         >
           <ShieldCheck aria-hidden="true" />
           {approvalLabel(state.approvalPolicy)}
@@ -123,7 +122,7 @@
           <span class="flex min-w-0 flex-col gap-0.5">
             <span>{approvalLabel(policy)}</span>
             {#if approvalDescription(policy)}
-              <span class="text-muted-foreground text-[12px] leading-[1.4] whitespace-normal">
+              <span class="text-muted-foreground text-[13px] leading-[1.4] whitespace-normal">
                 {approvalDescription(policy)}
               </span>
             {/if}
@@ -136,11 +135,11 @@
     <!-- Right: which model, thinking how hard. -->
     <div class="config-right">
     {#if saving}
-      <span class="text-primary text-[12px]" data-testid="conversation-config-saving">Saving…</span>
+      <span class="text-primary text-[13px]" data-testid="conversation-config-saving">Saving…</span>
     {/if}
     {#if error}
       <span
-        class="text-destructive text-[12px]"
+        class="text-destructive text-[13px]"
         data-testid="conversation-config-error"
         title={error}
       >
@@ -148,14 +147,14 @@
       </span>
     {/if}
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger disabled={!canChooseModel && !canChooseEffort}>
+      <DropdownMenu.Trigger disabled={modelOptions.length === 0 && !canChooseEffort}>
         {#snippet child({ props })}
           <Button
             {...props}
             data-testid="conversation-config-pill"
             variant="ghost"
             size="xs"
-            class="border-border/70 text-muted-foreground hover:text-foreground gap-1 rounded-full border px-2.5 text-[12px] font-normal"
+            class="border-border/70 text-muted-foreground hover:text-foreground gap-1 rounded-full border px-2.5 text-[13px] font-normal"
           >
             {modelEffortLabel(state.model, state.reasoningEffort)}
             <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
@@ -174,7 +173,7 @@
         <DropdownMenu.Sub>
           <DropdownMenu.SubTrigger
             data-testid="conversation-config-model"
-            disabled={!canChooseModel || modelBusy}
+            disabled={modelOptions.length === 0 || modelBusy}
           >
             Model
             <span class="text-muted-foreground ml-auto pl-4">{modelLabel(state.model)}</span>
@@ -188,11 +187,20 @@
             class="min-w-[180px]"
           >
             {#each modelOptions as model (model)}
-              <DropdownMenu.Item onSelect={() => onChange?.('model', model)}>
+              {@const modelAvailable = state.availableModels.includes(model)}
+              <DropdownMenu.Item
+                disabled={modelBusy || !modelAvailable}
+                title={modelAvailable ? undefined : 'Unavailable for this session.'}
+                class="model-option"
+                onSelect={() => onChange?.('model', model)}
+              >
                 <span class="flex size-3.5 shrink-0 items-center justify-center">
                   {#if model === state.model}<Check aria-hidden="true" class="size-3.5" />{/if}
                 </span>
-                {modelLabel(model)}
+                <span class="model-option-copy">
+                  <span class="model-option-name">{modelLabel(model)}</span>
+                  <span class="model-option-provider">{provider}</span>
+                </span>
               </DropdownMenu.Item>
             {/each}
           </DropdownMenu.SubContent>
@@ -250,7 +258,11 @@
     min-width: 0;
   }
   .unavailable {
-    color: var(--color-text-3);
-    font-size: 12px;
+    color: var(--secondary-label);
+    font-size: 13px;
   }
+  :global(.model-option[data-disabled]) { cursor: not-allowed; }
+  .model-option-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+  .model-option-name { overflow: hidden; color: var(--color-text); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+  .model-option-provider { color: var(--secondary-label); font-size: 13px; }
 </style>

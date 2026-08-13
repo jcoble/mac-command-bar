@@ -64,6 +64,13 @@
   --color-text-2: #b3b7bf;
   --color-text-3: #8b919b;
   --color-disabled-text: #7f858e;
+  --secondary-label: var(--color-text-3);
+
+  /* Shared shell insets keep dense rows and floating detail surfaces aligned. */
+  --rail-content-inset: 12px;
+  --rail-row-content-inset: 8px 10px 9px 12px;
+  --floating-content-inset: 14px 15px 13px;
+  --floating-row-gap: 9px;
 
   /* ------------------------------------------------------------------
    * Accent, hairlines and the focus tint.
@@ -80,6 +87,9 @@
   --color-selected: #263734;
   --color-selected-border: #5cb29b;
   --color-hover: #292c31;
+  --row-hover: color-mix(in srgb, var(--color-text) 8%, transparent);
+  --row-active: color-mix(in srgb, var(--color-accent) 11%, transparent);
+  --row-selected: color-mix(in srgb, var(--color-accent) 7%, transparent);
 
   /* ------------------------------------------------------------------
    * Status tones — live is blue and good is green so running and done

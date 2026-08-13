@@ -90,7 +90,7 @@
     max-width: calc(100vw - 24px);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    padding: 14px 15px 13px;
+    padding: var(--floating-content-inset);
     color: var(--color-text);
     background: var(--color-surface);
     box-shadow: var(--shadow-lg);
@@ -109,15 +109,15 @@
 
   .session-card-sub {
     margin: 0 0 12px;
-    color: var(--color-text-3);
-    font-size: 12px;
+    color: var(--secondary-label);
+    font-size: 13px;
     line-height: 18px;
   }
 
   .session-card-lines {
     display: flex;
     flex-direction: column;
-    gap: 9px;
+    gap: var(--floating-row-gap);
   }
 
   .session-card-line {
@@ -125,28 +125,28 @@
     min-width: 0;
     align-items: center;
     gap: 10px;
-    color: var(--color-text-2);
+    color: var(--secondary-label);
     font-size: 13px;
   }
 
   .session-card-line :global(svg) {
-    width: 15px;
-    height: 15px;
-    flex: 0 0 auto;
-    color: var(--color-text-3);
+    width: 12px;
+    height: 12px;
+    flex: 0 0 12px;
+    color: var(--secondary-label);
   }
 
   .session-card-value {
     min-width: 0;
     overflow: hidden;
-    color: var(--color-text);
+    color: color-mix(in srgb, var(--color-text) 75%, transparent);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .session-card-value.mono {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12.5px;
+    font-size: 13px;
   }
 
   .session-card-foot {
@@ -157,8 +157,8 @@
     margin-top: 13px;
     padding-top: 11px;
     border-top: 1px solid var(--color-border);
-    color: var(--color-text-3);
-    font-size: 12px;
+    color: var(--secondary-label);
+    font-size: 13px;
     line-height: 18px;
   }
 
@@ -169,7 +169,7 @@
     height: 19px;
     padding: 0 7px;
     border-radius: 5px;
-    font-size: 11.5px;
+    font-size: 13px;
     font-weight: 550;
     line-height: 17.25px;
     white-space: nowrap;
@@ -178,7 +178,7 @@
   .status-pill.working { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 14%, transparent); }
   .status-pill.attention { color: var(--color-attention); background: var(--color-attention-bg); }
   .status-pill.idle { color: var(--color-idle); background: color-mix(in srgb, var(--color-idle) 12%, transparent); }
-  .status-pill.stopped { color: var(--color-text-3); background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .status-pill.stopped { color: var(--secondary-label); background: var(--row-selected); }
   .status-pill.done { color: var(--color-good); background: var(--color-good-bg); }
   .status-pill.failed { color: var(--color-bad); background: var(--color-bad-bg); }
   .status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 999px; background: currentColor; }
@@ -195,8 +195,8 @@
   }
 
   .usage-line :global(svg) {
-    width: 14px;
-    height: 14px;
-    flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+    flex: 0 0 12px;
   }
 </style>

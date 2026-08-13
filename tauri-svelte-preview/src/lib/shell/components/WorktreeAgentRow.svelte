@@ -162,7 +162,6 @@
   const usage = $derived(formatUsage(conversation?.metadata.usedTokens, conversation?.usage));
   const metaProject = $derived(project);
 
-  let overlayVisible = $state(false);
   let cardPlacement = $state<{ top: number; left: number } | null>(null);
   let cardTimer: ReturnType<typeof setTimeout> | null = null;
   const CARD_WIDTH = 336;
@@ -184,31 +183,29 @@
     };
   }
 
+  function bodyPortal(node: HTMLElement): { destroy(): void } {
+    document.body.appendChild(node);
+    return {
+      destroy(): void {
+        node.remove();
+      }
+    };
+  }
+
   function showOverlay(event: {
     currentTarget: EventTarget | null;
-    target?: EventTarget | null;
-    type?: string;
   }): void {
     const row = event.currentTarget;
     if (!(row instanceof HTMLElement)) return;
     clearCardTimer();
-    if (
-      event.type === 'focusin'
-      && event.target instanceof Element
-      && event.target.matches(':focus-visible')
-    ) {
-      overlayVisible = true;
-    }
     cardTimer = setTimeout(() => {
       cardTimer = null;
-      overlayVisible = true;
       placeCard(row);
     }, 160);
   }
 
   function hideOverlay(): void {
     clearCardTimer();
-    overlayVisible = false;
     cardPlacement = null;
   }
 
@@ -317,88 +314,89 @@
             <span class="branch">{session.branch}</span>
           {/if}
         </span>
-        {#if modelText}
-          <span data-testid="worktree-agent-model" class="model-chip" title={modelValue ?? undefined}>
-            <Sparkles class="model-mark" aria-hidden="true" />{modelText}
-          </span>
-        {/if}
-        {#if activity}
-          <span data-testid="worktree-agent-activity" class="row-time">{activity}</span>
-        {/if}
+        <span class="row-right-slot">
+          {#if modelText}
+            <span data-testid="worktree-agent-model" class="model-chip" title={modelValue ?? undefined}>
+              <Sparkles class="model-mark" aria-hidden="true" />{modelText}
+            </span>
+          {/if}
+          {#if activity}
+            <span data-testid="worktree-agent-activity" class="row-time">{activity}</span>
+          {/if}
+        </span>
       </span>
     </button>
 
-    {#if overlayVisible}
-      <span data-testid="worktree-agent-overlay" class="row-overlay">
-        {#if presenceIsRestart}
-          <span data-testid="worktree-agent-start">
-            <IconButton
-              label="Start session"
-              size="xs"
-              side="bottom"
-              class="action action-session"
-              onclick={startSession}
-            >
-              <Play class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-
-        <span data-testid="worktree-agent-jump" class="row-cluster">
-          <span data-testid="worktree-agent-jump-session">
-            <IconButton
-              label="Open session"
-              size="xs"
-              side="bottom"
-              class="action action-session"
-              onclick={(event) => jump(event, 'session')}
-            >
-              <MessageCircle class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-          <span data-testid="worktree-agent-jump-editor">
-            <IconButton
-              label="Open editor"
-              size="xs"
-              side="bottom"
-              class="action action-editor"
-              onclick={(event) => jump(event, 'editor')}
-            >
-              <FileCode2 class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-          <span data-testid="worktree-agent-jump-source-control">
-            <IconButton
-              label="Open source control"
-              size="xs"
-              side="bottom"
-              class="action action-git"
-              onclick={(event) => jump(event, 'source-control')}
-            >
-              <GitBranch class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
+    <span data-testid="worktree-agent-overlay" class="row-overlay">
+      {#if presenceIsRestart}
+        <span data-testid="worktree-agent-start">
+          <IconButton
+            label="Start session"
+            size="xs"
+            side="bottom"
+            class="action action-session"
+            onclick={startSession}
+          >
+            <Play class="action-icon" aria-hidden="true" />
+          </IconButton>
         </span>
+      {/if}
 
-        {#if onToggle}
-          <span data-testid="worktree-agent-details">
-            <IconButton
-              label="Details — session actions"
-              size="xs"
-              side="bottom"
-              class="action action-details"
-              onclick={(event) => stopPropagation(event, onToggle)}
-            >
-              <MoreHorizontal class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
+      <span data-testid="worktree-agent-jump" class="row-cluster">
+        <span data-testid="worktree-agent-jump-session">
+          <IconButton
+            label="Open session"
+            size="xs"
+            side="bottom"
+            class="action action-session"
+            onclick={(event) => jump(event, 'session')}
+          >
+            <MessageCircle class="action-icon" aria-hidden="true" />
+          </IconButton>
+        </span>
+        <span data-testid="worktree-agent-jump-editor">
+          <IconButton
+            label="Open editor"
+            size="xs"
+            side="bottom"
+            class="action action-editor"
+            onclick={(event) => jump(event, 'editor')}
+          >
+            <FileCode2 class="action-icon" aria-hidden="true" />
+          </IconButton>
+        </span>
+        <span data-testid="worktree-agent-jump-source-control">
+          <IconButton
+            label="Open source control"
+            size="xs"
+            side="bottom"
+            class="action action-git"
+            onclick={(event) => jump(event, 'source-control')}
+          >
+            <GitBranch class="action-icon" aria-hidden="true" />
+          </IconButton>
+        </span>
       </span>
-    {/if}
+
+      {#if onToggle}
+        <span data-testid="worktree-agent-details">
+          <IconButton
+            label="Details — session actions"
+            size="xs"
+            side="bottom"
+            class="action action-details"
+            onclick={(event) => stopPropagation(event, onToggle)}
+          >
+            <MoreHorizontal class="action-icon" aria-hidden="true" />
+          </IconButton>
+        </span>
+      {/if}
+    </span>
   </div>
 
   {#if cardPlacement}
     <div
+      use:bodyPortal
       data-testid="worktree-agent-hover-popover"
       class="hover-popover"
       role="tooltip"
@@ -488,21 +486,25 @@
   .row {
     position: relative;
     display: block;
+    box-sizing: border-box;
     min-width: 0;
     list-style: none;
-    padding: 8px 10px 9px 12px;
+    padding: var(--rail-row-content-inset);
     background: transparent;
     color: var(--color-text);
     font-size: 13px;
     line-height: 19.5px;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 57px;
+    contain-intrinsic-block-size: auto 39.1875px;
   }
 
   .row:not(:first-child) { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text) 4.5%, transparent); }
 
   .row:hover,
-  .row:focus-within { background: var(--color-hover); }
+  .row:focus-within { background: var(--row-hover); }
 
-  .active { background: var(--color-selected); }
+  .active { background: var(--row-selected); }
   .active::before {
     position: absolute;
     inset: 0 auto 0 0;
@@ -511,7 +513,7 @@
     content: '';
   }
   .active:hover,
-  .active:focus-within { background: color-mix(in srgb, var(--color-selected) 82%, var(--color-hover)); }
+  .active:focus-within { background: var(--row-active); }
 
   .row-body {
     position: relative;
@@ -551,7 +553,7 @@
     width: 14px;
     height: 14px;
     flex: 0 0 auto;
-    color: var(--color-text-3);
+    color: var(--secondary-label);
   }
 
   .presence {
@@ -618,7 +620,7 @@
     flex: 1 1 auto;
     gap: 5px;
     overflow: hidden;
-    color: var(--color-text-3);
+    color: var(--secondary-label);
     font-size: 12px;
     line-height: 1.35;
     text-overflow: ellipsis;
@@ -656,12 +658,35 @@
   }
   :global(.model-mark) { width: 11px; height: 11px; flex: 0 0 auto; color: var(--color-text-3); }
   .row-time {
-    margin-left: auto;
-    color: var(--color-text-3);
+    color: var(--secondary-label);
     font-size: 11.5px;
     line-height: 17.25px;
     opacity: 0.85;
     white-space: nowrap;
+  }
+
+  .row-right-slot {
+    display: inline-flex;
+    width: 111px;
+    min-width: 111px;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    overflow: hidden;
+    opacity: 1;
+  }
+
+  .row[data-presence='stopped'] :global(.provider-icon) {
+    filter: grayscale(1);
+    opacity: 0.4;
+  }
+  .row[data-presence='stopped'] .row-meta > span:first-child { opacity: 0.72; }
+  .row[data-presence='stopped']:hover :global(.provider-icon),
+  .row[data-presence='stopped']:focus-within :global(.provider-icon),
+  .row[data-presence='stopped']:hover .row-meta > span:first-child,
+  .row[data-presence='stopped']:focus-within .row-meta > span:first-child {
+    filter: none;
+    opacity: 1;
   }
 
   .row-overlay {
@@ -678,6 +703,8 @@
     box-shadow: var(--shadow-sm), inset 0 0 0 1px color-mix(in srgb, var(--color-text) 6%, transparent);
     isolation: isolate;
     transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
   }
   .row-overlay::before {
     position: absolute;
@@ -688,6 +715,14 @@
     content: '';
   }
   .row-cluster { display: inline-flex; align-items: center; gap: 1px; }
+  .row:hover .row-right-slot,
+  .row:focus-within .row-right-slot { opacity: 0; }
+  .row:hover .row-overlay,
+  .row:focus-within .row-overlay,
+  .row-overlay:focus-within {
+    opacity: 1;
+    pointer-events: auto;
+  }
   .action,
   .secondary-action { color: var(--color-text-2); }
   .row-overlay :global(button.action) {
@@ -728,7 +763,10 @@
   .error-detail summary { cursor: pointer; color: var(--color-text-2); }
   .error-detail pre { margin: 4px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; font: inherit; }
 
-  @media (prefers-reduced-motion: reduce) {
-    .presence.working::after { opacity: 0.35; }
+  @media (prefers-reduced-motion: no-preference) {
+    .row-right-slot,
+    .row-overlay,
+    :global(.provider-icon),
+    .row-meta > span:first-child { transition: opacity 120ms ease; }
   }
 </style>

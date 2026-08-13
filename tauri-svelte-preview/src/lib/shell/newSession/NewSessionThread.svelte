@@ -3,7 +3,6 @@
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Cpu from '@lucide/svelte/icons/cpu';
-  import Folder from '@lucide/svelte/icons/folder';
   import Gauge from '@lucide/svelte/icons/gauge';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import Plus from '@lucide/svelte/icons/plus';
@@ -46,6 +45,10 @@
     worktreeChoicesFor,
     type WorktreeChoice
   } from '$lib/shell/newSession/newSessionFlow.ts';
+  import {
+    composerFlip,
+    type ComposerFlipReceipt
+  } from '$lib/shell/newSession/composerFlip.ts';
 
   interface Props {
     sessionRoots: string[];
@@ -72,6 +75,9 @@
   let worktreeMessage = $state<string | null>(null);
   let submitError = $state<string | null>(null);
   let submitting = $state(false);
+  let docked = $state(false);
+  let resolveDock: (() => void) | null = null;
+  let dockPromise: Promise<void> | null = null;
   let loadSequence = 0;
 
   const modelGroups = $derived<ThreadStartModelGroup[]>(groupProviderModels(providerConfigs));
@@ -88,10 +94,28 @@
       ?? branchChoices[0]
       ?? null
   );
-  const projectName = $derived(draft.projectPath.split('/').filter(Boolean).at(-1) ?? 'project');
+  const projectName = $derived(draft.projectPath.split('/').filter(Boolean).at(-1) ?? null);
   const sendDisabled = $derived(submitting || problems.length > 0);
   const effortChoices = $derived(effortChoicesFor(draft.provider, providerConfigs));
   const accessChoices = $derived(accessChoicesFor(draft.provider, providerConfigs));
+  const flipOptions = $derived({ docked, onComplete: finishDock });
+
+  function finishDock(_receipt: ComposerFlipReceipt): void {
+    resolveDock?.();
+    resolveDock = null;
+  }
+
+  async function dockComposer(): Promise<void> {
+    if (docked) {
+      await dockPromise;
+      return;
+    }
+    dockPromise = new Promise<void>((resolve) => {
+      resolveDock = resolve;
+    });
+    docked = true;
+    await dockPromise;
+  }
 
   function updateDraft(patch: Partial<ThreadStartPickerState>): void {
     draft = { ...draft, ...patch };
@@ -174,6 +198,7 @@
     submitting = true;
     submitError = null;
     try {
+      await dockComposer();
       const result = await onSend(request);
       if (result === false) submitError = 'The session could not be started. Check the rail for details.';
     } catch (error) {
@@ -208,7 +233,7 @@
         data-testid="new-session-thread-close"
         variant="ghost"
         size="icon-sm"
-        class="ml-auto text-[var(--color-text-3)] hover:text-foreground"
+        class="ml-auto text-[var(--secondary-label)] hover:text-foreground"
         aria-label="Close new session"
         onclick={onClose}
       >
@@ -216,15 +241,60 @@
       </Button>
     </header>
 
-    <div class="thread-start-body">
-      <h1 data-testid="new-session-thread-heading">
-        What should we build in <span>{projectName}</span>?
-      </h1>
-      <p class="thread-start-description">
-        Describe the work. The session starts when you send, on the branch and model shown below.
-      </p>
+    <div
+      class:docked
+      class="thread-start-body"
+      data-testid="new-session-thread-body"
+      data-composer-state={docked ? 'docked' : 'hero'}
+    >
+      <div class="thread-start-stage">
+        <div class="thread-start-hero-copy" aria-hidden={docked}>
+          <h1 data-testid="new-session-thread-heading">
+            {#if projectName}What should we build in{:else}{/if}
+            <span class:leading={!projectName} class="thread-start-project-inline">
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger>
+                  {#snippet child({ props })}
+                    <Button
+                      {...props}
+                      data-testid="new-session-thread-project"
+                      variant="ghost"
+                      class="thread-start-project-trigger"
+                    >
+                      {projectName ?? 'Pick a project'}
+                    </Button>
+                  {/snippet}
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Content class="thread-start-menu thread-start-project-menu" align="center" sideOffset={8}>
+                  <DropdownMenu.Label>Project workspace</DropdownMenu.Label>
+                  {#each roots as root (root.path)}
+                    <DropdownMenu.Item data-testid={`new-session-thread-project-${root.id}`} onSelect={() => selectProject(root.path)}>
+                      <span class="thread-start-check">{#if draft.projectPath === root.path}<Check class="size-3.5" aria-hidden="true" />{/if}</span>
+                      <span class="flex min-w-0 flex-col gap-0.5">
+                        <span>{root.name}</span>
+                        <span class="thread-start-menu-hint truncate">{root.path}</span>
+                      </span>
+                    </DropdownMenu.Item>
+                  {/each}
+                  {#if roots.length === 0}
+                    <DropdownMenu.Item disabled>No project workspaces yet</DropdownMenu.Item>
+                  {/if}
+                </DropdownMenu.Content>
+              </DropdownMenu.Root>
+              <span class="thread-start-project-suffix">{projectName ? '?' : ' to start'}</span>
+            </span>
+          </h1>
+          <p class="thread-start-description">
+            Describe the work. The session starts when you send, on the branch and settings shown below.
+          </p>
+        </div>
 
-      <div class="thread-start-composer" data-testid="new-session-thread-composer">
+      <div
+        use:composerFlip={flipOptions}
+        class="thread-start-composer"
+        data-testid="new-session-thread-composer"
+        data-position={docked ? 'docked' : 'hero'}
+      >
         <textarea
           data-testid="new-session-thread-input"
           aria-label="Describe what to build"
@@ -259,6 +329,8 @@
                   <DropdownMenu.Item
                     data-testid={`new-session-thread-model-${group.provider}-${model.id}`}
                     class="thread-start-menu-item"
+                    disabled={!model.available}
+                    title={model.unavailableReason ?? undefined}
                     onSelect={() => chooseModel(group.provider, model.id)}
                   >
                     <span class="thread-start-check">
@@ -266,8 +338,10 @@
                         <Check class="size-3.5" aria-hidden="true" />
                       {/if}
                     </span>
-                    <span class="thread-start-menu-name">{model.label}</span>
-                    <span class="thread-start-menu-hint">{model.hint}</span>
+                    <span class="thread-start-model-copy">
+                      <span class="thread-start-menu-name">{model.label}</span>
+                      <span class="thread-start-menu-provider">{group.label}</span>
+                    </span>
                   </DropdownMenu.Item>
                 {/each}
                 {#if groupIndex < modelGroups.length - 1}<DropdownMenu.Separator />{/if}
@@ -319,33 +393,6 @@
                   </span>
                 </DropdownMenu.Item>
               {/each}
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
-
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger>
-              {#snippet child({ props })}
-                <Button {...props} data-testid="new-session-thread-project" variant="ghost" size="sm" class="thread-start-pill">
-                  <Folder class="size-3.5" aria-hidden="true" />
-                  <span>{projectName}</span>
-                  <ChevronDown class="thread-start-chevron" aria-hidden="true" />
-                </Button>
-              {/snippet}
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content class="thread-start-menu thread-start-project-menu" align="start" sideOffset={8}>
-              <DropdownMenu.Label>Project workspace</DropdownMenu.Label>
-              {#each roots as root (root.path)}
-                <DropdownMenu.Item data-testid={`new-session-thread-project-${root.id}`} onSelect={() => selectProject(root.path)}>
-                  <span class="thread-start-check">{#if draft.projectPath === root.path}<Check class="size-3.5" aria-hidden="true" />{/if}</span>
-                  <span class="flex min-w-0 flex-col gap-0.5">
-                    <span>{root.name}</span>
-                    <span class="thread-start-menu-hint truncate">{root.path}</span>
-                  </span>
-                </DropdownMenu.Item>
-              {/each}
-              {#if roots.length === 0}
-                <DropdownMenu.Item disabled>No project workspaces yet</DropdownMenu.Item>
-              {/if}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
 
@@ -418,6 +465,7 @@
         Pills stay editable until you send. Nothing is created while this pane is a draft.
         {#if draft.provider}<span> · {displayProvider(draft.provider)}</span>{/if}
       </p>
+      </div>
     </div>
   </section>
 </div>
@@ -437,7 +485,10 @@
   }
 
   .thread-start-pane {
+    display: flex;
     width: min(840px, 100%);
+    height: min(760px, 100%);
+    flex-direction: column;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
     background: var(--color-bg);
@@ -452,8 +503,8 @@
     min-height: 40px;
     padding: 0 10px 0 12px;
     border-bottom: 1px solid var(--color-border);
-    color: var(--color-text-3);
-    font-size: 12.5px;
+    color: var(--secondary-label);
+    font-size: 13px;
   }
 
   .thread-start-tab {
@@ -468,27 +519,94 @@
     font-weight: 550;
   }
 
-  .thread-start-status { color: var(--color-text-3); }
+  .thread-start-status { color: var(--secondary-label); }
 
   .thread-start-body {
-    padding: 64px 48px 28px;
+    position: relative;
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 72px 36px 32px;
+    overflow: hidden;
     text-align: center;
+  }
+
+  .thread-start-body.docked { justify-content: flex-end; }
+
+  .thread-start-stage {
+    position: relative;
+    width: min(48rem, 100%);
+  }
+
+  .thread-start-hero-copy {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 24px);
+    left: 0;
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .docked .thread-start-hero-copy {
+    opacity: 0;
+    visibility: hidden;
   }
 
   h1 {
     margin: 0 0 8px;
     color: var(--color-text);
     font-size: 24px;
-    font-weight: 620;
-    letter-spacing: -0.015em;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    line-height: 1.3;
   }
 
-  h1 span { color: var(--color-accent); }
+  .thread-start-project-inline {
+    display: inline;
+    margin-left: 0.22em;
+    font-size: 0;
+    vertical-align: baseline;
+  }
+
+  .thread-start-project-inline.leading { margin-left: 0; }
+
+  .thread-start-project-suffix { font-size: 24px; }
+
+  :global(.thread-start-project-trigger) {
+    display: inline;
+    height: auto;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-bottom: 1px dotted color-mix(in srgb, var(--color-text) 60%, transparent);
+    border-radius: 0;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    font-size: 24px;
+    font-weight: 400;
+    letter-spacing: inherit;
+    line-height: inherit;
+    vertical-align: baseline;
+  }
+
+  :global(.thread-start-project-trigger:hover) {
+    color: var(--color-accent);
+    background: transparent;
+  }
+
+  :global(.thread-start-project-trigger:focus-visible) {
+    outline: 2px solid var(--color-focus-solid);
+    outline-offset: 3px;
+  }
 
   .thread-start-description {
     max-width: 500px;
-    margin: 0 auto 28px;
-    color: var(--color-text-3);
+    margin: 0 auto;
+    color: var(--secondary-label);
     font-size: 13px;
     line-height: 1.6;
   }
@@ -519,7 +637,7 @@
     font: 14px/1.55 inherit;
   }
 
-  textarea::placeholder { color: var(--color-text-3); }
+  textarea::placeholder { color: var(--secondary-label); }
 
   .thread-start-pills {
     display: flex;
@@ -538,12 +656,12 @@
     border: 1px solid var(--color-border);
     border-radius: 8px;
     color: var(--color-text-2);
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 550;
   }
 
   :global(.thread-start-pill:hover) { color: var(--color-text); }
-  .thread-start-pill-key { color: var(--color-text-3); font-weight: 500; }
+  .thread-start-pill-key { color: var(--secondary-label); font-weight: 500; }
   :global(.thread-start-chevron) { width: 12px; height: 12px; opacity: 0.55; }
 
   :global(.thread-start-send) {
@@ -556,7 +674,7 @@
     border-radius: 8px;
     background: var(--color-accent);
     color: var(--color-on-accent);
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 650;
   }
 
@@ -575,15 +693,18 @@
   :global(.thread-start-branch-menu) { width: 320px; }
 
   :global(.thread-start-menu-item) { align-items: flex-start; gap: 9px; padding: 7px 8px; }
+  :global(.thread-start-menu-item[data-disabled]) { cursor: not-allowed; }
   .thread-start-check { display: inline-flex; width: 14px; min-width: 14px; justify-content: center; color: var(--color-accent); }
-  .thread-start-menu-name { flex: 1 1 auto; }
-  .thread-start-menu-hint { color: var(--color-text-3); font-size: 11.5px; }
+  .thread-start-model-copy { display: flex; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 1px; }
+  .thread-start-menu-name { overflow: hidden; color: var(--color-text); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+  .thread-start-menu-provider,
+  .thread-start-menu-hint { color: var(--secondary-label); font-size: 13px; }
 
   .thread-start-note,
   .thread-start-footnote {
     margin: 12px auto 0;
-    color: var(--color-text-3);
-    font-size: 12px;
+    color: var(--secondary-label);
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -595,7 +716,7 @@
     gap: 4px;
     margin-top: 14px;
     color: var(--color-bad);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
     text-align: left;
   }
@@ -605,5 +726,9 @@
   @media (max-width: 980px) {
     .thread-start-layer { left: 0; padding: 18px; }
     .thread-start-body { padding: 36px 24px 24px; }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .thread-start-hero-copy { transition: opacity 120ms ease; }
   }
 </style>

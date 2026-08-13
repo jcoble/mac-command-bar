@@ -32,8 +32,18 @@
     {#if state.availableModels.length || state.model}
       <DropdownMenu.Label>Model</DropdownMenu.Label>
       {#each optionsFor(state.availableModels, state.model) as model (model)}
-        <DropdownMenu.Item disabled={'model' in pending} onSelect={() => onChange?.('model', model)}>
-          <span class="check-slot">{#if model === state.model}<Check size={13} aria-hidden="true" />{/if}</span>{modelLabel(model)}
+        {@const modelAvailable = state.availableModels.includes(model)}
+        <DropdownMenu.Item
+          disabled={'model' in pending || !modelAvailable}
+          title={modelAvailable ? undefined : 'Unavailable for this session.'}
+          class="model-option"
+          onSelect={() => onChange?.('model', model)}
+        >
+          <span class="check-slot">{#if model === state.model}<Check size={13} aria-hidden="true" />{/if}</span>
+          <span class="model-option-copy">
+            <span class="model-option-name">{modelLabel(model)}</span>
+            <span class="model-option-provider">{provider}</span>
+          </span>
         </DropdownMenu.Item>
       {/each}
     {/if}
@@ -62,4 +72,8 @@
   :global(.more-chevron) { opacity: .6; }
   :global(.compact-menu) { min-width: 230px; }
   .check-slot { display: inline-grid; place-items: center; width: 15px; margin-right: 2px; color: var(--color-accent); }
+  :global(.model-option[data-disabled]) { cursor: not-allowed; }
+  .model-option-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+  .model-option-name { overflow: hidden; color: var(--color-text); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+  .model-option-provider { color: var(--secondary-label); font-size: 13px; }
 </style>

@@ -44,6 +44,12 @@ const providerConfigs = [
   ]);
   assert.equal(groups[0].label.length > 0, true);
   assert.equal(groups[0].models.every((model) => model.hint.length > 0), true);
+  assert.equal(groups[0].models.find((model) => model.id === 'gpt-5.6-next')?.available, false);
+  assert.match(
+    groups[0].models.find((model) => model.id === 'gpt-5.6-next')?.unavailableReason ?? '',
+    /Unavailable/
+  );
+  assert.equal(groups[0].models.find((model) => model.id === 'gpt-5.6-luna')?.available, true);
 }
 
 // Opening a thread is a draft only; the pure default is already usable once a
