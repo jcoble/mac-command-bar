@@ -216,8 +216,8 @@ assert.match(
 assert.match(row, /class="action-reserve"/, 'line one always reserves the action cluster width');
 assert.match(
   row,
-  /\.action-reserve\s*\{[\s\S]*?width:\s*92px;[\s\S]*?flex:\s*0 0 92px;/,
-  'three 28px actions and two 4px gaps reserve exactly 92px'
+  /\.action-reserve\s*\{[\s\S]*?width:\s*0;[\s\S]*?flex:\s*0 0 0px;[\s\S]*?\.row:hover \.action-reserve[\s\S]*?width:\s*92px;/,
+  'action space is collapsed at rest and opens to 92px on hover'
 );
 assert.match(
   row,

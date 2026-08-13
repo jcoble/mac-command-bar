@@ -651,7 +651,15 @@
   .idle-label,
   .failed { flex: 0 1 auto; }
 
+  /* Collapsed at rest so the project name keeps the whole line; the space
+     opens only while the pointer is on the row and the buttons are visible. */
   .action-reserve {
+    width: 0;
+    flex: 0 0 0px;
+  }
+
+  .row:hover .action-reserve,
+  .row:focus-within .action-reserve {
     width: 92px;
     flex: 0 0 92px;
   }
