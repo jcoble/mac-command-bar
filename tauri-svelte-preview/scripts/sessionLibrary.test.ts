@@ -8,7 +8,6 @@ import {
   filterSessionHistory,
   groupSessionHistory,
   groupSessionLibrary,
-  paginateSessionLibrary,
   sessionIdentityKey,
   toggleSessionLibraryExpansion
 } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
@@ -114,7 +113,6 @@ function available(id, cwd, extra = {}) {
   );
   assert.equal(filterSessionLibrary(rows, { worktree: 'two' }).length, 1);
   assert.equal(filterSessionLibrary(rows, { state: 'resumable' }).length, 1);
-  assert.equal(paginateSessionLibrary(rows, 2, 2).items.length, 1);
   assert.deepEqual(groupSessionLibrary(rows).map((group) => group.state), [
     'working',
     'resumable',

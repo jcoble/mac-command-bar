@@ -3,6 +3,15 @@ import type { SessionLibraryRecord } from '../sessionLibrary/sessionLibraryModel
 export interface SessionHistoryFilterOptions {
   query?: string;
   provider?: string;
+  windowState?: SessionHistoryWindowState;
+}
+
+export const SESSION_HISTORY_ROW_WINDOW = 25;
+
+export interface SessionHistoryWindowState {
+  query: string;
+  provider: string;
+  visibleRowsByWorktree: Readonly<Record<string, number>>;
 }
 
 export interface SessionHistoryProviderOption {
@@ -26,6 +35,7 @@ export interface SessionHistoryWorktreeGroup {
   count: number;
   activityTime: number;
   rows: SessionHistoryRow[];
+  olderCount: number;
 }
 
 export interface SessionHistoryProjectGroup {
@@ -60,6 +70,44 @@ interface PathIdentity {
 
 interface IndexedRow extends SessionHistoryRow, PathIdentity {
   searchText: string;
+}
+
+function normalizedWindowFilters(
+  options: SessionHistoryFilterOptions
+): Pick<SessionHistoryWindowState, 'query' | 'provider'> {
+  return {
+    query: compactText(options.query).toLocaleLowerCase(),
+    provider: compactText(options.provider).toLocaleLowerCase()
+  };
+}
+
+export function createSessionHistoryWindowState(
+  options: SessionHistoryFilterOptions = {}
+): SessionHistoryWindowState {
+  return { ...normalizedWindowFilters(options), visibleRowsByWorktree: {} };
+}
+
+export function resetSessionHistoryWindowOnFilterChange(
+  state: SessionHistoryWindowState,
+  options: SessionHistoryFilterOptions
+): SessionHistoryWindowState {
+  const next = normalizedWindowFilters(options);
+  if (state.query === next.query && state.provider === next.provider) return state;
+  return { ...next, visibleRowsByWorktree: {} };
+}
+
+export function extendSessionHistoryWindow(
+  state: SessionHistoryWindowState,
+  worktreeKey: string
+): SessionHistoryWindowState {
+  const visible = state.visibleRowsByWorktree[worktreeKey] ?? SESSION_HISTORY_ROW_WINDOW;
+  return {
+    ...state,
+    visibleRowsByWorktree: {
+      ...state.visibleRowsByWorktree,
+      [worktreeKey]: visible + SESSION_HISTORY_ROW_WINDOW
+    }
+  };
 }
 
 function canonicalPath(value: string | null | undefined): string {
@@ -202,8 +250,9 @@ export function buildSessionHistoryViewModel(
   const providers = [...new Set(indexed.map((row) => row.record.provider).filter(Boolean))]
     .sort((left, right) => providerLabelFor(left).localeCompare(providerLabelFor(right)))
     .map((value) => ({ value, label: providerLabelFor(value) }));
-  const query = compactText(options.query).toLocaleLowerCase();
-  const provider = compactText(options.provider).toLocaleLowerCase();
+  const { query, provider } = normalizedWindowFilters(options);
+  const windowMatchesFilters = options.windowState?.query === query
+    && options.windowState.provider === provider;
   const filtered = indexed.filter((row) => {
     if (query && !row.searchText.includes(query)) return false;
     return !provider || row.record.provider.toLocaleLowerCase() === provider;
@@ -235,14 +284,21 @@ export function buildSessionHistoryViewModel(
   const projectGroups = [...projects.entries()].map(([key, project]): SessionHistoryProjectGroup => {
     const worktrees = [...project.worktrees.entries()]
       .map(([worktreeKey, worktree]): SessionHistoryWorktreeGroup => {
-        const rows = worktree.rows.toSorted(compareRows);
+        const allRows = worktree.rows.toSorted(compareRows);
+        const visibleRowCount = query
+          ? allRows.length
+          : windowMatchesFilters
+            ? options.windowState?.visibleRowsByWorktree[worktreeKey] ?? SESSION_HISTORY_ROW_WINDOW
+            : SESSION_HISTORY_ROW_WINDOW;
+        const rows = allRows.slice(0, visibleRowCount);
         return {
           key: worktreeKey,
           name: worktree.name,
           path: worktree.path,
-          count: rows.length,
-          activityTime: rows[0]?.activityTime ?? 0,
-          rows
+          count: allRows.length,
+          activityTime: allRows[0]?.activityTime ?? 0,
+          rows,
+          olderCount: Math.max(0, allRows.length - rows.length)
         };
       })
       .toSorted(compareGroups);
