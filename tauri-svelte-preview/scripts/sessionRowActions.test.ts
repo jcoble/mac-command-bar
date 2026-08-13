@@ -382,14 +382,21 @@ assert.match(
 );
 assert.doesNotMatch(rail, /paneStack|createPaneStack|dv-pane-header/, 'the rail has no splitters');
 
-// --- the one clock and the one spinner -------------------------------------
+// --- no clock at all, and the one spinner ----------------------------------
 
-assert.match(
+// A live per-second age ticker was tried and it progressively slowed the whole
+// app; the age is now read once at mount and the rail holds no clock.
+assert.doesNotMatch(
   row,
-  /watchRailElapsed/,
-  'elapsed text comes from the shared rail ticker, not a timer per row'
+  /watchRailElapsed|railElapsedTicker/,
+  'the rail age never ticks — it is read once when the row mounts'
 );
 assert.doesNotMatch(row, /setInterval/, 'the row starts no interval of its own');
+assert.match(
+  row,
+  /const mountedAtMs = Date\.now\(\);/,
+  'the age is anchored to a plain one-time read, not reactive state'
+);
 assert.match(
   row,
   /const spinning = \$derived\(isWorking && onScreen\)/,
@@ -399,16 +406,6 @@ assert.match(
   row,
   /\.spinner\.spinning \{ animation: spin 900ms linear infinite; \}/,
   'only the spinning class animates, so a row at rest has no motion'
-);
-assert.match(
-  row,
-  /railElapsedCadenceFor\(ageMs \?\? 0, isWorking\)/,
-  'the row asks for the slow cadence once its age is past the seconds range'
-);
-assert.match(
-  row,
-  /if \(!onScreen \|\| !hasAge\) return;/,
-  'a row off screen holds no clock at all'
 );
 
 // --- motion: plenty of it, and all of it ends ------------------------------
