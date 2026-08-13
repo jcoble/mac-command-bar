@@ -97,6 +97,7 @@
   );
   const connectionState = $derived(session.origin === 'app' ? conversation?.connectionState ?? null : null);
   const activeTurnId = $derived(conversation?.activeTurnId ?? session.activeTurnId ?? null);
+  const suspended = $derived(conversation?.suspended === true);
   const presenceSignals = $derived(
     session.state === 'exited'
       ? 'stopped'
@@ -104,6 +105,7 @@
           {
             terminalState: session.state,
             connectionState,
+            suspended,
             activeTurnId,
             sending: conversation?.sending,
             pendingApprovalCount,
@@ -129,7 +131,9 @@
       ? 'done'
       : session.lastError || runtimeState === 'failed'
         ? 'failed'
-        : session.state === 'exited' || session.executionOwner === 'stopped' || presenceSignals === 'disconnected'
+        : suspended
+          ? 'idle'
+          : session.state === 'exited' || session.executionOwner === 'stopped' || presenceSignals === 'disconnected'
           ? 'stopped'
           : pendingApprovalCount > 0
           || runtimeState === 'waiting-approval'
@@ -150,6 +154,7 @@
       failed: 'Error'
     }[presence]
   );
+  const presenceDetail = $derived(suspended ? 'Idle — resumes on click' : presenceLabel);
   const presenceIsRestart = $derived(presence === 'stopped');
   const modelValue = $derived(conversation?.metadata.model ?? session.model ?? null);
   const modelText = $derived(modelValue ? modelLabel(modelValue) : null);
@@ -292,9 +297,10 @@
         <span
           data-testid="worktree-agent-runtime"
           class="presence {presence}"
+          class:suspended
           role="img"
           aria-label={presenceLabel}
-          title={presenceLabel}
+          title={presenceDetail}
         >
           <span class="presence-dot" aria-hidden="true"></span>
         </span>
@@ -405,6 +411,7 @@
       <SessionHoverCard
         title={label}
         statusLabel={presenceLabel}
+        statusDetail={presenceDetail}
         {project}
         {worktree}
         {machine}
@@ -592,6 +599,7 @@
     opacity: 0.35;
   }
   .presence.idle .presence-dot { opacity: 0.85; }
+  .presence.idle.suspended .presence-dot { opacity: 0.6; }
   .presence.stopped .presence-dot {
     width: 7px;
     height: 7px;

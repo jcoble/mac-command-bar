@@ -336,6 +336,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   }
   conversationSessions[snapshot.connection.ownedId] = {
     ...rebuilt,
+    suspended: snapshot.suspended === true,
     draft: current.draft,
     mode: current.mode,
     sending: current.sending,
@@ -857,6 +858,7 @@ export function setConversationConnection(connection: AgentConversationConnectio
   current.generation = connection.generation;
   current.writerLease.generation = connection.generation;
   current.connectionState = connection.state;
+  current.suspended = false;
   if (connection.nativeSessionId) current.nativeSessionId = connection.nativeSessionId;
   if (connection.config) {
     current.agentConfig = connection.config;

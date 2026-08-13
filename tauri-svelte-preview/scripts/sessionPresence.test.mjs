@@ -99,6 +99,30 @@ assert.equal(
 );
 assert.equal(
   presence.deriveSessionPresence(
+    {
+      ...connected,
+      connectionState: 'disconnected',
+      suspended: true,
+      activeTurnId: 'stale-turn',
+      pendingApprovalCount: 1
+    },
+    approval,
+    0
+  ).state,
+  'idle',
+  'a healthy suspended session stays idle despite stale work signals instead of looking stopped'
+);
+assert.equal(
+  presence.deriveSessionPresence(
+    { ...connected, connectionState: 'failed', suspended: true },
+    empty,
+    0
+  ).state,
+  'disconnected',
+  'suspension does not hide an unhealthy connection'
+);
+assert.equal(
+  presence.deriveSessionPresence(
     { ...connected, connectionState: 'disconnected', runtimeState: 'starting' },
     empty,
     0

@@ -189,12 +189,37 @@ assert.match(row, /onmouseenter=\{showOverlay\}/, 'the action cluster opens on p
 assert.match(row, /onfocusin=\{showOverlay\}/, 'the action cluster opens on keyboard focus');
 assert.match(row, /data-presence=\{presence\}/, 'presence stays a compact row state');
 assert.match(row, /label="Start session"/, 'stopped rows keep Start as the first hover action');
+assert.match(
+  row,
+  /const presenceIsRestart = \$derived\(presence === 'stopped'\)/,
+  'only genuinely stopped rows offer Start, so suspended idle rows do not'
+);
+assert.match(row, /Idle — resumes on click/, 'suspended rows explain that a click resumes them');
+assert.match(
+  row,
+  /\.presence\.idle\.suspended \.presence-dot \{ opacity: 0\.6; \}/,
+  'suspended rows keep the solid idle dot and dim it to 60 percent'
+);
 assert.doesNotMatch(row, /No project recorded/i, 'the rail never renders the placeholder project sentence');
 
 assert.match(
   shellPage,
   /registerSessionRowJumpTarget\(\{[\s\S]*?selectSession[\s\S]*?showCenterPanel[\s\S]*?showSidebarView[\s\S]*?\}\)/,
   'the page registers the one host that can activate a session and a surface'
+);
+assert.match(
+  shellPage,
+  /if \(activation\.kind === 'view'\) \{[\s\S]*?if \(switching\) \{[\s\S]*?ensureStructuredConversation\(/,
+  'a rail selection change notifies the backend even when the conversation is already connected'
+);
+const viewActivationBlock = shellPage.match(
+  /if \(activation\.kind === 'view'\) \{[\s\S]*?\n      \}/
+);
+assert.ok(viewActivationBlock, 'the connected view-only activation branch stays explicit');
+assert.equal(
+  viewActivationBlock[0].match(/ensureStructuredConversation\(/g)?.length,
+  1,
+  'one selection change can issue at most one connected-session activation notification'
 );
 
 // --- the scroll chain ------------------------------------------------------
