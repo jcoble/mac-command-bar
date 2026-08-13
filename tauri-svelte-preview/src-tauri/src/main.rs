@@ -5548,16 +5548,8 @@ fn install_panic_hook() {
 
 fn main() {
     install_panic_hook();
-    let agent_runtime = agent_conversation::manager::AgentRuntimeManager::new(
-        agent_conversation::providers::ProviderRegistry::bundled_from_environment()
-            .expect("packaged ACP adapter configuration is invalid"),
-    );
-    let workflow_engine = WorkflowEngine::managed(agent_runtime.clone());
-    let conversation_events = agent_runtime.clone();
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
-        .manage(agent_runtime)
-        .manage(workflow_engine)
         .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
         .manage(terminal::TerminalRegistry::default())
@@ -5566,23 +5558,41 @@ fn main() {
         .manage(usage_history::UsageHistoryState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .setup(move |app| {
-            let live_session_ids = app
-                .state::<agent_conversation::manager::AgentRuntimeManager>()
-                .resource_roots()
-                .into_iter()
-                .map(|root| root.owned_id)
-                .collect();
+        .setup(|app| {
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .map_err(|error| format!("Application data directory is unavailable: {error}"))?;
+            std::fs::create_dir_all(&app_data_dir).map_err(|error| {
+                format!(
+                    "Could not create application data directory {}: {error}",
+                    app_data_dir.display()
+                )
+            })?;
+            let agent_runtime = agent_conversation::manager::AgentRuntimeManager::open(
+                agent_conversation::providers::ProviderRegistry::bundled_from_environment()
+                    .map_err(|error| {
+                        format!("Packaged ACP adapter configuration is invalid: {error}")
+                    })?,
+                &app_data_dir.join("sessions.db"),
+            )?;
+            // Validate the store-backed list and its runtime overlay before any
+            // frontend activation can observe the manager.
+            agent_runtime.list_snapshots()?;
+            let workflow_engine = WorkflowEngine::managed(agent_runtime.clone());
+            let live_session_ids = agent_runtime
+                .resource_roots()
+                .into_iter()
+                .map(|root| root.owned_id)
+                .collect();
             agent_conversation::reaper::start_startup_reaper(&app_data_dir, live_session_ids)?;
             let handle = app.handle().clone();
-            conversation_events.set_emitter(Arc::new(move |event| {
+            agent_runtime.set_emitter(Arc::new(move |event| {
                 let _ = handle.emit("agent-conversation-event", event);
             }));
-            conversation_events.start_idle_suspension_task();
+            agent_runtime.start_idle_suspension_task();
+            app.manage(workflow_engine);
+            app.manage(agent_runtime);
             // Every time a language server starts, finishes reading a project, or stops,
             // tell the editor straight away. Without this the editor would have to ask
             // over and over to notice, which is what it used to do.

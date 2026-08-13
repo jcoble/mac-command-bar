@@ -1,7 +1,7 @@
 mod attachments;
 pub mod capabilities;
 pub mod handoff;
-pub mod journal;
+mod legacy_import;
 pub mod manager;
 pub mod prompt_content;
 pub mod protocol;

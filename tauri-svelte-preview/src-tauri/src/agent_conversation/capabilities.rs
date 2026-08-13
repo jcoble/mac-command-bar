@@ -133,6 +133,7 @@ mod tests {
                 version: "1".into(),
             },
             session: AgentSessionCapabilities {
+                multi_session: false,
                 list: true,
                 load: true,
                 resume: true,
