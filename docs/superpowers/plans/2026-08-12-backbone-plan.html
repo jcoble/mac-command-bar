@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Backbone Plan — Store + Engine Lifecycle</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#111417; --panel:#1a1f24; --text:#e6e9ec; --dim:#9aa4ad; --line:#2a3138;
+          --good:#4cc38a; --warn:#e0b34c; --accent:#5aa7e8; --del:#e5734f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.55 -apple-system,"SF Pro Text",Helvetica,Arial,sans-serif; padding:32px 40px 80px; max-width:1100px; margin-inline:auto; }
+  h1 { font-size:22px; font-weight:600; margin:0 0 4px; }
+  .sub { color:var(--dim); margin:0 0 24px; }
+  h2 { font-size:16px; font-weight:600; margin:30px 0 10px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 20px; margin-bottom:14px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; }
+  code { background:#22282e; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .lane { display:inline-block; font-size:11px; padding:1px 8px; border-radius:99px; border:1px solid var(--accent); color:var(--accent); }
+  .lane.now { border-color:var(--good); color:var(--good); }
+  .lane.wait { border-color:var(--warn); color:var(--warn); }
+  .note { color:var(--dim); font-size:12.5px; }
+  ul { margin:6px 0; padding-left:20px; } li { margin:4px 0; }
+  .track { border-left:3px solid var(--line); padding-left:14px; margin:10px 0; }
+</style>
+</head>
+<body>
+<h1>Backbone Plan — Session Store + Engine Lifecycle</h1>
+<p class="sub">2026-08-12 · evidence: memprobe18 · muxspike19 (live probe) · t3lifecycle19 recon (running, feeds Track&nbsp;B policy detail) · rules: one-way-only, KISS, YAGNI</p>
+
+<h2>The end state, in one paragraph</h2>
+<div class="panel">
+A session is a <b>SQLite row</b>. Engines exist only while a turn runs (plus a <b>30-second grace window</b> — owner-decided).
+One shared adapter process per provider hosts many sessions (proven live by muxspike19 for both adapters).
+Restart or crash the app and every session, transcript, draft, and annotation restores from the database.
+The journal ring buffer, the localStorage owned-sessions store, and the per-session-process assumption are all deleted — no old paths remain.
+</div>
+
+<h2>Three tracks, maximum safe concurrency</h2>
+<div class="panel">
+<div class="track"><b>Track A — SQLite store module <span class="lane now">DISPATCHING NOW</span></b><br>
+New Rust files only (<code>store/</code> module: schema, queries, retention, importer core) + full test suite. Zero overlap with the manager — runs concurrently with everything. The spec'd four tables (sessions, events, drafts, annotations), WAL, one retention DELETE policy.</div>
+<div class="track"><b>Track C — Multi-session ACP client <span class="lane now">DISPATCHING NOW</span></b><br>
+<code>acp_client.rs</code> + <code>process.rs</code>: per-<code>sessionId</code> state and update routing (today: one <code>native_session_id</code>, one prompt route per process — muxspike19 proved the adapters already multiplex). Own worktree, own cargo target — safe alongside A (2 concurrent cargo builds, within the limit).</div>
+<div class="track"><b>Track B — Manager rewire <span class="lane wait">AFTER A + C + recon</span></b><br>
+The convergence point, sequential because everything meets in <code>manager.rs</code>: store wired as the single truth (writes in the same transaction as state changes), one-time importer, shared-adapter pool per provider, and turn-scoped suspend (30s grace; exact policy semantics — lease vs grace edge cases, cancel/permission interplay — finalized from the t3lifecycle19 recon report). Old paths deleted in this same track.</div>
+</div>
+
+<h2>Then the fan-out point — you called it</h2>
+<div class="panel">
+<p>Track B is exactly where the backbone starts affecting the rest of the app. Once it lands, the follow-ups are <b>disjoint frontend/feature surfaces</b> — ideal for wide concurrent lanes, each in its own worktree:</p>
+<table>
+<tr><th>Fan-out lane</th><th>Surface</th></tr>
+<tr><td>Session list from backend; delete localStorage store + reconciliation</td><td><code>ownedSessions.ts</code>, rail wiring</td></tr>
+<tr><td>Drafts persisted per session (composer reads/writes DB)</td><td>composer + thread-start</td></tr>
+<tr><td>Annotations persisted (browser overlay notes survive restarts)</td><td><code>sessionBrowserState</code></td></tr>
+<tr><td>Session library backed by SQL queries (history, search)</td><td>sessionLibrary</td></tr>
+<tr><td>Suspended/turn-state presence polish on the new lifecycle</td><td>rail presence (builds on 5bc79f7)</td></tr>
+</table>
+</div>
+
+<h2>Verification gates (each track, before merge)</h2>
+<div class="panel">
+<ul>
+<li>Track A: store tests incl. crash-safety (kill -9 mid-write → WAL recovers), retention policy, importer round-trip.</li>
+<li>Track C: the muxspike19 probe rerun through OUR client — two sessions, interleaved ALPHA/BRAVO, no cross-talk; full agent_conversation suite green.</li>
+<li>Track B: restart mid-conversation → everything restores; turn ends → engine gone in ~30s → next message resumes transparently; grep receipts that journal persistence + localStorage store are deleted; contract sweep zero-diff; rebuild + app restart before claiming done.</li>
+<li>All: <code>RUSTFLAGS="-D warnings"</code>, RUST_TEST_THREADS=1, one cargo per worktree, AGENTS.md perf rules.</li>
+</ul>
+</div>
+
+<h2>Risks, honestly</h2>
+<div class="panel">
+<ul>
+<li><b>Claude memory under multiplex is modest</b> (+394MB/session measured) — the win there is turn-scoped lifecycle, not sharing. Codex gets both (~165MB saved per extra session).</li>
+<li><b>Resume latency per message</b> after grace expiry: engine respawn ~1-3s before first token. Mitigation: 30s grace covers active back-and-forth; if it feels slow in practice, the constant is one line.</li>
+<li><b>Importer correctness</b>: one-shot migration verified against your real machine before old stores are deleted — the delete commit only lands after a live restore check.</li>
+<li><b>Recon may contradict a Track B detail</b> (e.g. approval-while-suspended edge): B hasn't started, so findings land in its spec, not in rework.</li>
+</ul>
+</div>
+</body>
+</html>
