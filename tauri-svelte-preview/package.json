@@ -117,7 +117,6 @@
     "test:usage-view-model": "node --experimental-strip-types scripts/usageViewModel.test.mjs",
     "test:space-view-model": "node --experimental-strip-types scripts/spaceViewModel.test.mjs",
     "test:session-row-actions": "node --experimental-strip-types scripts/sessionRowActions.test.ts",
-    "test:collapse-tool-output": "node --experimental-strip-types scripts/collapseToolOutput.test.mjs",
     "test:code-highlight": "node --experimental-strip-types scripts/codeHighlight.test.mjs",
     "test:markdown-preview": "node --experimental-strip-types scripts/markdownPreview.test.mjs"
   },

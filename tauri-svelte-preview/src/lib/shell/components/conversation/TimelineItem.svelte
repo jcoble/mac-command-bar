@@ -21,12 +21,15 @@
     onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
     onFileLink?(path: string): void;
   }
-  let { item, assistantLabel = 'Assistant', onApprovalDecision, onInputSubmit, onFileLink }: Props = $props();
+  // `assistantLabel` is retired: nothing in the transcript carries a role
+  // heading any more. It stays accepted only so the timeline that still passes
+  // it keeps type-checking; the container drops it in its own pass.
+  let { item, onApprovalDecision, onInputSubmit, onFileLink }: Props = $props();
 </script>
 
 <div class="timeline-item" data-testid="conversation-timeline-item" data-item-id={item.itemId} data-kind={item.kind}>
   {#if item.kind === 'user'}<UserMessageItem {item} {onFileLink} />
-  {:else if item.kind === 'assistant'}<AssistantMessageItem {item} label={assistantLabel} {onFileLink} />
+  {:else if item.kind === 'assistant'}<AssistantMessageItem {item} {onFileLink} />
   {:else if item.kind === 'reasoning'}<ReasoningItem {item} {onFileLink} />
   {:else if item.kind === 'plan'}<PlanItem {item} />
   {:else if item.kind === 'tasks'}<TaskListItem {item} />
@@ -41,10 +44,20 @@
 </div>
 
 <style>
-  /* The list sets 16px between items. A user message starts a new turn, so it
-     takes another 8px above it — 24px between turns. */
+  /* The list sets 16px between items, which is the space a finished turn earns
+     after it. Work rows — tools, thinking, plans, child agents — are part of
+     the same turn, so they give 8px of that back and read as one run. A user
+     message starts a new turn and takes another 8px above it. */
   .timeline-item{display:block;min-width:0;content-visibility:auto;contain-intrinsic-size:auto 96px}
   .timeline-item[data-kind='user']{margin-top:8px}
   .timeline-item[data-kind='user']:first-child{margin-top:0}
-  .unknown-item{padding:10px 12px;border-left:2px solid var(--color-border);color:var(--color-text-2);white-space:pre-wrap;font-size:13px}
+  .timeline-item[data-kind='tool'],
+  .timeline-item[data-kind='reasoning'],
+  .timeline-item[data-kind='subagent'],
+  .timeline-item[data-kind='command'],
+  .timeline-item[data-kind='file'],
+  .timeline-item[data-kind='plan'],
+  .timeline-item[data-kind='tasks']{margin-bottom:-8px}
+  .timeline-item:last-child{margin-bottom:0}
+  .unknown-item{padding:12px;border-left:2px solid var(--color-border);color:var(--color-text-2);white-space:pre-wrap;font-size:13px}
 </style>

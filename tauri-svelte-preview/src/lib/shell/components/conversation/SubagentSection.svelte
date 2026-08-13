@@ -1,6 +1,6 @@
 <script lang="ts">
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+  import CircleDot from '@lucide/svelte/icons/circle-dot';
   import Users from '@lucide/svelte/icons/users';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
 
@@ -28,7 +28,7 @@
   <summary>
     <span class="chevron" aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
     <span class="agent-icon" aria-hidden="true">
-      {#if running}<span class="spinner"><LoaderCircle size={14} strokeWidth={2} /></span>{:else}<Users size={14} strokeWidth={1.8} />{/if}
+      {#if running}<CircleDot size={14} strokeWidth={2} />{:else}<Users size={14} strokeWidth={1.8} />{/if}
     </span>
     <strong>{item.label}</strong>
     <span class="state-chip" data-testid="timeline-subagent-state">{item.state}</span>
@@ -44,33 +44,30 @@
 </details>
 
 <style>
-  .subagent{border:1px solid color-mix(in srgb,var(--color-border) 62%,transparent);border-left:2px solid color-mix(in srgb,var(--color-accent) 45%,var(--color-border));border-radius:10px;background:color-mix(in srgb,var(--color-surface) 50%,var(--color-bg) 50%);overflow:hidden}
-  summary{display:flex;align-items:center;gap:8px;min-height:34px;padding:6px 10px;cursor:pointer;list-style:none}
+  .subagent{border:1px solid transparent;border-left:2px solid color-mix(in srgb,var(--color-accent) 45%,var(--color-border));border-radius:10px}
+  .subagent[open]{border-color:color-mix(in srgb,var(--color-border) 62%,transparent);border-left-color:color-mix(in srgb,var(--color-accent) 45%,var(--color-border));background:color-mix(in srgb,var(--color-surface) 45%,var(--color-bg) 55%)}
+  summary{display:flex;align-items:center;gap:8px;min-height:28px;padding:2px 8px;border-radius:10px;cursor:pointer;list-style:none}
   summary::-webkit-details-marker{display:none}
   summary:hover{background:color-mix(in srgb,var(--color-hover) 55%,transparent)}
-  .chevron,.agent-icon{display:grid;place-items:center;flex:none;color:var(--color-text-2)}
+  summary:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
+  .chevron,.agent-icon{display:grid;place-items:center;flex:none;color:var(--color-text-3)}
   details[open] .chevron{transform:rotate(90deg)}
   strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:620}
-  .state-chip{flex:none;padding:2px 8px;border-radius:999px;background:color-mix(in srgb,var(--color-attention) 12%,transparent);color:var(--color-attention);font-size:12px;text-transform:lowercase}
+  .state-chip{flex:none;color:var(--color-text-3);font-size:12px;text-transform:lowercase}
   .running{border-left-color:var(--color-accent)}
-  .running .agent-icon{color:var(--color-accent)}
-  .running .state-chip{background:color-mix(in srgb,var(--color-accent) 14%,transparent);color:var(--color-accent)}
-  .done .state-chip{background:color-mix(in srgb,var(--color-good) 13%,transparent);color:var(--color-good)}
+  .running .agent-icon,.running .state-chip{color:var(--color-accent)}
+  .done .state-chip{color:var(--color-good)}
   .failed{border-left-color:var(--color-bad)}
-  .failed .state-chip{background:color-mix(in srgb,var(--color-bad) 14%,transparent);color:var(--color-bad)}
-  .subagent-body{display:grid;gap:8px;padding:0 12px 12px 40px}
+  .failed .state-chip{color:var(--color-bad)}
+  .subagent-body{display:grid;gap:8px;padding:0 12px 12px 38px}
   .note{margin:0;color:var(--color-text-2);font-size:13px}
-  dl{display:grid;gap:5px;margin:0}
-  dl div{display:grid;grid-template-columns:88px minmax(0,1fr);gap:10px}
-  dt{color:var(--color-text-3);font-size:13px}
-  dd{margin:0;min-width:0;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  dl{display:grid;gap:4px;margin:0}
+  dl div{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px}
+  dt{color:var(--color-text-3);font-size:12px}
+  dd{margin:0;min-width:0;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 
   @media (prefers-reduced-motion:no-preference){
     .chevron{transition:transform .14s ease}
     summary{transition:background .14s ease}
-    .spinner{display:grid;place-items:center;animation:spin .9s linear infinite}
-    .subagent-body{animation:body-in .14s ease-out both}
-    @keyframes spin{to{transform:rotate(360deg)}}
-    @keyframes body-in{from{opacity:0;transform:translateY(-2px)}to{opacity:1;transform:none}}
   }
 </style>
