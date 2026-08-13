@@ -21,10 +21,6 @@ const shellOverlaysSource = readFileSync(
   new URL('../src/lib/shell/components/ShellOverlays.svelte', import.meta.url),
   'utf8'
 );
-const browserOverlaySource = readFileSync(
-  new URL('../src/lib/shell/browser/SessionBrowserOverlay.svelte', import.meta.url),
-  'utf8'
-);
 const dockLayoutSource = readFileSync(
   new URL('../src/lib/sourceDockLayout.ts', import.meta.url),
   'utf8'
@@ -60,20 +56,10 @@ assert.match(
   /renderer: panel\.renderer/,
   'Center surface activation should preserve the panel-specific renderer contract'
 );
-assert.match(
+assert.doesNotMatch(
   shellOverlaysSource,
-  /<SessionBrowserOverlay\s*\/>/,
-  'The global overlay layer should mount one session-owned browser'
-);
-assert.match(
-  browserOverlaySource,
-  /class="session-browser-overlay"[\s\S]*?position:\s*fixed[\s\S]*?inset:\s*0/,
-  'The session browser should cover the complete window'
-);
-assert.match(
-  browserOverlaySource,
-  /data-testid="session-browser-frame"[\s\S]*?src=\{view\.url\}/,
-  'The session browser should render the current session URL'
+  /SessionBrowserOverlay/,
+  'The window-wide session browser overlay is gone; the Browser panel hosts the view now'
 );
 
 assert.match(

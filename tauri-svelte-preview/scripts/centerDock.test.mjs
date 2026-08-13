@@ -20,7 +20,6 @@ const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
 const rightPanelTabs = read('../src/lib/shell/components/RightPanelTabs.svelte');
 const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
 const shellOverlays = read('../src/lib/shell/components/ShellOverlays.svelte');
-const sessionBrowserOverlay = read('../src/lib/shell/browser/SessionBrowserOverlay.svelte');
 const assistanceHost = read('../src/lib/shell/assistance/AssistanceHost.svelte');
 const shellPage = read('../src/routes/next/+page.svelte');
 const shellLayout = read('../src/lib/shell/layout/frame.ts');
@@ -250,32 +249,12 @@ assert.match(
   'session activation errors must not be rendered over Diff or the editor'
 );
 
-// ── One session browser, still the whole window ────────────────────────────
+// ── The browser lives in its own right-panel tab now ───────────────────────
 
-assert.match(
-  shellOverlays,
-  /<SessionBrowserOverlay \/>/,
-  'the global overlay layer must mount the session-owned browser once'
-);
 assert.doesNotMatch(
   shellOverlays,
-  /BrowserOverlayHost|BrowserExpandedOverlay/,
-  'the retired browser overlay host must not remain reachable'
-);
-assert.match(
-  sessionBrowserOverlay,
-  /\.session-browser-overlay[\s\S]*?position:\s*fixed[\s\S]*?inset:\s*0[\s\S]*?z-index:\s*90/,
-  'the session browser must cover the complete window above the sessions rail'
-);
-assert.match(
-  sessionBrowserOverlay,
-  /data-testid="session-browser-frame"[\s\S]*?src=\{view\.url\}/,
-  'the browser preview must render the navigated session URL in the overlay'
-);
-assert.match(
-  sessionBrowserOverlay,
-  /session-browser-back[\s\S]*?session-browser-forward[\s\S]*?session-browser-reload/,
-  'the consolidated browser must expose back, forward, and reload controls'
+  /SessionBrowserOverlay|BrowserOverlayHost|BrowserExpandedOverlay/,
+  'no window-wide browser overlay remains: the Browser panel hosts the view itself'
 );
 
 console.log('centerDock: three center surfaces, corner tabs, eight right tabs, bottom utility strip verified');

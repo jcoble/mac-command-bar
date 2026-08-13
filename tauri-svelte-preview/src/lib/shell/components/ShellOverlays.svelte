@@ -15,7 +15,6 @@
   import ThreadStartHost from '$lib/shell/newSession/ThreadStartHost.svelte';
   import PalettePanel from './PalettePanel.svelte';
   import SettingsHost from './SettingsHost.svelte';
-  import SessionBrowserOverlay from '$lib/shell/browser/SessionBrowserOverlay.svelte';
   import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
   import ResourceManagerPanel from '$lib/shell/resources/ResourceManagerPanel.svelte';
@@ -154,7 +153,6 @@
 <ThreadStartHost bind:this={newSessionHost} onStart={onStartNewSession} />
 <!-- The session's own browser, over the whole window including the sessions
      column. It reads the active session itself and takes no props. -->
-<SessionBrowserOverlay />
 <AssistanceHost />
 <div
   bind:this={resourcePopoverHost}

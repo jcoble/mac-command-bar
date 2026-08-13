@@ -34,7 +34,6 @@
   import SettingsGearButton from '$lib/shell/components/SettingsGearButton.svelte';
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import LanguageIntelligenceControls from '$lib/shell/components/LanguageIntelligenceControls.svelte';
-  import { loadSessionBrowserAnnotations } from '$lib/shell/browser/sessionBrowserState.svelte.ts';
   import { openBrowserUrl } from '$lib/shell/browser/browserStore.svelte.ts';
   import type { UtilityId } from '$lib/shell/components/utilityStrip';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
@@ -821,13 +820,6 @@
     }
     setActiveOwned(ownedId);
     service?.show(ownedId);
-    if (switching) {
-      try {
-        await loadSessionBrowserAnnotations(ownedId);
-      } catch (error) {
-        rail.error = `could not load session annotations: ${describeError(error)}`;
-      }
-    }
     // Point the file tree, the context cards and any tab the user has already
     // opened at this session's project. Ignored while start-up is still
     // re-attaching sessions, so a reload still loads nothing on its own.
