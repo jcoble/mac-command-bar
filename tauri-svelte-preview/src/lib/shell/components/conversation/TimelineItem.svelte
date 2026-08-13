@@ -43,7 +43,7 @@
 <style>
   /* The list sets 16px between items. A user message starts a new turn, so it
      takes another 8px above it — 24px between turns. */
-  .timeline-item{display:block;min-width:0}
+  .timeline-item{display:block;min-width:0;content-visibility:auto;contain-intrinsic-size:auto 96px}
   .timeline-item[data-kind='user']{margin-top:8px}
   .timeline-item[data-kind='user']:first-child{margin-top:0}
   .unknown-item{padding:10px 12px;border-left:2px solid var(--color-border);color:var(--color-text-2);white-space:pre-wrap;font-size:13px}
