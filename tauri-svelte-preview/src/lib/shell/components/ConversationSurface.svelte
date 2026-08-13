@@ -351,6 +351,7 @@
       <ConversationTimeline
         items={visibleTimeline}
         conversationId={active.ownedId}
+        renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}
         timelineRevision={conversation.timelineRevision}
         anchorRequest={sendAnchorRequest}
         assistantLabel={selectedChild?.label ?? active.agent}

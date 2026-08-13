@@ -12,6 +12,7 @@ const SESSION_TAG = 'perfharness20-chrome';
 const HOVER_SAMPLE_COUNT = 10;
 const IDLE_MS = 15_000;
 const TIMER_WINDOW_MS = 10_000;
+const SCREENSHOT_PATH = '../.superpowers/sdd/2026-08-09-phase1-acp-foundation/centerwindow21-show-earlier.png';
 
 interface HoverReceipt {
   phase: string;
@@ -317,10 +318,12 @@ async function main(): Promise<number> {
     await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.resetIdleWindow());
     const clickStarted = await page.evaluate(() => performance.now());
     await largeRow.locator('[data-testid="worktree-agent-select"]').click({ position: { x: 12, y: 38 } });
-    await page.locator('[data-testid="conversation-timeline-item"]').nth(399).waitFor({ state: 'attached', timeout: 30_000 });
     await page.locator('[data-testid="conversation-composer-input"]').waitFor({ state: 'visible', timeout: 30_000 });
+    await page.locator('[data-testid="conversation-timeline-item"]').last().waitFor({ state: 'attached', timeout: 30_000 });
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     const clickInteractiveMs = round((await page.evaluate(() => performance.now())) - clickStarted);
+    const timelineDomCount = await page.locator('[data-testid="conversation-timeline-item"]').count();
+    const earlierRowCount = await page.locator('[data-testid="conversation-show-earlier-row"]').count();
     const snapshotLongTasks = await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.longTasks());
     const afterHover = await measureHover(page, 'after 2k events');
 
@@ -334,6 +337,24 @@ async function main(): Promise<number> {
     const idleLongTasks = await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.longTasks());
     const animationCount = await page.evaluate(() => document.getAnimations().length);
     const profileResult = await cdp.send('Profiler.stop') as { profile: CpuProfile };
+    if (earlierRowCount === 1) await page.screenshot({ path: SCREENSHOT_PATH, fullPage: false });
+    let disclosureReceipt: Record<string, unknown> | null = null;
+    if (earlierRowCount === 1) {
+      const firstRendered = page.locator('[data-testid="conversation-timeline-item"]').first();
+      const firstRenderedId = await firstRendered.getAttribute('data-item-id');
+      if (!firstRenderedId) throw new Error('First rendered timeline item has no data-item-id');
+      const beforeTop = await firstRendered.evaluate((element: HTMLElement) => element.getBoundingClientRect().top);
+      await page.locator('[data-testid="conversation-show-earlier"]').click();
+      await page.locator('[data-testid="conversation-timeline-item"]').nth(239).waitFor({ state: 'attached', timeout: 30_000 });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      const anchoredItem = page.locator(`[data-testid="conversation-timeline-item"][data-item-id="${firstRenderedId}"]`);
+      const afterTop = await anchoredItem.evaluate((element: HTMLElement) => element.getBoundingClientRect().top);
+      disclosureReceipt = {
+        'rows after click': await page.locator('[data-testid="conversation-timeline-item"]').count(),
+        'anchored item': firstRenderedId,
+        'offset delta px': round(afterTop - beforeTop)
+      };
+    }
 
     const hoverRows = [...beforeHover, ...afterHover];
     printTable('Hover latency (10 deterministic rows per phase)', hoverRows.map((row) => ({
@@ -351,6 +372,9 @@ async function main(): Promise<number> {
       };
     }));
     printTable('Click to transcript interactive', [{ events: 2_000, 'latency ms': clickInteractiveMs }]);
+    printTable('Transcript DOM count', [{ events: 2_000, rows: timelineDomCount, 'show-earlier rows': earlierRowCount }]);
+    printTable('Verified viewport', [{ width: verifiedViewport.width, height: verifiedViewport.height }]);
+    if (disclosureReceipt) printTable('Show-earlier scroll anchor', [disclosureReceipt]);
     printTable('Snapshot-load long tasks >50ms', snapshotLongTasks.length > 0
       ? snapshotLongTasks.map((entry) => ({ start: round(entry.startTime), duration: round(entry.duration), name: entry.name }))
       : [{ start: '-', duration: 0, name: 'none' }]);

@@ -61,28 +61,19 @@ const SESSION_COUNT = 15;
 const LARGE_EVENT_COUNT = 2_000;
 
 function eventPayload(index: number): Record<string, unknown> {
-  const turn = Math.floor(index / 10);
-  const offset = index % 10;
-  if (offset === 0) {
+  if (index % 2 === 0) {
     return {
       kind: 'userMessage',
-      itemId: `user-${turn}`,
-      text: `Investigate performance sample ${turn} and keep the response grounded in measurements.`,
-      completed: true
-    };
-  }
-  if (offset === 9) {
-    return {
-      kind: 'assistantMessage',
-      itemId: `assistant-${turn}`,
-      text: `Measured response ${turn}. The profile identifies repeated timeline projection work and preserves a concrete receipt for the next run.`,
+      itemId: `user-${index}`,
+      text: `Investigate performance sample ${index} and keep the response grounded in measurements.`,
       completed: true
     };
   }
   return {
-    kind: 'assistantDelta',
-    itemId: `assistant-${turn}`,
-    delta: ` chunk-${offset}: measured backend-truth transcript content. `
+    kind: 'assistantMessage',
+    itemId: `assistant-${index}`,
+    text: `Measured response ${index}. The profile identifies repeated timeline projection work and preserves a concrete receipt for the next run.`,
+    completed: true
   };
 }
 
@@ -144,7 +135,7 @@ export function createPerfHarnessMockPayload(): PerfHarnessMockPayload {
       settledAt: index === 14 ? new Date(now - 42_000).toISOString() : null,
       taskId: `TSK-${900 + index}`,
       pullRequest: null,
-      messageCount: largeTranscript ? 400 : 20,
+      messageCount: largeTranscript ? LARGE_EVENT_COUNT : 40,
       latestTurnPreview: largeTranscript ? 'Agent: stored 2k-event transcript' : `Agent: sample ${index + 1}`,
       scannedLastActivity: new Date(now - index * 31_000).toISOString()
     };
