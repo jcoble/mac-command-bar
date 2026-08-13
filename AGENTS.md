@@ -65,3 +65,18 @@ rule: the rename and the change land together). Never add a new `.js`/`.mjs` fil
 `any` is a last resort: type things properly — real interfaces, unions, generics, `unknown` with
 narrowing — and reach for `any` only when a correct type is genuinely impractical (say why in the
 one place it's used).
+
+## Browser viewport — 1710x990, every Playwright/browser session, no exceptions
+
+The desktop testing viewport is 1710x990 (this Mac's 2880x1864 Retina in "More Space" = 1710x1107
+points, minus ~117 for menu bar + browser chrome). Half-width screenshots have invalidated whole
+test runs; every browser mechanism must pin and VERIFY it:
+
+- playwright-cli: `open <url>`, then `resize 1710 990`, then verify with
+  `eval "() => window.innerWidth + 'x' + window.innerHeight"` — must print "1710x990"; resize
+  again if not, and re-run after any browser restart.
+- Raw playwright scripts: `chromium.launch(...)` + context/page viewport `{ width: 1710, height: 990 }`,
+  then the same innerWidth verification before any screenshot or measurement.
+- Playwright test-runner configs: pin `viewport: { width: 1710, height: 990 }` INSIDE each
+  project's `use` block AFTER any `...devices[...]` spread — the spread otherwise silently drops
+  it to 1280x720.
