@@ -1,10 +1,10 @@
 /**
  * A7 contract checks.  These are intentionally Node-light: the workflow view
- * and store are exercised without starting Tauri, while the service/UI checks
+ * and store are exercised without starting Tauri, while the service checks
  * prove the boundary and real command wiring by inspection.
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -14,7 +14,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workflowTypesPath = path.join(root, 'src/lib/shell/workflows/workflowTypes.ts');
 const workflowStorePath = path.join(root, 'src/lib/shell/workflows/workflowStore.svelte.ts');
 const workflowServicePath = path.join(root, 'src/lib/shell/workflows/workflowService.ts');
-const controlCenterPath = path.join(root, 'src/lib/shell/components/workflows/WorkflowControlCenter.svelte');
 
 const types = await import(workflowTypesPath);
 
@@ -145,7 +144,6 @@ assert.doesNotMatch(source, /orchestrationView|JSONL|read_workflow_event/);
 
 // ── Every engine control goes through the service/wrapper boundary ───────────
 const serviceSource = readFileSync(workflowServicePath, 'utf8');
-const controlCenterSource = readFileSync(controlCenterPath, 'utf8');
 const controlPairs = [
   ['startWorkflowRun', 'startWorkflowRunFromTauri'],
   ['pauseWorkflowRun', 'pauseWorkflowRunFromTauri'],
@@ -159,27 +157,18 @@ const controlPairs = [
 for (const [serviceFunction, wrapper] of controlPairs) {
   assert.match(serviceSource, new RegExp(`export async function ${serviceFunction}\\b`));
   assert.match(serviceSource, new RegExp(`return ${wrapper}\\(`));
-  assert.match(controlCenterSource, new RegExp(`\\b${serviceFunction}\\(`));
 }
 assert.match(serviceSource, /return listWorkflowRunsFromTauri\(\)/);
 assert.doesNotMatch(serviceSource, /\binvoke\s*\(/);
 
-// Components never bypass the service with a direct Tauri invoke.
-const componentDir = path.join(root, 'src/lib/shell/components/workflows');
-for (const name of [
-  'WorkflowControlCenter.svelte',
-  'WorkflowRunList.svelte',
-  'WorkflowRunHeader.svelte',
-  'WorkflowGraph.svelte',
-  'WorkflowLaneBoard.svelte',
-  'AgentHierarchy.svelte',
-  'WorkflowTimeline.svelte',
-  'WorkflowNodeInspector.svelte',
-  'AgentRuntimeInspector.svelte',
-  'WorkflowTemplateEditor.svelte',
-  'AgentActivityPane.svelte'
-]) {
-  assert.doesNotMatch(readFileSync(path.join(componentDir, name), 'utf8'), /\binvoke\s*\(/, `${name} bypasses workflowService`);
-}
+// The workflow UI that used to sit on top of this service has been removed —
+// the Agents panel replaced it and workflow authoring is not part of the app
+// today. The engine, its commands, and this service stay, so the checks above
+// still describe the boundary the next workflow surface has to use.
+assert.equal(
+  existsSync(path.join(root, 'src/lib/shell/components/workflows')),
+  false,
+  'the superseded workflow components are gone'
+);
 
 console.log('agent control center tests passed');
