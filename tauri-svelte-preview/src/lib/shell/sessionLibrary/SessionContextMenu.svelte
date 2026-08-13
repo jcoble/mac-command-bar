@@ -3,17 +3,10 @@
 
   import type {
     SessionContextMenuAction,
+    SessionContextMenuAnchor,
     SessionContextMenuItem
   } from './sessionLibraryContextMenu';
-
-  export interface SessionContextMenuAnchor {
-    left: number;
-    right: number;
-    top: number;
-    bottom: number;
-    containingBlockLeft?: number;
-    containingBlockTop?: number;
-  }
+  import { placeSessionContextMenu } from './sessionLibraryContextMenu';
 
   interface Props {
     anchor: SessionContextMenuAnchor;
@@ -24,43 +17,17 @@
 
   let { anchor, items, onSelect, onClose }: Props = $props();
 
-  const MENU_GAP = 8;
-  const VIEWPORT_PADDING = 8;
   let menuElement: HTMLDivElement | null = null;
   let measuredWidth = $state(0);
   let measuredHeight = $state(0);
   let viewportWidth = $state(typeof window === 'undefined' ? 0 : window.innerWidth);
   let viewportHeight = $state(typeof window === 'undefined' ? 0 : window.innerHeight);
 
-  const menuLeft = $derived.by(() => {
-    const width = measuredWidth;
-    const availableWidth = Math.max(viewportWidth, VIEWPORT_PADDING * 2);
-    const rightPosition = anchor.right + MENU_GAP;
-    const leftPosition = anchor.left - width - MENU_GAP;
-    const maxLeft = Math.max(VIEWPORT_PADDING, availableWidth - width - VIEWPORT_PADDING);
-    const rightFits = width > 0 && rightPosition + width <= availableWidth - VIEWPORT_PADDING;
-    const preferred = rightFits ? rightPosition : leftPosition;
-    const viewportLeft = Math.min(maxLeft, Math.max(VIEWPORT_PADDING, preferred));
-    return viewportLeft - (anchor.containingBlockLeft ?? 0);
-  });
-
-  const menuTop = $derived.by(() => {
-    const height = measuredHeight;
-    const availableHeight = viewportHeight || anchor.bottom + VIEWPORT_PADDING;
-    const belowPosition = anchor.bottom + MENU_GAP;
-    const abovePosition = anchor.top - height - MENU_GAP;
-    if (height === 0 || belowPosition + height <= availableHeight - VIEWPORT_PADDING) {
-      return Math.max(VIEWPORT_PADDING, belowPosition) - (anchor.containingBlockTop ?? 0);
-    }
-    if (abovePosition >= VIEWPORT_PADDING) {
-      return abovePosition - (anchor.containingBlockTop ?? 0);
-    }
-    const viewportTop = Math.max(
-      VIEWPORT_PADDING,
-      Math.min(belowPosition, availableHeight - height - VIEWPORT_PADDING)
-    );
-    return viewportTop - (anchor.containingBlockTop ?? 0);
-  });
+  const placement = $derived(placeSessionContextMenu(
+    anchor,
+    { width: measuredWidth, height: measuredHeight },
+    { width: viewportWidth, height: viewportHeight }
+  ));
 
   onMount(() => {
     const measure = (): void => {
@@ -96,7 +63,7 @@
   role="menu"
   tabindex="-1"
   aria-label="Session actions"
-  style={`left: ${menuLeft}px; top: ${menuTop}px`}
+  style={`left: ${placement.left}px; top: ${placement.top}px; visibility: ${measuredWidth > 0 && measuredHeight > 0 ? 'visible' : 'hidden'}`}
   onclick={(event) => event.stopPropagation()}
   oncontextmenu={(event) => event.preventDefault()}
   onkeydown={(event) => {

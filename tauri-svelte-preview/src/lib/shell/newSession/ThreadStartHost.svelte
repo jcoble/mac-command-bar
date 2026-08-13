@@ -5,11 +5,10 @@
   } from '$lib/shell/newSession/threadStartFlow.ts';
 
   interface Props {
-    providerConfigs: ThreadStartProviderConfig[];
     onStart: (request: ThreadStartRequest) => void | Promise<boolean | void>;
   }
 
-  let { providerConfigs, onStart }: Props = $props();
+  let { onStart }: Props = $props();
 
   type ThreadStartPaneComponent =
     (typeof import('./NewSessionThread.svelte'))['default'];
@@ -19,10 +18,20 @@
   let loading = false;
   let loadFailure = $state<string | null>(null);
   let sessionRoots = $state<string[]>([]);
+  let sessionProviderConfigs = $state<ThreadStartProviderConfig[]>([]);
 
   /** Open a fresh draft. Mounting a new pane resets every picker value. */
-  export function openNewSession(input: { sessionRoots?: string[] } = {}): void {
+  export function openNewSession(input: {
+    sessionRoots?: string[];
+    providerConfigs?: ThreadStartProviderConfig[];
+  } = {}): void {
     sessionRoots = [...(input.sessionRoots ?? [])];
+    sessionProviderConfigs = (input.providerConfigs ?? []).map((config) => ({
+      ...config,
+      availableModels: [...config.availableModels],
+      availableEfforts: [...config.availableEfforts],
+      availableApprovalPolicies: [...config.availableApprovalPolicies]
+    }));
     loadFailure = null;
     open = true;
     if (ThreadStartPane || loading) return;
@@ -54,7 +63,7 @@
 {#if ThreadStartPane && open}
   <ThreadStartPane
     {sessionRoots}
-    {providerConfigs}
+    providerConfigs={sessionProviderConfigs}
     onSend={submit}
     onClose={() => (open = false)}
   />

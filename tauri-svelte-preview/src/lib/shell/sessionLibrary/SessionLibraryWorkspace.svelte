@@ -64,7 +64,9 @@
       top: number;
       bottom: number;
       containingBlockLeft?: number;
+      containingBlockRight?: number;
       containingBlockTop?: number;
+      containingBlockBottom?: number;
     };
     items: SessionContextMenuItem[];
   };
@@ -178,13 +180,14 @@
 
   function menuPoint(event: MouseEvent): ContextMenuState['anchor'] {
     const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
-    const row = target?.closest<HTMLElement>('[data-testid="session-history-row"]');
-    const anchor = row ?? target;
+    const anchor = target;
     const rect = anchor?.getBoundingClientRect();
     const containingBlock = target?.closest<HTMLElement>('.dv-render-overlay');
     const containingBlockRect = containingBlock?.getBoundingClientRect();
     const containingBlockLeft = containingBlockRect?.left ?? 0;
+    const containingBlockRight = containingBlockRect?.right ?? window.innerWidth;
     const containingBlockTop = containingBlockRect?.top ?? 0;
+    const containingBlockBottom = containingBlockRect?.bottom ?? window.innerHeight;
     return rect
       ? {
           left: rect.left,
@@ -192,7 +195,9 @@
           top: rect.top,
           bottom: rect.bottom,
           containingBlockLeft,
-          containingBlockTop
+          containingBlockRight,
+          containingBlockTop,
+          containingBlockBottom
         }
       : {
           left: event.clientX,
@@ -200,7 +205,9 @@
           top: event.clientY,
           bottom: event.clientY,
           containingBlockLeft,
-          containingBlockTop
+          containingBlockRight,
+          containingBlockTop,
+          containingBlockBottom
         };
   }
 

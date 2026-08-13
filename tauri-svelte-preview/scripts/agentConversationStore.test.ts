@@ -3,7 +3,9 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
+import { get } from 'svelte/store';
 import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
+import { sessionPresenceHistory } from '../src/lib/shell/conversation/sessionPresence.ts';
 
 const storePath = fileURLToPath(
   new URL('../src/lib/shell/conversation/conversationStore.svelte.ts', import.meta.url)
@@ -151,6 +153,36 @@ assert.deepEqual(
   ['Visible question', 'Visible answer']
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
+
+// A bounded tail snapshot begins after omitted journal rows without marking
+// itself desynchronized, and replaying stored turn events cannot mutate the
+// live-only presence history.
+{
+  const presenceBefore = get(sessionPresenceHistory)['owned-windowed'];
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId: 'owned-windowed', provider: 'codex', generation: 1,
+      state: 'connected', nativeSessionId: 'thread-windowed'
+    },
+    suspended: true,
+    lastSequence: 502,
+    events: [
+      {
+        ownedId: 'owned-windowed', provider: 'codex', generation: 1,
+        sequence: 501, timestampMs: 500,
+        payload: { kind: 'userMessage', itemId: 'window-user', text: 'Recent question', completed: true }
+      },
+      {
+        ownedId: 'owned-windowed', provider: 'codex', generation: 1,
+        sequence: 502, timestampMs: 510,
+        payload: { kind: 'turn', turnId: 'stored-turn', state: 'completed' }
+      }
+    ]
+  });
+  assert.equal(store.getConversationSession('owned-windowed').desynchronized, false);
+  assert.equal(store.getConversationSession('owned-windowed').timeline[0].text, 'Recent question');
+  assert.equal(get(sessionPresenceHistory)['owned-windowed'], presenceBefore);
+}
 
 // Re-applying the same snapshot is a read repair, not another stream of deltas.
 // This is the session-row re-entry regression: the legacy timeline was rebuilt,
