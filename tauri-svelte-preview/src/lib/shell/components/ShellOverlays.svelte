@@ -240,7 +240,10 @@
      instrument, not chrome, and it never ships to a user. */
   .invoke-counter {
     position: absolute;
-    bottom: 8px;
+    /* Clear of the Resources and Usage strip along the bottom of the right
+       column, which is 28px tall — otherwise this sits on top of it and spoils
+       every screenshot taken in development. */
+    bottom: 36px;
     right: 10px;
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--color-surface) 92%, var(--color-bg));
