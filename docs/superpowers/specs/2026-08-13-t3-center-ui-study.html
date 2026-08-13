@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>T3 center UI renderer study</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f2f3f5;
+      --ink-2: #b0b4bc;
+      --ink-3: #777d88;
+      --ground: #090a0c;
+      --ground-2: #0e1013;
+      --panel: #121419;
+      --panel-2: #171a20;
+      --lift: #1c2027;
+      --message: rgba(255,255,255,.055);
+      --line: rgba(255,255,255,.085);
+      --line-strong: rgba(255,255,255,.14);
+      --accent: #77d4c5;
+      --accent-dim: rgba(119,212,197,.13);
+      --blue: #7ba7e8;
+      --green: #68c995;
+      --red: #ef7e83;
+      --amber: #d9b46f;
+      --r-sm: 6px;
+      --r-md: 8px;
+      --r-lg: 10px;
+      --r-xl: 14px;
+      --r-2xl: 18px;
+      --r-composer: 22px;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+      --measure: 768px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: auto; background: var(--ground); }
+    body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--sans); font-size: 14px; line-height: 1.55; }
+    a { color: inherit; }
+    button { font: inherit; }
+    .shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); min-height: 100vh; }
+    .rail { position: sticky; top: 0; height: 100vh; overflow: auto; border-right: 1px solid var(--line); background: #0b0d10; padding: 24px 18px; }
+    .brand { display: grid; grid-template-columns: 30px 1fr; gap: 10px; align-items: center; margin-bottom: 26px; }
+    .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel-2); font: 700 12px var(--mono); color: var(--accent); }
+    .brand strong { display: block; font-size: 13px; letter-spacing: -.01em; }
+    .brand span { display: block; color: var(--ink-3); font: 10px var(--mono); }
+    .nav-label { margin: 18px 8px 8px; color: var(--ink-3); font: 600 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .nav { display: grid; gap: 2px; }
+    .nav a { display: grid; grid-template-columns: 22px 1fr; align-items: center; padding: 7px 8px; border-radius: 7px; color: var(--ink-2); text-decoration: none; font-size: 12px; }
+    .nav a:hover, .nav a:focus-visible { outline: none; background: var(--message); color: var(--ink); }
+    .nav b { color: var(--ink-3); font: 10px var(--mono); }
+    .rail-note { margin-top: 22px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); color: var(--ink-3); font-size: 11px; }
+    main { min-width: 0; }
+    .hero { border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #0f1216 0%, var(--ground) 100%); }
+    .hero-inner { width: min(1120px, calc(100% - 48px)); margin: 0 auto; padding: 72px 0 54px; }
+    .kicker { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--accent); font: 600 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .commit { padding: 3px 7px; border: 1px solid rgba(119,212,197,.25); border-radius: 5px; background: var(--accent-dim); color: #a9e6dc; letter-spacing: 0; text-transform: none; }
+    h1 { max-width: 860px; margin: 18px 0 18px; font-size: clamp(38px, 6vw, 72px); line-height: .98; letter-spacing: -.055em; font-weight: 650; }
+    .hero p { max-width: 760px; margin: 0; color: var(--ink-2); font-size: 17px; line-height: 1.55; }
+    .thesis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin-top: 36px; border: 1px solid var(--line); border-radius: var(--r-xl); overflow: hidden; background: var(--line); }
+    .thesis div { min-height: 90px; padding: 15px; background: var(--panel); }
+    .thesis b { display: block; color: var(--accent); font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .thesis span { display: block; margin-top: 9px; color: var(--ink-2); font-size: 13px; line-height: 1.35; }
+    .content { width: min(1120px, calc(100% - 48px)); margin: 0 auto; padding: 42px 0 96px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 30px; color: var(--ink-3); font-size: 11px; }
+    .tag { display: inline-flex; align-items: center; min-height: 22px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 5px; font: 600 9px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .tag.verified { border-color: rgba(104,201,149,.25); color: var(--green); background: rgba(104,201,149,.07); }
+    .tag.assumed { border-color: rgba(217,180,111,.25); color: var(--amber); background: rgba(217,180,111,.07); }
+    .section { scroll-margin-top: 20px; display: grid; grid-template-columns: minmax(260px, .76fr) minmax(0, 1.5fr); gap: 34px; padding: 44px 0 54px; border-bottom: 1px solid var(--line); }
+    .section:last-of-type { border-bottom: 0; }
+    .section-copy { align-self: start; position: sticky; top: 20px; }
+    .section-number { margin-bottom: 12px; color: var(--accent); font: 600 11px var(--mono); letter-spacing: .1em; }
+    h2 { margin: 0 0 14px; font-size: 26px; line-height: 1.08; letter-spacing: -.035em; }
+    .section-copy p { margin: 0 0 14px; color: var(--ink-2); font-size: 13px; }
+    .receipt { margin: 14px 0; padding: 10px 11px; border-left: 2px solid var(--line-strong); background: rgba(255,255,255,.018); color: var(--ink-3); font: 10.5px/1.55 var(--mono); overflow-wrap: anywhere; }
+    .decision { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink); font-size: 12px; }
+    .decision b { color: var(--accent); font: 700 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .study { min-width: 0; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--panel); box-shadow: 0 20px 50px rgba(0,0,0,.16); }
+    .study-bar { display: flex; justify-content: space-between; align-items: center; gap: 14px; min-height: 40px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--ground-2); }
+    .study-bar strong { color: var(--ink-2); font: 600 10px var(--mono); letter-spacing: .05em; text-transform: uppercase; }
+    .study-bar span { color: var(--ink-3); font: 10px var(--mono); }
+    .canvas { padding: 28px; background: #0c0e11; }
+    .conversation { max-width: 768px; margin: 0 auto; }
+    .user-turn { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; padding-bottom: 16px; }
+    .user-bubble { max-width: 80%; padding: 12px; border-radius: 16px; background: rgba(255,255,255,.055); color: var(--ink); font-size: 14px; line-height: 1.55; }
+    .user-meta, .assistant-meta { display: flex; gap: 8px; align-items: center; color: var(--ink-3); font: 10px var(--mono); }
+    .assistant-turn { padding: 2px 4px 16px; }
+    .assistant-turn p { margin: 0 0 10.4px; color: #c9ccd2; font-size: 14px; line-height: 1.625; }
+    .assistant-turn p:last-child { margin-bottom: 0; }
+    .turn-fold { display: flex; gap: 5px; align-items: center; padding: 4px 4px 8px; border-bottom: 1px solid var(--line); color: var(--ink-3); font: 10px var(--mono); }
+    .annotation-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; border-top: 1px solid var(--line); background: var(--line); }
+    .annotation-grid div { padding: 10px 12px; background: var(--panel); color: var(--ink-3); font-size: 10px; }
+    .annotation-grid b { display: block; color: var(--ink-2); font: 600 10px var(--mono); }
+    .md-demo { max-width: 690px; margin: 0 auto; color: #c9ccd2; font-size: 14px; line-height: 1.625; }
+    .md-demo h3 { margin: 0 0 8px; color: var(--ink); font-size: 18px; line-height: 1.3; }
+    .md-demo h4 { margin: 20px 0 8px; color: var(--ink); font-size: 16px; line-height: 1.3; }
+    .md-demo p, .md-demo ul { margin: 10.4px 0; }
+    .md-demo ul { padding-left: 20px; }
+    .md-demo li + li { margin-top: 4px; }
+    .inline-code { padding: 1.6px 5.6px; border: 1px solid var(--line-strong); border-radius: 6px; background: rgba(255,255,255,.045); color: var(--ink); font: 12px var(--mono); }
+    .code-card { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.035); }
+    .code-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 6px 0 12px; color: #afb3bc; font: 11px var(--mono); }
+    .code-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .file-dot { width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(119,212,197,.45); background: var(--accent-dim); }
+    .code-actions { display: flex; gap: 2px; }
+    .icon-button { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--ink-3); font: 11px var(--mono); }
+    .icon-button.active { background: rgba(255,255,255,.07); color: var(--ink); }
+    pre { margin: 0; overflow: auto; padding: 13px 14px; color: #c9d0da; font: 12px/1.55 var(--mono); }
+    .syn-k { color: #c49ae8; } .syn-s { color: #9dcca5; } .syn-f { color: #7ebbd6; } .syn-c { color: #747b86; }
+    .tool-stack { display: grid; gap: 1px; }
+    .tool-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) 16px 16px; gap: 6px; align-items: center; min-height: 26px; padding: 2px; border-radius: 6px; font-size: 12px; line-height: 20px; }
+    .tool-row:hover { background: rgba(255,255,255,.035); }
+    .tool-icon { width: 20px; text-align: center; color: var(--ink-3); font: 11px var(--mono); }
+    .tool-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .tool-text b { font-weight: 600; }
+    .tool-text span { color: var(--ink-3); }
+    .tool-status { font: 12px var(--mono); text-align: center; }
+    .tool-status.ok { color: var(--green); } .tool-status.fail { color: var(--red); } .tool-status.run { color: var(--ink-3); }
+    .tool-toggle { display: flex; align-items: center; gap: 6px; padding: 3px 2px; color: var(--ink); font-size: 12px; }
+    .tool-output { margin: 4px 0 6px 28px; padding: 2px 0 2px 12px; border-left: 1px solid var(--line); color: var(--ink-2); font: 11px/1.6 var(--mono); white-space: pre-wrap; }
+    .working { display: flex; align-items: center; gap: 8px; padding: 6px; color: var(--ink-3); font: 11px var(--mono); }
+    .dots { display: flex; gap: 3px; }
+    .dots i { width: 4px; height: 4px; border-radius: 50%; background: #626871; }
+    .stream-cursor { display: inline-block; width: 6px; height: 14px; margin-left: 2px; vertical-align: -2px; background: rgba(255,255,255,.42); }
+    .scroll-stage { height: 420px; position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #0a0c0f; }
+    .scroll-transcript { height: 100%; overflow: hidden; padding: 24px 22px 116px; }
+    .scroll-transcript .conversation { transform: translateY(-28px); }
+    .scroll-pill { position: absolute; right: 50%; bottom: 92px; transform: translateX(50%); padding: 4px 12px; border: 1px solid var(--line-strong); border-radius: 999px; background: #171a1f; color: var(--ink-2); font-size: 11px; }
+    .composer { position: absolute; inset: auto 18px 14px; max-width: 768px; margin: 0 auto; border: 1px solid var(--line-strong); border-radius: 22px; background: #15181d; }
+    .composer-input { min-height: 64px; padding: 16px 16px 8px; color: var(--ink-2); }
+    .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 16px 16px; }
+    .composer-left { min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; }
+    .control { height: 28px; display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-3); font-size: 12px; }
+    .control + .control { border-left: 1px solid var(--line); border-radius: 0 8px 8px 0; }
+    .control strong { color: var(--ink-2); font-weight: 550; }
+    .send { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: 50%; background: #e7e9ed; color: #111318; font: 700 15px var(--sans); }
+    .send.stop { background: rgba(239,126,131,.9); color: white; }
+    .stop-square { width: 10px; height: 10px; border-radius: 2px; background: currentColor; }
+    .state-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+    .state-card { border: 1px solid var(--line); border-radius: 10px; padding: 11px; background: var(--ground-2); }
+    .state-card > span { display: block; margin-bottom: 8px; color: var(--ink-3); font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .meta-demo { display: grid; gap: 26px; max-width: 670px; margin: 0 auto; }
+    .meta-row { display: flex; align-items: center; gap: 8px; color: var(--ink-3); font: 10px var(--mono); }
+    .meta-row.right { justify-content: flex-end; max-width: 80%; margin-left: auto; }
+    .mini-action { width: 22px; height: 22px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--ink-3); font: 10px var(--mono); }
+    .context-ring { width: 28px; height: 28px; display: grid; place-items: center; border: 3px solid #343942; border-right-color: var(--accent); border-radius: 50%; }
+    .token-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+    .token { min-height: 78px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--ground-2); }
+    .token b { display: block; color: var(--accent); font: 650 15px var(--mono); }
+    .token span { display: block; margin-top: 4px; color: var(--ink-3); font-size: 10px; }
+    .radius-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .radius-chip { width: 72px; height: 52px; display: grid; place-items: center; border: 1px solid var(--line-strong); background: var(--message); color: var(--ink-3); font: 10px var(--mono); }
+    .perf-map { display: grid; grid-template-columns: 1fr 34px 1fr 34px 1fr; align-items: center; gap: 6px; }
+    .perf-node { min-height: 126px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--ground-2); }
+    .perf-node b { display: block; color: var(--ink); font-size: 12px; }
+    .perf-node code { display: block; margin: 8px 0; color: var(--accent); font: 11px var(--mono); }
+    .perf-node span { color: var(--ink-3); font-size: 11px; }
+    .arrow { color: var(--ink-3); text-align: center; font: 16px var(--mono); }
+    .warning { margin-top: 16px; padding: 12px; border: 1px solid rgba(239,126,131,.22); border-radius: 10px; background: rgba(239,126,131,.055); color: #d7a4a7; font-size: 11px; }
+    .ranked { margin-top: 42px; padding: 28px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); }
+    .ranked h2 { margin-bottom: 20px; }
+    .rank-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; counter-reset: rank; }
+    .rank-item { counter-increment: rank; display: grid; grid-template-columns: 28px 1fr; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--ground-2); color: var(--ink-2); font-size: 12px; }
+    .rank-item::before { content: counter(rank, decimal-leading-zero); color: var(--accent); font: 600 10px var(--mono); padding-top: 2px; }
+    .rank-item b { color: var(--ink); }
+    footer { margin-top: 44px; padding-top: 20px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 20px; color: var(--ink-3); font: 10px var(--mono); }
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; }
+      .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .nav { grid-template-columns: repeat(5, 1fr); }
+      .nav-label, .rail-note { display: none; }
+      .brand { margin-bottom: 14px; }
+      .section { grid-template-columns: 1fr; }
+      .section-copy { position: static; }
+      .thesis { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 620px) {
+      .hero-inner, .content { width: min(100% - 28px, 1120px); }
+      .hero-inner { padding-top: 44px; }
+      .nav { grid-template-columns: 1fr 1fr; }
+      .canvas { padding: 16px; }
+      .annotation-grid, .state-strip { grid-template-columns: 1fr; }
+      .token-grid { grid-template-columns: 1fr 1fr; }
+      .perf-map { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .rank-list { grid-template-columns: 1fr; }
+      .thesis { grid-template-columns: 1fr; }
+      .composer { inset-inline: 8px; }
+      .control:nth-child(n+3) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand"><div class="brand-mark">T3</div><div><strong>Center renderer study</strong><span>source-led / static</span></div></div>
+      <div class="nav-label">Ten surfaces</div>
+      <nav class="nav" aria-label="Study sections">
+        <a href="#s1"><b>01</b><span>Turns</span></a><a href="#s2"><b>02</b><span>Markdown</span></a>
+        <a href="#s3"><b>03</b><span>Code</span></a><a href="#s4"><b>04</b><span>Tools</span></a>
+        <a href="#s5"><b>05</b><span>Streaming</span></a><a href="#s6"><b>06</b><span>Scroll</span></a>
+        <a href="#s7"><b>07</b><span>Composer</span></a><a href="#s8"><b>08</b><span>Metadata</span></a>
+        <a href="#s9"><b>09</b><span>Tokens</span></a><a href="#s10"><b>10</b><span>Performance</span></a>
+      </nav>
+      <div class="rail-note">Every product claim is paired with a T3 repository file-and-line receipt. Mocks recreate hierarchy and geometry; colors are variable-based approximations.</div>
+    </aside>
+    <main>
+      <header class="hero">
+        <div class="hero-inner">
+          <div class="kicker">Renderer study <span class="commit">1e59b4c4004ce3c724d09ca0b140ed4523758d1e</span></div>
+          <h1>Clean by compression, fast by identity.</h1>
+          <p>T3’s center is not a stack of chat cards. It is one narrow virtual transcript: prompts become quiet right-side bubbles, assistant work stays in the reading plane, old machinery folds away, and the composer carries configuration without becoming a toolbar.</p>
+          <div class="thesis">
+            <div><b>Measure</b><span>One 768px transcript and composer width.</span></div>
+            <div><b>Hierarchy</b><span>User bubble; assistant prose; no avatars.</span></div>
+            <div><b>Compression</b><span>One recent tool row before disclosure.</span></div>
+            <div><b>Fast path</b><span>Virtual rows with preserved object identity.</span></div>
+          </div>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="legend"><span class="tag verified">Verified</span> read directly from source <span class="tag assumed">Assumed</span> faithful visual approximation where runtime variables are not sampled</div>
+
+        <section class="section" id="s1">
+          <div class="section-copy">
+            <div class="section-number">01 / MESSAGE + TURN</div>
+            <h2>Asymmetry does the labeling.</h2>
+            <p><span class="tag verified">Verified</span> User prompts align right in an 80%-wide, 16px-radius surface with 12px padding. Assistant replies stay unboxed and full measure. There are no avatars or role headings.</p>
+            <p>Terminal rows receive 16px after-space; commentary, work and plan rows use 8px. Old completed work folds behind a thin “Worked for …” divider.</p>
+            <div class="receipt">apps/web/src/components/chat/MessagesTimeline.tsx:549–595, 928–1062, 1090–1149<br>apps/web/src/components/chat/MessagesTimeline.logic.ts:430–440, 465–477</div>
+            <div class="decision"><b>Adopt</b> — Keep the asymmetric bubble/plain-prose hierarchy and 768px measure; let rhythm replace role chrome.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Faithful static recreation</strong><span>768px max / 16px turn gap</span></div>
+            <div class="canvas">
+              <div class="conversation">
+                <div class="user-turn"><div class="user-bubble">Find the slow path in session switching, then explain the smallest safe fix.</div><div class="user-meta"><span>10:42 AM</span><span>revert</span><span>copy</span></div></div>
+                <div class="assistant-turn"><p>The delay begins before the new session renders. The route waits for terminal restoration even when the center panel only needs the message snapshot.</p><p>I’d separate the visible conversation load from background terminal restoration, while preserving the existing session identity.</p></div>
+                <div class="turn-fold"><span>Worked for 18s</span><span>›</span></div>
+                <div class="user-turn" style="padding-top:16px"><div class="user-bubble">Make the first paint independent, but do not create a second session store.</div></div>
+              </div>
+            </div>
+            <div class="annotation-grid"><div><b>USER</b>80% cap · 12px inset</div><div><b>ASSISTANT</b>unboxed · 4px inline inset</div><div><b>TURN</b>8px internal / 16px terminal</div></div>
+          </div>
+        </section>
+
+        <section class="section" id="s2">
+          <div class="section-copy">
+            <div class="section-number">02 / MARKDOWN</div>
+            <h2>A compact editorial scale.</h2>
+            <p><span class="tag verified">Verified</span> Reply text is 14px with relaxed leading. Paragraphs and lists use 0.65rem vertical margins. Headings are 20/18/16/14px, 600 weight, with 20px top and 8px bottom margins. Lists indent 20px; siblings separate by 4px.</p>
+            <p>GitHub-flavored markdown, normalized indentation and sanitized raw HTML are supported; user prompts optionally preserve hard line breaks.</p>
+            <div class="receipt">apps/web/src/components/ChatMarkdown.tsx:149–183, 1321–1330, 1482–1543, 1699–1717<br>apps/web/src/index.css:1803–1889</div>
+            <div class="decision"><b>Adapt</b> — Use the compact type scale and rhythm, but support only transcript syntax we actually receive.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Rendered answer</strong><span>14px / relaxed</span></div>
+            <div class="canvas">
+              <article class="md-demo">
+                <h3>The safe split</h3>
+                <p>Keep the visible session snapshot on the immediate path. Restore terminals after the center has something useful to show.</p>
+                <h4>What remains authoritative</h4>
+                <ul><li>The session store owns identity.</li><li>The transcript renders from one ordered snapshot.</li><li>Terminal restoration reports readiness independently.</li></ul>
+                <p>The caller still receives one <span class="inline-code">sessionId</span>; only the timing changes.</p>
+              </article>
+            </div>
+            <div class="annotation-grid"><div><b>PARAGRAPH</b>10.4px block rhythm</div><div><b>HEADING</b>20px top / 8px bottom</div><div><b>LIST</b>20px indent / 4px items</div></div>
+          </div>
+        </section>
+
+        <section class="section" id="s3">
+          <div class="section-copy">
+            <div class="section-number">03 / CODE</div>
+            <h2>Utility chrome, not a terminal costume.</h2>
+            <p><span class="tag verified">Verified</span> Fenced code gets a filename or language identity, a wrap toggle and copy action. Code is 12px; its title is 11px mono. Default overflow scrolls horizontally; wrap is explicit.</p>
+            <p>Completed highlighting enters a 500-entry / 50MB LRU. Streaming blocks bypass the cache. Plain preformatted text is the Suspense and error fallback.</p>
+            <div class="receipt">apps/web/src/components/ChatMarkdown.tsx:117–137, 545–780, 1652–1677<br>apps/web/src/index.css:1967–2023, 2043–2094</div>
+            <div class="decision"><b>Adopt</b> — Take integrated title, wrap, copy feedback and bounded highlight caching; map them to our theme.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Code block</strong><span>10px radius / 12px mono</span></div>
+            <div class="canvas">
+              <div class="code-card">
+                <div class="code-head"><div class="code-title"><span class="file-dot"></span><span>conversationScrollAnchor.ts</span></div><div class="code-actions"><button class="icon-button" aria-label="Wrap lines">↵</button><button class="icon-button active" aria-label="Copy code">copy</button></div></div>
+                <pre><span class="syn-k">export function</span> <span class="syn-f">decideScroll</span>(state: ScrollState, event: Event) {
+  <span class="syn-k">if</span> (event.type === <span class="syn-s">'jump-to-latest'</span>) {
+    <span class="syn-k">return</span> { ...state, pinnedToBottom: <span class="syn-k">true</span> };
+  }
+  <span class="syn-c">// Streaming stays inert until the user opts in.</span>
+  <span class="syn-k">return</span> state;
+}</pre>
+              </div>
+              <p style="margin:14px 0 0;color:var(--ink-2)">Inline references stay compact: <span class="inline-code">ConversationTimeline.svelte</span></p>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="s4">
+          <div class="section-copy">
+            <div class="section-number">04 / TOOLS + COMMANDS</div>
+            <h2>The newest machine action earns the row.</h2>
+            <p><span class="tag verified">Verified</span> Consecutive tool work collapses to one newest ordinary row. A count disclosure inserts older entries into the virtual list. Each row starts collapsed, with one-line heading/preview, chevron and terminal status.</p>
+            <p>Expanded content combines data, command, output and paths in an 11px pre-wrapped region capped at 16rem. It scrolls; there is no nested “show more.” Failure logic recognizes non-zero exit-code text.</p>
+            <div class="receipt">apps/web/src/components/chat/MessagesTimeline.logic.ts:13, 502–570<br>apps/web/src/components/chat/MessagesTimeline.tsx:1384–1424, 2028–2064, 2214–2383<br>apps/web/src/session-logic.ts:200–240, 1425–1444</div>
+            <div class="decision"><b>Adopt</b> — Default to one recent tool row plus disclosure; preserve exit codes as structured metadata in our version.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Work log</strong><span>collapsed by default</span></div>
+            <div class="canvas">
+              <div class="tool-stack">
+                <div class="tool-row"><div class="tool-icon">$</div><div class="tool-text"><b>Read files</b> <span>conversationScrollAnchor.ts</span></div><div>⌄</div><div class="tool-status ok">✓</div></div>
+                <div class="tool-toggle"><span class="tool-icon">⌄</span><b>+3 previous tool calls</b></div>
+                <div class="tool-row"><div class="tool-icon">$</div><div class="tool-text"><b>Run focused checks</b> <span>2 passed, 1 failed</span></div><div>⌃</div><div class="tool-status fail">×</div></div>
+                <div class="tool-output">$ pnpm test conversation-scroll
+PASS anchors sent user row
+FAIL preserves bottom pin after manual scroll
+
+exit code 1</div>
+                <div class="tool-row"><div class="tool-icon">◇</div><div class="tool-text"><b>Inspect renderer state</b> <span>waiting for output</span></div><div>⌄</div><div class="tool-status run">−</div></div>
+              </div>
+            </div>
+            <div class="annotation-grid"><div><b>SUMMARY</b>12px / 20px line</div><div><b>OUTPUT</b>11px / 16rem cap</div><div><b>STATE</b>check · x · minus</div></div>
+          </div>
+        </section>
+
+        <section class="section" id="s5">
+          <div class="section-copy">
+            <div class="section-number">05 / STREAMING</div>
+            <h2>Text stays in place; completion chrome waits.</h2>
+            <p><span class="tag verified">Verified</span> In-flight assistant text renders in the normal markdown plane. Copy and timestamp metadata do not appear until the terminal assistant message settles. Streaming code is highlighted but not cached.</p>
+            <p>A separate 11px row shows three pulsing dots, “Working for Ns,” and an optional current step. The timer updates one span directly every second to avoid a full React commit.</p>
+            <div class="receipt">apps/web/src/components/chat/MessagesTimeline.tsx:1110–1146, 1286–1339<br>apps/web/src/components/chat/MessagesTimeline.logic.ts:596–620<br>apps/web/src/components/ChatMarkdown.tsx:700–775</div>
+            <div class="decision"><b>Adapt</b> — Keep the working sentence and isolated clock; use a static mark, not T3’s infinite pulse.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Turn in flight</strong><span>mock intentionally does not animate</span></div>
+            <div class="canvas">
+              <div class="conversation">
+                <div class="assistant-turn"><p>The session switch currently waits on two independent resources. I’m separating the transcript snapshot from terminal restoration so the first useful frame can render<span class="stream-cursor"></span></p></div>
+                <div class="working"><span class="dots"><i></i><i></i><i></i></span><span>Working for 12s</span><span>· verifying scroll ownership</span></div>
+              </div>
+            </div>
+            <div class="annotation-grid"><div><b>TEXT</b>normal assistant plane</div><div><b>META</b>withheld until settled</div><div><b>CLOCK</b>one DOM text node</div></div>
+          </div>
+        </section>
+
+        <section class="section" id="s6">
+          <div class="section-copy">
+            <div class="section-number">06 / SCROLL</div>
+            <h2>T3 follows harder; ours asks first.</h2>
+            <p><span class="tag verified">Verified</span> T3 owns three modes: follow end, anchor new turn, free scroll. It reserves space below a new prompt, measures the turn against composer height, follows streamed growth, and cancels on real upward/manual navigation. A 40px end band re-arms follow.</p>
+            <p><span class="tag verified">Verified ours</span> Our reducer anchors the new user item but makes streaming inert unless “Jump to latest” explicitly pins the bottom. It cancels smooth motion on input and honors reduced motion.</p>
+            <div class="receipt">T3: apps/web/src/components/chat/timelineScrollAnchoring.ts:1–77; ChatView.tsx:3653–3983, 6259–6275<br>Ours: tauri-svelte-preview/src/lib/shell/conversation/conversationScrollAnchor.ts:1–122</div>
+            <div class="decision"><b>Adapt narrowly</b> — Keep ours. Borrow measured composer inset and pill debounce only if acceptance proves a gap.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Anchored transcript</strong><span>composer-aware</span></div>
+            <div class="canvas">
+              <div class="scroll-stage">
+                <div class="scroll-transcript"><div class="conversation"><div class="assistant-turn" style="opacity:.45"><p>Earlier answer content moves above the reading frame.</p></div><div class="user-turn"><div class="user-bubble">Keep my new prompt near the top while the response grows.</div></div><div class="assistant-turn"><p>The new turn is measured from this prompt to the latest row. Stream growth reveals only the overflow that no longer fits above the composer.</p><div class="tool-row"><div class="tool-icon">$</div><div class="tool-text"><b>Measure usable viewport</b> <span>composer inset 86px</span></div><div>⌄</div><div class="tool-status ok">✓</div></div></div></div></div>
+                <button class="scroll-pill">⌄&nbsp; Scroll to end</button>
+                <div class="composer"><div class="composer-input">Ask anything…</div><div class="composer-footer"><div class="composer-left"><button class="control"><strong>Balanced Large</strong>⌄</button><button class="control">Supervised⌄</button></div><button class="send">↑</button></div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="s7">
+          <div class="section-copy">
+            <div class="section-number">07 / COMPOSER</div>
+            <h2>Configuration lives inside the dock.</h2>
+            <p><span class="tag verified">Verified</span> Transcript and composer share the 768px measure. The dock uses a 22px outer and 20px inner silhouette. Prompt content sits above an internal toolbar: model at left, optional traits/build-plan, permission mode, then one send/stop locus at right.</p>
+            <p>The web composer has no visible attach button. Images arrive by paste or drag/drop and appear as removable 64px previews. Send is a 32px desktop circle; running replaces it with a red stop button.</p>
+            <div class="receipt">apps/web/src/components/ChatView.tsx:6279–6335<br>apps/web/src/components/chat/ChatComposer.tsx:230–380, 2278–2416, 2649–3213<br>apps/web/src/components/chat/ComposerPrimaryActions.tsx:84–99, 156–267</div>
+            <div class="decision"><b>Adapt</b> — Take the integrated footer; retain visible attachment discoverability if needed and use an opaque surface instead of glass blur.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Composer states</strong><span>28px controls / 32px action</span></div>
+            <div class="canvas">
+              <div style="position:relative;min-height:154px">
+                <div class="composer" style="position:relative;inset:auto"><div class="composer-input">Make the timeline preserve my reading position when a tool row expands.</div><div class="composer-footer"><div class="composer-left"><button class="control"><span class="file-dot"></span><strong>Balanced Large</strong>⌄</button><button class="control">Build</button><button class="control">Supervised⌄</button></div><button class="send">↑</button></div></div>
+              </div>
+              <div class="state-strip"><div class="state-card"><span>Ready</span><div class="composer-footer" style="padding:0"><button class="control">Full access⌄</button><button class="send">↑</button></div></div><div class="state-card"><span>Sending</span><div class="composer-footer" style="padding:0"><button class="control">Balanced Large</button><button class="send" style="opacity:.48">···</button></div></div><div class="state-card"><span>Running</span><div class="composer-footer" style="padding:0"><button class="control">Auto-accept edits</button><button class="send stop"><span class="stop-square"></span></button></div></div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="s8">
+          <div class="section-copy">
+            <div class="section-number">08 / TURN METADATA</div>
+            <h2>Useful on intent, absent by default.</h2>
+            <p><span class="tag verified">Verified</span> User timestamps/actions sit under the right-aligned bubble; final assistant metadata sits below prose. Both are hidden until hover or keyboard focus. User actions are revert and copy; assistant has copy.</p>
+            <p>There is no per-turn token/cost display, retry, or edit-in-place control at this commit. Usage lives in a composer-level context ring; subagent summary rows may show aggregate tokens.</p>
+            <div class="receipt">apps/web/src/components/chat/MessagesTimeline.tsx:1043–1164, 2163–2209<br>apps/web/src/components/chat/ContextWindowMeter.tsx:15–139</div>
+            <div class="decision"><b>Adapt</b> — Preserve quiet hover/focus metadata and revert/copy; add usage only where runtime values are trustworthy.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Metadata revealed</strong><span>hover / focus within</span></div>
+            <div class="canvas">
+              <div class="meta-demo">
+                <div><div class="user-turn" style="padding:0"><div class="user-bubble">Use the current store; do not add a compatibility bridge.</div><div class="meta-row right"><span>11:08 AM</span><button class="mini-action">↶</button><button class="mini-action">□</button></div></div></div>
+                <div><div class="assistant-turn" style="padding-bottom:4px"><p>The implementation can cut directly to the existing session identity and remove the duplicate reader in the same wave.</p></div><div class="meta-row"><button class="mini-action">□</button><span>11:09 AM</span></div></div>
+                <div class="meta-row" style="justify-content:flex-end"><div class="context-ring"></div><span>Context window · 42% · 86k / 205k</span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="s9">
+          <div class="section-copy">
+            <div class="section-number">09 / SPACING + STATE TOKENS</div>
+            <h2>One four-pixel grammar.</h2>
+            <p><span class="tag verified">Verified</span> The center repeatedly composes a 4px utility scale: 2px micro inset, 4px menu padding, 6px compact gap, 8px normal gap, 10px compact control padding, 12px bubble/mobile inset, 16px desktop inset and 20px icon/list slots.</p>
+            <p>Radius starts at 10px, deriving 6/8/10/14/18px. Menus and selects share 4px list padding, 8px item padding, 4px vertical padding, 28px desktop height, 6px item radius and 4px anchor offset.</p>
+            <div class="receipt">apps/web/src/index.css:142–205, 1059–1164<br>apps/web/src/components/ui/menu.tsx:23–89, 172–199<br>apps/web/src/components/ui/popover.tsx:19–75; select.tsx:14–36, 106–175</div>
+            <div class="decision"><b>Adopt</b> — Encode one 4px-derived geometry scale and semantic states in our shadcn layer; remove local padding inventions.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Geometry inventory</strong><span>actual values</span></div>
+            <div class="canvas">
+              <div class="token-grid"><div class="token"><b>2px</b><span>micro inset</span></div><div class="token"><b>4px</b><span>list pad / hair gap</span></div><div class="token"><b>6px</b><span>compact gap</span></div><div class="token"><b>8px</b><span>standard gap</span></div><div class="token"><b>10px</b><span>control x-padding</span></div><div class="token"><b>12px</b><span>bubble / mobile inset</span></div><div class="token"><b>16px</b><span>desktop composer inset</span></div><div class="token"><b>20px</b><span>icon slot / list indent</span></div><div class="token"><b>28px</b><span>desktop control height</span></div><div class="token"><b>768px</b><span>center max measure</span></div></div>
+              <div class="radius-row"><div class="radius-chip" style="border-radius:6px">6px</div><div class="radius-chip" style="border-radius:8px">8px</div><div class="radius-chip" style="border-radius:10px">10px</div><div class="radius-chip" style="border-radius:14px">14px</div><div class="radius-chip" style="border-radius:18px">18px</div><div class="radius-chip" style="border-radius:22px">22px dock</div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="s10">
+          <div class="section-copy">
+            <div class="section-number">10 / FAST + CLEAN</div>
+            <h2>The load-bearing layer is identity.</h2>
+            <p><span class="tag verified">Verified</span> A virtual list receives stable ids, item-type buckets and a 90px estimate. Its render callback has no closure dependencies. Derived rows reuse previous objects after per-kind shallow comparisons; local disclosures stay inside memoized rows.</p>
+            <p>Markdown component maps are memoized and highlighted code uses a bounded cache. There is no content-visibility in these center files because virtualization is the offscreen strategy.</p>
+            <div class="receipt">apps/web/src/components/chat/MessagesTimeline.tsx:124–159, 549–638, 1341–1382<br>apps/web/src/components/chat/MessagesTimeline.logic.ts:643–713<br>apps/web/src/components/ChatMarkdown.tsx:117–137, 700–780, 1437–1440, 1681–1721</div>
+            <div class="decision"><b>Adapt</b> — Take stable virtual rows and bounded highlighting. Skip continuous pulses and glass blur under our idle-cost contract.</div>
+          </div>
+          <div class="study">
+            <div class="study-bar"><strong>Render path</strong><span>what keeps work local</span></div>
+            <div class="canvas">
+              <div class="perf-map"><div class="perf-node"><b>Derived timeline</b><code>row.id + row.kind</code><span>Per-kind shallow comparison preserves unchanged objects.</span></div><div class="arrow">→</div><div class="perf-node"><b>Virtual list</b><code>estimate 90px</code><span>Stable render function and item-type buckets recycle efficiently.</span></div><div class="arrow">→</div><div class="perf-node"><b>Memoized row</b><code>local disclosure</code><span>Only the changing tool, timer or markdown subtree updates.</span></div></div>
+              <div class="warning"><strong>Do not copy blindly:</strong> T3’s working indicator uses an infinite pulse and a one-second mounted interval; its composer uses backdrop blur/saturation. Those are source-verified and conflict with MacCommandBar’s stricter zero-idle-work rule.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="ranked">
+          <div class="section-number">IMPLEMENTATION HANDOFF</div>
+          <h2>What to take, in order.</h2>
+          <div class="rank-list">
+            <div class="rank-item"><span><b>Take:</b> user bubble, unboxed assistant, one 768px plane.</span></div>
+            <div class="rank-item"><span><b>Take:</b> one recent tool row plus count disclosure.</span></div>
+            <div class="rank-item"><span><b>Take:</b> stable virtual rows and row-local state.</span></div>
+            <div class="rank-item"><span><b>Take:</b> compact code header, wrap, copy and bounded cache.</span></div>
+            <div class="rank-item"><span><b>Take:</b> one 4px-derived geometry and state layer.</span></div>
+            <div class="rank-item"><span><b>Adapt:</b> static working status with visibility-scoped clock.</span></div>
+            <div class="rank-item"><span><b>Adapt:</b> integrated composer footer on an opaque surface.</span></div>
+            <div class="rank-item"><span><b>Keep ours:</b> conservative explicit-pin scroll state machine.</span></div>
+            <div class="rank-item"><span><b>Make our own:</b> trustworthy usage and turn actions.</span></div>
+            <div class="rank-item"><span><b>Skip:</b> infinite status pulse and compositor glass.</span></div>
+          </div>
+        </section>
+
+        <footer><span>T3 source: MIT · commit 1e59b4c4004ce3c724d09ca0b140ed4523758d1e</span><span>Static study · no app source copied</span></footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
