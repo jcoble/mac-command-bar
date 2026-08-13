@@ -882,41 +882,43 @@
         {/each}
       </div>
 
-      <!-- Nothing renders here in a browser tab or on an older desktop build:
-           there is no language server to report on, so there is no chip. -->
-      <LanguageServerStatusChip
-        language={activeFile?.language ?? null}
-        status={languageServerStatus}
-      />
-
-      <!-- Markdown reads two ways, so the file says which one it is on. Source
-           is the ordinary editor; Preview is the same document rendered. -->
-      {#if activeFileIsMarkdown}
-        <span data-testid="markdown-view-toggle" class="shrink-0">
-          <SegmentedControl
-            size="sm"
-            items={MARKDOWN_VIEW_ITEMS}
-            value={markdownView}
-            aria-label="Markdown view"
-            onValueChange={(value) => setMarkdownView(value as MarkdownView)}
-          />
-        </span>
-      {/if}
-
-      <!-- The project's editor mode. Off is read mode: colouring only, nothing
-           started. On runs the project's one language server, shared by every
-           session and view on it, and its cost shows in the resource view. -->
-      <div class="intelligence" title={languageIntelligenceTitle}>
-        <span class="intelligence-name">Language intelligence</span>
-        <Switch
-          checked={fullMode}
-          disabled={languageIntelligenceBusy || !editorState.projectRoot}
-          onCheckedChange={(checked) => void switchLanguageIntelligence(checked)}
-          aria-label="Language intelligence"
+      <div class="editor-controls">
+        <!-- Nothing renders here in a browser tab or on an older desktop build:
+             there is no language server to report on, so there is no chip. -->
+        <LanguageServerStatusChip
+          language={activeFile?.language ?? null}
+          status={languageServerStatus}
         />
-        <span class="intelligence-state" class:on={fullMode}>
-          {languageIntelligenceLabel(fullMode)}
-        </span>
+
+        <!-- Markdown reads two ways, so the file says which one it is on. Source
+             is the ordinary editor; Preview is the same document rendered. -->
+        {#if activeFileIsMarkdown}
+          <span data-testid="markdown-view-toggle" class="shrink-0">
+            <SegmentedControl
+              size="sm"
+              items={MARKDOWN_VIEW_ITEMS}
+              value={markdownView}
+              aria-label="Markdown view"
+              onValueChange={(value) => setMarkdownView(value as MarkdownView)}
+            />
+          </span>
+        {/if}
+
+        <!-- The project's editor mode. Off is read mode: colouring only, nothing
+             started. On runs the project's one language server, shared by every
+             session and view on it, and its cost shows in the resource view. -->
+        <div class="intelligence" title={languageIntelligenceTitle}>
+          <span class="intelligence-name">Language intelligence</span>
+          <Switch
+            checked={fullMode}
+            disabled={languageIntelligenceBusy || !editorState.projectRoot}
+            onCheckedChange={(checked) => void switchLanguageIntelligence(checked)}
+            aria-label="Language intelligence"
+          />
+          <span class="intelligence-state" class:on={fullMode}>
+            {languageIntelligenceLabel(fullMode)}
+          </span>
+        </div>
       </div>
     </div>
 
@@ -995,6 +997,7 @@
     flex-direction: column;
     height: 100%;
     width: 100%;
+    min-width: 0;
     overflow: hidden;
     background: var(--color-bg);
     color: var(--color-text);
@@ -1030,10 +1033,13 @@
     align-items: center;
     gap: 8px;
     flex: 0 0 auto;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
     padding: 3px 8px 3px 4px;
-    min-width: 0;
   }
 
   .file-strip {
@@ -1043,12 +1049,14 @@
     flex: 1 1 auto;
     min-width: 0;
     overflow-x: auto;
+    overflow-y: hidden;
     scrollbar-width: thin;
   }
 
   .file-chip {
     display: flex;
     align-items: center;
+    flex: 0 0 auto;
     border: 1px solid transparent;
     border-radius: 5px;
     background: transparent;
@@ -1086,9 +1094,17 @@
     color: var(--color-text);
   }
 
-  /* The project's editor mode, pinned to the right of the header beside the
-   * status chip. It does not scroll with the file strip: which mode a project
-   * is in has to be readable however many files are open. */
+  /* The complete right edge is one non-shrinking sibling of the scrollable
+   * file strip. Tabs can move underneath their own clip, but these controls
+   * retain their full width and never enter that scrolling region. */
+  .editor-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    min-width: max-content;
+  }
+
   .intelligence {
     display: flex;
     align-items: center;
