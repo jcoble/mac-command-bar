@@ -61,6 +61,22 @@ The convergence point, sequential because everything meets in <code>manager.rs</
 </table>
 </div>
 
+<h2 style="color:var(--del)">What gets DELETED — the old way, item by item</h2>
+<div class="panel">
+<p class="note">One-way rule: each deletion lands in the SAME wave as its replacement, with a grep receipt proving zero references remain. A track does not merge without its receipts.</p>
+<table>
+<tr><th>Old path</th><th>Where</th><th>Replaced by</th><th>Deleted in</th></tr>
+<tr><td>Global <code>native_session_id: Option&lt;String&gt;</code>, global <code>PromptUpdateRoute</code>, global conversation-config state</td><td><code>acp_client.rs</code></td><td>Per-session state map keyed by <code>sessionId</code></td><td><b>Track C — DONE</b> (receipt in muxclient19 report; merged f12a546)</td></tr>
+<tr><td>Journal ring-buffer persistence (event history on disk)</td><td><code>agent_conversation/journal.rs</code></td><td>SessionStore <code>events</code> table (capped DELETE). In-memory queue survives only if snapshots need it, renamed as a cache — never a second truth</td><td><b>Track B</b> (in flight; spec mandates deletion + grep receipt)</td></tr>
+<tr><td>Any owned-session file/state persistence the manager keeps outside the store</td><td><code>manager.rs</code> + support files</td><td>SessionStore <code>sessions</code> table upserted in the same code path as every lifecycle change</td><td><b>Track B</b></td></tr>
+<tr><td>10-minute idle-suspend policy: constants, 60s tick eligibility, dead paths</td><td><code>manager.rs:36-38, 2635-2651</code>, tick in <code>main.rs:5582-5585</code></td><td>30s quiescent-grace suspend (delayed task per quiescence transition + 30s backstop tick)</td><td><b>Track B</b></td></tr>
+<tr><td>One-process-per-session spawn assumption</td><td><code>manager.rs</code> ensure/spawn path</td><td>Per-provider adapter pool via Track C's multi API; capability fallback is the SAME code path with pool size 1</td><td><b>Track B</b></td></tr>
+<tr><td>One-time importer (legacy journal → store)</td><td>Track B adds it, plainly marked</td><td>Nothing — it runs once</td><td><b>Cleanup commit after live restore verifies on the real machine</b>, together with the adapter transcript reader it depends on</td></tr>
+<tr><td>localStorage owned-sessions store (<code>mac-command-bar.next.owned-sessions</code>) + reconciliation</td><td><code>ownedSessions.ts</code>, rail wiring</td><td>Backend session-list command reading the store</td><td><b>Frontend fan-out lane 1</b> — the switch and the delete are one lane, one commit</td></tr>
+</table>
+<p class="note">Merge review checklist per track: (1) grep receipts in the lane report, (2) controller re-runs the greps independently, (3) contract sweep zero-diff. Anything still referencing a deleted path fails the merge.</p>
+</div>
+
 <h2>Verification gates (each track, before merge)</h2>
 <div class="panel">
 <ul>
