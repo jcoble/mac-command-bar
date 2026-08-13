@@ -7,8 +7,8 @@
    * a read-only detail card; nothing about hover moves the title or the branch.
    *
    * Motion is deliberate: the working indicator spins only while this row is
-   * genuinely working AND on screen, and the age text holds no clock at all —
-   * it is read once when the row mounts.
+   * genuinely working AND on screen, and the elapsed clock is the rail's one
+   * shared interval rather than a timer per row.
    */
   import { onDestroy } from 'svelte';
 
@@ -37,7 +37,11 @@
     type OwnedSession
   } from '$lib/shell/ownedSessions';
   import { sessionLabel } from '$lib/shell/sessionStrip';
-  import { formatRailElapsed } from './railElapsedFormat.ts';
+  import {
+    formatRailElapsed,
+    railElapsedCadenceFor,
+    watchRailElapsed
+  } from './railElapsedTicker.ts';
   import { observeRailRowVisibility } from './railRowVisibility.ts';
   import { sessionRowMenuItems, type SessionRowMenuAction } from './sessionRowMenu.ts';
   import SessionHoverCard from './SessionHoverCard.svelte';
@@ -153,12 +157,7 @@
   // ── The age, and the one bit of motion in the rail ─────────────────────────
   let rowElement = $state<HTMLLIElement | null>(null);
   let onScreen = $state(true);
-  // Read once when the row mounts. Live per-second ticking was tried and it
-  // cost the whole app its snappiness (per-row clock subscriptions churned the
-  // main thread more and more the longer the rail lived), and the rail reads
-  // fine without it: a session hours old says "2h" whether or not the clock
-  // ticks, and a fresh row's age refreshes whenever the rail redraws it.
-  const mountedAtMs = Date.now();
+  let nowMs = $state(Date.now());
 
   const isWorking = $derived(presence === 'working');
   /** Spin only for a working row a person can actually see. */
@@ -175,7 +174,7 @@
         ? Date.parse(session.lastActivity)
         : null)
   );
-  const ageMs = $derived(startedAtMs === null ? null : Math.max(0, mountedAtMs - startedAtMs));
+  const ageMs = $derived(startedAtMs === null ? null : Math.max(0, nowMs - startedAtMs));
   const ageText = $derived(ageMs === null ? null : formatRailElapsed(ageMs));
 
   $effect(() => {
@@ -184,6 +183,22 @@
     return observeRailRowVisibility(element, (visible) => {
       onScreen = visible;
     });
+  });
+
+  const hasAge = $derived(startedAtMs !== null);
+  /** Only two possible values, so this effect re-subscribes at the one-minute
+   * mark rather than on every tick. */
+  const cadence = $derived(railElapsedCadenceFor(ageMs ?? 0, isWorking));
+
+  // A row off screen needs no clock at all; one on screen asks for seconds only
+  // while it is working or still in its first minute, and minutes after that.
+  $effect(() => {
+    if (!onScreen || !hasAge) return;
+    const wanted = cadence;
+    nowMs = Date.now();
+    return watchRailElapsed((tick) => {
+      nowMs = tick;
+    }, wanted);
   });
 
   // ── The read-only detail card ──────────────────────────────────────────────
