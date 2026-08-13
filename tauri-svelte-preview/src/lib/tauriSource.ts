@@ -103,6 +103,7 @@ export type UsageProviderSummaryRow = import('./shell/usage/usageTypes.ts').Usag
 export type UsageDailyRow = import('./shell/usage/usageTypes.ts').UsageDailyRow;
 export type UsageDailyTotalsRow = import('./shell/usage/usageTypes.ts').UsageDailyTotalsRow;
 export type AgentConversationCapabilities = import('./shell/conversation/conversationTypes.ts').AgentCapabilities;
+export type AgentConversationEvent = import('./shell/conversation/conversationTypes.ts').AgentConversationEvent;
 export type AgentConversationSnapshot = import('./shell/conversation/conversationTypes.ts').AgentConversationSnapshot;
 
 export type TerminalOutputPayload = {
@@ -297,6 +298,41 @@ export type AgentSession = {
    */
   messageCount?: number | null;
   latestTurnPreview?: string | null;
+};
+
+export type AgentConversationSessionMeta = {
+  worktree: string | null;
+  branch: string | null;
+  title: string | null;
+  project: string | null;
+  ptySessionId: string | null;
+  origin: 'app' | 'external' | null;
+  source: 'scanned' | 'fresh' | null;
+  viaCmux: boolean;
+  resumeCommand: string | null;
+  completedAt: string | null;
+  settledAt: string | null;
+  taskId: string | null;
+  pullRequest: string | null;
+  messageCount: number | null;
+  latestTurnPreview: string | null;
+  scannedLastActivity: string | null;
+};
+
+export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
+  ownedId: string;
+  provider: import('./shell/conversation/conversationTypes.ts').AgentConversationProvider;
+  model: string | null;
+  effort: string | null;
+  cwd: string;
+  state: import('./shell/ownedSessions.ts').AgentRuntimeState;
+  suspended: boolean;
+  createdAtMs: number;
+  lastActivityAtMs: number;
+  activeTurnId: string | null;
+  pendingPermission: boolean;
+  pendingInput: boolean;
+  nativeSessionId: string | null;
 };
 
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
@@ -1222,6 +1258,34 @@ export async function readAgentConversationSnapshotFromTauri(
   if (!isTauriRuntime() || !ownedId.trim()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', { ownedId });
+}
+
+export async function listAgentConversationSessionsFromTauri(): Promise<AgentConversationSessionRecord[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
+}
+
+export async function listAgentConversationEventsFromTauri(
+  ownedId: string,
+  fromSequence = 0
+): Promise<AgentConversationEvent[] | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationEvent[]>('list_agent_conversation_events', { ownedId, fromSequence });
+}
+
+export async function updateAgentConversationSessionMetaFromTauri(input: {
+  ownedId: string;
+  model: string | null;
+  effort: string | null;
+  meta: AgentConversationSessionMeta;
+}): Promise<AgentConversationSessionRecord | null> {
+  if (!isTauriRuntime() || !input.ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationSessionRecord>('update_agent_conversation_session_meta', {
+    request: input
+  });
 }
 
 export async function listAgentSessionsFromLocalBridge(): Promise<AgentSession[] | null> {

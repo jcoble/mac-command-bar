@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   normalizeProvider, adoptAgentSession, createFreshSession,
-  serializeOwnedSessions, parseStoredOwnedSessions, reconcileOwnedSessions,
+  ownedSessionFromBackend, ownedSessionMetaForBackend, parseStoredOwnedSessions, reconcileOwnedSessions,
   resolveOwnedSessionProject,
 } from '../src/lib/shell/ownedSessions.ts';
 
@@ -126,7 +126,7 @@ const scanRecord = {
 }
 { // persistence round-trip + tolerance
   const owned = adoptAgentSession(scanRecord, mint);
-  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));
+  const parsed = parseStoredOwnedSessions(JSON.stringify([owned]));
   assert.deepEqual(parsed, [owned]);
   assert.deepEqual(parseStoredOwnedSessions('not json'), []);
   assert.deepEqual(parseStoredOwnedSessions('{"a":1}'), []);
@@ -136,7 +136,7 @@ const scanRecord = {
 }
 { // when the user marked a session done survives a save and a reload
   const done = { ...adoptAgentSession(scanRecord, mint), completedAt: '2026-07-28T10:00:00.000Z' };
-  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([done]));
+  const parsed = parseStoredOwnedSessions(JSON.stringify([done]));
   assert.deepEqual(parsed, [done]);
   // Sessions saved before this field existed come back as "not done".
   const { completedAt, ...older } = done;
@@ -153,13 +153,13 @@ const scanRecord = {
     state: 'live',
     settledAt: '2026-08-01T10:00:00.000Z'
   };
-  assert.equal(parseStoredOwnedSessions(serializeOwnedSessions([settled]))[0].settledAt, settled.settledAt);
+  assert.equal(parseStoredOwnedSessions(JSON.stringify([settled]))[0].settledAt, settled.settledAt);
   const { settledAt, ...older } = settled;
   assert.equal(parseStoredOwnedSessions(JSON.stringify([older]))[0].settledAt, null);
 }
 { // the branch, task and pull request survive a save and a reload
   const owned = adoptAgentSession(scanRecord, mint);
-  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));
+  const parsed = parseStoredOwnedSessions(JSON.stringify([owned]));
   assert.deepEqual(parsed, [owned]);
   // Sessions saved before these fields existed come back with nothing to show.
   const { branch, taskId, pullRequest, ...older } = owned;
@@ -177,7 +177,7 @@ const scanRecord = {
 }
 { // how much was said and the last thing said survive a save and a reload
   const owned = adoptAgentSession(scanRecord, mint);
-  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));
+  const parsed = parseStoredOwnedSessions(JSON.stringify([owned]));
   assert.equal(parsed[0].messageCount, 12);
   assert.equal(parsed[0].latestTurnPreview, 'Agent: fixed the reference race');
   // Sessions saved before these fields existed come back with nothing to show.
@@ -200,7 +200,7 @@ const scanRecord = {
 { // when the session was last busy survives a save and a reload
   const seen = '2026-07-28T09:00:00.000Z';
   const owned = adoptAgentSession({ ...scanRecord, lastActivity: seen }, mint);
-  const parsed = parseStoredOwnedSessions(serializeOwnedSessions([owned]));
+  const parsed = parseStoredOwnedSessions(JSON.stringify([owned]));
   assert.deepEqual(parsed, [owned]);
   // Sessions saved before this field existed come back with no stamp.
   const { lastActivity, ...older } = owned;
@@ -276,7 +276,7 @@ const scanRecord = {
   assert.equal(migrated.runtimeState, 'ready');
   assert.equal(migrated.ptySessionId, 'term-legacy');
   assert.equal(migrated.nativeSessionId, 'native-9');
-  assert.deepEqual(parseStoredOwnedSessions(serializeOwnedSessions([migrated])), [migrated]);
+  assert.deepEqual(parseStoredOwnedSessions(JSON.stringify([migrated])), [migrated]);
 }
 { // a reload never marks a session done and never un-marks one
   const stamp = '2026-07-28T10:00:00.000Z';
@@ -294,5 +294,27 @@ const scanRecord = {
     [{ sessionId: 'term-4', exited: false }]
   );
   assert.equal(notDone.owned[0].completedAt, null);
+}
+{ // SQLite list rows project every persisted rail field and the live overlay
+  const record = {
+    ownedId: 'owned-db', provider: 'codex' as const, model: 'model-a', effort: 'high',
+    cwd: '/tmp/project/worktree', state: 'waiting-approval' as const, suspended: false,
+    createdAtMs: 10, lastActivityAtMs: 20, activeTurnId: 'turn-a',
+    pendingPermission: true, pendingInput: false, nativeSessionId: 'native-a',
+    worktree: '/tmp/project/worktree', branch: 'tsk-872-db-rail', title: 'DB rail',
+    project: '/tmp/project', ptySessionId: null, origin: 'app' as const,
+    source: 'fresh' as const, viaCmux: false, resumeCommand: null,
+    completedAt: null, settledAt: null, taskId: 'TSK-872', pullRequest: null,
+    messageCount: 7, latestTurnPreview: 'Agent: retained',
+    scannedLastActivity: '2026-08-13T10:00:00.000Z'
+  };
+  const projected = ownedSessionFromBackend(record);
+  assert.equal(projected.runtimeState, 'waiting-approval');
+  assert.equal(projected.pendingPermission, true);
+  assert.equal(projected.branch, record.branch);
+  assert.equal(projected.title, record.title);
+  assert.equal(projected.projectPath, record.project);
+  assert.equal(ownedSessionMetaForBackend(projected).messageCount, 7);
+  assert.equal(ownedSessionFromBackend({ ...record, suspended: true }).runtimeState, 'suspended');
 }
 console.log('ownedSessions tests passed');

@@ -4,8 +4,7 @@ import {
   adoptAgentSession,
   createFreshSession,
   parseStoredOwnedSessions,
-  reconcileOwnedSessions,
-  serializeOwnedSessions
+  reconcileOwnedSessions
 } from '../src/lib/shell/ownedSessions.ts';
 import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
 import {
@@ -66,7 +65,7 @@ const scanRecord = {
   assert.equal(reconciled.runtimeState, 'ready');
   assert.equal(reconciled.ptySessionId, 'pty-a');
   assert.equal(reconciled.nativeSessionId, 'native-a');
-  assert.deepEqual(parseStoredOwnedSessions(serializeOwnedSessions([reconciled])), [reconciled]);
+  assert.deepEqual(parseStoredOwnedSessions(JSON.stringify([reconciled])), [reconciled]);
 
   const storage = storageStub({
     [SESSION_WORKSPACES_STORAGE_KEY]: JSON.stringify({ 'owned-a': fixture.workspace })

@@ -194,7 +194,7 @@ assert.match(
   /const presenceIsRestart = \$derived\(presence === 'stopped'\)/,
   'only genuinely stopped rows offer Start, so suspended idle rows do not'
 );
-assert.match(row, /Idle — resumes on click/, 'suspended rows explain that a click resumes them');
+assert.match(row, /Idle — resumes on send/, 'suspended rows explain that only a send resumes them');
 assert.match(
   row,
   /\.presence\.idle\.suspended \.presence-dot \{ opacity: 0\.6; \}/,
@@ -209,18 +209,14 @@ assert.match(
 );
 assert.match(
   shellPage,
-  /if \(activation\.kind === 'view'\) \{[\s\S]*?if \(switching\) \{[\s\S]*?ensureStructuredConversation\(/,
-  'a rail selection change notifies the backend even when the conversation is already connected'
+  /async function selectOwned\([\s\S]*?loadConversationForRead\(ownedId\)/,
+  'a rail selection reads the stored transcript'
 );
-const viewActivationBlock = shellPage.match(
-  /if \(activation\.kind === 'view'\) \{[\s\S]*?\n      \}/
+const selectionBlock = shellPage.match(
+  /async function selectOwned\([\s\S]*?\n  \}\n\n  function handoffInput/
 );
-assert.ok(viewActivationBlock, 'the connected view-only activation branch stays explicit');
-assert.equal(
-  viewActivationBlock[0].match(/ensureStructuredConversation\(/g)?.length,
-  1,
-  'one selection change can issue at most one connected-session activation notification'
-);
+assert.ok(selectionBlock, 'the selection path stays explicit');
+assert.doesNotMatch(selectionBlock[0], /ensureStructuredConversation\(/, 'selection never ensures or starts a runtime');
 
 // --- the scroll chain ------------------------------------------------------
 

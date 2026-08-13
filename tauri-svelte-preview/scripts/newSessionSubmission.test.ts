@@ -92,11 +92,13 @@ assert.match(startNewSession, /async function startNewSession\(request: ThreadSt
 assert.match(startNewSession, /createFreshSession\(\{ cwd: request\.cwd, title: request\.title \}\)/);
 assert.match(startNewSession, /projectPath: request\.projectPath/);
 assert.match(startNewSession, /branch: request\.branch/);
-assert.match(startNewSession, /await selectOwned\(owned\.ownedId, true, request\.reasoningEffort/);
-assert.match(startNewSession, /setAgentConversationConfig\(/);
-assert.match(startNewSession, /await sendStructuredMessage\(owned\.ownedId, request\.prompt\)/);
+assert.match(startNewSession, /await selectOwned\(owned\.ownedId, true\)/);
+assert.doesNotMatch(startNewSession, /ensureStructuredConversation|setAgentConversationConfig\(/);
+assert.match(startNewSession, /await sendStructuredMessage\(owned\.ownedId, request\.prompt, null, \{/);
+assert.match(startNewSession, /model: request\.model/);
+assert.match(startNewSession, /approvalPolicy: request\.approvalPolicy/);
 assert.match(startNewSession, /return false;/);
 assert.match(conversationService, /reasoningEffort\?: string \| null;/);
 assert.match(conversationService, /nativeSessionMode: input\.nativeSessionMode \?\? 'resume'/);
 
-console.log('newSessionSubmission.test.mjs passed');
+console.log('newSessionSubmission.test.ts passed');

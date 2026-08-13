@@ -43,6 +43,7 @@ import {
 } from './conversationTypes.ts';
 import {
   readAgentConversationCapabilitiesFromTauri,
+  listAgentConversationEventsFromTauri,
   readAgentConversationSnapshotFromTauri,
   writeTerminalSessionFromTauri
 } from '$lib/tauriSource';
@@ -51,8 +52,8 @@ import { shouldClearConversationSending } from './conversationReducer.ts';
 import { rail, updateOwnedSession } from '../stores/sessionRailStore.svelte';
 import {
   decideConversationActivation,
-  shouldReviveBeforeSend,
-  validateStructuredSendGeneration
+  generationForSend,
+  shouldReviveBeforeSend
 } from './conversationActivation.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 
@@ -390,6 +391,17 @@ async function resyncConversation(ownedId: string): Promise<void> {
   return work;
 }
 
+export async function loadConversationForRead(ownedId: string): Promise<void> {
+  const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
+  if (!snapshot) return;
+  const events = await listAgentConversationEventsFromTauri(ownedId, 0);
+  applyAgentConversationSnapshot({
+    ...snapshot,
+    events: events ?? snapshot.events,
+    lastSequence: events?.at(-1)?.sequence ?? snapshot.lastSequence
+  });
+}
+
 export async function startConversationEvents(): Promise<void> {
   if (!isTauri() || unlisten) return;
   unlisten = await listen<AgentConversationEvent | AgentEvent>('agent-conversation-event', ({ payload }) => {
@@ -448,7 +460,12 @@ export async function ensureStructuredConversation(input: {
 export async function sendStructuredMessage(
   ownedId: string,
   text: string,
-  ptySessionId?: string | null
+  ptySessionId?: string | null,
+  startConfig?: {
+    reasoningEffort?: string | null;
+    model?: string | null;
+    approvalPolicy?: string | null;
+  }
 ): Promise<void> {
   let state = getConversationSession(ownedId);
   if (!state) return;
@@ -493,12 +510,12 @@ export async function sendStructuredMessage(
         cwd: owned.cwd,
         nativeSessionId: owned.nativeSessionId,
         nativeSessionMode,
-        reasoningEffort: state.agentConfig.reasoningEffort
+        reasoningEffort: startConfig?.reasoningEffort ?? state.agentConfig.reasoningEffort
       });
       const revived = getConversationSession(ownedId);
-      const nextGeneration = validateStructuredSendGeneration(previousGeneration, activated, revived);
+      const nextGeneration = generationForSend(previousGeneration, activated?.generation ?? -1);
       if (nextGeneration === null || !revived) {
-        throw new Error('The ensured conversation is not connected at the current generation');
+        throw new Error('The ensured conversation is not current');
       }
       state = revived;
       expectedGeneration = nextGeneration;
@@ -543,11 +560,9 @@ export async function sendStructuredMessage(
       ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY
     );
     const validatedState = getConversationSession(ownedId);
-    const validatedGeneration = validateStructuredSendGeneration(
-      expectedGeneration,
-      { state: state.connectionState, generation: expectedGeneration },
-      validatedState
-    );
+    const validatedGeneration = validatedState?.generation === expectedGeneration
+      ? expectedGeneration
+      : null;
     if (validatedGeneration === null || !validatedState) {
       throw new Error('The conversation generation changed before sending');
     }
@@ -562,7 +577,14 @@ export async function sendStructuredMessage(
       });
     }
     await invoke('send_agent_conversation_message', {
-      request: { ownedId, generation: validatedGeneration, text: prompt.text, content: prompt.content }
+      request: {
+        ownedId,
+        generation: validatedGeneration,
+        text: prompt.text,
+        content: prompt.content,
+        model: startConfig?.model ?? null,
+        approvalPolicy: startConfig?.approvalPolicy ?? null
+      }
     });
     if (!liveConversationEvents) await resyncConversation(ownedId);
     state.attachments.forEach(cleanupConversationAttachmentPreview);

@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,12 +15,13 @@ use super::handoff::{
 use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor,
     AgentConversationConfigState, AgentConversationConnection, AgentConversationEvent,
-    AgentConversationPayload, AgentConversationProvider, AgentConversationSnapshot, AgentEvent,
-    AgentEventType, AgentExecutionOwner, AgentImplementation, AgentInteractionCapabilities,
-    AgentNativeSessionMode, AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState,
-    AgentSessionCapabilities, AgentUserInputResponse, AgentWriterLease, AgentWriterLeaseOwner,
-    AgentWriterLeaseTransition, ApprovalState, ConversationConnectionState,
-    EnsureAgentConversationRequest, PlanItem, SetAgentConversationConfigRequest, ToolState,
+    AgentConversationPayload, AgentConversationProvider, AgentConversationSessionMeta,
+    AgentConversationSessionRecord, AgentConversationSnapshot, AgentEvent, AgentEventType,
+    AgentExecutionOwner, AgentImplementation, AgentInteractionCapabilities, AgentNativeSessionMode,
+    AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities,
+    AgentUserInputResponse, AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition,
+    ApprovalState, ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
+    SetAgentConversationConfigRequest, ToolState, UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
@@ -35,8 +35,6 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 const SNAPSHOT_EVENT_CAP: usize = 2_000;
 const STORE_EVENT_CAP: u32 = 10_000;
-const IDLE_RUNTIME_SUSPEND_TICK: std::time::Duration = std::time::Duration::from_secs(30);
-const IDLE_RUNTIME_SUSPEND_AFTER_MS: u128 = 30 * 1_000;
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 const CLAUDE_SESSION_EFFORTS: [(&str, &str); 4] = [
     ("low", "4000"),
@@ -133,8 +131,7 @@ pub struct ManagedAgentSession {
     last_activity_ms: u128,
     live_tool_calls: HashSet<String>,
     background_work: HashSet<String>,
-    quiescent_since_ms: Option<u128>,
-    quiescence_generation: u64,
+    rail_meta: AgentConversationSessionMeta,
     suspending: bool,
 }
 
@@ -152,7 +149,6 @@ pub struct AgentRuntimeManager {
     providers: Arc<ProviderRegistry>,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
-    idle_suspend_task_started: Arc<AtomicBool>,
     store: Arc<SessionStore>,
     adapter_pools: Arc<AsyncMutex<HashMap<AdapterPoolKey, AdapterPoolEntry>>>,
 }
@@ -194,7 +190,6 @@ impl AgentRuntimeManager {
             providers: Arc::new(providers),
             emitter: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
-            idle_suspend_task_started: Arc::new(AtomicBool::new(false)),
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
         })
@@ -216,75 +211,6 @@ impl AgentRuntimeManager {
         self.store
             .clear_draft(owned_id)
             .map_err(|error| error.to_string())
-    }
-
-    pub fn start_idle_suspension_task(&self) {
-        if self
-            .idle_suspend_task_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return;
-        }
-        let manager = self.clone();
-        tauri::async_runtime::spawn(async move {
-            let start = tokio::time::Instant::now() + IDLE_RUNTIME_SUSPEND_TICK;
-            let mut interval = tokio::time::interval_at(start, IDLE_RUNTIME_SUSPEND_TICK);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                if let Err(error) = manager.suspend_idle_sessions_at(timestamp_millis()).await {
-                    crate::debug_log::stderr_log!("Idle runtime suspension failed: {error}");
-                }
-            }
-        });
-    }
-
-    fn schedule_quiescent_suspend(&self, owned_id: &str, generation: u64) -> Result<(), String> {
-        let grace_generation = {
-            let mut sessions = self
-                .sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session_mut(&mut sessions, owned_id, generation)?;
-            if !session_is_quiescent(session) || session.quiescent_since_ms.is_some() {
-                return Ok(());
-            }
-            session.quiescence_generation = session.quiescence_generation.saturating_add(1);
-            session.quiescent_since_ms = Some(timestamp_millis());
-            persist_session(session)?;
-            session.quiescence_generation
-        };
-        let manager = self.clone();
-        let owned_id = owned_id.to_string();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(
-                IDLE_RUNTIME_SUSPEND_AFTER_MS as u64,
-            ))
-            .await;
-            let still_current = {
-                let sessions = manager
-                    .sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                sessions.get(&owned_id).is_some_and(|session| {
-                    session.generation == generation
-                        && session.quiescence_generation == grace_generation
-                        && session_is_quiescent(session)
-                })
-            };
-            if still_current {
-                if let Err(error) = manager
-                    .suspend_if_idle(&owned_id, generation, timestamp_millis())
-                    .await
-                {
-                    crate::debug_log::stderr_log!(
-                        "Quiescent runtime suspension failed for {owned_id}: {error}"
-                    );
-                }
-            }
-        });
-        Ok(())
     }
 
     async fn release_pool_scope(
@@ -548,8 +474,7 @@ impl AgentRuntimeManager {
                 last_activity_ms: created_at_ms,
                 live_tool_calls: HashSet::new(),
                 background_work: HashSet::new(),
-                quiescent_since_ms: None,
-                quiescence_generation: 0,
+                rail_meta: AgentConversationSessionMeta::default(),
                 suspending: false,
             },
         );
@@ -1267,17 +1192,18 @@ impl AgentRuntimeManager {
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(sessions
-            .get(owned_id)
-            .map(|session| AgentConversationSnapshot {
-                connection: session.connection.clone(),
-                suspended: session.state == AgentRuntimeState::Suspended,
-                last_sequence: session.next_sequence.saturating_sub(1),
-                events: session.frontend_events.iter().cloned().collect(),
-            }))
+        let Some(session) = sessions.get(owned_id) else {
+            return Ok(None);
+        };
+        Ok(Some(AgentConversationSnapshot {
+            connection: session.connection.clone(),
+            suspended: session.state == AgentRuntimeState::Suspended,
+            last_sequence: session.next_sequence.saturating_sub(1),
+            events: self.list_events(owned_id, 0)?,
+        }))
     }
 
-    pub fn list_snapshots(&self) -> Result<Vec<AgentConversationSnapshot>, String> {
+    pub fn list_sessions(&self) -> Result<Vec<AgentConversationSessionRecord>, String> {
         let rows = self
             .store
             .list_sessions()
@@ -1291,44 +1217,79 @@ impl AgentRuntimeManager {
                 let session = sessions.get(&row.owned_id).ok_or_else(|| {
                     "The stored session is missing its live runtime overlay".to_string()
                 })?;
-                Ok(AgentConversationSnapshot {
-                    connection: session.connection.clone(),
+                let mut meta = session.rail_meta.clone();
+                meta.worktree.clone_from(&row.worktree);
+                meta.branch.clone_from(&row.branch);
+                meta.title.clone_from(&row.title);
+                meta.project.clone_from(&row.project);
+                Ok(AgentConversationSessionRecord {
+                    owned_id: row.owned_id,
+                    provider: session.provider,
+                    model: row.model,
+                    effort: row.effort,
+                    cwd: row.cwd,
+                    state: session.state,
                     suspended: session.state == AgentRuntimeState::Suspended,
-                    last_sequence: session.next_sequence.saturating_sub(1),
-                    events: session.frontend_events.iter().cloned().collect(),
+                    created_at_ms: row.created_at_ms,
+                    last_activity_at_ms: row.last_activity_at_ms,
+                    active_turn_id: session.active_turn_id.clone(),
+                    pending_permission: !session.permission_requests.is_empty(),
+                    pending_input: !session.user_input_requests.is_empty(),
+                    native_session_id: session.native_session_id.clone(),
+                    meta,
                 })
             })
             .collect()
     }
 
-    pub async fn suspend_idle_sessions_at(&self, now_ms: u128) -> Result<Vec<String>, String> {
-        let candidates = {
-            let sessions = self
+    pub fn list_events(
+        &self,
+        owned_id: &str,
+        from_sequence: u64,
+    ) -> Result<Vec<AgentConversationEvent>, String> {
+        let from_sequence = i64::try_from(from_sequence)
+            .map_err(|_| "Conversation event sequence exceeded the store limit".to_string())?;
+        self.store
+            .list_events(owned_id, from_sequence, STORE_EVENT_CAP)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|row| {
+                serde_json::from_str(&row.payload_json)
+                    .map_err(|error| format!("Could not decode stored conversation event: {error}"))
+            })
+            .collect()
+    }
+
+    pub fn update_session_meta(
+        &self,
+        request: UpdateAgentConversationSessionMetaRequest,
+    ) -> Result<AgentConversationSessionRecord, String> {
+        let owned_id = required_id(&request.owned_id, "Owned session id")?;
+        {
+            let mut sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            sessions
-                .values()
-                .filter(|session| idle_session_can_suspend(session, now_ms))
-                .map(|session| (session.owned_id.clone(), session.generation))
-                .collect::<Vec<_>>()
-        };
-        let mut suspended = Vec::new();
-        for (owned_id, generation) in candidates {
-            let activation_lock = self.activation_lock(&owned_id)?;
-            let _activation = activation_lock.lock().await;
-            if self.suspend_if_idle(&owned_id, generation, now_ms).await? {
-                suspended.push(owned_id);
-            }
+            let session = sessions
+                .get_mut(&owned_id)
+                .ok_or_else(|| "Conversation session was not found".to_string())?;
+            session.spawn_reasoning_effort.clone_from(&request.effort);
+            session.config.model.clone_from(&request.model);
+            session.config.reasoning_effort.clone_from(&request.effort);
+            session.connection.config = session.config.clone();
+            session.rail_meta = request.meta;
+            persist_session(session)?;
         }
-        Ok(suspended)
+        self.list_sessions()?
+            .into_iter()
+            .find(|session| session.owned_id == owned_id)
+            .ok_or_else(|| "Conversation session was not found after metadata update".to_string())
     }
 
-    async fn suspend_if_idle(
+    pub async fn suspend_if_quiescent(
         &self,
         owned_id: &str,
         generation: u64,
-        now_ms: u128,
     ) -> Result<bool, String> {
         let (runtime, transport, ordered_events, pool_key, native_session_id) = {
             let mut sessions = self
@@ -1336,7 +1297,7 @@ impl AgentRuntimeManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
-            if !idle_session_can_suspend(session, now_ms) {
+            if !session_can_suspend(session) {
                 return Ok(false);
             }
             let Some(runtime) = session.runtime.take() else {
@@ -1411,7 +1372,6 @@ impl AgentRuntimeManager {
             session.writer_lease.owner = AgentWriterLeaseOwner::None;
             let transport = session.transport.take();
             session.ordered_events = None;
-            session.quiescent_since_ms = None;
             let pending_permission_rows = session.permission_requests.drain().collect::<Vec<_>>();
             let mut pending_permissions = Vec::with_capacity(pending_permission_rows.len());
             for (request_id, pending) in pending_permission_rows {
@@ -1808,6 +1768,8 @@ struct StoredSessionExtra {
     owner: AgentExecutionOwner,
     config: AgentConversationConfigState,
     capabilities: AgentCapabilities,
+    #[serde(default)]
+    rail_meta: AgentConversationSessionMeta,
 }
 
 fn persist_session(session: &ManagedAgentSession) -> Result<(), String> {
@@ -1817,6 +1779,7 @@ fn persist_session(session: &ManagedAgentSession) -> Result<(), String> {
         owner: session.owner,
         config: session.config.clone(),
         capabilities: session.capabilities.clone(),
+        rail_meta: session.rail_meta.clone(),
     };
     let row = SessionRow {
         owned_id: session.owned_id.clone(),
@@ -1829,10 +1792,14 @@ fn persist_session(session: &ManagedAgentSession) -> Result<(), String> {
             .clone()
             .or_else(|| session.spawn_reasoning_effort.clone()),
         cwd: session.cwd.clone(),
-        worktree: Some(session.cwd.clone()),
-        branch: None,
-        title: None,
-        project: None,
+        worktree: session
+            .rail_meta
+            .worktree
+            .clone()
+            .or_else(|| Some(session.cwd.clone())),
+        branch: session.rail_meta.branch.clone(),
+        title: session.rail_meta.title.clone(),
+        project: session.rail_meta.project.clone(),
         state: enum_storage_value(session.state)?,
         suspended: session.state == AgentRuntimeState::Suspended,
         created_at_ms: store_timestamp(session.created_at_ms),
@@ -1852,8 +1819,20 @@ fn recover_sessions_from_store(
     let mut sessions = HashMap::new();
     for row in store.list_sessions().map_err(|error| error.to_string())? {
         let provider: AgentConversationProvider = enum_from_storage(&row.provider)?;
-        let stored: StoredSessionExtra = serde_json::from_str(&row.extra_json)
+        let mut stored: StoredSessionExtra = serde_json::from_str(&row.extra_json)
             .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
+        if stored.rail_meta.worktree.is_none() {
+            stored.rail_meta.worktree.clone_from(&row.worktree);
+        }
+        if stored.rail_meta.branch.is_none() {
+            stored.rail_meta.branch.clone_from(&row.branch);
+        }
+        if stored.rail_meta.title.is_none() {
+            stored.rail_meta.title.clone_from(&row.title);
+        }
+        if stored.rail_meta.project.is_none() {
+            stored.rail_meta.project.clone_from(&row.project);
+        }
         let persisted_state: AgentRuntimeState = enum_from_storage(&row.state)?;
         let recoverable = row.native_session_id.is_some()
             && stored.capabilities.session.resume
@@ -1927,8 +1906,7 @@ fn recover_sessions_from_store(
             last_activity_ms: row.last_activity_at_ms.max(0) as u128,
             live_tool_calls: HashSet::new(),
             background_work: HashSet::new(),
-            quiescent_since_ms: None,
-            quiescence_generation: 0,
+            rail_meta: stored.rail_meta,
             suspending: false,
         };
         persist_session(&session)?;
@@ -2035,8 +2013,6 @@ fn record_payload_for_session(
         }
         _ => {}
     }
-    session.quiescent_since_ms = None;
-    session.quiescence_generation = session.quiescence_generation.saturating_add(1);
     let payload_json = serde_json::to_string(&frontend_event)
         .map_err(|error| format!("Could not encode the stored conversation event: {error}"))?;
     let kind = enum_storage_value(canonical.event_type)?;
@@ -2229,79 +2205,80 @@ async fn pump_inbound(
         let emitter = Arc::clone(&manager.emitter);
         match inbound {
             AcpInbound::SessionUpdate(params) => {
-                let mut sessions = sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
-                    return;
-                };
-                if update_raw_liveness(session, &params) {
-                    let manager = manager.clone();
-                    let quiescent_owned_id = owned_id.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(error) =
-                            manager.schedule_quiescent_suspend(&quiescent_owned_id, generation)
-                        {
-                            crate::debug_log::stderr_log!(
-                                "Could not schedule quiescent suspension: {error}"
-                            );
-                        }
-                    });
-                }
-                if let Err(error) = persist_session(session) {
-                    crate::debug_log::stderr_log!(
-                        "Could not persist adapter liveness state: {error}"
-                    );
-                }
-                if let Some(mode_id) = current_mode_update(&params) {
-                    session.config.approval_policy = Some(mode_id.to_string());
-                    session.connection.config = session.config.clone();
+                let reached_quiescence = 'update: {
+                    let mut sessions = sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation)
+                    else {
+                        return;
+                    };
+                    let reached_quiescence = update_raw_liveness(session, &params);
                     if let Err(error) = persist_session(session) {
                         crate::debug_log::stderr_log!(
-                            "Could not persist adapter configuration: {error}"
+                            "Could not persist adapter liveness state: {error}"
                         );
                     }
-                    continue;
-                }
-                if is_session_state_update(&params) {
+                    if let Some(mode_id) = current_mode_update(&params) {
+                        session.config.approval_policy = Some(mode_id.to_string());
+                        session.connection.config = session.config.clone();
+                        if let Err(error) = persist_session(session) {
+                            crate::debug_log::stderr_log!(
+                                "Could not persist adapter configuration: {error}"
+                            );
+                        }
+                        break 'update reached_quiescence;
+                    }
+                    if is_session_state_update(&params) {
+                        if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                            break 'update reached_quiescence;
+                        }
+                        let Some(payload) = payload_from_session_update_for_turn(
+                            &params,
+                            session.active_turn_id.as_deref(),
+                        ) else {
+                            break 'update reached_quiescence;
+                        };
+                        if let Err(error) =
+                            record_payload_for_session_and_dispatch(session, &emitter, payload)
+                        {
+                            crate::debug_log::stderr_log!(
+                                "Could not record ACP session state update: {error}"
+                            );
+                        }
+                        break 'update reached_quiescence;
+                    }
+                    let replay = is_replay_session_update(&params);
+                    if session.active_turn_id.is_none() && !replay {
+                        crate::debug_log::stderr_log!(
+                            "[debug] Dropping ACP session update without an active conversation turn"
+                        );
+                        break 'update reached_quiescence;
+                    }
                     if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
-                        continue;
+                        break 'update reached_quiescence;
                     }
                     let Some(payload) = payload_from_session_update_for_turn(
                         &params,
                         session.active_turn_id.as_deref(),
                     ) else {
-                        continue;
+                        break 'update reached_quiescence;
                     };
                     if let Err(error) =
                         record_payload_for_session_and_dispatch(session, &emitter, payload)
                     {
                         crate::debug_log::stderr_log!(
-                            "Could not record ACP session state update: {error}"
+                            "Could not record ACP session update: {error}"
                         );
                     }
-                    continue;
-                }
-                let replay = is_replay_session_update(&params);
-                if session.active_turn_id.is_none() && !replay {
-                    crate::debug_log::stderr_log!(
-                        "[debug] Dropping ACP session update without an active conversation turn"
-                    );
-                    continue;
-                }
-                if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
-                    continue;
-                }
-                let Some(payload) = payload_from_session_update_for_turn(
-                    &params,
-                    session.active_turn_id.as_deref(),
-                ) else {
-                    continue;
+                    reached_quiescence
                 };
-                if let Err(error) =
-                    record_payload_for_session_and_dispatch(session, &emitter, payload)
-                {
-                    crate::debug_log::stderr_log!("Could not record ACP session update: {error}");
+                if reached_quiescence {
+                    if let Err(error) = manager.suspend_if_quiescent(&owned_id, generation).await {
+                        crate::debug_log::stderr_log!(
+                            "Could not tear down quiescent runtime: {error}"
+                        );
+                    }
                 }
             }
             AcpInbound::AgentRequest {
@@ -2584,8 +2561,6 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
         target.remove(&identifier);
     } else {
         target.insert(identifier);
-        session.quiescent_since_ms = None;
-        session.quiescence_generation = session.quiescence_generation.saturating_add(1);
     }
     terminal && session_is_quiescent(session)
 }
@@ -2803,10 +2778,8 @@ async fn handle_ordered_session_event(
                     }
                 }
             }
-            if let Err(error) = manager.schedule_quiescent_suspend(owned_id, generation) {
-                crate::debug_log::stderr_log!(
-                    "Could not schedule quiescent runtime suspension: {error}"
-                );
+            if let Err(error) = manager.suspend_if_quiescent(owned_id, generation).await {
+                crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
             }
             true
         }
@@ -3424,15 +3397,12 @@ fn timestamp_millis() -> u128 {
         .unwrap_or(0)
 }
 
-fn idle_session_can_suspend(session: &ManagedAgentSession, now_ms: u128) -> bool {
+fn session_can_suspend(session: &ManagedAgentSession) -> bool {
     session.runtime.is_some()
         && !session.suspending
         && session.native_session_id.is_some()
         && session.capabilities.session.resume
         && session_is_quiescent(session)
-        && session
-            .quiescent_since_ms
-            .is_some_and(|started| now_ms.saturating_sub(started) >= IDLE_RUNTIME_SUSPEND_AFTER_MS)
 }
 
 fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
@@ -4022,21 +3992,6 @@ mod tests {
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
-    fn age_session_for_suspend(fixture: &FixtureManager) {
-        fixture
-            .manager
-            .sessions
-            .lock()
-            .unwrap()
-            .get_mut(&fixture.owned_id)
-            .unwrap()
-            .quiescent_since_ms = Some(
-            timestamp_millis()
-                .saturating_sub(IDLE_RUNTIME_SUSPEND_AFTER_MS)
-                .saturating_sub(1),
-        );
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn store_row_updated_on_every_lifecycle_transition() {
         let root = temp_root();
@@ -4079,19 +4034,8 @@ mod tests {
                 .state,
             "ready"
         );
-        {
-            let mut sessions = manager.sessions.lock().unwrap();
-            sessions
-                .get_mut(&connection.owned_id)
-                .unwrap()
-                .quiescent_since_ms = Some(
-                timestamp_millis()
-                    .saturating_sub(IDLE_RUNTIME_SUSPEND_AFTER_MS)
-                    .saturating_sub(1),
-            );
-        }
         manager
-            .suspend_idle_sessions_at(timestamp_millis())
+            .suspend_if_quiescent(&connection.owned_id, connection.generation)
             .await
             .unwrap();
         let suspended = manager
@@ -4195,9 +4139,9 @@ mod tests {
         let providers =
             ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
         let recovered = AgentRuntimeManager::open(providers, &database).unwrap();
-        let snapshots = recovered.list_snapshots().unwrap();
-        assert_eq!(snapshots.len(), 1);
-        assert!(snapshots[0].suspended);
+        let sessions = recovered.list_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].suspended);
         recovered
             .activate(&connection.owned_id, connection.generation)
             .await
@@ -4246,6 +4190,72 @@ mod tests {
     }
 
     #[test]
+    fn selecting_and_reading_session_never_spawns_runtime() {
+        let root = temp_root();
+        let log = root.join("read-only-session.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "prompt_with_update",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let (connection, _) = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-read-only",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap();
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&connection.owned_id).unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::UserMessage {
+                    item_id: "message-read-only".into(),
+                    text: "stored".into(),
+                    completed: true,
+                },
+            )
+            .unwrap();
+        }
+        manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: connection.owned_id.clone(),
+                model: Some("model-a".into()),
+                effort: Some("medium".into()),
+                meta: AgentConversationSessionMeta {
+                    worktree: Some(root.display().to_string()),
+                    branch: Some("lane/read-only".into()),
+                    title: Some("Read only".into()),
+                    project: Some("Project".into()),
+                    pty_session_id: Some("pty-1".into()),
+                    origin: Some("app".into()),
+                    source: Some("fresh".into()),
+                    ..AgentConversationSessionMeta::default()
+                },
+            })
+            .unwrap();
+
+        let listed = manager.list_sessions().unwrap();
+        let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
+        let events = manager.list_events(&connection.owned_id, 0).unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].meta.title.as_deref(), Some("Read only"));
+        assert_eq!(listed[0].meta.pty_session_id.as_deref(), Some("pty-1"));
+        assert_eq!(snapshot.events, events);
+        assert_eq!(events.len(), 1);
+        assert!(manager.resource_roots().is_empty());
+        assert!(
+            !log.exists(),
+            "read commands must not create a transport process"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn session_annotations_survive_manager_restart() {
         let root = temp_root();
         let database = root.join("sessions.db");
@@ -4281,18 +4291,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn suspend_after_30s_quiescence() {
+    async fn teardown_at_quiescence() {
         let fixture = fixture_manager_with_acp_session("suspend_active").await;
-        age_session_for_suspend(&fixture);
 
-        assert_eq!(
-            fixture
-                .manager
-                .suspend_idle_sessions_at(timestamp_millis())
-                .await
-                .unwrap(),
-            [fixture.owned_id.clone()]
-        );
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
@@ -4301,7 +4307,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn suspend_skips_running_turn() {
         let fixture = fixture_manager_with_acp_session("suspend_running").await;
-        age_session_for_suspend(&fixture);
         {
             let mut sessions = fixture.manager.sessions.lock().unwrap();
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
@@ -4309,12 +4314,11 @@ mod tests {
             session.state = AgentRuntimeState::Working;
         }
 
-        assert!(fixture
+        assert!(!fixture
             .manager
-            .suspend_idle_sessions_at(timestamp_millis())
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
-            .unwrap()
-            .is_empty());
+            .unwrap());
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
@@ -4324,7 +4328,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn approval_lease_never_expires() {
         let fixture = fixture_manager_with_acp_session("suspend_permission").await;
-        age_session_for_suspend(&fixture);
         fixture
             .manager
             .sessions
@@ -4342,12 +4345,11 @@ mod tests {
                 },
             );
 
-        assert!(fixture
+        assert!(!fixture
             .manager
-            .suspend_idle_sessions_at(timestamp_millis())
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
-            .unwrap()
-            .is_empty());
+            .unwrap());
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
@@ -4357,7 +4359,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn suspend_skips_pending_user_input() {
         let fixture = fixture_manager_with_acp_session("suspend_input").await;
-        age_session_for_suspend(&fixture);
         fixture
             .manager
             .sessions
@@ -4368,12 +4369,11 @@ mod tests {
             .user_input_requests
             .insert("input-1".into(), PendingUserInput { wire_id: json!(1) });
 
-        assert!(fixture
+        assert!(!fixture
             .manager
-            .suspend_idle_sessions_at(timestamp_millis())
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
-            .unwrap()
-            .is_empty());
+            .unwrap());
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
@@ -4383,7 +4383,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn suspend_closes_runtime_but_keeps_record_and_native_id() {
         let fixture = fixture_manager_with_acp_session("suspend_runtime").await;
-        age_session_for_suspend(&fixture);
         let pid = fixture.manager.resource_roots()[0].pid;
         let native_session_id = fixture
             .manager
@@ -4394,14 +4393,11 @@ mod tests {
             .native_session_id
             .unwrap();
 
-        assert_eq!(
-            fixture
-                .manager
-                .suspend_idle_sessions_at(timestamp_millis())
-                .await
-                .unwrap(),
-            [fixture.owned_id.clone()]
-        );
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
         wait_until(|| !process_is_alive(pid)).await;
         assert!(fixture.manager.resource_roots().is_empty());
         let snapshot = fixture
@@ -4428,7 +4424,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn ensure_after_suspend_resumes_with_same_native_session_id() {
         let fixture = fixture_manager_with_acp_session("suspend_resume").await;
-        age_session_for_suspend(&fixture);
         let native_session_id = fixture
             .manager
             .snapshot(&fixture.owned_id)
@@ -4439,7 +4434,7 @@ mod tests {
             .unwrap();
         fixture
             .manager
-            .suspend_idle_sessions_at(timestamp_millis())
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
 
@@ -4486,10 +4481,10 @@ mod tests {
             .snapshot(&fixture.owned_id)
             .unwrap()
             .unwrap();
-        assert!(!snapshot.suspended);
+        assert!(snapshot.suspended);
         assert_eq!(
             snapshot.connection.state,
-            ConversationConnectionState::Connected
+            ConversationConnectionState::Disconnected
         );
         let connection_states = snapshot
             .events
@@ -4503,7 +4498,8 @@ mod tests {
             connection_states,
             [
                 ConversationConnectionState::Disconnected,
-                ConversationConnectionState::Connected
+                ConversationConnectionState::Connected,
+                ConversationConnectionState::Disconnected
             ]
         );
         let log = fs::read_to_string(fixture.root.join("suspend_resume.jsonl")).unwrap();
@@ -4518,7 +4514,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn suspend_skips_provider_without_resume_capability() {
         let fixture = fixture_manager_with_acp_session("suspend_no_resume").await;
-        age_session_for_suspend(&fixture);
         assert!(
             !fixture
                 .manager
@@ -4528,12 +4523,11 @@ mod tests {
                 .resume
         );
 
-        assert!(fixture
+        assert!(!fixture
             .manager
-            .suspend_idle_sessions_at(timestamp_millis())
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
-            .unwrap()
-            .is_empty());
+            .unwrap());
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
@@ -4541,8 +4535,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn grace_starts_only_at_quiescence() {
-        let fixture = fixture_manager_with_acp_session("grace_quiescence").await;
+    async fn quiescence_gates_teardown() {
+        let fixture = fixture_manager_with_acp_session("suspend_quiescence").await;
         {
             let mut sessions = fixture.manager.sessions.lock().unwrap();
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
@@ -4550,76 +4544,31 @@ mod tests {
             session.active_turn_id = Some("turn-live".into());
             session.live_tool_calls.insert("tool-live".into());
         }
-        fixture
+        assert!(!fixture
             .manager
-            .schedule_quiescent_suspend(&fixture.owned_id, fixture.generation)
-            .unwrap();
-        assert!(fixture
-            .manager
-            .sessions
-            .lock()
-            .unwrap()
-            .get(&fixture.owned_id)
-            .unwrap()
-            .quiescent_since_ms
-            .is_none());
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
+        assert_eq!(fixture.manager.resource_roots().len(), 1);
 
         {
             let mut sessions = fixture.manager.sessions.lock().unwrap();
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
             session.state = AgentRuntimeState::Ready;
             session.active_turn_id = None;
+            session.prompt_once_active = false;
+            session.permission_requests.clear();
+            session.user_input_requests.clear();
+            session.writer_lease_transition = None;
             session.live_tool_calls.clear();
-        }
-        fixture
-            .manager
-            .schedule_quiescent_suspend(&fixture.owned_id, fixture.generation)
-            .unwrap();
-        assert!(fixture
-            .manager
-            .sessions
-            .lock()
-            .unwrap()
-            .get(&fixture.owned_id)
-            .unwrap()
-            .quiescent_since_ms
-            .is_some());
-
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
-        fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn rapid_followup_within_grace_keeps_runtime() {
-        let fixture = fixture_manager_with_acp_session("rapid_followup").await;
-        fixture
-            .manager
-            .schedule_quiescent_suspend(&fixture.owned_id, fixture.generation)
-            .unwrap();
-        {
-            let mut sessions = fixture.manager.sessions.lock().unwrap();
-            let session = sessions.get_mut(&fixture.owned_id).unwrap();
-            record_payload_for_session(
-                session,
-                AgentConversationPayload::UserMessage {
-                    item_id: "message-followup".into(),
-                    text: "follow up".into(),
-                    completed: true,
-                },
-            )
-            .unwrap();
+            session.background_work.clear();
         }
         assert!(fixture
             .manager
-            .suspend_idle_sessions_at(
-                timestamp_millis()
-                    .saturating_add(IDLE_RUNTIME_SUSPEND_AFTER_MS)
-                    .saturating_add(1),
-            )
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
-            .unwrap()
-            .is_empty());
-        assert_eq!(fixture.manager.resource_roots().len(), 1);
+            .unwrap());
+        assert!(fixture.manager.resource_roots().is_empty());
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
@@ -5660,7 +5609,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_sequence_and_snapshot_are_bounded_and_repairable() {
+    fn canonical_sequence_and_full_store_snapshot_are_repairable() {
         let root = temp_root();
         let manager = AgentRuntimeManager::default();
         let connection = manager
@@ -5687,7 +5636,7 @@ mod tests {
             .unwrap();
         }
         let events = manager.snapshot("owned-a").unwrap().unwrap().events;
-        assert_eq!(events.len(), SNAPSHOT_EVENT_CAP);
+        assert_eq!(events.len(), SNAPSHOT_EVENT_CAP + 3);
         assert!(events
             .windows(2)
             .all(|pair| pair[1].sequence == pair[0].sequence + 1));
