@@ -12,7 +12,7 @@
  * The file name always knows better.
  *
  * Nothing is downloaded to draw these: the glyphs are lucide components already in
- * the bundle and the colours are CSS custom properties defined in `ExplorerPanel.svelte`.
+ * the bundle and the colours are CSS custom properties defined in `FileIcon.svelte` itself.
  * There is no icon font and no request to any other host — the app's content policy
  * would block one anyway.
  */
