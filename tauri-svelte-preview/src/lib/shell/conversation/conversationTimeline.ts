@@ -45,7 +45,7 @@ export type ConversationTextDisplayItem = {
   metadata?: Record<string, AgentConfigValue>;
 };
 
-export type ConversationDisplayItem =
+export type ConversationDisplayItem = (
   | (ConversationTextDisplayItem & { kind: 'user' })
   | (ConversationTextDisplayItem & { kind: 'assistant' })
   | (ConversationTextDisplayItem & { kind: 'reasoning' })
@@ -80,7 +80,108 @@ export type ConversationDisplayItem =
       timestampMs: number;
     }
   | { kind: 'input'; itemId: string; requestId: string; title: string; description?: string; fields: AgentUserInputField[]; timestampMs: number }
-  | { kind: 'unknown'; itemId: string; text: string; timestampMs: number; metadata?: Record<string, AgentConfigValue> };
+  | { kind: 'unknown'; itemId: string; text: string; timestampMs: number; metadata?: Record<string, AgentConfigValue> }
+) & {
+  readonly turnId?: string | null;
+  readonly completed?: boolean;
+};
+
+export interface ConversationTurnGroup {
+  readonly turnId: string | null;
+  readonly items: readonly ConversationDisplayItem[];
+  readonly workItemIds: readonly string[];
+  readonly tailItemIds: readonly string[];
+  readonly completed: boolean;
+  readonly elapsedMs: number | null;
+}
+
+const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
+  'reasoning',
+  'tool',
+  'command',
+  'file',
+  'subagent',
+  'plan',
+  'tasks'
+]);
+
+function displayItemCompleted(item: ConversationDisplayItem): boolean {
+  if (typeof item.completed === 'boolean') return item.completed;
+  if (item.kind === 'tool') return item.state === 'completed' || item.state === 'failed';
+  if (item.kind === 'subagent') {
+    return ['completed', 'complete', 'failed', 'cancelled', 'canceled', 'stopped', 'done']
+      .includes(item.state.trim().toLowerCase());
+  }
+  if (item.kind === 'plan') {
+    return item.steps.every((step) => !['pending', 'in-progress'].includes(step.state));
+  }
+  if (item.kind === 'tasks') {
+    return item.tasks.every((task) => !['pending', 'in-progress'].includes(task.state));
+  }
+  if (item.kind === 'approval') {
+    return !['requested', 'pending', 'running'].includes(item.state.trim().toLowerCase());
+  }
+  if (item.kind === 'input') return false;
+  return true;
+}
+
+function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], activeTurnId: string | null): ConversationTurnGroup {
+  let tailStart = items.length;
+  while (tailStart > 0 && items[tailStart - 1].kind === 'assistant') tailStart -= 1;
+  const hasFoldableWork = items.some((item) => FOLDABLE_TURN_KINDS.has(item.kind));
+  const workItemIds = hasFoldableWork
+    ? items
+      .filter((item, index) => FOLDABLE_TURN_KINDS.has(item.kind) || (item.kind === 'assistant' && index < tailStart))
+      .map((item) => item.itemId)
+    : [];
+  const tailItemIds = items
+    .filter((item, index) => item.kind === 'user' || (item.kind === 'assistant' && index >= tailStart))
+    .map((item) => item.itemId);
+  const firstTimestamp = items[0]?.timestampMs;
+  const lastTimestamp = items[items.length - 1]?.timestampMs;
+  const elapsedMs = Number.isFinite(firstTimestamp) && Number.isFinite(lastTimestamp)
+    ? Math.max(0, lastTimestamp - firstTimestamp)
+    : null;
+  return {
+    turnId,
+    items,
+    workItemIds,
+    tailItemIds,
+    completed: turnId !== activeTurnId && items.every(displayItemCompleted),
+    elapsedMs
+  };
+}
+
+/** Groups adjacent display rows without changing their transcript order. */
+export function conversationTurnGroups(
+  items: readonly ConversationDisplayItem[],
+  activeTurnId: string | null = null
+): readonly ConversationTurnGroup[] {
+  const groups: ConversationTurnGroup[] = [];
+  let groupItems: ConversationDisplayItem[] = [];
+  let groupTurnId: string | null = null;
+  const publish = (): void => {
+    if (groupItems.length === 0) return;
+    groups.push(turnGroup(groupTurnId, groupItems, activeTurnId));
+    groupItems = [];
+  };
+  for (const item of items) {
+    const itemTurnId = item.turnId ?? null;
+    if (groupItems.length > 0 && itemTurnId !== groupTurnId) publish();
+    groupTurnId = itemTurnId;
+    groupItems.push(item);
+  }
+  publish();
+  return groups;
+}
+
+export function formatWorkedFor(elapsedMs: number): string {
+  const safeElapsedMs = Math.max(0, elapsedMs);
+  if (safeElapsedMs < 10_000) return `${(safeElapsedMs / 1_000).toFixed(1)}s`;
+  const seconds = Math.round(safeElapsedMs / 1_000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
 
 export const CONVERSATION_RENDER_WINDOW = 120;
 
@@ -97,7 +198,7 @@ export interface ConversationRenderWindow<T> {
 }
 
 /** Returns a slice of the projection, preserving the projection's item objects. */
-export function conversationRenderWindow<T extends { readonly itemId: string }>(
+export function conversationRenderWindow<T extends { readonly itemId: string; readonly turnId?: string | null }>(
   items: readonly T[],
   conversationId: string,
   previous?: ConversationRenderWindowState
@@ -111,9 +212,13 @@ export function conversationRenderWindow<T extends { readonly itemId: string }>(
   const disclosedStart = disclosureAnchorItemId
     ? items.findIndex((item) => item.itemId === disclosureAnchorItemId)
     : -1;
-  const hiddenCount = disclosedStart >= 0
+  let hiddenCount = disclosedStart >= 0
     ? disclosedStart
     : Math.max(0, items.length - CONVERSATION_RENDER_WINDOW - disclosedItems);
+  const boundaryTurnId = items[hiddenCount]?.turnId ?? null;
+  if (hiddenCount > 0 && boundaryTurnId !== null) {
+    while (hiddenCount > 0 && items[hiddenCount - 1].turnId === boundaryTurnId) hiddenCount -= 1;
+  }
   return {
     items: items.slice(hiddenCount),
     hiddenCount,
@@ -122,7 +227,7 @@ export function conversationRenderWindow<T extends { readonly itemId: string }>(
 }
 
 /** Extends the explicit render window by one bounded page. */
-export function discloseEarlierConversationItems<T extends { readonly itemId: string }>(
+export function discloseEarlierConversationItems<T extends { readonly itemId: string; readonly turnId?: string | null }>(
   items: readonly T[],
   conversationId: string,
   previous?: ConversationRenderWindowState
@@ -313,9 +418,11 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
   const metadata = item.providerMetadata;
   const kind = kindFor(item);
   const startedAt = displayTimestamp(item, timestampMs);
+  const turnId = item.turnId ?? null;
   if (kind === 'plan') return {
     kind,
     itemId: item.id,
+    turnId,
     title: stringOf(metadata?.title, 'Plan'),
     steps: stepsOf(metadata?.steps ?? metadata?.entries),
     text: textOf(item.content),
@@ -324,6 +431,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
   if (kind === 'tasks') return {
     kind,
     itemId: item.id,
+    turnId,
     title: stringOf(metadata?.title, 'Tasks'),
     tasks: tasksOf(metadata?.tasks ?? metadata?.steps),
     text: textOf(item.content),
@@ -336,6 +444,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     return {
       kind,
       itemId: item.id,
+      turnId,
       title,
       toolKind: toolKindOf(metadata?.toolKind ?? item.type, title),
       state: toolStateOf(metadata?.state ?? metadata?.status),
@@ -350,6 +459,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
   if (kind === 'subagent') return {
     kind,
     itemId: item.id,
+    turnId,
     childId: stringOf(metadata?.childId, item.id),
     parentId: stringOf(metadata?.parentId, item.turnId ?? ''),
     label: stringOf(metadata?.label, 'Sub-agent'),
@@ -357,13 +467,14 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     metadata,
     timestampMs: startedAt
   };
-  if (kind === 'unknown') return { kind, itemId: item.id, text: textOf(item.content), metadata, timestampMs: startedAt };
+  if (kind === 'unknown') return { kind, itemId: item.id, turnId, text: textOf(item.content), metadata, timestampMs: startedAt };
   const completed = typeof metadata?.completed === 'boolean'
     ? metadata.completed
     : metadata?.streaming === true ? false : true;
   return {
     kind: kind as ConversationTextDisplayItem['kind'],
     itemId: item.id,
+    turnId,
     text: textOf(item.content),
     completed,
     timestampMs: startedAt,
@@ -380,6 +491,7 @@ export function displayItemFromApproval(
   return {
     kind: 'approval',
     itemId: `approval:${request.requestId}`,
+    turnId: request.turnId ?? null,
     requestId: request.requestId,
     title: request.title || 'Approval requested',
     toolTitle,
@@ -397,6 +509,7 @@ export function displayItemFromInput(
   return {
     kind: 'input',
     itemId: `input:${request.requestId}`,
+    turnId: request.turnId ?? null,
     requestId: request.requestId,
     title: request.title,
     description: request.description,
