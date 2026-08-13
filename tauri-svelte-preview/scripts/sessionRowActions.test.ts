@@ -216,8 +216,8 @@ assert.match(
 assert.match(row, /class="action-reserve"/, 'line one always reserves the action cluster width');
 assert.match(
   row,
-  /\.action-reserve\s*\{[\s\S]*?width:\s*80px;[\s\S]*?flex:\s*0 0 80px;/,
-  'three 24px actions and two 4px gaps reserve exactly 80px'
+  /\.action-reserve\s*\{[\s\S]*?width:\s*92px;[\s\S]*?flex:\s*0 0 92px;/,
+  'three 28px actions and two 4px gaps reserve exactly 92px'
 );
 assert.match(
   row,
@@ -226,10 +226,10 @@ assert.match(
 );
 assert.match(
   row,
-  /\[data-slot='hover-actions'\] svg\)[\s\S]*?width:\s*16px;\s*height:\s*16px;/,
-  'row action glyphs are 16px'
+  /\[data-slot='hover-actions'\] svg\)[\s\S]*?width:\s*18px;\s*height:\s*18px;/,
+  'row action glyphs are 18px'
 );
-assert.equal((row.match(/size="xs"/g) ?? []).length, 4, 'all three jumps and Resume use 24px kit buttons');
+assert.equal((row.match(/size="sm"/g) ?? []).length, 4, 'all three jumps and Resume use 28px kit buttons');
 assert.doesNotMatch(
   row,
   /linear-gradient\(to right, transparent, var\(--color-hover\)\)/,

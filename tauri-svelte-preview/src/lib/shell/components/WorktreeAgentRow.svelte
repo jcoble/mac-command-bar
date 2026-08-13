@@ -519,7 +519,7 @@
         <HoverActionButton
           label="Open session"
           tone="primary"
-          size="xs"
+          size="sm"
           onclick={(event) => jump(event, 'session')}
         >
           <MessageCircle aria-hidden="true" />
@@ -529,7 +529,7 @@
         <HoverActionButton
           label="Open editor"
           tone="info"
-          size="xs"
+          size="sm"
           onclick={(event) => jump(event, 'editor')}
         >
           <FileCode2 aria-hidden="true" />
@@ -539,7 +539,7 @@
         <HoverActionButton
           label="Open source control"
           tone="success"
-          size="xs"
+          size="sm"
           onclick={(event) => jump(event, 'source-control')}
         >
           <GitBranch aria-hidden="true" />
@@ -550,7 +550,7 @@
 
   {#if presenceIsRestart}
     <span data-testid="worktree-agent-resume" class="resume-slot">
-      <HoverActionButton label="Resume session" tone="primary" size="xs" onclick={startSession}>
+      <HoverActionButton label="Resume session" tone="primary" size="sm" onclick={startSession}>
         <CornerDownLeft aria-hidden="true" />
       </HoverActionButton>
     </span>
@@ -652,8 +652,8 @@
   .failed { flex: 0 1 auto; }
 
   .action-reserve {
-    width: 80px;
-    flex: 0 0 80px;
+    width: 92px;
+    flex: 0 0 92px;
   }
 
   .status-slot {
@@ -781,7 +781,7 @@
   }
 
   .row :global([data-slot='hover-actions'] svg),
-  .row :global(.resume-slot [data-slot='icon-button'] svg) { width: 16px; height: 16px; }
+  .row :global(.resume-slot [data-slot='icon-button'] svg) { width: 18px; height: 18px; }
 
   .row[data-presence='stopped'] .project { opacity: 0.72; }
   .row[data-presence='stopped']:hover .project { opacity: 1; }
