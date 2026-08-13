@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 
 import {
   emptyAgentConversationConfigState,
-  hasAgentConversationConfig
+  hasAgentConversationConfig,
+  snapshotAgentConversationConfig
 } from '../src/lib/shell/conversation/conversationConfig.ts';
 
 const menu = readFileSync(
@@ -13,7 +14,7 @@ const menu = readFileSync(
 
 assert.match(
   menu,
-  /const hasAgentSettings = \$derived\(hasAgentConversationConfig\(state\)\)/,
+  /const hasAgentSettings = \$derived\(hasAgentConversationConfig\(configState\)\)/,
   'the menu uses the shared empty-state decision'
 );
 assert.match(
@@ -40,4 +41,19 @@ assert.equal(
   'advertised permission modes keep the real settings menus visible'
 );
 
-console.log('composerConfigMenu.test.mjs passed');
+const liveConfig = {
+  ...emptyAgentConversationConfigState(),
+  model: 'gpt-5.6-sol',
+  availableModels: ['gpt-5.6-sol'],
+  reasoningEffort: 'medium',
+  availableEfforts: ['medium'],
+  approvalPolicy: 'never',
+  availableApprovalPolicies: ['never']
+};
+const openMenuConfig = snapshotAgentConversationConfig(liveConfig);
+liveConfig.availableModels.push('streamed-later');
+liveConfig.model = 'streamed-later';
+assert.deepEqual(openMenuConfig.availableModels, ['gpt-5.6-sol']);
+assert.equal(openMenuConfig.model, 'gpt-5.6-sol', 'an open config menu does not follow provider events');
+
+console.log('composerConfigMenu.test.ts passed');

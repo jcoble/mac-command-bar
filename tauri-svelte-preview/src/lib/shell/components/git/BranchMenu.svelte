@@ -8,10 +8,9 @@
    * text: a branch called `codex/outbound-rule-generation` does not fit a narrow
    * panel, and two names cut off at the same point cannot be told apart.
    *
-   * NOTHING LOADS UNTIL IT IS OPENED. The branch list and the stash list are
-   * read when the menu opens, not on mount, so a panel sitting in the background
-   * costs no `git branch` call. Opening it again re-reads, because a branch may
-   * have been made in a terminal since.
+   * The cached branch and stash lists render as soon as the menu opens. A refresh
+   * begins only after the menu has had a paint opportunity, so opening never
+   * makes the WebView wait on Tauri or git.
    *
    * A `<select>` is deliberately not used here — see the kit's DESIGN.md. It
    * cannot be styled, it comes out as the OS control, and it cannot carry the
@@ -30,6 +29,7 @@
   import type { GitService } from '$lib/shell/git/gitService';
   import type { GitBranchSummary, GitStashEntry } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
+  import { afterFloatingSurfacePaint } from '$lib/shell/floatingSurface.ts';
 
   import {
     branchNameProblem,
@@ -55,13 +55,15 @@
   let loading = $state(false);
   let query = $state('');
   let newBranch = $state('');
+  let menuBusy = $state(false);
+  let menuHasChanges = $state(false);
 
   const busy = $derived(panel.actionBusy !== '');
   const current = $derived(describeCurrentBranch(panel.status?.branch));
   const shown = $derived(filterBranches(branches, query));
   const existingNames = $derived(branches.map((branch) => branch.name));
   const nameProblem = $derived(branchNameProblem(newBranch, existingNames));
-  const canCreate = $derived(canCreateBranch(newBranch, existingNames, { canWrite, busy }));
+  const canCreate = $derived(canCreateBranch(newBranch, existingNames, { canWrite, busy: menuBusy }));
   const hasChanges = $derived((panel.status?.files ?? []).length > 0);
 
   async function load(): Promise<void> {
@@ -87,7 +89,10 @@
     if (next) {
       query = '';
       newBranch = '';
-      void load();
+      menuBusy = busy;
+      menuHasChanges = hasChanges;
+      loading = branches.length === 0 && stashes.length === 0;
+      afterFloatingSurfacePaint(() => void load());
     }
   }
 
@@ -169,7 +174,7 @@
         {#each shown as branch (branch.name)}
           <DropdownMenu.Item
             class="flex-col items-start gap-0"
-            disabled={!canWrite || busy || branch.isCurrent}
+            disabled={!canWrite || menuBusy || branch.isCurrent}
             onSelect={() => void switchTo(branch.name)}
           >
             <span class="flex w-full min-w-0 items-center gap-1.5">
@@ -197,7 +202,7 @@
         placeholder="tsk-808-git-panel"
         autocomplete="off"
         spellcheck="false"
-        disabled={!canWrite || busy}
+        disabled={!canWrite || menuBusy}
         bind:value={newBranch}
         onkeydown={createOnEnter}
         data-testid="new-branch-name"
@@ -221,17 +226,17 @@
 
     <div class={HEADING}>Stash</div>
     <DropdownMenu.Item
-      disabled={!canWrite || busy || !hasChanges}
+      disabled={!canWrite || menuBusy || !menuHasChanges}
       onSelect={() => void stash()}
     >
       <Archive class="size-3.5 shrink-0" aria-hidden="true" />
       <span class="min-w-0 truncate">
-        {hasChanges ? 'Stash all changes, including new files' : 'Nothing to stash'}
+        {menuHasChanges ? 'Stash all changes, including new files' : 'Nothing to stash'}
       </span>
     </DropdownMenu.Item>
     {#if stashes.length > 0}
       <DropdownMenu.Item
-        disabled={!canWrite || busy}
+          disabled={!canWrite || menuBusy}
         onSelect={() => void pop(null)}
         data-testid="pop-latest-stash"
       >

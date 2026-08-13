@@ -1,4 +1,6 @@
-/** Pure action rosters for Source Control row context menus. */
+/** Pure snapshots and placement for Source Control row context menus. */
+
+import type { ProjectGitFileStatus } from '../../../tauriSource.ts';
 
 export type SourceControlFileAction =
   | 'open-diff'
@@ -20,6 +22,80 @@ export interface SourceControlContextMenuItem<Action extends string, Handler ext
   label: string;
   enabled: boolean;
   handler: Handler;
+}
+
+export type SourceControlContextMenuAction = SourceControlFileAction | SourceControlCommitAction;
+
+export interface SourceControlContextMenuAnchor {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  containingBlockLeft: number;
+  containingBlockRight: number;
+  containingBlockTop: number;
+  containingBlockBottom: number;
+}
+
+export interface SourceControlContextMenuSnapshot {
+  key: string;
+  anchor: SourceControlContextMenuAnchor;
+  items: SourceControlContextMenuItem<SourceControlContextMenuAction, string>[];
+}
+
+export interface SourceControlCommitMenuSnapshot extends SourceControlContextMenuSnapshot {
+  kind: 'commit';
+  target: { sha: string; isMerge: boolean };
+}
+
+export interface SourceControlFileMenuSnapshot extends SourceControlContextMenuSnapshot {
+  kind: 'file';
+  target: {
+    groupAction: 'stage' | 'unstage';
+    file: ProjectGitFileStatus;
+  };
+}
+
+export type SourceControlMenuSnapshot =
+  | SourceControlCommitMenuSnapshot
+  | SourceControlFileMenuSnapshot;
+
+const MENU_GAP = 4;
+const EDGE_PADDING = 8;
+
+export function sourceControlContextMenuAnchor(event: MouseEvent): SourceControlContextMenuAnchor {
+  const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  const containingBlock = target?.closest<HTMLElement>('.dv-render-overlay');
+  const containingBlockRect = containingBlock?.getBoundingClientRect();
+  return {
+    left: event.clientX,
+    right: event.clientX,
+    top: event.clientY,
+    bottom: event.clientY,
+    containingBlockLeft: containingBlockRect?.left ?? 0,
+    containingBlockRight: containingBlockRect?.right ?? window.innerWidth,
+    containingBlockTop: containingBlockRect?.top ?? 0,
+    containingBlockBottom: containingBlockRect?.bottom ?? window.innerHeight
+  };
+}
+
+/** Place once from the hidden menu's measured size, clamped to its Dockview block. */
+export function placeSourceControlContextMenu(
+  anchor: SourceControlContextMenuAnchor,
+  menu: { width: number; height: number }
+): { left: number; top: number } {
+  const minLeft = anchor.containingBlockLeft + EDGE_PADDING;
+  const maxLeft = Math.max(minLeft, anchor.containingBlockRight - menu.width - EDGE_PADDING);
+  const minTop = anchor.containingBlockTop + EDGE_PADDING;
+  const maxTop = Math.max(minTop, anchor.containingBlockBottom - menu.height - EDGE_PADDING);
+  const preferredLeft = anchor.right + MENU_GAP;
+  const preferredTop = anchor.bottom + MENU_GAP;
+  const viewportLeft = Math.min(maxLeft, Math.max(minLeft, preferredLeft));
+  const viewportTop = Math.min(maxTop, Math.max(minTop, preferredTop));
+  return {
+    left: viewportLeft - anchor.containingBlockLeft,
+    top: viewportTop - anchor.containingBlockTop
+  };
 }
 
 export interface SourceControlFileMenuOptions {
@@ -97,4 +173,43 @@ export function sourceControlCommitContextMenuItems(
       handler: 'copy-hash'
     }
   ];
+}
+
+export function snapshotSourceControlCommitMenu(input: {
+  sha: string;
+  isMerge: boolean;
+  expanded: boolean;
+  anchor: SourceControlContextMenuAnchor;
+}): SourceControlCommitMenuSnapshot {
+  return {
+    kind: 'commit',
+    key: `commit:${input.sha}:${input.expanded ? 'open' : 'closed'}`,
+    target: { sha: input.sha, isMerge: input.isMerge },
+    anchor: { ...input.anchor },
+    items: sourceControlCommitContextMenuItems(input.expanded)
+  };
+}
+
+export function snapshotSourceControlFileMenu(input: {
+  groupAction: 'stage' | 'unstage';
+  file: ProjectGitFileStatus;
+  canWrite: boolean;
+  busy: boolean;
+  hasRoot: boolean;
+  anchor: SourceControlContextMenuAnchor;
+}): SourceControlFileMenuSnapshot {
+  const file = { ...input.file };
+  return {
+    kind: 'file',
+    key: `file:${input.groupAction}:${file.relativePath}`,
+    target: { groupAction: input.groupAction, file },
+    anchor: { ...input.anchor },
+    items: sourceControlFileContextMenuItems({
+      groupAction: input.groupAction,
+      canWrite: input.canWrite,
+      busy: input.busy,
+      deleted: file.badge === 'D' || file.worktreeStatus === 'deleted',
+      hasRoot: input.hasRoot
+    })
+  };
 }

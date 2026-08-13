@@ -49,6 +49,12 @@
   let picked = $state<string | null>(null);
   let menuOpen = $state(false);
   let editorOpen = $state(false);
+  let menuRows = $state<StackRow[]>([]);
+  let menuInProject = $state<StackRow[]>([]);
+  let menuElsewhere = $state<StackRow[]>([]);
+  let menuCurrent = $state<StackRow | null>(null);
+  let menuRoot = $state('');
+  let menuLoading = $state(false);
   /** The editor dialog, referred to by the one method this component calls. */
   let editor = $state<{
     openFor: (configuration: StackDefinition | null, defaultFolder?: string) => void;
@@ -94,6 +100,19 @@
   const running = $derived(current?.state === 'running' || current?.state === 'starting');
   const busy = $derived(current ? isStackBusy(current.definition.id) : false);
 
+  function changeMenu(next: boolean): void {
+    menuOpen = next;
+    if (!next) return;
+    menuRows = rows.map((row) => ({ ...row, definition: { ...row.definition } }));
+    menuRoot = root;
+    menuInProject = menuRows.filter((row) => isInsideRoot(row.definition.cwd, menuRoot));
+    menuElsewhere = menuRows.filter((row) => !isInsideRoot(row.definition.cwd, menuRoot));
+    menuCurrent = current
+      ? menuRows.find((row) => row.definition.id === current?.definition.id) ?? null
+      : null;
+    menuLoading = stacks.loading;
+  }
+
   /** The state as a colour name. The four states, and nothing else. */
   function tone(state: string): string {
     if (state === 'running') return 'running';
@@ -124,13 +143,13 @@
 
   function addNew(): void {
     menuOpen = false;
-    editor?.openFor(null, root);
+    editor?.openFor(null, menuRoot);
   }
 
   function changeCurrent(): void {
-    if (!current) return;
+    if (!menuCurrent) return;
     menuOpen = false;
-    editor?.openFor(current.definition);
+    editor?.openFor(menuCurrent.definition);
   }
 
   function readPortsAgain(): void {
@@ -164,7 +183,7 @@
     {/if}
   </button>
 
-  <DropdownMenu.Root bind:open={menuOpen}>
+  <DropdownMenu.Root open={menuOpen} onOpenChange={changeMenu}>
     <DropdownMenu.Trigger
       class="chevron"
       aria-label="Choose what to run"
@@ -177,15 +196,15 @@
       class="w-[min(360px,calc(100vw-2rem))] bg-[var(--color-surface)] text-[var(--color-text)]
              ring-[var(--color-border)]"
     >
-      {#if rows.length === 0}
+      {#if menuRows.length === 0}
         <p class="px-2 py-2 text-[12px] leading-[1.5] text-[var(--color-text-2)]">
           Nothing saved yet. A run configuration is one command you keep starting — the dev server,
           the database, the watcher.
         </p>
       {:else}
-        {#each [{ heading: 'This project', list: inProject }, { heading: 'Other folders', list: elsewhere }] as group (group.heading)}
+        {#each [{ heading: 'This project', list: menuInProject }, { heading: 'Other folders', list: menuElsewhere }] as group (group.heading)}
           {#if group.list.length > 0}
-            {#if inProject.length > 0 && elsewhere.length > 0}
+            {#if menuInProject.length > 0 && menuElsewhere.length > 0}
               <DropdownMenu.Label class="text-[12px] text-[var(--color-text-3)]">
                 {group.heading}
               </DropdownMenu.Label>
@@ -210,24 +229,24 @@
         <DropdownMenu.Separator class="bg-[var(--color-border)]" />
       {/if}
 
-      {#if current}
+      {#if menuCurrent}
         <DropdownMenu.Item class="gap-2 px-2 py-1.5 text-[13px]" onSelect={changeCurrent}>
           <Pencil size={13} aria-hidden="true" />
-          Change “{current.definition.name}”…
+          Change “{menuCurrent.definition.name}”…
         </DropdownMenu.Item>
       {/if}
       <DropdownMenu.Item class="gap-2 px-2 py-1.5 text-[13px]" onSelect={addNew}>
         <Plus size={13} aria-hidden="true" />
         New run configuration…
       </DropdownMenu.Item>
-      {#if rows.length > 0}
+      {#if menuRows.length > 0}
         <DropdownMenu.Item
           class="gap-2 px-2 py-1.5 text-[13px]"
-          disabled={stacks.loading}
+          disabled={menuLoading}
           onSelect={readPortsAgain}
         >
           <RefreshCw size={13} aria-hidden="true" />
-          {stacks.loading ? 'Reading…' : 'Look again at which ports are open'}
+          {menuLoading ? 'Reading…' : 'Look again at which ports are open'}
         </DropdownMenu.Item>
       {/if}
     </DropdownMenu.Content>

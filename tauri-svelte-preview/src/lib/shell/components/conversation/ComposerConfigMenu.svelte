@@ -32,6 +32,8 @@
   } from '$lib/shell/conversation/agentConfigLabels.ts';
   import {
     hasAgentConversationConfig,
+    emptyAgentConversationConfigState,
+    snapshotAgentConversationConfig,
     type AgentConversationConfigField,
     type AgentConversationConfigState
   } from '$lib/shell/conversation/conversationConfig.ts';
@@ -46,17 +48,18 @@
     onChange?(field: AgentConversationConfigField, value: string): void;
   }
 
-  let { provider, state, pending, error = null, onChange }: Props = $props();
+  let { provider, state: configState, pending, error = null, onChange }: Props = $props();
+  let menuProvider = $state('');
+  let menuState = $state<AgentConversationConfigState>(emptyAgentConversationConfigState());
+  let menuPending = $state<Partial<Record<AgentConversationConfigField, string>>>({});
 
-  const modelBusy = $derived('model' in pending);
-  const effortBusy = $derived('reasoningEffort' in pending);
   const approvalBusy = $derived('approvalPolicy' in pending);
   const saving = $derived(Object.keys(pending).length > 0);
 
   /** Which individual controls have choices the agent can accept. */
-  const canChooseEffort = $derived(state.availableEfforts.length > 0);
-  const canChooseApproval = $derived(state.availableApprovalPolicies.length > 0);
-  const hasAgentSettings = $derived(hasAgentConversationConfig(state));
+  const canChooseEffort = $derived(configState.availableEfforts.length > 0);
+  const canChooseApproval = $derived(configState.availableApprovalPolicies.length > 0);
+  const hasAgentSettings = $derived(hasAgentConversationConfig(configState));
 
   /**
    * The options to show, with whatever the agent currently reports included
@@ -68,11 +71,21 @@
     return [...available];
   }
 
-  const modelOptions = $derived(optionsFor(state.availableModels, state.model));
-  const effortOptions = $derived(optionsFor(state.availableEfforts, state.reasoningEffort));
-  const approvalOptions = $derived(
-    optionsFor(state.availableApprovalPolicies, state.approvalPolicy)
+  const modelOptions = $derived(optionsFor(configState.availableModels, configState.model));
+  const menuModelOptions = $derived(optionsFor(menuState.availableModels, menuState.model));
+  const menuEffortOptions = $derived(
+    optionsFor(menuState.availableEfforts, menuState.reasoningEffort)
   );
+  const menuApprovalOptions = $derived(
+    optionsFor(menuState.availableApprovalPolicies, menuState.approvalPolicy)
+  );
+
+  function snapshotOnOpen(open: boolean): void {
+    if (!open) return;
+    menuProvider = provider;
+    menuState = snapshotAgentConversationConfig(configState);
+    menuPending = { ...pending };
+  }
 </script>
 
 <div class="config-row" data-testid="conversation-config-bar" aria-label="Agent settings">
@@ -82,7 +95,7 @@
     </span>
   {:else}
     <!-- Left: what the agent may do on its own. -->
-    <DropdownMenu.Root>
+    <DropdownMenu.Root onOpenChange={snapshotOnOpen}>
     <DropdownMenu.Trigger disabled={!canChooseApproval || approvalBusy}>
       {#snippet child({ props })}
         <Button
@@ -93,7 +106,7 @@
           class="text-muted-foreground hover:text-foreground gap-1 px-1.5 text-[13px] font-normal"
         >
           <ShieldCheck aria-hidden="true" />
-          {approvalLabel(state.approvalPolicy)}
+          {approvalLabel(configState.approvalPolicy)}
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
         </Button>
       {/snippet}
@@ -110,14 +123,14 @@
       collisionPadding={12}
       class="w-auto! max-w-[320px] min-w-[248px]"
     >
-      <DropdownMenu.Label>When {provider} needs permission</DropdownMenu.Label>
-      {#each approvalOptions as policy (policy)}
+      <DropdownMenu.Label>When {menuProvider} needs permission</DropdownMenu.Label>
+      {#each menuApprovalOptions as policy (policy)}
         <DropdownMenu.Item
           class="items-start gap-2 py-1.5"
           onSelect={() => onChange?.('approvalPolicy', policy)}
         >
           <span class="mt-0.5 flex size-3.5 shrink-0 items-center justify-center">
-            {#if policy === state.approvalPolicy}<Check aria-hidden="true" class="size-3.5" />{/if}
+            {#if policy === menuState.approvalPolicy}<Check aria-hidden="true" class="size-3.5" />{/if}
           </span>
           <span class="flex min-w-0 flex-col gap-0.5">
             <span>{approvalLabel(policy)}</span>
@@ -146,7 +159,7 @@
         Settings unavailable
       </span>
     {/if}
-    <DropdownMenu.Root>
+    <DropdownMenu.Root onOpenChange={snapshotOnOpen}>
       <DropdownMenu.Trigger disabled={modelOptions.length === 0 && !canChooseEffort}>
         {#snippet child({ props })}
           <Button
@@ -156,7 +169,7 @@
             size="xs"
             class="border-border/70 text-muted-foreground hover:text-foreground gap-1 rounded-full border px-2.5 text-[13px] font-normal"
           >
-            {modelEffortLabel(state.model, state.reasoningEffort)}
+            {modelEffortLabel(configState.model, configState.reasoningEffort)}
             <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
           </Button>
         {/snippet}
@@ -173,10 +186,10 @@
         <DropdownMenu.Sub>
           <DropdownMenu.SubTrigger
             data-testid="conversation-config-model"
-            disabled={modelOptions.length === 0 || modelBusy}
+            disabled={menuModelOptions.length === 0 || 'model' in menuPending}
           >
             Model
-            <span class="text-muted-foreground ml-auto pl-4">{modelLabel(state.model)}</span>
+            <span class="text-muted-foreground ml-auto pl-4">{modelLabel(menuState.model)}</span>
           </DropdownMenu.SubTrigger>
           <!-- A submenu hangs off its row, near the bottom of the window: its
                bottom edge is pinned to the row's so it grows upward. -->
@@ -186,20 +199,20 @@
             collisionPadding={12}
             class="min-w-[180px]"
           >
-            {#each modelOptions as model (model)}
-              {@const modelAvailable = state.availableModels.includes(model)}
+            {#each menuModelOptions as model (model)}
+              {@const modelAvailable = menuState.availableModels.includes(model)}
               <DropdownMenu.Item
-                disabled={modelBusy || !modelAvailable}
+                disabled={'model' in menuPending || !modelAvailable}
                 title={modelAvailable ? undefined : 'Unavailable for this session.'}
                 class="model-option"
                 onSelect={() => onChange?.('model', model)}
               >
                 <span class="flex size-3.5 shrink-0 items-center justify-center">
-                  {#if model === state.model}<Check aria-hidden="true" class="size-3.5" />{/if}
+                  {#if model === menuState.model}<Check aria-hidden="true" class="size-3.5" />{/if}
                 </span>
                 <span class="model-option-copy">
                   <span class="model-option-name">{modelLabel(model)}</span>
-                  <span class="model-option-provider">{provider}</span>
+                  <span class="model-option-provider">{menuProvider}</span>
                 </span>
               </DropdownMenu.Item>
             {/each}
@@ -209,11 +222,11 @@
         <DropdownMenu.Sub>
           <DropdownMenu.SubTrigger
             data-testid="conversation-config-reasoning-effort"
-            disabled={!canChooseEffort || effortBusy}
+            disabled={menuState.availableEfforts.length === 0 || 'reasoningEffort' in menuPending}
           >
             Effort
             <span class="text-muted-foreground ml-auto pl-4">
-              {effortLabel(state.reasoningEffort)}
+              {effortLabel(menuState.reasoningEffort)}
             </span>
           </DropdownMenu.SubTrigger>
           <!-- A submenu hangs off its row, near the bottom of the window: its
@@ -224,10 +237,10 @@
             collisionPadding={12}
             class="min-w-[180px]"
           >
-            {#each effortOptions as effort (effort)}
+            {#each menuEffortOptions as effort (effort)}
               <DropdownMenu.Item onSelect={() => onChange?.('reasoningEffort', effort)}>
                 <span class="flex size-3.5 shrink-0 items-center justify-center">
-                  {#if effort === state.reasoningEffort}
+                  {#if effort === menuState.reasoningEffort}
                     <Check aria-hidden="true" class="size-3.5" />
                   {/if}
                 </span>

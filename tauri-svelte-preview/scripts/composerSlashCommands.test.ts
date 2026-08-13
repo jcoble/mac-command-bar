@@ -14,7 +14,8 @@ import {
   moveSlashMenuIndex,
   remainingContextPercent,
   slashCommandQuery,
-  slashMenuState
+  slashMenuState,
+  snapshotConversationCommands
 } from '../src/lib/shell/conversation/composerSlashCommands.ts';
 import { mergeConversationCommandCatalog } from '../src/lib/shell/conversation/conversationCommandCatalog.ts';
 
@@ -81,6 +82,12 @@ assert.equal(longProviderCatalog.length, 15, 'all provider and built-in commands
 assert.equal(longProviderCatalog[13].description, 'Description 14');
 assert.equal(longProviderCatalog[14].source, 'assembly');
 
+const openCatalog = snapshotConversationCommands(catalog);
+catalog[0].label = 'Streamed replacement';
+catalog.push({ ...catalog[0], id: 'late', name: 'late' });
+assert.equal(openCatalog[0]?.label, 'Review changes');
+assert.equal(openCatalog.length, 3, 'an open slash menu does not follow streamed command updates');
+
 // ── Keyboard movement ──────────────────────────────────────────────────────
 assert.equal(moveSlashMenuIndex(0, 3, 'ArrowDown'), 1);
 assert.equal(moveSlashMenuIndex(2, 3, 'ArrowDown'), 0, 'the list wraps to the top');
@@ -101,4 +108,4 @@ assert.equal(remainingContextPercent(-1, 400), 100, 'negative usage clamps to th
 assert.equal(remainingContextPercent(1, 0), null, 'an absent context window hides the indicator');
 assert.equal(remainingContextPercent(null, 400), null);
 
-console.log('composerSlashCommands.test.mjs passed');
+console.log('composerSlashCommands.test.ts passed');

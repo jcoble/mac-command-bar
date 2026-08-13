@@ -62,6 +62,8 @@
   let context = $state<PullRequestContext | null>(null);
   /** The branches this pull request could be opened against. Read once, on open. */
   let baseChoices = $state<string[]>([]);
+  let baseMenuChoices = $state<string[]>([]);
+  let baseMenuValue = $state('');
   let disposed = false;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -178,6 +180,12 @@
     model.base = base;
   }
 
+  function snapshotBaseMenu(open: boolean): void {
+    if (!open) return;
+    baseMenuValue = model.base;
+    baseMenuChoices = baseChoices.length > 0 ? [...baseChoices] : [model.base];
+  }
+
   function toggleDraft(event: Event): void {
     model.draft = (event.currentTarget as HTMLInputElement).checked;
   }
@@ -212,7 +220,7 @@
         {model.branch || status?.branch || 'current branch'}
       </span>
       <span class="shrink-0 text-[var(--color-text-3)]" aria-hidden="true">→</span>
-      <DropdownMenu.Root>
+      <DropdownMenu.Root onOpenChange={snapshotBaseMenu}>
         <DropdownMenu.Trigger
           class="min-w-0 flex-1 truncate rounded-[7px] bg-[var(--color-bg)] px-2.5 py-2 text-left font-mono text-[13px] text-[var(--color-text)] outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-60"
           disabled={busy || model.state === 'created'}
@@ -223,7 +231,7 @@
           {model.base}
         </DropdownMenu.Trigger>
         <DropdownMenu.Content class="max-h-[240px] w-[240px] overflow-y-auto" align="end">
-          {#each baseChoices.length > 0 ? baseChoices : [model.base] as choice (choice)}
+          {#each baseMenuChoices.length > 0 ? baseMenuChoices : [baseMenuValue] as choice (choice)}
             <DropdownMenu.Item onSelect={() => updateBase(choice)}>
               <span class="min-w-0 truncate font-mono">{choice}</span>
             </DropdownMenu.Item>

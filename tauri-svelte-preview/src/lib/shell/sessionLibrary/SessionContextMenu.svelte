@@ -30,29 +30,12 @@
   ));
 
   onMount(() => {
-    const measure = (): void => {
-      const rect = menuElement?.getBoundingClientRect();
-      if (!rect) return;
-      measuredWidth = rect.width;
-      measuredHeight = rect.height;
-    };
-    const updateViewport = (): void => {
-      viewportWidth = window.innerWidth;
-      viewportHeight = window.innerHeight;
-      measure();
-    };
-    measure();
-    window.addEventListener('resize', updateViewport);
-    let observer: ResizeObserver | null = null;
-    if (menuElement && typeof ResizeObserver !== 'undefined') {
-      observer = new ResizeObserver(measure);
-      observer.observe(menuElement);
-    }
-    updateViewport();
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener('resize', updateViewport);
-    };
+    viewportWidth = window.innerWidth;
+    viewportHeight = window.innerHeight;
+    const rect = menuElement?.getBoundingClientRect();
+    if (!rect) return;
+    measuredWidth = rect.width;
+    measuredHeight = rect.height;
   });
 </script>
 
