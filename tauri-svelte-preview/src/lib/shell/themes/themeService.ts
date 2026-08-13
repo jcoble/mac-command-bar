@@ -136,7 +136,7 @@ function paintTargets(root: HTMLElement | null | undefined): HTMLElement[] {
  * Remove every inline color this service ever painted.
  *
  * Painting writes inline properties onto `<html>`, which outranks the
- * `:has(.next-shell)` scoping that keeps the old shell on its own palette —
+ * route-class scoping that keeps the old shell on its own palette —
  * and inline styles outlive the shell unless something takes them off. The
  * /next page calls this from its unmount cleanup so leaving the shell leaves
  * the document exactly as it was found. Walks the SAME token names paint()

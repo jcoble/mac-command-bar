@@ -1166,6 +1166,7 @@
   onMount(() => {
     // First, and synchronous: it only touches the DOM, and every panel below
     // paints in the theme it sets.
+    document.documentElement.classList.add('next-shell-document');
     applyStoredTheme();
     disposed = false;
     const stopExtensionApiProbeObservations = onExtensionApiProbeObservation((observation) => {
@@ -1341,6 +1342,7 @@
       // back off, so a same-document navigation to the old shell renders it
       // exactly as it was found.
       clearTheme();
+      document.documentElement.classList.remove('next-shell-document');
     };
   });
 </script>

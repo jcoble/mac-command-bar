@@ -5,13 +5,21 @@
 	let {
 		ref = $bindable(null),
 		class: className,
+		hasMedia = false,
 		...restProps
-	}: AlertDialogPrimitive.TitleProps = $props();
+	}: AlertDialogPrimitive.TitleProps & {
+		/** Mirror Header.hasMedia at the composition site; avoids a group relational selector. */
+		hasMedia?: boolean;
+	} = $props();
 </script>
 
 <AlertDialogPrimitive.Title
 	bind:ref
 	data-slot="alert-dialog-title"
-	class={cn("text-base font-medium sm:group-data-[size=default]/alert-dialog-content:group-has-data-[slot=alert-dialog-media]/alert-dialog-content:col-start-2", className)}
+	class={cn(
+		"text-base font-medium",
+		hasMedia && "sm:group-data-[size=default]/alert-dialog-content:col-start-2",
+		className
+	)}
 	{...restProps}
 />

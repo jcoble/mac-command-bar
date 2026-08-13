@@ -15214,8 +15214,9 @@
 													{@const runLiveDigest = orchestrationLiveDigestItems(run, 5)}
 													{@const runArtifacts = orchestrationArtifactChips(run)}
 													{@const runLinks = orchestrationLinkChips(run)}
-													<div
-														class="activity-run-row"
+											<div
+												class="activity-run-row"
+												class:menu-open={activityRowActionMenuOpen("run", run.id)}
 														class:bad={orchestrationStatusClass(run.status) === "bad"}
 														class:attention={orchestrationStatusClass(run.status) === "attention" ||
 															runMetrics.attentionCount > 0 ||
@@ -15369,8 +15370,9 @@
 																{/each}
 															</div>
 														{/if}
-														<div
-															class="activity-row-actions run-activity-actions row-action-menu-anchor"
+												<div
+													class="activity-row-actions run-activity-actions row-action-menu-anchor"
+													class:menu-open={activityRowActionMenuOpen("run", run.id)}
 															aria-label="Run actions"
 														>
 															<button
@@ -15523,8 +15525,9 @@
 														<div class="workspace-snapshot-list">
 															{#each filteredWorkspaceSnapshots as snapshot (snapshot.id)}
 																{@const readiness = workspaceSnapshotRestoreReadiness(snapshot)}
-																<div
-																	class="workspace-snapshot-row"
+													<div
+														class="workspace-snapshot-row"
+														class:menu-open={activityRowActionMenuOpen("workspace-snapshot", snapshot.id)}
 																	class:active={activeWorkspaceSessionKey === snapshot.id}
 																	title={workspaceSnapshotRestorePlan(snapshot)}
 																	oncontextmenu={(event) => {
@@ -15552,8 +15555,9 @@
 																			</span>
 																		</div>
 																	</button>
-																	<div
-																		class="activity-row-actions workspace-snapshot-actions row-action-menu-anchor"
+															<div
+																class="activity-row-actions workspace-snapshot-actions row-action-menu-anchor"
+																class:menu-open={activityRowActionMenuOpen("workspace-snapshot", snapshot.id)}
 																		aria-label="Workspace snapshot actions"
 																	>
 																		<button
@@ -15706,8 +15710,9 @@
 												<div class="activity-empty">No active sessions</div>
 											{:else}
 												{#each filteredProjectRuntimeContexts as context (`activity:${context.pid}:${context.port}:${context.cwd}`)}
-													<div
-														class="activity-runtime-row"
+											<div
+												class="activity-runtime-row"
+												class:menu-open={activityRowActionMenuOpen("runtime", `${context.pid}:${context.port}:${context.cwd}`)}
 														title={context.cwd}
 														oncontextmenu={(event) => {
 															event.preventDefault();
@@ -15719,8 +15724,9 @@
 															<strong>{context.command}</strong>
 															<small>{context.rootLabel} · {context.cwd}</small>
 														</div>
-														<div
-															class="activity-row-actions runtime-activity-actions row-action-menu-anchor"
+												<div
+													class="activity-row-actions runtime-activity-actions row-action-menu-anchor"
+													class:menu-open={activityRowActionMenuOpen("runtime", `${context.pid}:${context.port}:${context.cwd}`)}
 															aria-label="Active session actions"
 														>
 															<button
@@ -15815,8 +15821,9 @@
 														? workspaceSnapshotRestoreReadiness(sessionSnapshot)
 														: null}
 													{@const sessionFocusLane = agentSessionFocusLane(session, sessionReadiness)}
-													<div
-														class="activity-session-row agent-activity-row"
+											<div
+												class="activity-session-row agent-activity-row"
+												class:menu-open={agentRowActionMenuOpen(session, "agent")}
 														title={agentSessionResumePlan(session)}
 														oncontextmenu={(event) => {
 															event.preventDefault();
@@ -15858,8 +15865,9 @@
 																<strong>{sessionFocusLane.detail}</strong>
 															</span>
 														</div>
-														<div
-															class="activity-row-actions agent-activity-actions row-action-menu-anchor"
+												<div
+													class="activity-row-actions agent-activity-actions row-action-menu-anchor"
+													class:menu-open={agentRowActionMenuOpen(session, "agent")}
 															aria-label="Agent actions"
 														>
 															<button
@@ -18111,44 +18119,42 @@
 		white-space: nowrap;
 	}
 
-	.activity-panel-list .conversation-session-row:has(.row-action-menu),
-	.activity-panel-list .agent-activity-row:has(.row-action-menu),
-	.activity-panel-list .workspace-snapshot-row:has(.row-action-menu),
-	.activity-panel-list .activity-runtime-row:has(.row-action-menu) {
+	.activity-panel-list .activity-run-row.menu-open,
+	.activity-panel-list .agent-activity-row.menu-open,
+	.activity-panel-list .workspace-snapshot-row.menu-open,
+	.activity-panel-list .activity-runtime-row.menu-open {
 		align-items: start;
 	}
 
-	.activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu),
-	.activity-panel-list .run-activity-actions:has(.row-action-menu),
-	.activity-panel-list .workspace-snapshot-actions:has(.row-action-menu),
-	.activity-panel-list .runtime-activity-actions:has(.row-action-menu),
-	.activity-panel-list .agent-activity-actions:has(.row-action-menu) {
+	.activity-panel-list .run-activity-actions.menu-open,
+	.activity-panel-list .workspace-snapshot-actions.menu-open,
+	.activity-panel-list .runtime-activity-actions.menu-open,
+	.activity-panel-list .agent-activity-actions.menu-open {
 		display: contents;
 	}
 
-	.activity-panel-list .conversation-session-row .row-action-menu-anchor:has(.row-action-menu) > button,
-	.activity-panel-list .run-activity-actions:has(.row-action-menu) > button,
-	.activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
-	.activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button {
+	.activity-panel-list .run-activity-actions.menu-open > button,
+	.activity-panel-list .workspace-snapshot-actions.menu-open > button,
+	.activity-panel-list .runtime-activity-actions.menu-open > button {
 		justify-self: end;
 	}
 
-	.activity-panel-list .run-activity-actions:has(.row-action-menu) > button {
+	.activity-panel-list .run-activity-actions.menu-open > button {
 		justify-self: end;
 	}
 
-	.activity-panel-list .agent-activity-actions:has(.row-action-menu) > button {
+	.activity-panel-list .agent-activity-actions.menu-open > button {
 		grid-area: actions;
 		justify-self: end;
 	}
 
-	.activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button,
-	.activity-panel-list .runtime-activity-actions:has(.row-action-menu) > button {
+	.activity-panel-list .workspace-snapshot-actions.menu-open > button,
+	.activity-panel-list .runtime-activity-actions.menu-open > button {
 		grid-column: 3;
 		grid-row: 1;
 	}
 
-	.activity-panel-list .workspace-snapshot-actions:has(.row-action-menu) > button {
+	.activity-panel-list .workspace-snapshot-actions.menu-open > button {
 		grid-column: 2;
 	}
 

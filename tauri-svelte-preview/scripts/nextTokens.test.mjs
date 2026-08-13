@@ -127,14 +127,13 @@ for (const rule of sharedRules) {
     'the colors must apply to the /next shell element'
   );
   assert.ok(
-    /:root:has\(\s*\.next-shell\s*\)/.test(selectors),
+    /:root\.next-shell-document/.test(selectors),
     'the colors must also apply document-wide while /next is on screen, ' +
       'because dialogs are moved outside the shell element when they open'
   );
   assert.ok(
     /:is\(/.test(selectors),
-    'the two selectors belong in one :is() list so an engine without :has() ' +
-      'still gets the .next-shell half'
+    'the route-state selector and .next-shell belong in one :is() list'
   );
 }
 
