@@ -34,6 +34,7 @@
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import RunButton from '$lib/shell/components/run/RunButton.svelte';
   import SessionBrowserButton from '$lib/shell/browser/SessionBrowserButton.svelte';
+  import LanguageIntelligenceControls from '$lib/shell/components/LanguageIntelligenceControls.svelte';
   import {
     loadSessionBrowserAnnotations,
     openSessionBrowserOverlay
@@ -1484,6 +1485,10 @@
   <div class="top-bar">
     <RunButton />
     <SessionBrowserButton />
+    <!-- The project's language-server controls, pushed to the right edge. They
+         are about the project rather than the open file, so they belong up
+         here rather than among the editor's file tabs. -->
+    <LanguageIntelligenceControls />
   </div>
 
   <div class="frame-area">

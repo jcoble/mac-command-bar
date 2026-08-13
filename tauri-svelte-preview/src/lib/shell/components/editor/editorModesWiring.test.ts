@@ -30,6 +30,10 @@ const nativeDiffSource = readFileSync(
   path.join(here, '..', 'git', 'NativeGitDiffEditor.svelte'),
   'utf8'
 );
+const controlsSource = readFileSync(
+  path.join(here, '..', 'LanguageIntelligenceControls.svelte'),
+  'utf8'
+);
 
 test('warming a project is behind that project switch', () => {
   const warm = panelSource.slice(
@@ -82,10 +86,23 @@ test('only one project is restored at launch', () => {
   );
 });
 
-test('the switch is the kit component', () => {
-  assert.match(panelSource, /import \{ Switch \} from '\$lib\/components\/ui\/switch\/index\.js'/);
-  assert.match(panelSource, /<Switch\b/);
-  assert.match(panelSource, /aria-label="Language intelligence"/);
+test('the switch is the kit component, in the top-strip controls', () => {
+  assert.match(
+    controlsSource,
+    /import \{ Switch \} from '\$lib\/components\/ui\/switch\/index\.js'/
+  );
+  assert.match(controlsSource, /<Switch\b/);
+  assert.match(controlsSource, /aria-label="Language intelligence"/);
+  assert.ok(
+    !panelSource.includes('<Switch'),
+    'the editor panel no longer paints the switch; it only publishes the state behind it'
+  );
+});
+
+test('flipping the switch reaches the panel that owns the server', () => {
+  assert.match(controlsSource, /requestLanguageIntelligence\(checked\)/);
+  assert.match(panelSource, /setLanguageIntelligenceSwitch\(/);
+  assert.match(panelSource, /switchLanguageIntelligence\(enabled\)/);
 });
 
 test('file tabs scroll while the complete right-side control group stays pinned', () => {

@@ -17,8 +17,8 @@
    *    downloaded once a file is actually opened. The language server is
    *    warmed on the first file opened per project, never before.
    *  - **Read mode is the default.** Opening a file colours it and stops
-   *    there. A language server starts only for a project whose switch in this
-   *    header has been turned on, and turning it off stops that server. The
+   *    there. A language server starts only for a project whose switch in the
+   *    top strip has been turned on, and turning it off stops that server. The
    *    choice belongs to the project — one server serves every session and
    *    every view on it — and is remembered between launches.
    *  - **No `$effect` calls the backend.** Every read is started by a user
@@ -35,7 +35,6 @@
     type LanguageServerStatusMessage
   } from './editor/languageServerStatus.ts';
   import FileIcon from './explorer/FileIcon.svelte';
-  import LanguageServerStatusChip from './LanguageServerStatusChip.svelte';
   import {
     isMarkdownFile,
     markdownPreviewDefault,
@@ -44,9 +43,7 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
-  import { Switch } from '$lib/components/ui/switch/index.js';
   import {
-    languageIntelligenceLabel,
     languageIntelligenceOn,
     launchRestoreFor,
     readLanguageIntelligenceChoices,
@@ -55,6 +52,11 @@
     workspaceKey,
     type LanguageIntelligenceChoices
   } from '$lib/shell/editor/languageIntelligenceMode';
+  import {
+    clearLanguageIntelligenceBar,
+    publishLanguageIntelligenceBar,
+    setLanguageIntelligenceSwitch
+  } from '$lib/shell/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import { hasBackendCapability } from '$lib/shell/backendCapabilities';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
@@ -816,10 +818,33 @@
     if (!ownedId) throw new Error(`No terminal opened for .NET ${action}.`);
   }
 
+  /**
+   * Keep the top strip's copy of the language-server controls in step.
+   *
+   * This is the one `$effect` in the panel, and it calls nothing: it copies
+   * state the panel already holds into the shared module the top strip reads,
+   * so the chip and the switch can sit beside the run button while this panel
+   * stays their only owner. The status pipeline is not run twice.
+   */
+  $effect(() => {
+    publishLanguageIntelligenceBar({
+      language: activeFile?.language ?? null,
+      status: languageServerStatus,
+      fullMode,
+      busy: languageIntelligenceBusy,
+      hasProject: Boolean(editorState.projectRoot),
+      title: languageIntelligenceTitle
+    });
+  });
+
   onMount(() => {
     // Subscribing costs nothing and loads nothing; it just means a click in the
     // explorer made before this panel was ever shown still opens its file.
     const unsubscribe = onOpenFile(handleOpenFileRequest);
+
+    // The switch in the top strip is this panel's own; flipping it there runs
+    // exactly the same code as flipping it here once did.
+    setLanguageIntelligenceSwitch((enabled) => void switchLanguageIntelligence(enabled));
 
     // Listening for status updates is likewise free, and it is the only way the
     // chip ever changes after a file opens — nothing here polls.
@@ -840,6 +865,8 @@
       stopNativeCsharpDiagnostics?.();
       // Anything still waiting on the server has nowhere to go now.
       languageServerGate.releaseAll();
+      // With no panel there is nothing truthful to show in the top strip.
+      clearLanguageIntelligenceBar();
       unsubscribe();
     };
   });
@@ -882,14 +909,10 @@
         {/each}
       </div>
 
+      <!-- Only the open file's own controls belong here. The project's
+           language-server chip and switch sit in the strip along the top of the
+           shell, in `LanguageIntelligenceControls.svelte`. -->
       <div class="editor-controls">
-        <!-- Nothing renders here in a browser tab or on an older desktop build:
-             there is no language server to report on, so there is no chip. -->
-        <LanguageServerStatusChip
-          language={activeFile?.language ?? null}
-          status={languageServerStatus}
-        />
-
         <!-- Markdown reads two ways, so the file says which one it is on. Source
              is the ordinary editor; Preview is the same document rendered. -->
         {#if activeFileIsMarkdown}
@@ -903,22 +926,6 @@
             />
           </span>
         {/if}
-
-        <!-- The project's editor mode. Off is read mode: colouring only, nothing
-             started. On runs the project's one language server, shared by every
-             session and view on it, and its cost shows in the resource view. -->
-        <div class="intelligence" title={languageIntelligenceTitle}>
-          <span class="intelligence-name">Language intelligence</span>
-          <Switch
-            checked={fullMode}
-            disabled={languageIntelligenceBusy || !editorState.projectRoot}
-            onCheckedChange={(checked) => void switchLanguageIntelligence(checked)}
-            aria-label="Language intelligence"
-          />
-          <span class="intelligence-state" class:on={fullMode}>
-            {languageIntelligenceLabel(fullMode)}
-          </span>
-        </div>
       </div>
     </div>
 
@@ -1103,30 +1110,6 @@
     gap: 8px;
     flex: 0 0 auto;
     min-width: max-content;
-  }
-
-  .intelligence {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 0 0 auto;
-    padding-left: 4px;
-  }
-
-  .intelligence-name {
-    color: var(--color-text-2);
-    font-size: 13px;
-    white-space: nowrap;
-  }
-
-  .intelligence-state {
-    color: var(--color-text-3);
-    font-size: 13px;
-    min-width: 22px;
-  }
-
-  .intelligence-state.on {
-    color: var(--color-text);
   }
 
   .chip-note {
