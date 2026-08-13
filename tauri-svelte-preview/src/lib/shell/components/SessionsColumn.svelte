@@ -2,23 +2,18 @@
   /**
    * SessionsColumn.svelte — the /next shell's left column.
    *
-   * The primary Working/Done/Settled layout and the resumable-session finder
-   * are owned by SessionsPaneview. This wrapper keeps the column-width strip,
-   * the existing New session affordance, and the remove confirmation while
-   * forwarding every session intent to the page-owned rail authorities.
+   * The Working/Done/Settled list is owned by SessionRail. This wrapper keeps
+   * the column-width strip, the header controls, and the remove confirmation
+   * while forwarding every session intent to the page-owned rail authorities.
    */
   import Bot from '@lucide/svelte/icons/bot';
   import Archive from '@lucide/svelte/icons/archive';
   import Check from '@lucide/svelte/icons/check';
   import CircleDot from '@lucide/svelte/icons/circle-dot';
-  import Gem from '@lucide/svelte/icons/gem';
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Plus from '@lucide/svelte/icons/plus';
   import Search from '@lucide/svelte/icons/search';
   import List from '@lucide/svelte/icons/list';
-  import SquareCode from '@lucide/svelte/icons/square-code';
-  import SquareTerminal from '@lucide/svelte/icons/square-terminal';
-  import Terminal from '@lucide/svelte/icons/terminal';
   import { onMount } from 'svelte';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
@@ -30,10 +25,11 @@
   import { Switch } from '$lib/components/ui/switch/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import type { AgentSession } from '$lib/tauriSource';
-  import type { AgentKind, OwnedSession } from '$lib/shell/ownedSessions';
+  import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import { AGENT_ICONS } from '$lib/shell/agentIcons';
   import { registerSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
-  import SessionsPaneview from './SessionsPaneview.svelte';
+  import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
+  import SessionRail from './SessionRail.svelte';
   import { sessionLabel, stripCells } from '$lib/shell/sessionStrip';
   import { cn } from '$lib/utils';
   import {
@@ -50,45 +46,34 @@
 
   interface Props {
     owned: OwnedSession[];
-    available: AgentSession[];
     activeOwnedId: string | null;
-    scanning: boolean;
     collapsed: boolean;
     onSelect(ownedId: string): void;
-    onAdopt(session: AgentSession): void;
-    onClose(ownedId: string): void;
     onRestart(ownedId: string): void;
     onComplete(ownedId: string): void;
     onReopen(ownedId: string): void;
     onSettle(ownedId: string): void;
     onUnsettle(ownedId: string): void;
     onRemove(ownedId: string): void;
-    onRescan(): void;
     onNewSession(): void;
     onCollapse(collapsed: boolean): void;
   }
 
   let {
     owned,
-    available,
     activeOwnedId,
-    scanning,
     collapsed,
     onSelect,
-    onAdopt,
-    onClose,
     onRestart,
     onComplete,
     onReopen,
     onSettle,
     onUnsettle,
     onRemove,
-    onRescan,
     onNewSession,
     onCollapse
   }: Props = $props();
 
-  let paneview = $state<{ openFinder(): void } | null>(null);
   const cells = $derived(stripCells(owned, activeOwnedId));
   let viewOptions = $state<MyWorkViewOptions>({
     ...DEFAULT_MY_WORK_VIEW_OPTIONS,
@@ -131,8 +116,9 @@
   let removing = $state<OwnedSession | null>(null);
   let removeOpen = $state(false);
 
+  /** Searching sessions means the full Session History tab, not a rail popover. */
   export function openFinder(): void {
-    paneview?.openFinder();
+    openSessionLibrary();
   }
 
   function askAboutRemoving(ownedId: string): void {
@@ -153,13 +139,6 @@
       : 'The transcript stays on disk.';
   }
 
-  const AGENT_ICONS: Record<AgentKind, typeof Bot> = {
-    claude: Bot,
-    codex: SquareCode,
-    gemini: Gem,
-    opencode: SquareTerminal,
-    other: Terminal
-  };
   const ACTION_CLASS =
     'text-[var(--color-text-2)] hover:text-foreground hover:bg-[var(--color-elevated)]';
   const TOOLTIP_CLASS =
@@ -220,7 +199,7 @@
   {:else}
     <div data-testid="sessions-column" class="sessions-column flex h-full min-h-0 flex-col bg-[var(--color-bg)] text-[var(--color-text)]">
       <header class="sessions-header">
-        <h2 class="text-[13px] font-semibold text-[var(--color-text)]">Sessions</h2>
+        <h2 class="text-[14px] font-semibold text-[var(--color-text)]">Sessions</h2>
         <div class="header-actions ml-auto flex items-center gap-2">
           <IconButton
             label="Search sessions"
@@ -320,22 +299,16 @@
       </header>
 
       <div class="min-h-0 flex-1 overflow-hidden">
-        <SessionsPaneview
-          bind:this={paneview}
+        <SessionRail
           sessions={owned}
-          {available}
-          {scanning}
-          activeOwnedId={activeOwnedId}
-          {viewOptions}
-          onSelect={onSelect}
-          onAdopt={onAdopt}
-          onRescan={onRescan}
-          onRestart={onRestart}
-          onComplete={onComplete}
-          onReopen={onReopen}
-          onSettle={onSettle}
-          onUnsettle={onUnsettle}
-          onClose={onClose}
+          options={viewOptions}
+          {activeOwnedId}
+          {onSelect}
+          {onRestart}
+          {onComplete}
+          {onReopen}
+          {onSettle}
+          {onUnsettle}
           onAskRemove={askAboutRemoving}
         />
       </div>
@@ -384,10 +357,10 @@
 
   .sessions-header {
     display: flex;
-    flex: 0 0 40px;
+    flex: 0 0 52px;
     align-items: center;
-    gap: 8px;
-    padding: 0 8px 0 12px;
+    gap: 5px;
+    padding: 0 9px 0 13px;
     border-bottom: 1px solid var(--color-border);
     font-size: 13px;
     line-height: 19.5px;
@@ -395,23 +368,24 @@
 
   .sessions-header :global(h2) {
     flex: 1 1 auto;
-    font-size: 13px;
+    font-size: 14px;
+    letter-spacing: -0.01em;
     line-height: 19.5px;
   }
 
   .sessions-header :global(button) {
-    width: 26px;
-    height: 26px;
+    width: 29px;
+    height: 29px;
     padding: 0;
     border-radius: 7px;
     font-size: 13.3333px;
     line-height: normal;
   }
 
-  .sessions-header .header-actions { gap: 8px; }
+  .sessions-header .header-actions { gap: 5px; }
 
   .sessions-header :global(button svg) {
-    width: 15px;
-    height: 15px;
+    width: 16px;
+    height: 16px;
   }
 </style>

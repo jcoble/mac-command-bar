@@ -1,28 +1,27 @@
 <script lang="ts">
   /**
-   * The compact, two-line session row used by every left-rail shelf.
+   * One session in the rail: project and status, title and model, branch.
    *
-   * The row is intentionally presentational. Selection, restart, shelf
-   * transitions and surface jumps arrive through props; hover only reveals
-   * controls and a read-only detail card.
+   * The row is presentational. Selecting, jumping, and every menu action arrive
+   * through props. Hover only reveals controls that are already in the page and
+   * a read-only detail card; nothing about hover moves the title or the branch.
+   *
+   * Motion is deliberate: the working indicator spins only while this row is
+   * genuinely working AND on screen, and the elapsed clock is the rail's one
+   * shared interval rather than a timer per row.
    */
   import { onDestroy } from 'svelte';
 
-  import Bot from '@lucide/svelte/icons/bot';
-  import Check from '@lucide/svelte/icons/check';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
+  import Folder from '@lucide/svelte/icons/folder';
   import GitBranch from '@lucide/svelte/icons/git-branch';
+  import Lock from '@lucide/svelte/icons/lock';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
-  import MoreHorizontal from '@lucide/svelte/icons/more-horizontal';
   import Play from '@lucide/svelte/icons/play';
-  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
-  import Archive from '@lucide/svelte/icons/archive';
-  import Sparkles from '@lucide/svelte/icons/sparkles';
-  import Terminal from '@lucide/svelte/icons/terminal';
-  import Trash2 from '@lucide/svelte/icons/trash-2';
-  import Undo2 from '@lucide/svelte/icons/undo-2';
 
-  import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+  import { HoverActionButton, HoverActions } from '$lib/components/ui/hover-actions/index.js';
+  import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import { modelLabel } from '$lib/shell/conversation/agentConfigLabels.ts';
   import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
@@ -38,21 +37,25 @@
     type OwnedSession
   } from '$lib/shell/ownedSessions';
   import { sessionLabel } from '$lib/shell/sessionStrip';
+  import {
+    formatRailElapsed,
+    railElapsedCadenceFor,
+    watchRailElapsed
+  } from './railElapsedTicker.ts';
+  import { observeRailRowVisibility } from './railRowVisibility.ts';
+  import { sessionRowMenuItems, type SessionRowMenuAction } from './sessionRowMenu.ts';
   import SessionHoverCard from './SessionHoverCard.svelte';
   import { sessionRowJump } from './sessionRowJump';
 
   interface Props {
     session: OwnedSession;
     active?: boolean;
-    expanded?: boolean;
     onSelect?(): void;
-    onToggle?(): void;
     onRestart?(): void;
     onComplete?(): void;
     onReopen?(): void;
     onSettle?(): void;
     onUnsettle?(): void;
-    onClose?(): void;
     onAskRemove?(): void;
   }
 
@@ -62,15 +65,12 @@
   let {
     session,
     active = false,
-    expanded = false,
     onSelect,
-    onToggle,
     onRestart,
     onComplete,
     onReopen,
     onSettle,
     onUnsettle,
-    onClose,
     onAskRemove
   }: Props = $props();
 
@@ -79,7 +79,6 @@
   const projectInfo = $derived(resolveOwnedSessionProject(session));
   const project = $derived(projectInfo.label);
   const worktree = $derived(canonicalCwd(session.cwd || session.projectPath) || projectInfo.path || project);
-  const providerGlyph = $derived(session.viaCmux ? 'terminal' : 'agent');
   const conversation = $derived(
     session.state === 'exited' ? null : conversationSessions[session.ownedId] ?? null
   );
@@ -89,7 +88,7 @@
     $sessionPresenceHistory[session.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY
   );
   // Presence is rail-record truth plus events received live. Loading a stored
-  // transcript may populate `conversation`, but it must not repaint this dot.
+  // transcript may populate `conversation`, but it must not repaint this row.
   const pendingApprovalCount = $derived(session.pendingPermission ? 1 : 0);
   const runtimeState = $derived(session.runtimeState);
   const activeTurnId = $derived(session.activeTurnId ?? presenceHistory.activeTurnId);
@@ -143,6 +142,10 @@
   const presenceIsRestart = $derived(presence === 'stopped');
   const modelValue = $derived(conversation?.metadata.model ?? session.model ?? null);
   const modelText = $derived(modelValue ? modelLabel(modelValue) : null);
+  // The row marks the provider with its glyph; the name and the model belong to
+  // the hover card, where there is room to read them.
+  const ProviderIcon = $derived(AGENT_ICONS[session.agent]);
+  const providerName = $derived(agentDisplayName(session.agent, session.viaCmux));
   const machine = $derived(
     (session as SessionRecordExtras).hostname?.trim()
       || (session as SessionRecordExtras).machine?.trim()
@@ -150,9 +153,81 @@
   );
   const activity = $derived(formatActivity(session.lastActivity));
   const usage = $derived(formatUsage(conversation?.metadata.usedTokens, conversation?.usage));
-  const metaProject = $derived(project);
+
+  // ── The age, and the one bit of motion in the rail ─────────────────────────
+  let rowElement = $state<HTMLLIElement | null>(null);
+  let onScreen = $state(true);
+  let nowMs = $state(Date.now());
+
+  const isWorking = $derived(presence === 'working');
+  /** Spin only for a working row a person can actually see. */
+  const spinning = $derived(isWorking && onScreen);
+
+  /**
+   * How old this session is, counted from when it started rather than from the
+   * current turn — the number stays put when the agent stops working, which is
+   * what makes it comparable between rows.
+   */
+  const startedAtMs = $derived(
+    session.startedAtMs
+      ?? (session.lastActivity && Number.isFinite(Date.parse(session.lastActivity))
+        ? Date.parse(session.lastActivity)
+        : null)
+  );
+  const ageMs = $derived(startedAtMs === null ? null : Math.max(0, nowMs - startedAtMs));
+  const ageText = $derived(ageMs === null ? null : formatRailElapsed(ageMs));
+
+  $effect(() => {
+    const element = rowElement;
+    if (!element) return;
+    return observeRailRowVisibility(element, (visible) => {
+      onScreen = visible;
+    });
+  });
+
+  const hasAge = $derived(startedAtMs !== null);
+  /** Only two possible values, so this effect re-subscribes at the one-minute
+   * mark rather than on every tick. */
+  const cadence = $derived(railElapsedCadenceFor(ageMs ?? 0, isWorking));
+
+  // A row off screen needs no clock at all; one on screen asks for seconds only
+  // while it is working or still in its first minute, and minutes after that.
+  $effect(() => {
+    if (!onScreen || !hasAge) return;
+    const wanted = cadence;
+    nowMs = Date.now();
+    return watchRailElapsed((tick) => {
+      nowMs = tick;
+    }, wanted);
+  });
+
+  // ── The read-only detail card ──────────────────────────────────────────────
+  /**
+   * Everything the card shows, read once when it opens.
+   *
+   * The card is a still picture of the row at the moment a person paused on it.
+   * Reading the live conversation while it is open would repaint a floating
+   * surface on every transcript event, so nothing here is a store read: the
+   * snapshot is plain values, and the card renders only from them.
+   */
+  interface HoverCardView {
+    title: string;
+    statusLabel: string;
+    statusDetail: string;
+    project: string;
+    worktree: string;
+    machine: string | null;
+    branch: string | null;
+    provider: string;
+    model: string | null;
+    lastActivity: string | null;
+    usage: string | null;
+    error: string | null;
+    statusTone: RowPresence;
+  }
 
   let cardPlacement = $state<{ top: number; left: number } | null>(null);
+  let cardView = $state<HoverCardView | null>(null);
   let cardTimer: ReturnType<typeof setTimeout> | null = null;
   const CARD_WIDTH = 336;
   const CARD_HEIGHT = 300;
@@ -164,9 +239,29 @@
     }
   }
 
+  /** Read the row's current values into plain data, once, on the way open. */
+  function takeCardView(): HoverCardView {
+    return {
+      title: label,
+      statusLabel: presenceLabel,
+      statusDetail: presenceDetail,
+      project,
+      worktree,
+      machine,
+      branch: session.branch,
+      provider: providerName,
+      model: modelText,
+      lastActivity: activity,
+      usage,
+      error: presentedError?.summary ?? null,
+      statusTone: presence
+    };
+  }
+
   function placeCard(row: HTMLElement): void {
     const rect = row.getBoundingClientRect();
     const rightRoom = window.innerWidth - rect.right - 8;
+    cardView = takeCardView();
     cardPlacement = {
       top: Math.max(8, Math.min(rect.top, window.innerHeight - CARD_HEIGHT - 8)),
       left: rightRoom >= CARD_WIDTH ? rect.right + 8 : Math.max(8, rect.left - CARD_WIDTH - 8)
@@ -182,9 +277,7 @@
     };
   }
 
-  function showOverlay(event: {
-    currentTarget: EventTarget | null;
-  }): void {
+  function showOverlay(event: { currentTarget: EventTarget | null }): void {
     const row = event.currentTarget;
     if (!(row instanceof HTMLElement)) return;
     clearCardTimer();
@@ -197,6 +290,7 @@
   function hideOverlay(): void {
     clearCardTimer();
     cardPlacement = null;
+    cardView = null;
   }
 
   function handleFocusOut(event: FocusEvent): void {
@@ -207,11 +301,6 @@
       && event.currentTarget.contains(next)
     ) return;
     hideOverlay();
-  }
-
-  function stopPropagation(event: MouseEvent, action?: () => void): void {
-    event.stopPropagation();
-    action?.();
   }
 
   function selectRow(event: MouseEvent): void {
@@ -234,6 +323,34 @@
   }
 
   onDestroy(clearCardTimer);
+
+  // ── The right-click menu ───────────────────────────────────────────────────
+  const sessionIdForCopy = $derived(session.nativeSessionId || session.ownedId);
+  const menuItems = $derived(
+    sessionRowMenuItems({
+      status: shelf,
+      sessionId: sessionIdForCopy,
+      worktreePath: worktree || null
+    })
+  );
+
+  function copyText(value: string | null): void {
+    if (!value || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+    void navigator.clipboard.writeText(value);
+  }
+
+  function runMenuAction(action: SessionRowMenuAction): void {
+    hideOverlay();
+    if (action === 'mark-done') onComplete?.();
+    else if (action === 'reopen') onReopen?.();
+    else if (action === 'archive') onSettle?.();
+    else if (action === 'unsettle') onUnsettle?.();
+    else if (action === 'copy-session-id') copyText(sessionIdForCopy);
+    else if (action === 'copy-worktree-path') copyText(worktree || null);
+    else if (action === 'open-in-editor') {
+      if (!sessionRowJump(session.ownedId, 'editor')) onSelect?.();
+    } else if (action === 'delete') onAskRemove?.();
+  }
 
   function formatActivity(value: string | null): string | null {
     if (!value) return null;
@@ -260,132 +377,149 @@
 </script>
 
 <li
+  bind:this={rowElement}
   data-testid="worktree-agent-row"
   data-presence={presence}
   class:active
-  class="row"
-  title={label}
+  class="row group"
   onmouseenter={showOverlay}
   onmouseleave={hideOverlay}
   onfocusin={showOverlay}
   onfocusout={handleFocusOut}
 >
-  <div class="row-body">
-    <button
-      data-testid="worktree-agent-select"
-      type="button"
-      class="row-select"
-      aria-current={active ? 'true' : undefined}
-      onclick={selectRow}
-    >
-      <span class="row-title-line">
-        <span
-          data-testid="worktree-agent-runtime"
-          class="presence {presence}"
-          class:suspended
-          role="img"
-          aria-label={presenceLabel}
-          title={presenceDetail}
+  <ContextMenu.Root>
+    <ContextMenu.Trigger>
+      {#snippet child({ props })}
+        <button
+          {...props}
+          data-testid="worktree-agent-select"
+          type="button"
+          class="session-row"
+          aria-current={active ? 'true' : undefined}
+          aria-label={`Open session: ${label}`}
+          onclick={selectRow}
         >
-          <span class="presence-dot" aria-hidden="true"></span>
-        </span>
-        {#if providerGlyph === 'terminal'}
-          <Terminal data-testid="worktree-agent-provider-icon" class="provider-icon" aria-hidden="true" />
-        {:else}
-          <Bot data-testid="worktree-agent-provider-icon" class="provider-icon" aria-hidden="true" />
-        {/if}
-        <span data-testid="worktree-agent-title" class="row-title" title={label}>{label}</span>
-      </span>
+          <span class="line">
+            <Folder class="glyph" aria-hidden="true" />
+            <span data-testid="worktree-agent-meta" class="project">{project}</span>
 
-      <span data-testid="worktree-agent-meta-line" class="row-meta-line">
-        <span data-testid="worktree-agent-meta" class="row-meta">
-          <span>{metaProject}</span>
-          {#if session.branch}
-            <span class="meta-separator" aria-hidden="true">·</span>
-            <span class="branch">{session.branch}</span>
-          {/if}
-        </span>
-        <span class="row-right-slot">
-          {#if modelText}
-            <span data-testid="worktree-agent-model" class="model-chip" title={modelValue ?? undefined}>
-              <Sparkles class="model-mark" aria-hidden="true" />{modelText}
+            {#if presence === 'attention'}
+              <span data-testid="worktree-agent-status" class="attention">
+                <Lock aria-hidden="true" />Permission waiting
+              </span>
+            {:else if presence === 'failed'}
+              <span
+                data-testid="worktree-agent-status"
+                class="failed"
+                title={presentedError?.detail ?? presentedError?.summary}
+              >{presentedError?.summary ?? presenceLabel}</span>
+            {:else if suspended || presence === 'stopped'}
+              <span data-testid="worktree-agent-status" class="idle-label" title={presenceDetail}>
+                {suspended ? 'Suspended' : presenceLabel}
+              </span>
+            {/if}
+
+            <!-- The age stays put whatever the session is doing; while it works
+                 the spinner joins it, and nothing else moves. -->
+            <span
+              data-testid="worktree-agent-age"
+              class="status"
+              class:working={isWorking}
+              title={presenceDetail}
+            >
+              {#if isWorking}
+                <span class="spinner" class:spinning aria-hidden="true"></span>
+              {/if}
+              {ageText ?? ''}
             </span>
-          {/if}
-          {#if activity}
-            <span data-testid="worktree-agent-activity" class="row-time">{activity}</span>
-          {/if}
-        </span>
+          </span>
+
+          <span class="line">
+            <span data-testid="worktree-agent-title" class="session-title">{label}</span>
+            <ProviderIcon
+              data-testid="worktree-agent-provider"
+              class="provider-icon"
+              aria-label={providerName}
+            />
+          </span>
+
+          <span class="line">
+            <GitBranch class="glyph" aria-hidden="true" />
+            <span class="branch">{session.branch ?? worktree}</span>
+          </span>
+        </button>
+      {/snippet}
+    </ContextMenu.Trigger>
+
+    <ContextMenu.Content
+      data-testid="worktree-agent-context-menu"
+      class="w-[216px] bg-popover text-foreground"
+      aria-label="Session actions"
+    >
+      {#each menuItems as item (item.id)}
+        {#if item.startsGroup}
+          <ContextMenu.Separator />
+        {/if}
+        <ContextMenu.Item
+          data-testid={`session-row-menu-${item.id}`}
+          disabled={!item.enabled}
+          variant={item.destructive ? 'destructive' : 'default'}
+          title={item.enabled ? item.label : item.disabledReason}
+          onSelect={() => runMenuAction(item.id)}
+        >{item.label}</ContextMenu.Item>
+      {/each}
+    </ContextMenu.Content>
+  </ContextMenu.Root>
+
+  <!-- The kit cluster: bare buttons over the metadata, always in the page, so
+       revealing them never rebuilds a subtree or moves the title. -->
+  <HoverActions
+    data-testid="worktree-agent-overlay"
+    label="Session actions"
+    class="absolute top-[27px] right-[9px] z-[2]"
+  >
+    {#if presenceIsRestart}
+      <span data-testid="worktree-agent-start" class="contents">
+        <HoverActionButton label="Start session" tone="primary" onclick={startSession}>
+          <Play aria-hidden="true" />
+        </HoverActionButton>
       </span>
-    </button>
+    {/if}
 
-    <span data-testid="worktree-agent-overlay" class="row-overlay">
-      {#if presenceIsRestart}
-        <span data-testid="worktree-agent-start">
-          <IconButton
-            label="Start session"
-            size="xs"
-            side="bottom"
-            class="action action-session"
-            onclick={startSession}
-          >
-            <Play class="action-icon" aria-hidden="true" />
-          </IconButton>
-        </span>
-      {/if}
-
-      <span data-testid="worktree-agent-jump" class="row-cluster">
-        <span data-testid="worktree-agent-jump-session">
-          <IconButton
-            label="Open session"
-            size="xs"
-            side="bottom"
-            class="action action-session"
-            onclick={(event) => jump(event, 'session')}
-          >
-            <MessageCircle class="action-icon" aria-hidden="true" />
-          </IconButton>
-        </span>
-        <span data-testid="worktree-agent-jump-editor">
-          <IconButton
-            label="Open editor"
-            size="xs"
-            side="bottom"
-            class="action action-editor"
-            onclick={(event) => jump(event, 'editor')}
-          >
-            <FileCode2 class="action-icon" aria-hidden="true" />
-          </IconButton>
-        </span>
-        <span data-testid="worktree-agent-jump-source-control">
-          <IconButton
-            label="Open source control"
-            size="xs"
-            side="bottom"
-            class="action action-git"
-            onclick={(event) => jump(event, 'source-control')}
-          >
-            <GitBranch class="action-icon" aria-hidden="true" />
-          </IconButton>
-        </span>
+    <span data-testid="worktree-agent-jump" class="contents">
+      <span data-testid="worktree-agent-jump-session" class="contents">
+        <HoverActionButton
+          label="Open session"
+          tone="primary"
+          onclick={(event) => jump(event, 'session')}
+        >
+          <MessageCircle aria-hidden="true" />
+        </HoverActionButton>
       </span>
-
-      {#if onToggle}
-        <span data-testid="worktree-agent-details">
-          <IconButton
-            label="Details — session actions"
-            size="xs"
-            side="bottom"
-            class="action action-details"
-            onclick={(event) => stopPropagation(event, onToggle)}
-          >
-            <MoreHorizontal class="action-icon" aria-hidden="true" />
-          </IconButton>
-        </span>
-      {/if}
+      <span data-testid="worktree-agent-jump-editor" class="contents">
+        <HoverActionButton
+          label="Open editor"
+          tone="info"
+          onclick={(event) => jump(event, 'editor')}
+        >
+          <FileCode2 aria-hidden="true" />
+        </HoverActionButton>
+      </span>
+      <span data-testid="worktree-agent-jump-source-control" class="contents">
+        <HoverActionButton
+          label="Open source control"
+          tone="success"
+          onclick={(event) => jump(event, 'source-control')}
+        >
+          <GitBranch aria-hidden="true" />
+        </HoverActionButton>
+      </span>
     </span>
-  </div>
+  </HoverActions>
 
-  {#if cardPlacement}
+  <!-- Nothing here reads a store: the card renders the snapshot taken when it
+       opened, so a transcript event cannot repaint an open floating surface. -->
+  {#if cardPlacement && cardView}
     <div
       use:bodyPortal
       data-testid="worktree-agent-hover-popover"
@@ -393,83 +527,7 @@
       role="tooltip"
       style="top: {cardPlacement.top}px; left: {cardPlacement.left}px"
     >
-      <SessionHoverCard
-        title={label}
-        statusLabel={presenceLabel}
-        statusDetail={presenceDetail}
-        {project}
-        {worktree}
-        {machine}
-        branch={session.branch}
-        model={modelText}
-        lastActivity={activity}
-        {usage}
-        statusTone={presence}
-      />
-    </div>
-  {/if}
-
-  {#if expanded}
-    <div data-testid="worktree-agent-detail" class="detail-grid">
-      <span>Project</span><span class="truncate" title={project}>{project}</span>
-      <span>Worktree</span><span class="truncate" title={worktree}>{worktree}</span>
-      {#if session.branch}<span>Branch</span><span class="truncate mono">{session.branch}</span>{/if}
-      {#if session.taskId}<span>Task</span><span class="truncate">{session.taskId}</span>{/if}
-      {#if session.pullRequest}<span>Pull request</span><span class="truncate">{session.pullRequest}</span>{/if}
-      {#if session.nativeSessionId}<span>Session</span><span class="truncate mono">{session.nativeSessionId}</span>{/if}
-      {#if session.latestTurnPreview}<span>Last turn</span><span class="truncate" title={session.latestTurnPreview}>{session.latestTurnPreview}</span>{/if}
-      {#if presentedError}
-        <span>Error</span><span class="error">{presentedError.summary}</span>
-        {#if presentedError.detail}
-          <span></span>
-          <details data-testid="worktree-agent-error-detail" class="error-detail">
-            <summary>Technical details</summary>
-            <pre>{presentedError.detail}</pre>
-          </details>
-        {/if}
-      {/if}
-      <div data-testid="worktree-agent-actions" class="detail-actions">
-        {#if shelf === 'working' && onComplete}
-          <span data-testid="worktree-agent-mark-done">
-            <IconButton label="Mark done" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onComplete)}>
-              <Check class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {:else if shelf === 'done' && onReopen}
-          <span data-testid="worktree-agent-reopen">
-            <IconButton label="Move back to Working" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onReopen)}>
-              <Undo2 class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-        {#if shelf === 'done' && onSettle}
-          <span data-testid="worktree-agent-settle">
-            <IconButton label="Move to Settled" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onSettle)}>
-              <Archive class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {:else if shelf === 'settled' && onUnsettle}
-          <span data-testid="worktree-agent-unsettle">
-            <IconButton label="Move back to Done" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onUnsettle)}>
-              <RotateCcw class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-        {#if shelf === 'done' && onAskRemove}
-          <span data-testid="worktree-agent-remove">
-            <IconButton label="Remove from sessions" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onAskRemove)}>
-              <Trash2 class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-        {#if onClose && session.state !== 'exited' && session.ptySessionId}
-          <span data-testid="worktree-agent-close">
-            <IconButton label="Close terminal" size="xs" side="bottom" class="secondary-action" onclick={(event) => stopPropagation(event, onClose)}>
-              <Terminal class="action-icon" aria-hidden="true" />
-            </IconButton>
-          </span>
-        {/if}
-      </div>
+      <SessionHoverCard {...cardView} />
     </div>
   {/if}
 </li>
@@ -481,258 +539,190 @@
     box-sizing: border-box;
     min-width: 0;
     list-style: none;
-    padding: var(--rail-row-content-inset);
-    background: transparent;
     color: var(--color-text);
     font-size: 13px;
-    line-height: 19.5px;
+    line-height: 1.4;
     content-visibility: auto;
-    contain-intrinsic-size: auto 57px;
-    contain-intrinsic-block-size: auto 39.1875px;
+    contain-intrinsic-size: auto 75px;
   }
 
-  .row:not(:first-child) { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-text) 4.5%, transparent); }
+  .session-row {
+    position: relative;
+    display: block;
+    width: 100%;
+    min-height: 75px;
+    padding: var(--rail-row-content-inset);
+    border: 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-text) 5.5%, transparent);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+  }
 
-  .row:hover,
-  .row:focus-within { background: var(--row-hover); }
+  .row:hover .session-row { background: var(--color-hover); }
+  .session-row:focus-visible { box-shadow: inset 0 0 0 2px var(--color-focus); }
 
-  .active { background: var(--row-selected); }
-  .active::before {
+  .active .session-row { background: var(--color-selected); }
+
+  /* The accent bar is always there and sweeps up from the row's top edge when
+     the row becomes the selected one. Transform only — the row's box never
+     changes, so nothing around it reflows. */
+  .session-row::before {
     position: absolute;
     inset: 0 auto 0 0;
     width: 2px;
     background: var(--color-selected-border);
     content: '';
+    transform: scaleY(0);
+    transform-origin: top;
   }
-  .active:hover,
-  .active:focus-within { background: var(--row-active); }
 
-  .row-body {
+  .active .session-row::before { transform: scaleY(1); }
+
+  .line {
     position: relative;
-    min-width: 0;
-    padding: 0;
-  }
-
-  .row-select {
-    display: flex;
-    width: 100%;
-    min-width: 0;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0;
-    padding: 0;
-    border: 0;
-    border-radius: 4px;
-    color: inherit;
-    background: transparent;
-    text-align: left;
-    outline: none;
-  }
-
-  .row-select:focus-visible { box-shadow: 0 0 0 2px var(--color-focus); }
-
-  .row-title-line,
-  .row-meta-line {
     display: flex;
     min-width: 0;
     align-items: center;
+    gap: 6px;
   }
 
-  .row-title-line { gap: 8px; }
-  .row-meta-line { gap: 6px; margin: 4px 0 0 22px; line-height: 17.25px; }
+  .line + .line { margin-top: 4px; }
 
-  :global(.provider-icon) {
+  .project {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-3);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :global(.glyph) {
     width: 14px;
     height: 14px;
     flex: 0 0 auto;
-    color: var(--secondary-label);
+    color: var(--color-text-3);
   }
 
-  .presence {
-    position: relative;
+  .status,
+  .attention,
+  .idle-label,
+  .failed { margin-left: auto; }
+
+  .status {
     display: inline-flex;
-    width: 14px;
-    height: 14px;
     flex: 0 0 auto;
     align-items: center;
-    justify-content: center;
+    gap: 5px;
+    color: var(--color-text-3);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
-  .presence-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 999px;
-    background: var(--color-idle);
+  /* Working brings the age forward a tier; it never changes place. */
+  .status.working { color: var(--color-text-2); }
+
+  .spinner {
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid color-mix(in srgb, var(--color-live) 32%, transparent);
+    border-top-color: var(--color-live);
+    border-radius: 50%;
   }
 
-  .presence.working .presence-dot { background: var(--color-accent); }
-  .presence.working::after {
-    position: absolute;
-    inset: 0;
-    border: 1.5px solid var(--color-accent);
-    border-radius: 999px;
-    content: '';
-    opacity: 0.35;
-  }
-  .presence.attention .presence-dot { background: var(--color-attention); }
-  .presence.attention::after {
-    position: absolute;
-    inset: 1px;
-    border: 1.5px solid var(--color-attention);
-    border-radius: 999px;
-    content: '';
-    opacity: 0.35;
-  }
-  .presence.idle .presence-dot { opacity: 0.85; }
-  .presence.idle.suspended .presence-dot { opacity: 0.6; }
-  .presence.stopped .presence-dot {
-    width: 7px;
-    height: 7px;
-    border: 1.5px solid var(--color-text-3);
-    background: transparent;
-    opacity: 0.6;
-  }
-  .presence.done .presence-dot { background: var(--color-good); }
-  .presence.failed .presence-dot { background: var(--color-bad); }
+  /* The only looping motion in the rail, and it runs only while this row is
+     working and on screen. */
+  .spinner.spinning { animation: spin 900ms linear infinite; }
 
-  .row-title {
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner.spinning { animation: none; } }
+
+  .attention {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 7px;
+    border: 1px solid color-mix(in srgb, var(--color-attention) 30%, transparent);
+    border-radius: var(--radius-sm);
+    background: var(--color-attention-bg);
+    color: var(--color-attention);
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .attention :global(svg) { width: 12px; height: 12px; }
+
+  .failed {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    color: var(--color-bad);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .idle-label {
+    flex: 0 0 auto;
+    color: var(--color-idle);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .session-title {
     min-width: 0;
     flex: 1 1 auto;
     overflow: hidden;
     color: var(--color-text);
     font-size: 13px;
-    line-height: 1.38;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .active .row-title { font-weight: 600; }
-
-  .row-meta {
-    display: block;
-    min-width: 0;
-    flex: 1 1 auto;
-    gap: 5px;
-    overflow: hidden;
-    color: var(--secondary-label);
-    font-size: 12px;
-    line-height: 1.35;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .row-meta > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .meta-separator { flex: 0 0 auto; padding: 0 1px; opacity: 0.55; }
-  .branch {
-    overflow: hidden;
-    flex: 0 1 auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11.5px;
+    font-weight: 570;
+    letter-spacing: -0.005em;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .model-chip {
-    display: inline-flex;
-    height: 17px;
+  :global(.provider-icon) {
+    width: 14px;
+    height: 14px;
     flex: 0 0 auto;
-    align-items: center;
-    gap: 4px;
-    max-width: 118px;
-    padding: 0 6px;
+    margin-left: auto;
+    color: var(--color-text-3);
+  }
+
+  .branch {
+    min-width: 0;
     overflow: hidden;
-    border-radius: 5px;
-    color: var(--color-text-2);
-    background: var(--color-elevated);
-    font-size: calc(12px - 1px);
-    font-weight: 550;
-    letter-spacing: 0.01em;
-    line-height: 16.5px;
+    color: var(--color-text-3);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  :global(.model-mark) { width: 11px; height: 11px; flex: 0 0 auto; color: var(--color-text-3); }
-  .row-time {
-    color: var(--secondary-label);
-    font-size: 11.5px;
-    line-height: 17.25px;
-    opacity: 0.85;
-    white-space: nowrap;
-  }
 
-  .row-right-slot {
-    display: inline-flex;
-    width: 111px;
-    min-width: 111px;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 6px;
-    overflow: hidden;
-    opacity: 1;
-  }
+  /* The cluster itself is the kit's; the row only says where it sits and which
+     metadata steps aside for it — by fading, never by moving. */
+  .row:hover .status,
+  .row:hover .idle-label,
+  .row:hover .attention,
+  .row:hover :global(.provider-icon),
+  .row:focus-within .status,
+  .row:focus-within .idle-label,
+  .row:focus-within .attention,
+  .row:focus-within :global(.provider-icon) { opacity: 0; }
 
-  .row[data-presence='stopped'] :global(.provider-icon) {
-    filter: grayscale(1);
-    opacity: 0.4;
-  }
-  .row[data-presence='stopped'] .row-meta > span:first-child { opacity: 0.72; }
-  .row[data-presence='stopped']:hover :global(.provider-icon),
-  .row[data-presence='stopped']:focus-within :global(.provider-icon),
-  .row[data-presence='stopped']:hover .row-meta > span:first-child,
-  .row[data-presence='stopped']:focus-within .row-meta > span:first-child {
-    filter: none;
-    opacity: 1;
-  }
+  .row :global([data-slot='hover-actions'] svg) { width: 14px; height: 14px; }
 
-  .row-overlay {
-    position: absolute;
-    z-index: 3;
-    top: 50%;
-    right: 4px;
-    display: inline-flex;
-    align-items: center;
-    gap: 1px;
-    padding: 2px;
-    border-radius: 9px;
-    background: var(--color-elevated);
-    box-shadow: var(--shadow-sm), inset 0 0 0 1px color-mix(in srgb, var(--color-text) 6%, transparent);
-    isolation: isolate;
-    transform: translateY(-50%);
-    opacity: 0;
-    pointer-events: none;
-  }
-  .row-overlay::before {
-    position: absolute;
-    z-index: -1;
-    inset: 0 auto 0 -32px;
-    width: 32px;
-    background: linear-gradient(to right, transparent, var(--color-elevated) 78%);
-    content: '';
-  }
-  .row-cluster { display: inline-flex; align-items: center; gap: 1px; }
-  .row:hover .row-right-slot,
-  .row:focus-within .row-right-slot { opacity: 0; }
-  .row:hover .row-overlay,
-  .row:focus-within .row-overlay,
-  .row-overlay:focus-within {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .action,
-  .secondary-action { color: var(--color-text-2); }
-  .row-overlay :global(button.action) {
-    width: 26px;
-    height: 26px;
-    padding: 0;
-    border: 0;
-    border-radius: 7px;
-  }
-  .action :global(svg),
-  .secondary-action :global(svg) { width: 16px; height: 16px; }
-  .action:hover { color: var(--color-text); background: color-mix(in srgb, var(--color-text) 10%, transparent); }
-  .action-session:hover { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 16%, transparent); }
-  .action-editor:hover { color: var(--color-live); background: var(--color-live-bg); }
-  .action-git:hover { color: var(--color-good); background: var(--color-good-bg); }
-  .action-details:hover,
-  .secondary-action:hover { color: var(--color-text); background: color-mix(in srgb, var(--color-text) 12%, transparent); }
+  .row[data-presence='stopped'] .project { opacity: 0.72; }
+  .row[data-presence='stopped']:hover .project { opacity: 1; }
 
   .hover-popover {
     position: fixed;
@@ -740,26 +730,22 @@
     pointer-events: none;
   }
 
-  .detail-grid {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 4px 10px;
-    padding: 0 12px 10px 34px;
-    color: var(--color-text-2);
-    font-size: 12px;
-  }
-  .detail-grid > span:nth-child(odd) { color: var(--color-text-3); }
-  .detail-actions { display: flex; grid-column: 1 / -1; gap: 2px; padding-top: 4px; }
-  .truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
-  .error { color: var(--color-bad); }
-  .error-detail summary { cursor: pointer; color: var(--color-text-2); }
-  .error-detail pre { margin: 4px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; font: inherit; }
-
+  /* Interaction motion: every one of these ends. The row's fill and its accent
+     bar answer a pointer or a selection and then stop; only the working spinner
+     loops, and only while a real turn is running on screen. */
   @media (prefers-reduced-motion: no-preference) {
-    .row-right-slot,
-    .row-overlay,
-    :global(.provider-icon),
-    .row-meta > span:first-child { transition: opacity 120ms ease; }
+    .status,
+    .idle-label,
+    .attention,
+    :global(.provider-icon) { transition: opacity 120ms ease; }
+
+    .session-row { transition: background-color 140ms ease; }
+    .session-row::before { transition: transform 180ms cubic-bezier(0.2, 0, 0, 1); }
+    .hover-popover { animation: card-in 160ms ease-out; }
+  }
+
+  @keyframes card-in {
+    from { opacity: 0; transform: translateX(-4px); }
+    to { opacity: 1; transform: none; }
   }
 </style>

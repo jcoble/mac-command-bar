@@ -5,6 +5,7 @@
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import Laptop from '@lucide/svelte/icons/laptop';
   import Folder from '@lucide/svelte/icons/folder';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
   interface Props {
     title: string;
@@ -14,9 +15,13 @@
     worktree: string;
     machine?: string | null;
     branch?: string | null;
+    /** Which kind of agent runs this session. */
+    provider?: string | null;
     model?: string | null;
     lastActivity?: string | null;
     usage?: string | null;
+    /** A plain summary of the last error, when the session hit one. */
+    error?: string | null;
     statusTone?: 'working' | 'attention' | 'idle' | 'stopped' | 'done' | 'failed';
   }
 
@@ -28,9 +33,11 @@
     worktree,
     machine = null,
     branch = null,
+    provider = null,
     model = null,
     lastActivity = null,
     usage = null,
+    error = null,
     statusTone = 'idle'
   }: Props = $props();
 
@@ -60,16 +67,31 @@
         <span class="session-card-value mono">{branch}</span>
       </div>
     {/if}
-    {#if model}
-      <div class="session-card-line" title={model}>
+    <!-- The row shows the provider as a glyph and nothing else, so this is the
+         one place the agent and its model are spelled out. -->
+    {#if provider || model}
+      <div
+        data-testid="session-hover-card-agent"
+        class="session-card-line"
+        title={[provider, model].filter(Boolean).join(' · ')}
+      >
         <Cpu aria-hidden="true" />
-        <span class="session-card-value">{model}</span>
+        <span class="session-card-value">{provider ?? 'Agent'}</span>
+        {#if model}
+          <span class="session-card-model">{model}</span>
+        {/if}
       </div>
     {/if}
     {#if lastActivity}
       <div class="session-card-line" title={lastActivity}>
         <Clock3 aria-hidden="true" />
         <span class="session-card-value">Last activity {lastActivity}</span>
+      </div>
+    {/if}
+    {#if error}
+      <div data-testid="session-hover-card-error" class="session-card-line error" title={error}>
+        <TriangleAlert aria-hidden="true" />
+        <span class="session-card-value">{error}</span>
       </div>
     {/if}
   </div>
@@ -87,15 +109,17 @@
 </aside>
 
 <style>
+  /* Same surface, hairline and shadow as the row's own menu, so the two
+     floating layers of the rail read as one material. */
   .session-card {
     width: 336px;
     max-width: calc(100vw - 24px);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-sm);
     padding: var(--floating-content-inset);
     color: var(--color-text);
-    background: var(--color-surface);
-    box-shadow: var(--shadow-lg);
+    background: var(--color-elevated);
+    box-shadow: var(--shadow-md);
     pointer-events: none;
   }
 
@@ -145,6 +169,24 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* The model sits beside the agent name as its own quiet chip. */
+  .session-card-model {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 1px 7px 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text-2);
+    font-size: 13px;
+    line-height: 18px;
+    white-space: nowrap;
+  }
+
+  .session-card-line.error,
+  .session-card-line.error :global(svg),
+  .session-card-line.error .session-card-value { color: var(--color-bad); }
 
   .session-card-value.mono {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

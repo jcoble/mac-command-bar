@@ -131,16 +131,32 @@ test('an empty error still has a human summary and no empty detail', () => {
   assert.deepEqual(presentAgentError(''), { summary: 'The agent hit an error.' });
 });
 
-test('session rows render summaries and keep raw detail behind disclosure controls', async () => {
-  const [sessionCard, worktreeRow] = await Promise.all([
-    readFile(new URL('../src/lib/shell/components/sessions/SessionCard.svelte', import.meta.url), 'utf8'),
-    readFile(new URL('../src/lib/shell/components/WorktreeAgentRow.svelte', import.meta.url), 'utf8')
-  ]);
+test('the session card keeps raw detail behind a disclosure control', async () => {
+  const sessionCard = await readFile(
+    new URL('../src/lib/shell/components/sessions/SessionCard.svelte', import.meta.url),
+    'utf8'
+  );
 
-  for (const source of [sessionCard, worktreeRow]) {
-    assert.match(source, /presentAgentError\(session\.lastError\)/);
-    assert.doesNotMatch(source, /\{session\.lastError\}|title=\{session\.lastError\}/);
-    assert.match(source, /presentedError\.summary/);
-    assert.match(source, /<details[\s\S]*presentedError\.detail/);
-  }
+  assert.match(sessionCard, /presentAgentError\(session\.lastError\)/);
+  assert.doesNotMatch(sessionCard, /\{session\.lastError\}|title=\{session\.lastError\}/);
+  assert.match(sessionCard, /presentedError\.summary/);
+  assert.match(sessionCard, /<details[\s\S]*presentedError\.detail/);
+});
+
+test('the rail row shows the error summary in its status slot, never the raw text', async () => {
+  const worktreeRow = await readFile(
+    new URL('../src/lib/shell/components/WorktreeAgentRow.svelte', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(worktreeRow, /presentAgentError\(session\.lastError\)/);
+  assert.doesNotMatch(worktreeRow, /\{session\.lastError\}|title=\{session\.lastError\}/);
+  // The row has three lines and no disclosure of its own: the summary is the
+  // status text, the technical detail is its tooltip, and the hover card
+  // repeats the summary.
+  assert.match(worktreeRow, /presentedError\?\.summary/);
+  assert.match(worktreeRow, /title=\{presentedError\?\.detail \?\? presentedError\?\.summary\}/);
+  // The hover card gets the summary through the snapshot taken when it opens.
+  assert.match(worktreeRow, /error: presentedError\?\.summary \?\? null/);
+  assert.doesNotMatch(worktreeRow, /<details/);
 });

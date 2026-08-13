@@ -114,6 +114,13 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
    * whenever the scanner had nothing to say, and the row then shows no stamp.
    */
   lastActivity: string | null;
+  /**
+   * When this session was started, in milliseconds since the epoch, as the
+   * stored record reports it. The rail shows the row's age from it, which is
+   * why it survives a turn ending. `null` for a session the app has not
+   * persisted yet, and for one adopted off disk where nothing recorded a start.
+   */
+  startedAtMs?: number | null;
 };
 
 export interface OwnedSessionProject {
@@ -303,7 +310,8 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     pullRequest: record.pullRequest,
     messageCount: record.messageCount,
     latestTurnPreview: record.latestTurnPreview,
-    lastActivity: record.scannedLastActivity
+    lastActivity: record.scannedLastActivity,
+    startedAtMs: Number.isFinite(record.createdAtMs) ? record.createdAtMs : null
   };
 }
 

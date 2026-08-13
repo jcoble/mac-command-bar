@@ -1,4 +1,4 @@
-import { readable, writable } from 'svelte/store';
+import { writable } from 'svelte/store';
 
 import type { AgentRuntimeState, OwnedSessionState } from '../ownedSessions.ts';
 import type { ConversationConnectionState } from './conversationTypes.ts';
@@ -50,13 +50,6 @@ export const EMPTY_SESSION_PRESENCE_HISTORY: Readonly<SessionPresenceHistory> = 
 };
 
 export const sessionPresenceHistory = writable<Record<string, SessionPresenceHistory>>({});
-
-/** One shared clock keeps every visible elapsed label in step without one timer per row. */
-export const sessionPresenceNow = readable(Date.now(), (set) => {
-  if (typeof window === 'undefined') return;
-  const timer = window.setInterval(() => set(Date.now()), 1_000);
-  return () => window.clearInterval(timer);
-});
 
 let viewedOwnedId: string | null = null;
 
