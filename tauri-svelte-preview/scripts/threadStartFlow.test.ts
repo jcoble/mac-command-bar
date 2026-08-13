@@ -2,11 +2,42 @@ import assert from 'node:assert/strict';
 
 import {
   buildThreadStartRequest,
+  canSelectThreadStartGitRef,
   defaultThreadStartState,
+  deriveThreadStartProjects,
+  filterThreadStartGitRefs,
   groupProviderModels,
   titleFromPrompt,
   validateThreadStart
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
+
+{
+  const projects = deriveThreadStartProjects([
+    '/Users/me/dev/alpha/',
+    '/Users/me/dev/beta',
+    '/Users/me/dev/alpha',
+    'relative/path'
+  ]);
+  assert.deepEqual(projects, [
+    { path: '/Users/me/dev/alpha', name: 'alpha' },
+    { path: '/Users/me/dev/beta', name: 'beta' }
+  ]);
+}
+
+{
+  const refs = Array.from({ length: 120 }, (_, index) => ({
+    name: index === 0 ? 'main' : `feature/${index}`,
+    checkoutPath: index < 2 ? `/checkout/${index}` : null
+  }));
+  const all = filterThreadStartGitRefs(refs, '');
+  assert.equal(all.visible.length, 100);
+  assert.equal(all.total, 120);
+  const searched = filterThreadStartGitRefs(refs, 'feature/119');
+  assert.deepEqual(searched.visible.map((ref) => ref.name), ['feature/119']);
+  assert.equal(canSelectThreadStartGitRef(refs[0], false), true);
+  assert.equal(canSelectThreadStartGitRef(refs[2], false), false);
+  assert.equal(canSelectThreadStartGitRef(refs[2], true), true);
+}
 
 const providerConfigs = [
   {
@@ -143,4 +174,4 @@ assert.equal(
 assert.equal(titleFromPrompt('', '/Users/me/app'), 'Build in app');
 assert.equal(titleFromPrompt('x'.repeat(100), '/Users/me/app').length, 72);
 
-console.log('threadStartFlow.test.mjs passed');
+console.log('threadStartFlow.test.ts passed');
