@@ -1354,13 +1354,13 @@
 {#snippet sessionsArea()}
   <SessionsColumn
     bind:this={sessionsColumn}
-    owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
-    scanning={rail.scanning} collapsed={sessionsCollapsed}
-    onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal} onRestart={restartOwned}
+    owned={rail.owned} activeOwnedId={rail.activeOwnedId}
+    collapsed={sessionsCollapsed}
+    onSelect={selectOwned} onRestart={restartOwned}
     onComplete={completeOwned}
     onReopen={reopenOwned} onSettle={settleOwnedSession} onUnsettle={unsettleOwnedSession}
     onRemove={removeSession}
-    onRescan={scanRail} onCollapse={collapseSessions}
+    onCollapse={collapseSessions}
     onNewSession={() => overlays?.openNewSession()}
   />
 {/snippet}

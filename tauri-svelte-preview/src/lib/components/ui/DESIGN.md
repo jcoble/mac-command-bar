@@ -71,8 +71,23 @@ only for a group heading in small caps.
 | A number on a range | `Slider`, with the value shown beside it |
 | Actions, or a setting changed from a compact trigger | `DropdownMenu`, with `Sub` when a row has its own list of values |
 | Actions for the row or region under the pointer | `ContextMenu`; attach its trigger only to that target so other native context menus remain available |
+| A few icon actions that appear on a list row when it is hovered | `HoverActions` with `HoverActionButton` inside |
 | Naming what an icon does | `Tooltip` (already inside `IconButton`) |
 | Grouping rows of settings or details | `Card`, or a plain `rounded-xl border` box with rows divided by `border-b` |
+
+## Row actions on hover
+
+Every list row in the app reveals its actions the same way: `HoverActions`
+holding two or three `HoverActionButton`s. They are bare icon buttons with
+nothing behind them — no pill, no panel, no shadow — sitting over the row's own
+metadata, and each one lights up by itself on hover rather than as a block.
+They are always in the page and only fade, so revealing them cannot rebuild a
+subtree or shift the row's text; the row supplies the trigger by carrying
+`class="group"`. A button's `tone` names where the action leads (`primary` for
+the session, `info` for a file or editor surface, `success` for source control)
+rather than naming a color, and `info` and `success` are the one place a kit
+component reads the shell's status tokens directly, because the registry has no
+slot for either idea.
 
 ## Divergences from the shadcn registry, and why
 
