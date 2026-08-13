@@ -1,8 +1,7 @@
 /**
  * frame.ts — the /next shell's Gridview root. Left to right: the sessions
- * column, the center dock, the tool views, and the center-surface rail on the
- * far-right edge; the bottom dock sits under the center only. DOM-only: zero
- * backend IO, zero Svelte imports.
+ * column, the center dock, and the right panel; the bottom dock sits under the
+ * center only. DOM-only: zero backend IO, zero Svelte imports.
  *
  * Teleport contract: every region's content is a Svelte-owned element that
  * this module MOVES into a dockview-owned host div. dockview never renders or
@@ -27,15 +26,12 @@ import {
   type LayoutStorage
 } from './layoutStorage';
 
-export type ShellRegionId = 'sessions' | 'center' | 'tools' | 'activity' | 'dock';
+export type ShellRegionId = 'sessions' | 'center' | 'tools' | 'dock';
 
-const REGION_IDS: readonly ShellRegionId[] = ['sessions', 'center', 'tools', 'activity', 'dock'];
+const REGION_IDS: readonly ShellRegionId[] = ['sessions', 'center', 'tools', 'dock'];
 const COMPONENT = 'shell-region';
 const PERSIST_DEBOUNCE_MS = 250;
 
-/** Width of the center-surface rail, in px. Matches the rail's own CSS width —
- * one 28px icon button plus its horizontal padding. */
-const ACTIVITY_STRIP_WIDTH = 44;
 /** What the two side columns open at, in px, before anyone drags a divider. */
 export const SESSIONS_WIDTH = 300;
 const TOOLS_WIDTH = 320;
@@ -215,27 +211,9 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       minimumWidth: SESSIONS_MIN_WIDTH,
       maximumWidth: SESSIONS_MAX_WIDTH
     });
-    // The center-surface rail, hard against the right edge of the window. Its
-    // width is fixed — the same number as its minimum
-    // and its maximum — so the divider beside it cannot be dragged and a window
-    // resize leaves it exactly one icon wide.
-    //
-    // It is added BEFORE the tool column even though it ends up outside it. A
-    // new region takes its width out of the region it is added against, so
-    // adding the rail against the tool column would have carved the rail out
-    // of the 320px the column is meant to have. Adding both against the center
-    // instead — the rail first, then the column, which lands between them —
-    // takes both widths out of the middle, where there is room to spare.
-    api.addPanel({
-      id: 'activity',
-      component: COMPONENT,
-      position: { direction: 'right', referencePanel: 'center' },
-      size: ACTIVITY_STRIP_WIDTH,
-      minimumWidth: ACTIVITY_STRIP_WIDTH,
-      maximumWidth: ACTIVITY_STRIP_WIDTH
-    });
-    // Every tool view — files, source control, worktrees, context — shares one
-    // column on the right, and only one of them is open at a time.
+    // Every panel — files, source control, worktrees, run, context, agents,
+    // browser, history — shares one column on the right, and only one of them
+    // is open at a time.
     api.addPanel({
       id: 'tools',
       component: COMPONENT,

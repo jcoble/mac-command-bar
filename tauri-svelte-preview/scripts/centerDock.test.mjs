@@ -1,42 +1,31 @@
+/**
+ * centerDock.test.mjs — the center surface area and the two tab strips that
+ * navigate the workbench.
+ *
+ * The middle of the shell is three Dockview panels — Session, Editor, Diff —
+ * with the corner tabs in the center pane as their only visible navigation. The
+ * eight panels on the right are a plain host with an icon strip over it and the
+ * Resources/Usage strip under it. None of that is checkable by a type checker,
+ * so it is pinned here, in source text.
+ */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const shellFrame = readFileSync(
-  new URL('../src/lib/shell/components/ShellFrame.svelte', import.meta.url),
-  'utf8'
-);
-const centerDock = readFileSync(
-  new URL('../src/lib/shell/layout/centerDock.ts', import.meta.url),
-  'utf8'
-);
-const centerActivityDock = readFileSync(
-  new URL('../src/lib/shell/components/CenterActivityDock.svelte', import.meta.url),
-  'utf8'
-);
-const activityBar = readFileSync(
-  new URL('../src/lib/shell/components/ActivityBar.svelte', import.meta.url),
-  'utf8'
-);
-const shellOverlays = readFileSync(
-  new URL('../src/lib/shell/components/ShellOverlays.svelte', import.meta.url),
-  'utf8'
-);
-const sessionBrowserOverlay = readFileSync(
-  new URL('../src/lib/shell/browser/SessionBrowserOverlay.svelte', import.meta.url),
-  'utf8'
-);
-const assistanceHost = readFileSync(
-  new URL('../src/lib/shell/assistance/AssistanceHost.svelte', import.meta.url),
-  'utf8'
-);
-const shellPage = readFileSync(
-  new URL('../src/routes/next/+page.svelte', import.meta.url),
-  'utf8'
-);
-const shellLayout = readFileSync(
-  new URL('../src/lib/shell/layout/frame.ts', import.meta.url),
-  'utf8'
-);
+const read = (relative) => readFileSync(new URL(relative, import.meta.url), 'utf8');
+
+const shellFrame = read('../src/lib/shell/components/ShellFrame.svelte');
+const centerDock = read('../src/lib/shell/layout/centerDock.ts');
+const centerCornerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
+const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
+const rightPanelTabs = read('../src/lib/shell/components/RightPanelTabs.svelte');
+const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
+const shellOverlays = read('../src/lib/shell/components/ShellOverlays.svelte');
+const sessionBrowserOverlay = read('../src/lib/shell/browser/SessionBrowserOverlay.svelte');
+const assistanceHost = read('../src/lib/shell/assistance/AssistanceHost.svelte');
+const shellPage = read('../src/routes/next/+page.svelte');
+const shellLayout = read('../src/lib/shell/layout/frame.ts');
+
+// ── The frame builds the parent grid before the center dock ────────────────
 
 const centerDockStart = shellFrame.indexOf('centerDock = createCenterDock(');
 const parentLayout = shellFrame.indexOf('frame.layout(gridHost.clientWidth, gridHost.clientHeight);');
@@ -48,161 +37,199 @@ assert.ok(
   'the parent Gridview must have real bounds before center Dockview restore/build'
 );
 
+// ── Three center surfaces, and the diff detaches when it is not on screen ──
+
+assert.match(
+  centerDock,
+  /export const CENTER_PANEL_IDS = \['session', 'editor', 'diff'\] as const;/,
+  'the center dock holds exactly Session, Editor and Diff'
+);
 assert.match(
   shellFrame,
   /id: 'diff',[\s\S]*?renderer: 'onlyWhenVisible'/,
   'the Monaco Diff surface must detach when another center surface is active'
 );
 assert.match(
-  shellFrame,
-  /\{\s*id: 'browser',\s*title: 'Browser',\s*element: browserSlot,\s*group: 'display',\s*renderer: 'onlyWhenVisible'\s*\}/,
-  'the browser HTML host must detach when another center surface is active'
-);
-assert.match(
   centerDock,
   /renderer: panel\.renderer/,
   'the center surface model must pass a panel-specific renderer to Dockview'
 );
-
-assert.match(
-  shellFrame,
-  /\.tools-region[\s\S]*?grid-template-rows:\s*40px minmax\(0, 1fr\)/,
-  'the right tool region must reserve a horizontal picker row above its pane'
-);
 assert.match(
   shellFrame,
   /\.shell-center-dock \.dv-tabs-and-actions-container\)[\s\S]*?display:\s*none/,
-  'the former horizontal center tab headers must be hidden'
-);
-assert.match(
-  shellFrame,
-  /<div class="slot tools-region"[\s\S]*?<div class="tools-tabs">\{@render activity\(\)\}<\/div>[\s\S]*?<div class="tools-pane">\{@render tools\(\)\}<\/div>/,
-  'ShellFrame must mount the horizontal view picker directly above the right tool pane'
-);
-assert.match(
-  shellFrame,
-  /<div class="slot activity-region"[^>]*>[\s\S]*?<CenterActivityDock activeId=\{activeCenterPanel\} onSelect=\{selectCenterPanel\}/,
-  'ShellFrame must mount the center surface rail in the far-right activity region'
-);
-assert.match(
-  shellFrame,
-  /selectCenterPanel\(id: CenterPanelId\)[\s\S]*?centerDock\?\.activatePanel\(id\)/,
-  'dock clicks must use the existing centerDock activation state machine'
+  'Dockview’s own horizontal tab headers stay hidden — the corner tabs replace them'
 );
 
-for (const id of ['session', 'editor', 'browser', 'diff', 'session-library', 'agents']) {
+// ── The corner tabs sit above the dock, in a row of their own ──────────────
+
+assert.match(
+  shellFrame,
+  /<div class="slot center-region"[\s\S]*?<div class="center-tabs">\{@render centerTabs\(\)\}<\/div>[\s\S]*?<div class="center-dock-host"/,
+  'ShellFrame must mount the corner tabs above the center dock, never over it'
+);
+assert.match(
+  shellFrame,
+  /\.center-region \{[\s\S]*?grid-template-rows:\s*auto minmax\(0, 1fr\);/,
+  'the center region gives the tabs their own row and the dock the rest'
+);
+assert.match(
+  shellFrame,
+  /\.center-tabs \{[\s\S]*?justify-content:\s*flex-end;/,
+  'the corner tabs sit in the pane’s upper-right corner'
+);
+for (const id of ['session', 'editor', 'diff']) {
   assert.match(
-    centerActivityDock,
+    centerCornerTabs,
     new RegExp(`id: '${id}'`),
-    `the far-right rail must keep the ${id} surface reachable`
+    `the corner tabs must keep the ${id} surface reachable`
   );
 }
 assert.match(
-  centerActivityDock,
-  /label: 'Session History'/,
-  'the dock must keep the user-facing Session History label'
-);
-assert.match(
-  centerActivityDock,
-  /import \{ IconButton \} from '\$lib\/components\/ui\/icon-button\/index\.js'/,
-  'the surface rail must consume the kit IconButton'
-);
-assert.match(
-  centerActivityDock,
-  /label=\{surface\.label\}[\s\S]*?size="default"[\s\S]*?side="left"[\s\S]*?<Icon class="size-5"/,
-  'every surface icon must get its tooltip, accessible label, 32px target, and 20px glyph from IconButton'
+  centerCornerTabs,
+  /size="xs"[\s\S]*?variant=\{tab\.id === activeId \? 'secondary' : 'ghost'\}/,
+  'the selected corner tab is filled, and every tab is the kit’s 24px small button'
 );
 assert.doesNotMatch(
-  centerActivityDock,
-  /ResourcePopover|UsagePopover/,
-  'Dockview must not own the resource or quota overlay mounts'
-);
-assert.match(
-  centerActivityDock,
-  /label="Resources"[\s\S]*?label="Usage and Stats"/,
-  'the two rail utilities must have explicit IconButton labels'
-);
-assert.match(
-  centerActivityDock,
-  /requestUtility\(id: RailUtilityId, event: MouseEvent\)[\s\S]*?RAIL_UTILITY_REQUEST_EVENT[\s\S]*?railUtilityRequest\(id, event\.currentTarget\.getBoundingClientRect\(\)\)/,
-  'rail utility IconButtons must dispatch an anchored request to the global overlay owners'
-);
-assert.match(
-  centerActivityDock,
-  /label="Usage and Stats"[\s\S]*?size="default"[\s\S]*?onclick=\{\(event\) => requestUtility\('usage', event\)\}[\s\S]*?<ChartNoAxesCombined class="size-5"/,
-  'the Usage and Stats entry must use the 32px rail control and request the quota popover'
-);
-assert.match(
-  centerActivityDock,
-  /\.surface-group,[\s\S]*?\.utility-group[\s\S]*?gap:\s*8px/,
-  'surface and utility buttons must retain an 8px vertical rhythm'
-);
-assert.match(
-  centerActivityDock,
-  /\.surface-action,[\s\S]*?\.utility-action[\s\S]*?width:\s*32px;[\s\S]*?height:\s*32px/,
-  'surface and utility wrappers must match the 32px IconButton target'
-);
-assert.match(
-  centerActivityDock,
-  /variant=\{surface\.id === activeId \? 'secondary' : 'ghost'\}[\s\S]*?\.surface-action\.active::before[\s\S]*?width:\s*3px/,
-  'the selected surface must combine a filled button treatment with a visible edge marker'
-);
-assert.doesNotMatch(
-  centerActivityDock,
+  centerCornerTabs,
   /<button\b/,
-  'the icon-only surface rail must not hand-roll button controls'
+  'the corner tabs must not hand-roll button controls'
 );
-assert.match(
-  activityBar,
-  /<Tabs\.List variant="line"[\s\S]*?<Tabs\.Trigger[\s\S]*?value=\{view\.id\}/,
-  'the right-pane picker must use the kit tabs line variant'
-);
-assert.doesNotMatch(
-  activityBar,
-  /ResourcePopover|UsagePopover|utility-group/,
-  'right-pane tabs must contain only pane navigation and settings'
-);
-assert.match(
-  shellLayout,
-  /id: 'activity',[\s\S]*?direction: 'right', referencePanel: 'center'[\s\S]*?id: 'tools',[\s\S]*?direction: 'right', referencePanel: 'center'/,
-  'the surface rail must be added outside the right tool panel'
-);
+
+// ── The far-right rail and the old tab row are gone ────────────────────────
+
 assert.doesNotMatch(
   shellFrame,
-  /\.shell-region-host-activity[\s\S]*?overflow:\s*visible/,
-  'the quota overlay must not depend on escaping Dockview clipping'
+  /activity|CenterActivityDock/,
+  'ShellFrame must not keep the deleted far-right rail or its region'
+);
+assert.doesNotMatch(
+  shellLayout,
+  /'activity'|ACTIVITY_STRIP_WIDTH/,
+  'the frame must not build a region for the deleted far-right rail'
 );
 assert.match(
-  assistanceHost,
-  /right:\s*calc\(44px \+ 16px\)[\s\S]*?z-index:\s*48/,
-  'Assistance must sit one rail width left and below the rail stacking level'
+  shellFrame,
+  /<div class="slot tools-region"[^>]*>\{@render tools\(\)\}<\/div>/,
+  'the right column is one region now: the panel host owns its own strips'
 );
+
+// ── The right panel: eight tabs, eight always-mounted bodies ───────────────
+
+const RIGHT_TABS = [
+  'files',
+  'source-control',
+  'worktrees',
+  'run',
+  'context',
+  'agents',
+  'browser',
+  'history'
+];
+for (const id of RIGHT_TABS) {
+  assert.match(
+    rightPanelTabs,
+    new RegExp(`id: '${id}'`),
+    `the right tab strip must offer the ${id} tab`
+  );
+}
+assert.equal(
+  rightPanelTabs.indexOf("id: 'files'") < rightPanelTabs.indexOf("id: 'history'"),
+  true,
+  'Files opens the strip and History closes it'
+);
+assert.match(
+  rightPanelTabs,
+  /import \{ IconButton \} from '\$lib\/components\/ui\/icon-button\/index\.js'/,
+  'the tab strip must consume the kit IconButton'
+);
+assert.match(
+  rightPanelTabs,
+  /label=\{tab\.label\}[\s\S]*?size="sm"[\s\S]*?<Icon class="size-\[18px\]"/,
+  'every tab gets its tooltip, accessible label, 28px target and 18px glyph from IconButton'
+);
+assert.match(
+  rightPanelTabs,
+  /aria-current=\{tab\.id === activeId \? 'page' : undefined\}/,
+  'the selected tab says so to a screen reader'
+);
+assert.doesNotMatch(
+  rightPanelTabs,
+  /<button\b/,
+  'the icon-only tab strip must not hand-roll button controls'
+);
+
+assert.match(
+  rightPanel,
+  /grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/,
+  'the right column is tab strip, panel body, utility strip'
+);
+assert.equal(
+  (rightPanel.match(/class="panel-body"/g) ?? []).length,
+  RIGHT_TABS.length,
+  'every one of the eight panels stays mounted; only the open one is displayed'
+);
+assert.match(
+  rightPanel,
+  /\.panel-body \{[\s\S]*?display:\s*none;[\s\S]*?\}\s*\.panel-body\.showing \{\s*display:\s*block;/,
+  'switching tabs only changes which panel is displayed — nothing is torn down'
+);
+assert.doesNotMatch(
+  rightPanel,
+  /createPaneStack|Paneview/,
+  'the right column is a plain host now, not a stack of collapsible panes'
+);
+
+// ── Resources and Usage: a strip at the bottom, surfaces at the page root ──
+
+assert.match(
+  utilityStrip,
+  /data-testid="utility-resources"[\s\S]*?data-testid="utility-usage"/,
+  'the bottom strip holds Resources and Usage, in that order'
+);
+assert.match(
+  utilityStrip,
+  /formatResourceBytes[\s\S]*?formatResourceCpu[\s\S]*?processCount/,
+  'the live memory, CPU and process count read on the Resources button itself'
+);
+assert.match(
+  utilityStrip,
+  /onOpenUtility\(id, utilityAnchorFor\(event\.currentTarget\.getBoundingClientRect\(\)\)\)/,
+  'the strip hands the overlay layer the exact rectangle of the button that was pressed'
+);
+assert.doesNotMatch(
+  utilityStrip,
+  /ResourcePopover|UsagePopover/,
+  'the strip must not own the resource or quota surfaces'
+);
+
 assert.match(
   shellOverlays,
   /<ResourcePopover \/>[\s\S]*?<UsagePopover \/>/,
-  'the global overlay layer must own both rail utility state owners'
+  'the global overlay layer owns both utility state owners'
 );
 assert.match(
   shellOverlays,
-  /handleRailUtilityRequest[\s\S]*?isRailUtilityRequest\(event\.detail\)[\s\S]*?openRailUtility\(event\.detail\)/,
-  'the global overlay layer must validate and handle each rail utility request'
+  /\{#if resourceManagerState\.open\}\s*<ResourceManagerPanel \/>/,
+  'the Resource Manager is mounted above the layout, not inside the column that opens it'
 );
 assert.match(
   shellOverlays,
-  /async function openRailUtility\(request: RailUtilityRequest\)[\s\S]*?await tick\(\);[\s\S]*?popoverTrigger\(request\.id\)\?\.click\(\)/,
-  'an anchored rail request must position first, then toggle the existing Resource or Usage trigger'
+  /export async function openUtility\(id: UtilityId, anchor: UtilityAnchor\)[\s\S]*?await tick\(\);[\s\S]*?popoverTrigger\(id\)\?\.click\(\)/,
+  'an anchored request must position first, then toggle the existing Resource or Usage trigger'
 );
 assert.match(
   shellOverlays,
   /\.rail-popover-host :global\(\.usage-popover \.card\)[\s\S]*?right:\s*calc\(100% \+ 12px\);[\s\S]*?bottom:\s*0/,
-  'the quota card must open inward from the requested rail button rectangle'
+  'the quota card opens inward from the requested button rectangle'
+);
+assert.match(
+  assistanceHost,
+  /right:\s*calc\(44px \+ 16px\)[\s\S]*?z-index:\s*48/,
+  'Assistance keeps its inset and its stacking level'
 );
 
-assert.match(
-  shellPage,
-  /function handleCenterPanelShown\(id: string\): void \{[\s\S]*?if \(id === 'browser'\) \{[\s\S]*?openSessionBrowserOverlay\(rail\.activeOwnedId\)[\s\S]*?frameControls\?\.showCenterPanel\('session'\);[\s\S]*?\n  \}/,
-  'the Browser center entry must open the session-owned overlay and return the dock to Session'
-);
+// ── The page: one switch handler, no session work inside it ────────────────
+
 const centerSwitch = shellPage.match(
   /function handleCenterPanelShown\(id: string\): void \{([\s\S]*?)\n  \}/
 )?.[1] ?? '';
@@ -219,22 +246,15 @@ assert.match(
 );
 assert.match(
   shellPage,
-  /message=\{\[layoutError, activeCenterPanelId === 'session' \? rail\.error : null\]/,
-  'session activation errors must not be rendered over Diff or other center surfaces'
+  /message=\{\[layoutError, centerTab === 'session' \? rail\.error : null\]/,
+  'session activation errors must not be rendered over Diff or the editor'
 );
-assert.match(
-  shellPage,
-  /<SessionBrowserButton \/>/,
-  'the top strip must expose the single session-owned browser entry'
-);
-assert.match(
-  shellPage,
-  /<div class="browser-center-proxy"[^>]*data-testid="browser-center-proxy"/,
-  'the center Browser id must be a proxy, not a second embedded browser'
-);
+
+// ── One session browser, still the whole window ────────────────────────────
+
 assert.match(
   shellOverlays,
-  /<SessionBrowserOverlay onClose=\{onSessionBrowserClose\} \/>/,
+  /<SessionBrowserOverlay \/>/,
   'the global overlay layer must mount the session-owned browser once'
 );
 assert.doesNotMatch(
@@ -258,4 +278,4 @@ assert.match(
   'the consolidated browser must expose back, forward, and reload controls'
 );
 
-console.log('centerDock: 32px far-right rail, global anchored utilities, right-pane line tabs, and pure switching verified');
+console.log('centerDock: three center surfaces, corner tabs, eight right tabs, bottom utility strip verified');

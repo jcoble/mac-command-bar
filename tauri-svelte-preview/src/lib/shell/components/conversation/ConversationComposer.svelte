@@ -85,6 +85,12 @@
   let fileInput = $state<HTMLInputElement | null>(null);
   let commandSnapshot = $state<ConversationCommand[]>([]);
 
+  /** Put the caret in the prompt box. The only way in from outside — a panel
+   * that hands the composer an attachment wants the reader typing next to it. */
+  export function focus(): void {
+    promptHost?.focus();
+  }
+
   $effect(() => {
     if (draft === observedDraft) return;
     if (slashCommandQuery(inputDraft) === null && slashCommandQuery(draft) !== null) {

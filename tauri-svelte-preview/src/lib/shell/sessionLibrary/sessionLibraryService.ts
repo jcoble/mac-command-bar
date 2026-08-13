@@ -127,3 +127,29 @@ export function createSessionLibraryService(
 
 /** A no-op service is safe for a presentational host until the controller wires actions. */
 export const inertSessionLibraryService: SessionLibraryService = createSessionLibraryService();
+
+/**
+ * The service and rescan the History panel should use.
+ *
+ * The panel is mounted by the right column and takes only the three props every
+ * panel takes, but the actions it offers — resume, open, archive, delete — are
+ * the page's, because only the page owns the rail and the terminal service. So
+ * the page registers them once, the same register-then-call shape
+ * `sessionLibraryNavigation.ts` and `stackService.ts` already use, and the panel
+ * reads whatever is registered.
+ */
+export interface SessionLibraryHost {
+  service: SessionLibraryService;
+  /** Look for agent sessions again. */
+  rescan?(): void | Promise<void>;
+}
+
+let registeredHost: SessionLibraryHost = { service: inertSessionLibraryService };
+
+export function registerSessionLibraryHost(host: SessionLibraryHost): void {
+  registeredHost = host;
+}
+
+export function sessionLibraryHost(): SessionLibraryHost {
+  return registeredHost;
+}

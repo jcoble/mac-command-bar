@@ -16,7 +16,6 @@ import {
 
 import {
   CENTER_LAYOUT_KEY,
-  CENTER_LAYOUT_KEY_V4,
   clearLayout,
   dockPanelIds,
   loadLayout,
@@ -74,17 +73,8 @@ export interface CenterDockSnapshot {
 
 const COMPONENT = 'center-panel';
 const PERSIST_DEBOUNCE_MS = 250;
-export const CENTER_PANEL_IDS = [
-  'session',
-  'editor',
-  'browser',
-  'diff',
-  'session-library',
-  'agents'
-] as const;
+export const CENTER_PANEL_IDS = ['session', 'editor', 'diff'] as const;
 export type CenterPanelId = (typeof CENTER_PANEL_IDS)[number];
-
-const CENTER_PANEL_IDS_V4 = CENTER_PANEL_IDS.filter((id) => id !== 'agents');
 
 export function isCenterPanelId(id: string): id is CenterPanelId {
   return CENTER_PANEL_IDS.some((candidate) => candidate === id);
@@ -151,9 +141,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   const addPanelFor = (panel: CenterPanelSpec, position?: AddPanelPositionOptions): void => {
     api.addPanel({
       id: panel.id,
-      // Keep the persisted panel id/registration stable while giving the
-      // dedicated history experience the title users see in the tab.
-      title: panel.id === 'session-library' ? 'Session History' : panel.title,
+      title: panel.title,
       component: COMPONENT,
       params: { panelId: panel.id },
       renderer: panel.renderer,
@@ -169,11 +157,6 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
    * explicit form below is the exact body of `getGroupPanel` and of
    * `addPanel`'s own duplicate guard, so what we test is what dockview does. */
   const panelById = (id: string) => api.panels.find((panel) => panel.id === id);
-
-  /** Existing serialized layouts may still carry the former tab label. */
-  const normalizeSessionLibraryTitle = (): void => {
-    panelById('session-library')?.api.setTitle('Session History');
-  };
 
   /** Old saved layouts predate per-panel renderers, so enforce the current
    * roster contract after either restore or build. */
@@ -247,9 +230,9 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   };
 
   /**
-   * The six roster surfaces are permanent for now. Dockview still owns their
+   * The three roster surfaces are permanent for now. Dockview still owns their
    * lifecycle even though its horizontal headers are visually replaced by the
-   * shell's top surface strip. If a panel is removed through a restored layout
+   * corner tabs in the center pane. If a panel is removed through a restored layout
    * or API call, put it straight back so the strip never points at an
    * unavailable surface — especially the live Session terminal.
    *
@@ -294,8 +277,6 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
 
   layoutToContainer();
 
-  let migratedFromV4 = false;
-
   runSynchronized(() => {
     const stored = loadLayout<object>(options.storage, CENTER_LAYOUT_KEY);
     if (stored && panelSetMatches(dockPanelIds(stored), specs.keys())) {
@@ -311,39 +292,8 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       }
     }
 
-    /**
-     * v4 has the same arrangement as the current roster minus Agents. Restore
-     * that exact set first, then add the new tab beside Session Library through
-     * the live Dockview API. This preserves the serialized groups/sizes/order
-     * and avoids hand-editing Dockview's private grid tree. Any mismatch or
-     * Dockview rejection falls through to the safe current defaults.
-     */
-    const previous = loadLayout<object>(options.storage, CENTER_LAYOUT_KEY_V4);
-    if (previous && panelSetMatches(dockPanelIds(previous), CENTER_PANEL_IDS_V4)) {
-      try {
-        api.fromJSON(previous as never);
-        const activePanelId = api.activePanel?.id ?? null;
-        const library = specs.get('session-library');
-        const agents = specs.get('agents');
-        if (!library || !agents || !panelById('session-library')) {
-          throw new Error('Agents migration roster is incomplete');
-        }
-        addPanelFor(agents, { referencePanel: 'session-library', direction: 'within' });
-        if (activePanelId) panelById(activePanelId)?.api.setActive();
-        migratedFromV4 = true;
-        return;
-      } catch {
-        try {
-          api.clear();
-        } catch {
-          // fall through
-        }
-      }
-    }
-
     buildDefault();
   });
-  normalizeSessionLibraryTitle();
   normalizePanelRenderers();
 
   const persistSoon = (): void => {
@@ -366,18 +316,6 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       options.onLayoutPersisted?.(ok);
     }, PERSIST_DEBOUNCE_MS);
   };
-
-  // The migrated layout is already a complete current-roster Dockview tree.
-  // Persist it under v5 immediately so a reload does not repeat the migration;
-  // the old v4 payload remains untouched as a harmless fallback record.
-  if (migratedFromV4) {
-    try {
-      saveLayout(options.storage, CENTER_LAYOUT_KEY, api.toJSON());
-    } catch {
-      // A quota/serialization failure is benign; the live layout remains usable
-      // and the next launch safely retries from the old v3 record.
-    }
-  }
 
   const listeners = [
     api.onDidLayoutChange(persistSoon),
@@ -408,7 +346,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       // restore. Leaving the live dock alone keeps every roster tab visible;
       // the next capture gives that session its own starting arrangement.
       if (!snapshot) return;
-      // Keep the one live six-tab roster mounted. Replaying a serialized
+      // Keep the one live three-tab roster mounted. Replaying a serialized
       // Dockview tree during a session switch intermittently retained the
       // panel bodies but dropped their tab renderers. The active tab is the
       // session-specific state the reader needs; editor/browser/diff content is

@@ -66,15 +66,16 @@ test('the strip along the top of the shell mounts the controls', () => {
     shellPageSource.indexOf('<div class="frame-area">')
   );
   assert.ok(topBar.length > 0, 'the top strip must still exist');
-  assert.match(topBar, /<RunButton \/>/);
   assert.match(topBar, /<LanguageIntelligenceControls \/>/);
+  // Everything else that used to be up here has a panel of its own now.
+  assert.doesNotMatch(topBar, /<RunButton|<SessionBrowserButton/);
 });
 
 test('the controls sit at the right-hand end of the strip', () => {
   assert.match(
     controlsSource,
     /margin-left:\s*auto/,
-    'the group is pushed away from the run and browser buttons'
+    'the group is pushed to the right-hand end of the strip'
   );
   assert.ok(
     !controlsSource.includes(':has(') && !controlsSource.includes('has-['),

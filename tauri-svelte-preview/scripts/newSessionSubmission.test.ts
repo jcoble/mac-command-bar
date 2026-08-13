@@ -116,7 +116,10 @@ assert.equal(request?.reasoningEffort, 'max');
 assert.equal(request?.approvalPolicy, 'on-request');
 assert.deepEqual(validateThreadStart({ ...request, prompt: request.prompt }), []);
 
-assert.match(startNewSession, /async function startNewSession\(request: ThreadStartRequest\): Promise<void>/);
+// It answers with the new session's id, so a panel that starts a session on
+// somebody's behalf can point at the one it just made.
+assert.match(startNewSession, /async function startNewSession\(request: ThreadStartRequest\): Promise<string>/);
+assert.match(startNewSession, /return owned\.ownedId;/);
 assert.match(startNewSession, /createFreshSession\(\{ cwd: request\.cwd, title: request\.title \}\)/);
 assert.match(startNewSession, /projectPath: request\.projectPath/);
 assert.match(startNewSession, /branch: request\.branch/);

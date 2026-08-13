@@ -10,9 +10,7 @@
   import { onMount, type Snippet } from 'svelte';
 
   import {
-    isCenterPanelId,
     createCenterDock,
-    type CenterPanelId,
     type CenterDock,
     type CenterDockSnapshot
   } from '$lib/shell/layout/centerDock';
@@ -23,7 +21,6 @@
     type ShellFrame as Frame,
     type ShellRegionId
   } from '$lib/shell/layout/frame';
-  import CenterActivityDock from './CenterActivityDock.svelte';
 
   interface Props {
     /** The left column: the sessions list, and nothing else. */
@@ -31,15 +28,12 @@
     center: {
       session: Snippet;
       editor: Snippet;
-      browser: Snippet;
       diff: Snippet;
-      sessionLibrary: Snippet;
-      agents: Snippet;
     };
-    /** The right column: whichever tool view the horizontal picker has open. */
+    /** The small tabs in the center pane's upper-right corner. */
+    centerTabs: Snippet;
+    /** The right column: its tab strip, the open panel, and the bottom strip. */
     tools: Snippet;
-    /** The horizontal picker rendered above the right tool pane. */
-    activity: Snippet;
     dock: Snippet;
     onSessionPanelLayout?: () => void;
     /** A center surface came to the front. Fires for Dockview's own start-up
@@ -68,8 +62,8 @@
   let {
     sessions,
     center,
+    centerTabs,
     tools,
-    activity,
     dock,
     onSessionPanelLayout,
     onCenterPanelShown,
@@ -82,23 +76,14 @@
   let centerRegionSlot: HTMLElement;
   let centerSlot: HTMLElement; // holds the center Dockview's own container
   let toolsSlot: HTMLElement;
-  let activitySlot: HTMLElement;
   let dockSlot: HTMLElement;
   let sessionSlot: HTMLElement;
   let editorSlot: HTMLElement;
-  let browserSlot: HTMLElement;
   let diffSlot: HTMLElement;
-  let sessionLibrarySlot: HTMLElement;
-  let agentsSlot: HTMLElement;
 
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
-  let activeCenterPanel = $state<CenterPanelId>('session');
   let ready = $state(false);
-
-  function selectCenterPanel(id: CenterPanelId): void {
-    centerDock?.activatePanel(id);
-  }
 
   onMount(() => {
     let observer: ResizeObserver | null = null;
@@ -109,7 +94,6 @@
           sessions: sessionsSlot,
           center: centerRegionSlot,
           tools: toolsSlot,
-          activity: activitySlot,
           dock: dockSlot
         }
       });
@@ -122,40 +106,25 @@
       centerDock = createCenterDock(centerSlot, {
         storage: window.localStorage,
         // The session is what you talk to, so it opens on its own on the left;
-        // the editor, the browser and the diff are where you look at the
-        // result, so they open stacked together on the right. Source control
-        // itself is not here at all — it is a view of the tool column — but the
-        // changes it shows are, because a diff wants the width of the middle.
+        // the editor and the diff are where you look at the result, so they
+        // open stacked together on the right. Source control itself is not here
+        // at all — it is a panel of the right column — but the changes it shows
+        // are, because a diff wants the width of the middle.
         panels: [
           { id: 'session', title: 'Session', element: sessionSlot },
           { id: 'editor', title: 'Editor', element: editorSlot, group: 'display' },
-          {
-            id: 'browser',
-            title: 'Browser',
-            element: browserSlot,
-            group: 'display',
-            renderer: 'onlyWhenVisible'
-          },
           {
             id: 'diff',
             title: 'Diff',
             element: diffSlot,
             group: 'display',
             renderer: 'onlyWhenVisible'
-          },
-          {
-            id: 'session-library',
-            title: 'Session Library',
-            element: sessionLibrarySlot,
-            group: 'display'
-          },
-          { id: 'agents', title: 'Agents', element: agentsSlot, group: 'display' }
+          }
         ],
         onPanelLayout: (id) => {
           if (id === 'session') onSessionPanelLayout?.();
         },
         onPanelActivated: (id) => {
-          if (isCenterPanelId(id)) activeCenterPanel = id;
           onCenterPanelShown?.(id);
         }
       });
@@ -199,22 +168,14 @@
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
   <div class="slot center-region" bind:this={centerRegionSlot}>
+    <div class="center-tabs">{@render centerTabs()}</div>
     <div class="center-dock-host" bind:this={centerSlot}></div>
   </div>
-  <div class="slot tools-region" bind:this={toolsSlot}>
-    <div class="tools-tabs">{@render activity()}</div>
-    <div class="tools-pane">{@render tools()}</div>
-  </div>
-  <div class="slot activity-region" bind:this={activitySlot}>
-    <CenterActivityDock activeId={activeCenterPanel} onSelect={selectCenterPanel} />
-  </div>
+  <div class="slot tools-region" bind:this={toolsSlot}>{@render tools()}</div>
   <div class="slot" bind:this={dockSlot}>{@render dock()}</div>
   <div class="slot" bind:this={sessionSlot}>{@render center.session()}</div>
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
-  <div class="slot" bind:this={browserSlot}>{@render center.browser()}</div>
   <div class="slot" bind:this={diffSlot}>{@render center.diff()}</div>
-  <div class="slot" bind:this={sessionLibrarySlot}>{@render center.sessionLibrary()}</div>
-  <div class="slot" bind:this={agentsSlot}>{@render center.agents()}</div>
 </div>
 
 <style>
@@ -249,21 +210,26 @@
     overflow: hidden;
   }
 
+  /* The corner tabs sit in a row of their own above the dock, pushed to the
+     right edge. A row rather than an overlay: the tabs must never cover the
+     surface they name. */
   .center-region {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
     background: var(--color-bg);
   }
 
-  .tools-region {
-    display: grid;
-    grid-template-rows: 40px minmax(0, 1fr);
-    background: var(--background);
+  .center-tabs {
+    display: flex;
+    min-width: 0;
+    justify-content: flex-end;
+    overflow: hidden;
   }
 
-  .tools-tabs,
-  .tools-pane {
+  .tools-region {
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
+    background: var(--background);
   }
 
   .center-dock-host {
@@ -315,8 +281,8 @@
     box-shadow: none;
   }
 
-  /* Dockview still owns the six panels and their active state, while the
-     far-right surface rail is their only visible navigation. */
+  /* Dockview still owns the three panels and their active state, while the
+     center pane's corner tabs are their only visible navigation. */
   .shell-frame :global(.shell-center-dock .dv-tabs-and-actions-container) {
     display: none;
   }

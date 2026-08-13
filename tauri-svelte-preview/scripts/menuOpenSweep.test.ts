@@ -14,11 +14,6 @@ assert.match(usagePopover, /menuSnapshots\[providerName\]/);
 const resourcePopover = source('lib/shell/resources/ResourcePopover.svelte');
 assert.match(resourcePopover, /afterFloatingSurfacePaint\(\(\) => void refreshResourceSample\(\)\)/);
 
-const runMenu = source('lib/shell/components/run/RunButton.svelte');
-assert.match(runMenu, /menuRows = rows\.map/);
-assert.match(runMenu, /onOpenChange=\{changeMenu\}/);
-assert.doesNotMatch(runMenu, /\{#each rows as/);
-
 const configMenu = source('lib/shell/components/conversation/ComposerConfigMenu.svelte');
 const compactConfigMenu = source('lib/shell/components/conversation/CompactComposerControlsMenu.svelte');
 for (const menu of [configMenu, compactConfigMenu]) {

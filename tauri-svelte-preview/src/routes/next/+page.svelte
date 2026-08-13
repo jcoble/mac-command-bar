@@ -23,24 +23,20 @@
      is painted on the first frame, before any theme has been applied. */
   import '$lib/shell/styles/themeChrome.css';
 
-  import ActivityBar from '$lib/shell/components/ActivityBar.svelte';
+  import CenterCornerTabs from '$lib/shell/components/CenterCornerTabs.svelte';
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
   import GitDiffView from '$lib/shell/components/GitDiffView.svelte';
   import SessionsColumn from '$lib/shell/components/SessionsColumn.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
-  import ShellSidebar from '$lib/shell/components/ShellSidebar.svelte';
+  import RightPanel from '$lib/shell/components/RightPanel.svelte';
+  import SettingsGearButton from '$lib/shell/components/SettingsGearButton.svelte';
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
-  import RunButton from '$lib/shell/components/run/RunButton.svelte';
-  import SessionBrowserButton from '$lib/shell/browser/SessionBrowserButton.svelte';
   import LanguageIntelligenceControls from '$lib/shell/components/LanguageIntelligenceControls.svelte';
-  import {
-    loadSessionBrowserAnnotations,
-    openSessionBrowserOverlay
-  } from '$lib/shell/browser/sessionBrowserState.svelte.ts';
-  import SessionLibraryWorkspace from '$lib/shell/sessionLibrary/SessionLibraryWorkspace.svelte';
-  import WorkflowControlCenter from '$lib/shell/components/workflows/WorkflowControlCenter.svelte';
+  import { loadSessionBrowserAnnotations } from '$lib/shell/browser/sessionBrowserState.svelte.ts';
+  import { openBrowserUrl } from '$lib/shell/browser/browserStore.svelte.ts';
+  import type { UtilityId } from '$lib/shell/components/utilityStrip';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
   import { setContextPanelHooks } from '$lib/shell/context/contextPanelHooks.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
@@ -51,6 +47,8 @@
     getConversationSession,
     removeConversationSession,
     restoreConversationWorkspace,
+    setConversationAttachments,
+    setConversationDraft,
     setConversationMode
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
@@ -100,11 +98,20 @@
     type ShellRegionId
   } from '$lib/shell/layout/frame';
   import type { CenterDockSnapshot } from '$lib/shell/layout/centerDock';
+  import { isSidebarViewId, type SidebarViewId } from '$lib/shell/layout/sidebarViews';
   import {
-    DEFAULT_SIDEBAR_VIEW,
-    isSidebarViewId,
-    type SidebarViewId
-  } from '$lib/shell/layout/sidebarViews';
+    clearWorkbenchTabs,
+    readCenterTab,
+    readRightTab,
+    writeCenterTab,
+    writeRightTab
+  } from '$lib/shell/layout/workbenchTabs';
+  import {
+    clearWorkbenchNavigation,
+    registerWorkbenchNavigation,
+    type CenterTabId,
+    type RightTabId
+  } from '$lib/shell/workbenchNavigation';
   import { registerSessionRowJumpTarget } from '$lib/shell/components/sessionRowJump';
   import type {
     ThreadStartProviderConfig,
@@ -135,7 +142,8 @@
   } from '$lib/shell/sessionWorkspaces';
   import { readSessionsCollapsed, writeSessionsCollapsed } from '$lib/shell/sessionStrip';
   import {
-    createSessionLibraryService
+    createSessionLibraryService,
+    registerSessionLibraryHost
   } from '$lib/shell/sessionLibrary/sessionLibraryService';
   import type { SessionLibraryRecord } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import { registerShellCommands } from '$lib/shell/shellCommands';
@@ -169,7 +177,6 @@
     updateAgentConversationSessionMetaFromTauri,
     type AgentSession
   } from '$lib/tauriSource';
-  import BottomBar from '$lib/shell/resources/BottomBar.svelte';
 
   /** Hosts mount before the service finishes async init: parked here, drained later. */
   const pendingHosts = new Map<string, HTMLElement>();
@@ -211,20 +218,27 @@
     setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
     regionWidth(id: ShellRegionId): number | null;
   } | null = null;
-  /** The tool column's own controls; it builds after the frame does. */
-  let sidebarControls: {
-    resetLayout(): void;
-    expandSourceControl(): void;
-    selectView(id: SidebarViewId): void;
+  /** Which panel the right column is showing, and which surface the center
+   * pane is on. The PAGE owns both, because both are remembered per session and
+   * the sessions are the page's. Read for the session on screen, written the
+   * moment either is clicked. */
+  let rightTab = $state<RightTabId>(
+    typeof window === 'undefined' ? 'files' : readRightTab(window.localStorage, null)
+  );
+  let centerTab = $state<CenterTabId>(
+    typeof window === 'undefined' ? 'session' : readCenterTab(window.localStorage, null)
+  );
+  /** Which of the two bottom-strip surfaces is open, so its button reads as on. */
+  let openUtility = $state<UtilityId | null>(null);
+  /** The overlay layer, for opening the dialogs and surfaces it owns. */
+  let overlays: {
+    openSettings(): void;
+    openNewSession(projectPath?: string): void;
+    openUtility(id: UtilityId, anchor: { left: number; top: number; width: number; height: number }): void;
   } | null = null;
-  /** Which tool view is open. The column decides it and says so; the page holds
-   * the answer only because the icon strip that draws it is a separate region
-   * of the frame, on the far right edge. */
-  let activeView = $state<SidebarViewId>(DEFAULT_SIDEBAR_VIEW);
-  /** The action island follows the same center-panel signal as the shell. */
-  let activeCenterPanelId = $state('session');
-  /** The overlay layer, for opening the dialogs it owns. */
-  let overlays: { openSettings(): void; openNewSession(projectPath?: string): void } | null = null;
+  /** The conversation surface, for putting the caret in its prompt box when a
+   * panel hands the composer something. */
+  let conversationSurface: { focusComposer(): void } | null = null;
 
   function mostRecentProjectPath(): string | undefined {
     const active = rail.owned.find((session) => session.ownedId === rail.activeOwnedId);
@@ -273,22 +287,83 @@
    * failure on every launch and leave a blank shell with no message. */
   let layoutError = $state<string | null>(null);
 
-  /** The browser tab is a second entry point to the same session-owned overlay.
-   * Its old dock body no longer exists, so a click can never open a parallel
-   * browser experience. */
-  let browserOpenedFromCenter = false;
-
+  /**
+   * Dockview says a center surface came to the front — because the corner tabs
+   * asked for it, or because the dock restored one at launch. Either way the
+   * page adopts the answer, so the tabs and the dock can never disagree.
+   */
   function handleCenterPanelShown(id: string): void {
-    activeCenterPanelId = id;
-    if (id === 'browser') {
-      browserOpenedFromCenter = true;
-      openSessionBrowserOverlay(rail.activeOwnedId);
-      frameControls?.showCenterPanel('session');
-      activeCenterPanelId = 'session';
-      shellPanels.panelShown('session');
+    if (isCenterTabId(id)) centerTab = id;
+    shellPanels.panelShown(id);
+  }
+
+  function isCenterTabId(value: string): value is CenterTabId {
+    return value === 'session' || value === 'editor' || value === 'diff';
+  }
+
+  /** Show a center surface. The dock owns which panel is active, so the tab
+   * state follows its announcement rather than being set here twice. */
+  function applyCenterTab(id: CenterTabId): void {
+    centerTab = id;
+    frameControls?.showCenterPanel(id);
+  }
+
+  /** A center tab the user clicked: shown, and remembered for this session. */
+  function selectCenterTab(id: CenterTabId): void {
+    applyCenterTab(id);
+    writeCenterTab(window.localStorage, rail.activeOwnedId, id);
+  }
+
+  /**
+   * Show a right panel, and say so.
+   *
+   * Four of the eight read something project-scoped, and all four follow the
+   * same rule they always have: they load only while the user can see them.
+   * "Visible" here means simply "this is the open tab" — the column no longer
+   * has folding panes, so there is no second half to the question.
+   */
+  function applyRightTab(id: RightTabId): void {
+    rightTab = id;
+    shellPanels.sourceControlVisible(id === 'source-control');
+    shellPanels.worktreesVisible(id === 'worktrees');
+    shellPanels.stacksVisible(id === 'run');
+    shellPanels.contextVisible(id === 'context');
+    if (id === 'browser') shellPanels.panelShown('browser');
+  }
+
+  /** A right tab the user clicked: shown, and remembered for this session. */
+  function selectRightTab(id: RightTabId): void {
+    applyRightTab(id);
+    writeRightTab(window.localStorage, rail.activeOwnedId, id);
+  }
+
+  /** Put both columns back on the tabs this session was left on. */
+  function restoreTabsFor(ownedId: string | null): void {
+    applyCenterTab(readCenterTab(window.localStorage, ownedId));
+    applyRightTab(readRightTab(window.localStorage, ownedId));
+  }
+
+  /** The tool column used to be the vocabulary the palette, the rail rows and
+   * the context panel spoke; the right panel's tabs are that vocabulary now. A
+   * view with no tab of its own — the Problems list, which lives in the strip
+   * along the bottom — comes back null and is ignored. */
+  function rightTabForView(id: SidebarViewId): RightTabId | null {
+    if (id === 'explorer') return 'files';
+    if (id === 'stacks') return 'run';
+    if (id === 'problems') return null;
+    return id;
+  }
+
+  /** What the palette and the rail rows mean by a surface name. Session, Editor
+   * and Diff are center tabs; the browser and the session history became panels
+   * of the right column, and their old names still have to lead somewhere. */
+  function showSurface(id: string): void {
+    if (isCenterTabId(id)) {
+      selectCenterTab(id);
       return;
     }
-    shellPanels.panelShown(id);
+    if (id === 'browser') selectRightTab('browser');
+    else if (id === 'session-library') selectRightTab('history');
   }
 
   async function persistOwnedMetadata(ownedId: string): Promise<void> {
@@ -361,11 +436,15 @@
   /** Palette actions for the panels. Pure bookkeeping — nothing runs until the
    * user picks one — so it belongs here at component init, not in an effect. */
   registerShellCommands({
-    showPanel: (id) => frameControls?.showCenterPanel(id),
-    expandSourceControl: () => sidebarControls?.expandSourceControl(),
-    // Opening a view is what lets that view read anything, so nothing else has
-    // to be called here — the column reports the change and the load follows.
-    showView: (id) => sidebarControls?.selectView(id),
+    showPanel: (id) => showSurface(id),
+    expandSourceControl: () => selectRightTab('source-control'),
+    // Opening a panel is what lets that panel read anything, so nothing else
+    // has to be called here — showing it reports the change and the load
+    // follows.
+    showView: (id) => {
+      const tab = rightTabForView(id);
+      if (tab) selectRightTab(tab);
+    },
     openNewSession: () => openNewSession(),
     showProblemsAtBottom: () => {
       settings.panels.problemsLocation = 'bottom';
@@ -379,9 +458,11 @@
    * actions above; nothing runs until a row button is clicked. */
   registerSessionRowJumpTarget({
     selectSession: (ownedId) => void selectOwned(ownedId),
-    showCenterPanel: (id) => frameControls?.showCenterPanel(id),
+    showCenterPanel: (id) => showSurface(id),
     showSidebarView: (id) => {
-      if (isSidebarViewId(id)) sidebarControls?.selectView(id);
+      if (!isSidebarViewId(id)) return;
+      const tab = rightTabForView(id);
+      if (tab) selectRightTab(tab);
     }
   });
 
@@ -390,9 +471,67 @@
    * it asks rather than reaching for them. Pure bookkeeping, like the palette
    * actions above — nothing runs until a link is clicked. */
   setContextPanelHooks({
-    showWorktreesView: () => sidebarControls?.selectView('worktrees'),
+    showWorktreesView: () => selectRightTab('worktrees'),
     openSessionFinder: () => sessionsColumn?.openFinder()
   });
+
+  /**
+   * The one way a panel reaches anything outside itself.
+   *
+   * Pure bookkeeping like the registrations above: it stores functions and
+   * calls none of them. Every panel in the right column and every surface in
+   * the middle goes through these six, so no panel ever imports another.
+   */
+  registerWorkbenchNavigation({
+    showCenterTab: (id) => selectCenterTab(id),
+    showRightTab: (id) => selectRightTab(id),
+    openDiff: async (request) => {
+      await gitService.showStoredDiff(request.projectRoot, request.relativePath);
+    },
+    openUrl: (request) => {
+      openBrowserUrl(request.url);
+    },
+    focusComposer: async (handoff) => {
+      if (handoff.attachments) setConversationAttachments(handoff.ownedId, handoff.attachments);
+      if (handoff.appendText) {
+        const draft = getConversationSession(handoff.ownedId)?.draft ?? '';
+        setConversationDraft(
+          handoff.ownedId,
+          draft ? `${draft}\n${handoff.appendText}` : handoff.appendText
+        );
+      }
+      // The composer may not be the surface on screen yet, so wait for Svelte
+      // to have applied the draft before asking for the caret.
+      await tick();
+      conversationSurface?.focusComposer();
+    },
+    startSession: async (request) => {
+      const provider = request.provider ?? 'codex';
+      const config = providerConfigsForNewSession().find((entry) => entry.provider === provider);
+      try {
+        return await startNewSession({
+          prompt: request.prompt,
+          provider,
+          model: config?.model ?? null,
+          reasoningEffort: config?.reasoningEffort ?? null,
+          approvalPolicy: config?.approvalPolicy ?? null,
+          projectPath: request.projectPath,
+          cwd: request.cwd,
+          branch: '',
+          createNewWorktree: false,
+          title: request.title
+        });
+      } catch {
+        // `startNewSession` has already put the failure on the rail in words a
+        // person can read; the caller only needs to know it did not happen.
+        return null;
+      }
+    }
+  });
+
+  /** The History panel's actions are the page's, because only the page owns the
+   * rail and the terminal service. Registered once, read by the panel. */
+  registerSessionLibraryHost({ service: sessionLibraryService, rescan: () => scanRail() });
 
   /**
    * Is the sessions column folded up to a strip? The PAGE owns this rather
@@ -429,11 +568,11 @@
   /**
    * Put the Problems list where the setting says it goes.
    *
-   * Only "in the strip along the bottom" keeps that strip open; the other two
-   * answers close it to nothing, and the maximum height goes with the minimum
-   * so a divider cannot be dragged to reopen a strip holding nothing. Asked for
-   * once at start-up as well as on every change, or a choice made last week
-   * would only take effect when the buttons were pressed again.
+   * "In the strip along the bottom" keeps that strip open; hiding the list
+   * closes it to nothing, and the maximum height goes with the minimum so a
+   * divider cannot be dragged to reopen a strip holding nothing. Asked for once
+   * at start-up as well as on every change, or a choice made last week would
+   * only take effect when the buttons were pressed again.
    */
   function applyProblemsLocation(location: ProblemsLocation): void {
     const atBottom = location === 'bottom';
@@ -449,21 +588,16 @@
           { minimumHeight: 96, maximumHeight: Number.MAX_SAFE_INTEGER }
         : { minimumHeight: 0, maximumHeight: 0 }
     );
-    if (location === 'right') sidebarControls?.selectView('problems');
-    // The tool column keeps a container for Problems whether or not it is
-    // offered, so leaving the list on screen there after it has been moved back
-    // to the bottom would be the same list in two places, with only one of them
-    // reachable from the icon strip.
-    else if (activeView === 'problems') sidebarControls?.selectView(DEFAULT_SIDEBAR_VIEW);
   }
 
   /** "Reset layout" means ALL of it: the grid regions (so both side columns go
-   * back to their default widths), the center tabs, and the tool column, which
-   * remembers its section sizes and its open view under its own keys. A folded
-   * sessions column is part of that arrangement, so it opens out too. */
+   * back to their default widths), the center surfaces, and every session's
+   * remembered pair of tabs. A folded sessions column is part of that
+   * arrangement, so it opens out too. */
   function resetLayout(): void {
     frameControls?.resetLayout();
-    sidebarControls?.resetLayout();
+    clearWorkbenchTabs(window.localStorage);
+    restoreTabsFor(rail.activeOwnedId);
     if (sessionsCollapsed) collapseSessions(false);
     // A reset builds the default arrangement, which has the bottom strip open.
     // Where the Problems list goes is a setting rather than part of the
@@ -712,7 +846,13 @@
     // Clicking the session you are already on changes nothing. Putting the
     // stored record back here would throw away every file opened since the last
     // switch, which is the opposite of what a click on your own row means.
-    if (switching) restoreWorkspace(ownedId);
+    if (switching) {
+      restoreWorkspace(ownedId);
+      // Both columns go back to the tabs this session was left on. After the
+      // workspace restore, which may have brought the editor forward for a file
+      // it re-opened — the session's own remembered tab wins.
+      restoreTabsFor(ownedId);
+    }
     const provider = conversationProviderFor(ownedId);
     if (selected && provider) {
       ensureConversationSession(ownedId, provider);
@@ -859,7 +999,7 @@
     // here rather than inside `selectOwned`, which also runs on every plain
     // click on a card — a click on a row must not yank the reader off the file
     // they had open.
-    frameControls?.showCenterPanel('session');
+    selectCenterTab('session');
   }
 
   /**
@@ -868,14 +1008,14 @@
    * prompt is sent. The existing ensure/select/send path remains the single
    * session creation authority.
    */
-  async function startNewSession(request: ThreadStartRequest): Promise<void> {
+  async function startNewSession(request: ThreadStartRequest): Promise<string> {
     console.warn('mcb next: thread-start submit', {
       provider: request.provider,
       cwd: request.cwd,
       branch: request.branch,
       disposed
     });
-    if (disposed) return;
+    if (disposed) throw new Error('the shell is closing');
     const owned = {
       ...createFreshSession({ cwd: request.cwd, title: request.title }),
       agent: request.provider,
@@ -891,7 +1031,7 @@
       runtimeState: 'starting',
       lastError: null
     });
-    frameControls?.showCenterPanel('session');
+    selectCenterTab('session');
 
     try {
       await selectOwned(owned.ownedId, true);
@@ -902,6 +1042,7 @@
       });
       await persistOwnedMetadata(owned.ownedId);
       updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
+      return owned.ownedId;
     } catch (error) {
       const detail = describeError(error);
       const message = `could not start ${owned.agent} session: ${detail}`;
@@ -949,7 +1090,7 @@
     // Pressing play is asking to watch the thing start. Without this the run
     // configuration's terminal opens behind whatever tab was already in front,
     // and a command that fails immediately does so out of sight.
-    frameControls?.showCenterPanel('session');
+    selectCenterTab('session');
     return owned.ownedId;
   }
 
@@ -1002,7 +1143,7 @@
       });
       try {
         await selectOwned(ownedId);
-        frameControls?.showCenterPanel('session');
+        selectCenterTab('session');
       } catch (error) {
         updateOwnedSession(ownedId, {
           state: 'exited',
@@ -1107,7 +1248,7 @@
       // ended up on screen. Every early return above hands the screen to a
       // DIFFERENT session on purpose, and pulling the reader to the terminal
       // panel there would show them somebody else's scrollback.
-      frameControls?.showCenterPanel('session');
+      selectCenterTab('session');
     } catch (error) {
       // The row goes back to finished rather than sitting there claiming to be
       // running: nothing started, and the card's buttons must still offer this.
@@ -1378,37 +1519,38 @@
 <!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
      shadow the imported `rail` store and break every `rail.owned` read. -->
 {#snippet sessionsArea()}
-  <SessionsColumn
-    bind:this={sessionsColumn}
-    owned={rail.owned} activeOwnedId={rail.activeOwnedId}
-    collapsed={sessionsCollapsed}
-    onSelect={selectOwned} onRestart={restartOwned}
-    onComplete={completeOwned}
-    onReopen={reopenOwned} onSettle={settleOwnedSession} onUnsettle={unsettleOwnedSession}
-    onRemove={removeSession}
-    onCollapse={collapseSessions}
-    onNewSession={openNewSession}
-  />
+  <!-- The session list, with the settings gear under it in the bottom-left
+       corner of the app. The gear is not a session and not a panel, so it sits
+       below the list rather than in either tab strip. -->
+  <div class="sessions-region">
+    <div class="sessions-list">
+      <SessionsColumn
+        bind:this={sessionsColumn}
+        owned={rail.owned} activeOwnedId={rail.activeOwnedId}
+        collapsed={sessionsCollapsed}
+        onSelect={selectOwned} onRestart={restartOwned}
+        onComplete={completeOwned}
+        onReopen={reopenOwned} onSettle={settleOwnedSession} onUnsettle={unsettleOwnedSession}
+        onRemove={removeSession}
+        onCollapse={collapseSessions}
+        onNewSession={openNewSession}
+      />
+    </div>
+    <SettingsGearButton onOpenSettings={() => overlays?.openSettings()} />
+  </div>
 {/snippet}
 {#snippet toolsArea()}
-  <ShellSidebar
-    onReady={(controls) => (sidebarControls = controls)}
-    onActiveViewChange={(id) => (activeView = id)}
-    onSourceControlVisible={(visible) => shellPanels.sourceControlVisible(visible)}
-    onWorktreesVisible={(visible) => shellPanels.worktreesVisible(visible)}
-    onStacksVisible={(visible) => shellPanels.stacksVisible(visible)}
-    onContextVisible={(visible) => shellPanels.contextVisible(visible)}
-    onProblemsVisible={(visible) => shellPanels.problemsVisible(visible)}
-    onOpenSession={(ownedId) => void selectOwned(ownedId)}
-    onShowDiff={() => frameControls?.showCenterPanel('diff')}
+  <RightPanel
+    activeId={rightTab}
+    onSelect={selectRightTab}
+    root={readSelection().root}
+    ownedId={rail.activeOwnedId}
+    {openUtility}
+    onOpenUtility={(id, anchor) => overlays?.openUtility(id, anchor)}
   />
 {/snippet}
-{#snippet activityArea()}
-  <ActivityBar
-    activeId={activeView}
-    onSelect={(id) => sidebarControls?.selectView(id)}
-    onOpenSettings={() => overlays?.openSettings()}
-  />
+{#snippet centerTabsArea()}
+  <CenterCornerTabs activeId={centerTab} onSelect={selectCenterTab} />
 {/snippet}
 {#snippet dockArea()}
   <DockPanel onReset={resetLayout} onProblemsLocationChange={applyProblemsLocation} />
@@ -1419,6 +1561,7 @@
        that runs when the panel is shown does nothing. The surface says when a
        host appears, changes size, or the terminal font lands. -->
   <ConversationSurface
+    bind:this={conversationSurface}
     owned={rail.owned}
     activeOwnedId={rail.activeOwnedId}
     activeOrigin={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.origin}
@@ -1435,7 +1578,7 @@
        it must not drag the user off the terminal they were watching. -->
   <EditorPanel
     onFileOpened={() => {
-      if (!restoringWorkspace) frameControls?.showCenterPanel('editor');
+      if (!restoringWorkspace) selectCenterTab('editor');
     }}
     onStartWorkspaceCommand={(request) =>
       onStartStack({
@@ -1446,61 +1589,28 @@
       })}
   />
 {/snippet}
-{#snippet browserArea()}
-  <!-- The Browser tab id remains a stable Dockview entry, but it is only a
-       route into SessionBrowserOverlay. There is deliberately no second page
-       renderer here. -->
-  <div class="browser-center-proxy" data-testid="browser-center-proxy" aria-hidden="true"></div>
-{/snippet}
 <!-- The changes to whichever file source control has selected. `GitDiffView`
      reads that selection itself and takes no props, so it can simply live here
      as a tab of its own — which is what gives a diff the width of the middle
      instead of a column. -->
 {#snippet diffArea()}<GitDiffView />{/snippet}
-{#snippet sessionLibraryArea()}
-  <SessionLibraryWorkspace
-    owned={rail.owned}
-    available={rail.available}
-    service={sessionLibraryService}
-    visible={activeCenterPanelId === 'session-library'}
-    workspacePath={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.cwd ?? null}
-    projectPath={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.projectPath ?? rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.cwd ?? null}
-    onOpenTab={() => frameControls?.showCenterPanel('session-library')}
-    onRefresh={() => void scanRail()}
-  />
-{/snippet}
-{#snippet agentsArea()}
-  <WorkflowControlCenter
-    onOpenConversation={(ownedId) => {
-      void selectOwned(ownedId);
-      frameControls?.showCenterPanel('session');
-    }}
-  />
-{/snippet}
 
 <main class="next-shell">
-  <!-- The strip along the top. It holds the play button that runs a saved
-       configuration; anything else that belongs above the whole shell goes
-       beside it, since it is a plain flex row. -->
+  <!-- The strip along the top. It holds the project's language-server
+       controls, and nothing else: everything that used to be up here has a
+       panel of its own now. They are about the project rather than the open
+       file, which is why they are not among the editor's file tabs. -->
   <div class="top-bar">
-    <RunButton />
-    <SessionBrowserButton />
-    <!-- The project's language-server controls, pushed to the right edge. They
-         are about the project rather than the open file, so they belong up
-         here rather than among the editor's file tabs. -->
     <LanguageIntelligenceControls />
   </div>
 
   <div class="frame-area">
     <ShellFrame
-    sessions={sessionsArea} tools={toolsArea} activity={activityArea} dock={dockArea}
+    sessions={sessionsArea} tools={toolsArea} centerTabs={centerTabsArea} dock={dockArea}
     center={{
       session: sessionArea,
       editor: editorArea,
-      browser: browserArea,
-      diff: diffArea,
-      sessionLibrary: sessionLibraryArea,
-      agents: agentsArea
+      diff: diffArea
     }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={handleCenterPanelShown}
@@ -1536,6 +1646,9 @@
       // through a microtask, and those all arrive before any timer. Waiting
       // means a restored tab loads nothing, while a real click still does.
       setTimeout(() => shellPanels.allowPanelLoads(), 0);
+      // Open on the tabs the shell was left on. The frame is what shows a
+      // center surface, so this cannot happen any earlier than here.
+      restoreTabsFor(rail.activeOwnedId);
     }}
     onError={(message) => (layoutError = `layout failed: ${message}`)}
     />
@@ -1545,17 +1658,18 @@
     bind:this={overlays}
     onResetLayout={resetLayout}
     onRescanSessions={scanRail}
-    onStartNewSession={startNewSession}
+    onStartNewSession={async (request) => {
+      await startNewSession(request);
+    }}
     newSessionProviderConfigs={providerConfigsForNewSession}
     newSessionRoots={deriveThreadStartProjects(
       rail.owned.map((session) => session.projectPath ?? session.cwd)
     ).map((project) => project.path)}
-    message={[layoutError, activeCenterPanelId === 'session' ? rail.error : null].filter(Boolean).join('; ') || null}
+    message={[layoutError, centerTab === 'session' ? rail.error : null].filter(Boolean).join('; ') || null}
     onProblemsLocationChange={applyProblemsLocation}
-    onSessionBrowserClose={() => {
-      if (!browserOpenedFromCenter) return;
-      browserOpenedFromCenter = false;
-      frameControls?.showCenterPanel('session');
+    onUtilityStateChange={(id, open) => {
+      if (open) openUtility = id;
+      else if (openUtility === id) openUtility = null;
     }}
   />
   <div
@@ -1569,7 +1683,6 @@
       <span>{extensionApiProbeObservation.detail}</span>
     </div>
   {/if}
-  <BottomBar />
 </main>
 
 <style>
@@ -1587,6 +1700,22 @@
     overflow: hidden;
     background: var(--color-bg);
     color: var(--color-text);
+  }
+
+  .sessions-region {
+    display: grid;
+    height: 100%;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .sessions-list {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .top-bar {

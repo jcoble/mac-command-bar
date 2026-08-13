@@ -14,7 +14,6 @@
    * reacts to the setting. That way the settings dialog and these buttons cannot
    * disagree, and the choice survives a restart.
    */
-  import PanelRight from '@lucide/svelte/icons/panel-right';
   import X from '@lucide/svelte/icons/x';
 
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
@@ -42,15 +41,6 @@
 <div class="dock-slot">
   <ProblemsPanel>
     {#snippet headerEnd()}
-      <button
-        class="dock-action"
-        type="button"
-        title="Show the Problems list in the tool column on the right instead"
-        onclick={() => moveProblems('right')}
-      >
-        <PanelRight size={13} strokeWidth={1.6} />
-        Move to the right side
-      </button>
       <button
         class="dock-action"
         type="button"

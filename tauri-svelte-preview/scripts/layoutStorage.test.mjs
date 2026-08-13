@@ -8,7 +8,7 @@ import {
   paneviewPanelIds,
   panelSetMatches,
   CENTER_LAYOUT_KEY,
-  CENTER_LAYOUT_KEY_V4
+  GRID_LAYOUT_KEY
 } from '../src/lib/shell/layout/layoutStorage.ts';
 import {
   SIDE_PANE_LAYOUT_KEY,
@@ -193,32 +193,37 @@ function memoryStorage(initial = {}) {
   assert.deepEqual(loadLayout(storage, SIDE_PANE_LAYOUT_KEY), payload);
 }
 
-// The center roster bump is exact-set based: the current v5 roster restores
-// unchanged, the v4 five-panel roster is the only eligible migration source, and any
-// partial/extra set falls back to defaults in centerDock.
+// Both roster bumps are exact-set based: a stored layout is restored only when
+// its panel set is exactly the current one, and anything else — including every
+// older roster — falls back to the defaults rather than being translated.
 {
-  assert.equal(CENTER_LAYOUT_KEY_V4, 'mac-command-bar.next.center-layout-v4');
-  assert.equal(CENTER_LAYOUT_KEY, 'mac-command-bar.next.center-layout-v5');
+  assert.equal(GRID_LAYOUT_KEY, 'mac-command-bar.next.grid-layout-v3');
+  assert.equal(CENTER_LAYOUT_KEY, 'mac-command-bar.next.center-layout-v6');
+  assert.equal(
+    panelSetMatches(['session', 'editor', 'diff'], ['diff', 'editor', 'session']),
+    true,
+    'the current center roster is an exact set, regardless of stored order'
+  );
   assert.equal(
     panelSetMatches(
       ['session', 'editor', 'browser', 'diff', 'session-library', 'agents'],
-      ['agents', 'session-library', 'diff', 'browser', 'editor', 'session']
+      ['session', 'editor', 'diff']
     ),
-    true,
-    'the v5 roster is an exact set, regardless of stored order'
+    false,
+    'the retired six-panel roster is not restored into the three-panel center'
+  );
+  assert.equal(
+    panelSetMatches(['session', 'editor'], ['session', 'editor', 'diff']),
+    false,
+    'a partial center roster must fall back safely'
   );
   assert.equal(
     panelSetMatches(
-      ['session', 'editor', 'browser', 'diff', 'session-library'],
-      ['session', 'editor', 'browser', 'diff', 'session-library']
+      ['sessions', 'center', 'tools', 'activity', 'dock'],
+      ['sessions', 'center', 'tools', 'dock']
     ),
-    true,
-    'the v4 roster is an exact migration source'
-  );
-  assert.equal(
-    panelSetMatches(['session', 'editor', 'browser'], ['session', 'editor', 'browser', 'diff']),
     false,
-    'a partial center roster must fall back safely'
+    'a grid layout still naming the deleted far-right rail must fall back safely'
   );
 }
 

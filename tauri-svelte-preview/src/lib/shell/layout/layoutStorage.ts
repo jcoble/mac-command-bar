@@ -15,33 +15,25 @@ export interface LayoutStorage {
 }
 
 /**
- * Bumped to `-v2` when the shell's regions were rearranged: the sessions list
- * took a column of its own down the left, every tool view moved to a column on
- * the right, and the icon strip moved to the far right edge. A layout saved
- * under the old key describes four regions that no longer exist by those names,
- * with the sizes and the left-to-right order of the old arrangement. There is
- * no honest way to translate one into the other — the old layout says nothing
- * about how wide the user wants two columns that were never there — so it is
- * not migrated. It is left where it is, harmless and unread, and the new
- * arrangement starts from its defaults.
+ * Bumped to `-v3` when the far-right icon rail was deleted and the shell went
+ * down to three columns plus the bottom dock. A layout saved under an older key
+ * describes a region that no longer exists, and restoring it would put the grid
+ * back together around a column nothing draws. There is no honest way to
+ * translate one into the other — the old layout says nothing about how wide the
+ * user wants a column that was never there — so it is not migrated. It is left
+ * where it is, harmless and unread, and the new arrangement starts from its
+ * defaults. The same treatment `-v2` gave the arrangement before it.
  */
-export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout-v2';
-/**
- * The previous center roster. `centerDock.ts` reads this key only when its
- * payload is the exact five-panel roster it knows how to extend with Agents;
- * malformed, partial, or unrelated layouts are ignored. Keeping the old key
- * named makes the migration explicit without introducing another storage-key
- * family.
- */
-export const CENTER_LAYOUT_KEY_V4 = 'mac-command-bar.next.center-layout-v4';
+export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout-v3';
 
 /**
- * Bumped to `-v5` when Agents joined the center roster. The current key is
- * restored only when its panel set is exact; the v4 key is migrated by adding
- * the new tab through Dockview so the user's existing groups, sizes, order,
- * and active panel survive the roster change.
+ * Bumped to `-v6` when the center pane went down to Session, Editor and Diff.
+ * The browser, the session history and the agent list are panels of the right
+ * column now, so an older payload names three tabs the center no longer has.
+ * A layout is restored only when its panel set is exact, which those are not,
+ * so they are left where they are and the center opens from its defaults.
  */
-export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v5';
+export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v6';
 
 export function loadLayout<T>(storage: LayoutStorage, key: string): T | null {
   try {

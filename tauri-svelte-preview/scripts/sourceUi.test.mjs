@@ -41,20 +41,19 @@ assert.doesNotMatch(
   'The route should not duplicate the source browser stack style owned by Activity Files'
 );
 
-assert.match(
-  nextPageSource,
-  /function handleCenterPanelShown\(id: string\): void \{[\s\S]*?if \(id === ['"]browser['"]\) \{[\s\S]*?openSessionBrowserOverlay\(rail\.activeOwnedId\)[\s\S]*?showCenterPanel\(['"]session['"]\)/,
-  'The center Browser entry should open the active session overlay and return to Session'
+const browserPanelSource = readFileSync(
+  new URL('../src/lib/shell/panels/browser/BrowserPanel.svelte', import.meta.url),
+  'utf8'
 );
 assert.match(
-  nextPageSource,
-  /<div class="browser-center-proxy"[^>]*data-testid="browser-center-proxy"/,
-  'The center Browser tab should render a proxy host rather than a second browser surface'
+  browserPanelSource,
+  /openSessionBrowserOverlay\(ownedId\)/,
+  'The Browser panel should open the one session-owned overlay rather than a second browser surface'
 );
 assert.doesNotMatch(
   nextPageSource,
-  /BrowserPanel|browserInputUrl|openRuntimeContextInBrowserDock|aria-label="Browser dock"/,
-  'The consolidated shell should not retain the retired embedded browser dock'
+  /browser-center-proxy|browserInputUrl|openRuntimeContextInBrowserDock|aria-label="Browser dock"/,
+  'The consolidated shell should not retain the retired embedded browser dock or its center proxy'
 );
 assert.match(
   centerDockSource,
@@ -63,7 +62,7 @@ assert.match(
 );
 assert.match(
   shellOverlaysSource,
-  /<SessionBrowserOverlay\s+onClose=\{onSessionBrowserClose\}\s*\/>/,
+  /<SessionBrowserOverlay\s*\/>/,
   'The global overlay layer should mount one session-owned browser'
 );
 assert.match(

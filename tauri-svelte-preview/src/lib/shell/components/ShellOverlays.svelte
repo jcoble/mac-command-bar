@@ -18,7 +18,9 @@
   import SessionBrowserOverlay from '$lib/shell/browser/SessionBrowserOverlay.svelte';
   import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
   import { invokeCounts } from '$lib/shell/devInvokeCounter.svelte';
+  import ResourceManagerPanel from '$lib/shell/resources/ResourceManagerPanel.svelte';
   import ResourcePopover from '$lib/shell/resources/ResourcePopover.svelte';
+  import { resourceManagerState } from '$lib/shell/resources/resourceSampleStore.svelte';
   import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import type { ProblemsLocation } from '$lib/settingsStore.svelte';
   import type {
@@ -26,14 +28,10 @@
     ThreadStartRequest
   } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
-    RAIL_UTILITY_REQUEST_EVENT,
-    RAIL_UTILITY_STATE_EVENT,
-    isRailUtilityRequest,
-    railUtilityAnchorStyle,
-    type RailUtilityAnchor,
-    type RailUtilityId,
-    type RailUtilityRequest
-  } from './railUtilityEvents';
+    utilityAnchorStyle,
+    type UtilityAnchor,
+    type UtilityId
+  } from './utilityStrip';
 
   interface Props {
     /** Put every panel back where it started. */
@@ -52,7 +50,9 @@
     /** The user moved the Problems list from the settings dialog, which lives
      * here; the page is what opens or closes the strip along the bottom. */
     onProblemsLocationChange?: (location: ProblemsLocation) => void;
-    onSessionBrowserClose?: () => void;
+    /** One of the two bottom-strip surfaces opened or closed. The strip draws
+     * its own button as on or off from this. */
+    onUtilityStateChange?: (id: UtilityId, open: boolean) => void;
   }
   let {
     onResetLayout,
@@ -62,7 +62,7 @@
     newSessionRoots,
     message,
     onProblemsLocationChange,
-    onSessionBrowserClose
+    onUtilityStateChange
   }: Props = $props();
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
@@ -76,58 +76,55 @@
   } | null = null;
   let resourcePopoverHost: HTMLDivElement | null = null;
   let usagePopoverHost: HTMLDivElement | null = null;
-  let resourceAnchor = $state<RailUtilityAnchor | null>(null);
-  let usageAnchor = $state<RailUtilityAnchor | null>(null);
+  let resourceAnchor = $state<UtilityAnchor | null>(null);
+  let usageAnchor = $state<UtilityAnchor | null>(null);
 
-  function popoverHost(id: RailUtilityId): HTMLDivElement | null {
+  function popoverHost(id: UtilityId): HTMLDivElement | null {
     return id === 'resources' ? resourcePopoverHost : usagePopoverHost;
   }
 
-  function popoverTrigger(id: RailUtilityId): HTMLButtonElement | null {
+  function popoverTrigger(id: UtilityId): HTMLButtonElement | null {
     return popoverHost(id)?.querySelector<HTMLButtonElement>('.trigger') ?? null;
   }
 
-  function publishUtilityState(id: RailUtilityId, trigger: HTMLButtonElement): void {
-    window.dispatchEvent(new CustomEvent(RAIL_UTILITY_STATE_EVENT, {
-      detail: { id, open: trigger.getAttribute('aria-expanded') === 'true' }
-    }));
-  }
-
-  function observeUtilityState(id: RailUtilityId): () => void {
+  /** Watch one surface's own trigger and report whether it is open, so the
+   * bottom strip's button can read as on without owning that state itself. */
+  function observeUtilityState(id: UtilityId): () => void {
     const trigger = popoverTrigger(id);
     if (!trigger) return () => {};
     trigger.tabIndex = -1;
     trigger.setAttribute('aria-hidden', 'true');
-    const observer = new MutationObserver(() => publishUtilityState(id, trigger));
+    const report = (): void =>
+      onUtilityStateChange?.(id, trigger.getAttribute('aria-expanded') === 'true');
+    const observer = new MutationObserver(report);
     observer.observe(trigger, { attributes: true, attributeFilter: ['aria-expanded'] });
-    publishUtilityState(id, trigger);
+    report();
     return () => observer.disconnect();
   }
 
-  /** Rail controls and overlay owners live in separate shell regions. Anchor
-   * the owner first, then toggle its existing trigger after Svelte has applied
-   * the fixed screen rectangle. */
-  async function openRailUtility(request: RailUtilityRequest): Promise<void> {
-    if (request.id === 'resources') resourceAnchor = request.anchor;
-    else usageAnchor = request.anchor;
-    await tick();
-    popoverTrigger(request.id)?.click();
-  }
-
   onMount(() => {
-    const handleRailUtilityRequest = (event: Event): void => {
-      if (!(event instanceof CustomEvent) || !isRailUtilityRequest(event.detail)) return;
-      void openRailUtility(event.detail);
-    };
-    window.addEventListener(RAIL_UTILITY_REQUEST_EVENT, handleRailUtilityRequest);
     const stopObservingResources = observeUtilityState('resources');
     const stopObservingUsage = observeUtilityState('usage');
     return () => {
-      window.removeEventListener(RAIL_UTILITY_REQUEST_EVENT, handleRailUtilityRequest);
       stopObservingResources();
       stopObservingUsage();
     };
   });
+
+  /**
+   * Open one of the two bottom-strip surfaces from outside.
+   *
+   * The strip is inside the layout and these surfaces are mounted out here,
+   * above it, so a card cannot be clipped by the column it was opened from.
+   * The anchor is applied FIRST and the surface's own trigger clicked after
+   * Svelte has written the rectangle, or the card opens where the last one was.
+   */
+  export async function openUtility(id: UtilityId, anchor: UtilityAnchor): Promise<void> {
+    if (id === 'resources') resourceAnchor = anchor;
+    else usageAnchor = anchor;
+    await tick();
+    popoverTrigger(id)?.click();
+  }
 
   /** Open the settings dialog from outside — the gear on the activity bar is
    * over in the left column, and the dialog lives here. Same shape as
@@ -157,19 +154,24 @@
 <ThreadStartHost bind:this={newSessionHost} onStart={onStartNewSession} />
 <!-- The session's own browser, over the whole window including the sessions
      column. It reads the active session itself and takes no props. -->
-<SessionBrowserOverlay onClose={onSessionBrowserClose} />
+<SessionBrowserOverlay />
 <AssistanceHost />
 <div
   bind:this={resourcePopoverHost}
   class="rail-popover-host"
-  style={resourceAnchor ? railUtilityAnchorStyle(resourceAnchor) : undefined}
+  style={resourceAnchor ? utilityAnchorStyle(resourceAnchor) : undefined}
 >
   <ResourcePopover />
 </div>
+<!-- The Resource Manager is a window-anchored sheet rather than a card beside
+     the button, so it is mounted plainly rather than in a popover host. -->
+{#if resourceManagerState.open}
+  <ResourceManagerPanel />
+{/if}
 <div
   bind:this={usagePopoverHost}
   class="rail-popover-host"
-  style={usageAnchor ? railUtilityAnchorStyle(usageAnchor) : undefined}
+  style={usageAnchor ? utilityAnchorStyle(usageAnchor) : undefined}
 >
   <UsagePopover />
 </div>
@@ -195,8 +197,8 @@
 <style>
   /* Resource and quota state stay with their existing components, but the
      mounts live above Dockview so inward-opening content cannot be clipped by
-     the rail's fixed-width Gridview cell. The rail supplies the exact button
-     rectangle before each toggle. */
+     the right column's Gridview cell. The bottom strip supplies the exact
+     button rectangle before each toggle. */
   .rail-popover-host {
     position: fixed;
     z-index: 70;

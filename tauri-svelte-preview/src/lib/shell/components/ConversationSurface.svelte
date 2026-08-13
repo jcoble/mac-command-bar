@@ -130,6 +130,14 @@
   let localTurnActive = $state(false);
   let localTurnStarted = $state(false);
   let composerHeight = $state(0);
+  let composer = $state<{ focus(): void } | null>(null);
+
+  /** Put the caret in the prompt box. The page calls this when a panel hands
+   * the composer something — an attachment, a line of text — so the reader ends
+   * up typing beside it rather than hunting for the box. */
+  export function focusComposer(): void {
+    composer?.focus();
+  }
 
   $effect(() => {
     if (!localTurnActive) {
@@ -394,6 +402,7 @@
       />
       {#if !conversation.selectedChildId}
         <ConversationComposer
+          bind:this={composer}
           provider={active.agent}
           draft={conversation.draft}
           attachments={conversation.attachments}
