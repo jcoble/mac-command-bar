@@ -12,11 +12,18 @@
    * Two of those rows can act, and both act only through a dialog that names
    * the exact thing: the process ids about to be signalled, or the folder about
    * to be removed. Nothing here ever stops or removes anything on its own.
+   *
+   * The Playwright card sits at the bottom for the same reason: browsers left
+   * behind by an interrupted test run are machine-wide, look exactly like the
+   * user's own Chrome in Activity Monitor, and are the thing people come to this
+   * panel to find.
    */
   import Square from '@lucide/svelte/icons/square';
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
+
+  import PlaywrightCard from '$lib/shell/components/processes/PlaywrightCard.svelte';
 
   import ResourceConfirmDialog from './ResourceConfirmDialog.svelte';
   import Sparkline from './Sparkline.svelte';
@@ -363,6 +370,10 @@
         {/if}
       {/if}
     </section>
+
+    <section class="playwright-group" aria-label="Playwright processes">
+      <PlaywrightCard />
+    </section>
   </div>
 </dialog>
 
@@ -454,7 +465,7 @@
   .column-headings .trend { text-align: left; padding-left: 4px; }
   .manager-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
 
-  .workspace-group + .workspace-group, .app-group, .disk-group { border-top: 1px solid var(--color-border); }
+  .workspace-group + .workspace-group, .app-group, .disk-group, .playwright-group { border-top: 1px solid var(--color-border); }
   .row-shell { position: relative; }
   .tree-row { box-sizing: border-box; min-height: 34px; width: 100%; padding: 5px 40px 5px 12px; }
   button.tree-row { border: 0; text-align: left; color: inherit; cursor: pointer; }

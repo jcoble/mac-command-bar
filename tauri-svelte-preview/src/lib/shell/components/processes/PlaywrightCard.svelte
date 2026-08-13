@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * PlaywrightCard.svelte — the "Playwright processes" card in the /next context
-   * region.
+   * PlaywrightCard.svelte — the "Playwright processes" card at the bottom of the
+   * Resources panel.
    *
    * THE PROBLEM IT SOLVES
    * When a Playwright run or an agent's browser session is interrupted, its
@@ -15,15 +15,11 @@
    * the desktop side only signals process ids it listed in the same call.
    *
    * SHAPE
-   * NO props, NO IO at mount, NO `$effect` — the same contract every other card
-   * in this region keeps. It renders an inert line until the shell calls
-   * `activate()` on `playwrightService`; after that the only things that reach
-   * the backend are the refresh button and the two stop buttons, each behind a
-   * confirmation dialog.
-   *
-   * The chrome (card head, chips, row rhythm) is deliberately styled to match
-   * `ContextPanel.svelte`, so this card reads as one more section of the same
-   * panel rather than a visitor.
+   * NO props, NO IO at mount, NO `$effect`. It renders an inert line until the
+   * shell calls `activate()` on `playwrightService`, which the Resources panel
+   * does when it opens; after that the only things that reach the backend are
+   * the refresh button and the two stop buttons, each behind a confirmation
+   * dialog.
    */
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Drama from '@lucide/svelte/icons/drama';

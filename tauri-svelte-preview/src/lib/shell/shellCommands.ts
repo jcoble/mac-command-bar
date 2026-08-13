@@ -19,6 +19,8 @@ import { gitPanel } from './git/gitPanelStore.svelte.ts';
 import { gitService } from './git/gitService.ts';
 import type { SidebarViewId } from './layout/sidebarViews.ts';
 import { registerCommands } from './palette/commandRegistry.ts';
+import { activate as activatePlaywright } from './processes/playwrightService.ts';
+import { setResourceManagerOpen } from './resources/resourceSampleStore.svelte.ts';
 import { refreshProblemsForSelection } from './shellPanels.ts';
 import { refreshStacks } from './stacks/stackService.ts';
 
@@ -133,6 +135,15 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       detail: 'Give up on the file list that is still being read',
       disabled: () => !explorer.scanning,
       perform: () => stopScan()
+    },
+    {
+      id: 'playwright-show',
+      label: 'Show leftover browser processes',
+      detail: 'Open Resources and look for browsers a test run left running',
+      perform: () => {
+        setResourceManagerOpen(true);
+        activatePlaywright();
+      }
     },
     {
       id: 'worktrees-clean-up',

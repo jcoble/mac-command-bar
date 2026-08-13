@@ -1,10 +1,10 @@
 /**
  * playwrightService.ts — the ONLY place the Playwright card talks to the backend.
  *
- * Imperative, like `contextService.ts`: nothing here runs from an `$effect`,
- * nothing runs at import, and nothing polls. Reads happen exactly twice:
+ * Imperative: nothing here runs from an `$effect`, nothing runs at import, and
+ * nothing polls. Reads happen exactly twice:
  *
- *  - the shell calls `activate()` when the context region is first shown;
+ *  - the shell calls `activate()` when the Resources panel is opened;
  *  - the user presses refresh on the card, or stops something (a stop always
  *    re-reads, because the stop result lists what was ASKED to stop, not what
  *    survived).
@@ -55,7 +55,7 @@ function describeError(error: unknown): string {
 
 /**
  * Show the card and read the process list — once. Calling it again does no
- * work, so the shell may call it every time the context region becomes visible.
+ * work, so the shell may call it every time the Resources panel is opened.
  */
 export function activate(): void {
   markPlaywrightActivated();

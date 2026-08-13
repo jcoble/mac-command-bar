@@ -21,6 +21,7 @@
   import ChartNoAxesCombined from '@lucide/svelte/icons/chart-no-axes-combined';
   import Cpu from '@lucide/svelte/icons/cpu';
 
+  import { activate as activatePlaywright } from '$lib/shell/processes/playwrightService';
   import {
     formatResourceBytes,
     formatResourceCpu
@@ -72,6 +73,10 @@
   // shell waking every three seconds.
   $effect(() => {
     if (!resourceManagerState.open) return;
+    // The Playwright card lives at the bottom of this panel. Its own read runs
+    // once and then only when somebody presses its refresh, so it is switched
+    // on here rather than joining the three-second poll below.
+    activatePlaywright();
     void refreshResourceSample();
     const pollTimer = window.setInterval(() => void refreshResourceSample(), 3_000);
     return () => window.clearInterval(pollTimer);
