@@ -22,7 +22,7 @@
     label: string;
     children: Snippet;
     tone?: HoverActionTone;
-    /** `xs` is 24px and the default here; a roomier row may use `sm` (28px). */
+    /** `sm` (28px) is the default, matching the approved mockup; `xs` (24px) is for tight rows. */
     size?: 'xs' | 'sm';
     disabled?: boolean;
     class?: string;
@@ -34,7 +34,7 @@
     label,
     children,
     tone = 'default',
-    size = 'xs',
+    size = 'sm',
     disabled = false,
     class: className,
     'data-testid': dataTestId,
@@ -62,7 +62,7 @@
   side="bottom"
   data-testid={dataTestId}
   class={cn(
-    'text-[var(--color-text-2)] rounded-md bg-transparent shadow-none',
+    'text-[var(--color-text)] rounded-md bg-transparent shadow-none',
     TONES[tone],
     className
   )}

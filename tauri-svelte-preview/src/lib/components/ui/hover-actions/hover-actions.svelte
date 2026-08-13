@@ -43,7 +43,7 @@
   data-testid={dataTestId}
   aria-label={label}
   class={cn(
-    'inline-flex items-center gap-px opacity-0 pointer-events-none',
+    'inline-flex items-center gap-1 opacity-0 pointer-events-none',
     'group-hover:opacity-100 group-hover:pointer-events-auto',
     'group-focus-within:opacity-100 group-focus-within:pointer-events-auto',
     // Fades and settles in from the right, once, in 150ms. Opacity and
