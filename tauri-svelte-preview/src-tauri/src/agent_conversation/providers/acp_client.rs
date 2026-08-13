@@ -43,8 +43,17 @@ pub struct AcpTransport {
     closed: std::sync::atomic::AtomicBool,
     writer: tokio::sync::Mutex<SidecarWriteHalf>,
     process: Mutex<Option<SidecarProcessHandle>>,
-    prompt_updates: Mutex<PromptUpdateRoute>,
-    conversation_config: Mutex<AgentConversationConfigState>,
+    sessions: Arc<Mutex<HashMap<SessionId, AcpSessionState>>>,
+}
+
+pub type SessionId = String;
+
+struct AcpSessionState {
+    native_session_id: SessionId,
+    commands: Vec<AgentCommandDescriptor>,
+    config: AgentConversationConfigState,
+    config_protocol: ConversationConfigProtocol,
+    prompt_updates: PromptUpdateRoute,
 }
 
 #[derive(Default)]
@@ -73,8 +82,7 @@ impl AcpTransport {
             closed: std::sync::atomic::AtomicBool::new(false),
             writer: tokio::sync::Mutex::new(writer),
             process: Mutex::new(Some(process_handle)),
-            prompt_updates: Mutex::new(PromptUpdateRoute::default()),
-            conversation_config: Mutex::new(AgentConversationConfigState::default()),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         });
         let reader_transport = Arc::downgrade(&transport);
         tokio::spawn(async move {
@@ -147,46 +155,27 @@ impl AcpTransport {
             .and_then(|value| value.as_ref().and_then(SidecarProcessHandle::process_id))
     }
 
-    fn conversation_config(&self) -> AgentConversationConfigState {
-        self.conversation_config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn replace_conversation_config(&self, config: AgentConversationConfigState) {
-        *self
-            .conversation_config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
-    }
-
-    fn set_conversation_model(&self, model_id: String) {
-        self.conversation_config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .model = Some(model_id);
-    }
-
-    fn set_conversation_mode(&self, mode_id: String) {
-        self.conversation_config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .approval_policy = Some(mode_id);
+    fn sessions(&self) -> Arc<Mutex<HashMap<SessionId, AcpSessionState>>> {
+        Arc::clone(&self.sessions)
     }
 
     fn register_prompt_updates(
         self: &Arc<Self>,
+        session_id: &str,
         turn_id: String,
     ) -> Result<(mpsc::UnboundedReceiver<Value>, PromptUpdateRegistration), AgentRuntimeError> {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let mut prompt_updates = self
-            .prompt_updates
+        let mut sessions = self
+            .sessions
             .lock()
             .map_err(|_| transport_error("prompt update queue is unavailable".to_string()))?;
+        let prompt_updates = &mut sessions
+            .get_mut(session_id)
+            .ok_or_else(|| session_not_found(session_id))?
+            .prompt_updates;
         if prompt_updates.active.is_some() {
             return Err(transport_error(
-                "ACP prompt aggregation is already active".to_string(),
+                "ACP prompt aggregation is already active for this session".to_string(),
             ));
         }
         prompt_updates.active = Some(ActivePromptUpdateRoute {
@@ -198,14 +187,26 @@ impl AcpTransport {
             receiver,
             PromptUpdateRegistration {
                 transport: Arc::clone(self),
+                session_id: session_id.to_string(),
                 turn_id,
                 active: true,
             },
         ))
     }
 
-    fn unregister_prompt_updates(&self, turn_id: &str, response_turn_id: Option<&str>) {
-        if let Ok(mut prompt_updates) = self.prompt_updates.lock() {
+    fn unregister_prompt_updates(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        response_turn_id: Option<&str>,
+    ) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            let Some(prompt_updates) = sessions
+                .get_mut(session_id)
+                .map(|state| &mut state.prompt_updates)
+            else {
+                return;
+            };
             let Some(active) = prompt_updates.active.take() else {
                 return;
             };
@@ -213,12 +214,12 @@ impl AcpTransport {
                 prompt_updates.active = Some(active);
                 return;
             }
-            Self::remember_completed_turn_id(&mut prompt_updates, turn_id);
+            Self::remember_completed_turn_id(prompt_updates, turn_id);
             if let Some(response_turn_id) = response_turn_id {
-                Self::remember_completed_turn_id(&mut prompt_updates, response_turn_id);
+                Self::remember_completed_turn_id(prompt_updates, response_turn_id);
             }
             for observed_turn_id in active.observed_turn_ids {
-                Self::remember_completed_turn_id(&mut prompt_updates, &observed_turn_id);
+                Self::remember_completed_turn_id(prompt_updates, &observed_turn_id);
             }
         }
     }
@@ -229,7 +230,16 @@ impl AcpTransport {
     /// long enough to drop late updates after the queue is unregistered.
     fn send_prompt_update(&self, params: Value) -> bool {
         let turn_id = prompt_update_turn_id(&params).map(str::to_string);
-        if let Ok(mut prompt_updates) = self.prompt_updates.lock() {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            let routed_session_id =
+                resolve_update_session_id(&sessions, &params, turn_id.as_deref());
+            let Some(prompt_updates) = routed_session_id
+                .as_deref()
+                .and_then(|session_id| sessions.get_mut(session_id))
+                .map(|state| &mut state.prompt_updates)
+            else {
+                return false;
+            };
             if let Some(active) = prompt_updates.active.as_mut() {
                 if let Some(turn_id) = turn_id.as_deref() {
                     if !active
@@ -257,6 +267,24 @@ impl AcpTransport {
             }
         }
         false
+    }
+
+    fn capture_session_update(&self, params: &Value) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session_id =
+            resolve_update_session_id(&sessions, params, prompt_update_turn_id(params));
+        let Some(state) = session_id.and_then(|session_id| sessions.get_mut(&session_id)) else {
+            return;
+        };
+        if let Some(mode_id) = current_mode_update(params) {
+            state.config.approval_policy = Some(mode_id.to_string());
+        }
+        if let Some(commands) = available_commands_update(params) {
+            state.commands = commands;
+        }
     }
 
     fn remember_completed_turn_id(prompt_updates: &mut PromptUpdateRoute, turn_id: &str) {
@@ -302,6 +330,7 @@ struct PendingRequestGuard<'a> {
 
 struct PromptUpdateRegistration {
     transport: Arc<AcpTransport>,
+    session_id: SessionId,
     turn_id: String,
     active: bool,
 }
@@ -309,8 +338,11 @@ struct PromptUpdateRegistration {
 impl PromptUpdateRegistration {
     fn finish(&mut self, response_turn_id: Option<&str>) {
         if self.active {
-            self.transport
-                .unregister_prompt_updates(&self.turn_id, response_turn_id);
+            self.transport.unregister_prompt_updates(
+                &self.session_id,
+                &self.turn_id,
+                response_turn_id,
+            );
             self.active = false;
         }
     }
@@ -379,9 +411,7 @@ async fn reader_loop(
             (false, Some("session/update")) => {
                 let params = frame.get("params").cloned().unwrap_or(Value::Null);
                 if let Some(transport) = transport.upgrade() {
-                    if let Some(mode_id) = current_mode_update(&params) {
-                        transport.set_conversation_mode(mode_id.to_string());
-                    }
+                    transport.capture_session_update(&params);
                     if transport.send_prompt_update(params.clone()) {
                         continue;
                     }
@@ -407,9 +437,9 @@ async fn reader_loop(
 pub struct AcpClient {
     transport: Arc<AcpTransport>,
     inbound: Option<mpsc::UnboundedReceiver<AcpInbound>>,
-    native_session_id: Option<String>,
+    sessions: Arc<Mutex<HashMap<SessionId, AcpSessionState>>>,
+    primary_session_id: Option<SessionId>,
     provider: Option<AgentConversationProvider>,
-    conversation_config_protocol: ConversationConfigProtocol,
 }
 
 const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 3] = ["opus", "claude-opus-5", "claude-fable-5"];
@@ -439,12 +469,13 @@ impl AcpClient {
         let process = SidecarProcess::spawn_with_environment(manifest, cwd, owned_id, environment)
             .map_err(|message| AgentRuntimeError::new("sidecar-spawn", message))?;
         let (transport, inbound) = AcpTransport::start(process);
+        let sessions = transport.sessions();
         Ok(Self {
             transport,
             inbound: Some(inbound),
-            native_session_id: None,
+            sessions,
+            primary_session_id: None,
             provider: None,
-            conversation_config_protocol: ConversationConfigProtocol::Metadata,
         })
     }
 
@@ -548,6 +579,12 @@ impl AcpClient {
         self.start_session("session/new", &request, None).await
     }
 
+    /// Start an additional native session without changing the primary session.
+    #[allow(dead_code)] // Track B calls this after the manager multiplexing cutover.
+    pub async fn new_session_multi(&mut self, cwd: &Path) -> Result<SessionId, AgentRuntimeError> {
+        Ok(self.new_session(cwd).await?.native_session_id)
+    }
+
     pub async fn resume_session(
         &mut self,
         cwd: &Path,
@@ -556,6 +593,19 @@ impl AcpClient {
         let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), cwd);
         self.start_session("session/resume", &request, Some(native_session_id))
             .await
+    }
+
+    /// Resume an additional native session without changing the primary session.
+    #[allow(dead_code)] // Track B calls this after the manager multiplexing cutover.
+    pub async fn resume_session_multi(
+        &mut self,
+        cwd: &Path,
+        native_session_id: &str,
+    ) -> Result<SessionId, AgentRuntimeError> {
+        Ok(self
+            .resume_session(cwd, native_session_id)
+            .await?
+            .native_session_id)
     }
 
     pub async fn load_session(
@@ -580,18 +630,28 @@ impl AcpClient {
         prompt: AgentPrompt,
     ) -> Result<GeneratedText, AgentRuntimeError> {
         let session_id = self.session_id()?;
+        self.prompt_on(&session_id, prompt).await
+    }
+
+    /// Send a one-shot prompt to a specific native session.
+    pub async fn prompt_on(
+        &self,
+        session_id: &str,
+        prompt: AgentPrompt,
+    ) -> Result<GeneratedText, AgentRuntimeError> {
+        self.require_session(session_id)?;
         let mut blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(prompt.text))];
         blocks.extend(prompt.images.into_iter().map(|image| {
             acp::ContentBlock::Image(acp::ImageContent::new(image.data, image.mime_type))
         }));
-        let params = serde_json::to_value(acp::PromptRequest::new(session_id, blocks))
+        let params = serde_json::to_value(acp::PromptRequest::new(session_id.to_string(), blocks))
             .map_err(serialization_error)?;
         let one_shot_turn_id = format!("turn-{}", uuid::Uuid::new_v4());
         let mut params = params;
         insert_prompt_turn_id(&mut params, &one_shot_turn_id)?;
         let (mut updates, mut registration) = self
             .transport
-            .register_prompt_updates(one_shot_turn_id.clone())?;
+            .register_prompt_updates(session_id, one_shot_turn_id.clone())?;
         let mut text = String::new();
         let mut turn_id = None;
         let response = self.transport.request("session/prompt", params).await;
@@ -627,10 +687,12 @@ impl AcpClient {
         option_id: &str,
         value: Value,
     ) -> Result<Vec<AgentConfigOption>, AgentRuntimeError> {
+        let session_id = self.session_id()?;
         let result = self
+            .transport
             .request(
                 "session/set_config_option",
-                &json!({ "sessionId": self.session_id()?, "configId": option_id, "value": value }),
+                json!({ "sessionId": session_id, "configId": option_id, "value": value }),
             )
             .await?;
         Ok(parse_config_options(
@@ -644,26 +706,43 @@ impl AcpClient {
         &mut self,
         update: &AgentConversationConfigUpdate,
     ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
-        if self.conversation_config_protocol == ConversationConfigProtocol::Standard {
-            return self.set_standard_conversation_config(update).await;
+        let session_id = self.session_id()?;
+        self.set_conversation_config_on(&session_id, update).await
+    }
+
+    /// Update conversation configuration on a specific native session.
+    pub async fn set_conversation_config_on(
+        &self,
+        session_id: &str,
+        update: &AgentConversationConfigUpdate,
+    ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+        let protocol = self.require_session(session_id)?.config_protocol;
+        if protocol == ConversationConfigProtocol::Standard {
+            return self
+                .set_standard_conversation_config_on(session_id, update)
+                .await;
         }
         let mut params = serde_json::to_value(update)
             .map_err(serialization_error)?
             .as_object()
             .cloned()
             .ok_or_else(|| AgentRuntimeError::new("serialization", "Config update is invalid"))?;
-        params.insert("sessionId".to_string(), Value::String(self.session_id()?));
+        params.insert(
+            "sessionId".to_string(),
+            Value::String(session_id.to_string()),
+        );
         let result = self
             .transport
             .request("session/set_config_option", Value::Object(params))
             .await?;
         let config = parse_conversation_config(Some(&result))?;
-        self.transport.replace_conversation_config(config.clone());
+        self.replace_session_config(session_id, config.clone())?;
         Ok(config)
     }
 
-    async fn set_standard_conversation_config(
-        &mut self,
+    async fn set_standard_conversation_config_on(
+        &self,
+        session_id: &str,
         update: &AgentConversationConfigUpdate,
     ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
         if update.reasoning_effort.is_some() {
@@ -672,7 +751,6 @@ impl AcpClient {
                 "This ACP session does not expose a reasoning-effort control",
             ));
         }
-        let session_id = self.session_id()?;
         if let Some(model_id) = &update.model {
             self.transport
                 .request(
@@ -680,7 +758,7 @@ impl AcpClient {
                     json!({ "sessionId": session_id, "modelId": model_id }),
                 )
                 .await?;
-            self.transport.set_conversation_model(model_id.clone());
+            self.update_session_config(session_id, |config| config.model = Some(model_id.clone()))?;
         }
         if let Some(mode_id) = &update.approval_policy {
             self.transport
@@ -689,19 +767,70 @@ impl AcpClient {
                     json!({ "sessionId": session_id, "modeId": mode_id }),
                 )
                 .await?;
-            self.transport.set_conversation_mode(mode_id.clone());
+            self.update_session_config(session_id, |config| {
+                config.approval_policy = Some(mode_id.clone());
+            })?;
         }
-        Ok(self.transport.conversation_config())
+        Ok(self.require_session(session_id)?.config)
+    }
+
+    /// Select a model on a specific native session using its negotiated config protocol.
+    #[allow(dead_code)] // Track B calls this after the manager multiplexing cutover.
+    pub async fn set_model_on(
+        &self,
+        session_id: &str,
+        model_id: &str,
+    ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
+        self.set_conversation_config_on(
+            session_id,
+            &AgentConversationConfigUpdate {
+                model: Some(model_id.to_string()),
+                reasoning_effort: None,
+                approval_policy: None,
+            },
+        )
+        .await
     }
 
     pub async fn close(&mut self) -> Result<(), AgentRuntimeError> {
-        if let Some(session_id) = self.native_session_id.clone() {
+        let session_ids = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session_id in session_ids {
             let _ = self
                 .request("session/close", &acp::CloseSessionRequest::new(session_id))
                 .await;
         }
         self.transport.stop().await;
-        self.native_session_id = None;
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.primary_session_id = None;
+        Ok(())
+    }
+
+    /// Close one native session while leaving the shared adapter process alive.
+    #[allow(dead_code)] // Track B calls this after the manager multiplexing cutover.
+    pub async fn close_session(&mut self, session_id: &str) -> Result<(), AgentRuntimeError> {
+        self.require_session(session_id)?;
+        self.request(
+            "session/close",
+            &acp::CloseSessionRequest::new(session_id.to_string()),
+        )
+        .await?;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| transport_error("session state is unavailable".to_string()))?;
+        sessions.remove(session_id);
+        if self.primary_session_id.as_deref() == Some(session_id) {
+            self.primary_session_id = sessions.keys().next().cloned();
+        }
         Ok(())
     }
 
@@ -755,9 +884,22 @@ impl AcpClient {
                 .or_else(|| result.pointer("/_meta/availableCommands"))
                 .or_else(|| result.pointer("/_meta/available_commands")),
         );
-        self.native_session_id = Some(native_session_id.clone());
-        self.transport.replace_conversation_config(config.clone());
-        self.conversation_config_protocol = protocol;
+        self.sessions
+            .lock()
+            .map_err(|_| transport_error("session state is unavailable".to_string()))?
+            .insert(
+                native_session_id.clone(),
+                AcpSessionState {
+                    native_session_id: native_session_id.clone(),
+                    commands: commands.clone(),
+                    config: config.clone(),
+                    config_protocol: protocol,
+                    prompt_updates: PromptUpdateRoute::default(),
+                },
+            );
+        if self.primary_session_id.is_none() {
+            self.primary_session_id = Some(native_session_id.clone());
+        }
         Ok(StartedAgentSession {
             native_session_id,
             config,
@@ -775,10 +917,78 @@ impl AcpClient {
     }
 
     fn session_id(&self) -> Result<String, AgentRuntimeError> {
-        self.native_session_id.clone().ok_or_else(|| {
+        self.primary_session_id.clone().ok_or_else(|| {
             AgentRuntimeError::new("session-not-started", "ACP session has not started")
         })
     }
+
+    fn require_session(&self, session_id: &str) -> Result<AcpSessionSnapshot, AgentRuntimeError> {
+        self.sessions
+            .lock()
+            .map_err(|_| transport_error("session state is unavailable".to_string()))?
+            .get(session_id)
+            .map(AcpSessionSnapshot::from)
+            .ok_or_else(|| session_not_found(session_id))
+    }
+
+    fn replace_session_config(
+        &self,
+        session_id: &str,
+        config: AgentConversationConfigState,
+    ) -> Result<(), AgentRuntimeError> {
+        self.update_session_config(session_id, |current| *current = config)
+    }
+
+    fn update_session_config(
+        &self,
+        session_id: &str,
+        update: impl FnOnce(&mut AgentConversationConfigState),
+    ) -> Result<(), AgentRuntimeError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| transport_error("session state is unavailable".to_string()))?;
+        let state = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| session_not_found(session_id))?;
+        update(&mut state.config);
+        Ok(())
+    }
+
+    #[allow(dead_code)] // Track B reads this after the manager multiplexing cutover.
+    pub fn commands_on(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<AgentCommandDescriptor>, AgentRuntimeError> {
+        self.sessions
+            .lock()
+            .map_err(|_| transport_error("session state is unavailable".to_string()))?
+            .get(session_id)
+            .map(|state| state.commands.clone())
+            .ok_or_else(|| session_not_found(session_id))
+    }
+}
+
+struct AcpSessionSnapshot {
+    config: AgentConversationConfigState,
+    config_protocol: ConversationConfigProtocol,
+}
+
+impl From<&AcpSessionState> for AcpSessionSnapshot {
+    fn from(state: &AcpSessionState) -> Self {
+        debug_assert!(!state.native_session_id.is_empty());
+        Self {
+            config: state.config.clone(),
+            config_protocol: state.config_protocol,
+        }
+    }
+}
+
+fn session_not_found(session_id: &str) -> AgentRuntimeError {
+    AgentRuntimeError::new(
+        "session-not-started",
+        format!("ACP session {session_id} has not started"),
+    )
 }
 
 fn insert_prompt_turn_id(params: &mut Value, turn_id: &str) -> Result<(), AgentRuntimeError> {
@@ -873,6 +1083,76 @@ fn prompt_update_turn_id(params: &Value) -> Option<&str> {
                         .and_then(Value::as_str)
                 })
         })
+}
+
+fn update_session_id(params: &Value) -> Option<&str> {
+    params
+        .get("sessionId")
+        .or_else(|| params.get("session_id"))
+        .and_then(Value::as_str)
+}
+
+fn resolve_update_session_id(
+    sessions: &HashMap<SessionId, AcpSessionState>,
+    params: &Value,
+    turn_id: Option<&str>,
+) -> Option<SessionId> {
+    if let Some(session_id) = update_session_id(params) {
+        return Some(session_id.to_string());
+    }
+    if let Some(turn_id) = turn_id {
+        let mut matching_sessions = sessions
+            .iter()
+            .filter(|(_, state)| {
+                state.prompt_updates.active.as_ref().is_some_and(|active| {
+                    active.turn_id == turn_id
+                        || active
+                            .observed_turn_ids
+                            .iter()
+                            .any(|observed| observed == turn_id)
+                }) || state
+                    .prompt_updates
+                    .completed_turn_ids
+                    .iter()
+                    .any(|completed| completed == turn_id)
+            })
+            .map(|(session_id, _)| session_id.clone());
+        if let Some(only_match) = matching_sessions.next() {
+            if matching_sessions.next().is_none() {
+                return Some(only_match);
+            }
+        }
+    }
+    let mut active_sessions = sessions
+        .iter()
+        .filter(|(_, state)| state.prompt_updates.active.is_some())
+        .map(|(session_id, _)| session_id.clone());
+    if let Some(only_active) = active_sessions.next() {
+        if active_sessions.next().is_none() {
+            return Some(only_active);
+        }
+    }
+    (sessions.len() == 1)
+        .then(|| sessions.keys().next().cloned())
+        .flatten()
+}
+
+fn available_commands_update(params: &Value) -> Option<Vec<AgentCommandDescriptor>> {
+    let update = params
+        .get("update")
+        .or_else(|| params.get("sessionUpdate"))
+        .unwrap_or(params);
+    update
+        .get("sessionUpdate")
+        .or_else(|| update.get("session_update"))
+        .or_else(|| update.get("type"))
+        .and_then(Value::as_str)
+        .filter(|kind| *kind == "available_commands_update")?;
+    Some(parse_command_descriptors(
+        update
+            .get("availableCommands")
+            .or_else(|| update.get("available_commands")),
+    ))
 }
 
 fn current_mode_update(params: &Value) -> Option<&str> {
@@ -1051,6 +1331,7 @@ pub(crate) mod tests {
         let script = format!(
             r#"log={log}
 fixture={fixture}
+session_count=0
 if [ "${{MAX_THINKING_TOKENS+x}}" = "x" ]; then
   printf 'MAX_THINKING_TOKENS=%s\n' "$MAX_THINKING_TOKENS" >> "$log"
 else
@@ -1067,7 +1348,11 @@ while IFS= read -r line; do
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    fi ;;
     *'"method":"session/new"'*)
-      if [ "$fixture" = "command_capture" ]; then
+      if [ "$fixture" = "multiplex" ]; then
+        session_count=$((session_count + 1))
+        session_id="session-$session_count"
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s","availableCommands":[{{"name":"initial-%s"}}]}}}}\n' "$id" "$session_id" "$session_count"
+      elif [ "$fixture" = "command_capture" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","availableCommands":[{{"name":"initial","description":"Initial command","input":{{"hint":"path"}}}}]}}}}\n' "$id"
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"available_commands_update","availableCommands":[{{"name":"updated","description":"Updated command"}}]}}}}}}\n'
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"usage_update","used":120,"size":4096}}}}}}\n'
@@ -1095,8 +1380,28 @@ while IFS= read -r line; do
 		      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
     *'"method":"session/prompt"'*)
       turn=$(printf '%s\n' "$line" | sed -n 's/.*"turnId":"\([^"]*\)".*/\1/p')
+      session_id=$(printf '%s\n' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
       if [ -z "$turn" ]; then turn="turn-1"; fi
-      if [ "$fixture" = "dies_midturn" ]; then
+      if [ "$fixture" = "multiplex" ]; then
+        if [ "$session_id" = "session-1" ]; then
+          (
+            sleep 0.03
+            printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"session-1","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"AL"}},"turnId":"%s"}}}}}}\n' "$turn"
+            sleep 0.03
+            printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"session-1","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"PHA"}},"turnId":"%s"}}}}}}\n' "$turn"
+            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
+          ) &
+        else
+          (
+            sleep 0.01
+            printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"session-2","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"BR"}},"turnId":"%s"}}}}}}\n' "$turn"
+            printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"session-2","update":{{"sessionUpdate":"available_commands_update","availableCommands":[{{"name":"updated-2"}}]}}}}}}\n'
+            sleep 0.01
+            printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"session-2","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"AVO"}},"turnId":"%s"}}}}}}\n' "$turn"
+            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
+          ) &
+        fi
+      elif [ "$fixture" = "dies_midturn" ]; then
         exit 0
       elif [ "$fixture" = "pending_drop" ]; then
         sleep 1
@@ -1171,7 +1476,9 @@ while IFS= read -r line; do
     *'"method":"session/set_model"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/set_mode"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
-    *'"method":"session/close"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"; exit 0 ;;
+    *'"method":"session/close"'*)
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      if [ "$fixture" != "multiplex" ]; then exit 0; fi ;;
   esac
 done"#,
             log = shell_quote(log_path),
@@ -1568,6 +1875,11 @@ done"#,
             .unwrap();
         let started = client.resume_session(&root, "native-old").await.unwrap();
         assert_eq!(started.native_session_id, "resumed-session");
+        let resumed = client
+            .resume_session_multi(&root, "native-second")
+            .await
+            .unwrap();
+        assert_eq!(resumed, "resumed-session");
         client.close().await.unwrap();
         let frames = std::fs::read_to_string(log).unwrap();
         assert!(frames.contains("session/resume"));
@@ -1589,6 +1901,138 @@ done"#,
         let frames = std::fs::read_to_string(log).unwrap();
         assert!(frames.contains("session/load"));
         assert!(!frames.contains("session/resume"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_sessions_on_one_process_route_independently() {
+        let root = fixture_root();
+        let log = root.join("multiplex.jsonl");
+        let mut client =
+            AcpClient::spawn(&fixture_manifest_named(&log, "multiplex"), &root, "mux").unwrap();
+        client
+            .initialize(AgentConversationProvider::Codex)
+            .await
+            .unwrap();
+        let session_a = client.new_session_multi(&root).await.unwrap();
+        let session_b = client.new_session_multi(&root).await.unwrap();
+
+        let (alpha, bravo) = tokio::join!(
+            client.prompt_on(
+                &session_a,
+                AgentPrompt {
+                    text: "ALPHA".into(),
+                    images: Vec::new(),
+                }
+            ),
+            client.prompt_on(
+                &session_b,
+                AgentPrompt {
+                    text: "BRAVO".into(),
+                    images: Vec::new(),
+                }
+            )
+        );
+
+        assert_eq!(alpha.unwrap().text, "ALPHA");
+        assert_eq!(bravo.unwrap().text, "BRAVO");
+        client.close().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn second_session_new_does_not_clobber_primary() {
+        let root = fixture_root();
+        let log = root.join("primary.jsonl");
+        let mut client =
+            AcpClient::spawn(&fixture_manifest_named(&log, "multiplex"), &root, "primary").unwrap();
+        client
+            .initialize(AgentConversationProvider::Codex)
+            .await
+            .unwrap();
+        let primary = client.new_session(&root).await.unwrap();
+        let second = client.new_session_multi(&root).await.unwrap();
+        assert_ne!(primary.native_session_id, second);
+        let config = client.set_model_on(&second, "new").await.unwrap();
+        assert_eq!(config.model.as_deref(), Some("gpt-5.6-terra"));
+
+        let generated = client
+            .prompt_once(AgentPrompt {
+                text: "primary".into(),
+                images: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(generated.text, "ALPHA");
+        client.close().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn per_session_command_capture() {
+        let root = fixture_root();
+        let log = root.join("commands-multiplex.jsonl");
+        let mut client = AcpClient::spawn(
+            &fixture_manifest_named(&log, "multiplex"),
+            &root,
+            "commands-multiplex",
+        )
+        .unwrap();
+        client
+            .initialize(AgentConversationProvider::Codex)
+            .await
+            .unwrap();
+        let session_a = client.new_session_multi(&root).await.unwrap();
+        let session_b = client.new_session_multi(&root).await.unwrap();
+        client
+            .prompt_on(
+                &session_b,
+                AgentPrompt {
+                    text: "commands".into(),
+                    images: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(client.commands_on(&session_a).unwrap()[0].id, "initial-1");
+        assert_eq!(client.commands_on(&session_b).unwrap()[0].id, "updated-2");
+        client.close().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn close_one_session_keeps_the_other_alive() {
+        let root = fixture_root();
+        let log = root.join("close-one.jsonl");
+        let mut client = AcpClient::spawn(
+            &fixture_manifest_named(&log, "multiplex"),
+            &root,
+            "close-one",
+        )
+        .unwrap();
+        client
+            .initialize(AgentConversationProvider::Codex)
+            .await
+            .unwrap();
+        let session_a = client.new_session_multi(&root).await.unwrap();
+        let session_b = client.new_session_multi(&root).await.unwrap();
+
+        client.close_session(&session_a).await.unwrap();
+        let generated = client
+            .prompt_on(
+                &session_b,
+                AgentPrompt {
+                    text: "still alive".into(),
+                    images: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(generated.text, "BRAVO");
+        client.close().await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }
