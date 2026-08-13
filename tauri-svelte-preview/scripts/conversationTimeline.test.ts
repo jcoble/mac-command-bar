@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import {
+  conversationRenderWindow,
+  conversationTurnGroups,
   displayItemFromAgentItem,
   displayItemsFromConversationEvents,
+  formatWorkedFor,
+  type ConversationDisplayItem,
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
@@ -94,5 +98,100 @@ assert.deepEqual(remainingRichKinds.map((item) => item.kind), ['plan', 'tool', '
 assert.equal(remainingRichKinds[1].toolKind, 'file-edit');
 assert.equal(remainingRichKinds[1].state, 'completed');
 assert.equal(remainingRichKinds[1].diff, '@@ -1 +1 @@\n-old\n+new');
+
+const textItem = (
+  kind: 'user' | 'assistant' | 'reasoning',
+  itemId: string,
+  turnId: string | null,
+  timestampMs: number,
+  completed = true
+): ConversationDisplayItem => ({ kind, itemId, turnId, text: itemId, timestampMs, completed });
+
+const toolItem = (
+  itemId: string,
+  turnId: string,
+  timestampMs: number,
+  state: 'running' | 'completed' = 'completed'
+): ConversationDisplayItem => ({
+  kind: 'tool',
+  itemId,
+  turnId,
+  title: itemId,
+  toolKind: 'command',
+  state,
+  timestampMs
+});
+
+const partitioned = conversationTurnGroups([
+  textItem('user', 'partition-user', 'partition-turn', 100),
+  textItem('reasoning', 'partition-reasoning', 'partition-turn', 200),
+  toolItem('partition-tool', 'partition-turn', 300),
+  textItem('assistant', 'partition-tail', 'partition-turn', 600)
+]);
+assert.equal(partitioned.length, 1, 'one contiguous turn becomes one group');
+assert.deepEqual(partitioned[0].workItemIds, ['partition-reasoning', 'partition-tool'], 'foldable work is partitioned from visible messages');
+assert.deepEqual(partitioned[0].tailItemIds, ['partition-user', 'partition-tail'], 'user and final assistant messages remain visible');
+assert.equal(partitioned[0].completed, true);
+assert.equal(partitioned[0].elapsedMs, 500);
+
+const interleaved = conversationTurnGroups([
+  textItem('user', 'interleaved-user', 'interleaved-turn', 1),
+  toolItem('interleaved-tool-a', 'interleaved-turn', 2),
+  textItem('assistant', 'interleaved-commentary', 'interleaved-turn', 3),
+  toolItem('interleaved-tool-b', 'interleaved-turn', 4),
+  textItem('assistant', 'interleaved-tail-a', 'interleaved-turn', 5),
+  textItem('assistant', 'interleaved-tail-b', 'interleaved-turn', 6)
+]);
+assert.deepEqual(
+  interleaved[0].workItemIds,
+  ['interleaved-tool-a', 'interleaved-commentary', 'interleaved-tool-b'],
+  'assistant commentary between work rows folds with the work'
+);
+assert.deepEqual(
+  interleaved[0].tailItemIds,
+  ['interleaved-user', 'interleaved-tail-a', 'interleaved-tail-b'],
+  'only the contiguous assistant run at the end is tail prose'
+);
+
+const noWork = conversationTurnGroups([
+  textItem('user', 'plain-user', 'plain-turn', 1),
+  textItem('assistant', 'plain-assistant', 'plain-turn', 2)
+]);
+assert.deepEqual(noWork[0].workItemIds, [], 'plain chat has no fold disclosure work');
+
+const active = conversationTurnGroups([
+  textItem('user', 'active-user', 'active-turn', 1),
+  toolItem('active-tool', 'active-turn', 2)
+], 'active-turn');
+assert.equal(active[0].completed, false, 'the active turn never reports as completed');
+
+const running = conversationTurnGroups([
+  textItem('user', 'running-user', 'running-turn', 1),
+  toolItem('running-tool', 'running-turn', 2, 'running')
+]);
+assert.equal(running[0].completed, false, 'a turn remains incomplete while any item runs');
+
+const ungrouped = conversationTurnGroups([
+  textItem('user', 'ungrouped-user', null, 1),
+  textItem('assistant', 'ungrouped-assistant', null, 2)
+]);
+assert.equal(ungrouped[0].turnId, null);
+assert.deepEqual(ungrouped[0].items.map((item) => item.itemId), ['ungrouped-user', 'ungrouped-assistant']);
+
+assert.equal(formatWorkedFor(800), '0.8s');
+assert.equal(formatWorkedFor(5_540), '5.5s');
+assert.equal(formatWorkedFor(42_100), '42s');
+assert.equal(formatWorkedFor(1_150_000), '19m 10s');
+
+const boundaryTurn = Array.from({ length: 4 }, (_, index) =>
+  textItem(index === 0 ? 'user' : 'reasoning', `boundary-${index}`, 'boundary-turn', index)
+);
+const windowItems = [
+  ...boundaryTurn,
+  ...Array.from({ length: 118 }, (_, index) => textItem('assistant', `later-${index}`, null, index + 4))
+];
+const wholeTurnWindow = conversationRenderWindow(windowItems, 'window-boundary');
+assert.equal(wholeTurnWindow.hiddenCount, 0, 'a render window expands backward instead of splitting a turn');
+assert.equal(wholeTurnWindow.items[0].itemId, 'boundary-0');
 
 console.log('conversationTimeline.test.ts passed');

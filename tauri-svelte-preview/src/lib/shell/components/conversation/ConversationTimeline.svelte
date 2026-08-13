@@ -4,7 +4,10 @@
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
     conversationRenderWindow,
+    conversationTurnGroups,
     discloseEarlierConversationItems,
+    formatWorkedFor,
+    type ConversationTurnGroup,
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
   import {
@@ -24,6 +27,7 @@
     renderWindowId?: string;
     timelineRevision: number;
     anchorRequest?: ConversationSendAnchorRequest | null;
+    activeTurnId?: string | null;
     localTurnActive?: boolean;
     composerHeight?: number;
     assistantLabel?: string;
@@ -41,6 +45,7 @@
     renderWindowId = conversationId,
     timelineRevision,
     anchorRequest = null,
+    activeTurnId = null,
     localTurnActive = false,
     composerHeight = 0,
     assistantLabel = 'Assistant',
@@ -66,12 +71,18 @@
   let windowConversationId = $state('');
   let disclosedItems = $state(0);
   let disclosureAnchorItemId = $state<string | null>(null);
+  let foldConversationId = $state('');
+  let expandedTurns = $state<Map<string, boolean>>(new Map());
   const renderWindow = $derived(conversationRenderWindow(items, renderWindowId, {
     conversationId: windowConversationId,
     disclosedItems,
     disclosureAnchorItemId
   }));
   const renderedItems = $derived(renderWindow.items);
+  const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
+    ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
+    : null));
+  const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId));
   const anchoredUserIndex = $derived(anchoredUserItemId
     ? renderedItems.findIndex((item) => item.itemId === anchoredUserItemId)
     : -1);
@@ -99,6 +110,19 @@
     disclosedItems = 0;
     disclosureAnchorItemId = null;
     anchoredUserItemId = null;
+    foldConversationId = renderWindowId;
+    expandedTurns = new Map();
+  });
+
+  $effect(() => {
+    if (foldConversationId !== renderWindowId) return;
+    let next: Map<string, boolean> | null = null;
+    for (const group of renderedGroups) {
+      if (!group.turnId || group.completed || group.workItemIds.length === 0 || expandedTurns.has(group.turnId)) continue;
+      next ??= new Map(expandedTurns);
+      next.set(group.turnId, true);
+    }
+    if (next) expandedTurns = next;
   });
 
   $effect(() => {
@@ -275,6 +299,18 @@
     perform(decision.action);
   }
 
+  function turnExpanded(group: ConversationTurnGroup): boolean {
+    if (!group.turnId || !group.completed || group.workItemIds.length === 0) return true;
+    return expandedTurns.get(group.turnId) ?? false;
+  }
+
+  function toggleTurn(group: ConversationTurnGroup): void {
+    if (!group.turnId) return;
+    const next = new Map(expandedTurns);
+    next.set(group.turnId, !turnExpanded(group));
+    expandedTurns = next;
+  }
+
   function handleKeydown(event: KeyboardEvent): void {
     if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
       handleUserInput();
@@ -316,14 +352,33 @@
           >Show earlier — {renderWindow.hiddenCount.toLocaleString()} more</Button>
         </div>
       {/if}
-      {#each renderedItems as item (item.itemId)}
-        <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} />
-        {#if showWorking && item.itemId === anchoredUserItemId}
-          <div class="working-row" data-testid="conversation-working-indicator" role="status">
-            <span class="working-dot" aria-hidden="true"></span>
-            <span>Working…</span>
-          </div>
-        {/if}
+      {#each renderedGroups as group (group.turnId ?? group.items[0]?.itemId)}
+        {@const expanded = turnExpanded(group)}
+        {@const firstWorkItemId = group.workItemIds[0]}
+        {#each group.items as item (item.itemId)}
+          {@const workItem = group.workItemIds.includes(item.itemId)}
+          {#if group.turnId !== null && item.itemId === firstWorkItemId && group.completed}
+            <button
+              class="turn-fold"
+              data-testid="conversation-turn-fold"
+              type="button"
+              aria-expanded={expanded}
+              onclick={() => toggleTurn(group)}
+            >
+              <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
+              <span class="turn-fold-chevron" aria-hidden="true">{expanded ? '⌄' : '>'}</span>
+            </button>
+          {/if}
+          {#if !workItem || expanded}
+            <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} />
+            {#if showWorking && item.itemId === anchoredUserItemId}
+              <div class="working-row" data-testid="conversation-working-indicator" role="status">
+                <span class="working-dot" aria-hidden="true"></span>
+                <span>Working…</span>
+              </div>
+            {/if}
+          {/if}
+        {/each}
       {/each}
       {#if showActiveTurnTail}<div class="active-turn-tail" style={`height:${viewportHeight}px`} aria-hidden="true"></div>{/if}
     </div>
@@ -336,6 +391,10 @@
   .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;padding:30px 24px calc(var(--composer-height) + 16px);scrollbar-gutter:stable;overscroll-behavior:contain}
   .timeline-list{display:flex;flex-direction:column;gap:16px;width:min(820px,100%);min-height:1px;margin:0 auto}
   .earlier-row{display:flex;justify-content:center;min-height:28px}
+  .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
+  .turn-fold:hover{color:var(--color-text)}
+  .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
+  .turn-fold-chevron{display:inline-block;line-height:1;transform:translateY(-1px);transition:transform .14s ease}
   .empty{display:grid;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{display:flex;align-items:center;gap:8px;min-height:20px;color:var(--color-text-3);font-size:13px}
   .working-dot{width:6px;height:6px;border-radius:999px;background:currentColor}

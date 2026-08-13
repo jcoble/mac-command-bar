@@ -101,10 +101,10 @@
     const now = items.reduce((latest, item) => Math.max(latest, item.timestampMs), 0) + 1;
     const typedKinds = new Set(items.map((item) => item.kind));
     if (conversation.planSteps.length && !typedKinds.has('plan')) {
-      items.push({ kind: 'plan', itemId: 'plan:current', title: 'Plan', steps: conversation.planSteps, timestampMs: now });
+      items.push({ kind: 'plan', itemId: 'plan:current', turnId: conversation.activeTurnId ?? null, title: 'Plan', steps: conversation.planSteps, timestampMs: now });
     }
     if (conversation.tasks.length && !typedKinds.has('tasks')) {
-      items.push({ kind: 'tasks', itemId: 'tasks:current', title: 'Tasks', tasks: conversation.tasks, timestampMs: now });
+      items.push({ kind: 'tasks', itemId: 'tasks:current', turnId: conversation.activeTurnId ?? null, title: 'Tasks', tasks: conversation.tasks, timestampMs: now });
     }
     // Live requests render inline above the composer, keeping their response
     // controls attached to the prompt. Resolved requests remain in the
@@ -378,6 +378,7 @@
         renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}
         timelineRevision={conversation.timelineRevision}
         anchorRequest={sendAnchorRequest}
+        activeTurnId={conversation.activeTurnId ?? null}
         {localTurnActive}
         {composerHeight}
         assistantLabel={selectedChild?.label ?? active.agent}
