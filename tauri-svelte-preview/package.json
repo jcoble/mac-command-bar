@@ -95,6 +95,7 @@
     "test:source-control-panel": "node --experimental-strip-types scripts/sourceControlPanel.test.ts",
     "test:session-card-model": "node --experimental-strip-types src/lib/shell/components/sessions/sessionCardModel.test.ts",
     "test:session-groups": "node --experimental-strip-types scripts/sessionGroups.test.mjs",
+    "test:session-history-panel": "node --experimental-strip-types scripts/sessionHistoryPanel.test.ts",
     "test:session-strip": "node --experimental-strip-types scripts/sessionStrip.test.ts",
     "test:session-workspaces": "node --experimental-strip-types scripts/sessionWorkspaces.test.ts",
     "test:relative-time": "node --experimental-strip-types scripts/relativeTime.test.mjs",
