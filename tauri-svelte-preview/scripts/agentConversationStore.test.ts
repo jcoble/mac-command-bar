@@ -246,6 +246,44 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   assert.equal(store.getConversationSession('owned-poisoned').agentItems[0].content[0].text, 'Recovered answer');
 }
 
+// A backend-sized snapshot is rebuilt once without losing the bounded event
+// inspector or duplicating streamed assistant content on a second read.
+{
+  const ownedId = 'owned-large-snapshot';
+  const events = Array.from({ length: 2_000 }, (_, index) => {
+    const turn = Math.floor(index / 10);
+    const offset = index % 10;
+    const payload = offset === 0
+      ? { kind: 'userMessage', itemId: `user-${turn}`, text: `Question ${turn}`, completed: true }
+      : offset === 9
+        ? { kind: 'assistantMessage', itemId: `assistant-${turn}`, text: `Answer ${turn}`, completed: true }
+        : { kind: 'assistantDelta', itemId: `assistant-${turn}`, delta: `chunk ${offset} ` };
+    return {
+      ownedId,
+      provider: 'codex',
+      generation: 1,
+      sequence: index + 1,
+      timestampMs: 1_000 + index,
+      payload
+    };
+  });
+  const snapshot = {
+    connection: {
+      ownedId, provider: 'codex', generation: 1,
+      state: 'connected', nativeSessionId: 'thread-large'
+    },
+    lastSequence: events.length,
+    events
+  };
+  store.applyAgentConversationSnapshot(snapshot);
+  store.applyAgentConversationSnapshot(snapshot);
+  const restored = store.getConversationSession(ownedId);
+  assert.equal(restored.timeline.length, 400);
+  assert.equal(restored.agentItems.length, 400);
+  assert.equal(restored.recentEvents.length, 200);
+  assert.equal(restored.agentItems.at(-1).content[0].text, 'Answer 199');
+}
+
 // A stale snapshot cannot replace a newer generation.
 store.setConversationConnection({
   ownedId: 'owned-a', provider: 'codex', generation: 3, state: 'reconnecting'

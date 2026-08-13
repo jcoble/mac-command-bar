@@ -599,7 +599,12 @@ export function conversationEventAppendsItemContent(event: ConversationEvent): b
 export function mergeAgentItem(items: readonly AgentItem[], incoming: AgentItem, append: boolean): AgentItem[] {
   const index = items.findIndex((item) => item.id === incoming.id);
   if (index < 0) return [...items, incoming];
-  const existing = items[index];
+  const next = items.slice();
+  next[index] = mergedAgentItem(items[index], incoming, append);
+  return next;
+}
+
+function mergedAgentItem(existing: AgentItem, incoming: AgentItem, append: boolean): AgentItem {
   const replay = incoming.providerMetadata?.replay === true;
   let content = incoming.content.length ? incoming.content : existing.content;
   if (append && existing.content.length && incoming.content.length
@@ -620,16 +625,34 @@ export function mergeAgentItem(items: readonly AgentItem[], incoming: AgentItem,
     ...(incoming.providerMetadata ?? {}),
     startedAtMs: existing.providerMetadata?.startedAtMs ?? incoming.providerMetadata?.startedAtMs ?? 0
   };
-  const next = items.slice();
-  next[index] = { ...existing, ...incoming, content, providerMetadata };
-  return next;
+  return { ...existing, ...incoming, content, providerMetadata };
+}
+
+/** Snapshot replay owns a private, unpublished array, so it can update by an
+ * id index instead of searching and copying a growing array for every event. */
+export function mergeAgentItemForReplay(
+  items: AgentItem[],
+  indexes: Map<string, number>,
+  incoming: AgentItem,
+  append: boolean
+): void {
+  const index = indexes.get(incoming.id);
+  if (index === undefined) {
+    indexes.set(incoming.id, items.length);
+    items.push(incoming);
+    return;
+  }
+  items[index] = mergedAgentItem(items[index], incoming, append);
 }
 
 export function agentItemsFromEvents(events: readonly ConversationEvent[]): AgentItem[] {
-  return events.reduce<AgentItem[]>((items, event) => {
+  const items: AgentItem[] = [];
+  const indexes = new Map<string, number>();
+  for (const event of events) {
     const item = agentItemFromEvent(event);
-    return item ? mergeAgentItem(items, item, conversationEventAppendsItemContent(event)) : items;
-  }, []);
+    if (item) mergeAgentItemForReplay(items, indexes, item, conversationEventAppendsItemContent(event));
+  }
+  return items;
 }
 
 export function permissionRequestFromEvent(event: ConversationEvent): AgentPermissionRequest | null {
