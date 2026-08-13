@@ -5,10 +5,13 @@
     resourceSampleState,
     toggleResourceManager
   } from './resourceSampleStore.svelte';
+  import { afterFloatingSurfacePaint } from '$lib/shell/floatingSurface.ts';
 
   function toggle(): void {
     toggleResourceManager();
-    if (resourceManagerState.open) void refreshResourceSample();
+    if (resourceManagerState.open) {
+      afterFloatingSurfacePaint(() => void refreshResourceSample());
+    }
   }
 </script>
 

@@ -19,6 +19,12 @@ export interface SlashMenuState {
   emptyText: string;
 }
 
+export function snapshotConversationCommands(
+  catalog: readonly ConversationCommand[]
+): ConversationCommand[] {
+  return catalog.map((command) => ({ ...command }));
+}
+
 /**
  * The command word the composer is typing, or null when the draft is not a
  * command. The menu belongs to the first word only: as soon as arguments

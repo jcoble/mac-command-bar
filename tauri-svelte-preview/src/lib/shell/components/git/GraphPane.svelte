@@ -34,7 +34,6 @@
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
-  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { buildGitCommitGraphRows } from '$lib/gitGraphViewModel';
   import {
@@ -64,9 +63,12 @@
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { cn } from '$lib/utils';
   import {
-    sourceControlCommitContextMenuItems,
-    type SourceControlCommitAction
+    snapshotSourceControlCommitMenu,
+    sourceControlContextMenuAnchor,
+    type SourceControlCommitMenuSnapshot,
+    type SourceControlContextMenuAction
   } from './sourceControlContextMenu';
+  import SourceControlContextMenu from './SourceControlContextMenu.svelte';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
 
   interface Props {
@@ -81,6 +83,7 @@
   let { panel, service, commitFiles, files, onShowDiff }: Props = $props();
 
   let open = $state(true);
+  let contextMenu = $state<SourceControlCommitMenuSnapshot | null>(null);
 
   /** One row of the graph is exactly this tall, so the SVG can be drawn to size. */
   const ROW_HEIGHT = 40;
@@ -148,7 +151,7 @@
     return formatLastActivity(committedAt, new Date());
   }
 
-  function toggleCommit(row: GitGraphLaneRow): void {
+  function toggleCommit(row: Pick<GitGraphLaneRow, 'sha' | 'isMerge'>): void {
     commitFiles.activate(panel.root);
     void commitFiles.toggleCommit(row.sha, row.isMerge);
   }
@@ -159,9 +162,27 @@
   }
 
   /** Keep the context menu on the same expansion path as a left click. */
-  function runCommitContextAction(action: SourceControlCommitAction, row: GitGraphLaneRow): void {
-    if (action === 'toggle-commit') toggleCommit(row);
-    else copyCommitHash(row.sha);
+  function openCommitContextMenu(
+    row: GitGraphLaneRow,
+    expanded: boolean,
+    event: MouseEvent
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+    contextMenu = snapshotSourceControlCommitMenu({
+      sha: row.sha,
+      isMerge: row.isMerge,
+      expanded,
+      anchor: sourceControlContextMenuAnchor(event)
+    });
+  }
+
+  function runCommitContextAction(action: SourceControlContextMenuAction): void {
+    const current = contextMenu;
+    contextMenu = null;
+    if (!current) return;
+    if (action === 'toggle-commit') toggleCommit(current.target);
+    else if (action === 'copy-hash') copyCommitHash(current.target.sha);
   }
 
   function pickFile(sha: string, file: GitCommitFileChange): void {
@@ -254,8 +275,6 @@
             onOpenChange={() => row && toggleCommit(row)}
             class="border-b border-[var(--color-border)]/45 last:border-b-0"
           >
-            <ContextMenu.Root>
-              <ContextMenu.Trigger class="block">
                 <Collapsible.Trigger
                   class={cn(
                     'flex w-full items-stretch gap-1.5 pr-2 text-left transition-colors',
@@ -264,6 +283,7 @@
                     expanded && 'bg-[var(--color-elevated)]'
                   )}
                   title={commit.detailLabel}
+                  oncontextmenu={(event) => row && openCommitContextMenu(row, expanded, event)}
                 >
                   <svg
                     class="shrink-0"
@@ -321,19 +341,6 @@
                     </span>
                   </span>
                 </Collapsible.Trigger>
-              </ContextMenu.Trigger>
-
-              <ContextMenu.Content>
-                {#each sourceControlCommitContextMenuItems(expanded) as item (item.id)}
-                  <ContextMenu.Item
-                    disabled={!item.enabled || !row}
-                    onSelect={() => row && runCommitContextAction(item.id, row)}
-                  >
-                    {item.label}
-                  </ContextMenu.Item>
-                {/each}
-              </ContextMenu.Content>
-            </ContextMenu.Root>
 
             <!-- Layout classes go on the div INSIDE: a closed collapsible is
                  hidden by the `hidden` attribute, which any display rule of
@@ -441,3 +448,14 @@
     </div>
   {/if}
 </section>
+
+{#if contextMenu}
+  {#key contextMenu.key}
+    <SourceControlContextMenu
+      anchor={contextMenu.anchor}
+      items={contextMenu.items}
+      onSelect={runCommitContextAction}
+      onClose={() => (contextMenu = null)}
+    />
+  {/key}
+{/if}

@@ -5,6 +5,7 @@
   import { usagePercent, usageProviderLabel, usageQuotaWindowLabel, usageResetLabel } from './usageCurrent.ts';
   import UsageWorkspace from './UsageWorkspace.svelte';
   import type { ProviderUsageSnapshot } from './usageTypes.ts';
+  import { afterFloatingSurfacePaint } from '$lib/shell/floatingSurface.ts';
 
   interface Props { provider?: string | null; instanceId?: string | null; }
   let { provider = null, instanceId = null }: Props = $props();
@@ -13,9 +14,27 @@
   let fullOpen = $state(false);
   let triggerButton = $state<HTMLButtonElement>();
   let modalSurface = $state<HTMLDivElement>();
+  let menuSnapshots = $state<Record<string, ProviderUsageSnapshot>>({});
+  let menuLoading = $state(false);
 
   function snapshotFor(providerName: string): ProviderUsageSnapshot | null {
-    return usageState.currentByProvider[providerName] ?? null;
+    return menuSnapshots[providerName] ?? null;
+  }
+
+  function captureCurrentUsage(): void {
+    menuSnapshots = Object.fromEntries(
+      Object.entries(usageState.currentByProvider).map(([name, snapshot]) => [
+        name,
+        { ...snapshot, windows: snapshot.windows.map((window) => ({ ...window })) }
+      ])
+    );
+  }
+
+  async function refreshMenu(): Promise<void> {
+    menuLoading = true;
+    await refreshCurrentUsage(provider, instanceId);
+    captureCurrentUsage();
+    menuLoading = false;
   }
 
   function unavailableMessage(snapshot: ProviderUsageSnapshot | null): string {
@@ -27,20 +46,22 @@
   function toggleOpen(): void {
     open = !open;
     if (open) {
-      void refreshCurrentUsage(provider, instanceId);
-      void refreshUsageHistory();
+      captureCurrentUsage();
+      afterFloatingSurfacePaint(() => void refreshMenu());
     }
   }
 
   async function refresh(): Promise<void> {
-    await Promise.all([refreshCurrentUsage(provider, instanceId), refreshUsageHistory()]);
+    await refreshMenu();
   }
 
   async function openStats(): Promise<void> {
     open = false;
     fullOpen = true;
-    void refreshCurrentUsage(provider, instanceId);
-    void refreshUsageHistory();
+    afterFloatingSurfacePaint(() => {
+      void refreshCurrentUsage(provider, instanceId);
+      void refreshUsageHistory();
+    });
     await tick();
     modalSurface?.focus();
   }
@@ -74,9 +95,9 @@
           <p class="eyebrow">Live quota</p>
           <h2>Usage</h2>
         </div>
-        <button class="refresh-button" type="button" onclick={() => void refresh()} disabled={usageState.loading}>
-          <RefreshCw size={13} class={usageState.loading ? 'spinning' : undefined} aria-hidden="true" />
-          {usageState.loading ? 'Refreshing…' : 'Refresh'}
+        <button class="refresh-button" type="button" onclick={() => void refresh()} disabled={menuLoading}>
+          <RefreshCw size={13} class={menuLoading ? 'spinning' : undefined} aria-hidden="true" />
+          {menuLoading ? 'Refreshing…' : 'Refresh'}
         </button>
       </header>
 

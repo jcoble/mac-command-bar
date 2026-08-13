@@ -28,6 +28,20 @@ export const emptyAgentConversationConfigState = (): AgentConversationConfigStat
   availableApprovalPolicies: []
 });
 
+/** Freeze provider-advertised choices for one open menu while events keep streaming. */
+export function snapshotAgentConversationConfig(
+  state: AgentConversationConfigState
+): AgentConversationConfigState {
+  return {
+    model: state.model,
+    availableModels: [...state.availableModels],
+    reasoningEffort: state.reasoningEffort,
+    availableEfforts: [...state.availableEfforts],
+    approvalPolicy: state.approvalPolicy,
+    availableApprovalPolicies: [...state.availableApprovalPolicies]
+  };
+}
+
 /** Whether the composer has any current value or advertised choice to present. */
 export function hasAgentConversationConfig(state: AgentConversationConfigState): boolean {
   return Boolean(

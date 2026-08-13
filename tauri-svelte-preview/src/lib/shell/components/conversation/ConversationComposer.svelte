@@ -6,7 +6,7 @@
   import type { ConversationAttachment, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
-  import { draftAfterSlashCommand, moveSlashMenuIndex, slashMenuState } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { draftAfterSlashCommand, moveSlashMenuIndex, slashCommandQuery, slashMenuState, snapshotConversationCommands } from '$lib/shell/conversation/composerSlashCommands.ts';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
   import ComposerConfigMenu from './ComposerConfigMenu.svelte';
@@ -80,9 +80,13 @@
   let observedDraft = $state('');
   let promptHost = $state<HTMLTextAreaElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
+  let commandSnapshot = $state<ConversationCommand[]>([]);
 
   $effect(() => {
     if (draft === observedDraft) return;
+    if (slashCommandQuery(inputDraft) === null && slashCommandQuery(draft) !== null) {
+      commandSnapshot = snapshotConversationCommands(commands);
+    }
     observedDraft = draft;
     inputDraft = draft;
     activeIndex = 0;
@@ -90,7 +94,7 @@
     resizePrompt();
   });
 
-  const menu = $derived(slashMenuState(inputDraft, commands, {
+  const menu = $derived(slashMenuState(inputDraft, commandSnapshot, {
     activeIndex,
     dismissed: dismissedDraft === inputDraft
   }));
@@ -144,6 +148,9 @@
   }
 
   function changeDraft(value: string): void {
+    if (slashCommandQuery(inputDraft) === null && slashCommandQuery(value) !== null) {
+      commandSnapshot = snapshotConversationCommands(commands);
+    }
     inputDraft = value;
     activeIndex = 0;
     dismissedDraft = null;

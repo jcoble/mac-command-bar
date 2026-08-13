@@ -31,7 +31,6 @@
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
-  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import {
     buildGitStatusFileGroups,
     describeGitStatusGroups,
@@ -39,7 +38,6 @@
     gitStatusGroupActionLabel,
     hasGitFileUnstagedChanges,
     hasStagedChanges,
-    isGitFileDeleted,
     isGitFileUntracked,
     type GitPanelState,
     type GitStatusFileGroup
@@ -48,9 +46,12 @@
   import { absolutePathWithin, type GitService } from '$lib/shell/git/gitService';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import {
-    sourceControlFileContextMenuItems,
-    type SourceControlFileAction
+    snapshotSourceControlFileMenu,
+    sourceControlContextMenuAnchor,
+    type SourceControlContextMenuAction,
+    type SourceControlFileMenuSnapshot
   } from './sourceControlContextMenu';
+  import SourceControlContextMenu from './SourceControlContextMenu.svelte';
   import { describeCommitSuggestion, suggestCommitMessage } from './commitSuggestion';
   import type { DiscardTarget } from './discardConfirm';
   import { cn } from '$lib/utils';
@@ -99,6 +100,7 @@
   }
 
   let open = $state(true);
+  let contextMenu = $state<SourceControlFileMenuSnapshot | null>(null);
   let generatingCommitMessage = $state(false);
   let generationError = $state('');
   /**
@@ -162,8 +164,8 @@
     else void service.unstagePaths(paths);
   }
 
-  function runFileAction(group: GitStatusFileGroup, file: ProjectGitFileStatus): void {
-    if (group.action === 'stage') void service.stagePaths([file.relativePath]);
+  function runFileAction(groupAction: 'stage' | 'unstage', file: ProjectGitFileStatus): void {
+    if (groupAction === 'stage') void service.stagePaths([file.relativePath]);
     else void service.unstagePaths([file.relativePath]);
   }
 
@@ -179,24 +181,31 @@
     void navigator.clipboard.writeText(file.relativePath);
   }
 
-  function fileContextItems(group: GitStatusFileGroup, file: ProjectGitFileStatus) {
-    return sourceControlFileContextMenuItems({
+  function openFileContextMenu(
+    group: GitStatusFileGroup,
+    file: ProjectGitFileStatus,
+    event: MouseEvent
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+    contextMenu = snapshotSourceControlFileMenu({
       groupAction: group.action,
+      file,
       canWrite,
       busy,
-      deleted: isGitFileDeleted(file),
-      hasRoot: Boolean(panel.root)
+      hasRoot: Boolean(panel.root),
+      anchor: sourceControlContextMenuAnchor(event)
     });
   }
 
   /** Route context-menu choices through the row's existing button handlers. */
   function runFileContextAction(
-    action: SourceControlFileAction,
-    group: GitStatusFileGroup,
+    action: SourceControlContextMenuAction,
+    groupAction: 'stage' | 'unstage',
     file: ProjectGitFileStatus
   ): void {
     if (action === 'open-diff') pickFile(file);
-    else if (action === 'stage' || action === 'unstage') runFileAction(group, file);
+    else if (action === 'stage' || action === 'unstage') runFileAction(groupAction, file);
     else if (action === 'discard') askToDiscardFile(file);
     else if (action === 'open-file') openInEditor(file);
     else copyPath(file);
@@ -471,14 +480,14 @@
 
           {#each group.files as file (group.id + file.relativePath)}
             {@const parts = splitRepositoryPath(file.relativePath)}
-            <ContextMenu.Root>
-              <ContextMenu.Trigger class="block">
                 <div
+                  role="group"
                   class={cn(
                     'group flex items-center gap-1 rounded-[4px] pr-1 transition-colors',
                     'hover:bg-[var(--color-elevated)]',
                     panel.selectedPath === file.relativePath && 'bg-[var(--color-elevated)]'
                   )}
+                  oncontextmenu={(event) => openFileContextMenu(group, file, event)}
                 >
                   <button
                     type="button"
@@ -519,7 +528,7 @@
                       tooltip={false}
                       class={ROW_ACTION}
                       disabled={!canWrite || busy}
-                      onclick={() => runFileAction(group, file)}
+                      onclick={() => runFileAction(group.action, file)}
                     >
                       {#if group.action === 'stage'}
                         <Plus class="size-3.5" aria-hidden="true" />
@@ -555,25 +564,25 @@
                     {file.badge || '·'}
                   </span>
                 </div>
-              </ContextMenu.Trigger>
-
-              <ContextMenu.Content>
-                {#each fileContextItems(group, file) as item (item.id)}
-                  {#if item.id === 'copy-path'}
-                    <ContextMenu.Separator />
-                  {/if}
-                  <ContextMenu.Item
-                    disabled={!item.enabled}
-                    onSelect={() => runFileContextAction(item.id, group, file)}
-                  >
-                    {item.label}
-                  </ContextMenu.Item>
-                {/each}
-              </ContextMenu.Content>
-            </ContextMenu.Root>
           {/each}
         </div>
       {/each}
     </div>
   {/if}
 </section>
+
+{#if contextMenu}
+  {#key contextMenu.key}
+    <SourceControlContextMenu
+      anchor={contextMenu.anchor}
+      items={contextMenu.items}
+      onSelect={(action) => {
+        const current = contextMenu;
+        contextMenu = null;
+        if (!current) return;
+        runFileContextAction(action, current.target.groupAction, current.target.file);
+      }}
+      onClose={() => (contextMenu = null)}
+    />
+  {/key}
+{/if}

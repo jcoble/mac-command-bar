@@ -6,6 +6,7 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { approvalLabel, effortLabel, modelLabel } from '$lib/shell/conversation/agentConfigLabels.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
+  import { emptyAgentConversationConfigState, snapshotAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
 
   interface Props {
     provider: string;
@@ -14,11 +15,21 @@
     onChange?(field: AgentConversationConfigField, value: string): void;
   }
 
-  let { provider, state, pending, onChange }: Props = $props();
+  let { provider, state: configState, pending, onChange }: Props = $props();
   const optionsFor = (available: readonly string[], current: string | null): string[] => current && !available.includes(current) ? [current, ...available] : [...available];
+  let menuProvider = $state('');
+  let menuState = $state<AgentConversationConfigState>(emptyAgentConversationConfigState());
+  let menuPending = $state<Partial<Record<AgentConversationConfigField, string>>>({});
+
+  function snapshotOnOpen(open: boolean): void {
+    if (!open) return;
+    menuProvider = provider;
+    menuState = snapshotAgentConversationConfig(configState);
+    menuPending = { ...pending };
+  }
 </script>
 
-<DropdownMenu.Root>
+<DropdownMenu.Root onOpenChange={snapshotOnOpen}>
   <DropdownMenu.Trigger>
     {#snippet child({ props })}
       <Button {...props} variant="ghost" size="sm" class="more-trigger" aria-label="More composer controls">
@@ -29,37 +40,37 @@
   </DropdownMenu.Trigger>
   <DropdownMenu.Content side="top" align="start" sideOffset={8} class="compact-menu">
     <DropdownMenu.Label>Composer controls</DropdownMenu.Label>
-    {#if state.availableModels.length || state.model}
+    {#if menuState.availableModels.length || menuState.model}
       <DropdownMenu.Label>Model</DropdownMenu.Label>
-      {#each optionsFor(state.availableModels, state.model) as model (model)}
-        {@const modelAvailable = state.availableModels.includes(model)}
+      {#each optionsFor(menuState.availableModels, menuState.model) as model (model)}
+        {@const modelAvailable = menuState.availableModels.includes(model)}
         <DropdownMenu.Item
-          disabled={'model' in pending || !modelAvailable}
+          disabled={'model' in menuPending || !modelAvailable}
           title={modelAvailable ? undefined : 'Unavailable for this session.'}
           class="model-option"
           onSelect={() => onChange?.('model', model)}
         >
-          <span class="check-slot">{#if model === state.model}<Check size={13} aria-hidden="true" />{/if}</span>
+          <span class="check-slot">{#if model === menuState.model}<Check size={13} aria-hidden="true" />{/if}</span>
           <span class="model-option-copy">
             <span class="model-option-name">{modelLabel(model)}</span>
-            <span class="model-option-provider">{provider}</span>
+            <span class="model-option-provider">{menuProvider}</span>
           </span>
         </DropdownMenu.Item>
       {/each}
     {/if}
-    {#if state.availableEfforts.length || state.reasoningEffort}
+    {#if menuState.availableEfforts.length || menuState.reasoningEffort}
       <DropdownMenu.Label>Thinking effort</DropdownMenu.Label>
-      {#each optionsFor(state.availableEfforts, state.reasoningEffort) as effort (effort)}
-        <DropdownMenu.Item disabled={'reasoningEffort' in pending} onSelect={() => onChange?.('reasoningEffort', effort)}>
-          <span class="check-slot">{#if effort === state.reasoningEffort}<Check size={13} aria-hidden="true" />{/if}</span>{effortLabel(effort)}
+      {#each optionsFor(menuState.availableEfforts, menuState.reasoningEffort) as effort (effort)}
+        <DropdownMenu.Item disabled={'reasoningEffort' in menuPending} onSelect={() => onChange?.('reasoningEffort', effort)}>
+          <span class="check-slot">{#if effort === menuState.reasoningEffort}<Check size={13} aria-hidden="true" />{/if}</span>{effortLabel(effort)}
         </DropdownMenu.Item>
       {/each}
     {/if}
-    {#if state.availableApprovalPolicies.length || state.approvalPolicy}
-      <DropdownMenu.Label>Access for {provider}</DropdownMenu.Label>
-      {#each optionsFor(state.availableApprovalPolicies, state.approvalPolicy) as policy (policy)}
-        <DropdownMenu.Item disabled={'approvalPolicy' in pending} onSelect={() => onChange?.('approvalPolicy', policy)}>
-          <span class="check-slot">{#if policy === state.approvalPolicy}<Check size={13} aria-hidden="true" />{/if}</span>{approvalLabel(policy)}
+    {#if menuState.availableApprovalPolicies.length || menuState.approvalPolicy}
+      <DropdownMenu.Label>Access for {menuProvider}</DropdownMenu.Label>
+      {#each optionsFor(menuState.availableApprovalPolicies, menuState.approvalPolicy) as policy (policy)}
+        <DropdownMenu.Item disabled={'approvalPolicy' in menuPending} onSelect={() => onChange?.('approvalPolicy', policy)}>
+          <span class="check-slot">{#if policy === menuState.approvalPolicy}<Check size={13} aria-hidden="true" />{/if}</span>{approvalLabel(policy)}
         </DropdownMenu.Item>
       {/each}
     {/if}
