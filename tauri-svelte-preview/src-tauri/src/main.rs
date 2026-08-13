@@ -5569,6 +5569,7 @@ fn main() {
                     app_data_dir.display()
                 )
             })?;
+            debug_log::install_file_mirror(app_data_dir.join("logs/backend.log"));
             let agent_runtime = agent_conversation::manager::AgentRuntimeManager::open(
                 agent_conversation::providers::ProviderRegistry::bundled_from_environment()
                     .map_err(|error| {

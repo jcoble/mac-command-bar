@@ -845,14 +845,14 @@
    * prompt is sent. The existing ensure/select/send path remains the single
    * session creation authority.
    */
-  async function startNewSession(request: ThreadStartRequest): Promise<boolean> {
+  async function startNewSession(request: ThreadStartRequest): Promise<void> {
     console.warn('mcb next: thread-start submit', {
       provider: request.provider,
       cwd: request.cwd,
       branch: request.branch,
       disposed
     });
-    if (disposed) return false;
+    if (disposed) return;
     const owned = {
       ...createFreshSession({ cwd: request.cwd, title: request.title }),
       agent: request.provider,
@@ -879,17 +879,18 @@
       });
       await persistOwnedMetadata(owned.ownedId);
       updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
-      return true;
     } catch (error) {
-      console.warn('mcb next: thread-start failed', describeError(error));
+      const detail = describeError(error);
+      const message = `could not start ${owned.agent} session: ${detail}`;
+      console.warn('mcb next: thread-start failed', detail);
       updateOwnedSession(owned.ownedId, {
         state: 'exited',
         executionOwner: 'stopped',
         runtimeState: 'failed',
-        lastError: describeError(error)
+        lastError: detail
       });
-      rail.error = `could not start ${owned.agent} session: ${describeError(error)}`;
-      return false;
+      rail.error = message;
+      throw new Error(message);
     }
   }
 
