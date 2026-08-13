@@ -852,38 +852,6 @@
       <p class="empty-hint">Open a file from the explorer or palette.</p>
     </div>
   {:else}
-    <!-- One thin row of its own, above the tabs: what the language server is
-         doing, and the project's editor mode. It sits here rather than at the
-         end of the tab strip so the tabs keep the whole width. -->
-    <div class="editor-status-bar">
-      <!-- Nothing renders here in a browser tab or on an older desktop build:
-           there is no language server to report on, so there is no chip. The
-           slot takes the free width and lines its contents up on the right, so
-           a longer or shorter status never moves the switch beside it. -->
-      <span class="status-slot">
-        <LanguageServerStatusChip
-          language={activeFile?.language ?? null}
-          status={languageServerStatus}
-        />
-      </span>
-
-      <!-- The project's editor mode. Off is read mode: colouring only, nothing
-           started. On runs the project's one language server, shared by every
-           session and view on it, and its cost shows in the resource view. -->
-      <div class="intelligence" title={languageIntelligenceTitle}>
-        <span class="intelligence-name">Language intelligence</span>
-        <Switch
-          checked={fullMode}
-          disabled={languageIntelligenceBusy || !editorState.projectRoot}
-          onCheckedChange={(checked) => void switchLanguageIntelligence(checked)}
-          aria-label="Language intelligence"
-        />
-        <span class="intelligence-state" class:on={fullMode}>
-          {languageIntelligenceLabel(fullMode)}
-        </span>
-      </div>
-    </div>
-
     <div class="editor-header">
       <div class="file-strip" role="tablist" aria-label="Open files">
         {#each editorState.openFiles as file (file.path)}
@@ -914,6 +882,13 @@
         {/each}
       </div>
 
+      <!-- Nothing renders here in a browser tab or on an older desktop build:
+           there is no language server to report on, so there is no chip. -->
+      <LanguageServerStatusChip
+        language={activeFile?.language ?? null}
+        status={languageServerStatus}
+      />
+
       <!-- Markdown reads two ways, so the file says which one it is on. Source
            is the ordinary editor; Preview is the same document rendered. -->
       {#if activeFileIsMarkdown}
@@ -927,6 +902,22 @@
           />
         </span>
       {/if}
+
+      <!-- The project's editor mode. Off is read mode: colouring only, nothing
+           started. On runs the project's one language server, shared by every
+           session and view on it, and its cost shows in the resource view. -->
+      <div class="intelligence" title={languageIntelligenceTitle}>
+        <span class="intelligence-name">Language intelligence</span>
+        <Switch
+          checked={fullMode}
+          disabled={languageIntelligenceBusy || !editorState.projectRoot}
+          onCheckedChange={(checked) => void switchLanguageIntelligence(checked)}
+          aria-label="Language intelligence"
+        />
+        <span class="intelligence-state" class:on={fullMode}>
+          {languageIntelligenceLabel(fullMode)}
+        </span>
+      </div>
     </div>
 
     <div class="editor-canvas">
@@ -1031,33 +1022,9 @@
     font-size: 12px;
   }
 
-  /* The row above the tabs: language server status on the left of it, the
-   * project's editor mode on the right. Its own row, so neither one takes width
-   * away from the tabs or scrolls out of sight with them. */
-  .editor-status-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 0 0 auto;
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
-    padding: 3px 8px;
-    min-width: 0;
-  }
-
-  /* Reserves the free width for the status chip and right-aligns it, so the
-   * chip grows and shrinks into empty space and nothing else moves with it. */
-  .status-slot {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-  }
-
-  /* The strip of open files. It scrolls when there are many of them, and it now
-   * has the whole row to itself. */
+  /* The strip of open files and, pinned to the right, what the language server
+   * is doing. The strip scrolls when there are many files; the chip does not go
+   * with it, so it stays readable however many tabs are open. */
   .editor-header {
     display: flex;
     align-items: center;
@@ -1119,9 +1086,9 @@
     color: var(--color-text);
   }
 
-  /* The project's editor mode, pinned to the right end of the bar above the
-   * tabs. It does not scroll with the file strip: which mode a project is in
-   * has to be readable however many files are open. */
+  /* The project's editor mode, pinned to the right of the header beside the
+   * status chip. It does not scroll with the file strip: which mode a project
+   * is in has to be readable however many files are open. */
   .intelligence {
     display: flex;
     align-items: center;
