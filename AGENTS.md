@@ -58,3 +58,6 @@ All new frontend/tooling code is TypeScript — including one-off scripts, test 
 (`node --experimental-strip-types` runs `.ts` directly, so there is no excuse for `.mjs`). Existing
 `.mjs` files under `tauri-svelte-preview/scripts/` convert to `.ts` when a task touches them (one-way
 rule: the rename and the change land together). Never add a new `.js`/`.mjs` file.
+`any` is a last resort: type things properly — real interfaces, unions, generics, `unknown` with
+narrowing — and reach for `any` only when a correct type is genuinely impractical (say why in the
+one place it's used).
