@@ -84,6 +84,7 @@
     "test:parse-unified-diff": "node --experimental-strip-types scripts/parseUnifiedDiff.test.mjs",
     "test:session-context": "node --experimental-strip-types scripts/sessionContext.test.ts",
     "test:explorer": "node --experimental-strip-types scripts/explorerStore.test.mjs",
+    "test:files-panel": "node --experimental-strip-types scripts/filesPanel.test.ts",
     "test:explorer-file-icons": "node --experimental-strip-types scripts/explorerFileIcons.test.mjs",
     "test:normalize-browser-url": "node --experimental-strip-types scripts/normalizeBrowserUrl.test.mjs",
     "test:command-registry": "node --experimental-strip-types scripts/commandRegistry.test.mjs",
