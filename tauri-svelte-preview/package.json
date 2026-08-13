@@ -32,6 +32,7 @@
     "test:worktree-cleanup-plan": "node --experimental-strip-types scripts/worktreeCleanupPlan.test.mjs",
     "test:worktree-cleanup-runbook": "node --experimental-strip-types scripts/worktreeCleanupRunbook.test.mjs",
     "test:worktree-safety": "node --experimental-strip-types scripts/worktreeSafety.test.mjs",
+    "test:worktree-agent-prompts": "node --experimental-strip-types scripts/worktreeAgentPrompts.test.ts",
     "test:local-source-fs": "node --experimental-strip-types scripts/localSourceFs.test.mjs",
     "test:session-scan-filter": "node --experimental-strip-types scripts/sessionScanFilter.test.mjs",
     "test:live-terminals": "node --experimental-strip-types scripts/liveConversationTerminals.test.mjs",
