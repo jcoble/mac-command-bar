@@ -106,7 +106,18 @@ function humanSummary(raw: string): string {
     return "The agent couldn't complete that request.";
   }
 
-  return 'The agent hit an error.';
+  return trimmedSummary(raw) || 'The agent hit an error.';
+}
+
+function trimmedSummary(raw: string): string {
+  const text = raw.trim();
+  const characters = Array.from(text);
+  if (characters.length <= 160) return text;
+
+  const available = characters.slice(0, 159).join('').trimEnd();
+  const lastSpace = available.search(/\s+\S*$/);
+  const wordSafe = lastSpace > 0 ? available.slice(0, lastSpace) : available;
+  return `${wordSafe}…`;
 }
 
 export function presentAgentError(raw: string): PresentedAgentError {

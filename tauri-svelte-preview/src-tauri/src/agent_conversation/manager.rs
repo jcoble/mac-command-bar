@@ -525,15 +525,22 @@ impl AgentRuntimeManager {
                 session.state == AgentRuntimeState::Suspended,
             )
         };
-        let expected_native_session_id = native_session_id.clone();
+        let mut expected_native_session_id = native_session_id.clone();
+        let can_start_fresh = expected_native_session_id.is_some()
+            && self
+                .store
+                .first_user_message_payload(owned_id)
+                .map_err(|error| error.to_string())?
+                .is_none();
         let shared_key = AdapterPoolKey::Shared(provider);
         let mut pools = self.adapter_pools.lock().await;
-        let (capabilities, started_result, runtime, transport, inbound, pool_key) =
+        let (capabilities, started_result, runtime, transport, inbound, pool_key, started_fresh) =
             if let Some(pool) = pools.get_mut(&shared_key) {
                 let runtime = Arc::clone(&pool.runtime);
+                let mut started_fresh = false;
                 let started = {
                     let mut runtime = runtime.lock().await;
-                    match native_session_id.as_deref() {
+                    let attempted = match native_session_id.as_deref() {
                         Some(native_session_id) => match native_session_mode {
                             AgentNativeSessionMode::Resume => {
                                 runtime.resume_session_multi(&cwd, native_session_id).await
@@ -543,6 +550,15 @@ impl AgentRuntimeManager {
                             }
                         },
                         None => runtime.new_session_multi(&cwd).await,
+                    };
+                    if attempted.is_err() && can_start_fresh {
+                        crate::debug_log::stderr_log!(
+                            "{owned_id}: stored native session never started; starting fresh"
+                        );
+                        started_fresh = true;
+                        runtime.new_session_multi(&cwd).await
+                    } else {
+                        attempted
                     }
                 };
                 if started.is_ok() {
@@ -555,6 +571,7 @@ impl AgentRuntimeManager {
                     Arc::clone(&pool.transport),
                     None,
                     shared_key,
+                    started_fresh,
                 )
             } else {
                 let manifest = self.providers.manifest(provider)?;
@@ -569,7 +586,7 @@ impl AgentRuntimeManager {
                     .initialize(InitializeAgentInput { provider })
                     .await
                     .map_err(|error| error.to_string())?;
-                let started = match native_session_id.as_ref() {
+                let attempted = match native_session_id.as_ref() {
                     Some(native_session_id) => {
                         let input = LoadAgentSession {
                             cwd: cwd.clone(),
@@ -585,6 +602,19 @@ impl AgentRuntimeManager {
                             .new_session(NewAgentSession { cwd: cwd.clone() })
                             .await
                     }
+                };
+                let (started, started_fresh) = if attempted.is_err() && can_start_fresh {
+                    crate::debug_log::stderr_log!(
+                        "{owned_id}: stored native session never started; starting fresh"
+                    );
+                    (
+                        adapter
+                            .new_session(NewAgentSession { cwd: cwd.clone() })
+                            .await,
+                        true,
+                    )
+                } else {
+                    (attempted, false)
                 };
                 let runtime = Arc::new(AsyncMutex::new(StructuredRuntimeHandle::Acp(adapter)));
                 let (transport, inbound) = {
@@ -615,9 +645,13 @@ impl AgentRuntimeManager {
                     transport,
                     Some(inbound),
                     pool_key,
+                    started_fresh,
                 )
             };
         drop(pools);
+        if started_fresh {
+            expected_native_session_id = None;
+        }
         let mut started = match started_result {
             Ok(started) => started,
             Err(error) if expected_native_session_id.is_some() => {
@@ -4945,7 +4979,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn load_failure_surfaces_resumability_error() {
+    async fn resume_failure_without_user_history_starts_fresh() {
         let root = temp_root();
         let log = root.join("resume-failure.jsonl");
         let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
@@ -4962,16 +4996,74 @@ mod tests {
         );
         ensure.native_session_id = Some("missing-native".into());
         let connection = manager.ensure_inner(ensure).unwrap().0;
+        let resumed = manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .expect("empty session starts fresh");
+        let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
+        assert!(!snapshot.suspended);
+        assert_eq!(resumed.native_session_id.as_deref(), Some("new-session"));
+        assert_eq!(
+            snapshot.connection.native_session_id.as_deref(),
+            Some("new-session")
+        );
+        assert!(!snapshot.events.iter().any(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::Error { code, .. } if code == "session-resume-failed"
+        )));
+        let requests = fs::read_to_string(&log).unwrap();
+        assert!(requests.contains(r#""method":"session/resume""#));
+        assert!(requests.contains(r#""method":"session/new""#));
+        manager.close(&connection.owned_id).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resume_failure_with_user_history_stays_suspended() {
+        let root = temp_root();
+        let log = root.join("resume-failure-with-history.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "resume_failure",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let mut ensure = request(
+            root.to_str().unwrap(),
+            "owned-resume-failure-with-history",
+            AgentConversationProvider::Codex,
+        );
+        ensure.native_session_id = Some("missing-native".into());
+        let connection = manager.ensure_inner(ensure).unwrap().0;
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&connection.owned_id).unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::UserMessage {
+                    item_id: "stored-user-message".into(),
+                    text: "Earlier message".into(),
+                    completed: true,
+                },
+            )
+            .unwrap();
+        }
+
         assert!(manager
             .activate(&connection.owned_id, connection.generation)
             .await
             .unwrap_err()
             .contains("could not be resumed"));
         let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
+        assert!(snapshot.suspended);
         assert!(snapshot.events.iter().any(|event| matches!(
             &event.payload,
             AgentConversationPayload::Error { code, .. } if code == "session-resume-failed"
         )));
+        let requests = fs::read_to_string(&log).unwrap();
+        assert!(requests.contains(r#""method":"session/resume""#));
+        assert!(!requests.contains(r#""method":"session/new""#));
         fs::remove_dir_all(root).unwrap();
     }
 

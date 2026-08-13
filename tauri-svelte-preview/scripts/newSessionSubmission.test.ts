@@ -54,7 +54,8 @@ assert.match(thread, /groupProviderModels\(providerConfigs\)/);
 assert.match(thread, /onSelect=\{\(\) => chooseModel\(group\.provider, model\.id\)\}/);
 assert.match(thread, /disabled=\{!model\.available\}/);
 assert.match(thread, /class="thread-start-menu-provider">\{group\.label\}/);
-assert.match(thread, /await dockComposer\(\);[\s\S]*?const result = await onSend\(request\)/);
+assert.match(thread, /await dockComposer\(\);[\s\S]*?await onSend\(request\)/);
+assert.doesNotMatch(thread, /The session could not be started\. Check the rail for details\./);
 assert.match(thread, /data-composer-state=\{docked \? 'docked' : 'hero'\}/);
 assert.match(thread, /Nothing is created while this pane is a draft/);
 assert.match(flip, /node\.animate\(/);
@@ -94,7 +95,7 @@ assert.equal(request?.reasoningEffort, 'max');
 assert.equal(request?.approvalPolicy, 'on-request');
 assert.deepEqual(validateThreadStart({ ...request, prompt: request.prompt }), []);
 
-assert.match(startNewSession, /async function startNewSession\(request: ThreadStartRequest\): Promise<boolean>/);
+assert.match(startNewSession, /async function startNewSession\(request: ThreadStartRequest\): Promise<void>/);
 assert.match(startNewSession, /createFreshSession\(\{ cwd: request\.cwd, title: request\.title \}\)/);
 assert.match(startNewSession, /projectPath: request\.projectPath/);
 assert.match(startNewSession, /branch: request\.branch/);
@@ -103,7 +104,8 @@ assert.doesNotMatch(startNewSession, /ensureStructuredConversation|setAgentConve
 assert.match(startNewSession, /await sendStructuredMessage\(owned\.ownedId, request\.prompt, null, \{/);
 assert.match(startNewSession, /model: request\.model/);
 assert.match(startNewSession, /approvalPolicy: request\.approvalPolicy/);
-assert.match(startNewSession, /return false;/);
+assert.match(startNewSession, /throw new Error\(message\)/);
+assert.match(startNewSession, /could not start \$\{owned\.agent\} session: \$\{detail\}/);
 assert.match(conversationService, /reasoningEffort\?: string \| null;/);
 assert.match(conversationService, /nativeSessionMode: input\.nativeSessionMode \?\? 'resume'/);
 

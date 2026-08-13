@@ -180,6 +180,7 @@
         <span
           data-testid="session-card-error"
           class="w-full min-w-0 text-[12px] leading-[1.4] break-words text-destructive"
+          title={presentedError.detail ?? presentedError.summary}
         >
           {presentedError.summary}
         </span>

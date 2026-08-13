@@ -108,12 +108,22 @@ for (const example of mappedCases) {
   });
 }
 
-test('unknown errors use a safe summary and retain their detail', () => {
+test('unknown errors use their actual text and retain their detail', () => {
   const raw = 'provider-meltdown: impossible state 47';
   assert.deepEqual(presentAgentError(raw), {
-    summary: 'The agent hit an error.',
+    summary: raw,
     detail: raw
   });
+});
+
+test('unknown errors are word-safe trimmed to 160 characters', () => {
+  const raw = `${'visible '.repeat(30)}hidden details`;
+  const presented = presentAgentError(raw);
+
+  assert.equal(Array.from(presented.summary).length <= 160, true);
+  assert.equal(presented.summary.endsWith('…'), true);
+  assert.equal(presented.summary.includes('hidden details'), false);
+  assert.equal(presented.detail, raw);
 });
 
 test('embedded JSON is pretty-printed in detail without leaking into the summary', () => {
@@ -140,6 +150,7 @@ test('the session card keeps raw detail behind a disclosure control', async () =
   assert.match(sessionCard, /presentAgentError\(session\.lastError\)/);
   assert.doesNotMatch(sessionCard, /\{session\.lastError\}|title=\{session\.lastError\}/);
   assert.match(sessionCard, /presentedError\.summary/);
+  assert.match(sessionCard, /title=\{presentedError\.detail \?\? presentedError\.summary\}/);
   assert.match(sessionCard, /<details[\s\S]*presentedError\.detail/);
 });
 

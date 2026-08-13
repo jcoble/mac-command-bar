@@ -41,7 +41,7 @@
     /** Look for agent sessions again. */
     onRescanSessions: () => void | Promise<void>;
     /** Start the session described by the thread-first draft. */
-    onStartNewSession: (request: ThreadStartRequest) => void | Promise<boolean | void>;
+    onStartNewSession: (request: ThreadStartRequest) => void | Promise<void>;
     /** Read configuration only when a new-session draft opens. */
     newSessionProviderConfigs: () => ThreadStartProviderConfig[];
     /** The folders the sessions on the rail are running in, so the project

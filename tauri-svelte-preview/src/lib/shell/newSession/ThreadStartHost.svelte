@@ -5,7 +5,7 @@
   } from '$lib/shell/newSession/threadStartFlow.ts';
 
   interface Props {
-    onStart: (request: ThreadStartRequest) => void | Promise<boolean | void>;
+    onStart: (request: ThreadStartRequest) => void | Promise<void>;
   }
 
   let { onStart }: Props = $props();
@@ -53,10 +53,9 @@
     open = false;
   }
 
-  async function submit(request: ThreadStartRequest): Promise<boolean | void> {
-    const result = await onStart(request);
-    if (result !== false) open = false;
-    return result;
+  async function submit(request: ThreadStartRequest): Promise<void> {
+    await onStart(request);
+    open = false;
   }
 </script>
 

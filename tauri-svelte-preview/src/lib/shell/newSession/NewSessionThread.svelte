@@ -53,7 +53,7 @@
   interface Props {
     sessionRoots: string[];
     providerConfigs: ThreadStartProviderConfig[];
-    onSend: (request: ThreadStartRequest) => void | Promise<boolean | void>;
+    onSend: (request: ThreadStartRequest) => void | Promise<void>;
     onClose: () => void;
   }
 
@@ -199,8 +199,7 @@
     submitError = null;
     try {
       await dockComposer();
-      const result = await onSend(request);
-      if (result === false) submitError = 'The session could not be started. Check the rail for details.';
+      await onSend(request);
     } catch (error) {
       submitError = error instanceof Error ? error.message : String(error);
     } finally {
