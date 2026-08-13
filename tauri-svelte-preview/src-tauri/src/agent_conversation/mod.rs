@@ -15,10 +15,11 @@ use mcb_core::session_store::AnnotationRow;
 use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
-    AgentConversationSnapshot, EnsureAgentConversationRequest,
-    RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
-    RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
-    SetAgentConversationConfigRequest, StopAgentConversationTurnRequest,
+    AgentConversationEvent, AgentConversationSessionRecord, AgentConversationSnapshot,
+    EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
+    RespondAgentConversationInputRequest, RespondAgentConversationPermissionRequest,
+    SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
+    StopAgentConversationTurnRequest, UpdateAgentConversationSessionMetaRequest,
 };
 
 #[derive(serde::Serialize)]
@@ -81,16 +82,7 @@ pub async fn ensure_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: EnsureAgentConversationRequest,
 ) -> Result<AgentConversationConnection, String> {
-    let connection = manager.ensure_async(request).await?;
-    if manager.providers().manifest(connection.provider).is_ok() {
-        manager
-            .activate(&connection.owned_id, connection.generation)
-            .await
-    } else {
-        // A0 installs the packaged, hash-recorded adapters. Until then the
-        // existing connecting response remains available without a fallback PTY.
-        Ok(connection)
-    }
+    manager.ensure_async(request).await
 }
 
 #[tauri::command]
@@ -99,6 +91,20 @@ pub async fn send_agent_conversation_message(
     request: SendAgentConversationMessageRequest,
 ) -> Result<(), String> {
     let prompt = prompt_from_blocks(request.text.trim(), request.content)?;
+    manager
+        .activate(&request.owned_id, request.generation)
+        .await?;
+    if request.model.is_some() || request.approval_policy.is_some() {
+        manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: request.owned_id.clone(),
+                generation: request.generation,
+                model: request.model,
+                reasoning_effort: None,
+                approval_policy: request.approval_policy,
+            })
+            .await?;
+    }
     manager
         .prompt(&request.owned_id, request.generation, prompt)
         .await
@@ -230,6 +236,30 @@ pub async fn read_agent_conversation_snapshot(
     owned_id: String,
 ) -> Result<Option<AgentConversationSnapshot>, String> {
     manager.snapshot(&owned_id)
+}
+
+#[tauri::command]
+pub fn list_agent_conversation_sessions(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+) -> Result<Vec<AgentConversationSessionRecord>, String> {
+    manager.list_sessions()
+}
+
+#[tauri::command]
+pub fn list_agent_conversation_events(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    from_sequence: Option<u64>,
+) -> Result<Vec<AgentConversationEvent>, String> {
+    manager.list_events(&owned_id, from_sequence.unwrap_or(0))
+}
+
+#[tauri::command]
+pub fn update_agent_conversation_session_meta(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    request: UpdateAgentConversationSessionMetaRequest,
+) -> Result<AgentConversationSessionRecord, String> {
+    manager.update_session_meta(request)
 }
 
 #[tauri::command]

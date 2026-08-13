@@ -5578,7 +5578,7 @@ fn main() {
             )?;
             // Validate the store-backed list and its runtime overlay before any
             // frontend activation can observe the manager.
-            agent_runtime.list_snapshots()?;
+            agent_runtime.list_sessions()?;
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone());
             let live_session_ids = agent_runtime
                 .resource_roots()
@@ -5590,7 +5590,6 @@ fn main() {
             agent_runtime.set_emitter(Arc::new(move |event| {
                 let _ = handle.emit("agent-conversation-event", event);
             }));
-            agent_runtime.start_idle_suspension_task();
             app.manage(workflow_engine);
             app.manage(agent_runtime);
             // Every time a language server starts, finishes reading a project, or stops,
@@ -5731,6 +5730,9 @@ fn main() {
             agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
             agent_conversation::read_agent_conversation_snapshot,
+            agent_conversation::list_agent_conversation_sessions,
+            agent_conversation::list_agent_conversation_events,
+            agent_conversation::update_agent_conversation_session_meta,
             agent_conversation::read_agent_conversation_transcript,
             agent_conversation::start_agent_conversation_terminal_projection,
             agent_conversation::stop_agent_conversation_terminal_projection,
@@ -8585,9 +8587,13 @@ mod tests {
 
     #[test]
     fn agent_conversation_response_command_names_match_frontend_invokes_and_registration() {
-        let frontend = include_str!(concat!(
+        let conversation_frontend = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../src/lib/shell/conversation/conversationService.ts"
+        ));
+        let source_frontend = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/tauriSource.ts"
         ));
         let native = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
         for command in [
@@ -8599,7 +8605,29 @@ mod tests {
             "respond_agent_conversation_input",
         ] {
             assert!(
-                frontend.contains(&format!("invoke('{command}'")),
+                conversation_frontend.contains(&format!("invoke('{command}'")),
+                "frontend invoke must pin {command}"
+            );
+            assert!(
+                native.contains(&format!("agent_conversation::{command}")),
+                "generate_handler must register {command}"
+            );
+        }
+        for command in [
+            "list_agent_conversation_sessions",
+            "list_agent_conversation_events",
+            "update_agent_conversation_session_meta",
+        ] {
+            assert!(
+                source_frontend.contains(&format!("invoke<{command}"))
+                    || source_frontend
+                        .contains(&format!("invoke<AgentConversationEvent[]>(\'{command}\'"))
+                    || source_frontend.contains(&format!(
+                        "invoke<AgentConversationSessionRecord[]>(\'{command}\'"
+                    ))
+                    || source_frontend.contains(&format!(
+                        "invoke<AgentConversationSessionRecord>(\'{command}\'"
+                    )),
                 "frontend invoke must pin {command}"
             );
             assert!(

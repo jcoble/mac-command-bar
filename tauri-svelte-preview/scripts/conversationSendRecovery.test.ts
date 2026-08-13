@@ -95,18 +95,18 @@ const serviceSource = readFileSync(
 );
 assert.match(
   serviceSource,
-  /const validatedState = getConversationSession\(ownedId\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
-  'the service must re-read the conversation immediately before the send request'
+  /const activated = await ensureStructuredConversation\([\s\S]*?await invoke\('send_agent_conversation_message'/,
+  'the service activates only as part of the send request'
 );
 assert.match(
   serviceSource,
-  /validateStructuredSendGeneration\([\s\S]*?if \(validatedGeneration === null[\s\S]*?throw new Error\([^)]*generation/,
-  'the service must reject a stale generation before invoking the send request'
+  /const validatedGeneration = validatedState\?\.generation === expectedGeneration[\s\S]*?if \(validatedGeneration === null/,
+  'the service must reject a replaced generation before invoking the send request'
 );
 assert.match(
   serviceSource,
-  /nativeSessionMode,[\s\S]*?reasoningEffort: state\.agentConfig\.reasoningEffort/,
+  /nativeSessionMode,[\s\S]*?reasoningEffort: startConfig\?\.reasoningEffort \?\? state\.agentConfig\.reasoningEffort/,
   'revival must retain the session-start effort when it creates a new adapter process'
 );
 
-console.log('conversationSendRecovery.test.mjs passed');
+console.log('conversationSendRecovery.test.ts passed');

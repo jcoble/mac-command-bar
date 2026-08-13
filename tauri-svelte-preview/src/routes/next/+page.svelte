@@ -50,7 +50,6 @@
     getConversationSession,
     removeConversationSession,
     restoreConversationWorkspace,
-    setConversationAgentConfigState,
     setConversationMode
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
@@ -58,6 +57,7 @@
     commitConversationHandoff,
     ensureStructuredConversation,
     flushConversationSessionDraft,
+    loadConversationForRead,
     loadConversationSessionDraft,
     prepareConversationHandoff,
     rollbackConversationHandoff,
@@ -67,13 +67,11 @@
     stopConversationTerminalProjection,
     stopConversationEvents
   } from '$lib/shell/conversation/conversationService';
-  import { decideConversationActivation } from '$lib/shell/conversation/conversationActivation';
   import type {
     AgentConversationHandoffDirection,
     AgentConversationHandoffMode,
     AgentConversationProvider
   } from '$lib/shell/conversation/conversationTypes';
-  import { setAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
   import {
     editorState,
     resetEditorState,
@@ -115,6 +113,9 @@
   import {
     adoptAgentSession,
     createFreshSession,
+    ownedSessionFromBackend,
+    ownedSessionMetaForBackend,
+    parseStoredOwnedSessions,
     reconcileOwnedSessions
   } from '$lib/shell/ownedSessions';
   import {
@@ -148,7 +149,6 @@
     addOwnedSession,
     completeOwnedSession,
     hydrateOwned,
-    loadStoredOwned,
     rail,
     removeOwnedSession,
     reopenOwnedSession,
@@ -162,13 +162,16 @@
   import {
     listAgentSessionsFromLocalBridge,
     isNativeTauriRuntime,
+    listAgentConversationSessionsFromTauri,
     listAgentSessionsFromTauri,
+    updateAgentConversationSessionMetaFromTauri,
     type AgentSession
   } from '$lib/tauriSource';
   import BottomBar from '$lib/shell/resources/BottomBar.svelte';
 
   /** Hosts mount before the service finishes async init: parked here, drained later. */
   const pendingHosts = new Map<string, HTMLElement>();
+  const LEGACY_OWNED_SESSIONS_ADOPTION_KEY = 'mac-command-bar.next.owned-sessions';
   /** Owned ids whose surviving PTY still needs `adoptExisting` once its host mounts. */
   const awaitingReattach = new Set<string>();
   /** Sessions with a restart already under way. Added before the first await, so
@@ -265,14 +268,36 @@
     shellPanels.panelShown(id);
   }
 
-  /** Settled is an explicit rail transition, persisted by the existing update
-   * path. Age, process state, and title never infer this shelf. */
+  async function persistOwnedMetadata(ownedId: string): Promise<void> {
+    const session = rail.owned.find((entry) => entry.ownedId === ownedId);
+    if (!session) return;
+    await updateAgentConversationSessionMetaFromTauri({
+      ownedId,
+      model: session.model ?? null,
+      effort: getConversationSession(ownedId)?.agentConfig.reasoningEffort ?? null,
+      meta: ownedSessionMetaForBackend(session)
+    });
+  }
+
+  /** Settled is an explicit rail transition. Age, process state, and title never infer this shelf. */
   function settleOwnedSession(ownedId: string): void {
     updateOwnedSession(ownedId, { settledAt: new Date().toISOString() });
+    void persistOwnedMetadata(ownedId);
   }
 
   function unsettleOwnedSession(ownedId: string): void {
     updateOwnedSession(ownedId, { settledAt: null });
+    void persistOwnedMetadata(ownedId);
+  }
+
+  function completeOwned(ownedId: string): void {
+    completeOwnedSession(ownedId, new Date());
+    void persistOwnedMetadata(ownedId);
+  }
+
+  function reopenOwned(ownedId: string): void {
+    reopenOwnedSession(ownedId);
+    void persistOwnedMetadata(ownedId);
   }
 
   /** The center library reuses the rail's imperative actions; construction of
@@ -510,6 +535,7 @@
     const attached = await service.adoptExisting(session, host, size);
     if (!attached) {
       updateOwnedSession(ownedId, { state: 'exited', ptySessionId: null });
+      await persistOwnedMetadata(ownedId);
       return;
     }
     if (rail.activeOwnedId === null) await selectOwned(ownedId);
@@ -628,8 +654,7 @@
 
   async function selectOwned(
     ownedId: string,
-    propagateStructuredFailure = false,
-    reasoningEffort?: string
+    propagateStructuredFailure = false
   ): Promise<void> {
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
@@ -668,80 +693,20 @@
     const provider = conversationProviderFor(ownedId);
     if (selected && provider) {
       ensureConversationSession(ownedId, provider);
-      if (switching) await loadConversationSessionDraft(ownedId).catch(() => undefined);
-      const conversation = getConversationSession(ownedId);
-      const activation = decideConversationActivation(
-        selected,
-        conversation
-      );
-      console.warn('mcb next: conversation activation', {
-        ownedId,
-        origin: selected.origin ?? 'external',
-        sessionState: selected.state,
-        executionOwner: selected.executionOwner ?? null,
-        connectionState: conversation?.connectionState ?? null,
-        decision: activation.kind,
-        nativeSessionMode: activation.kind === 'structured' ? activation.nativeSessionMode : null
-      });
-      if (activation.kind === 'terminal') {
-        // Externally started sessions keep their PTY as the only writer while
-        // running. Stopped sessions without loadable Codex history retain the
-        // same terminal fallback they had before structured loading existed.
-        if (selected.origin === 'external' && selected.ptySessionId) {
-          void closeStructuredConversation(ownedId);
-        }
+      if (selected.origin === 'external' && selected.ptySessionId) {
         setConversationMode(ownedId, 'raw');
         return;
       }
       setConversationMode(ownedId, 'structured');
-      if (activation.kind === 'view') {
-        if (switching) {
-          void ensureStructuredConversation({
-            ownedId,
-            provider,
-            cwd: selected.cwd,
-            nativeSessionId: selected.nativeSessionId,
-            nativeSessionMode: 'resume',
-            reasoningEffort: reasoningEffort ?? conversation?.agentConfig.reasoningEffort
-          }).catch((error) => {
-            updateOwnedSession(ownedId, { lastError: describeError(error) });
-          });
-        }
-        return;
-      }
-
-      const sessionReasoningEffort = reasoningEffort ?? conversation?.agentConfig.reasoningEffort;
-      const structuredActivation = ensureStructuredConversation({
-        ownedId,
-        provider,
-        cwd: selected.cwd,
-        nativeSessionId: selected.nativeSessionId,
-        nativeSessionMode: activation.nativeSessionMode,
-        reasoningEffort: sessionReasoningEffort
-      });
-      const connected = (): void => {
-        updateOwnedSession(ownedId, { lastError: null });
-      };
-      const failed = (error: unknown): void => {
-        const message = describeError(error);
-        updateOwnedSession(ownedId, { lastError: message });
-        if (activation.nativeSessionMode === 'load') {
-          setConversationMode(ownedId, 'raw');
-          rail.error = `could not load ${selected.title || ownedId} as a conversation: ${message}`;
-        } else {
-          rail.error = `could not open structured ${provider}: ${message}`;
-        }
-      };
-      if (!propagateStructuredFailure) {
-        void structuredActivation.then(connected).catch(failed);
-        return;
-      }
-      try {
-        await structuredActivation;
-        connected();
-      } catch (error) {
-        failed(error);
-        throw error;
+      if (switching) {
+        await Promise.all([
+          loadConversationForRead(ownedId),
+          loadConversationSessionDraft(ownedId)
+        ]).catch((error) => {
+          const message = describeError(error);
+          updateOwnedSession(ownedId, { lastError: message });
+          if (propagateStructuredFailure) throw error;
+        });
       }
     }
   }
@@ -840,6 +805,19 @@
     if (!service || disposed) return;
     const owned = adoptAgentSession(record);
     addOwnedSession(owned);
+    const provider = conversationProviderFor(owned.ownedId);
+    if (!provider) {
+      rail.error = `could not adopt "${owned.title}" into the session database`;
+      return;
+    }
+    await ensureStructuredConversation({
+      ownedId: owned.ownedId,
+      provider,
+      cwd: owned.cwd,
+      nativeSessionId: owned.nativeSessionId,
+      nativeSessionMode: 'load'
+    });
+    await persistOwnedMetadata(owned.ownedId);
     const host = await hostFor(owned.ownedId);
     if (!host) {
       rail.error = `no terminal host for "${owned.title}"`;
@@ -851,8 +829,8 @@
       rail.error = `failed to start a terminal for "${owned.title}"`;
       return;
     }
-    // Persist the PTY id: reload re-attach reads it back out of localStorage.
     updateOwnedSession(owned.ownedId, { ptySessionId, state: 'live' });
+    await persistOwnedMetadata(owned.ownedId);
     await selectOwned(owned.ownedId);
     // A session you just started is a session you want to watch. Deliberately
     // here rather than inside `selectOwned`, which also runs on every plain
@@ -893,27 +871,13 @@
     frameControls?.showCenterPanel('session');
 
     try {
-      // Effort is a start-time field, so it travels through ensure exactly once.
-      await selectOwned(owned.ownedId, true, request.reasoningEffort ?? undefined);
-      const conversation = getConversationSession(owned.ownedId);
-      if (!conversation || conversation.generation < 1) {
-        throw new Error('The structured conversation runtime is unavailable in this build.');
-      }
-
-      // Model and access are mutable provider settings. Do not make a hidden
-      // session to fetch them: the connection returned by ensure already owns
-      // the generation and validates the advertised values.
-      if (isNativeTauriRuntime() && (request.model || request.approvalPolicy)) {
-        const config = await setAgentConversationConfig({
-          ownedId: owned.ownedId,
-          generation: conversation.generation,
-          model: request.model ?? undefined,
-          approvalPolicy: request.approvalPolicy ?? undefined
-        });
-        setConversationAgentConfigState(owned.ownedId, config);
-      }
-
-      await sendStructuredMessage(owned.ownedId, request.prompt);
+      await selectOwned(owned.ownedId, true);
+      await sendStructuredMessage(owned.ownedId, request.prompt, null, {
+        reasoningEffort: request.reasoningEffort,
+        model: request.model,
+        approvalPolicy: request.approvalPolicy
+      });
+      await persistOwnedMetadata(owned.ownedId);
       updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
       return true;
     } catch (error) {
@@ -1006,28 +970,14 @@
         return;
       }
       updateOwnedSession(ownedId, {
-        state: 'live',
+        state: 'background',
         executionOwner: 'structured',
-        runtimeState: 'starting',
+        runtimeState: 'suspended',
         ptySessionId: null,
         lastError: null
       });
       try {
-        await ensureStructuredConversation({
-          ownedId,
-          provider,
-          cwd: session.cwd,
-          nativeSessionId: session.nativeSessionId,
-          nativeSessionMode: 'resume',
-          reasoningEffort: getConversationSession(ownedId)?.agentConfig.reasoningEffort
-        });
         await selectOwned(ownedId);
-        updateOwnedSession(ownedId, {
-          state: 'live',
-          executionOwner: 'structured',
-          runtimeState: 'ready',
-          lastError: null
-        });
         frameControls?.showCenterPanel('session');
       } catch (error) {
         updateOwnedSession(ownedId, {
@@ -1083,6 +1033,7 @@
       // `hostFor` to wait for. The old PTY id goes at the same time — it names
       // a process that no longer exists.
       updateOwnedSession(ownedId, { state: 'live', ptySessionId: null });
+      await persistOwnedMetadata(ownedId);
 
       const host = await hostFor(ownedId);
       if (!host) {
@@ -1123,6 +1074,7 @@
 
       // Persist the new PTY id: reload re-attach reads it back out of storage.
       updateOwnedSession(ownedId, { ptySessionId, state: 'live' });
+      await persistOwnedMetadata(ownedId);
       // A restarted stack run is a run again — without this the stacks pane
       // keeps the old exit on record and says "stopped" under a live server.
       if (restartedStackId !== null) recordStackStart(restartedStackId, ownedId);
@@ -1169,6 +1121,7 @@
     // The PTY id is cleared with the state: it names a process that is gone, and
     // leaving it stored would have the next launch try to re-attach to it.
     updateOwnedSession(ownedId, { state: 'exited', ptySessionId: null });
+    await persistOwnedMetadata(ownedId);
     // Picked BEFORE the await: adopt it only while it still exists. It goes
     // through `selectOwned` like every other session change, and the order is
     // what makes that safe: `rail.activeOwnedId` is still the session whose
@@ -1264,11 +1217,50 @@
           });
         }
 
-        // Rail hydration — the ONLY launch IO (constitution).
+        // Rail hydration reads SQLite. The browser key is consumed only by this
+        // one-time empty-database adoption and is deleted after successful writes.
         const live = (await backend.list()) ?? [];
         if (disposed) return;
         for (const i of live) livePtySizes.set(i.sessionId, { cols: i.cols, rows: i.rows });
-        const { owned, reattachable } = reconcileOwnedSessions(loadStoredOwned(), live);
+        let storedSessions = (await listAgentConversationSessionsFromTauri()) ?? [];
+        if (storedSessions.length === 0) {
+          const legacy = parseStoredOwnedSessions(
+            window.localStorage.getItem(LEGACY_OWNED_SESSIONS_ADOPTION_KEY)
+          );
+          let adopted = 0;
+          for (const session of legacy) {
+            const provider = session.agent === 'codex' || session.agent === 'claude'
+              ? session.agent
+              : null;
+            if (!provider) {
+              throw new Error(`legacy session ${session.ownedId} has no structured provider`);
+            }
+            await ensureStructuredConversation({
+              ownedId: session.ownedId,
+              provider,
+              cwd: session.cwd,
+              nativeSessionId: session.nativeSessionId,
+              nativeSessionMode: session.origin === 'external' ? 'load' : 'resume'
+            });
+            await updateAgentConversationSessionMetaFromTauri({
+              ownedId: session.ownedId,
+              model: session.model ?? null,
+              effort: null,
+              meta: ownedSessionMetaForBackend(session)
+            });
+            adopted += 1;
+          }
+          storedSessions = (await listAgentConversationSessionsFromTauri()) ?? [];
+          const storedIds = new Set(storedSessions.map((session) => session.ownedId));
+          if (
+            adopted === legacy.length
+            && legacy.every((session) => storedIds.has(session.ownedId))
+          ) {
+            window.localStorage.removeItem(LEGACY_OWNED_SESSIONS_ADOPTION_KEY);
+          }
+        }
+        const projected = storedSessions.map(ownedSessionFromBackend);
+        const { owned, reattachable } = reconcileOwnedSessions(projected, live);
         // Tombstones re-attach too (final scrollback + a reapable PTY id); live first.
         const attachable = [
           ...reattachable,
@@ -1365,8 +1357,8 @@
     owned={rail.owned} available={rail.available} activeOwnedId={rail.activeOwnedId}
     scanning={rail.scanning} collapsed={sessionsCollapsed}
     onSelect={selectOwned} onAdopt={adopt} onClose={closeTerminal} onRestart={restartOwned}
-    onComplete={(ownedId) => completeOwnedSession(ownedId, new Date())}
-    onReopen={reopenOwnedSession} onSettle={settleOwnedSession} onUnsettle={unsettleOwnedSession}
+    onComplete={completeOwned}
+    onReopen={reopenOwned} onSettle={settleOwnedSession} onUnsettle={unsettleOwnedSession}
     onRemove={removeSession}
     onRescan={scanRail} onCollapse={collapseSessions}
     onNewSession={() => overlays?.openNewSession()}

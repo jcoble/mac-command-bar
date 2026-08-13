@@ -90,14 +90,18 @@
     conversation
       ? Object.keys(conversation.pendingApprovals).length
         + conversation.timeline.filter((item) => item.kind === 'approval' && item.state === 'requested').length
-      : 0
+      : session.pendingPermission
+        ? 1
+        : 0
   );
   const runtimeState = $derived(
     conversation ? (session.runtimeState === 'starting' ? 'starting' : null) : session.runtimeState
   );
   const connectionState = $derived(session.origin === 'app' ? conversation?.connectionState ?? null : null);
   const activeTurnId = $derived(conversation?.activeTurnId ?? session.activeTurnId ?? null);
-  const suspended = $derived(conversation?.suspended === true);
+  const suspended = $derived(
+    conversation?.suspended === true || session.runtimeState === 'suspended'
+  );
   const presenceSignals = $derived(
     session.state === 'exited'
       ? 'stopped'
@@ -154,7 +158,7 @@
       failed: 'Error'
     }[presence]
   );
-  const presenceDetail = $derived(suspended ? 'Idle — resumes on click' : presenceLabel);
+  const presenceDetail = $derived(suspended ? 'Idle — resumes on send' : presenceLabel);
   const presenceIsRestart = $derived(presence === 'stopped');
   const modelValue = $derived(conversation?.metadata.model ?? session.model ?? null);
   const modelText = $derived(modelValue ? modelLabel(modelValue) : null);

@@ -505,6 +505,10 @@ pub struct SendAgentConversationMessageRequest {
     /// Ordered prompt blocks from the composer, including pasted images.
     #[serde(default)]
     pub content: Vec<super::prompt_content::AgentPromptContentBlock>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub approval_policy: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -589,6 +593,56 @@ pub struct AgentConversationSnapshot {
     pub suspended: bool,
     pub last_sequence: u64,
     pub events: Vec<AgentConversationEvent>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationSessionMeta {
+    pub worktree: Option<String>,
+    pub branch: Option<String>,
+    pub title: Option<String>,
+    pub project: Option<String>,
+    pub pty_session_id: Option<String>,
+    pub origin: Option<String>,
+    pub source: Option<String>,
+    pub via_cmux: bool,
+    pub resume_command: Option<String>,
+    pub completed_at: Option<String>,
+    pub settled_at: Option<String>,
+    pub task_id: Option<String>,
+    pub pull_request: Option<String>,
+    pub message_count: Option<u64>,
+    pub latest_turn_preview: Option<String>,
+    pub scanned_last_activity: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAgentConversationSessionMetaRequest {
+    pub owned_id: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub meta: AgentConversationSessionMeta,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationSessionRecord {
+    pub owned_id: String,
+    pub provider: AgentConversationProvider,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub cwd: String,
+    pub state: AgentRuntimeState,
+    pub suspended: bool,
+    pub created_at_ms: i64,
+    pub last_activity_at_ms: i64,
+    pub active_turn_id: Option<String>,
+    pub pending_permission: bool,
+    pub pending_input: bool,
+    pub native_session_id: Option<String>,
+    #[serde(flatten)]
+    pub meta: AgentConversationSessionMeta,
 }
 
 #[cfg(test)]

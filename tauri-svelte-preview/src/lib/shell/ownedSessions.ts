@@ -5,7 +5,12 @@
  * persistence, and active-tracking. Provider ids are mutable (a resume mints a
  * new one), so they are carried but never used as keys.
  */
-import type { AgentSession, TerminalSessionInfo } from '../tauriSource';
+import type {
+  AgentConversationSessionMeta,
+  AgentConversationSessionRecord,
+  AgentSession,
+  TerminalSessionInfo
+} from '../tauriSource';
 
 export type AgentKind = 'codex' | 'claude' | 'gemini' | 'opencode' | 'other';
 export type OwnedSessionState = 'live' | 'background' | 'exited';
@@ -24,6 +29,7 @@ export type AgentRuntimeState =
   | 'waiting-approval'
   | 'waiting-input'
   | 'interrupting'
+  | 'suspended'
   | 'failed'
   | 'closed';
 
@@ -33,6 +39,8 @@ export interface OwnedAgentRuntimeFields {
   providerInstanceId: string | null;
   nativeSessionId: string | null;
   activeTurnId: string | null;
+  pendingPermission?: boolean;
+  pendingInput?: boolean;
   capabilityRevision: number;
   lastRuntimeError: string | null;
 }
@@ -131,6 +139,7 @@ const KNOWN_RUNTIME_STATES: AgentRuntimeState[] = [
   'waiting-approval',
   'waiting-input',
   'interrupting',
+  'suspended',
   'failed',
   'closed'
 ];
@@ -257,12 +266,66 @@ export function createFreshSession(
   };
 }
 
-export function serializeOwnedSessions(sessions: OwnedSession[]): string {
-  return JSON.stringify(sessions);
-}
-
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+export function ownedSessionFromBackend(record: AgentConversationSessionRecord): OwnedSession {
+  const { agent, viaCmux: providerViaCmux } = normalizeProvider(record.provider);
+  const terminalOwned = record.origin === 'external' && record.ptySessionId !== null;
+  return {
+    ownedId: record.ownedId,
+    agent,
+    origin: record.origin ?? 'app',
+    viaCmux: record.viaCmux || providerViaCmux,
+    source: record.source ?? 'fresh',
+    title: record.title ?? '',
+    model: record.model,
+    projectPath: record.project,
+    cwd: record.cwd,
+    resumeCommand: record.resumeCommand,
+    nativeSessionId: record.nativeSessionId,
+    ptySessionId: record.ptySessionId,
+    state: record.activeTurnId === null ? 'background' : 'live',
+    lastError: null,
+    executionOwner: terminalOwned ? 'terminal' : 'structured',
+    runtimeState: record.suspended ? 'suspended' : record.state,
+    providerInstanceId: null,
+    activeTurnId: record.activeTurnId,
+    pendingPermission: record.pendingPermission,
+    pendingInput: record.pendingInput,
+    capabilityRevision: 0,
+    lastRuntimeError: null,
+    completedAt: record.completedAt,
+    settledAt: record.settledAt,
+    branch: record.branch,
+    taskId: record.taskId,
+    pullRequest: record.pullRequest,
+    messageCount: record.messageCount,
+    latestTurnPreview: record.latestTurnPreview,
+    lastActivity: record.scannedLastActivity
+  };
+}
+
+export function ownedSessionMetaForBackend(session: OwnedSession): AgentConversationSessionMeta {
+  return {
+    worktree: session.cwd || null,
+    branch: session.branch,
+    title: session.title || null,
+    project: session.projectPath,
+    ptySessionId: session.ptySessionId,
+    origin: session.origin ?? null,
+    source: session.source,
+    viaCmux: session.viaCmux,
+    resumeCommand: session.resumeCommand,
+    completedAt: session.completedAt,
+    settledAt: session.settledAt,
+    taskId: session.taskId,
+    pullRequest: session.pullRequest,
+    messageCount: session.messageCount,
+    latestTurnPreview: session.latestTurnPreview,
+    scannedLastActivity: session.lastActivity
+  };
 }
 
 /**
