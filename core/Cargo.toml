@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1"
 base64 = "0.22"
 rand = "0.8"
+rusqlite = { version = "=0.37.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 aes-gcm = "0.10"
