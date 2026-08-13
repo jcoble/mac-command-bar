@@ -35,6 +35,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 const SNAPSHOT_EVENT_CAP: usize = 2_000;
 const STORE_EVENT_CAP: u32 = 10_000;
+const SESSION_TITLE_CHAR_CAP: usize = 64;
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 const CLAUDE_SESSION_EFFORTS: [(&str, &str); 4] = [
     ("low", "4000"),
@@ -765,6 +766,16 @@ impl AgentRuntimeManager {
                 .ok_or_else(|| "Structured event pump has not started".to_string())?;
             session.active_turn_id = Some(turn_id.clone());
             session.state = AgentRuntimeState::Working;
+            if session_title_is_empty(session.rail_meta.title.as_deref()) {
+                let is_first_user_prompt = session
+                    .store
+                    .first_user_message_payload(&session.owned_id)
+                    .map_err(|error| error.to_string())?
+                    .is_none();
+                if is_first_user_prompt {
+                    session.rail_meta.title = prompt_title(&input.text);
+                }
+            }
             record_payload_for_session_and_dispatch(
                 session,
                 &self.emitter,
@@ -1839,8 +1850,25 @@ fn recover_sessions_from_store(
         if stored.rail_meta.branch.is_none() {
             stored.rail_meta.branch.clone_from(&row.branch);
         }
-        if stored.rail_meta.title.is_none() {
+        if session_title_is_empty(stored.rail_meta.title.as_deref())
+            && !session_title_is_empty(row.title.as_deref())
+        {
             stored.rail_meta.title.clone_from(&row.title);
+        }
+        if session_title_is_empty(stored.rail_meta.title.as_deref()) {
+            stored.rail_meta.title = store
+                .first_user_message_payload(&row.owned_id)
+                .map_err(|error| error.to_string())?
+                .map(|payload| {
+                    serde_json::from_str::<AgentConversationEvent>(&payload).map_err(|error| {
+                        format!("Could not decode stored first user message: {error}")
+                    })
+                })
+                .transpose()?
+                .and_then(|event| match event.payload {
+                    AgentConversationPayload::UserMessage { text, .. } => prompt_title(&text),
+                    _ => None,
+                });
         }
         if stored.rail_meta.project.is_none() {
             stored.rail_meta.project.clone_from(&row.project);
@@ -1935,6 +1963,19 @@ fn enum_from_storage<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T, Str
 
 fn store_timestamp(value: u128) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn session_title_is_empty(title: Option<&str>) -> bool {
+    title.is_none_or(|title| title.trim().is_empty())
+}
+
+fn prompt_title(prompt: &str) -> Option<String> {
+    prompt
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.chars().take(SESSION_TITLE_CHAR_CAP).collect())
 }
 
 fn current_session<'a>(
@@ -2251,12 +2292,15 @@ async fn pump_inbound(
                     let replay = is_replay_session_update(&params);
                     if replay
                         && session.native_session_mode == AgentNativeSessionMode::Resume
-                        && session.store.has_display_events(&session.owned_id).unwrap_or_else(|error| {
-                            crate::debug_log::stderr_log!(
-                                "Could not inspect existing conversation history: {error}"
-                            );
-                            false
-                        })
+                        && session
+                            .store
+                            .has_display_events(&session.owned_id)
+                            .unwrap_or_else(|error| {
+                                crate::debug_log::stderr_log!(
+                                    "Could not inspect existing conversation history: {error}"
+                                );
+                                false
+                            })
                     {
                         break 'update reached_quiescence;
                     }
@@ -3946,6 +3990,111 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn first_prompt_titles_once_and_explicit_metadata_wins() {
+        let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("  First prompt title  \nignored second line"),
+            )
+            .await
+            .expect("first prompt");
+        wait_until(|| {
+            fixture
+                .manager
+                .list_sessions()
+                .expect("list after first prompt")[0]
+                .active_turn_id
+                .is_none()
+        })
+        .await;
+        assert_eq!(
+            fixture.manager.list_sessions().unwrap()[0]
+                .meta
+                .title
+                .as_deref(),
+            Some("First prompt title")
+        );
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("A later prompt must not replace the title"),
+            )
+            .await
+            .expect("second prompt");
+        wait_until(|| {
+            fixture
+                .manager
+                .list_sessions()
+                .expect("list after second prompt")[0]
+                .active_turn_id
+                .is_none()
+        })
+        .await;
+        assert_eq!(
+            fixture.manager.list_sessions().unwrap()[0]
+                .meta
+                .title
+                .as_deref(),
+            Some("First prompt title")
+        );
+
+        fixture
+            .manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: fixture.owned_id.clone(),
+                model: None,
+                effort: None,
+                meta: AgentConversationSessionMeta {
+                    title: Some("Chosen title".into()),
+                    ..AgentConversationSessionMeta::default()
+                },
+            })
+            .expect("set explicit title");
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("Another prompt must preserve the chosen title"),
+            )
+            .await
+            .expect("third prompt");
+        wait_until(|| {
+            fixture
+                .manager
+                .list_sessions()
+                .expect("list after third prompt")[0]
+                .active_turn_id
+                .is_none()
+        })
+        .await;
+        assert_eq!(
+            fixture.manager.list_sessions().unwrap()[0]
+                .meta
+                .title
+                .as_deref(),
+            Some("Chosen title")
+        );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn prompt_title_is_char_boundary_safe_and_capped() {
+        let long_title = format!("  {} trailing", "é".repeat(64));
+        assert_eq!(prompt_title(&long_title), Some("é".repeat(64)));
+        assert_eq!(prompt_title("   \nsecond line"), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn activating_the_same_generation_reuses_one_runtime_and_pump() {
         let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
@@ -4175,6 +4324,71 @@ mod tests {
                 .suspended
         );
         recovered.close(&connection.owned_id).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_recovery_backfills_untitled_session_from_first_user_message() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-title-backfill",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&connection.owned_id).unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::AssistantMessage {
+                    item_id: "earlier-assistant".into(),
+                    text: "not a title".into(),
+                    completed: true,
+                },
+            )
+            .unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::UserMessage {
+                    item_id: "first-user".into(),
+                    text: "  Recovered title  \nignored second line".into(),
+                    completed: true,
+                },
+            )
+            .unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::UserMessage {
+                    item_id: "second-user".into(),
+                    text: "Later title".into(),
+                    completed: true,
+                },
+            )
+            .unwrap();
+        }
+        drop(manager);
+
+        let recovered = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        assert_eq!(
+            recovered.list_sessions().unwrap()[0].meta.title.as_deref(),
+            Some("Recovered title")
+        );
+        assert_eq!(
+            recovered
+                .store
+                .get_session(&connection.owned_id)
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Recovered title")
+        );
+        drop(recovered);
         fs::remove_dir_all(root).unwrap();
     }
 

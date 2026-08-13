@@ -49,6 +49,7 @@ import {
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
 import { rail, updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import { sessionTitleFromPrompt } from '../sessionStrip.ts';
 import {
   decideConversationActivation,
   generationForSend,
@@ -400,6 +401,17 @@ export async function startConversationEvents(): Promise<void> {
   if (!isTauri() || unlisten) return;
   unlisten = await listen<AgentConversationEvent | AgentEvent>('agent-conversation-event', ({ payload }) => {
     applyAgentConversationEvent(payload);
+    if (
+      'payload' in payload
+      && payload.payload.kind === 'userMessage'
+      && typeof payload.payload.text === 'string'
+    ) {
+      const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
+      if (owned && !owned.title.trim()) {
+        const title = sessionTitleFromPrompt(payload.payload.text);
+        if (title) updateOwnedSession(payload.ownedId, { title });
+      }
+    }
     if (getConversationSession(payload.ownedId)?.desynchronized) {
       void resyncConversation(payload.ownedId);
     }

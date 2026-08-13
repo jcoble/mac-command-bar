@@ -342,6 +342,27 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the event list", error))
     }
 
+    pub fn first_user_message_payload(&self, owned_id: &str) -> Result<Option<String>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT payload
+                 FROM events
+                 WHERE owned_id = ?1
+                   AND json_extract(payload, '$.payload.kind') = 'userMessage'
+                   AND seq = (
+                       SELECT MIN(seq)
+                       FROM events
+                       WHERE owned_id = ?1
+                         AND json_extract(payload, '$.payload.kind') = 'userMessage'
+                   )",
+                [owned_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not read the first user message", error))
+    }
+
     /// The newest bounded event window, returned in transcript order.
     ///
     /// Both the limiting and final ordering stay in SQLite so opening a long
