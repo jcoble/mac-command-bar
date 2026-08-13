@@ -1581,114 +1581,145 @@ fn list_workflow_runs(
     engine.list_runs().map_err(|error| error.to_string())
 }
 
+fn emit_workflow_run_updated(app: &tauri::AppHandle, run: &WorkflowRunRecord) {
+    let _ = app.emit("workflow-run-updated", run);
+}
+
 #[tauri::command]
 fn create_workflow_run(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     definition: WorkflowDefinitionV1,
     input: serde_json::Value,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .create_run(definition, input, idempotency_key)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
 async fn start_workflow_run(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .start(&run_id, &idempotency_key)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
 fn pause_workflow_run(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .pause(&run_id, &idempotency_key)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
 async fn resume_workflow_run(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .resume(&run_id, &idempotency_key)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
 async fn cancel_workflow_run(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .cancel(&run_id, &idempotency_key)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
 fn retry_workflow_node(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
     node_id: String,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .retry_node(&run_id, &node_id, &idempotency_key)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
 fn skip_workflow_node(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
     node_id: String,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .skip_node(&run_id, &node_id, &idempotency_key)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
 fn approve_workflow_gate(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
     node_id: String,
     approval: serde_json::Value,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .approve_gate(&run_id, &node_id, approval, &idempotency_key)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
 async fn submit_workflow_result(
+    app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
     node_id: String,
     result: serde_json::Value,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    engine
+    let run = engine
         .submit_result(&run_id, &node_id, result, &idempotency_key)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
 }
 
 #[tauri::command]
@@ -5667,15 +5698,19 @@ fn main() {
             agent_conversation::ensure_agent_conversation,
             agent_conversation::send_agent_conversation_message,
             agent_conversation::respond_agent_conversation_approval,
+            agent_conversation::respond_agent_conversation_permission,
+            agent_conversation::respond_agent_conversation_input,
             agent_conversation::stop_agent_conversation_turn,
             agent_conversation::set_agent_conversation_config,
             agent_conversation::read_agent_conversation_config,
+            agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
             agent_conversation::read_agent_conversation_snapshot,
             agent_conversation::read_agent_conversation_transcript,
             agent_conversation::start_agent_conversation_terminal_projection,
             agent_conversation::stop_agent_conversation_terminal_projection,
             agent_conversation::save_agent_conversation_attachment,
+            agent_conversation::delete_agent_conversation_attachment,
             agent_conversation::handoff::handoff_agent_conversation,
             start_terminal_session,
             list_terminal_sessions,
@@ -8518,6 +8553,29 @@ mod tests {
                 "acpLiveConversationEvents".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn agent_conversation_response_command_names_match_frontend_invokes_and_registration() {
+        let frontend = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/shell/conversation/conversationService.ts"
+        ));
+        let native = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
+        for command in [
+            "respond_agent_conversation_approval",
+            "respond_agent_conversation_permission",
+            "respond_agent_conversation_input",
+        ] {
+            assert!(
+                frontend.contains(&format!("invoke('{command}'")),
+                "frontend invoke must pin {command}"
+            );
+            assert!(
+                native.contains(&format!("agent_conversation::{command}")),
+                "generate_handler must register {command}"
+            );
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -13,6 +13,14 @@ pub struct SavedConversationAttachment {
     pub mime_type: String,
     pub path: String,
     pub byte_length: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteConversationAttachmentRequest {
+    pub owned_id: String,
+    pub attachment_id: String,
+    pub path: String,
 }
 
 pub fn save(
@@ -50,6 +58,24 @@ pub fn save(
     })
 }
 
+pub fn delete(
+    app: &tauri::AppHandle,
+    request: DeleteConversationAttachmentRequest,
+) -> Result<(), String> {
+    let owned_id = safe_segment(&request.owned_id, "Owned session id")?;
+    let attachment_id = uuid::Uuid::parse_str(request.attachment_id.trim())
+        .map_err(|_| "Attachment id is invalid".to_string())?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Application data directory is unavailable: {error}"))?
+        .join("conversation-attachments")
+        .join(owned_id);
+    let root = canonical_root(&root)?;
+    let target = validate_delete_target(&root, attachment_id, Path::new(&request.path))?;
+    fs::remove_file(&target).map_err(|error| format!("Could not delete screenshot: {error}"))
+}
+
 fn validate_image<'a>(mime_type: &str, bytes: &'a [u8]) -> Result<&'static str, String> {
     let (extension, expected_magic): (&str, &[u8]) = match mime_type {
         "image/png" => ("png", b"\x89PNG\r\n\x1a\n"),
@@ -74,6 +100,28 @@ fn canonical_root(path: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("Could not verify attachment folder: {error}"))
 }
 
+fn validate_delete_target(
+    root: &Path,
+    attachment_id: uuid::Uuid,
+    path: &Path,
+) -> Result<PathBuf, String> {
+    let target = path
+        .canonicalize()
+        .map_err(|error| format!("Could not verify screenshot path: {error}"))?;
+    if !target.starts_with(root) || target.parent() != Some(root) {
+        return Err("Attachment path is outside the managed attachment folder".to_string());
+    }
+    let expected_prefix = format!("screenshot-{attachment_id}.");
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Attachment path has no valid file name".to_string())?;
+    if !file_name.starts_with(&expected_prefix) {
+        return Err("Attachment id does not match the managed screenshot path".to_string());
+    }
+    Ok(target)
+}
+
 fn safe_segment<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
     let value = value.trim();
     if value.is_empty()
@@ -90,7 +138,8 @@ fn safe_segment<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{safe_segment, validate_image, MAX_ATTACHMENT_BYTES};
+    use super::{safe_segment, validate_delete_target, validate_image, MAX_ATTACHMENT_BYTES};
+    use std::fs;
 
     #[test]
     fn attachment_session_folder_rejects_path_traversal() {
@@ -120,5 +169,19 @@ mod tests {
         assert!(validate_image("image/png", b"not-a-png").is_err());
         assert!(validate_image("image/svg+xml", b"<svg></svg>").is_err());
         assert!(validate_image("image/png", &vec![0; MAX_ATTACHMENT_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn attachment_delete_target_stays_inside_the_owned_folder() {
+        let root =
+            std::env::temp_dir().join(format!("mcb-attachment-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let id = uuid::Uuid::new_v4();
+        let target = root.join(format!("screenshot-{id}.png"));
+        fs::write(&target, b"png").unwrap();
+        assert!(validate_delete_target(&root, id, &target).is_ok());
+        assert!(validate_delete_target(&root, id, &root.join("../outside.png")).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }

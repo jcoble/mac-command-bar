@@ -274,6 +274,37 @@ pub struct AgentApprovalResponse {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum AgentUserInputKind {
+    Text,
+    Password,
+    Select,
+    Boolean,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUserInputField {
+    pub id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub required: bool,
+    pub kind: AgentUserInputKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub choices: Option<Vec<AgentConfigOptionChoice>>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUserInputResponse {
+    #[serde(flatten)]
+    pub identity: AgentRequestIdentity,
+    pub values: BTreeMap<String, Value>,
+    pub cancelled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum AgentWriterLeaseOwner {
     Structured,
     Terminal,
@@ -400,6 +431,17 @@ pub enum AgentConversationPayload {
         state: ApprovalState,
         summary: String,
     },
+    UserInputRequested {
+        request_id: String,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        fields: Vec<AgentUserInputField>,
+    },
+    UserInputResolved {
+        request_id: String,
+        cancelled: bool,
+    },
     Plan {
         items: Vec<PlanItem>,
     },
@@ -476,6 +518,26 @@ pub struct RespondAgentConversationApprovalRequest {
     pub generation: u64,
     pub request_id: String,
     pub decision: ApprovalDecision,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondAgentConversationPermissionRequest {
+    pub owned_id: String,
+    pub generation: u64,
+    pub request_id: String,
+    pub option_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondAgentConversationInputRequest {
+    pub owned_id: String,
+    pub generation: u64,
+    pub request_id: String,
+    #[serde(default)]
+    pub values: BTreeMap<String, Value>,
+    pub cancelled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

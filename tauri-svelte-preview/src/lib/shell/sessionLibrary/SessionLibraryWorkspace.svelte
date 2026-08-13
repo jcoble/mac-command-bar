@@ -63,6 +63,8 @@
       right: number;
       top: number;
       bottom: number;
+      containingBlockLeft?: number;
+      containingBlockTop?: number;
     };
     items: SessionContextMenuItem[];
   };
@@ -179,9 +181,27 @@
     const row = target?.closest<HTMLElement>('[data-testid="session-history-row"]');
     const anchor = row ?? target;
     const rect = anchor?.getBoundingClientRect();
+    const containingBlock = target?.closest<HTMLElement>('.dv-render-overlay');
+    const containingBlockRect = containingBlock?.getBoundingClientRect();
+    const containingBlockLeft = containingBlockRect?.left ?? 0;
+    const containingBlockTop = containingBlockRect?.top ?? 0;
     return rect
-      ? { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
-      : { left: event.clientX, right: event.clientX, top: event.clientY, bottom: event.clientY };
+      ? {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          containingBlockLeft,
+          containingBlockTop
+        }
+      : {
+          left: event.clientX,
+          right: event.clientX,
+          top: event.clientY,
+          bottom: event.clientY,
+          containingBlockLeft,
+          containingBlockTop
+        };
   }
 
   function openRowMenu(record: SessionLibraryRecord, event: MouseEvent): void {

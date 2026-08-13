@@ -16,9 +16,9 @@ use super::protocol::{
     AgentConversationPayload, AgentConversationProvider, AgentConversationSnapshot, AgentEvent,
     AgentEventType, AgentExecutionOwner, AgentImplementation, AgentInteractionCapabilities,
     AgentNativeSessionMode, AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState,
-    AgentSessionCapabilities, AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition,
-    ApprovalState, ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
-    SetAgentConversationConfigRequest, ToolState,
+    AgentSessionCapabilities, AgentUserInputResponse, AgentWriterLease, AgentWriterLeaseOwner,
+    AgentWriterLeaseTransition, ApprovalState, ConversationConnectionState,
+    EnsureAgentConversationRequest, PlanItem, SetAgentConversationConfigRequest, ToolState,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
@@ -55,6 +55,16 @@ struct PendingPermission {
     summary: String,
 }
 
+#[derive(Clone, Debug)]
+struct PendingUserInput {
+    wire_id: Value,
+}
+
+enum PermissionSelection {
+    Decision(AgentApprovalDecision),
+    Option(String),
+}
+
 enum OrderedSessionEvent {
     PromptResult {
         turn_id: String,
@@ -64,6 +74,10 @@ enum OrderedSessionEvent {
         request_id: String,
         state: ApprovalState,
         summary: String,
+    },
+    UserInputResolved {
+        request_id: String,
+        cancelled: bool,
     },
 }
 
@@ -87,6 +101,8 @@ pub struct ManagedAgentSession {
     pub writer_lease_transition: Option<AgentWriterLeaseTransition>,
     permission_requests: HashMap<String, PendingPermission>,
     next_permission_id: u64,
+    user_input_requests: HashMap<String, PendingUserInput>,
+    next_user_input_id: u64,
     ordered_events: Option<UnboundedSender<OrderedSessionEvent>>,
     cwd: String,
     spawn_reasoning_effort: Option<String>,
@@ -185,6 +201,21 @@ impl AgentRuntimeManager {
         Ok(current_session(&sessions, owned_id, generation)?
             .capabilities
             .clone())
+    }
+
+    /// Return the current capability snapshot for a session-owned identifier.
+    /// The native read command is intentionally generation-free because it is a
+    /// snapshot read, not a mutating operation; the map contains only the
+    /// current generation for each owned session.
+    pub fn capabilities_for_owned_id(&self, owned_id: &str) -> Result<AgentCapabilities, String> {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions
+            .get(owned_id)
+            .map(|session| session.capabilities.clone())
+            .ok_or_else(|| "Conversation session was not found".to_string())
     }
 
     /// Ensure an app-owned ACP session while serializing it with activation.
@@ -290,6 +321,8 @@ impl AgentRuntimeManager {
                 writer_lease_transition: None,
                 permission_requests: HashMap::new(),
                 next_permission_id: 0,
+                user_input_requests: HashMap::new(),
+                next_user_input_id: 0,
                 ordered_events: None,
                 cwd,
                 spawn_reasoning_effort: reasoning_effort,
@@ -532,9 +565,39 @@ impl AgentRuntimeManager {
     }
 
     pub async fn respond_permission(&self, input: PermissionResponse) -> Result<(), String> {
-        let owned_id = input.identity.owned_id.clone();
-        let generation = input.identity.generation;
-        let request_id = input.identity.request_id.clone();
+        self.respond_permission_selection(
+            &input.identity.owned_id,
+            input.identity.generation,
+            input.identity.request_id,
+            PermissionSelection::Decision(input.decision),
+        )
+        .await
+    }
+
+    pub async fn respond_permission_option(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        request_id: String,
+        option_id: String,
+    ) -> Result<(), String> {
+        let option_id = required_id(&option_id, "Permission option id")?;
+        self.respond_permission_selection(
+            owned_id,
+            generation,
+            request_id,
+            PermissionSelection::Option(option_id),
+        )
+        .await
+    }
+
+    async fn respond_permission_selection(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        request_id: String,
+        selection: PermissionSelection,
+    ) -> Result<(), String> {
         let runtime = self.runtime(&owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
@@ -557,17 +620,12 @@ impl AgentRuntimeManager {
             (pending, ordered_events, session.active_turn_id.is_some())
         };
         let terminal_state = if turn_active {
-            match input.decision {
-                AgentApprovalDecision::Accept => ApprovalState::Accepted,
-                AgentApprovalDecision::Decline | AgentApprovalDecision::Cancel => {
-                    ApprovalState::Declined
-                }
-            }
+            permission_state(&pending.options, &selection)
         } else {
             ApprovalState::Declined
         };
         let response = match if turn_active {
-            permission_response(&pending.options, input.decision)
+            permission_response_for_selection(&pending.options, &selection)
         } else {
             Ok(serde_json::json!({ "outcome": { "outcome": "cancelled" } }))
         } {
@@ -598,6 +656,54 @@ impl AgentRuntimeManager {
                 request_id,
                 state: terminal_state,
                 summary: pending.summary,
+            })
+            .map_err(|_| "Structured event pump is no longer running".to_string())?;
+        Ok(())
+    }
+
+    pub async fn respond_user_input(&self, input: AgentUserInputResponse) -> Result<(), String> {
+        let owned_id = input.identity.owned_id.clone();
+        let generation = input.identity.generation;
+        let request_id = input.identity.request_id.clone();
+        let runtime = self.runtime(&owned_id, generation)?;
+        let transport = {
+            let runtime = runtime.lock().await;
+            runtime.transport().map_err(|error| error.to_string())?
+        };
+        let (pending, ordered_events) = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session_mut(&mut sessions, &owned_id, generation)?;
+            let ordered_events = session
+                .ordered_events
+                .clone()
+                .ok_or_else(|| "Structured event pump has not started".to_string())?;
+            let pending = session
+                .user_input_requests
+                .remove(&request_id)
+                .ok_or_else(|| "User input request is no longer pending".to_string())?;
+            (pending, ordered_events)
+        };
+        let response = serde_json::json!({
+            "values": input.values,
+            "cancelled": input.cancelled,
+        });
+        if let Err(error) = transport.respond(pending.wire_id.clone(), response).await {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
+                session.user_input_requests.insert(request_id, pending);
+            }
+            return Err(error.to_string());
+        }
+        ordered_events
+            .send(OrderedSessionEvent::UserInputResolved {
+                request_id,
+                cancelled: input.cancelled,
             })
             .map_err(|_| "Structured event pump is no longer running".to_string())?;
         Ok(())
@@ -1367,10 +1473,61 @@ async fn pump_inbound(
                 method,
                 params,
             } => {
-                if method != "session/request_permission" {
+                if method != "session/request_permission"
+                    && method != "session/request_user_input"
+                    && method != "session/request_input"
+                {
                     crate::debug_log::stderr_log!(
                         "Ignoring unsupported ACP agent request: {method}"
                     );
+                    continue;
+                }
+                if method == "session/request_user_input" || method == "session/request_input" {
+                    let title = params
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("Input requested")
+                        .to_string();
+                    let description = params
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let fields = params
+                        .get("fields")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .unwrap_or_default();
+                    let mut sessions = sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation)
+                    else {
+                        return;
+                    };
+                    if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                        continue;
+                    }
+                    session.next_user_input_id = session.next_user_input_id.saturating_add(1);
+                    let request_id = format!("input-{}", session.next_user_input_id);
+                    session
+                        .user_input_requests
+                        .insert(request_id.clone(), PendingUserInput { wire_id });
+                    session.state = AgentRuntimeState::WaitingInput;
+                    if let Err(error) = record_payload_for_session_and_dispatch(
+                        session,
+                        &emitter,
+                        AgentConversationPayload::UserInputRequested {
+                            request_id,
+                            title,
+                            description,
+                            fields,
+                        },
+                    ) {
+                        crate::debug_log::stderr_log!(
+                            "Could not record ACP user input request: {error}"
+                        );
+                    }
                     continue;
                 }
                 let summary = permission_summary(&params);
@@ -1431,6 +1588,21 @@ async fn pump_inbound(
                         ) {
                             crate::debug_log::stderr_log!(
                                 "Could not record expired ACP permission request: {error}"
+                            );
+                        }
+                    }
+                    let pending_inputs = session.user_input_requests.drain().collect::<Vec<_>>();
+                    for (request_id, _pending) in pending_inputs {
+                        if let Err(error) = record_payload_for_session_and_dispatch(
+                            session,
+                            &emitter,
+                            AgentConversationPayload::UserInputResolved {
+                                request_id,
+                                cancelled: true,
+                            },
+                        ) {
+                            crate::debug_log::stderr_log!(
+                                "Could not record expired ACP user input request: {error}"
                             );
                         }
                     }
@@ -1533,6 +1705,39 @@ async fn handle_ordered_session_event(
             };
             true
         }
+        OrderedSessionEvent::UserInputResolved {
+            request_id,
+            cancelled,
+        } => {
+            let mut sessions = sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
+                return false;
+            };
+            if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                return true;
+            }
+            if let Err(error) = record_payload_for_session_and_dispatch(
+                session,
+                &emitter,
+                AgentConversationPayload::UserInputResolved {
+                    request_id,
+                    cancelled,
+                },
+            ) {
+                crate::debug_log::stderr_log!(
+                    "Could not record ACP user input resolution: {error}"
+                );
+                return false;
+            }
+            session.state = if session.active_turn_id.is_some() {
+                AgentRuntimeState::Working
+            } else {
+                AgentRuntimeState::Ready
+            };
+            true
+        }
         OrderedSessionEvent::PromptResult { turn_id, result } => {
             let cancelled = result
                 .as_ref()
@@ -1548,7 +1753,7 @@ async fn handle_ordered_session_event(
             // session-lock operation. If transport closure wins this lock,
             // it emits the same terminal approval/turn events and this handler
             // returns without duplicating them.
-            let pending_permissions = {
+            let (pending_permissions, pending_inputs) = {
                 let mut sessions = sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1577,6 +1782,22 @@ async fn handle_ordered_session_event(
                     ) {
                         crate::debug_log::stderr_log!(
                             "Could not expire ACP permission request: {error}"
+                        );
+                        return false;
+                    }
+                }
+                let pending_inputs = session.user_input_requests.drain().collect::<Vec<_>>();
+                for (request_id, _pending) in &pending_inputs {
+                    if let Err(error) = record_payload_for_session_and_dispatch(
+                        session,
+                        &emitter,
+                        AgentConversationPayload::UserInputResolved {
+                            request_id: request_id.clone(),
+                            cancelled: true,
+                        },
+                    ) {
+                        crate::debug_log::stderr_log!(
+                            "Could not expire ACP user input request: {error}"
                         );
                         return false;
                     }
@@ -1618,7 +1839,7 @@ async fn handle_ordered_session_event(
                 session.active_turn_id = None;
                 session.prompt_once_active = false;
                 session.state = AgentRuntimeState::Ready;
-                pending_permissions
+                (pending_permissions, pending_inputs)
             };
 
             // The wire responses are transport I/O and must not hold the
@@ -1635,6 +1856,19 @@ async fn handle_ordered_session_event(
                     {
                         crate::debug_log::stderr_log!(
                             "Could not expire ACP permission request: {error}"
+                        );
+                    }
+                }
+                for (_, pending) in pending_inputs {
+                    if let Err(error) = transport
+                        .respond(
+                            pending.wire_id,
+                            serde_json::json!({ "values": {}, "cancelled": true }),
+                        )
+                        .await
+                    {
+                        crate::debug_log::stderr_log!(
+                            "Could not expire ACP user input request: {error}"
                         );
                     }
                 }
@@ -1738,6 +1972,42 @@ fn permission_response(
     }
 }
 
+fn permission_response_for_selection(
+    options: &[PermissionOption],
+    selection: &PermissionSelection,
+) -> Result<Value, String> {
+    match selection {
+        PermissionSelection::Decision(decision) => permission_response(options, *decision),
+        PermissionSelection::Option(option_id) => {
+            if options.iter().any(|option| option.option_id == *option_id) {
+                Ok(serde_json::json!({
+                    "outcome": { "outcome": "selected", "optionId": option_id }
+                }))
+            } else {
+                Err("ACP permission option is not part of the pending request".to_string())
+            }
+        }
+    }
+}
+
+fn permission_state(
+    options: &[PermissionOption],
+    selection: &PermissionSelection,
+) -> ApprovalState {
+    match selection {
+        PermissionSelection::Decision(AgentApprovalDecision::Accept) => ApprovalState::Accepted,
+        PermissionSelection::Decision(
+            AgentApprovalDecision::Decline | AgentApprovalDecision::Cancel,
+        ) => ApprovalState::Declined,
+        PermissionSelection::Option(option_id) => options
+            .iter()
+            .find(|option| option.option_id == *option_id)
+            .filter(|option| !is_reject_kind(&option.kind))
+            .map(|_| ApprovalState::Accepted)
+            .unwrap_or(ApprovalState::Declined),
+    }
+}
+
 fn is_allow_kind(kind: &str) -> bool {
     kind.eq_ignore_ascii_case("allow") || kind.to_ascii_lowercase().starts_with("allow_")
 }
@@ -1763,6 +2033,8 @@ fn canonical_event(
         AgentConversationPayload::AssistantMessage { .. } => AgentEventType::ItemCompleted,
         AgentConversationPayload::Tool { .. } => AgentEventType::ItemUpdated,
         AgentConversationPayload::Approval { .. } => AgentEventType::ApprovalRequested,
+        AgentConversationPayload::UserInputRequested { .. } => AgentEventType::UserInputRequested,
+        AgentConversationPayload::UserInputResolved { .. } => AgentEventType::UserInputResolved,
         AgentConversationPayload::Plan { .. } => AgentEventType::PlanUpdated,
         AgentConversationPayload::AvailableCommandsUpdate { .. } => AgentEventType::CommandsUpdated,
         AgentConversationPayload::Turn {
@@ -2385,6 +2657,8 @@ mod tests {
             AgentConversationPayload::AssistantMessage { .. } => "assistantMessage",
             AgentConversationPayload::Tool { .. } => "tool",
             AgentConversationPayload::Approval { .. } => "approval",
+            AgentConversationPayload::UserInputRequested { .. } => "userInputRequested",
+            AgentConversationPayload::UserInputResolved { .. } => "userInputResolved",
             AgentConversationPayload::Plan { .. } => "plan",
             AgentConversationPayload::Turn { .. } => "turn",
             AgentConversationPayload::AvailableCommandsUpdate { .. } => "availableCommandsUpdate",

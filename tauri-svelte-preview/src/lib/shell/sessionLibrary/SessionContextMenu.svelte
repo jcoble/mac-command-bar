@@ -11,6 +11,8 @@
     right: number;
     top: number;
     bottom: number;
+    containingBlockLeft?: number;
+    containingBlockTop?: number;
   }
 
   interface Props {
@@ -32,17 +34,14 @@
 
   const menuLeft = $derived.by(() => {
     const width = measuredWidth;
-    const availableWidth = viewportWidth || anchor.right + VIEWPORT_PADDING;
+    const availableWidth = Math.max(viewportWidth, VIEWPORT_PADDING * 2);
     const rightPosition = anchor.right + MENU_GAP;
     const leftPosition = anchor.left - width - MENU_GAP;
-    if (width === 0 || rightPosition + width <= availableWidth - VIEWPORT_PADDING) {
-      return Math.max(VIEWPORT_PADDING, rightPosition);
-    }
-    if (leftPosition >= VIEWPORT_PADDING) return leftPosition;
-    return Math.max(
-      VIEWPORT_PADDING,
-      Math.min(rightPosition, availableWidth - width - VIEWPORT_PADDING)
-    );
+    const maxLeft = Math.max(VIEWPORT_PADDING, availableWidth - width - VIEWPORT_PADDING);
+    const rightFits = width > 0 && rightPosition + width <= availableWidth - VIEWPORT_PADDING;
+    const preferred = rightFits ? rightPosition : leftPosition;
+    const viewportLeft = Math.min(maxLeft, Math.max(VIEWPORT_PADDING, preferred));
+    return viewportLeft - (anchor.containingBlockLeft ?? 0);
   });
 
   const menuTop = $derived.by(() => {
@@ -51,13 +50,16 @@
     const belowPosition = anchor.bottom + MENU_GAP;
     const abovePosition = anchor.top - height - MENU_GAP;
     if (height === 0 || belowPosition + height <= availableHeight - VIEWPORT_PADDING) {
-      return Math.max(VIEWPORT_PADDING, belowPosition);
+      return Math.max(VIEWPORT_PADDING, belowPosition) - (anchor.containingBlockTop ?? 0);
     }
-    if (abovePosition >= VIEWPORT_PADDING) return abovePosition;
-    return Math.max(
+    if (abovePosition >= VIEWPORT_PADDING) {
+      return abovePosition - (anchor.containingBlockTop ?? 0);
+    }
+    const viewportTop = Math.max(
       VIEWPORT_PADDING,
       Math.min(belowPosition, availableHeight - height - VIEWPORT_PADDING)
     );
+    return viewportTop - (anchor.containingBlockTop ?? 0);
   });
 
   onMount(() => {
@@ -79,6 +81,7 @@
       observer = new ResizeObserver(measure);
       observer.observe(menuElement);
     }
+    updateViewport();
     return () => {
       observer?.disconnect();
       window.removeEventListener('resize', updateViewport);

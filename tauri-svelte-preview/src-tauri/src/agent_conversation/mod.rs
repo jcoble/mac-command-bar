@@ -12,10 +12,11 @@ mod transcript;
 use manager::AgentRuntimeManager;
 use prompt_content::prompt_from_blocks;
 use protocol::{
-    AgentConversationConfigState, AgentConversationConnection, AgentConversationSnapshot,
-    EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
-    SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
-    StopAgentConversationTurnRequest,
+    AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
+    AgentConversationSnapshot, EnsureAgentConversationRequest,
+    RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
+    RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
+    SetAgentConversationConfigRequest, StopAgentConversationTurnRequest,
 };
 
 #[tauri::command]
@@ -63,6 +64,43 @@ pub async fn respond_agent_conversation_approval(
 }
 
 #[tauri::command]
+pub async fn respond_agent_conversation_permission(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    request: RespondAgentConversationPermissionRequest,
+) -> Result<(), String> {
+    let request_id = required_id(&request.request_id, "Permission request id")?;
+    manager
+        .respond_permission_option(
+            &request.owned_id,
+            request.generation,
+            request_id,
+            request.option_id,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn respond_agent_conversation_input(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    request: RespondAgentConversationInputRequest,
+) -> Result<(), String> {
+    let request_id = required_id(&request.request_id, "User input request id")?;
+    manager
+        .respond_user_input(protocol::AgentUserInputResponse {
+            identity: protocol::AgentRequestIdentity {
+                owned_id: request.owned_id,
+                generation: request.generation,
+                request_id,
+                turn_id: None,
+                item_id: None,
+            },
+            values: request.values,
+            cancelled: request.cancelled,
+        })
+        .await
+}
+
+#[tauri::command]
 pub async fn stop_agent_conversation_turn(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: StopAgentConversationTurnRequest,
@@ -86,6 +124,14 @@ pub fn read_agent_conversation_config(
     owned_id: String,
 ) -> Result<AgentConversationConfigState, String> {
     manager.conversation_config(&owned_id)
+}
+
+#[tauri::command]
+pub fn read_agent_conversation_capabilities(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> Result<AgentCapabilities, String> {
+    manager.capabilities_for_owned_id(&owned_id)
 }
 
 #[tauri::command]
@@ -138,6 +184,14 @@ pub async fn save_agent_conversation_attachment(
     bytes: Vec<u8>,
 ) -> Result<attachments::SavedConversationAttachment, String> {
     attachments::save(&app, &owned_id, &mime_type, &bytes)
+}
+
+#[tauri::command]
+pub fn delete_agent_conversation_attachment(
+    app: tauri::AppHandle,
+    request: attachments::DeleteConversationAttachmentRequest,
+) -> Result<(), String> {
+    attachments::delete(&app, request)
 }
 
 fn required_id(value: &str, label: &str) -> Result<String, String> {
