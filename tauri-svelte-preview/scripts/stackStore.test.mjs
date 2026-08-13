@@ -63,7 +63,8 @@ const {
   serializeStackRuns,
   stackIdForOwnedId,
   stackProcessesFor,
-  stacks
+  stacks,
+  updateStack
 } = store;
 
 let passed = 0;
@@ -264,6 +265,97 @@ test('saved stacks are trimmed, de-duplicated by id, and stripped of extra field
 test('saved stacks survive a round trip', () => {
   const parsed = parseStackDefinitions(serializeStackDefinitions([web, api]));
   assert.deepEqual(parsed, [web, api]);
+});
+
+// ── The four fields the Run panel added ──────────────────────────────────────
+//
+// A shortcut, a page to open, and the two toggles are all optional, because a
+// configuration saved before they existed has to keep loading exactly as it is.
+
+test('a stack saved with a shortcut, a preview page and both toggles survives a round trip', () => {
+  const full = {
+    id: 'stack-full',
+    name: 'Web',
+    script: 'pnpm dev',
+    cwd: '/Users/me/app',
+    keybinding: 'Cmd+Shift+R',
+    previewUrl: 'http://localhost:5173',
+    runOnWorktreeCreation: true,
+    openPreviewOnRun: true
+  };
+  assert.deepEqual(parseStackDefinitions(serializeStackDefinitions([full])), [full]);
+});
+
+test('a stack saved before those fields existed still loads, with none of them set', () => {
+  const raw = JSON.stringify([{ id: 'a', name: 'Web', script: 'pnpm dev', cwd: '/p' }]);
+  const parsed = parseStackDefinitions(raw);
+  assert.deepEqual(parsed, [{ id: 'a', name: 'Web', script: 'pnpm dev', cwd: '/p' }]);
+  assert.equal(parsed[0].keybinding, undefined);
+  assert.equal(parsed[0].previewUrl, undefined);
+  assert.equal(parsed[0].runOnWorktreeCreation, undefined);
+  assert.equal(parsed[0].openPreviewOnRun, undefined);
+});
+
+test('a toggle left off is not written down at all, so an old build reads the same bytes', () => {
+  const written = serializeStackDefinitions([
+    {
+      id: 'a',
+      name: 'Web',
+      script: 'pnpm dev',
+      cwd: '/p',
+      runOnWorktreeCreation: false,
+      openPreviewOnRun: false,
+      keybinding: '',
+      previewUrl: ''
+    }
+  ]);
+  assert.equal(written, JSON.stringify([{ id: 'a', name: 'Web', script: 'pnpm dev', cwd: '/p' }]));
+});
+
+test('an unusable shortcut or toggle drops that field and keeps the configuration', () => {
+  const raw = JSON.stringify([
+    {
+      id: 'a',
+      name: 'Web',
+      script: 'pnpm dev',
+      cwd: '/p',
+      keybinding: 17,
+      previewUrl: { href: 'nope' },
+      runOnWorktreeCreation: 'yes',
+      openPreviewOnRun: 1
+    }
+  ]);
+  const parsed = parseStackDefinitions(raw);
+  assert.equal(parsed.length, 1);
+  assert.deepEqual(parsed[0], { id: 'a', name: 'Web', script: 'pnpm dev', cwd: '/p' });
+});
+
+test('adding and changing a configuration keeps the four fields', () => {
+  resetStacks();
+  const added = addStack({
+    name: 'Web',
+    script: 'pnpm dev',
+    cwd: '/Users/me/app',
+    keybinding: ' Cmd+Shift+R ',
+    previewUrl: ' http://localhost:5173 ',
+    runOnWorktreeCreation: true,
+    openPreviewOnRun: true
+  });
+  assert.equal(added.keybinding, 'Cmd+Shift+R');
+  assert.equal(added.previewUrl, 'http://localhost:5173');
+  assert.equal(added.runOnWorktreeCreation, true);
+  assert.equal(added.openPreviewOnRun, true);
+
+  const changed = updateStack(added.id, {
+    name: 'Web',
+    script: 'pnpm dev',
+    cwd: '/Users/me/app',
+    openPreviewOnRun: false
+  });
+  assert.equal(changed.keybinding, undefined);
+  assert.equal(changed.previewUrl, undefined);
+  assert.equal(changed.runOnWorktreeCreation, undefined);
+  assert.equal(changed.openPreviewOnRun, undefined);
 });
 
 test('the saved which-session-is-which-stack list is read just as carefully', () => {

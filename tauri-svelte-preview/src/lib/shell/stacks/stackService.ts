@@ -18,7 +18,8 @@
  *    page — it owns the session rail, the terminal service and the terminal
  *    hosts. So this service does not do either: the page REGISTERS three
  *    handlers here (`registerStackHandlers`), and this service calls them and
- *    keeps the bookkeeping. See `_(stacks)-INTEGRATION.md` for the exact wiring.
+ *    keeps the bookkeeping. The page's side of that is `registerStackHandlers`
+ *    in its `onMount`.
  *
  * Every backend call is counted with `countInvoke('<command name>')` right
  * before it, so the dev invoke counter stays honest. A `null` result from a
