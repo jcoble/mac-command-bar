@@ -2,7 +2,7 @@
  * Pins the left-rail row quick-jump: the pure surface mapping, the thin
  * dispatch that runs it, and the wiring that makes the three buttons real.
  *
- * Run: node --experimental-strip-types scripts/sessionRowActions.test.mjs
+ * Run: node --experimental-strip-types scripts/sessionRowActions.test.ts
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -213,15 +213,27 @@ assert.match(
   /\.session-title\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/,
   'long row titles keep one fixed-width ellipsis line'
 );
+assert.match(row, /class="action-reserve"/, 'line one always reserves the action cluster width');
 assert.match(
   row,
-  /\[data-slot='hover-actions'\]\)\s*\{[\s\S]*?padding:\s*2px 3px;[\s\S]*?border-radius:\s*6px;[\s\S]*?background:\s*var\(--color-hover\);/,
-  'hover actions sit on an opaque copy of the row hover surface'
+  /\.action-reserve\s*\{[\s\S]*?width:\s*80px;[\s\S]*?flex:\s*0 0 80px;/,
+  'three 24px actions and two 4px gaps reserve exactly 80px'
 );
 assert.match(
   row,
-  /\[data-slot='hover-actions'\]\)::before\s*\{[\s\S]*?width:\s*14px;[\s\S]*?linear-gradient\(to right, transparent, var\(--color-hover\)\)/,
-  'the hover surface fades in over the title instead of exposing text beneath it'
+  /class="absolute top-\[2px\] right-\[93px\] z-\[2\]"/,
+  'the actions occupy line one immediately left of the fixed status slot'
+);
+assert.match(
+  row,
+  /\[data-slot='hover-actions'\] svg\)[\s\S]*?width:\s*16px;\s*height:\s*16px;/,
+  'row action glyphs are 16px'
+);
+assert.equal((row.match(/size="xs"/g) ?? []).length, 4, 'all three jumps and Resume use 24px kit buttons');
+assert.doesNotMatch(
+  row,
+  /linear-gradient\(to right, transparent, var\(--color-hover\)\)/,
+  'line-one actions need no opaque title-covering gradient'
 );
 assert.doesNotMatch(row, /:has\(|has-\[/, 'rail actions do not add relational selectors');
 
@@ -255,12 +267,47 @@ for (const live of ['model={modelText}', 'statusTone={presence}', '{usage}', 'la
 assert.match(row, /onmouseenter=\{showOverlay\}/, 'the action cluster opens on pointer hover');
 assert.match(row, /onfocusin=\{showOverlay\}/, 'the action cluster opens on keyboard focus');
 assert.match(row, /data-presence=\{presence\}/, 'presence stays a compact row state');
-assert.match(row, /label="Start session"/, 'stopped rows keep Start as the first hover action');
+assert.match(row, /label="Resume session"/, 'stopped rows swap elapsed time for Resume');
 assert.match(
   row,
   /const presenceIsRestart = \$derived\(presence === 'stopped'\)/,
-  'only genuinely stopped rows offer Start, so suspended idle rows do not'
+  'only genuinely stopped rows offer Resume, so suspended idle rows do not'
 );
+assert.match(
+  row,
+  /\.row\[data-presence='stopped'\]:hover \.status,[\s\S]*?\.row\[data-presence='stopped'\]:hover \.resume-slot/,
+  'elapsed time and Resume trade opacity inside the same stopped-row slot'
+);
+assert.match(
+  row,
+  /session\.pendingPermission === true[\s\S]*?session\.pendingInput === true/,
+  'both permission and structured-input requests mark the row as needing the human'
+);
+assert.match(row, />\s*Needs you\s*</, 'the human-waiting state uses the approved concise label');
+assert.match(
+  rail,
+  /data-testid="session-rail-needs-you-count"/,
+  'group headings expose a needs-you count chip'
+);
+assert.match(
+  rail,
+  /`mcb\.rail\.order\.\$\{groupKey\}`/,
+  'each group persists its owned-id order under the documented localStorage key'
+);
+assert.match(rail, /setDragImage\(/, 'dragging uses an explicit quiet drag image');
+assert.match(
+  rail,
+  /dragState\.groupKey !== groupKey/,
+  'drag-over accepts reordering only inside the source group'
+);
+assert.match(rail, /event\.key === 'Escape'/, 'Escape clears the active reorder state');
+assert.match(
+  row,
+  /height:\s*4px;[\s\S]*?background:\s*var\(--color-accent\);/,
+  'the insertion target is a 4px accent line'
+);
+assert.match(row, /const POPOUT_DIAG_DISABLED = false;/, 'the snapshot hover popout is enabled');
+assert.match(row, /const TICKER_DIAG_DISABLED = true;/, 'the isolated ticker stays disabled');
 assert.match(row, /Idle — resumes on send/, 'suspended rows explain that only a send resumes them');
 assert.match(
   row,

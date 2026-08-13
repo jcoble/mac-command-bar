@@ -12,12 +12,11 @@
    */
   import { onDestroy } from 'svelte';
 
+  import CornerDownLeft from '@lucide/svelte/icons/corner-down-left';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import Folder from '@lucide/svelte/icons/folder';
   import GitBranch from '@lucide/svelte/icons/git-branch';
-  import Lock from '@lucide/svelte/icons/lock';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
-  import Play from '@lucide/svelte/icons/play';
 
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { HoverActionButton, HoverActions } from '$lib/components/ui/hover-actions/index.js';
@@ -50,6 +49,8 @@
   interface Props {
     session: OwnedSession;
     active?: boolean;
+    dragging?: boolean;
+    dropPosition?: 'before' | 'after' | null;
     onSelect?(): void;
     onRestart?(): void;
     onComplete?(): void;
@@ -57,6 +58,10 @@
     onSettle?(): void;
     onUnsettle?(): void;
     onAskRemove?(): void;
+    onDragStart?(event: DragEvent): void;
+    onDragOver?(event: DragEvent): void;
+    onDrop?(event: DragEvent): void;
+    onDragEnd?(event: DragEvent): void;
   }
 
   type RowPresence = 'working' | 'attention' | 'idle' | 'stopped' | 'done' | 'failed';
@@ -65,13 +70,19 @@
   let {
     session,
     active = false,
+    dragging = false,
+    dropPosition = null,
     onSelect,
     onRestart,
     onComplete,
     onReopen,
     onSettle,
     onUnsettle,
-    onAskRemove
+    onAskRemove,
+    onDragStart,
+    onDragOver,
+    onDrop,
+    onDragEnd
   }: Props = $props();
 
   const label = $derived(sessionLabel(session));
@@ -89,7 +100,13 @@
   );
   // Presence is rail-record truth plus events received live. Loading a stored
   // transcript may populate `conversation`, but it must not repaint this row.
-  const pendingApprovalCount = $derived(session.pendingPermission ? 1 : 0);
+  const needsYou = $derived(
+    session.pendingPermission === true
+    || session.pendingInput === true
+    || session.runtimeState === 'waiting-approval'
+    || session.runtimeState === 'waiting-input'
+  );
+  const pendingApprovalCount = $derived(needsYou ? 1 : 0);
   const runtimeState = $derived(session.runtimeState);
   const activeTurnId = $derived(session.activeTurnId ?? presenceHistory.activeTurnId);
   const suspended = $derived(session.runtimeState === 'suspended');
@@ -119,10 +136,7 @@
           ? 'idle'
           : session.state === 'exited' || session.executionOwner === 'stopped' || presenceSignals === 'disconnected'
           ? 'stopped'
-          : pendingApprovalCount > 0
-          || runtimeState === 'waiting-approval'
-          || runtimeState === 'waiting-input'
-          || presenceSignals === 'needs-attention'
+          : needsYou || presenceSignals === 'needs-attention'
             ? 'attention'
             : presenceSignals === 'working'
               ? 'working'
@@ -190,8 +204,8 @@
    * mark rather than on every tick. */
   const cadence = $derived(railElapsedCadenceFor(ageMs ?? 0, isWorking));
 
-  // Diagnostic A/B (owner request): popout and ticker off to isolate the slowdown.
-  const POPOUT_DIAG_DISABLED = true;
+  // Diagnostic A/B (owner request): keep the snapshot popout on while the ticker stays isolated.
+  const POPOUT_DIAG_DISABLED = false;
   const TICKER_DIAG_DISABLED = true;
 
   // A row off screen needs no clock at all; one on screen asks for seconds only
@@ -386,7 +400,15 @@
   data-testid="worktree-agent-row"
   data-presence={presence}
   class:active
+  class:dragging
+  class:drop-before={dropPosition === 'before'}
+  class:drop-after={dropPosition === 'after'}
   class="row group"
+  draggable="true"
+  ondragstart={onDragStart}
+  ondragover={onDragOver}
+  ondrop={onDrop}
+  ondragend={onDragEnd}
   onmouseenter={showOverlay}
   onmouseleave={hideOverlay}
   onfocusin={showOverlay}
@@ -404,15 +426,11 @@
           aria-label={`Open session: ${label}`}
           onclick={selectRow}
         >
-          <span class="line">
+          <span class="line meta-line">
             <Folder class="glyph" aria-hidden="true" />
             <span data-testid="worktree-agent-meta" class="project">{project}</span>
 
-            {#if presence === 'attention'}
-              <span data-testid="worktree-agent-status" class="attention">
-                <Lock aria-hidden="true" />Permission waiting
-              </span>
-            {:else if presence === 'failed'}
+            {#if presence === 'failed'}
               <span
                 data-testid="worktree-agent-status"
                 class="failed"
@@ -424,18 +442,31 @@
               </span>
             {/if}
 
-            <!-- The age stays put whatever the session is doing; while it works
-                 the spinner joins it, and nothing else moves. -->
-            <span
-              data-testid="worktree-agent-age"
-              class="status"
-              class:working={isWorking}
-              title={presenceDetail}
-            >
-              {#if isWorking}
-                <span class="spinner" class:spinning aria-hidden="true"></span>
+            <!-- This empty box permanently reserves the exact 3-button width.
+                 The project truncates here instead of moving when actions appear. -->
+            <span class="action-reserve" aria-hidden="true"></span>
+
+            <!-- Human attention and elapsed time share one fixed box. Resume
+                 overlays this same box for stopped rows, so hover cannot reflow. -->
+            <span class="status-slot">
+              {#if needsYou}
+                <span data-testid="worktree-agent-needs-you" class="needs-you">
+                  <span class="attention-dot" aria-hidden="true"></span>
+                  Needs you
+                </span>
+              {:else}
+                <span
+                  data-testid="worktree-agent-age"
+                  class="status"
+                  class:working={isWorking}
+                  title={presenceDetail}
+                >
+                  {#if isWorking}
+                    <span class="spinner" class:spinning aria-hidden="true"></span>
+                  {/if}
+                  {ageText ?? ''}
+                </span>
               {/if}
-              {ageText ?? ''}
             </span>
           </span>
 
@@ -476,26 +507,19 @@
     </ContextMenu.Content>
   </ContextMenu.Root>
 
-  <!-- The kit cluster: bare buttons over the metadata, always in the page, so
-       revealing them never rebuilds a subtree or moves the title. -->
+  <!-- The kit cluster is always in the page. Its matching spacer above puts it
+       on line one, left of the fixed status slot, without covering the title. -->
   <HoverActions
     data-testid="worktree-agent-overlay"
     label="Session actions"
-    class="absolute top-[27px] right-[9px] z-[2]"
+    class="absolute top-[2px] right-[93px] z-[2]"
   >
-    {#if presenceIsRestart}
-      <span data-testid="worktree-agent-start" class="contents">
-        <HoverActionButton label="Start session" tone="primary" onclick={startSession}>
-          <Play aria-hidden="true" />
-        </HoverActionButton>
-      </span>
-    {/if}
-
     <span data-testid="worktree-agent-jump" class="contents">
       <span data-testid="worktree-agent-jump-session" class="contents">
         <HoverActionButton
           label="Open session"
           tone="primary"
+          size="xs"
           onclick={(event) => jump(event, 'session')}
         >
           <MessageCircle aria-hidden="true" />
@@ -505,6 +529,7 @@
         <HoverActionButton
           label="Open editor"
           tone="info"
+          size="xs"
           onclick={(event) => jump(event, 'editor')}
         >
           <FileCode2 aria-hidden="true" />
@@ -514,6 +539,7 @@
         <HoverActionButton
           label="Open source control"
           tone="success"
+          size="xs"
           onclick={(event) => jump(event, 'source-control')}
         >
           <GitBranch aria-hidden="true" />
@@ -521,6 +547,14 @@
       </span>
     </span>
   </HoverActions>
+
+  {#if presenceIsRestart}
+    <span data-testid="worktree-agent-resume" class="resume-slot">
+      <HoverActionButton label="Resume session" tone="primary" size="xs" onclick={startSession}>
+        <CornerDownLeft aria-hidden="true" />
+      </HoverActionButton>
+    </span>
+  {/if}
 
   <!-- Nothing here reads a store: the card renders the snapshot taken when it
        opened, so a transcript event cannot repaint an open floating surface. -->
@@ -599,6 +633,7 @@
 
   .project {
     min-width: 0;
+    flex: 1 1 auto;
     overflow: hidden;
     color: var(--color-text-3);
     font-size: 13px;
@@ -613,10 +648,20 @@
     color: var(--color-text-3);
   }
 
-  .status,
-  .attention,
   .idle-label,
-  .failed { margin-left: auto; }
+  .failed { flex: 0 1 auto; }
+
+  .action-reserve {
+    width: 80px;
+    flex: 0 0 80px;
+  }
+
+  .status-slot {
+    width: 76px;
+    min-width: 76px;
+    display: flex;
+    justify-content: flex-end;
+  }
 
   .status {
     display: inline-flex;
@@ -648,23 +693,24 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner.spinning { animation: none; } }
 
-  .attention {
+  .needs-you {
     display: inline-flex;
     flex: 0 0 auto;
     align-items: center;
     gap: 5px;
-    height: 22px;
-    padding: 0 7px;
-    border: 1px solid color-mix(in srgb, var(--color-attention) 30%, transparent);
-    border-radius: var(--radius-sm);
-    background: var(--color-attention-bg);
     color: var(--color-attention);
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     white-space: nowrap;
   }
 
-  .attention :global(svg) { width: 12px; height: 12px; }
+  .attention-dot {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--color-attention);
+  }
 
   .failed {
     min-width: 0;
@@ -713,39 +759,48 @@
     white-space: nowrap;
   }
 
-  /* The cluster itself is the kit's; the row only says where it sits and which
-     metadata steps aside for it — by fading, never by moving. */
-  .row:hover .status,
-  .row:hover .idle-label,
-  .row:hover .attention,
-  .row:hover :global(.provider-icon),
-  .row:focus-within .status,
-  .row:focus-within .idle-label,
-  .row:focus-within .attention,
-  .row:focus-within :global(.provider-icon) { opacity: 0; }
-
-  .row :global([data-slot='hover-actions'] svg) { width: 14px; height: 14px; }
-
-  /* The actions sit over the title by design, so their surface has to be
-     opaque. The short lead-in fades the last title glyphs into that surface
-     without changing the title width or moving anything when hover begins. */
-  .row :global([data-slot='hover-actions']) {
-    padding: 2px 3px;
-    border-radius: 6px;
-    background: var(--color-hover);
-  }
-
-  .row :global([data-slot='hover-actions'])::before {
+  /* A stopped row trades elapsed time for one resume control in the same box. */
+  .resume-slot {
     position: absolute;
-    inset: 0 100% 0 auto;
-    width: 14px;
-    background: linear-gradient(to right, transparent, var(--color-hover));
-    content: '';
+    top: 2px;
+    right: 11px;
+    z-index: 2;
+    width: 76px;
+    display: flex;
+    justify-content: flex-end;
+    opacity: 0;
     pointer-events: none;
   }
 
+  .row[data-presence='stopped']:hover .status,
+  .row[data-presence='stopped']:focus-within .status { opacity: 0; }
+  .row[data-presence='stopped']:hover .resume-slot,
+  .row[data-presence='stopped']:focus-within .resume-slot {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .row :global([data-slot='hover-actions'] svg),
+  .row :global(.resume-slot [data-slot='icon-button'] svg) { width: 16px; height: 16px; }
+
   .row[data-presence='stopped'] .project { opacity: 0.72; }
   .row[data-presence='stopped']:hover .project { opacity: 1; }
+
+  .row.dragging { opacity: 0.48; }
+  .row.drop-before::after,
+  .row.drop-after::after {
+    position: absolute;
+    right: 6px;
+    left: 6px;
+    z-index: 5;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--color-accent);
+    content: '';
+    pointer-events: none;
+  }
+  .row.drop-before::after { top: -2px; }
+  .row.drop-after::after { bottom: -2px; }
 
   .hover-popover {
     position: fixed;
@@ -759,8 +814,7 @@
   @media (prefers-reduced-motion: no-preference) {
     .status,
     .idle-label,
-    .attention,
-    :global(.provider-icon) { transition: opacity 120ms ease; }
+    .resume-slot { transition: opacity 120ms ease; }
 
     .session-row { transition: background-color 140ms ease; }
     .session-row::before { transition: transform 180ms cubic-bezier(0.2, 0, 0, 1); }
