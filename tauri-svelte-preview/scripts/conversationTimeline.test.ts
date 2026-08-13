@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import {
-  conversationScrollShouldFollow,
   displayItemFromAgentItem,
   displayItemsFromConversationEvents,
-  typedConversationTimeline,
-  visibleConversationRange
+  typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
 
 const typed = typedConversationTimeline([
@@ -15,10 +13,6 @@ const typed = typedConversationTimeline([
 
 assert.deepEqual(typed.map((item) => item.kind), ['user', 'assistant', 'tool', 'plan']);
 assert.equal(displayItemFromAgentItem({ id: 'reason-1', type: 'reasoning', content: [{ channel: 'reasoning', text: 'Think' }] }, 2).kind, 'reasoning');
-assert.equal(conversationScrollShouldFollow(500, 400, 950), true);
-assert.equal(conversationScrollShouldFollow(300, 400, 950), false);
-assert.deepEqual(visibleConversationRange(100, 960, 480, 96, 2), { start: 8, end: 17, offsetTop: 768 });
-assert.deepEqual(visibleConversationRange(0, 0, 480), { start: 0, end: 0, offsetTop: 0 });
 
 const event = (sequence, payload, timestampMs = sequence) => ({
   ownedId: 'owned-rich',
@@ -98,4 +92,4 @@ assert.equal(remainingRichKinds[1].toolKind, 'file-edit');
 assert.equal(remainingRichKinds[1].state, 'completed');
 assert.equal(remainingRichKinds[1].diff, '@@ -1 +1 @@\n-old\n+new');
 
-console.log('conversationTimeline.test.mjs passed');
+console.log('conversationTimeline.test.ts passed');

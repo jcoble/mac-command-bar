@@ -53,6 +53,7 @@
   import { requestOpenFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import { requestSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
+  import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
 
   interface Props {
     owned: OwnedSession[];
@@ -113,6 +114,8 @@
   let capabilityRequest = $state('');
   let configRequest = $state('');
   let inspectorOpen = $state(false);
+  let sendAnchorRequest = $state<ConversationSendAnchorRequest | null>(null);
+  let sendAnchorRequestId = 0;
 
   $effect(() => {
     const ownedId = activeOwnedId;
@@ -165,6 +168,12 @@
     if (!activeOwnedId || !conversation || conversation.sending || conversation.selectedChildId) return;
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
     const text = conversation.draft;
+    const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
+    sendAnchorRequest = {
+      requestId: ++sendAnchorRequestId,
+      conversationId: activeOwnedId,
+      previousUserItemId
+    };
     setConversationDraft(activeOwnedId, '');
     try {
       await clearConversationSessionDraft(activeOwnedId);
@@ -330,6 +339,8 @@
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
         items={visibleTimeline}
+        conversationId={active.ownedId}
+        anchorRequest={sendAnchorRequest}
         assistantLabel={selectedChild?.label ?? active.agent}
         savedScrollTop={conversation.selectedChildId ? conversation.childScrollTopById[conversation.selectedChildId] ?? 0 : conversation.scrollTop}
         emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}

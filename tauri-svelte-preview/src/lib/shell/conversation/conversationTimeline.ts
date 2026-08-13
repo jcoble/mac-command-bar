@@ -421,30 +421,6 @@ export function typedConversationTimeline(
   return [...byId.values()].sort((left, right) => left.timestampMs - right.timestampMs);
 }
 
-/** Stable, bounded row selection for a long history. */
-export function visibleConversationRange(
-  count: number,
-  scrollTop: number,
-  viewportHeight: number,
-  rowEstimate = 96,
-  overscan = 6
-): { start: number; end: number; offsetTop: number } {
-  if (count <= 0) return { start: 0, end: 0, offsetTop: 0 };
-  const safeRow = Math.max(48, rowEstimate);
-  const start = Math.max(0, Math.floor(Math.max(0, scrollTop) / safeRow) - overscan);
-  const visible = Math.ceil(Math.max(1, viewportHeight) / safeRow) + overscan * 2;
-  return { start, end: Math.min(count, start + visible), offsetTop: start * safeRow };
-}
-
-export function conversationScrollShouldFollow(
-  scrollTop: number,
-  clientHeight: number,
-  scrollHeight: number,
-  threshold = 80
-): boolean {
-  return scrollHeight - (scrollTop + clientHeight) <= threshold;
-}
-
 function eventIdentity(event: ConversationEvent, payload: StringRecord, prefix: string): string {
   const fromEvent = 'itemId' in event ? event.itemId : undefined;
   const turnId = 'turnId' in event ? event.turnId : undefined;
