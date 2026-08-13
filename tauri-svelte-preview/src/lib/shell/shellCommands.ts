@@ -12,7 +12,6 @@
  */
 import { settings } from '../settingsStore.svelte.ts';
 import { browser, reloadBrowserFrame } from './browser/browserStore.svelte.ts';
-import { refreshAll as refreshContextCards } from './context/contextService.ts';
 import { closeEditorFile, editorState } from './editor/editorStore.svelte.ts';
 import { explorer } from './explorer/explorerStore.svelte.ts';
 import { refresh as refreshFileList, stopScan } from './explorer/explorerService.ts';
@@ -20,7 +19,6 @@ import { gitPanel } from './git/gitPanelStore.svelte.ts';
 import { gitService } from './git/gitService.ts';
 import type { SidebarViewId } from './layout/sidebarViews.ts';
 import { registerCommands } from './palette/commandRegistry.ts';
-import { refresh as refreshPlaywright } from './processes/playwrightService.ts';
 import { refreshProblemsForSelection } from './shellPanels.ts';
 import { refreshStacks } from './stacks/stackService.ts';
 
@@ -135,23 +133,6 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       detail: 'Give up on the file list that is still being read',
       disabled: () => !explorer.scanning,
       perform: () => stopScan()
-    },
-    {
-      id: 'context-refresh',
-      label: 'Refresh the context cards',
-      detail: 'Read runs, processes, agent sessions, worktrees and repositories again',
-      // `refreshContextCards` reads the Playwright list itself now, so asking
-      // for it again here would only read it twice.
-      perform: () => void refreshContextCards()
-    },
-    {
-      id: 'playwright-show',
-      label: 'Show leftover Playwright processes',
-      detail: 'Open the Context view and look again for browsers Playwright left running',
-      perform: () => {
-        hooks.showView('context');
-        void refreshPlaywright();
-      }
     },
     {
       id: 'worktrees-clean-up',

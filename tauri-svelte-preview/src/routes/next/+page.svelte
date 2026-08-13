@@ -38,7 +38,6 @@
   import { openBrowserUrl } from '$lib/shell/browser/browserStore.svelte.ts';
   import type { UtilityId } from '$lib/shell/components/utilityStrip';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
-  import { setContextPanelHooks } from '$lib/shell/context/contextPanelHooks.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import {
     captureConversationWorkspace,
@@ -317,7 +316,7 @@
   /**
    * Show a right panel, and say so.
    *
-   * Four of the eight read something project-scoped, and all four follow the
+   * Three of the eight read something project-scoped, and all three follow the
    * same rule they always have: they load only while the user can see them.
    * "Visible" here means simply "this is the open tab" — the column no longer
    * has folding panes, so there is no second half to the question.
@@ -327,7 +326,6 @@
     shellPanels.sourceControlVisible(id === 'source-control');
     shellPanels.worktreesVisible(id === 'worktrees');
     shellPanels.stacksVisible(id === 'run');
-    shellPanels.contextVisible(id === 'context');
     if (id === 'browser') shellPanels.panelShown('browser');
   }
 
@@ -464,15 +462,6 @@
       const tab = rightTabForView(id);
       if (tab) selectRightTab(tab);
     }
-  });
-
-  /** The two places the context panel can send you: the Worktrees view, and the
-   * sessions column's "Find a session" drawer. Both live outside that panel, so
-   * it asks rather than reaching for them. Pure bookkeeping, like the palette
-   * actions above — nothing runs until a link is clicked. */
-  setContextPanelHooks({
-    showWorktreesView: () => selectRightTab('worktrees'),
-    openSessionFinder: () => sessionsColumn?.openFinder()
   });
 
   /**

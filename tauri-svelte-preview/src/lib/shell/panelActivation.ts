@@ -32,11 +32,11 @@
  * rebuild the same answer. So each panel remembers the folder it was last
  * loaded for, and a pick that does not change it loads nothing.
  *
- * Four panels are neither a tab nor always on screen: **source control**, the
- * **worktree manager**, the **stacks pane** and the **context cards**. All four
- * live in the tool column on the right, as four of the five views its icon strip
- * switches between, and the shell opens on none of them. So all four follow the
- * same principle by a third route — they load when you can actually see them.
+ * Three panels are neither a tab nor always on screen: **source control**, the
+ * **worktree manager** and the **stacks pane**. All three live in the tool
+ * column on the right, as three of the views its icon strip switches between,
+ * and the shell opens on none of them. So all three follow the same principle
+ * by a third route — they load when you can actually see them.
  * Picking a session loads one only while it is in view, and opening one loads it
  * if a session is already picked. Out of view they cost nothing; in view they
  * are never stale.
@@ -74,7 +74,6 @@ export interface PanelActivators {
   git(root: string | null): void;
   browser(): void;
   explorer(root: string): void;
-  context(selection: ProjectSelection): void;
   worktrees(selection: ProjectSelection): void;
   stacks(root: string | null): void;
   problems(root: string | null): void;
@@ -97,9 +96,6 @@ export interface PanelActivation {
    * now; the tool column reports it once at start-up too, so this is never
    * guesswork. */
   sourceControlVisible(visible: boolean): void;
-  /** The context cards came into view, or went out of it. Same contract as
-   * source control above. */
-  contextVisible(visible: boolean): void;
   /** The worktree manager came into view, or went out of it. Same contract. */
   worktreesVisible(visible: boolean): void;
   /** The stacks pane came into view, or went out of it. Same contract. */
@@ -116,9 +112,9 @@ export interface PanelActivation {
 /** Center tabs that have something to load. "session" is the terminal: it is
  * owned by the page's own start-up and must never be re-loaded from here.
  *
- * Source control and the context cards are deliberately absent: both are views
- * of the tool column, not tabs, so nothing ever brings them to the front. Their
- * own rule is in `loadSourceControl` and `loadContext` below. */
+ * Source control is deliberately absent: it is a view of the tool column, not a
+ * tab, so nothing ever brings it to the front. Its own rule is in
+ * `loadSourceControl` below. */
 const LOADABLE_PANELS = new Set(['editor', 'browser']);
 
 export function createPanelActivation(
@@ -135,10 +131,6 @@ export function createPanelActivation(
   /** The folder source control was last loaded for, or `null` if it never has
    * been. `''` is a real value here — it means "loaded, for no folder". */
   let gitLoadedFor: string | null = null;
-  /** Can the user see the context cards right now? */
-  let contextInView = false;
-  /** Same bookkeeping as `gitLoadedFor`, for the context cards. */
-  let contextLoadedFor: string | null = null;
   /** Can the user see the worktree manager right now? */
   let worktreesInView = false;
   /** Same bookkeeping as `gitLoadedFor`, for the worktree manager. */
@@ -169,13 +161,6 @@ export function createPanelActivation(
     const root = selection.root.trim();
     gitLoadedFor = root;
     activators.git(root || null);
-  };
-
-  /** Point the context cards at this selection. They are machine-wide, so a
-   * session with no folder still has something to show. */
-  const loadContext = (selection: ProjectSelection): void => {
-    contextLoadedFor = selection.root.trim();
-    activators.context({ root: selection.root, projects: selection.projects });
   };
 
   /** Point the worktree manager at this selection. It needs the whole selection
@@ -213,7 +198,6 @@ export function createPanelActivation(
     const root = selection.root.trim();
     if (root) activators.explorer(root);
     if (sourceControlInView && gitLoadedFor !== root) loadSourceControl(selection);
-    if (contextInView && contextLoadedFor !== root) loadContext(selection);
     if (worktreesInView && worktreesLoadedFor !== root) loadWorktrees(selection);
     if (stacksInView && stacksLoadedFor !== root) loadStacks(selection);
     if (problemsInView && problemsLoadedFor !== root) loadProblems(selection);
@@ -274,19 +258,6 @@ export function createPanelActivation(
       loadSourceControl(selection);
     },
 
-    contextVisible(visible: boolean): void {
-      contextInView = visible;
-      // Same two reasons to do nothing as source control: looking away loads
-      // nothing, and looking at it before a session has been picked has nothing
-      // to point at — the pick that follows will load it.
-      if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      // Already showing this folder: coming back to it is not a reason to read
-      // the machine again.
-      if (contextLoadedFor === selection.root.trim()) return;
-      loadContext(selection);
-    },
-
     worktreesVisible(visible: boolean): void {
       worktreesInView = visible;
       if (!visible || !sessionPanelsShown) return;
@@ -318,7 +289,6 @@ export function createPanelActivation(
       const loaded = [...panelLoadedFor.keys()];
       if (sessionPanelsShown) loaded.push('explorer');
       if (gitLoadedFor !== null) loaded.push('git');
-      if (contextLoadedFor !== null) loaded.push('context');
       if (worktreesLoadedFor !== null) loaded.push('worktrees');
       if (stacksLoadedFor !== null) loaded.push('stacks');
       if (problemsLoadedFor !== null) loaded.push('problems');
