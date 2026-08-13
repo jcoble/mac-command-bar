@@ -278,6 +278,12 @@ export type AgentSession = {
   lastActivity: string | null;
   resumeCommands: string[];
   /**
+   * The transcript file the scanner read this session out of, so the app can
+   * open it, show it in the file manager, or copy its path. Left out when no
+   * single file describes the session, in which case those actions stay off.
+   */
+  logPath?: string | null;
+  /**
    * What the scanner worked out about the session from its title, folder and
    * resume command. All optional: the scanner leaves a field out entirely when
    * it found nothing, and older records predate them, so a row must treat a
