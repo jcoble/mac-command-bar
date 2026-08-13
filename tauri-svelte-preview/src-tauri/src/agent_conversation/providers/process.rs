@@ -121,16 +121,24 @@ impl SidecarProcess {
         owned_id: &str,
         environment: &SidecarEnvironment,
     ) -> Result<Self, String> {
-        let mut command = Command::new(&manifest.executable);
+        let owner_marker = super::super::reaper::owner_instance_marker()?;
+        let visible_marker = super::super::reaper::visible_process_marker(owned_id, &owner_marker);
+        let mut command = Command::new("/bin/sh");
         command
+            .arg("-c")
+            .arg("\"$@\"; command_status=$?; :; exit \"$command_status\"")
+            .arg(visible_marker)
+            .arg(&manifest.executable)
             .args(&manifest.args)
             .current_dir(cwd)
-            .env("COMMANDBAR_SESSION_ID", owned_id)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         environment.apply(&mut command);
+        command
+            .env(super::super::reaper::SESSION_MARKER_ENV, owned_id)
+            .env(super::super::reaper::OWNER_INSTANCE_ENV, owner_marker);
         command.as_std_mut().process_group(0);
         let mut child = command
             .spawn()
@@ -308,6 +316,10 @@ mod tests {
             0,
             "sidecar parent survived close"
         );
+        let reap_deadline = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(child, 0) } == 0 && Instant::now() < reap_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert_ne!(
             unsafe { libc::kill(child, 0) },
             0,

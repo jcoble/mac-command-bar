@@ -6,6 +6,7 @@ pub mod manager;
 pub mod prompt_content;
 pub mod protocol;
 pub mod providers;
+pub mod reaper;
 pub mod terminal_projection;
 mod transcript;
 

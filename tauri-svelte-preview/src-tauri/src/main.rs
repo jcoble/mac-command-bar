@@ -5567,6 +5567,17 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
+            let live_session_ids = app
+                .state::<agent_conversation::manager::AgentRuntimeManager>()
+                .resource_roots()
+                .into_iter()
+                .map(|root| root.owned_id)
+                .collect();
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| format!("Application data directory is unavailable: {error}"))?;
+            agent_conversation::reaper::start_startup_reaper(&app_data_dir, live_session_ids)?;
             let handle = app.handle().clone();
             conversation_events.set_emitter(Arc::new(move |event| {
                 let _ = handle.emit("agent-conversation-event", event);
