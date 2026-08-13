@@ -70,6 +70,7 @@
     openNewSession: (input?: {
       sessionRoots?: string[];
       providerConfigs?: ThreadStartProviderConfig[];
+      projectPath?: string;
     }) => void;
     close(): void;
   } | null = null;
@@ -138,10 +139,11 @@
   /** Open the thread-first new-session pane from outside. Both ways in reach the same
    * instance: the "New session" button in the sessions column, and the palette
    * command the page registers. */
-  export function openNewSession(): void {
+  export function openNewSession(projectPath?: string): void {
     newSessionHost?.openNewSession({
       sessionRoots: newSessionRoots,
-      providerConfigs: newSessionProviderConfigs()
+      providerConfigs: newSessionProviderConfigs(),
+      projectPath
     });
   }
 </script>

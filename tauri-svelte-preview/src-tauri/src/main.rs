@@ -264,6 +264,16 @@ struct ProjectWorktree {
     delete_eligibility: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ProjectGitRef {
+    name: String,
+    is_default: bool,
+    is_current: bool,
+    checkout_path: Option<String>,
+    last_commit_ms: Option<i64>,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProjectWorktreeActionResult {
@@ -1465,6 +1475,13 @@ async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, St
     tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Worktree scan task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_project_git_refs(root: String) -> Result<Vec<ProjectGitRef>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_project_git_refs_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Git ref scan task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -3310,6 +3327,62 @@ fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, St
             })
             .collect(),
     )
+}
+
+fn classify_project_git_refs(
+    refs: Vec<(String, Option<i64>)>,
+    current: &str,
+    checkouts: &[(String, String)],
+) -> Vec<ProjectGitRef> {
+    let has_main = refs.iter().any(|(name, _)| name == "main");
+    let default = if has_main { "main" } else { "master" };
+    refs.into_iter()
+        .take(500)
+        .map(|(name, last_commit_ms)| ProjectGitRef {
+            is_default: name == default,
+            is_current: name == current,
+            checkout_path: checkouts
+                .iter()
+                .find(|(branch, _)| branch == &name)
+                .map(|(_, path)| path.clone()),
+            name,
+            last_commit_ms,
+        })
+        .collect()
+}
+
+fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGitRef>, String> {
+    let refs = run_git_text(
+        &root,
+        &[
+            "for-each-ref",
+            "refs/heads",
+            "--sort=-committerdate",
+            "--format=%(refname:short)%09%(committerdate:unix)",
+        ],
+    )?
+    .lines()
+    .filter_map(|line| {
+        let (name, timestamp) = line.split_once('\t').unwrap_or((line, ""));
+        let name = name.trim();
+        (!name.is_empty()).then(|| {
+            (
+                name.to_string(),
+                timestamp
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(|seconds| seconds.checked_mul(1_000)),
+            )
+        })
+    })
+    .collect();
+    let current = run_git_text(&root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let checkouts = list_project_worktrees_sync(root)?
+        .into_iter()
+        .map(|worktree| (worktree.branch, worktree.path))
+        .collect::<Vec<_>>();
+    Ok(classify_project_git_refs(refs, current.trim(), &checkouts))
 }
 
 /// `force = false` is the everyday remove: it refuses anything that would lose work.
@@ -5674,6 +5747,7 @@ fn main() {
             git_workspace::amend_git_commit,
             git_workspace::list_open_pull_requests,
             list_project_worktrees,
+            list_project_git_refs,
             remove_project_worktree,
             archive_project_worktree,
             list_git_repository_summaries,
@@ -5779,6 +5853,50 @@ fn main() {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn project_git_refs_classify_default_current_and_checkouts() {
+        let refs = vec![
+            ("feature/new-pane".to_string(), Some(3_000)),
+            ("main".to_string(), Some(2_000)),
+            ("older".to_string(), None),
+        ];
+        let checkouts = vec![
+            ("main".to_string(), "/repo".to_string()),
+            (
+                "feature/new-pane".to_string(),
+                "/worktrees/new-pane".to_string(),
+            ),
+        ];
+
+        let classified = classify_project_git_refs(refs, "main", &checkouts);
+
+        assert_eq!(classified.len(), 3);
+        assert_eq!(classified[0].name, "feature/new-pane");
+        assert_eq!(
+            classified[0].checkout_path.as_deref(),
+            Some("/worktrees/new-pane")
+        );
+        assert!(!classified[0].is_current);
+        assert!(!classified[0].is_default);
+        assert_eq!(classified[1].name, "main");
+        assert!(classified[1].is_current);
+        assert!(classified[1].is_default);
+        assert_eq!(classified[1].checkout_path.as_deref(), Some("/repo"));
+        assert_eq!(classified[2].checkout_path, None);
+    }
+
+    #[test]
+    fn project_git_refs_use_master_only_when_main_is_absent_and_cap_results() {
+        let mut refs = vec![("master".to_string(), Some(1_000))];
+        refs.extend((0..505).map(|index| (format!("branch-{index}"), None)));
+
+        let classified = classify_project_git_refs(refs, "master", &[]);
+
+        assert_eq!(classified.len(), 500);
+        assert!(classified[0].is_default);
+        assert!(classified[0].is_current);
+    }
 
     #[test]
     fn playwright_process_parser_groups_only_owned_markers() {

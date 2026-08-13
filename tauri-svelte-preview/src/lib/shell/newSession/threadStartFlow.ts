@@ -63,6 +63,16 @@ export type ThreadStartRequest = {
   title: string;
 };
 
+export type ThreadStartGitRef = {
+  name: string;
+  checkoutPath: string | null;
+};
+
+export type ThreadStartProject = {
+  path: string;
+  name: string;
+};
+
 const PROVIDER_ORDER: readonly ThreadStartProvider[] = ['codex', 'claude'];
 
 const PROVIDER_LABELS: Record<ThreadStartProvider, string> = {
@@ -104,6 +114,37 @@ function tidy(value: string | null | undefined): string {
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values.map(tidy).filter(Boolean))];
+}
+
+export function deriveThreadStartProjects(paths: readonly string[]): ThreadStartProject[] {
+  return unique(paths)
+    .filter((path) => path.startsWith('/'))
+    .map((path) => ({
+      path: path === '/' ? path : path.replace(/\/+$/, ''),
+      name: path.split('/').filter(Boolean).at(-1) ?? path
+    }))
+    .filter((project, index, projects) =>
+      projects.findIndex((candidate) => candidate.path === project.path) === index
+    );
+}
+
+export function filterThreadStartGitRefs<T extends Pick<ThreadStartGitRef, 'name'>>(
+  refs: readonly T[],
+  search: string,
+  limit = 100
+): { visible: T[]; total: number } {
+  const query = tidy(search).toLocaleLowerCase();
+  const matches = query
+    ? refs.filter((ref) => ref.name.toLocaleLowerCase().includes(query))
+    : [...refs];
+  return { visible: matches.slice(0, Math.max(0, limit)), total: matches.length };
+}
+
+export function canSelectThreadStartGitRef(
+  ref: ThreadStartGitRef,
+  canCreateWorktree: boolean
+): boolean {
+  return Boolean(ref.checkoutPath) || canCreateWorktree;
 }
 
 function modelLabel(model: string): string {

@@ -4,17 +4,20 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Cpu from '@lucide/svelte/icons/cpu';
   import Gauge from '@lucide/svelte/icons/gauge';
+  import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import Plus from '@lucide/svelte/icons/plus';
+  import Search from '@lucide/svelte/icons/search';
   import Send from '@lucide/svelte/icons/send';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
+  import { Input } from '$lib/components/ui/input/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import {
-    builtInRoots,
+    addCustomRoot,
     hydrate,
     initialRootPath,
     knownRoots,
@@ -28,7 +31,9 @@
     displayEffort,
     displayProvider,
     effortChoicesFor,
+    filterThreadStartGitRefs,
     groupProviderModels,
+    canSelectThreadStartGitRef,
     type ThreadStartModelGroup,
     type ThreadStartPickerState,
     type ThreadStartProvider,
@@ -37,14 +42,11 @@
     validateThreadStart
   } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
-    listWorktrees,
+    listGitRefs,
+    pickProjectFolder,
+    type ProjectGitRef,
     type BackendAnswer
   } from '$lib/shell/newSession/newSessionBackend.ts';
-  import type { ProjectWorktree } from '$lib/tauriSource.ts';
-  import {
-    worktreeChoicesFor,
-    type WorktreeChoice
-  } from '$lib/shell/newSession/newSessionFlow.ts';
   import {
     composerFlip,
     type ComposerFlipReceipt
@@ -52,33 +54,36 @@
 
   interface Props {
     sessionRoots: string[];
+    presetProjectPath: string | null;
     providerConfigs: ThreadStartProviderConfig[];
     onSend: (request: ThreadStartRequest) => void | Promise<void>;
     onClose: () => void;
   }
 
-  let { sessionRoots, providerConfigs, onSend, onClose }: Props = $props();
+  let { sessionRoots, presetProjectPath, providerConfigs, onSend, onClose }: Props = $props();
 
-  const preferredRoot = (): string => {
+  const preferredRoot = (preset?: string | null): string => {
+    const requested = preset?.trim();
+    if (requested?.startsWith('/')) return requested;
     const roots = knownRoots();
-    return roots.find((root) => root.id === 'mac-command-bar')?.path
-      ?? initialRootPath()
+    return initialRootPath()
       ?? roots[0]?.path
-      ?? builtInRoots[0]?.path
       ?? '';
   };
 
   let draft = $state<ThreadStartPickerState>(defaultThreadStartState({ projectPath: preferredRoot() }));
   let composerInput = $state<HTMLTextAreaElement | null>(null);
-  let branchChoices = $state<WorktreeChoice[]>([]);
-  let worktreeLoading = $state(false);
-  let worktreeMessage = $state<string | null>(null);
+  let gitRefs = $state<ProjectGitRef[]>([]);
+  let refsLoading = $state(false);
+  let refsMessage = $state<string | null>(null);
+  let refSearch = $state('');
   let submitError = $state<string | null>(null);
   let submitting = $state(false);
   let docked = $state(false);
   let resolveDock: (() => void) | null = null;
   let dockPromise: Promise<void> | null = null;
   let loadSequence = 0;
+  const canCreateWorktree = false;
 
   const modelGroups = $derived<ThreadStartModelGroup[]>(groupProviderModels(providerConfigs));
   const roots = $derived(knownRoots());
@@ -88,12 +93,8 @@
       ?? modelGroups[0]?.models[0]
       ?? null
   );
-  const selectedBranch = $derived(
-    branchChoices.find((choice) => choice.path === draft.cwd && (choice.branch ?? 'current') === draft.branch)
-      ?? branchChoices.find((choice) => choice.path === draft.cwd)
-      ?? branchChoices[0]
-      ?? null
-  );
+  const filteredRefs = $derived(filterThreadStartGitRefs(gitRefs, refSearch));
+  const selectedRef = $derived(gitRefs.find((ref) => ref.name === draft.branch) ?? null);
   const projectName = $derived(draft.projectPath.split('/').filter(Boolean).at(-1) ?? null);
   const sendDisabled = $derived(submitting || problems.length > 0);
   const effortChoices = $derived(effortChoicesFor(draft.provider, providerConfigs));
@@ -125,40 +126,54 @@
   function resetDraft(): void {
     hydrate();
     setSessionRoots(sessionRoots);
-    const projectPath = preferredRoot();
+    const projectPath = preferredRoot(presetProjectPath);
     draft = defaultThreadStartState({ projectPath, providerConfigs });
-    branchChoices = [];
-    worktreeMessage = null;
+    gitRefs = [];
+    refsMessage = null;
+    refSearch = '';
     submitError = null;
-    void loadWorktrees(projectPath);
+    void loadRefs(projectPath);
   }
 
-  async function loadWorktrees(projectPath: string): Promise<void> {
+  async function loadRefs(projectPath: string): Promise<void> {
     const sequence = ++loadSequence;
-    worktreeLoading = true;
-    worktreeMessage = null;
-    const answer: BackendAnswer<ProjectWorktree[]> = await listWorktrees(projectPath);
+    refsLoading = true;
+    refsMessage = null;
+    const answer: BackendAnswer<ProjectGitRef[]> = await listGitRefs(projectPath);
     if (sequence !== loadSequence) return;
-    worktreeLoading = false;
+    refsLoading = false;
     if (answer.status === 'failed') {
-      branchChoices = worktreeChoicesFor({ projectRoot: projectPath, worktrees: null });
-      worktreeMessage = answer.message;
+      gitRefs = [];
+      refsMessage = answer.message;
     } else {
-      const listed = answer.status === 'ok' ? answer.value : null;
-      branchChoices = worktreeChoicesFor({ projectRoot: projectPath, worktrees: listed });
-      if (answer.status === 'unavailable') worktreeMessage = answer.message;
+      gitRefs = answer.status === 'ok' ? answer.value : [];
+      if (answer.status === 'unavailable') refsMessage = answer.message;
     }
-    const first = branchChoices[0];
+    const first = gitRefs.find((ref) => ref.isCurrent)
+      ?? gitRefs.find((ref) => ref.checkoutPath)
+      ?? null;
     updateDraft({
-      cwd: first?.path ?? projectPath,
-      branch: first?.branch ?? 'current'
+      cwd: first?.checkoutPath ?? projectPath,
+      branch: first?.name ?? ''
     });
   }
 
   function selectProject(path: string): void {
     updateDraft({ projectPath: path, cwd: path, branch: '' });
-    branchChoices = [];
-    void loadWorktrees(path);
+    gitRefs = [];
+    refSearch = '';
+    void loadRefs(path);
+  }
+
+  async function addProject(): Promise<void> {
+    const answer = await pickProjectFolder();
+    if (answer.status !== 'ok') {
+      refsMessage = answer.message;
+      return;
+    }
+    if (!answer.value) return;
+    addCustomRoot(answer.value);
+    selectProject(answer.value);
   }
 
   function selectProvider(provider: ThreadStartProvider): void {
@@ -183,11 +198,12 @@
     updateDraft({ provider, model });
   }
 
-  function chooseBranch(choice: WorktreeChoice): void {
+  function chooseRef(ref: ProjectGitRef): void {
+    if (!canSelectThreadStartGitRef(ref, canCreateWorktree)) return;
     updateDraft({
-      cwd: choice.path,
-      branch: choice.branch ?? 'current',
-      createNewWorktree: false
+      cwd: ref.checkoutPath ?? draft.projectPath,
+      branch: ref.name,
+      createNewWorktree: !ref.checkoutPath
     });
   }
 
@@ -278,14 +294,16 @@
                   {#if roots.length === 0}
                     <DropdownMenu.Item disabled>No project workspaces yet</DropdownMenu.Item>
                   {/if}
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item data-testid="new-session-thread-new-project" onSelect={() => void addProject()}>
+                    <FolderPlus class="size-3.5" aria-hidden="true" />
+                    <span>New project</span>
+                  </DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Root>
               <span class="thread-start-project-suffix">{projectName ? '?' : ' to start'}</span>
             </span>
           </h1>
-          <p class="thread-start-description">
-            Describe the work. The session starts when you send, on the branch and settings shown below.
-          </p>
         </div>
 
       <div
@@ -395,47 +413,6 @@
             </DropdownMenu.Content>
           </DropdownMenu.Root>
 
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger>
-              {#snippet child({ props })}
-                <Button {...props} data-testid="new-session-thread-branch" variant="ghost" size="sm" class="thread-start-pill">
-                  <GitBranch class="size-3.5" aria-hidden="true" />
-                  <span>{draft.createNewWorktree ? `new worktree · ${draft.branch || 'branch'}` : (draft.branch || 'Choose branch')}</span>
-                  <ChevronDown class="thread-start-chevron" aria-hidden="true" />
-                </Button>
-              {/snippet}
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content class="thread-start-menu thread-start-branch-menu" align="start" sideOffset={8}>
-              <DropdownMenu.Label>Existing checkouts</DropdownMenu.Label>
-              {#if worktreeLoading}
-                <DropdownMenu.Item disabled>Reading branches…</DropdownMenu.Item>
-              {:else}
-                {#each branchChoices as choice (choice.path)}
-                  <DropdownMenu.Item data-testid={`new-session-thread-branch-${choice.branch ?? 'current'}`} onSelect={() => chooseBranch(choice)}>
-                    <span class="thread-start-check">{#if selectedBranch?.path === choice.path && !draft.createNewWorktree}<Check class="size-3.5" aria-hidden="true" />{/if}</span>
-                    <span class="flex min-w-0 flex-col gap-0.5">
-                      <span>{choice.branch ?? 'Current branch'}</span>
-                      <span class="thread-start-menu-hint truncate">{choice.path}</span>
-                    </span>
-                  </DropdownMenu.Item>
-                {/each}
-                {#if branchChoices.length === 0}<DropdownMenu.Item disabled>No existing checkout found</DropdownMenu.Item>{/if}
-              {/if}
-              <DropdownMenu.Separator />
-              <DropdownMenu.CheckboxItem
-                data-testid="new-session-thread-new-worktree"
-                checked={draft.createNewWorktree}
-                onCheckedChange={(checked) => updateDraft({ createNewWorktree: checked })}
-              >
-                <GitBranch class="size-3.5" aria-hidden="true" />
-                <span class="flex min-w-0 flex-col gap-0.5">
-                  <span>New worktree</span>
-                  <span class="thread-start-menu-hint">Unavailable in this build</span>
-                </span>
-              </DropdownMenu.CheckboxItem>
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
-
           <Button
             data-testid="new-session-thread-send"
             class="thread-start-send"
@@ -446,10 +423,88 @@
             <Send class="size-3.5" aria-hidden="true" />
           </Button>
         </div>
+
+        <div class="thread-start-workspace-bar" data-testid="new-session-thread-workspace-bar">
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>
+              {#snippet child({ props })}
+                <Button {...props} data-testid="new-session-thread-workspace-mode" variant="ghost" size="sm" class="thread-start-workspace-control">
+                  <span>Current checkout</span>
+                  <ChevronDown class="thread-start-chevron" aria-hidden="true" />
+                </Button>
+              {/snippet}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content class="thread-start-menu" align="start" sideOffset={6}>
+              <DropdownMenu.Item onSelect={() => updateDraft({ createNewWorktree: false })}>
+                <span class="thread-start-check"><Check class="size-3.5" aria-hidden="true" /></span>
+                <span>Current checkout</span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Item data-testid="new-session-thread-new-worktree" disabled title="Unavailable in this build">
+                <span class="thread-start-check"></span>
+                <span class="flex flex-col gap-0.5">
+                  <span>New worktree</span>
+                  <span class="thread-start-menu-hint">Unavailable in this build</span>
+                </span>
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+
+          <DropdownMenu.Root onOpenChange={(open) => { if (!open) refSearch = ''; }}>
+            <DropdownMenu.Trigger>
+              {#snippet child({ props })}
+                <Button {...props} data-testid="new-session-thread-branch" variant="ghost" size="sm" class="thread-start-workspace-control thread-start-ref-trigger">
+                  <GitBranch class="size-3.5" aria-hidden="true" />
+                  <span>{(selectedRef?.name ?? draft.branch) || 'Choose ref'}</span>
+                  <ChevronDown class="thread-start-chevron" aria-hidden="true" />
+                </Button>
+              {/snippet}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content class="thread-start-menu thread-start-ref-menu" align="end" sideOffset={6}>
+              <div class="thread-start-ref-search">
+                <Search class="size-3.5" aria-hidden="true" />
+                <Input
+                  data-testid="new-session-thread-ref-search"
+                  aria-label="Search refs"
+                  placeholder="Search refs"
+                  bind:value={refSearch}
+                  onclick={(event) => event.stopPropagation()}
+                  onkeydown={(event) => event.stopPropagation()}
+                  class="thread-start-ref-input"
+                />
+              </div>
+              <DropdownMenu.Separator />
+              {#if refsLoading}
+                <DropdownMenu.Item disabled>Reading refs…</DropdownMenu.Item>
+              {:else}
+                {#each filteredRefs.visible as ref (ref.name)}
+                  <DropdownMenu.Item
+                    data-testid={`new-session-thread-ref-${ref.name}`}
+                    disabled={!canSelectThreadStartGitRef(ref, canCreateWorktree)}
+                    title={canSelectThreadStartGitRef(ref, canCreateWorktree) ? ref.checkoutPath ?? undefined : 'needs a worktree'}
+                    onSelect={() => chooseRef(ref)}
+                  >
+                    <span class="thread-start-check">{#if draft.branch === ref.name}<Check class="size-3.5" aria-hidden="true" />{/if}</span>
+                    <span class="thread-start-ref-name">{ref.name}</span>
+                    <span class="thread-start-ref-tags">
+                      {#if ref.isCurrent}<span>current</span>{/if}
+                      {#if ref.isDefault}<span>default</span>{/if}
+                      {#if ref.checkoutPath && !ref.isCurrent}<span>worktree</span>{/if}
+                      {#if !canSelectThreadStartGitRef(ref, canCreateWorktree)}<small>needs a worktree</small>{/if}
+                    </span>
+                  </DropdownMenu.Item>
+                {/each}
+                {#if filteredRefs.total === 0}<DropdownMenu.Item disabled>No matching refs</DropdownMenu.Item>{/if}
+              {/if}
+              {#if filteredRefs.total > filteredRefs.visible.length}
+                <div class="thread-start-ref-footer">Showing {filteredRefs.visible.length} of {filteredRefs.total} refs</div>
+              {/if}
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+        </div>
       </div>
 
-      {#if worktreeMessage}
-        <p class="thread-start-note" data-testid="new-session-thread-worktree-note">{worktreeMessage}</p>
+      {#if refsMessage}
+        <p class="thread-start-note" data-testid="new-session-thread-worktree-note">{refsMessage}</p>
       {/if}
       {#if problems.length || submitError}
         <div class="thread-start-errors" data-testid="new-session-thread-errors" role="alert">
@@ -555,9 +610,9 @@
   }
 
   h1 {
-    margin: 0 0 8px;
+    margin: 0;
     color: var(--color-text);
-    font-size: 24px;
+    font-size: 30px;
     font-weight: 400;
     letter-spacing: -0.02em;
     line-height: 1.3;
@@ -572,7 +627,7 @@
 
   .thread-start-project-inline.leading { margin-left: 0; }
 
-  .thread-start-project-suffix { font-size: 24px; }
+  .thread-start-project-suffix { font-size: 30px; }
 
   :global(.thread-start-project-trigger) {
     display: inline;
@@ -585,7 +640,7 @@
     color: inherit;
     background: transparent;
     font: inherit;
-    font-size: 24px;
+    font-size: 30px;
     font-weight: 400;
     letter-spacing: inherit;
     line-height: inherit;
@@ -600,14 +655,6 @@
   :global(.thread-start-project-trigger:focus-visible) {
     outline: 2px solid var(--color-focus-solid);
     outline-offset: 3px;
-  }
-
-  .thread-start-description {
-    max-width: 500px;
-    margin: 0 auto;
-    color: var(--secondary-label);
-    font-size: 13px;
-    line-height: 1.6;
   }
 
   .thread-start-composer {
@@ -689,7 +736,7 @@
 
   :global(.thread-start-model-menu) { width: 292px; }
   :global(.thread-start-project-menu) { width: 300px; }
-  :global(.thread-start-branch-menu) { width: 320px; }
+  :global(.thread-start-ref-menu) { width: min(440px, calc(100vw - 32px)); max-height: 430px; }
 
   :global(.thread-start-menu-item) { align-items: flex-start; gap: 9px; padding: 7px 8px; }
   :global(.thread-start-menu-item[data-disabled]) { cursor: not-allowed; }
@@ -698,6 +745,90 @@
   .thread-start-menu-name { overflow: hidden; color: var(--color-text); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
   .thread-start-menu-provider,
   .thread-start-menu-hint { color: var(--secondary-label); font-size: 13px; }
+
+  .thread-start-workspace-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 10px -14px -10px;
+    padding: 7px 9px;
+    border-top: 1px solid var(--color-border);
+    background: color-mix(in srgb, var(--color-surface) 82%, var(--color-bg));
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+  }
+
+  :global(.thread-start-workspace-control) {
+    min-width: 0;
+    height: 28px;
+    gap: 6px;
+    padding: 0 8px;
+    color: var(--color-text-2);
+    font-size: 13px;
+    font-weight: 550;
+  }
+
+  :global(.thread-start-ref-trigger) { max-width: 60%; }
+  :global(.thread-start-ref-trigger > span) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .thread-start-ref-search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 5px;
+    color: var(--secondary-label);
+  }
+
+  :global(.thread-start-ref-input) {
+    height: 30px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  :global(.thread-start-ref-menu [data-slot='dropdown-menu-item']) { gap: 8px; }
+  .thread-start-ref-name {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    color: var(--color-text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .thread-start-ref-tags {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .thread-start-ref-tags span {
+    padding: 1px 5px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--secondary-label);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .thread-start-ref-tags small {
+    color: var(--secondary-label);
+    font-size: 12px;
+  }
+
+  .thread-start-ref-footer {
+    padding: 7px 8px 4px;
+    border-top: 1px solid var(--color-border);
+    color: var(--secondary-label);
+    font-size: 12px;
+    text-align: left;
+  }
 
   .thread-start-note,
   .thread-start-footnote {

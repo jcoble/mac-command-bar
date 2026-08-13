@@ -15,6 +15,14 @@ const host = readFileSync(
   new URL('../src/lib/shell/newSession/ThreadStartHost.svelte', import.meta.url),
   'utf8'
 );
+const backend = readFileSync(
+  new URL('../src/lib/shell/newSession/newSessionBackend.ts', import.meta.url),
+  'utf8'
+);
+const nativeSource = readFileSync(
+  new URL('../src-tauri/src/main.rs', import.meta.url),
+  'utf8'
+);
 const flip = readFileSync(
   new URL('../src/lib/shell/newSession/composerFlip.ts', import.meta.url),
   'utf8'
@@ -50,6 +58,14 @@ assert.match(thread, /data-testid="new-session-thread-access"/);
 assert.match(thread, /data-testid="new-session-thread-project"/);
 assert.match(thread, /data-testid="new-session-thread-branch"/);
 assert.match(thread, /data-testid="new-session-thread-new-worktree"/);
+assert.match(thread, /data-testid="new-session-thread-new-project"/);
+assert.match(thread, /data-testid="new-session-thread-ref-search"/);
+assert.match(thread, /Showing \{filteredRefs\.visible\.length\} of \{filteredRefs\.total\} refs/);
+assert.match(thread, /needs a worktree/);
+assert.match(thread, /disabled=\{!canSelectThreadStartGitRef\(ref, canCreateWorktree\)\}/);
+assert.match(backend, /invoke<ProjectGitRef\[]>\('list_project_git_refs'/);
+assert.match(nativeSource, /async fn list_project_git_refs\(/);
+assert.match(nativeSource, /list_project_git_refs,/);
 assert.match(thread, /groupProviderModels\(providerConfigs\)/);
 assert.match(thread, /onSelect=\{\(\) => chooseModel\(group\.provider, model\.id\)\}/);
 assert.match(thread, /disabled=\{!model\.available\}/);
@@ -65,13 +81,18 @@ assert.match(flip, /Math\.abs\(deltaX\) < 0\.5 && Math\.abs\(deltaY\) < 0\.5/);
 
 assert.match(host, /import\('\.\/NewSessionThread\.svelte'\)/);
 assert.match(host, /sessionProviderConfigs = \(input\.providerConfigs \?\? \[\]\)\.map/);
+assert.match(host, /presetProjectPath = input\.projectPath\?\.trim\(\) \|\| null/);
+assert.match(host, /\{presetProjectPath\}/);
 assert.match(host, /providerConfigs=\{sessionProviderConfigs\}/);
 assert.match(host, /onSend={submit}/);
 assert.match(overlays, /<ThreadStartHost/);
 assert.match(overlays, /providerConfigs: newSessionProviderConfigs\(\)/);
+assert.match(overlays, /projectPath/);
 assert.doesNotMatch(overlays, /<ThreadStartHost[^>]*providerConfigs/);
 assert.doesNotMatch(overlays, /NewSessionHost|NewSessionDialog/);
 assert.match(page, /function providerConfigsForNewSession\(\): ThreadStartProviderConfig\[\]/);
+assert.match(page, /function openNewSessionForProject\(projectPath\?: string\): void/);
+assert.match(page, /mostRecentProjectPath\(\)/);
 assert.doesNotMatch(page, /const providerConfigs = \$derived/);
 
 // The first-send request keeps every chosen picker value and rejects the

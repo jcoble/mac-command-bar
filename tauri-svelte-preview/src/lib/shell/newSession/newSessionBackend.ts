@@ -25,6 +25,14 @@ import {
   type ProjectWorktree
 } from '../../tauriSource.ts';
 
+export type ProjectGitRef = {
+  name: string;
+  isDefault: boolean;
+  isCurrent: boolean;
+  checkoutPath: string | null;
+  lastCommitMs: number | null;
+};
+
 /**
  * What came back: an answer, "this only works in the desktop app", or a failure
  * with something readable to show.
@@ -127,6 +135,30 @@ export async function listWorktrees(root: string): Promise<BackendAnswer<Project
     return {
       status: 'failed',
       message: `The working copies for this project could not be listed: ${describeError(error)}`
+    };
+  }
+}
+
+/** Every local branch, newest commit first, with checkout locations attached. */
+export async function listGitRefs(root: string): Promise<BackendAnswer<ProjectGitRef[]>> {
+  const trimmed = root.trim();
+  if (!trimmed) {
+    return { status: 'failed', message: 'Choose a project folder first.' };
+  }
+  if (!isNativeTauriRuntime()) {
+    return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
+  }
+  try {
+    countInvoke('list_project_git_refs');
+    const { invoke } = await import('@tauri-apps/api/core');
+    return {
+      status: 'ok',
+      value: await invoke<ProjectGitRef[]>('list_project_git_refs', { root: trimmed })
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      message: `The branches for this project could not be listed: ${describeError(error)}`
     };
   }
 }

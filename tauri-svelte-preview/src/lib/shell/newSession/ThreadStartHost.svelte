@@ -19,11 +19,13 @@
   let loadFailure = $state<string | null>(null);
   let sessionRoots = $state<string[]>([]);
   let sessionProviderConfigs = $state<ThreadStartProviderConfig[]>([]);
+  let presetProjectPath = $state<string | null>(null);
 
   /** Open a fresh draft. Mounting a new pane resets every picker value. */
   export function openNewSession(input: {
     sessionRoots?: string[];
     providerConfigs?: ThreadStartProviderConfig[];
+    projectPath?: string;
   } = {}): void {
     sessionRoots = [...(input.sessionRoots ?? [])];
     sessionProviderConfigs = (input.providerConfigs ?? []).map((config) => ({
@@ -32,6 +34,7 @@
       availableEfforts: [...config.availableEfforts],
       availableApprovalPolicies: [...config.availableApprovalPolicies]
     }));
+    presetProjectPath = input.projectPath?.trim() || null;
     loadFailure = null;
     open = true;
     if (ThreadStartPane || loading) return;
@@ -62,6 +65,7 @@
 {#if ThreadStartPane && open}
   <ThreadStartPane
     {sessionRoots}
+    {presetProjectPath}
     providerConfigs={sessionProviderConfigs}
     onSend={submit}
     onClose={() => (open = false)}

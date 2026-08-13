@@ -109,6 +109,7 @@
     ThreadStartProviderConfig,
     ThreadStartRequest
   } from '$lib/shell/newSession/threadStartFlow.ts';
+  import { deriveThreadStartProjects } from '$lib/shell/newSession/threadStartFlow.ts';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import {
     adoptAgentSession,
@@ -222,7 +223,28 @@
   /** The action island follows the same center-panel signal as the shell. */
   let activeCenterPanelId = $state('session');
   /** The overlay layer, for opening the dialogs it owns. */
-  let overlays: { openSettings(): void; openNewSession(): void } | null = null;
+  let overlays: { openSettings(): void; openNewSession(projectPath?: string): void } | null = null;
+
+  function mostRecentProjectPath(): string | undefined {
+    const active = rail.owned.find((session) => session.ownedId === rail.activeOwnedId);
+    if (active) return active.projectPath?.trim() || active.cwd.trim() || undefined;
+    const activityTime = (value: string | null): number => {
+      const parsed = Date.parse(value ?? '');
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const recent = [...rail.owned].sort((left, right) =>
+      activityTime(right.lastActivity) - activityTime(left.lastActivity)
+    )[0];
+    return recent?.projectPath?.trim() || recent?.cwd.trim() || undefined;
+  }
+
+  function openNewSessionForProject(projectPath?: string): void {
+    overlays?.openNewSession(projectPath?.trim() || mostRecentProjectPath());
+  }
+
+  function openNewSession(): void {
+    openNewSessionForProject();
+  }
   /** Provider settings already fetched for existing structured sessions. A
    * fresh pane consumes these snapshots without starting a hidden session just
    * to populate its menus. */
@@ -343,7 +365,7 @@
     // Opening a view is what lets that view read anything, so nothing else has
     // to be called here — the column reports the change and the load follows.
     showView: (id) => sidebarControls?.selectView(id),
-    openNewSession: () => overlays?.openNewSession(),
+    openNewSession: () => openNewSession(),
     showProblemsAtBottom: () => {
       settings.panels.problemsLocation = 'bottom';
       applyProblemsLocation('bottom');
@@ -1364,7 +1386,7 @@
     onReopen={reopenOwned} onSettle={settleOwnedSession} onUnsettle={unsettleOwnedSession}
     onRemove={removeSession}
     onCollapse={collapseSessions}
-    onNewSession={() => overlays?.openNewSession()}
+    onNewSession={openNewSession}
   />
 {/snippet}
 {#snippet toolsArea()}
@@ -1520,7 +1542,9 @@
     onRescanSessions={scanRail}
     onStartNewSession={startNewSession}
     newSessionProviderConfigs={providerConfigsForNewSession}
-    newSessionRoots={rail.owned.map((session) => session.cwd)}
+    newSessionRoots={deriveThreadStartProjects(
+      rail.owned.map((session) => session.projectPath ?? session.cwd)
+    ).map((project) => project.path)}
     message={[layoutError, activeCenterPanelId === 'session' ? rail.error : null].filter(Boolean).join('; ') || null}
     onProblemsLocationChange={applyProblemsLocation}
     onSessionBrowserClose={() => {
