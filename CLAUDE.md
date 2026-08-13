@@ -26,3 +26,28 @@ Rules for all work in this repo:
   long-task count from PerformanceObserver). Interaction latency: clicking a session must stay
   under ~350ms to interactive.
 - A correct feature that makes the app feel slower is a defect. Fix or remove it.
+
+## ⛔ One way only — never old and new side by side
+
+A change is finished only when the old way is deleted. Never leave two mechanisms for the same job in
+the tree: no compatibility bridges, no "legacy" fallback paths, no adapters kept just in case, no
+feature flags that keep both alive, no half-migrated stores where a reader can't tell which one is the
+truth. A migration cuts over and removes the old path in the same wave — if the old way can't be
+deleted yet, the change isn't done, and the work does not merge. When you find an existing old/new
+split, deleting one side is part of whatever task touched it.
+
+## ⛔ KISS and YAGNI are load-bearing rules
+
+- **Keep it simple.** The simplest design that does the job wins. One store, one path, one obvious
+  place for each responsibility. If explaining a design takes more than a few sentences, simplify the
+  design before writing more code.
+- **You aren't gonna need it.** Do not build for imagined futures: no speculative abstraction layers,
+  no config for things nobody configures, no generalizing a function that has one caller. Add
+  flexibility on the day it is actually needed, not before.
+
+## Explain in HTML, not walls of text
+
+Anything beyond a simple explanation gets a self-contained HTML page — a diagram, a mockup, a
+before/after, an annotated flow — instead of paragraphs. Plans and especially specs should be written
+as (or paired with) an HTML page under `docs/`; they are far easier to read and review. A mockup HTML
+page is the approval artifact for any visual change.
