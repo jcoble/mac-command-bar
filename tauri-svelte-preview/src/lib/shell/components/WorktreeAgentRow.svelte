@@ -28,8 +28,7 @@
   import {
     deriveSessionPresence,
     EMPTY_SESSION_PRESENCE_HISTORY,
-    sessionPresenceHistory,
-    synchronizeSessionPresenceWork
+    sessionPresenceHistory
   } from '$lib/shell/conversation/sessionPresence.ts';
   import { requestSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
   import { presentAgentError } from '$lib/shell/errorPresentation';
@@ -86,49 +85,31 @@
   );
   const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
 
-  const pendingApprovalCount = $derived(
-    conversation
-      ? Object.keys(conversation.pendingApprovals).length
-        + conversation.timeline.filter((item) => item.kind === 'approval' && item.state === 'requested').length
-      : session.pendingPermission
-        ? 1
-        : 0
+  const presenceHistory = $derived(
+    $sessionPresenceHistory[session.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY
   );
-  const runtimeState = $derived(
-    conversation ? (session.runtimeState === 'starting' ? 'starting' : null) : session.runtimeState
-  );
-  const connectionState = $derived(session.origin === 'app' ? conversation?.connectionState ?? null : null);
-  const activeTurnId = $derived(conversation?.activeTurnId ?? session.activeTurnId ?? null);
-  const suspended = $derived(
-    conversation?.suspended === true || session.runtimeState === 'suspended'
-  );
+  // Presence is rail-record truth plus events received live. Loading a stored
+  // transcript may populate `conversation`, but it must not repaint this dot.
+  const pendingApprovalCount = $derived(session.pendingPermission ? 1 : 0);
+  const runtimeState = $derived(session.runtimeState);
+  const activeTurnId = $derived(session.activeTurnId ?? presenceHistory.activeTurnId);
+  const suspended = $derived(session.runtimeState === 'suspended');
   const presenceSignals = $derived(
     session.state === 'exited'
       ? 'stopped'
       : deriveSessionPresence(
           {
             terminalState: session.state,
-            connectionState,
             suspended,
             activeTurnId,
             sending: conversation?.sending,
             pendingApprovalCount,
             runtimeState
           },
-          $sessionPresenceHistory[session.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY,
+          presenceHistory,
           0
         ).state
   );
-
-  // Keep the shared history current without mounting the old wordy indicator.
-  $effect(() => {
-    if (session.state === 'exited') return;
-    synchronizeSessionPresenceWork(
-      session.ownedId,
-      activeTurnId,
-      conversation?.sending === true || runtimeState === 'working'
-    );
-  });
 
   const presence = $derived<RowPresence>(
     shelf === 'done'

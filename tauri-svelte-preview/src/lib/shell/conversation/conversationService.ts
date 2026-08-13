@@ -43,7 +43,6 @@ import {
 } from './conversationTypes.ts';
 import {
   readAgentConversationCapabilitiesFromTauri,
-  listAgentConversationEventsFromTauri,
   readAgentConversationSnapshotFromTauri,
   writeTerminalSessionFromTauri
 } from '$lib/tauriSource';
@@ -394,12 +393,7 @@ async function resyncConversation(ownedId: string): Promise<void> {
 export async function loadConversationForRead(ownedId: string): Promise<void> {
   const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
   if (!snapshot) return;
-  const events = await listAgentConversationEventsFromTauri(ownedId, 0);
-  applyAgentConversationSnapshot({
-    ...snapshot,
-    events: events ?? snapshot.events,
-    lastSequence: events?.at(-1)?.sequence ?? snapshot.lastSequence
-  });
+  applyAgentConversationSnapshot(snapshot);
 }
 
 export async function startConversationEvents(): Promise<void> {

@@ -31,6 +31,63 @@ export interface SessionContextMenuOptions {
   canDelete?: boolean;
 }
 
+export interface SessionContextMenuAnchor {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  containingBlockLeft?: number;
+  containingBlockRight?: number;
+  containingBlockTop?: number;
+  containingBlockBottom?: number;
+}
+
+export interface SessionContextMenuSize {
+  width: number;
+  height: number;
+}
+
+export interface SessionContextMenuViewport {
+  width: number;
+  height: number;
+}
+
+const MENU_GAP = 8;
+const VIEWPORT_PADDING = 8;
+
+/** Flip beside the trigger, then clamp inside the menu's real containing block. */
+export function placeSessionContextMenu(
+  anchor: SessionContextMenuAnchor,
+  menu: SessionContextMenuSize,
+  viewport: SessionContextMenuViewport
+): { left: number; top: number } {
+  const blockLeft = anchor.containingBlockLeft ?? 0;
+  const blockRight = anchor.containingBlockRight ?? viewport.width;
+  const blockTop = anchor.containingBlockTop ?? 0;
+  const blockBottom = anchor.containingBlockBottom ?? viewport.height;
+  const minLeft = blockLeft + VIEWPORT_PADDING;
+  const maxLeft = Math.max(minLeft, blockRight - menu.width - VIEWPORT_PADDING);
+  const rightPosition = anchor.right + MENU_GAP;
+  const leftPosition = anchor.left - menu.width - MENU_GAP;
+  const preferredLeft = rightPosition + menu.width <= blockRight - VIEWPORT_PADDING
+    ? rightPosition
+    : leftPosition;
+  const viewportLeft = Math.min(maxLeft, Math.max(minLeft, preferredLeft));
+
+  const minTop = blockTop + VIEWPORT_PADDING;
+  const maxTop = Math.max(minTop, blockBottom - menu.height - VIEWPORT_PADDING);
+  const belowPosition = anchor.bottom + MENU_GAP;
+  const abovePosition = anchor.top - menu.height - MENU_GAP;
+  const preferredTop = belowPosition + menu.height <= blockBottom - VIEWPORT_PADDING
+    ? belowPosition
+    : abovePosition >= minTop
+      ? abovePosition
+      : belowPosition;
+  const viewportTop = Math.min(maxTop, Math.max(minTop, preferredTop));
+
+  return { left: viewportLeft - blockLeft, top: viewportTop - blockTop };
+}
+
 const FUTURE_NEW_SESSION = 'Future-native: continue in a new session is not wired yet.';
 const FUTURE_LOG = 'Future-native: transcript log viewing is not wired yet.';
 const FUTURE_TAB_ACTION = 'Future-native: this action needs a session row target.';

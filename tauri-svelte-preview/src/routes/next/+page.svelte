@@ -226,7 +226,7 @@
   /** Provider settings already fetched for existing structured sessions. A
    * fresh pane consumes these snapshots without starting a hidden session just
    * to populate its menus. */
-  const providerConfigs = $derived.by((): ThreadStartProviderConfig[] => {
+  function providerConfigsForNewSession(): ThreadStartProviderConfig[] {
     return (['codex', 'claude'] as const).map((provider) => {
       const existing = Object.values(conversationSessions).find((session) => session.provider === provider);
       const config = existing?.agentConfig;
@@ -240,7 +240,7 @@
         availableApprovalPolicies: config?.availableApprovalPolicies ?? []
       };
     });
-  });
+  }
   /** The sessions column, for opening its "Find a session" drawer from the
    * context panel's "Search all sessions" link. */
   let sessionsColumn: { openFinder(): void } | null = null;
@@ -1515,7 +1515,7 @@
     onResetLayout={resetLayout}
     onRescanSessions={scanRail}
     onStartNewSession={startNewSession}
-    {providerConfigs}
+    newSessionProviderConfigs={providerConfigsForNewSession}
     newSessionRoots={rail.owned.map((session) => session.cwd)}
     message={[layoutError, activeCenterPanelId === 'session' ? rail.error : null].filter(Boolean).join('; ') || null}
     onProblemsLocationChange={applyProblemsLocation}

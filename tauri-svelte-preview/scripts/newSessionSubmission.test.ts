@@ -63,9 +63,15 @@ assert.match(flip, /prefers-reduced-motion: reduce/);
 assert.match(flip, /Math\.abs\(deltaX\) < 0\.5 && Math\.abs\(deltaY\) < 0\.5/);
 
 assert.match(host, /import\('\.\/NewSessionThread\.svelte'\)/);
+assert.match(host, /sessionProviderConfigs = \(input\.providerConfigs \?\? \[\]\)\.map/);
+assert.match(host, /providerConfigs=\{sessionProviderConfigs\}/);
 assert.match(host, /onSend={submit}/);
 assert.match(overlays, /<ThreadStartHost/);
+assert.match(overlays, /providerConfigs: newSessionProviderConfigs\(\)/);
+assert.doesNotMatch(overlays, /<ThreadStartHost[^>]*providerConfigs/);
 assert.doesNotMatch(overlays, /NewSessionHost|NewSessionDialog/);
+assert.match(page, /function providerConfigsForNewSession\(\): ThreadStartProviderConfig\[\]/);
+assert.doesNotMatch(page, /const providerConfigs = \$derived/);
 
 // The first-send request keeps every chosen picker value and rejects the
 // unsupported worktree branch before any route-owned side effect can run.

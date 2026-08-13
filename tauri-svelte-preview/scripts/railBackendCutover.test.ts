@@ -16,7 +16,8 @@ assert.doesNotMatch(
 );
 assert.equal((page.match(/mac-command-bar\.next\.owned-sessions/g) ?? []).length, 1);
 assert.doesNotMatch(railStore, /localStorage|owned-sessions|persist/i);
-assert.match(conversationService, /listAgentConversationEventsFromTauri/);
+assert.match(conversationService, /readAgentConversationSnapshotFromTauri\(ownedId\)/);
+assert.doesNotMatch(conversationService, /listAgentConversationEventsFromTauri/);
 assert.match(conversationService, /model: startConfig\?\.model/);
 assert.match(source, /invoke<AgentConversationSessionRecord\[]>\('list_agent_conversation_sessions'/);
 assert.match(source, /invoke<AgentConversationEvent\[]>\('list_agent_conversation_events'/);

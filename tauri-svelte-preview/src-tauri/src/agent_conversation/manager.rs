@@ -125,7 +125,6 @@ pub struct ManagedAgentSession {
     spawn_reasoning_effort: Option<String>,
     config: AgentConversationConfigState,
     connection: AgentConversationConnection,
-    frontend_events: VecDeque<AgentConversationEvent>,
     store: Arc<SessionStore>,
     created_at_ms: u128,
     last_activity_ms: u128,
@@ -468,7 +467,6 @@ impl AgentRuntimeManager {
                 spawn_reasoning_effort: reasoning_effort,
                 config: connection.config.clone(),
                 connection: connection.clone(),
-                frontend_events: VecDeque::new(),
                 store: Arc::clone(&self.store),
                 created_at_ms,
                 last_activity_ms: created_at_ms,
@@ -1199,7 +1197,7 @@ impl AgentRuntimeManager {
             connection: session.connection.clone(),
             suspended: session.state == AgentRuntimeState::Suspended,
             last_sequence: session.next_sequence.saturating_sub(1),
-            events: self.list_events(owned_id, 0)?,
+            events: self.list_recent_events(owned_id)?,
         }))
     }
 
@@ -1251,6 +1249,20 @@ impl AgentRuntimeManager {
             .map_err(|_| "Conversation event sequence exceeded the store limit".to_string())?;
         self.store
             .list_events(owned_id, from_sequence, STORE_EVENT_CAP)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|row| {
+                serde_json::from_str(&row.payload_json)
+                    .map_err(|error| format!("Could not decode stored conversation event: {error}"))
+            })
+            .collect()
+    }
+
+    fn list_recent_events(&self, owned_id: &str) -> Result<Vec<AgentConversationEvent>, String> {
+        let limit = u32::try_from(SNAPSHOT_EVENT_CAP)
+            .map_err(|_| "Conversation snapshot event cap is invalid".to_string())?;
+        self.store
+            .list_recent_events(owned_id, limit)
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(|row| {
@@ -1849,13 +1861,6 @@ fn recover_sessions_from_store(
             AgentRuntimeState::Failed => ConversationConnectionState::Failed,
             _ => ConversationConnectionState::Disconnected,
         };
-        let events = store
-            .list_events(&row.owned_id, 0, STORE_EVENT_CAP)
-            .map_err(|error| error.to_string())?;
-        let frontend_events = events
-            .iter()
-            .filter_map(|event| serde_json::from_str(&event.payload_json).ok())
-            .collect::<VecDeque<AgentConversationEvent>>();
         let next_sequence = store
             .latest_seq(&row.owned_id)
             .map_err(|error| error.to_string())?
@@ -1900,7 +1905,6 @@ fn recover_sessions_from_store(
             spawn_reasoning_effort: row.effort,
             config: stored.config,
             connection,
-            frontend_events,
             store: Arc::clone(store),
             created_at_ms: row.created_at_ms.max(0) as u128,
             last_activity_ms: row.last_activity_at_ms.max(0) as u128,
@@ -2033,12 +2037,8 @@ fn record_payload_for_session(
         .enforce_event_cap(&session.owned_id, STORE_EVENT_CAP)
         .map_err(|error| error.to_string())?;
     session.recent_events.push_back(canonical);
-    session.frontend_events.push_back(frontend_event.clone());
     while session.recent_events.len() > SNAPSHOT_EVENT_CAP {
         session.recent_events.pop_front();
-    }
-    while session.frontend_events.len() > SNAPSHOT_EVENT_CAP {
-        session.frontend_events.pop_front();
     }
     persist_session(session)?;
     Ok(frontend_event)
@@ -4107,6 +4107,16 @@ mod tests {
         assert_eq!(events.len(), STORE_EVENT_CAP as usize);
         assert_eq!(events.first().unwrap().seq, 2);
         assert_eq!(events.last().unwrap().seq, i64::from(STORE_EVENT_CAP) + 1);
+        let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
+        assert_eq!(snapshot.events.len(), SNAPSHOT_EVENT_CAP);
+        assert_eq!(
+            snapshot.events.first().unwrap().sequence,
+            u64::from(STORE_EVENT_CAP) + 2 - SNAPSHOT_EVENT_CAP as u64
+        );
+        assert_eq!(
+            snapshot.events.last().unwrap().sequence,
+            u64::from(STORE_EVENT_CAP) + 1
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -5609,7 +5619,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_sequence_and_full_store_snapshot_are_repairable() {
+    fn canonical_sequence_and_bounded_snapshot_tail_are_repairable() {
         let root = temp_root();
         let manager = AgentRuntimeManager::default();
         let connection = manager
@@ -5635,9 +5645,13 @@ mod tests {
             )
             .unwrap();
         }
-        let events = manager.snapshot("owned-a").unwrap().unwrap().events;
-        assert_eq!(events.len(), SNAPSHOT_EVENT_CAP + 3);
-        assert!(events
+        let stored = manager.list_events("owned-a", 0).unwrap();
+        assert_eq!(stored.len(), SNAPSHOT_EVENT_CAP + 3);
+        let snapshot = manager.snapshot("owned-a").unwrap().unwrap().events;
+        assert_eq!(snapshot.len(), SNAPSHOT_EVENT_CAP);
+        assert_eq!(snapshot.first().unwrap().sequence, 4);
+        assert_eq!(snapshot.last().unwrap().sequence, 2_003);
+        assert!(snapshot
             .windows(2)
             .all(|pair| pair[1].sequence == pair[0].sequence + 1));
         fs::remove_dir_all(root).unwrap();

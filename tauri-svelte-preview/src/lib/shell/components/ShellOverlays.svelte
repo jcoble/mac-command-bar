@@ -42,8 +42,8 @@
     onRescanSessions: () => void | Promise<void>;
     /** Start the session described by the thread-first draft. */
     onStartNewSession: (request: ThreadStartRequest) => void | Promise<boolean | void>;
-    /** Configuration snapshots already fetched for provider sessions. */
-    providerConfigs: ThreadStartProviderConfig[];
+    /** Read configuration only when a new-session draft opens. */
+    newSessionProviderConfigs: () => ThreadStartProviderConfig[];
     /** The folders the sessions on the rail are running in, so the project
      * picker knows about projects nobody added by hand. */
     newSessionRoots: string[];
@@ -58,7 +58,7 @@
     onResetLayout,
     onRescanSessions,
     onStartNewSession,
-    providerConfigs,
+    newSessionProviderConfigs,
     newSessionRoots,
     message,
     onProblemsLocationChange,
@@ -67,7 +67,10 @@
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
   let newSessionHost: {
-    openNewSession: (input?: { sessionRoots?: string[] }) => void;
+    openNewSession: (input?: {
+      sessionRoots?: string[];
+      providerConfigs?: ThreadStartProviderConfig[];
+    }) => void;
     close(): void;
   } | null = null;
   let resourcePopoverHost: HTMLDivElement | null = null;
@@ -136,7 +139,10 @@
    * instance: the "New session" button in the sessions column, and the palette
    * command the page registers. */
   export function openNewSession(): void {
-    newSessionHost?.openNewSession({ sessionRoots: newSessionRoots });
+    newSessionHost?.openNewSession({
+      sessionRoots: newSessionRoots,
+      providerConfigs: newSessionProviderConfigs()
+    });
   }
 </script>
 
@@ -146,7 +152,7 @@
   onOpenSettings={() => settingsHost?.open()}
 />
 <SettingsHost bind:this={settingsHost} {onProblemsLocationChange} />
-<ThreadStartHost bind:this={newSessionHost} {providerConfigs} onStart={onStartNewSession} />
+<ThreadStartHost bind:this={newSessionHost} onStart={onStartNewSession} />
 <!-- The session's own browser, over the whole window including the sessions
      column. It reads the active session itself and takes no props. -->
 <SessionBrowserOverlay onClose={onSessionBrowserClose} />

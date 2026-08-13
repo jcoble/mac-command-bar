@@ -342,6 +342,35 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the event list", error))
     }
 
+    /// The newest bounded event window, returned in transcript order.
+    ///
+    /// Both the limiting and final ordering stay in SQLite so opening a long
+    /// conversation never materializes its full journal just to discard the
+    /// oldest rows in application code.
+    pub fn list_recent_events(&self, owned_id: &str, limit: u32) -> Result<Vec<EventRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT owned_id, seq, turn_id, kind, payload, created_at
+                 FROM (
+                     SELECT owned_id, seq, turn_id, kind, payload, created_at
+                     FROM events
+                     WHERE owned_id = ?
+                     ORDER BY seq DESC
+                     LIMIT ?
+                 )
+                 ORDER BY seq ASC",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not prepare the recent event list", error)
+            })?;
+        let rows = statement
+            .query_map(params![owned_id, i64::from(limit)], event_from_row)
+            .map_err(|error| StoreError::sqlite("could not list recent events", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the recent event list", error))
+    }
+
     pub fn latest_seq(&self, owned_id: &str) -> Result<i64> {
         let connection = self.lock()?;
         connection
@@ -719,6 +748,30 @@ mod tests {
         assert!(store
             .list_events(&session.owned_id, 1, 0)
             .expect("list zero-sized page")
+            .is_empty());
+    }
+
+    #[test]
+    fn recent_event_page_is_bounded_and_keeps_transcript_order() {
+        let (_directory, _path, store) = open_temp_store();
+        let session = fixture_session("owned-recent", 2_000);
+        store.upsert_session(&session).expect("insert session");
+        for seq in 1..=6 {
+            store
+                .append_event(&fixture_event(&session.owned_id, seq))
+                .expect("append event");
+        }
+
+        let seqs: Vec<i64> = store
+            .list_recent_events(&session.owned_id, 3)
+            .expect("list recent event page")
+            .into_iter()
+            .map(|event| event.seq)
+            .collect();
+        assert_eq!(seqs, [4, 5, 6]);
+        assert!(store
+            .list_recent_events(&session.owned_id, 0)
+            .expect("list zero-sized recent page")
             .is_empty());
     }
 

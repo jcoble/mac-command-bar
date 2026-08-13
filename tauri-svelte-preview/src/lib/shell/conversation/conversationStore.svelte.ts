@@ -327,10 +327,15 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     snapshot.connection.ownedId,
     snapshot.connection.provider
   );
-  rebuilt.generation = snapshot.connection.generation;
+  const events = idempotentSnapshotEvents(snapshot.events);
+  const firstEvent = events[0];
+  // A read snapshot is deliberately a bounded tail window. Seed the reducer
+  // immediately before that window so the first retained event is contiguous
+  // without pretending the omitted older journal was materialized.
+  rebuilt.generation = firstEvent?.generation ?? snapshot.connection.generation;
+  rebuilt.lastSequence = firstEvent ? Math.max(0, firstEvent.sequence - 1) : 0;
   rebuilt.connectionState = snapshot.connection.state;
   rebuilt.nativeSessionId = snapshot.connection.nativeSessionId;
-  const events = idempotentSnapshotEvents(snapshot.events);
   for (const event of events) {
     rebuilt = applyConversationEvent(rebuilt, event);
   }
@@ -380,14 +385,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
       );
     }
     applyTypedEventPayload(restored, event);
-    recordConversationPresenceEvent(event);
   }
-  synchronizeSessionPresenceWork(
-    snapshot.connection.ownedId,
-    restored.activeTurnId,
-    restored.sending,
-    events.at(-1)?.timestampMs ?? Date.now()
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
