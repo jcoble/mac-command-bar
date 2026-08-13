@@ -9,3 +9,5 @@
   <ConversationMessage text={item.text} role="user" itemId={item.itemId} completed={item.completed} {onFileLink} />
   <TurnMetadata text={item.text} timestampMs={item.timestampMs} align="end" />
 </div>
+
+<style>.group{position:relative}</style>

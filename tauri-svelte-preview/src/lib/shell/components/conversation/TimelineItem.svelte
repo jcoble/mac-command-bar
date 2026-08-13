@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import UserMessageItem from './UserMessageItem.svelte';
   import AssistantMessageItem from './AssistantMessageItem.svelte';
   import ReasoningItem from './ReasoningItem.svelte';
@@ -25,32 +26,32 @@
   // heading any more. It stays accepted only so the timeline that still passes
   // it keeps type-checking; the container drops it in its own pass.
   let { item, onApprovalDecision, onInputSubmit, onFileLink }: Props = $props();
+  const visible = $derived(conversationItemHasVisibleContent(item));
 </script>
 
-<div class="timeline-item" data-testid="conversation-timeline-item" data-item-id={item.itemId} data-kind={item.kind}>
-  {#if item.kind === 'user'}<UserMessageItem {item} {onFileLink} />
-  {:else if item.kind === 'assistant'}<AssistantMessageItem {item} {onFileLink} />
-  {:else if item.kind === 'reasoning'}<ReasoningItem {item} {onFileLink} />
-  {:else if item.kind === 'plan'}<PlanItem {item} />
-  {:else if item.kind === 'tasks'}<TaskListItem {item} />
-  {:else if item.kind === 'command'}<CommandItem {item} {onFileLink} />
-  {:else if item.kind === 'file'}<FileChangeItem {item} {onFileLink} />
-  {:else if item.kind === 'tool'}<ToolItem {item} {onFileLink} />
-  {:else if item.kind === 'subagent'}<SubagentSection {item} />
-  {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />
-  {:else if item.kind === 'input'}<UserInputItem {item} onSubmit={onInputSubmit} />
-  {:else if item.kind === 'error'}<ErrorItem {item} />
-  {:else}<div class="unknown-item" data-testid="timeline-unknown-item">{item.text}</div>{/if}
-</div>
+{#if visible}
+  <div class="timeline-item" data-testid="conversation-timeline-item" data-item-id={item.itemId} data-kind={item.kind}>
+    {#if item.kind === 'user'}<UserMessageItem {item} {onFileLink} />
+    {:else if item.kind === 'assistant'}<AssistantMessageItem {item} {onFileLink} />
+    {:else if item.kind === 'reasoning'}<ReasoningItem {item} {onFileLink} />
+    {:else if item.kind === 'plan'}<PlanItem {item} />
+    {:else if item.kind === 'tasks'}<TaskListItem {item} />
+    {:else if item.kind === 'command'}<CommandItem {item} {onFileLink} />
+    {:else if item.kind === 'file'}<FileChangeItem {item} {onFileLink} />
+    {:else if item.kind === 'tool'}<ToolItem {item} {onFileLink} />
+    {:else if item.kind === 'subagent'}<SubagentSection {item} />
+    {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />
+    {:else if item.kind === 'input'}<UserInputItem {item} onSubmit={onInputSubmit} />
+    {:else if item.kind === 'error'}<ErrorItem {item} />
+    {:else}<div class="unknown-item" data-testid="timeline-unknown-item">{item.text}</div>{/if}
+  </div>
+{/if}
 
 <style>
   /* The list sets 16px between items, which is the space a finished turn earns
      after it. Work rows — tools, thinking, plans, child agents — are part of
-     the same turn, so they give 8px of that back and read as one run. A user
-     message starts a new turn and takes another 8px above it. */
-  .timeline-item{display:block;min-width:0;content-visibility:auto;contain-intrinsic-size:auto 96px}
-  .timeline-item[data-kind='user']{margin-top:8px}
-  .timeline-item[data-kind='user']:first-child{margin-top:0}
+     the same turn, so they give 8px of that back and read as one run. */
+  .timeline-item{display:block;min-width:0}
   .timeline-item[data-kind='tool'],
   .timeline-item[data-kind='reasoning'],
   .timeline-item[data-kind='subagent'],

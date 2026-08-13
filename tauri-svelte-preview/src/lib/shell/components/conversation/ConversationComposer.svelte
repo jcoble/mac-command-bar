@@ -42,6 +42,7 @@
     onCommandSelected?(command: ConversationCommand): void;
     onApprovalDecision?(requestId: string, optionId: string): void | Promise<void>;
     onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void | Promise<void>;
+    onHeightChange?(height: number): void;
   }
 
   let {
@@ -70,7 +71,8 @@
     onConfigChange,
     onCommandSelected,
     onApprovalDecision,
-    onInputSubmit
+    onInputSubmit,
+    onHeightChange
   }: Props = $props();
 
   let activeIndex = $state(0);
@@ -79,6 +81,7 @@
   let inputDraft = $state('');
   let observedDraft = $state('');
   let promptHost = $state<HTMLTextAreaElement | null>(null);
+  let composerArea = $state<HTMLDivElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
   let commandSnapshot = $state<ConversationCommand[]>([]);
 
@@ -105,6 +108,15 @@
     if (attachmentError) items.push({ id: 'attachment-error', variant: 'error', title: 'Attachment unavailable', description: attachmentError });
     if (configError) items.push({ id: 'config-error', variant: 'warning', title: 'Settings unavailable', description: configError });
     return items;
+  });
+
+  $effect(() => {
+    if (!composerArea) return;
+    const publish = (): void => onHeightChange?.(Math.ceil(composerArea?.getBoundingClientRect().height ?? 0));
+    const observer = new ResizeObserver(publish);
+    observer.observe(composerArea);
+    publish();
+    return () => observer.disconnect();
   });
 
   function resizePrompt(): void {
@@ -193,7 +205,7 @@
   }
 </script>
 
-<div class="composer-area" data-testid="conversation-composer-area">
+<div class="composer-area" data-testid="conversation-composer-area" bind:this={composerArea}>
   {#if bannerItems.length}<ComposerBannerStack items={bannerItems} />{/if}
   <form class="composer-form" onsubmit={(event) => { event.preventDefault(); if (!composerLocked) void onSend?.(); }}>
     <div

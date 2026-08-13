@@ -65,7 +65,7 @@
 </div>
 
 <style>
-  .turn-meta{display:flex;align-items:center;gap:6px;min-height:24px;margin-top:2px;color:var(--color-text-3);font-size:12px}
-  .turn-meta.end{justify-content:flex-end}
+  .turn-meta{position:absolute;top:100%;left:0;z-index:1;display:flex;align-items:center;gap:6px;min-height:16px;color:var(--color-text-3);font-size:12px}
+  .turn-meta.end{right:0;left:auto;justify-content:flex-end}
   .turn-time{font-variant-numeric:tabular-nums}
 </style>
