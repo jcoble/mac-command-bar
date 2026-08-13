@@ -726,6 +726,24 @@
 
   .row :global([data-slot='hover-actions'] svg) { width: 14px; height: 14px; }
 
+  /* The actions sit over the title by design, so their surface has to be
+     opaque. The short lead-in fades the last title glyphs into that surface
+     without changing the title width or moving anything when hover begins. */
+  .row :global([data-slot='hover-actions']) {
+    padding: 2px 3px;
+    border-radius: 6px;
+    background: var(--color-hover);
+  }
+
+  .row :global([data-slot='hover-actions'])::before {
+    position: absolute;
+    inset: 0 100% 0 auto;
+    width: 14px;
+    background: linear-gradient(to right, transparent, var(--color-hover));
+    content: '';
+    pointer-events: none;
+  }
+
   .row[data-presence='stopped'] .project { opacity: 0.72; }
   .row[data-presence='stopped']:hover .project { opacity: 1; }
 

@@ -88,6 +88,19 @@ test('the switch is the kit component', () => {
   assert.match(panelSource, /aria-label="Language intelligence"/);
 });
 
+test('file tabs scroll while the complete right-side control group stays pinned', () => {
+  assert.match(panelSource, /<div class="file-strip"[\s\S]*?<div class="editor-controls">/);
+  assert.match(
+    panelSource,
+    /\.file-strip\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-width:\s*0;[\s\S]*?overflow-x:\s*auto;[\s\S]*?overflow-y:\s*hidden;/
+  );
+  assert.match(panelSource, /\.file-chip\s*\{[\s\S]*?flex:\s*0 0 auto;/);
+  assert.match(
+    panelSource,
+    /\.editor-controls\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?min-width:\s*max-content;/
+  );
+});
+
 test('a diff hunk opens the file in the editor at its line', () => {
   assert.match(diffSource, /import \{ requestOpenFile \} from '\$lib\/shell\/openFileBus'/);
   assert.match(diffSource, /onclick=\{\(\) => openAtLine\(hunk\.afterStart\)\}/);

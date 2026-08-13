@@ -208,6 +208,22 @@ for (const label of ['Open session', 'Open editor', 'Open source control']) {
 }
 
 assert.match(row, /SessionHoverCard/, 'hover details use the dedicated rail card');
+assert.match(
+  row,
+  /\.session-title\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/,
+  'long row titles keep one fixed-width ellipsis line'
+);
+assert.match(
+  row,
+  /\[data-slot='hover-actions'\]\)\s*\{[\s\S]*?padding:\s*2px 3px;[\s\S]*?border-radius:\s*6px;[\s\S]*?background:\s*var\(--color-hover\);/,
+  'hover actions sit on an opaque copy of the row hover surface'
+);
+assert.match(
+  row,
+  /\[data-slot='hover-actions'\]\)::before\s*\{[\s\S]*?width:\s*14px;[\s\S]*?linear-gradient\(to right, transparent, var\(--color-hover\)\)/,
+  'the hover surface fades in over the title instead of exposing text beneath it'
+);
+assert.doesNotMatch(row, /:has\(|has-\[/, 'rail actions do not add relational selectors');
 
 // The card is a still picture: what it shows is read once, on the way open.
 assert.match(
