@@ -43,6 +43,7 @@
   import {
     captureConversationWorkspace,
     conversationSessions,
+    ensureConversationSession,
     getConversationSession,
     removeConversationSession,
     restoreConversationWorkspace,
@@ -53,6 +54,8 @@
     closeStructuredConversation,
     commitConversationHandoff,
     ensureStructuredConversation,
+    flushConversationSessionDraft,
+    loadConversationSessionDraft,
     prepareConversationHandoff,
     rollbackConversationHandoff,
     sendStructuredMessage,
@@ -633,7 +636,10 @@
     // still empty, and saving that emptiness would overwrite the tabs the
     // session actually had (rows are clickable for seconds while the first
     // scan runs — including the close button, which switches sessions too).
-    if (switching && previous !== null && shellPanels.loadsAllowed()) snapshotWorkspace(previous);
+    if (switching && previous !== null) {
+      await flushConversationSessionDraft(previous).catch(() => undefined);
+      if (shellPanels.loadsAllowed()) snapshotWorkspace(previous);
+    }
     if (switching && previous !== null) stopConversationTerminalProjection(previous);
     if (switching && selected) {
       const root = selected.cwd.trim() || (selected.projectPath ?? '').trim();
@@ -651,6 +657,8 @@
     if (switching) restoreWorkspace(ownedId);
     const provider = conversationProviderFor(ownedId);
     if (selected && provider) {
+      ensureConversationSession(ownedId, provider);
+      if (switching) await loadConversationSessionDraft(ownedId).catch(() => undefined);
       const conversation = getConversationSession(ownedId);
       const activation = decideConversationActivation(
         selected,

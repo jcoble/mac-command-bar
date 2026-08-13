@@ -6,6 +6,7 @@ import {
   applyChildConversationTranscript,
   ensureConversationSession,
   getConversationSession,
+  setConversationDraft,
   setConversationConnection,
   setConversationAttachments,
   setConversationSending,
@@ -53,17 +54,42 @@ import {
   shouldReviveBeforeSend,
   validateStructuredSendGeneration
 } from './conversationActivation.ts';
+import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 
 let unlisten: UnlistenFn | null = null;
 const resyncing = new Map<string, Promise<void>>();
 const ensuring = new Map<string, { signature: string; work: Promise<AgentConversationConnection | null> }>();
 const terminalProjections = new Map<string, string>();
 const ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY = 'acpLiveConversationEvents';
+const sessionDraftPersistence = new ConversationDraftPersistence(
+  {
+    set: (ownedId, text) => invoke('agent_conversation_set_session_draft', { ownedId, text }),
+    get: (ownedId) => invoke('agent_conversation_get_session_draft', { ownedId }) as Promise<string | null>,
+    clear: (ownedId) => invoke('agent_conversation_clear_session_draft', { ownedId })
+  },
+  setConversationDraft
+);
 
 type TerminalProjectionRegistration = {
   generation: number;
   events: AgentEvent[];
 };
+
+export function persistConversationSessionDraft(ownedId: string, text: string): void {
+  if (isTauri()) sessionDraftPersistence.schedule(ownedId, text);
+}
+
+export async function flushConversationSessionDraft(ownedId: string): Promise<void> {
+  if (isTauri()) await sessionDraftPersistence.flush(ownedId);
+}
+
+export async function loadConversationSessionDraft(ownedId: string): Promise<void> {
+  if (isTauri()) await sessionDraftPersistence.load(ownedId);
+}
+
+export async function clearConversationSessionDraft(ownedId: string): Promise<void> {
+  if (isTauri()) await sessionDraftPersistence.clear(ownedId);
+}
 
 export async function readChildConversationTranscript(input: {
   ownedId: string;

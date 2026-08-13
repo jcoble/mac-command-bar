@@ -72,7 +72,7 @@ const scanRecord = {
     [SESSION_WORKSPACES_STORAGE_KEY]: JSON.stringify({ 'owned-a': fixture.workspace })
   });
   const restored = readWorkspaces(storage);
-  assert.equal(restored['owned-a'].conversation.draft, 'draft-a');
+  assert.equal('draft' in restored['owned-a'].conversation, false);
   assert.deepEqual(restored['owned-a'].conversation.attachmentIds, ['attachment-a']);
   assert.equal(restored['owned-a'].conversation.unknownLegacyField.retained, true);
   assert.deepEqual(fixture.transcript, [{ itemId: 'message-a', text: 'retained transcript' }]);

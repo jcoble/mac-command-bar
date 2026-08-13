@@ -5719,6 +5719,9 @@ fn main() {
             submit_workflow_result,
             agent_conversation::ensure_agent_conversation,
             agent_conversation::send_agent_conversation_message,
+            agent_conversation::agent_conversation_set_session_draft,
+            agent_conversation::agent_conversation_get_session_draft,
+            agent_conversation::agent_conversation_clear_session_draft,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,
@@ -8585,6 +8588,9 @@ mod tests {
         ));
         let native = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
         for command in [
+            "agent_conversation_set_session_draft",
+            "agent_conversation_get_session_draft",
+            "agent_conversation_clear_session_draft",
             "respond_agent_conversation_approval",
             "respond_agent_conversation_permission",
             "respond_agent_conversation_input",

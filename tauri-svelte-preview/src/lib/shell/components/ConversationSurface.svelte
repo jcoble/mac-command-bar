@@ -22,7 +22,10 @@
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
     cleanupConversationAttachment,
+    clearConversationSessionDraft,
+    flushConversationSessionDraft,
     loadConversationCapabilities,
+    persistConversationSessionDraft,
     readChildConversationTranscript,
     removeConversationAttachment,
     sendPermissionResponse,
@@ -164,11 +167,14 @@
     const text = conversation.draft;
     setConversationDraft(activeOwnedId, '');
     try {
+      await clearConversationSessionDraft(activeOwnedId);
       await sendStructuredMessage(activeOwnedId, text, active?.ptySessionId);
     } catch {
       // Restore the draft. The service intentionally leaves attachments in the
       // store on every failure, so the user can retry without data loss.
       setConversationDraft(activeOwnedId, text);
+      persistConversationSessionDraft(activeOwnedId, text);
+      await flushConversationSessionDraft(activeOwnedId).catch(() => undefined);
     }
   }
 
@@ -350,7 +356,11 @@
           pendingApprovalCount={pendingApprovals.length}
           pendingInputs={pendingInputs}
           {attachmentError}
-          onDraftChange={(value) => setConversationDraft(active.ownedId, value)}
+          onDraftChange={(value) => {
+            setConversationDraft(active.ownedId, value);
+            persistConversationSessionDraft(active.ownedId, value);
+          }}
+          onDraftBlur={() => flushConversationSessionDraft(active.ownedId)}
           onSend={send}
           onStop={() => { if (activeOwnedId) void stopStructuredTurn(activeOwnedId).catch(() => undefined); }}
           onPaste={paste}

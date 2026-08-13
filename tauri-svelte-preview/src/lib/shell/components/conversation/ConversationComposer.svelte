@@ -31,6 +31,7 @@
     pendingInputs?: readonly AgentUserInputRequest[];
     respondingRequestIds?: readonly string[];
     onDraftChange?(value: string): void;
+    onDraftBlur?(): void | Promise<void>;
     onSend?(): void | Promise<void>;
     onStop?(): void | Promise<void>;
     onPaste?(event: ClipboardEvent): void | Promise<void>;
@@ -59,6 +60,7 @@
     pendingInputs = [],
     respondingRequestIds = [],
     onDraftChange,
+    onDraftBlur,
     onSend,
     onStop,
     onPaste,
@@ -238,6 +240,7 @@
             disabled={composerLocked}
             onpaste={(event) => void onPaste?.(event)}
             oninput={(event) => changeDraft(event.currentTarget.value)}
+            onblur={() => void onDraftBlur?.()}
             onkeydown={onKeydown}
           ></textarea>
         </div>

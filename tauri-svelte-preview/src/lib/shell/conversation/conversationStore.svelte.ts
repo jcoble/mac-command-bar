@@ -874,7 +874,6 @@ export function captureConversationWorkspace(
   return {
     version: SESSION_CONVERSATION_WORKSPACE_VERSION,
     mode: current.mode,
-    draft: current.draft,
     generation: current.generation,
     owner: current.executionOwner,
     attachmentIds: current.attachmentIds,
@@ -899,7 +898,6 @@ export function restoreConversationWorkspace(
 ): ConversationWorkspaceState {
   const current = ensureConversationSession(ownedId, provider);
   current.mode = snapshot?.mode === 'raw' ? 'raw' : 'structured';
-  current.draft = snapshot?.draft ?? '';
   current.selectedChildId = snapshot?.selectedChildId ?? null;
   current.scrollTop = snapshot?.parentScrollTop ?? snapshot?.scrollTop ?? 0;
   current.childScrollTopById = snapshot?.childScrollTopById ?? {};

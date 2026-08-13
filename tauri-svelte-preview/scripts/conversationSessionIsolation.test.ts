@@ -64,7 +64,7 @@ const sessions = {
 assert.equal(writeWorkspaces(storage, sessions), true);
 const restored = readWorkspaces(storage);
 
-assert.equal(restored['owned-a'].conversation.draft, 'draft-alpha');
+assert.equal('draft' in restored['owned-a'].conversation, false);
 assert.equal(restored['owned-b'].conversation.mode, 'raw');
 assert.equal(restored['owned-a'].conversation.selectedChildId, 'child-alpha');
 assert.equal(restored['owned-b'].conversation.scrollTop, 500);

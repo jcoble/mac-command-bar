@@ -200,6 +200,24 @@ impl AgentRuntimeManager {
         })
     }
 
+    pub fn set_session_draft(&self, owned_id: &str, text: &str) -> Result<(), String> {
+        self.store
+            .set_draft(owned_id, text)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn get_session_draft(&self, owned_id: &str) -> Result<Option<String>, String> {
+        self.store
+            .get_draft(owned_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn clear_session_draft(&self, owned_id: &str) -> Result<(), String> {
+        self.store
+            .clear_draft(owned_id)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn start_idle_suspension_task(&self) {
         if self
             .idle_suspend_task_started
@@ -4161,6 +4179,38 @@ mod tests {
                 .suspended
         );
         recovered.close(&connection.owned_id).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_draft_survives_manager_restart_and_clears() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-draft-restart",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        manager
+            .set_session_draft(&connection.owned_id, "unfinished message")
+            .unwrap();
+        drop(manager);
+
+        let recovered = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        assert_eq!(
+            recovered.get_session_draft(&connection.owned_id).unwrap(),
+            Some("unfinished message".to_owned())
+        );
+        recovered.clear_session_draft(&connection.owned_id).unwrap();
+        assert_eq!(
+            recovered.get_session_draft(&connection.owned_id).unwrap(),
+            None
+        );
+        drop(recovered);
         fs::remove_dir_all(root).unwrap();
     }
 
