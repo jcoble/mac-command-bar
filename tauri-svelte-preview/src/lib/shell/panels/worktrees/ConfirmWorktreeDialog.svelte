@@ -1,32 +1,43 @@
 <script lang="ts">
   /**
-   * RemoveWorktreeDialog.svelte — the question asked before ANY worktree is
-   * removed, cleared or deleted.
+   * ConfirmWorktreeDialog.svelte — the question asked before anything about a
+   * worktree changes.
    *
-   * There used to be one dialog here, and it only guarded the destructive
-   * button. The two quieter paths went straight through on the first click, and
-   * one of them — the row whose folder is already gone — turned out to clear
-   * every other folder-gone row along with it. Somebody pressed it, watched two
-   * rows disappear, and had no way of knowing that would happen. So all three
-   * paths now come through this file, and the difference between them is a
-   * different set of sentences, not a different amount of asking.
+   * Two kinds of question come through here and they are deliberately the same
+   * dialog: clearing git's record of a folder that is already gone, and starting
+   * a session that can remove a folder that is not. The wording differs; the
+   * amount of asking does not. There used to be a path that acted on the first
+   * click, and it turned out to clear rows nobody had been told about.
    *
-   * What the dialog says is not decided here. `describeRemovalQuestion` in
-   * `worktreeManagerRows.ts` works out the title, the sentences, the button
-   * words and whether the folder name has to be typed — which is what lets the
-   * exact wording, including the older-app-build warning, be read in a test
-   * rather than clicked through in an app.
+   * What the dialog says is never decided here. It arrives already written — by
+   * `describeRemovalQuestion` in `worktreeManagerRows.ts` or by
+   * `describeWorktreeAgentQuestion` in `worktreeAgentPrompts.ts` — which is what
+   * lets the exact wording be read in a test instead of clicked through in an
+   * app. The prop is structural rather than one of those two named types, so
+   * both fit without either module knowing about the other.
    *
    * No `window.confirm` anywhere: that dialog does not exist in the desktop
    * webview, where it answers "no" without asking anybody.
    */
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
-  import type { WorktreeRemovalQuestion } from '$lib/shell/worktrees/worktreeManagerRows';
+
+  /** Everything this dialog draws. Both question builders satisfy it. */
+  interface WorktreeQuestion {
+    title: string;
+    intro: string;
+    lines: string[];
+    confirmLabel: string;
+    cancelLabel: string;
+    /** The folder's own name has to be typed before the button works. */
+    requiresTypedName: boolean;
+    /** Drawn in the danger colour. */
+    destructive: boolean;
+  }
 
   interface Props {
     /** What is being asked, or `null` when the dialog is shut. */
-    question: WorktreeRemovalQuestion | null;
+    question: WorktreeQuestion | null;
     /** The folder's own name — the word that has to be typed, when one does. */
     folderName: string;
     open: boolean;
@@ -41,8 +52,8 @@
 
   const needsName = $derived(question?.requiresTypedName === true);
   /**
-   * The folder name is the one thing a person cannot type by accident, so the
-   * destructive path waits for it. Every other path is ready as soon as it opens.
+   * The folder name is the one thing a person cannot type by accident, so a
+   * question that asks for it waits. Every other one is ready as it opens.
    */
   const ready = $derived(!needsName || (typed.trim() === folderName && folderName !== ''));
 
@@ -69,16 +80,16 @@
       <AlertDialog.Title class="text-[14px] leading-[1.4] font-semibold">
         {question?.title ?? ''}
       </AlertDialog.Title>
-      <AlertDialog.Description class="text-[13px] leading-[1.5] text-[var(--color-text-2)]">
+      <AlertDialog.Description class="text-[13px] leading-[1.5] text-muted-foreground">
         {question?.intro ?? ''}
       </AlertDialog.Description>
     </AlertDialog.Header>
 
     <ul class="m-0 flex list-none flex-col gap-1 p-0">
       {#each question?.lines ?? [] as line, index (index)}
-        <li class="flex gap-1.5 text-[13px] leading-[1.5] text-[var(--color-text)]">
+        <li class="flex gap-1.5 text-[13px] leading-[1.5] text-foreground">
           <span
-            class={question?.destructive ? 'text-[var(--color-bad)]' : 'text-[var(--color-text-3)]'}
+            class={question?.destructive ? 'text-[var(--color-bad)]' : 'text-muted-foreground'}
             aria-hidden="true">•</span
           >
           <span>{line}</span>
@@ -87,8 +98,8 @@
     </ul>
 
     {#if needsName}
-      <label class="flex flex-col gap-1 text-[13px] leading-[1.5] text-[var(--color-text-2)]">
-        Type <span class="font-medium text-[var(--color-text)]">{folderName}</span> to confirm.
+      <label class="flex flex-col gap-1 text-[13px] leading-[1.5] text-muted-foreground">
+        Type <span class="font-medium text-foreground">{folderName}</span> to confirm.
         <Input
           class="h-8 text-[13px]"
           autocomplete="off"
