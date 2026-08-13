@@ -7,10 +7,14 @@
  *
  * The words on the chip and the waiting rules are tested for real in
  * `languageServerStatus.test.ts`. What cannot be tested that way is the wiring
- * inside two Svelte components, so it is read out of their source here. These
- * are the four promises that would be silently broken by an ordinary-looking
+ * inside the Svelte components, so it is read out of their source here. These
+ * are the promises that would be silently broken by an ordinary-looking
  * edit:
  *
+ *  0. The chip and the project's switch live in the strip along the top of the
+ *     shell, and the editor's file-tab row keeps only the open file's own
+ *     controls. The panel remains the single owner of the status pipeline; the
+ *     top strip only reads what the panel publishes.
  *  1. Nothing is asked on a timer. The panel reads the status when a file
  *     opens and otherwise waits to be told — a poll would put the desktop app
  *     back under the load this whole change exists to remove.
@@ -34,22 +38,85 @@ const intelligenceSource = readFileSync(
   path.join(here, '..', '..', 'editor', 'sourceIntelligence.ts'),
   'utf8'
 );
+const controlsSource = readFileSync(
+  path.join(here, '..', 'LanguageIntelligenceControls.svelte'),
+  'utf8'
+);
+const barSource = readFileSync(
+  path.join(here, '..', '..', 'editor', 'languageIntelligenceBar.svelte.ts'),
+  'utf8'
+);
+const shellPageSource = readFileSync(
+  path.join(here, '..', '..', '..', '..', 'routes', 'next', '+page.svelte'),
+  'utf8'
+);
 
-test('the panel shows the chip', () => {
-  assert.match(panelSource, /import LanguageServerStatusChip from/);
-  assert.match(panelSource, /<LanguageServerStatusChip\b/);
+test('the top-strip controls show the chip', () => {
+  assert.match(controlsSource, /import LanguageServerStatusChip from/);
+  assert.match(controlsSource, /<LanguageServerStatusChip\b/);
 });
 
-test('the chip and its controls share the file-tab title row', () => {
+test('the strip along the top of the shell mounts the controls', () => {
+  assert.match(
+    shellPageSource,
+    /import LanguageIntelligenceControls from '\$lib\/shell\/components\/LanguageIntelligenceControls\.svelte'/
+  );
+  const topBar = shellPageSource.slice(
+    shellPageSource.indexOf('<div class="top-bar">'),
+    shellPageSource.indexOf('<div class="frame-area">')
+  );
+  assert.ok(topBar.length > 0, 'the top strip must still exist');
+  assert.match(topBar, /<RunButton \/>/);
+  assert.match(topBar, /<LanguageIntelligenceControls \/>/);
+});
+
+test('the controls sit at the right-hand end of the strip', () => {
+  assert.match(
+    controlsSource,
+    /margin-left:\s*auto/,
+    'the group is pushed away from the run and browser buttons'
+  );
+  assert.ok(
+    !controlsSource.includes(':has(') && !controlsSource.includes('has-['),
+    'no `:has()` selectors'
+  );
+});
+
+test('only the open file\'s own controls stay in the file-tab title row', () => {
   const titleRow = panelSource.slice(
     panelSource.indexOf('<div class="editor-header">'),
     panelSource.indexOf('<div class="editor-canvas">')
   );
   assert.ok(titleRow.length > 0, 'the editor title row must still exist');
   assert.match(titleRow, /aria-label="Open files"/);
-  assert.match(titleRow, /<LanguageServerStatusChip\b/);
-  assert.match(titleRow, /<div class="intelligence"/);
+  assert.match(
+    titleRow,
+    /aria-label="Markdown view"/,
+    'the Source/Preview toggle is about the open file, so it stays with the tabs'
+  );
+  assert.ok(
+    !panelSource.includes('<LanguageServerStatusChip'),
+    'the chip is about the project and has moved to the top strip'
+  );
+  assert.ok(
+    !panelSource.includes('class="intelligence"'),
+    'the switch is about the project and has moved to the top strip'
+  );
   assert.doesNotMatch(panelSource, /editor-status-bar|status-slot/);
+});
+
+test('the status pipeline has one owner', () => {
+  assert.match(panelSource, /publishLanguageIntelligenceBar\(/);
+  for (const call of ['invoke', 'listen(', 'read_source_lsp_status']) {
+    assert.ok(
+      !controlsSource.includes(call) && !barSource.includes(call),
+      `the top-strip controls must not run the status pipeline a second time (${call})`
+    );
+  }
+});
+
+test('the controls disappear when no project is open', () => {
+  assert.match(controlsSource, /\{#if languageIntelligenceBar\.hasProject\}/);
 });
 
 test('the chip is only rendered when there is something truthful to say', () => {
@@ -63,7 +130,8 @@ test('the chip is only rendered when there is something truthful to say', () => 
 test('nothing is asked on a repeating timer', () => {
   for (const [name, source] of [
     ['EditorPanel.svelte', panelSource],
-    ['LanguageServerStatusChip.svelte', chipSource]
+    ['LanguageServerStatusChip.svelte', chipSource],
+    ['LanguageIntelligenceControls.svelte', controlsSource]
   ] as const) {
     assert.ok(!source.includes('setInterval'), `${name} must not poll the desktop app`);
   }
@@ -107,20 +175,30 @@ test('the second diagnostics read goes through the waiting room', () => {
   assert.match(panelSource, /waitUntilReady\(\)/);
 });
 
-test('the chip is painted only from the shared colour names', () => {
-  const style = chipSource.slice(chipSource.indexOf('<style>'));
-  const writtenInColours = style.match(/#[0-9a-fA-F]{3,8}\b|\brgba?\(/g) ?? [];
-  assert.deepEqual(
-    writtenInColours,
-    [],
-    'colours belong in the shared token file, not in this component'
-  );
+test('the chip and the controls are painted only from the shared colour names', () => {
+  for (const [name, source] of [
+    ['LanguageServerStatusChip.svelte', chipSource],
+    ['LanguageIntelligenceControls.svelte', controlsSource]
+  ] as const) {
+    const style = source.slice(source.indexOf('<style>'));
+    const writtenInColours = style.match(/#[0-9a-fA-F]{3,8}\b|\brgba?\(/g) ?? [];
+    assert.deepEqual(
+      writtenInColours,
+      [],
+      `colours belong in the shared token file, not in ${name}`
+    );
+  }
 });
 
-test('no text in the chip is smaller than 12 pixels', () => {
-  const sizes = [...chipSource.matchAll(/font-size:\s*(\d+)px/g)].map((match) => Number(match[1]));
-  assert.ok(sizes.length > 0, 'the chip should state its text size');
-  for (const size of sizes) {
-    assert.ok(size >= 12, `text at ${size}px is below the 12px floor`);
+test('no text in the chip or the controls is smaller than 12 pixels', () => {
+  for (const [name, source] of [
+    ['LanguageServerStatusChip.svelte', chipSource],
+    ['LanguageIntelligenceControls.svelte', controlsSource]
+  ] as const) {
+    const sizes = [...source.matchAll(/font-size:\s*(\d+)px/g)].map((match) => Number(match[1]));
+    assert.ok(sizes.length > 0, `${name} should state its text size`);
+    for (const size of sizes) {
+      assert.ok(size >= 12, `text at ${size}px in ${name} is below the 12px floor`);
+    }
   }
 });
