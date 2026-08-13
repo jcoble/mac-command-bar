@@ -684,6 +684,22 @@ impl AgentRuntimeManager {
         };
         if provider == AgentConversationProvider::Claude {
             started.config = claude_session_config(started.config, reasoning_effort.as_deref());
+        } else if let Some(reasoning_effort) = reasoning_effort {
+            let update = AgentConversationConfigUpdate {
+                reasoning_effort: Some(reasoning_effort),
+                ..AgentConversationConfigUpdate::default()
+            };
+            match runtime
+                .lock()
+                .await
+                .set_conversation_config_on(&started.native_session_id, &update)
+                .await
+            {
+                Ok(config) => started.config = config,
+                Err(error) => crate::debug_log::stderr_log!(
+                    "{owned_id}: session-start effort was not applied: {error}"
+                ),
+            }
         }
         if let Some(expected_native_session_id) = expected_native_session_id {
             if started.native_session_id != expected_native_session_id {
@@ -3527,12 +3543,10 @@ fn normalized_session_start_effort(
     let Some(value) = value else {
         return Ok(None);
     };
-    if provider != AgentConversationProvider::Claude {
-        return Err("Session-start effort is only available for Claude sessions".to_string());
-    }
-    if CLAUDE_SESSION_EFFORTS
-        .iter()
-        .any(|(effort, _)| *effort == value)
+    if provider != AgentConversationProvider::Claude
+        || CLAUDE_SESSION_EFFORTS
+            .iter()
+            .any(|(effort, _)| *effort == value)
     {
         Ok(Some(value))
     } else {
@@ -5546,6 +5560,110 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn session_start_effort_is_applied_after_start() {
+        let fixture = fixture_manager_with_provider(
+            "session_start_effort",
+            AgentConversationProvider::Codex,
+            Some("xhigh"),
+        )
+        .await;
+
+        let log = fs::read_to_string(fixture.root.join("session_start_effort.jsonl"))
+            .expect("fixture request log");
+        assert!(log.contains(r#""method":"session/set_config_option""#));
+        assert!(log.contains(r#""reasoningEffort":"xhigh""#));
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("stored config")
+                .reasoning_effort
+                .as_deref(),
+            Some("xhigh")
+        );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stored_session_effort_is_reapplied_on_resume() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let log = root.join("stored-session-effort.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "suspend_stored_session_effort",
+        );
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Codex, manifest.clone())]).unwrap();
+        let manager = AgentRuntimeManager::open(providers, &database).unwrap();
+        let mut ensure = request(
+            root.to_str().unwrap(),
+            "owned-stored-session-effort",
+            AgentConversationProvider::Codex,
+        );
+        ensure.reasoning_effort = Some("xhigh".into());
+        let connection = manager.ensure_async(ensure).await.unwrap();
+        manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        drop(manager);
+
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
+        let recovered = AgentRuntimeManager::open(providers, &database).unwrap();
+        recovered
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .expect("stored session resumes");
+        let snapshot = recovered.snapshot(&connection.owned_id).unwrap().unwrap();
+        assert!(!snapshot.suspended);
+        assert_eq!(
+            snapshot.connection.config.reasoning_effort.as_deref(),
+            Some("xhigh")
+        );
+        let requests = fs::read_to_string(&log).expect("fixture request log");
+        assert!(requests.contains(r#""method":"session/resume""#));
+        assert_eq!(requests.matches("session/set_config_option").count(), 2);
+
+        recovered.close(&connection.owned_id).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_start_effort_failure_keeps_session_ready() {
+        let fixture = fixture_manager_with_provider(
+            "config_update_failure",
+            AgentConversationProvider::Codex,
+            Some("xhigh"),
+        )
+        .await;
+
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            snapshot.connection.state,
+            ConversationConnectionState::Connected
+        );
+        assert_eq!(snapshot.connection.config.reasoning_effort, None);
+        assert!(!snapshot
+            .events
+            .iter()
+            .any(|event| matches!(event.payload, AgentConversationPayload::Error { .. })));
+        let requests = fs::read_to_string(fixture.root.join("config_update_failure.jsonl"))
+            .expect("fixture request log");
+        assert!(requests.contains(r#""method":"session/set_config_option""#));
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn conversation_config_commands_read_set_forward_and_reject_stale_generation() {
         let fixture = fixture_manager_with_acp_session("conversation_config").await;
         let initial = fixture
@@ -5878,7 +5996,7 @@ mod tests {
         );
         drop(seen);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        let _ = fixture.manager.close(&fixture.owned_id).await;
         fs::remove_dir_all(fixture.root).unwrap();
     }
 

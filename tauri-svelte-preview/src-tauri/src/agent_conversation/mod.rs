@@ -82,7 +82,12 @@ pub async fn ensure_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: EnsureAgentConversationRequest,
 ) -> Result<AgentConversationConnection, String> {
-    manager.ensure_async(request).await
+    let owned_id = request.owned_id.clone();
+    log_command_error(
+        "ensure_agent_conversation",
+        &owned_id,
+        manager.ensure_async(request).await,
+    )
 }
 
 #[tauri::command]
@@ -90,24 +95,29 @@ pub async fn send_agent_conversation_message(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: SendAgentConversationMessageRequest,
 ) -> Result<(), String> {
-    let prompt = prompt_from_blocks(request.text.trim(), request.content)?;
-    manager
-        .activate(&request.owned_id, request.generation)
-        .await?;
-    if request.model.is_some() || request.approval_policy.is_some() {
+    let owned_id = request.owned_id.clone();
+    let result = async {
+        let prompt = prompt_from_blocks(request.text.trim(), request.content)?;
         manager
-            .set_conversation_config(SetAgentConversationConfigRequest {
-                owned_id: request.owned_id.clone(),
-                generation: request.generation,
-                model: request.model,
-                reasoning_effort: None,
-                approval_policy: request.approval_policy,
-            })
+            .activate(&request.owned_id, request.generation)
             .await?;
+        if request.model.is_some() || request.approval_policy.is_some() {
+            manager
+                .set_conversation_config(SetAgentConversationConfigRequest {
+                    owned_id: request.owned_id.clone(),
+                    generation: request.generation,
+                    model: request.model,
+                    reasoning_effort: None,
+                    approval_policy: request.approval_policy,
+                })
+                .await?;
+        }
+        manager
+            .prompt(&request.owned_id, request.generation, prompt)
+            .await
     }
-    manager
-        .prompt(&request.owned_id, request.generation, prompt)
-        .await
+    .await;
+    log_command_error("send_agent_conversation_message", &owned_id, result)
 }
 
 #[tauri::command]
@@ -313,4 +323,15 @@ fn required_id(value: &str, label: &str) -> Result<String, String> {
     } else {
         Ok(value.to_string())
     }
+}
+
+fn log_command_error<T>(
+    command: &str,
+    owned_id: &str,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    if let Err(error) = &result {
+        crate::debug_log::stderr_log!("{command} [{owned_id}]: {error}");
+    }
+    result
 }
