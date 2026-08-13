@@ -59,6 +59,34 @@ assert.match(
   'Dockview’s own horizontal tab headers stay hidden — the corner tabs replace them'
 );
 
+// ── One surface at a time: the three are stacked, never side by side ───────
+
+// A fresh dock adds every surface into the group the first one made, so exactly
+// one is on screen and the corner tabs are what change which.
+assert.match(
+  centerDock,
+  /addPanelFor\(panel, \{ referencePanel: lead\.id, direction: 'within' \}\)/,
+  'every center surface after the first must be stacked into the same group'
+);
+assert.doesNotMatch(
+  centerDock,
+  /direction: 'right'/,
+  'no center surface may open beside another — that is what showed two at once'
+);
+assert.doesNotMatch(
+  shellFrame,
+  /group: '(display|conversation)'/,
+  'the center panels no longer choose a side; they all stack'
+);
+// A layout stored by the older side-by-side geometry has the same three panel
+// ids, so the id check alone would restore the split. The group count is what
+// rejects it.
+assert.match(
+  centerDock,
+  /dockGroupCount\(stored\) === 1/,
+  'a stored center layout is only restored when its surfaces are in one group'
+);
+
 // ── The corner tabs sit above the dock, in a row of their own ──────────────
 
 assert.match(

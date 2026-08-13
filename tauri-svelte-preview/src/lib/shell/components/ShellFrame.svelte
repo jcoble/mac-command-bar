@@ -105,19 +105,17 @@
       frame.layout(gridHost.clientWidth, gridHost.clientHeight);
       centerDock = createCenterDock(centerSlot, {
         storage: window.localStorage,
-        // The session is what you talk to, so it opens on its own on the left;
-        // the editor and the diff are where you look at the result, so they
-        // open stacked together on the right. Source control itself is not here
-        // at all — it is a panel of the right column — but the changes it shows
-        // are, because a diff wants the width of the middle.
+        // All three stacked, one showing at a time, opening on the session. The
+        // corner tabs are what move between them. Source control itself is not
+        // here at all — it is a panel of the right column — but the changes it
+        // shows are, because a diff wants the width of the middle.
         panels: [
           { id: 'session', title: 'Session', element: sessionSlot },
-          { id: 'editor', title: 'Editor', element: editorSlot, group: 'display' },
+          { id: 'editor', title: 'Editor', element: editorSlot },
           {
             id: 'diff',
             title: 'Diff',
             element: diffSlot,
-            group: 'display',
             renderer: 'onlyWhenVisible'
           }
         ],

@@ -17,6 +17,7 @@ import {
 import {
   CENTER_LAYOUT_KEY,
   clearLayout,
+  dockGroupCount,
   dockPanelIds,
   loadLayout,
   panelSetMatches,
@@ -31,14 +32,6 @@ export interface CenterPanelSpec {
   /** Override the dock-wide attachment policy for surfaces that cannot remain
    * in the overlay container while another tab is active. */
   renderer?: DockviewPanelRenderer;
-  /**
-   * Which side of the default layout this panel opens on: `'conversation'` (the
-   * left group, where the user talks to the session) or `'display'` (the right
-   * group, where results are shown). Only read when the dock is built from
-   * scratch — once the user has dragged tabs around, the stored layout wins.
-   * Defaults to `'conversation'`.
-   */
-  group?: 'conversation' | 'display';
 }
 
 export interface CenterDockOptions {
@@ -167,37 +160,22 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   };
 
   /**
-   * The layout a fresh dock opens with: the conversation panels on the left, the
-   * display panels stacked as tabs in a second group to their right. Both sides
-   * may be empty — a roster that is all conversation just never opens the second
-   * group, and one that is all display opens a single group with no anchor to
-   * sit beside (asking dockview to position against a panel that does not exist
-   * yet throws, so that case adds the first panel with no position at all).
+   * The layout a fresh dock opens with: every surface stacked in ONE group, with
+   * the first of them showing. The middle of the shell holds one thing at a time
+   * — the session, a file, or a diff — and the corner tabs are what choose
+   * between them. Splitting them across two groups is what put two empty states
+   * on screen at once and left the tabs with nothing to switch.
    */
   const buildDefault = (): void => {
-    const conversation = options.panels.filter((panel) => panel.group !== 'display');
-    const display = options.panels.filter((panel) => panel.group === 'display');
-    for (const panel of conversation) addPanelFor(panel);
-
-    const anchor = conversation[0];
-    const [leadDisplay, ...stackedDisplay] = display;
-    if (leadDisplay) {
-      addPanelFor(
-        leadDisplay,
-        anchor ? { referencePanel: anchor.id, direction: 'right' } : undefined
-      );
-      for (const panel of stackedDisplay) {
-        addPanelFor(panel, { referencePanel: leadDisplay.id, direction: 'within' });
-      }
+    const [lead, ...stacked] = options.panels;
+    if (!lead) return;
+    addPanelFor(lead);
+    for (const panel of stacked) {
+      addPanelFor(panel, { referencePanel: lead.id, direction: 'within' });
     }
-
-    // Every add above made its own panel the active one, so the last display tab
-    // is showing — which is now Diff, an empty pane until a file is picked. Put
-    // the display group back on its first tab, then hand focus to the front of
-    // the roster.
-    if (leadDisplay) panelById(leadDisplay.id)?.api.setActive();
-    const opening = anchor ?? leadDisplay;
-    if (opening) panelById(opening.id)?.api.setActive();
+    // Every add made its own panel the active one, so the last tab is showing.
+    // Open on the first instead.
+    panelById(lead.id)?.api.setActive();
   };
 
   /**
@@ -279,7 +257,14 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
 
   runSynchronized(() => {
     const stored = loadLayout<object>(options.storage, CENTER_LAYOUT_KEY);
-    if (stored && panelSetMatches(dockPanelIds(stored), specs.keys())) {
+    // The panel set has to match AND the surfaces have to be in one group. A
+    // layout written by the older side-by-side geometry passes the first test
+    // and fails the second, so it is rebuilt rather than resurrected.
+    if (
+      stored &&
+      panelSetMatches(dockPanelIds(stored), specs.keys()) &&
+      dockGroupCount(stored) === 1
+    ) {
       try {
         api.fromJSON(stored as never);
         return;

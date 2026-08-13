@@ -4,6 +4,7 @@ import {
   saveLayout,
   clearLayout,
   gridPanelIds,
+  dockGroupCount,
   dockPanelIds,
   paneviewPanelIds,
   panelSetMatches,
@@ -94,6 +95,29 @@ function memoryStorage(initial = {}) {
   const dock = { panels: { session: {}, editor: {}, browser: {} }, grid: {} };
   assert.deepEqual([...dockPanelIds(dock)].sort(), ['browser', 'editor', 'session']);
   assert.deepEqual([...dockPanelIds({ grid: {} })], [], 'missing panels -> empty');
+}
+
+// dockGroupCount counts the leaves of a SerializedDockview's grid tree, which
+// is what tells one stacked group of tabs from two panes side by side.
+{
+  const stacked = {
+    grid: { root: { type: 'branch', data: [{ type: 'leaf', data: { views: ['session', 'editor', 'diff'] } }] } }
+  };
+  const sideBySide = {
+    grid: {
+      root: {
+        type: 'branch',
+        data: [
+          { type: 'leaf', data: { views: ['session'] } },
+          { type: 'leaf', data: { views: ['editor', 'diff'] } }
+        ]
+      }
+    }
+  };
+  assert.equal(dockGroupCount(stacked), 1, 'three surfaces in one group is one group');
+  assert.equal(dockGroupCount(sideBySide), 2, 'the old split geometry counts two');
+  assert.equal(dockGroupCount({}), 0, 'malformed -> zero, no throw');
+  assert.equal(dockGroupCount(null), 0);
 }
 
 // paneviewPanelIds reads SerializedPaneview.views[].data.id.
