@@ -61,14 +61,6 @@ export interface SessionHistoryFilters extends SessionLibraryFilters {
   projectPath?: string | null;
 }
 
-export interface SessionLibraryPage {
-  items: SessionLibraryRecord[];
-  page: number;
-  pageSize: number;
-  totalItems: number;
-  totalPages: number;
-}
-
 export interface SessionLibraryGroup {
   state: SessionLibraryState;
   label: string;
@@ -315,25 +307,6 @@ export function filterSessionHistory(
     return filtered.filter((record) => samePath(sessionProjectPath(record), projectPath));
   }
   return filtered;
-}
-
-export function paginateSessionLibrary(
-  records: readonly SessionLibraryRecord[],
-  page = 1,
-  pageSize = 50
-): SessionLibraryPage {
-  const safePageSize = Number.isInteger(pageSize) && pageSize > 0 ? pageSize : 50;
-  const totalItems = records.length;
-  const totalPages = Math.max(1, Math.ceil(totalItems / safePageSize));
-  const safePage = Math.min(Math.max(1, Number.isInteger(page) ? page : 1), totalPages);
-  const start = (safePage - 1) * safePageSize;
-  return {
-    items: records.slice(start, start + safePageSize),
-    page: safePage,
-    pageSize: safePageSize,
-    totalItems,
-    totalPages
-  };
 }
 
 export function groupSessionLibrary(records: readonly SessionLibraryRecord[]): SessionLibraryGroup[] {

@@ -22,10 +22,15 @@
   import {
     buildSessionHistoryViewModel,
     createSessionHistoryCollapseState,
+    createSessionHistoryWindowState,
+    extendSessionHistoryWindow,
     isSessionHistoryGroupOpen,
+    resetSessionHistoryWindowOnFilterChange,
     toggleSessionHistoryGroup,
     type SessionHistoryCollapseState,
-    type SessionHistoryRow
+    type SessionHistoryRow,
+    type SessionHistoryWindowState,
+    type SessionHistoryWorktreeGroup
   } from '$lib/shell/history/sessionHistoryViewModel';
   import {
     sessionContextMenuRoster,
@@ -51,6 +56,7 @@
     store?: SessionLibraryUiState;
     workspacePath?: string | null;
     projectPath?: string | null;
+    visible?: boolean;
     onOpenTab?(): void;
     onRefresh?(): void | Promise<void>;
   }
@@ -76,11 +82,14 @@
     available,
     service = inertSessionLibraryService,
     store = sessionLibraryState,
+    visible = true,
     onOpenTab,
     onRefresh
   }: Props = $props();
 
   let collapseState = $state<SessionHistoryCollapseState>(createSessionHistoryCollapseState());
+  let windowState = $state<SessionHistoryWindowState>(createSessionHistoryWindowState());
+  let hasRendered = $state(false);
   /** Rows the reader has opened to see everything the history holds on them. */
   let expandedRows = $state<string[]>([]);
   let contextMenu = $state<ContextMenuState | null>(null);
@@ -89,8 +98,27 @@
   const records = $derived(buildSessionLibrary(owned, available));
   const history = $derived(buildSessionHistoryViewModel(records, {
     query: store.query,
-    provider: store.provider
+    provider: store.provider,
+    windowState
   }));
+
+  $effect(() => {
+    if (visible) hasRendered = true;
+  });
+
+  $effect(() => {
+    const reset = resetSessionHistoryWindowOnFilterChange(windowState, {
+      query: store.query,
+      provider: store.provider
+    });
+    if (reset !== windowState) windowState = reset;
+  });
+
+  $effect(() => {
+    if (!visible) return;
+    const timer = window.setInterval(() => (now = new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  });
 
   function setQuery(value: string): void {
     store.query = value;
@@ -121,6 +149,10 @@
     expandedRows = rowIsExpanded(key)
       ? expandedRows.filter((candidate) => candidate !== key)
       : [...expandedRows, key];
+  }
+
+  function showMore(worktreeKey: string): void {
+    windowState = extendSessionHistoryWindow(windowState, worktreeKey);
   }
 
   /**
@@ -269,12 +301,10 @@
     };
     document.addEventListener('contextmenu', onContextMenu, true);
     document.addEventListener('pointerdown', onPointerDown, true);
-    const timer = window.setInterval(() => (now = new Date()), 60_000);
     return () => {
       releaseOpenHandler();
       document.removeEventListener('contextmenu', onContextMenu, true);
       document.removeEventListener('pointerdown', onPointerDown, true);
-      window.clearInterval(timer);
     };
   });
 </script>
@@ -355,6 +385,25 @@
   </article>
 {/snippet}
 
+{#snippet showMoreRows(worktree: SessionHistoryWorktreeGroup)}
+  {#if worktree.olderCount > 0}
+    <Button
+      data-testid="session-history-show-more"
+      variant="ghost"
+      size="sm"
+      class="mt-1 w-full justify-center text-muted-foreground"
+      onclick={() => showMore(worktree.key)}
+    >Show more — {worktree.olderCount} older</Button>
+  {/if}
+{/snippet}
+
+{#if !hasRendered}
+  <div
+    data-testid="session-history-placeholder"
+    class="h-full min-h-0 bg-background"
+    aria-hidden="true"
+  ></div>
+{:else}
 <section
   data-testid="session-library-workspace"
   data-session-history-workspace="true"
@@ -472,6 +521,7 @@
                   {#each worktree.rows as row (row.record.key)}
                     {@render sessionRow(row)}
                   {/each}
+                  {@render showMoreRows(worktree)}
                 </div>
               {:else}
                 {@const worktreeOpen = isSessionHistoryGroupOpen(collapseState, 'worktree', worktree.key)}
@@ -504,6 +554,7 @@
                     {#each worktree.rows as row (row.record.key)}
                       {@render sessionRow(row)}
                     {/each}
+                    {@render showMoreRows(worktree)}
                   </Collapsible.Content>
                 </Collapsible.Root>
               {/if}
@@ -522,4 +573,5 @@
     onSelect={(action) => void selectContextAction(action)}
     onClose={closeContextMenu}
   />
+{/if}
 {/if}
