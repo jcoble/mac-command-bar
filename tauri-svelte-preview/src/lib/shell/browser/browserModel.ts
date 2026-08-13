@@ -543,7 +543,7 @@ export function acceptBrowserElementSelection(
   // Preserve whether this picker was Grab or Annotate until the card is queued.
   context.workspace.pendingSelectionKind ??= 'annotation';
   context.workspace.pendingMarkup = null;
-  context.workspace.interaction = 'annotating';
+  context.workspace.interaction = 'region';
   return context.workspace;
 }
 
