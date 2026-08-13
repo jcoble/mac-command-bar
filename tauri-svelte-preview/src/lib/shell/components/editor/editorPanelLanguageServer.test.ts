@@ -40,6 +40,18 @@ test('the panel shows the chip', () => {
   assert.match(panelSource, /<LanguageServerStatusChip\b/);
 });
 
+test('the chip and its controls share the file-tab title row', () => {
+  const titleRow = panelSource.slice(
+    panelSource.indexOf('<div class="editor-header">'),
+    panelSource.indexOf('<div class="editor-canvas">')
+  );
+  assert.ok(titleRow.length > 0, 'the editor title row must still exist');
+  assert.match(titleRow, /aria-label="Open files"/);
+  assert.match(titleRow, /<LanguageServerStatusChip\b/);
+  assert.match(titleRow, /<div class="intelligence"/);
+  assert.doesNotMatch(panelSource, /editor-status-bar|status-slot/);
+});
+
 test('the chip is only rendered when there is something truthful to say', () => {
   assert.match(
     chipSource,
