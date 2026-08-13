@@ -6,6 +6,7 @@ import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
 import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { sessionPresenceHistory } from '../src/lib/shell/conversation/sessionPresence.ts';
+import { mergeAgentItem } from '../src/lib/shell/conversation/conversationTimeline.ts';
 
 const storePath = fileURLToPath(
   new URL('../src/lib/shell/conversation/conversationStore.svelte.ts', import.meta.url)
@@ -153,6 +154,104 @@ assert.deepEqual(
   ['Visible question', 'Visible answer']
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
+
+// Snapshot replay can repeat completed history after unrelated journal events.
+// The first repeated stable item identifies the contiguous replay block, so
+// both that item and the following replay-only items render zero extra rows.
+{
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
+      state: 'connected', nativeSessionId: 'thread-nonconsecutive-replay'
+    },
+    lastSequence: 6,
+    events: [
+      {
+        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
+        sequence: 1, timestampMs: 600,
+        payload: { kind: 'assistantMessage', itemId: 'complete-item', text: 'Complete answer', completed: true }
+      },
+      {
+        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
+        sequence: 2, timestampMs: 610,
+        payload: { kind: 'turn', turnId: 'stored-turn', state: 'completed' }
+      },
+      {
+        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
+        sequence: 3, timestampMs: 620,
+        payload: { kind: 'usage', usedTokens: 10 }
+      },
+      {
+        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
+        sequence: 4, timestampMs: 630,
+        payload: { kind: 'assistantMessage', itemId: 'complete-item', text: 'Complete answer', completed: true }
+      },
+      {
+        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
+        sequence: 5, timestampMs: 640,
+        payload: { kind: 'assistantMessage', itemId: 'replayed-next-item', text: 'Replay-only answer', completed: true }
+      },
+      {
+        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
+        sequence: 6, timestampMs: 650,
+        payload: { kind: 'turn', turnId: 'replay-finished', state: 'completed' }
+      }
+    ]
+  });
+  const assistantRows = store.getConversationSession('owned-nonconsecutive-replay').timeline
+    .filter((item) => item.kind === 'assistant');
+  assert.equal(assistantRows.length, 1);
+  assert.equal(assistantRows[0].text, 'Complete answer');
+  assert.equal(store.getConversationSession('owned-nonconsecutive-replay').agentItems.length, 1);
+  assert.equal(store.getConversationSession('owned-nonconsecutive-replay').agentItems[0].content[0].text, 'Complete answer');
+}
+
+// Live deltas mutate only the touched leaves and advance a cheap numeric revision.
+{
+  const ownedId = 'owned-live-identity';
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: a.provider, generation: 1, state: 'connected' },
+    lastSequence: 2,
+    events: [
+      {
+        ownedId, provider: a.provider, generation: 1, sequence: 1, timestampMs: 700,
+        payload: { kind: 'assistantMessage', itemId: 'settled-item', text: 'Settled', completed: true }
+      },
+      {
+        ownedId, provider: a.provider, generation: 1, sequence: 2, timestampMs: 710,
+        payload: { kind: 'assistantDelta', itemId: 'stream-item', delta: 'First' }
+      }
+    ]
+  });
+  const before = store.getConversationSession(ownedId);
+  const metadata = before.metadata;
+  const agentItems = before.agentItems;
+  const settledItem = before.agentItems[0];
+  const revision = before.timelineRevision;
+  store.applyAgentConversationEvent({
+    ownedId, provider: a.provider, generation: 1, sequence: 3, timestampMs: 720,
+    payload: { kind: 'assistantDelta', itemId: 'stream-item', delta: ' second' }
+  });
+  const after = store.getConversationSession(ownedId);
+  assert.equal(after, before);
+  assert.equal(after.metadata, metadata);
+  assert.equal(after.agentItems, agentItems);
+  assert.equal(after.agentItems[0], settledItem);
+  assert.equal(after.timelineRevision, revision + 1);
+}
+
+// Completing an already-complete stable item is an idempotent merge.
+{
+  const complete = {
+    id: 'complete-once', type: 'assistant-message',
+    content: [{ channel: 'assistant', text: 'One copy' }],
+    providerMetadata: { completed: true }
+  };
+  const once = mergeAgentItem([], complete, false);
+  const twice = mergeAgentItem(once, complete, false);
+  assert.equal(twice.length, 1);
+  assert.equal(twice[0], once[0]);
+}
 
 // A bounded tail snapshot begins after omitted journal rows without marking
 // itself desynchronized, and replaying stored turn events cannot mutate the

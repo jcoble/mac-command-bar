@@ -613,6 +613,8 @@ export interface ConversationSessionState {
   desynchronized: boolean;
   connectionState: ConversationConnectionState;
   suspended: boolean;
+  /** Monotonic display-content version used by scroll effects. */
+  timelineRevision: number;
   nativeSessionId?: string;
   activeTurnId?: string;
   usage?: ConversationUsage;

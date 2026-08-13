@@ -1378,7 +1378,7 @@ while IFS= read -r line; do
 	        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture resume failed"}}}}\n' "$id"
 	        continue
 	      elif [ "$fixture" = "replay_on_resume" ]; then
-	        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn"}}}}}}\n'
+	        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn","_meta":{{"replay":true}}}}}}}}\n'
 	      elif [ "${{fixture#suspend_}}" != "$fixture" ]; then
 	        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id"
 	        continue

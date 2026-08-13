@@ -382,6 +382,22 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the latest event sequence", error))
     }
 
+    /// Whether the durable journal already contains transcript display content.
+    pub fn has_display_events(&self, owned_id: &str) -> Result<bool> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM events
+                    WHERE owned_id = ?
+                      AND kind IN ('item.started', 'item.updated', 'item.completed', 'content.delta')
+                 )",
+                [owned_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| StoreError::sqlite("could not inspect conversation display events", error))
+    }
+
     pub fn enforce_event_cap(&self, owned_id: &str, keep: u32) -> Result<u64> {
         let connection = self.lock()?;
         let deleted = connection

@@ -28,6 +28,7 @@ export function createConversationState(
     desynchronized: false,
     connectionState: 'disconnected',
     suspended: false,
+    timelineRevision: 0,
     timeline: []
   };
 }

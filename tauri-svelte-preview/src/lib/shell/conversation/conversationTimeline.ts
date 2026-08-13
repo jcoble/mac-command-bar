@@ -407,7 +407,8 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
 export function typedConversationTimeline(
   items: readonly AgentItem[] = [],
   legacy: readonly ConversationTimelineEntry[] = [],
-  timestamps: Readonly<Record<string, number>> = {}
+  timestamps: Readonly<Record<string, number>> = {},
+  previous: readonly ConversationDisplayItem[] = []
 ): ConversationDisplayItem[] {
   const byId = new Map<string, ConversationDisplayItem>();
   legacy
@@ -418,7 +419,50 @@ export function typedConversationTimeline(
     item.id,
     displayItemFromAgentItem(item, timestamps[item.id] ?? displayTimestamp(item, legacyEnd + index + 1))
   ));
-  return [...byId.values()].sort((left, right) => left.timestampMs - right.timestampMs);
+  const next = [...byId.values()].sort((left, right) => left.timestampMs - right.timestampMs);
+  return reuseConversationDisplayItems(next, previous);
+}
+
+function shallowRecordEqual(
+  left: Readonly<Record<string, unknown>> | undefined,
+  right: Readonly<Record<string, unknown>> | undefined
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => Object.is(left[key], right[key]));
+}
+
+function sameDisplayItem(left: ConversationDisplayItem, right: ConversationDisplayItem): boolean {
+  if (left === right) return true;
+  if (left.kind !== right.kind || left.itemId !== right.itemId || left.timestampMs !== right.timestampMs) return false;
+  const leftRecord = left as unknown as Readonly<Record<string, unknown>>;
+  const rightRecord = right as unknown as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(leftRecord);
+  if (keys.length !== Object.keys(rightRecord).length) return false;
+  return keys.every((key) => {
+    if (key === 'metadata') {
+      return shallowRecordEqual(
+        leftRecord[key] as Readonly<Record<string, unknown>> | undefined,
+        rightRecord[key] as Readonly<Record<string, unknown>> | undefined
+      );
+    }
+    return Object.is(leftRecord[key], rightRecord[key]);
+  });
+}
+
+/** Reuse unchanged keyed rows so Svelte only invalidates the touched subtree. */
+export function reuseConversationDisplayItems(
+  next: readonly ConversationDisplayItem[],
+  previous: readonly ConversationDisplayItem[]
+): ConversationDisplayItem[] {
+  if (previous.length === 0) return next.slice();
+  const previousById = new Map(previous.map((item) => [item.itemId, item]));
+  return next.map((item) => {
+    const prior = previousById.get(item.itemId);
+    return prior && sameDisplayItem(item, prior) ? prior : item;
+  });
 }
 
 function eventIdentity(event: ConversationEvent, payload: StringRecord, prefix: string): string {
@@ -615,11 +659,24 @@ export function mergeAgentItem(items: readonly AgentItem[], incoming: AgentItem,
         ...incoming.content.slice(1)
       ];
   }
-  const providerMetadata = {
+  const providerMetadata: Record<string, AgentConfigValue> = {
     ...(existing.providerMetadata ?? {}),
-    ...(incoming.providerMetadata ?? {}),
-    startedAtMs: existing.providerMetadata?.startedAtMs ?? incoming.providerMetadata?.startedAtMs ?? 0
+    ...(incoming.providerMetadata ?? {})
   };
+  const startedAtMs = existing.providerMetadata?.startedAtMs ?? incoming.providerMetadata?.startedAtMs;
+  if (startedAtMs !== undefined) providerMetadata.startedAtMs = startedAtMs;
+  if (existing.type === incoming.type
+    && existing.turnId === incoming.turnId
+    && existing.content.length === content.length
+    && existing.content.every((entry, contentIndex) => {
+      const candidate = content[contentIndex];
+      return entry.channel === candidate.channel
+        && entry.text === candidate.text
+        && entry.mimeType === candidate.mimeType;
+    })
+    && shallowRecordEqual(existing.providerMetadata, providerMetadata)) {
+    return items as AgentItem[];
+  }
   const next = items.slice();
   next[index] = { ...existing, ...incoming, content, providerMetadata };
   return next;

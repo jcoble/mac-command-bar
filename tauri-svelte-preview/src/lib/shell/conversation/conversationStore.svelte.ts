@@ -110,6 +110,10 @@ const emptyMetadata = (): ConversationMetadata => ({
 
 export const conversationSessions = $state<Record<string, ConversationWorkspaceState>>({});
 
+const timelineIndexBySession = new WeakMap<ConversationWorkspaceState, Map<string, number>>();
+const agentItemIndexBySession = new WeakMap<ConversationWorkspaceState, Map<string, number>>();
+const activeReasoningBySession = new WeakMap<ConversationWorkspaceState, Set<AgentItem>>();
+
 function freshState(
   ownedId: string,
   provider: AgentConversationProvider
@@ -174,51 +178,218 @@ export function applyAgentConversationEvent(event: AgentConversationEvent | Agen
     }
     return applied;
   }
-  const next = applyConversationEvent(current, event);
-  if (next === current) return false;
-  conversationSessions[event.ownedId] = {
-    ...next,
-    draft: current.draft,
-    mode: current.mode,
-    sending: current.sending,
-    attachments: current.attachments,
-    metadata: current.metadata,
-    children: current.children,
-    selectedChildId: current.selectedChildId,
-    childTimeline: current.childTimeline,
-    scrollTop: current.scrollTop,
-    childScrollTopById: current.childScrollTopById,
-    executionOwner: current.executionOwner,
-    writerLease: { ...current.writerLease, generation: next.generation },
-    writerLeaseTransition: current.writerLeaseTransition,
-    attachmentIds: current.attachmentIds,
-    config: current.config,
-    agentConfig: current.agentConfig,
-    pendingAgentConfig: current.pendingAgentConfig,
-    agentConfigError: current.agentConfigError,
-    telemetry: current.telemetry,
-    capabilities: current.capabilities,
-    capabilityError: current.capabilityError,
-    agentItems: current.agentItems,
-    planSteps: current.planSteps,
-    tasks: current.tasks,
-    availableCommands: current.availableCommands,
-    pendingApprovals: current.pendingApprovals,
-    pendingInputs: current.pendingInputs,
-    pendingConfig: current.pendingConfig,
-    configErrors: current.configErrors,
-    recentEvents: current.recentEvents
-  };
+  const applied = applyLegacyEventInPlace(current, event);
+  if (!applied) return false;
   const typedItem = agentItemFromEvent(event);
   if (typedItem) {
-    conversationSessions[event.ownedId].agentItems = mergeAgentItem(
-      conversationSessions[event.ownedId].agentItems,
-      typedItem,
-      conversationEventAppendsItemContent(event)
-    );
+    if (mergeAgentItemInPlace(current, typedItem, conversationEventAppendsItemContent(event))
+      && !['userMessage', 'assistantDelta', 'assistantMessage', 'tool'].includes(event.payload.kind)) {
+      current.timelineRevision += 1;
+    }
   }
-  applyTypedEventPayload(conversationSessions[event.ownedId], event);
-  if (!conversationSessions[event.ownedId].desynchronized) recordConversationPresenceEvent(event);
+  applyTypedEventPayload(current, event);
+  if (!current.desynchronized) recordConversationPresenceEvent(event);
+  return true;
+}
+
+function timelineIndex(current: ConversationWorkspaceState): Map<string, number> {
+  let index = timelineIndexBySession.get(current);
+  if (!index) {
+    index = new Map(current.timeline.map((entry, entryIndex) => [entry.itemId, entryIndex]));
+    timelineIndexBySession.set(current, index);
+  }
+  return index;
+}
+
+function timelineEntry(current: ConversationWorkspaceState, itemId: string): ConversationTimelineEntry | undefined {
+  const index = timelineIndex(current).get(itemId);
+  return index === undefined ? undefined : current.timeline[index];
+}
+
+function appendTimelineEntry(current: ConversationWorkspaceState, entry: ConversationTimelineEntry): void {
+  timelineIndex(current).set(entry.itemId, current.timeline.length);
+  current.timeline.push(entry);
+}
+
+function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: AgentConversationEvent): boolean {
+  if (event.ownedId !== current.ownedId || event.provider !== current.provider) return false;
+  if (event.generation < current.generation) return false;
+  const newGeneration = event.generation > current.generation;
+  const previousSequence = newGeneration ? 0 : current.lastSequence;
+  if (!newGeneration && event.sequence <= previousSequence) return false;
+  const hasGap = event.sequence !== previousSequence + 1;
+  current.generation = event.generation;
+  current.lastSequence = event.sequence;
+  current.desynchronized = newGeneration ? hasGap : current.desynchronized || hasGap;
+  current.writerLease.generation = event.generation;
+  if (hasGap) return true;
+
+  const { payload } = event;
+  let displayChanged = false;
+  switch (payload.kind) {
+    case 'connection':
+      current.connectionState = payload.state;
+      current.nativeSessionId = payload.nativeSessionId ?? current.nativeSessionId;
+      break;
+    case 'userMessage': {
+      const existing = timelineEntry(current, payload.itemId);
+      if (existing?.kind === 'user') {
+        displayChanged = existing.text !== payload.text || existing.completed !== payload.completed;
+        existing.text = payload.text;
+        existing.completed = payload.completed;
+      } else {
+        appendTimelineEntry(current, {
+          kind: 'user', itemId: payload.itemId, text: payload.text,
+          completed: payload.completed, timestampMs: event.timestampMs
+        });
+        displayChanged = true;
+      }
+      break;
+    }
+    case 'assistantDelta': {
+      const existing = timelineEntry(current, payload.itemId);
+      if (existing?.kind === 'assistant') {
+        if (payload.delta) {
+          existing.text += payload.delta;
+          displayChanged = true;
+        }
+        existing.completed = false;
+      } else {
+        appendTimelineEntry(current, {
+          kind: 'assistant', itemId: payload.itemId, text: payload.delta,
+          completed: false, timestampMs: event.timestampMs
+        });
+        displayChanged = payload.delta.length > 0;
+      }
+      break;
+    }
+    case 'assistantMessage': {
+      const existing = timelineEntry(current, payload.itemId);
+      if (existing?.kind === 'assistant') {
+        displayChanged = existing.text !== payload.text || !existing.completed;
+        existing.text = payload.text;
+        existing.completed = true;
+      } else {
+        appendTimelineEntry(current, {
+          kind: 'assistant', itemId: payload.itemId, text: payload.text,
+          completed: true, timestampMs: event.timestampMs
+        });
+        displayChanged = true;
+      }
+      break;
+    }
+    case 'tool': {
+      const existing = timelineEntry(current, payload.itemId);
+      if (existing?.kind === 'tool') {
+        displayChanged = existing.name !== payload.name || existing.state !== payload.state || existing.summary !== payload.summary;
+        existing.name = payload.name;
+        existing.state = payload.state;
+        existing.summary = payload.summary;
+      } else {
+        appendTimelineEntry(current, {
+          kind: 'tool', itemId: payload.itemId, name: payload.name,
+          state: payload.state, summary: payload.summary, timestampMs: event.timestampMs
+        });
+        displayChanged = true;
+      }
+      break;
+    }
+    case 'approval': {
+      const itemId = `approval:${payload.requestId}`;
+      const existing = timelineEntry(current, itemId);
+      if (existing?.kind === 'approval') {
+        displayChanged = existing.state !== payload.state || existing.summary !== payload.summary;
+        existing.state = payload.state;
+        existing.summary = payload.summary;
+      } else {
+        appendTimelineEntry(current, {
+          kind: 'approval', itemId, requestId: payload.requestId,
+          state: payload.state, summary: payload.summary, timestampMs: event.timestampMs
+        });
+        displayChanged = true;
+      }
+      break;
+    }
+    case 'plan': {
+      const itemId = `plan:${event.generation}`;
+      const items = payload.items ?? (payload.entries ?? []).map((entry) => ({
+        text: entry.title ?? entry.text ?? entry.content ?? '',
+        status: entry.status ?? 'pending'
+      }));
+      const existing = timelineEntry(current, itemId);
+      if (existing?.kind === 'plan') {
+        existing.items = items;
+      } else {
+        appendTimelineEntry(current, { kind: 'plan', itemId, items, timestampMs: event.timestampMs });
+      }
+      displayChanged = true;
+      break;
+    }
+    case 'error': {
+      appendTimelineEntry(current, {
+        kind: 'error', itemId: `error:${event.generation}:${event.sequence}`,
+        code: payload.code, message: payload.message, recoverable: payload.recoverable,
+        timestampMs: event.timestampMs
+      });
+      current.activeTurnId = undefined;
+      if (!payload.recoverable) current.connectionState = 'failed';
+      displayChanged = true;
+      break;
+    }
+    case 'turn':
+      current.activeTurnId = payload.state === 'started' ? payload.turnId : undefined;
+      break;
+    case 'usage':
+      current.usage = {
+        inputTokens: payload.inputTokens ?? current.usage?.inputTokens,
+        outputTokens: payload.outputTokens ?? current.usage?.outputTokens,
+        usedTokens: payload.usedTokens ?? current.usage?.usedTokens,
+        contextWindow: payload.contextWindow ?? current.usage?.contextWindow
+      };
+      break;
+    case 'agentThoughtChunk':
+    case 'toolCall':
+    case 'toolCallUpdate':
+    case 'turnDiff':
+    case 'permissionRequest':
+    case 'availableCommandsUpdate':
+    case 'agentMessageChunk':
+    case 'userMessageChunk':
+      break;
+  }
+  if (displayChanged) current.timelineRevision += 1;
+  return true;
+}
+
+function agentItemIndex(current: ConversationWorkspaceState): Map<string, number> {
+  let index = agentItemIndexBySession.get(current);
+  if (!index) {
+    index = new Map(current.agentItems.map((item, itemIndex) => [item.id, itemIndex]));
+    agentItemIndexBySession.set(current, index);
+  }
+  return index;
+}
+
+function mergeAgentItemInPlace(current: ConversationWorkspaceState, incoming: AgentItem, append: boolean): boolean {
+  const index = agentItemIndex(current);
+  const itemIndex = index.get(incoming.id);
+  if (itemIndex === undefined) {
+    index.set(incoming.id, current.agentItems.length);
+    current.agentItems.push(incoming);
+    if (incoming.type === 'reasoning' && incoming.providerMetadata?.completed !== true) {
+      const active = activeReasoningBySession.get(current) ?? new Set<AgentItem>();
+      active.add(current.agentItems[current.agentItems.length - 1]);
+      activeReasoningBySession.set(current, active);
+    }
+    return true;
+  }
+  const existing = current.agentItems[itemIndex];
+  const merged = mergeAgentItem([existing], incoming, append)[0];
+  if (merged === existing) return false;
+  existing.type = merged.type;
+  existing.turnId = merged.turnId;
+  existing.content = merged.content;
+  existing.providerMetadata = merged.providerMetadata;
   return true;
 }
 
@@ -261,36 +432,36 @@ function applyCanonicalAgentEvent(event: AgentEvent): boolean {
   if (!newGeneration && event.sequence <= previousSequence) return false;
   const hasGap = event.sequence !== previousSequence + 1;
   if (hasGap) {
-    conversationSessions[event.ownedId] = { ...current, generation: event.generation, lastSequence: event.sequence, desynchronized: true };
+    current.generation = event.generation;
+    current.lastSequence = event.sequence;
+    current.desynchronized = true;
+    current.writerLease.generation = event.generation;
     return true;
   }
   const payload = event.payload as Record<string, unknown>;
-  const nextState: ConversationWorkspaceState = {
-    ...current,
-    generation: event.generation,
-    lastSequence: event.sequence,
-    desynchronized: newGeneration ? false : current.desynchronized,
-    connectionState: event.type === 'session.closed' ? 'closed'
+  current.generation = event.generation;
+  current.lastSequence = event.sequence;
+  current.desynchronized = newGeneration ? false : current.desynchronized;
+  current.connectionState = event.type === 'session.closed' ? 'closed'
       : event.type === 'session.started' ? 'connected'
-        : event.type === 'runtime.error' && payload.recoverable === false ? 'failed' : current.connectionState,
-    activeTurnId: event.type === 'turn.started'
+        : event.type === 'runtime.error' && payload.recoverable === false ? 'failed' : current.connectionState;
+  current.activeTurnId = event.type === 'turn.started'
       ? event.turnId ?? asString(payload.turnId) ?? current.activeTurnId
       : event.type === 'turn.completed'
         || event.type === 'turn.interrupted'
         || event.type === 'session.closed'
         || event.type === 'runtime.error'
         ? undefined
-        : current.activeTurnId,
-    nativeSessionId: event.nativeSessionId ?? current.nativeSessionId,
-    writerLease: { ...current.writerLease, generation: event.generation }
-  };
-  conversationSessions[event.ownedId] = nextState;
-  const target = conversationSessions[event.ownedId];
+        : current.activeTurnId;
+  current.nativeSessionId = event.nativeSessionId ?? current.nativeSessionId;
+  current.writerLease.generation = event.generation;
   const typedItem = agentItemFromEvent(event);
   if (typedItem) {
-    target.agentItems = mergeAgentItem(target.agentItems, typedItem, conversationEventAppendsItemContent(event));
+    if (mergeAgentItemInPlace(current, typedItem, conversationEventAppendsItemContent(event))) {
+      current.timelineRevision += 1;
+    }
   }
-  applyTypedEventPayload(target, event);
+  applyTypedEventPayload(current, event);
   return true;
 }
 
@@ -301,15 +472,39 @@ function applyCanonicalAgentEvent(event: AgentEvent): boolean {
  */
 function idempotentSnapshotEvents(events: AgentConversationEvent[]): AgentConversationEvent[] {
   let previous: { itemId: string; delta: string } | null = null;
+  const replayedChunksByItem = new Map<string, Set<string>>();
+  const completedItemIds = new Set<string>();
+  let insideCompletedItemReplay = false;
   return events.map((event) => {
+    if (event.payload.kind === 'userMessage' || event.payload.kind === 'assistantMessage') {
+      if (completedItemIds.has(event.payload.itemId)) insideCompletedItemReplay = true;
+      completedItemIds.add(event.payload.itemId);
+      previous = null;
+      // A resumed provider can replay its whole completed history as one
+      // contiguous block. The first repeated stable id identifies that block;
+      // suppress it and its following completed items while preserving journal
+      // sequence continuity for the snapshot reducer.
+      return insideCompletedItemReplay
+        ? { ...event, payload: { kind: 'usage' } }
+        : event;
+    }
+    insideCompletedItemReplay = false;
     if (event.payload.kind !== 'assistantDelta') {
       previous = null;
       return event;
     }
     const current = { itemId: event.payload.itemId, delta: event.payload.delta };
-    const duplicate = current.delta.length > 0
-      && previous?.itemId === current.itemId
-      && previous.delta === current.delta;
+    const metadata = (event.payload as unknown as { _meta?: { replay?: boolean } })._meta;
+    const seen = replayedChunksByItem.get(current.itemId) ?? new Set<string>();
+    const duplicateReplay = metadata?.replay === true && seen.has(current.delta);
+    if (metadata?.replay === true && current.delta.length > 0) {
+      seen.add(current.delta);
+      replayedChunksByItem.set(current.itemId, seen);
+    }
+    const duplicate = current.delta.length > 0 && (
+      duplicateReplay
+      || (previous?.itemId === current.itemId && previous.delta === current.delta)
+    );
     previous = current;
     return duplicate
       ? { ...event, payload: { ...event.payload, delta: '' } }
@@ -342,6 +537,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   conversationSessions[snapshot.connection.ownedId] = {
     ...rebuilt,
     suspended: snapshot.suspended === true,
+    timelineRevision: current.timelineRevision + 1,
     draft: current.draft,
     mode: current.mode,
     sending: current.sending,
@@ -378,11 +574,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     appendRecentEvent(restored, event);
     const typedItem = agentItemFromEvent(event);
     if (typedItem) {
-      restored.agentItems = mergeAgentItem(
-        restored.agentItems,
-        typedItem,
-        conversationEventAppendsItemContent(event)
-      );
+      mergeAgentItemInPlace(restored, typedItem, conversationEventAppendsItemContent(event));
     }
     applyTypedEventPayload(restored, event);
   }
@@ -425,13 +617,13 @@ function finishReasoningItems(current: ConversationWorkspaceState, event: AgentC
   const canonicalAssistant = 'type' in event && event.type === 'content.delta' && payload.channel === 'assistant';
   if (!turnFinished && !assistantStarted && !canonicalFinished && !canonicalAssistant) return;
   const turnId = 'turnId' in event ? event.turnId : asString(payload.turnId) ?? undefined;
-  current.agentItems = current.agentItems.map((item) => {
-    if (item.type !== 'reasoning' || (turnId && item.turnId && item.turnId !== turnId)) return item;
-    return {
-      ...item,
-      providerMetadata: { ...(item.providerMetadata ?? {}), completed: true, streaming: false }
-    };
-  });
+  const active = activeReasoningBySession.get(current);
+  if (!active?.size) return;
+  for (const item of active) {
+    if (turnId && item.turnId && item.turnId !== turnId) continue;
+    item.providerMetadata = { ...(item.providerMetadata ?? {}), completed: true, streaming: false };
+    active.delete(item);
+  }
 }
 
 function applyTypedEventPayload(current: ConversationWorkspaceState, event: AgentConversationEvent | AgentEvent): void {

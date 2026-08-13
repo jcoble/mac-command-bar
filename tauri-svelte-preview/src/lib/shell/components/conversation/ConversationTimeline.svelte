@@ -17,6 +17,7 @@
   interface Props {
     items: readonly ConversationDisplayItem[];
     conversationId: string;
+    timelineRevision: number;
     anchorRequest?: ConversationSendAnchorRequest | null;
     assistantLabel?: string;
     savedScrollTop?: number;
@@ -30,6 +31,7 @@
   let {
     items,
     conversationId,
+    timelineRevision,
     anchorRequest = null,
     assistantLabel = 'Assistant',
     savedScrollTop = 0,
@@ -45,13 +47,16 @@
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
   let animationFrame: number | null = null;
   let seenAnchorRequest = '';
-  let lastContentRevision = '';
-  const userItemIds = $derived(items.filter((item) => item.kind === 'user').map((item) => item.itemId));
-  const contentRevision = $derived(items.map((item) => {
-    const textLength = 'text' in item && typeof item.text === 'string' ? item.text.length : 0;
-    const outputLength = 'output' in item && typeof item.output === 'string' ? item.output.length : 0;
-    return `${item.itemId}:${textLength}:${outputLength}`;
-  }).join('|'));
+  let lastContentRevision = -1;
+  let lastItemCount = -1;
+  let userItemIds = $state<string[]>([]);
+
+  $effect(() => {
+    const itemCount = items.length;
+    if (itemCount === lastItemCount) return;
+    lastItemCount = itemCount;
+    userItemIds = items.filter((item) => item.kind === 'user').map((item) => item.itemId);
+  });
 
   function prefersReducedMotion(): boolean {
     return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -167,8 +172,8 @@
   });
 
   $effect(() => {
-    if (!contentRevision || contentRevision === lastContentRevision) return;
-    lastContentRevision = contentRevision;
+    if (timelineRevision === lastContentRevision) return;
+    lastContentRevision = timelineRevision;
     const decision = decideConversationScroll(scrollState, { type: 'stream-growth' });
     scrollState = decision.state;
     void tick().then(() => {
