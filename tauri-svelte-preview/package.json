@@ -89,6 +89,7 @@
     "test:next-tokens": "node --experimental-strip-types scripts/nextTokens.test.mjs",
     "test:panel-activation": "node --experimental-strip-types scripts/panelActivation.test.mjs",
     "test:agents-panel": "node --experimental-strip-types scripts/agentsPanel.test.ts",
+    "test:source-control-panel": "node --experimental-strip-types scripts/sourceControlPanel.test.ts",
     "test:session-card-model": "node --experimental-strip-types src/lib/shell/components/sessions/sessionCardModel.test.ts",
     "test:session-groups": "node --experimental-strip-types scripts/sessionGroups.test.mjs",
     "test:session-strip": "node --experimental-strip-types scripts/sessionStrip.test.ts",
