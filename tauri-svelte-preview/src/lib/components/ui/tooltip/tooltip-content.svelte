@@ -13,10 +13,13 @@
 		children,
 		arrowClasses,
 		portalProps,
+		hasKbd = false,
 		...restProps
 	}: TooltipPrimitive.ContentProps & {
 		arrowClasses?: string;
 		portalProps?: WithoutChildrenOrChild<ComponentProps<typeof TooltipPortal>>;
+		/** The caller sets this when the tooltip renders a Kbd child. */
+		hasKbd?: boolean;
 	} = $props();
 </script>
 
@@ -27,7 +30,8 @@
 		{sideOffset}
 		{side}
 		class={cn(
-			"data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] has-data-[slot=kbd]:pr-1.5 **:data-[slot=kbd]:relative **:data-[slot=kbd]:isolate **:data-[slot=kbd]:z-50 **:data-[slot=kbd]:rounded-sm bg-popover text-popover-foreground ring-foreground/10 shadow-[var(--shadow-md)] ring-1 z-50 w-fit max-w-xs origin-(--bits-tooltip-content-transform-origin)",
+			"data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] **:data-[slot=kbd]:relative **:data-[slot=kbd]:isolate **:data-[slot=kbd]:z-50 **:data-[slot=kbd]:rounded-sm bg-popover text-popover-foreground ring-foreground/10 shadow-[var(--shadow-md)] ring-1 z-50 w-fit max-w-xs origin-(--bits-tooltip-content-transform-origin)",
+			hasKbd && "pr-1.5",
 			className
 		)}
 		{...restProps}

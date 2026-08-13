@@ -188,6 +188,7 @@
   {@const chips = ownerChips(worktree, safety)}
   <div
     class="activity-worktree-row"
+    class:menu-open={rowActionMenuOpen(worktree)}
     class:blocked={kind === 'blocked'}
     class:protected={kind === 'protected'}
     class:ready={kind === 'ready'}
@@ -251,7 +252,11 @@
         </button>
       {/if}
     </div>
-    <div class="activity-row-actions worktree-activity-actions row-action-menu-anchor" aria-label="Worktree actions">
+    <div
+      class="activity-row-actions worktree-activity-actions row-action-menu-anchor"
+      class:menu-open={rowActionMenuOpen(worktree)}
+      aria-label="Worktree actions"
+    >
       <button
         type="button"
         aria-label="Worktree actions"
@@ -390,7 +395,7 @@
    * authors. They are copied verbatim so the worktree rows render identically;
    * tracked for the later dedup sweep alongside `.file-action-button`. The
    * `.activity-panel-list` container + `.activity-empty` empty state stay in the
-   * page, so the page's `.activity-panel-list .worktree-activity-actions:has(…)`
+   * page, so the page's `.activity-panel-list .worktree-activity-actions.menu-open`
    * reflow rules are re-expressed here without that ancestor (the container is
    * the page's parent element around this component).
    */

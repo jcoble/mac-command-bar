@@ -7,6 +7,7 @@
 		class: className,
 		variant = "default",
 		size = "default",
+		iconPosition,
 		ref = $bindable(null),
 		href = undefined,
 		type = "button",
@@ -14,13 +15,22 @@
 		children,
 		...restProps
 	}: ButtonProps = $props();
+
+	const compactIconPadding = $derived(size === "xs" || size === "sm");
+	const iconPaddingClass = $derived(
+		iconPosition === "start"
+			? compactIconPadding ? "pl-1.5" : "pl-2"
+			: iconPosition === "end"
+				? compactIconPadding ? "pr-1.5" : "pr-2"
+				: undefined
+	);
 </script>
 
 {#if href}
 	<a
 		bind:this={ref}
 		data-slot="button"
-		class={cn(buttonVariants({ variant, size }), className)}
+		class={cn(buttonVariants({ variant, size }), iconPaddingClass, className)}
 		href={disabled ? undefined : href}
 		aria-disabled={disabled}
 		role={disabled ? "link" : undefined}
@@ -33,7 +43,7 @@
 	<button
 		bind:this={ref}
 		data-slot="button"
-		class={cn(buttonVariants({ variant, size }), className)}
+		class={cn(buttonVariants({ variant, size }), iconPaddingClass, className)}
 		{type}
 		{disabled}
 		{...restProps}

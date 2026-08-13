@@ -29,7 +29,7 @@
  * mounted, because menus and dialogs are moved outside it.
  * ============================================================ */
 
-:is(:root:has(.next-shell), .next-shell) {
+:is(:root.next-shell-document, .next-shell) {
   /* Sidebar section headers ("EXPLORER", "OUTLINE"), and the ring
      dockview draws around the section that has focus. */
   --color-section-header-text: #8b919b;
