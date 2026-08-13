@@ -51,3 +51,10 @@ Anything beyond a simple explanation gets a self-contained HTML page — a diagr
 before/after, an annotated flow — instead of paragraphs. Plans and especially specs should be written
 as (or paired with) an HTML page under `docs/`; they are far easier to read and review. A mockup HTML
 page is the approval artifact for any visual change.
+
+## TypeScript over JavaScript, always
+
+All new frontend/tooling code is TypeScript — including one-off scripts, test scripts, and probes
+(`node --experimental-strip-types` runs `.ts` directly, so there is no excuse for `.mjs`). Existing
+`.mjs` files under `tauri-svelte-preview/scripts/` convert to `.ts` when a task touches them (one-way
+rule: the rename and the change land together). Never add a new `.js`/`.mjs` file.
