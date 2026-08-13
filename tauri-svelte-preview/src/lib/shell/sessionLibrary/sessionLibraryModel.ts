@@ -18,6 +18,16 @@ export interface SessionLibraryTurn {
   text: string;
 }
 
+/** One agent a session spawned for itself, as a card lists it. */
+export interface SessionLibrarySubagent {
+  name: string;
+  /** What kind of agent it was, when the transcript said. */
+  kind: string | null;
+  messageCount: number | null;
+  /** Its own transcript file, when it has one the app can open. */
+  logPath: string | null;
+}
+
 export interface SessionLibraryRecord {
   /** Stable row identity. Owned rows use ownedId; provider rows use a compound key. */
   key: string;
@@ -37,9 +47,22 @@ export interface SessionLibraryRecord {
   updatedAt: string | null;
   /** The scanner's bounded count, when it has one. It is a floor, not a total. */
   messageCount: number | null;
+  /**
+   * The transcript file this session was scanned out of. Null when the scanner
+   * had no single file for it — an owned session the scanner has not seen yet,
+   * or a record merged from several sources. Every log action is off in that
+   * case rather than guessing at a path.
+   */
+  logPath: string | null;
   /** These remain null/empty until the backend exposes the complete transcript. */
   firstPrompt: string | null;
   latestTurns: SessionLibraryTurn[];
+  /**
+   * Empty for the same reason: the scan reads a bounded window of a transcript
+   * for the row's title and turn count, and never walks the agents a session
+   * spawned. A card shows this block only once it has something in it.
+   */
+  subagents: SessionLibrarySubagent[];
   owned: OwnedSession | null;
   available: AgentSession | null;
 }
@@ -152,8 +175,10 @@ export function ownedSessionLibraryRecord(session: OwnedSession): SessionLibrary
     lastActivity: session.lastActivity,
     updatedAt: bestUpdatedAt(session),
     messageCount: session.messageCount ?? null,
+    logPath: null,
     firstPrompt: null,
     latestTurns: latestTurnsFor(session.latestTurnPreview),
+    subagents: [],
     owned: session,
     available: null
   };
@@ -179,8 +204,10 @@ export function providerSessionLibraryRecord(session: AgentSession): SessionLibr
     lastActivity: session.lastActivity,
     updatedAt: session.lastActivity,
     messageCount: session.messageCount ?? null,
+    logPath: session.logPath ?? null,
     firstPrompt: null,
     latestTurns: latestTurnsFor(session.latestTurnPreview),
+    subagents: [],
     owned: null,
     available: session
   };
@@ -197,7 +224,7 @@ export function buildSessionLibrary(
 ): SessionLibraryRecord[] {
   const records: SessionLibraryRecord[] = [];
   const ownedIds = new Set<string>();
-  const identities = new Set<string>();
+  const identities = new Map<string, SessionLibraryRecord>();
 
   for (const session of owned) {
     if (!session || ownedIds.has(session.ownedId)) continue;
@@ -209,7 +236,7 @@ export function buildSessionLibrary(
       cwd: record.canonicalCwd
     });
     if (identities.has(identity)) continue;
-    identities.add(identity);
+    identities.set(identity, record);
     records.push(record);
   }
 
@@ -221,8 +248,15 @@ export function buildSessionLibrary(
       nativeSessionId: record.nativeSessionId,
       cwd: record.canonicalCwd
     });
-    if (identities.has(identity)) continue;
-    identities.add(identity);
+    const existing = identities.get(identity);
+    if (existing) {
+      // The row already on the list wins, except for the transcript path: only
+      // the scanner knows which file a session is being written to, so an owned
+      // row that the scanner has also seen can offer its log like any other.
+      existing.logPath ??= record.logPath;
+      continue;
+    }
+    identities.set(identity, record);
     records.push(record);
   }
   return records;

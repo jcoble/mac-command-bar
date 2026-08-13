@@ -46,6 +46,12 @@ pub struct AgentSessionRecord {
     pub project_path: Option<String>,
     pub last_activity: Option<String>,
     pub resume_commands: Vec<String>,
+    /// Absolute path of the transcript file this record was scanned out of, so
+    /// the app can open it, show it in the file manager, or read it back. `None`
+    /// when no single file describes the record — an index row, or a hook state
+    /// file that is not a transcript.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<String>,
     /// What the scan worked out about the session from its own title, folder and
     /// resume command — the branch it is on, the task it belongs to, the pull
     /// request it opened, and a short "who and where" label. Filled in once, at
@@ -133,6 +139,23 @@ pub fn with_derived_agent_session_metadata(
     records
 }
 
+/// Write the transcript file a batch of records was read out of onto each of
+/// them.
+///
+/// The parsers take text, not files, so the path is stamped on here instead of
+/// being threaded through every one of them. Every record in the batch came out
+/// of the same file, which is what makes that correct as well as shorter.
+fn with_log_path(records: Vec<AgentSessionRecord>, log_path: &Path) -> Vec<AgentSessionRecord> {
+    let path = log_path.to_string_lossy().into_owned();
+    records
+        .into_iter()
+        .map(|mut record| {
+            record.log_path = Some(path.clone());
+            record
+        })
+        .collect()
+}
+
 pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -181,7 +204,7 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
         if let Ok(contents) =
             read_head_and_tail_utf8(&file, CODEX_SESSION_HEAD_BYTES, CODEX_SESSION_TAIL_BYTES)
         {
-            codex_metadata.extend(parse_codex_rollout_jsonl(&contents));
+            codex_metadata.extend(with_log_path(parse_codex_rollout_jsonl(&contents), &file));
         }
     }
     records.extend(merge_codex_session_metadata(codex_records, codex_metadata));
@@ -209,7 +232,10 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
             .and_then(decode_claude_project_dir)
             .unwrap_or_default();
         if let Ok(contents) = read_tail_utf8(&file, CLAUDE_SESSION_TAIL_BYTES) {
-            records.extend(parse_claude_jsonl(&contents, &project_path));
+            records.extend(with_log_path(
+                parse_claude_jsonl(&contents, &project_path),
+                &file,
+            ));
         }
     }
 
@@ -261,6 +287,7 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 project_path: None,
                 last_activity,
                 resume_commands: vec![format!("codex resume {id}")],
+                log_path: None,
                 branch_hint: None,
                 task_id: None,
                 pull_request_hint: None,
@@ -317,6 +344,7 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                     project_path: cwd,
                     last_activity,
                     resume_commands: vec![format!("codex resume {id}")],
+                    log_path: None,
                     branch_hint: None,
                     task_id: None,
                     pull_request_hint: None,
@@ -625,6 +653,7 @@ fn update_latest_codex_record(
         project_path: cwd,
         last_activity,
         resume_commands: vec![format!("codex resume {id}")],
+        log_path: None,
         branch_hint: None,
         task_id: None,
         pull_request_hint: None,
@@ -740,6 +769,7 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
                 project_path: cwd.clone(),
                 last_activity,
                 resume_commands: cmux_resume_commands(&agent, id, cwd.as_deref()),
+                log_path: None,
                 branch_hint: None,
                 task_id: None,
                 pull_request_hint: None,
@@ -819,6 +849,7 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
                 format!("claude --resume {id}"),
                 format!("cd {} && claude --resume {id}", shell_quote(&cwd)),
             ],
+            log_path: None,
             branch_hint: None,
             task_id: None,
             pull_request_hint: None,
@@ -1109,6 +1140,13 @@ fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: Agen
 
     if existing.project_path.is_none() {
         existing.project_path = candidate.project_path.clone();
+    }
+
+    // The first file to describe a session is the one the app offers to open,
+    // even when a later file has more to say about the session itself. Swapping
+    // it would move the transcript out from under a reader mid-scan for no gain.
+    if existing.log_path.is_none() {
+        existing.log_path = candidate.log_path.clone();
     }
 
     // The fuller read wins, whichever record it came from. One session can be
@@ -1697,6 +1735,7 @@ mod tests {
             project_path: project_path.map(ToOwned::to_owned),
             last_activity: None,
             resume_commands: vec!["codex resume 019e".to_string()],
+            log_path: None,
             branch_hint: None,
             task_id: None,
             pull_request_hint: None,
@@ -1744,6 +1783,43 @@ mod tests {
         "\n",
         r#"{"timestamp":"2026-07-28T16:43:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Here  is the plan\n for 2027."}]}}"#,
     );
+
+    /// The app can only offer "open the transcript" for a session whose record
+    /// remembers which file it was read out of.
+    #[test]
+    fn log_path_is_recorded_for_a_scanned_session() {
+        let file = Path::new("/Users/dev/.claude/projects/mac-command-bar/S9.jsonl");
+        let records = with_log_path(
+            parse_claude_jsonl(CONVERSATION_JSONL, "/Users/dev/work/mac-command-bar"),
+            file,
+        );
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].log_path.as_deref(),
+            Some("/Users/dev/.claude/projects/mac-command-bar/S9.jsonl")
+        );
+    }
+
+    /// One session can turn up in more than one file. Merging must not blank the
+    /// path already on the record, or hand back the later file instead.
+    #[test]
+    fn merged_records_keep_the_first_log_path() {
+        let project = Some("/Users/dev/work/mac-command-bar");
+        let mut first = session("Fix the resume rail", project);
+        first.log_path = Some("/Users/dev/.codex/sessions/first.jsonl".to_string());
+        let mut second = session("Fix the resume rail", project);
+        second.log_path = Some("/Users/dev/.codex/sessions/second.jsonl".to_string());
+        second.last_activity = Some("2026-07-30T10:00:00Z".to_string());
+
+        let merged = merge_agent_session_records(vec![first, second]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].log_path.as_deref(),
+            Some("/Users/dev/.codex/sessions/first.jsonl")
+        );
+    }
 
     /// A row wants to say "12 messages · Agent: fixed the reference race…", and
     /// this is where both halves of that come from. Only words count: the tool
