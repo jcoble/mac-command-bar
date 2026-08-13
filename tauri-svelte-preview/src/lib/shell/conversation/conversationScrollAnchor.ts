@@ -1,4 +1,5 @@
 export type ConversationScrollMotion = 'instant' | 'smooth';
+export const USER_SEND_ANCHOR_OFFSET_PX = 12;
 
 export interface ConversationSendAnchorRequest {
   requestId: number;
@@ -27,7 +28,7 @@ export type ConversationScrollAnchorEvent =
 
 export type ConversationScrollAction =
   | { type: 'none' }
-  | { type: 'anchor-user'; itemId: string; motion: ConversationScrollMotion }
+  | { type: 'anchor-user'; itemId: string; motion: ConversationScrollMotion; offsetPx: number }
   | { type: 'cancel-programmatic-scroll' }
   | { type: 'scroll-to-latest'; motion: ConversationScrollMotion };
 
@@ -85,7 +86,7 @@ export function decideConversationScroll(
         programmaticMotion: motion === 'smooth' ? 'smooth' : 'idle',
         pinnedToBottom: false
       },
-      action: { type: 'anchor-user', itemId, motion }
+      action: { type: 'anchor-user', itemId, motion, offsetPx: USER_SEND_ANCHOR_OFFSET_PX }
     };
   }
 

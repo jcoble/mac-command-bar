@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   decideConversationScroll,
-  initialConversationScrollAnchorState
+  initialConversationScrollAnchorState,
+  USER_SEND_ANCHOR_OFFSET_PX
 } from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
 
 let result = decideConversationScroll(initialConversationScrollAnchorState, {
@@ -13,7 +14,12 @@ result = decideConversationScroll(result.state, {
   type: 'user-items-changed',
   userItemIds: ['user-1', 'user-2']
 });
-assert.deepEqual(result.action, { type: 'anchor-user', itemId: 'user-2', motion: 'smooth' });
+assert.deepEqual(result.action, {
+  type: 'anchor-user',
+  itemId: 'user-2',
+  motion: 'smooth',
+  offsetPx: USER_SEND_ANCHOR_OFFSET_PX
+});
 
 const anchoredState = result.state;
 result = decideConversationScroll(anchoredState, { type: 'stream-growth' });
@@ -39,7 +45,12 @@ result = decideConversationScroll(result.state, {
   type: 'user-items-changed',
   userItemIds: ['first-user']
 });
-assert.deepEqual(result.action, { type: 'anchor-user', itemId: 'first-user', motion: 'instant' });
+assert.deepEqual(result.action, {
+  type: 'anchor-user',
+  itemId: 'first-user',
+  motion: 'instant',
+  offsetPx: USER_SEND_ANCHOR_OFFSET_PX
+});
 assert.equal(result.state.programmaticMotion, 'idle', 'reduced motion does not start an animation');
 
 console.log('conversationScrollAnchor.test.ts passed');

@@ -4,6 +4,7 @@ import {
   displayItemsFromConversationEvents,
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
+import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
 
 const typed = typedConversationTimeline([
   { id: 'assistant-1', type: 'assistant-message', content: [{ channel: 'assistant', text: 'Answer' }] },
@@ -13,6 +14,8 @@ const typed = typedConversationTimeline([
 
 assert.deepEqual(typed.map((item) => item.kind), ['user', 'assistant', 'tool', 'plan']);
 assert.equal(displayItemFromAgentItem({ id: 'reason-1', type: 'reasoning', content: [{ channel: 'reasoning', text: 'Think' }] }, 2).kind, 'reasoning');
+assert.equal(conversationItemHasVisibleContent({ kind: 'assistant', itemId: 'empty-assistant', text: '  ', completed: false, timestampMs: 2 }), false);
+assert.equal(conversationItemHasVisibleContent({ kind: 'reasoning', itemId: 'empty-reasoning', text: '', completed: false, timestampMs: 3 }), false);
 
 const event = (sequence, payload, timestampMs = sequence) => ({
   ownedId: 'owned-rich',

@@ -15,6 +15,7 @@
     type ConversationScrollMotion,
     type ConversationSendAnchorRequest
   } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import TimelineItem from './TimelineItem.svelte';
 
   interface Props {
@@ -23,6 +24,8 @@
     renderWindowId?: string;
     timelineRevision: number;
     anchorRequest?: ConversationSendAnchorRequest | null;
+    localTurnActive?: boolean;
+    composerHeight?: number;
     assistantLabel?: string;
     savedScrollTop?: number;
     emptyText?: string;
@@ -38,6 +41,8 @@
     renderWindowId = conversationId,
     timelineRevision,
     anchorRequest = null,
+    localTurnActive = false,
+    composerHeight = 0,
     assistantLabel = 'Assistant',
     savedScrollTop = 0,
     emptyText = 'Start the conversation below.',
@@ -52,7 +57,10 @@
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
   let animationFrame: number | null = null;
   let seenAnchorRequest = '';
+  let anchoredUserItemId = $state<string | null>(null);
+  let viewportHeight = $state(0);
   let lastContentRevision = -1;
+  let lastComposerHeight = -1;
   let lastItemCount = -1;
   let userItemIds = $state<string[]>([]);
   let windowConversationId = $state('');
@@ -64,12 +72,33 @@
     disclosureAnchorItemId
   }));
   const renderedItems = $derived(renderWindow.items);
+  const anchoredUserIndex = $derived(anchoredUserItemId
+    ? renderedItems.findIndex((item) => item.itemId === anchoredUserItemId)
+    : -1);
+  const showWorking = $derived(
+    localTurnActive
+      && anchoredUserIndex >= 0
+      && renderedItems.slice(anchoredUserIndex + 1).every((item) => !conversationItemHasVisibleContent(item))
+  );
+  const showActiveTurnTail = $derived(localTurnActive && anchoredUserIndex >= 0);
+
+  $effect(() => {
+    if (!host) return;
+    const publish = (): void => {
+      viewportHeight = host?.clientHeight ?? 0;
+    };
+    const observer = new ResizeObserver(publish);
+    observer.observe(host);
+    publish();
+    return () => observer.disconnect();
+  });
 
   $effect(() => {
     if (windowConversationId === renderWindowId) return;
     windowConversationId = renderWindowId;
     disclosedItems = 0;
     disclosureAnchorItemId = null;
+    anchoredUserItemId = null;
   });
 
   $effect(() => {
@@ -93,14 +122,14 @@
     animationFrame = null;
   }
 
-  function animateTo(top: number, motion: ConversationScrollMotion, settleItemId?: string): void {
+  function animateTo(top: number, motion: ConversationScrollMotion, settleItemId?: string, settleOffsetPx?: number): void {
     if (!host) return;
     cancelProgrammaticScroll();
     const target = Math.max(0, top);
     if (motion === 'instant') {
       host.scrollTop = target;
       if (settleItemId) {
-        const settledTop = itemTop(settleItemId);
+        const settledTop = itemTop(settleItemId, settleOffsetPx ?? 0);
         if (settledTop !== null) host.scrollTop = settledTop;
       }
       finishAnimation();
@@ -124,7 +153,7 @@
       if (progress < 1) animationFrame = requestAnimationFrame(step);
       else {
         if (settleItemId) {
-          const settledTop = itemTop(settleItemId);
+          const settledTop = itemTop(settleItemId, settleOffsetPx ?? 0);
           if (settledTop !== null) host.scrollTop = settledTop;
         }
         finishAnimation();
@@ -133,15 +162,14 @@
     animationFrame = requestAnimationFrame(step);
   }
 
-  function itemTop(itemId: string): number | null {
+  function itemTop(itemId: string, offsetPx: number): number | null {
     if (!host) return null;
     const item = [...host.querySelectorAll<HTMLElement>('[data-item-id]')]
       .find((candidate) => candidate.dataset.itemId === itemId);
     if (!item) return null;
     const hostTop = host.getBoundingClientRect().top;
     const itemTop = item.getBoundingClientRect().top;
-    const paddingTop = Number.parseFloat(getComputedStyle(host).paddingTop) || 0;
-    return host.scrollTop + itemTop - hostTop - paddingTop;
+    return host.scrollTop + itemTop - hostTop - offsetPx;
   }
 
   function itemViewportTop(itemId: string): number | null {
@@ -173,8 +201,9 @@
       animateTo(host.scrollHeight - host.clientHeight, action.motion);
       return;
     }
-    const top = itemTop(action.itemId);
-    if (top !== null) animateTo(top, action.motion, action.itemId);
+    anchoredUserItemId = action.itemId;
+    const top = itemTop(action.itemId, action.offsetPx);
+    if (top !== null) animateTo(top, action.motion, action.itemId, action.offsetPx);
   }
 
   function handleScroll(): void {
@@ -226,6 +255,15 @@
   });
 
   $effect(() => {
+    if (composerHeight === lastComposerHeight) return;
+    lastComposerHeight = composerHeight;
+    if (!scrollState.pinnedToBottom) return;
+    void tick().then(() => {
+      if (host) animateTo(host.scrollHeight - host.clientHeight, 'instant');
+    });
+  });
+
+  $effect(() => {
     if (host && savedScrollTop > 0 && host.scrollTop === 0) {
       host.scrollTop = savedScrollTop;
     }
@@ -258,7 +296,7 @@
   }
 </script>
 
-<div class="timeline-wrap" data-testid="conversation-timeline-wrap">
+<div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
   <div
     class="timeline-scroll"
     data-testid="conversation-timeline-scroll"
@@ -280,7 +318,14 @@
       {/if}
       {#each renderedItems as item (item.itemId)}
         <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} />
+        {#if showWorking && item.itemId === anchoredUserItemId}
+          <div class="working-row" data-testid="conversation-working-indicator" role="status">
+            <span class="working-dot" aria-hidden="true"></span>
+            <span>Working…</span>
+          </div>
+        {/if}
       {/each}
+      {#if showActiveTurnTail}<div class="active-turn-tail" style={`height:${viewportHeight}px`} aria-hidden="true"></div>{/if}
     </div>
   </div>
   {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" onclick={jumpToLatest}>Jump to latest</button>{/if}
@@ -288,12 +333,16 @@
 
 <style>
   .timeline-wrap{position:relative;flex:1;min-height:0}
-  .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;padding:30px 24px 206px;scrollbar-gutter:stable;overscroll-behavior:contain}
-  .timeline-list{display:flex;flex-direction:column;gap:18px;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;padding:30px 24px calc(var(--composer-height) + 16px);scrollbar-gutter:stable;overscroll-behavior:contain}
+  .timeline-list{display:flex;flex-direction:column;gap:16px;width:min(820px,100%);min-height:1px;margin:0 auto}
   .earlier-row{display:flex;justify-content:center;min-height:28px}
   .empty{display:grid;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
-  .jump-latest{position:absolute;right:24px;bottom:188px;min-height:28px;padding:6px 12px;border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);font-size:13px;box-shadow:var(--shadow-sm);cursor:pointer}
+  .working-row{display:flex;align-items:center;gap:8px;min-height:20px;color:var(--color-text-3);font-size:13px}
+  .working-dot{width:6px;height:6px;border-radius:999px;background:currentColor}
+  .active-turn-tail{flex:none;margin-top:-16px;pointer-events:none}
+  .jump-latest{position:absolute;right:24px;bottom:calc(var(--composer-height) + 16px);min-height:28px;padding:6px 12px;border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);font-size:13px;box-shadow:var(--shadow-sm);cursor:pointer}
   .jump-latest:hover{background:var(--color-hover)}
   .jump-latest:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
-  @media (prefers-reduced-motion:no-preference){.jump-latest{transition:background .14s ease,box-shadow .14s ease}}
+  @keyframes working-pulse{0%,100%{opacity:.38;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
+  @media (prefers-reduced-motion:no-preference){.jump-latest{transition:background .14s ease,box-shadow .14s ease}.working-dot{animation:working-pulse 1.1s ease-in-out infinite}}
 </style>

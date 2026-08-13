@@ -127,6 +127,25 @@
   let inspectorOpen = $state(false);
   let sendAnchorRequest = $state<ConversationSendAnchorRequest | null>(null);
   let sendAnchorRequestId = 0;
+  let localTurnActive = $state(false);
+  let localTurnStarted = $state(false);
+  let composerHeight = $state(0);
+
+  $effect(() => {
+    if (!localTurnActive) {
+      localTurnStarted = false;
+      return;
+    }
+    if (conversation?.sending) {
+      localTurnStarted = true;
+      return;
+    }
+    if (localTurnStarted) {
+      localTurnActive = false;
+      localTurnStarted = false;
+      sendAnchorRequest = null;
+    }
+  });
 
   $effect(() => {
     const ownedId = activeOwnedId;
@@ -185,6 +204,8 @@
       conversationId: activeOwnedId,
       previousUserItemId
     };
+    localTurnActive = true;
+    localTurnStarted = false;
     setConversationDraft(activeOwnedId, '');
     try {
       await clearConversationSessionDraft(activeOwnedId);
@@ -195,6 +216,9 @@
       setConversationDraft(activeOwnedId, text);
       persistConversationSessionDraft(activeOwnedId, text);
       await flushConversationSessionDraft(activeOwnedId).catch(() => undefined);
+      localTurnActive = false;
+      localTurnStarted = false;
+      sendAnchorRequest = null;
     }
   }
 
@@ -354,6 +378,8 @@
         renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}
         timelineRevision={conversation.timelineRevision}
         anchorRequest={sendAnchorRequest}
+        {localTurnActive}
+        {composerHeight}
         assistantLabel={selectedChild?.label ?? active.agent}
         savedScrollTop={conversation.selectedChildId ? conversation.childScrollTopById[conversation.selectedChildId] ?? 0 : conversation.scrollTop}
         emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}
@@ -394,6 +420,7 @@
           onApprovalDecision={onApprovalDecision}
           onInputSubmit={onInputSubmit}
           onConfigChange={(optionId, value) => void changeConfig(optionId, value)}
+          onHeightChange={(height) => (composerHeight = height)}
         />
       {:else}<div class="read-only-note" data-testid="conversation-read-only-note">Read-only sub-agent transcript</div>{/if}
       {#if appOwned && inspectorOpen}<ConversationInspector ownedId={active.ownedId} />{/if}

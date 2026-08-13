@@ -11,3 +11,5 @@
   <ConversationMessage text={item.text} role="assistant" itemId={item.itemId} completed={item.completed} {onFileLink} />
   {#if item.completed}<TurnMetadata text={item.text} timestampMs={item.timestampMs} />{/if}
 </div>
+
+<style>.group{position:relative}</style>
