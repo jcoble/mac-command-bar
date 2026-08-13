@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Session sidebar v3 — approval mockup</title>
+  <style>
+    :root {
+      color-scheme: dark;
+
+      /* Values copied from src/lib/shell/styles/nextTokens.css. */
+      --color-bg: #161719;
+      --color-surface: #1d1f22;
+      --color-elevated: #25282d;
+      --color-text: #f1f3f5;
+      --color-text-2: #b3b7bf;
+      --color-text-3: #8b919b;
+      --color-accent: #6ed8be;
+      --color-border: rgba(241, 243, 245, 0.12);
+      --color-focus: rgba(110, 216, 190, 0.42);
+      --color-selected: #263734;
+      --color-selected-border: #5cb29b;
+      --color-hover: #292c31;
+      --color-live: #74b6d8;
+      --color-good: #85c79a;
+      --color-attention: #d7b77e;
+      --color-idle: #969ca6;
+      --color-live-bg: rgba(116, 182, 216, 0.12);
+      --color-attention-bg: rgba(215, 183, 126, 0.12);
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.22);
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.26), 0 1px 3px rgba(0, 0, 0, 0.16);
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-width: 760px;
+      margin: 0;
+      background: #101113;
+      color: var(--color-text);
+      font-size: 13px;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button { font: inherit; }
+    svg { display: block; }
+
+    .page {
+      width: min(1060px, calc(100% - 64px));
+      margin: 0 auto;
+      padding: 40px 0 64px;
+    }
+
+    .page-header {
+      max-width: 720px;
+      margin-bottom: 22px;
+    }
+
+    .eyebrow {
+      margin: 0 0 7px;
+      color: var(--color-accent);
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+
+    .lede {
+      margin: 0;
+      color: var(--color-text-2);
+      font-size: 14px;
+    }
+
+    .stage {
+      position: relative;
+      min-height: 820px;
+      padding: 26px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-lg);
+      background: var(--color-bg);
+      overflow: hidden;
+    }
+
+    .app-ghost {
+      position: absolute;
+      inset: 0 0 0 347px;
+      padding: 27px 30px;
+      border-left: 1px solid var(--color-border);
+      color: var(--color-text-3);
+      background: #121315;
+    }
+
+    .app-ghost-line {
+      width: 66%;
+      height: 9px;
+      margin-top: 14px;
+      border-radius: 3px;
+      background: rgba(241, 243, 245, 0.055);
+    }
+
+    .app-ghost-line.short { width: 38%; }
+
+    .rail {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-rows: 52px minmax(0, 1fr);
+      width: 320px;
+      height: 768px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-bg);
+      box-shadow: var(--shadow-md);
+      overflow: hidden;
+    }
+
+    .rail-header {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 9px 0 13px;
+      border-bottom: 1px solid var(--color-border);
+      background: var(--color-bg);
+    }
+
+    .rail-title {
+      min-width: 0;
+      flex: 1 1 auto;
+      font-size: 14px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    .icon-button,
+    .action-button {
+      display: inline-grid;
+      place-items: center;
+      border: 0;
+      color: var(--color-text-2);
+      background: transparent;
+    }
+
+    .icon-button {
+      width: 29px;
+      height: 29px;
+      border-radius: 7px;
+    }
+
+    .icon-button:last-child { color: var(--color-accent); }
+    .icon-button:hover { color: var(--color-text); background: var(--color-hover); }
+    .icon-button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 1px; }
+    .icon-button svg { width: 16px; height: 16px; }
+
+    .session-scroll {
+      min-height: 0;
+      overflow-y: scroll;
+      scrollbar-gutter: stable;
+      scrollbar-width: thin;
+      scrollbar-color: var(--color-text-3) var(--color-surface);
+      overscroll-behavior: contain;
+    }
+
+    .session-scroll::-webkit-scrollbar { width: 9px; }
+    .session-scroll::-webkit-scrollbar-track { background: var(--color-surface); }
+    .session-scroll::-webkit-scrollbar-thumb {
+      min-height: 48px;
+      border: 2px solid var(--color-surface);
+      border-radius: 8px;
+      background: var(--color-text-3);
+    }
+
+    .section-heading {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      width: 100%;
+      min-height: 33px;
+      padding: 7px 12px;
+      border: 0;
+      border-bottom: 1px solid rgba(241, 243, 245, 0.055);
+      background: var(--color-surface);
+      color: var(--color-text-2);
+      text-align: left;
+    }
+
+    .section-heading svg { width: 13px; height: 13px; }
+    .section-heading .name { font-weight: 620; }
+    .section-heading .count { margin-left: auto; color: var(--color-text-3); font-family: var(--mono); }
+    .section-heading:hover { color: var(--color-text); }
+
+    .session-row {
+      position: relative;
+      display: block;
+      width: 100%;
+      min-height: 75px;
+      padding: 5px 11px 5px 13px;
+      border: 0;
+      border-bottom: 1px solid rgba(241, 243, 245, 0.055);
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+      content-visibility: auto;
+      contain-intrinsic-size: 75px;
+    }
+
+    .session-row:hover { background: var(--color-hover); }
+    .session-row:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+
+    .session-row.selected { background: var(--color-selected); }
+    .session-row.selected::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 2px;
+      background: var(--color-selected-border);
+    }
+
+    .line {
+      position: relative;
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 6px;
+    }
+
+    .line + .line { margin-top: 4px; }
+
+    .project {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--color-text-3);
+      font-size: 13px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .glyph {
+      flex: 0 0 auto;
+      width: 14px;
+      height: 14px;
+      color: var(--color-text-3);
+    }
+
+    .status {
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 5px;
+      margin-left: auto;
+      color: var(--color-text-3);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .spinner {
+      width: 11px;
+      height: 11px;
+      border: 1.5px solid rgba(116, 182, 216, 0.32);
+      border-top-color: var(--color-live);
+      border-radius: 50%;
+      animation: spin 900ms linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+    .attention {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 22px;
+      padding: 0 7px;
+      border: 1px solid rgba(215, 183, 126, 0.3);
+      border-radius: 6px;
+      background: var(--color-attention-bg);
+      color: var(--color-attention);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .attention svg { width: 12px; height: 12px; }
+
+    .session-title {
+      min-width: 0;
+      flex: 1 1 auto;
+      overflow: hidden;
+      color: var(--color-text);
+      font-size: 13px;
+      font-weight: 570;
+      letter-spacing: -0.005em;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .model-chip {
+      flex: 0 0 auto;
+      height: 20px;
+      margin-left: auto;
+      padding: 1px 7px 0;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      background: var(--color-elevated);
+      color: var(--color-text-2);
+      font-size: 13px;
+      line-height: 17px;
+      white-space: nowrap;
+    }
+
+    .branch {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--color-text-3);
+      font-family: var(--mono);
+      font-size: 13px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .idle-label {
+      margin-left: auto;
+      color: var(--color-idle);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .hover-actions {
+      position: absolute;
+      z-index: 2;
+      top: 27px;
+      right: 9px;
+      display: none;
+      align-items: center;
+      gap: 1px;
+      padding: 3px;
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      background: var(--color-elevated);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .session-row:hover .hover-actions,
+    .session-row.action-demo .hover-actions { display: flex; }
+
+    .action-button {
+      width: 25px;
+      height: 25px;
+      border-radius: 5px;
+    }
+
+    .action-button:hover { color: var(--color-text); background: var(--color-hover); }
+    .action-button svg { width: 14px; height: 14px; }
+
+    .collapsed .section-heading {
+      position: relative;
+      top: auto;
+      border-top: 1px solid var(--color-border);
+    }
+
+    .scroll-spacer { height: 64px; }
+
+    .context-menu {
+      position: absolute;
+      z-index: 7;
+      top: 294px;
+      left: 240px;
+      width: 216px;
+      padding: 6px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-elevated);
+      box-shadow: var(--shadow-md);
+    }
+
+    .context-label {
+      margin: 2px 8px 5px;
+      color: var(--color-text-3);
+      font-size: 13px;
+    }
+
+    .context-item {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      height: 30px;
+      padding: 0 8px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--color-text-2);
+      font-size: 13px;
+      text-align: left;
+    }
+
+    .context-item:hover { background: var(--color-hover); color: var(--color-text); }
+    .context-item.danger { color: #e28a98; }
+    .context-separator { height: 1px; margin: 5px 4px; background: var(--color-border); }
+
+    .callouts {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1px;
+      margin: 22px 0 0;
+      padding: 1px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-border);
+      list-style: none;
+      overflow: hidden;
+    }
+
+    .callouts li {
+      display: grid;
+      grid-template-columns: 25px 1fr;
+      gap: 9px;
+      min-height: 54px;
+      padding: 11px 13px;
+      background: var(--color-surface);
+      color: var(--color-text-2);
+      font-size: 13px;
+    }
+
+    .number {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--color-elevated);
+      color: var(--color-accent);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .performance-note {
+      margin: 14px 0 0;
+      color: var(--color-text-3);
+      font-size: 13px;
+    }
+
+    .performance-note strong { color: var(--color-text-2); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <!-- Inline sprite keeps the file self-contained and the interface free of font/emoji glyph drift. -->
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute">
+    <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m16 16 4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="filter" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="chevron-down" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="chevron-right" viewBox="0 0 16 16"><path d="m6 4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="folder" viewBox="0 0 20 20"><path d="M2.8 5.5h5l1.5 1.8h7.9v8.2H2.8z" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round"/></symbol>
+    <symbol id="branch" viewBox="0 0 20 20"><circle cx="5" cy="4" r="1.7" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="15" cy="6" r="1.7" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="5" cy="16" r="1.7" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 5.7v8.6M6.7 8.4c4.3 0 3.3-2.4 6.6-2.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="jump" viewBox="0 0 20 20"><path d="M4 10h10M10 6l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 4v12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="editor" viewBox="0 0 20 20"><rect x="3" y="3" width="14" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="m7 8 2 2-2 2m4 0h3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="git" viewBox="0 0 20 20"><circle cx="5" cy="5" r="1.7" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="15" cy="5" r="1.7" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="5" cy="15" r="1.7" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 6.7v6.6M6.7 9.5c5 0 3-4.5 6.6-4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="lock" viewBox="0 0 20 20"><rect x="4" y="8" width="12" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 8V6a3 3 0 0 1 6 0v2" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+  </svg>
+
+  <main class="page">
+    <header class="page-header">
+      <p class="eyebrow">Approval artifact</p>
+      <h1>Session sidebar v3</h1>
+      <p class="lede">A single roomy session list with lifecycle sections, stable metadata, and actions that never push titles sideways.</p>
+    </header>
+
+    <section class="stage" aria-label="Session sidebar mockup">
+      <div class="app-ghost" aria-hidden="true">
+        Conversation workspace
+        <div class="app-ghost-line"></div>
+        <div class="app-ghost-line short"></div>
+      </div>
+
+      <aside class="rail" aria-label="Sessions">
+        <header class="rail-header">
+          <div class="rail-title">Sessions</div>
+          <button class="icon-button" aria-label="Search sessions" title="Search sessions"><svg><use href="#search"/></svg></button>
+          <button class="icon-button" aria-label="Filter and view options" title="Filter and view options"><svg><use href="#filter"/></svg></button>
+          <button class="icon-button" aria-label="New session" title="New session"><svg><use href="#plus"/></svg></button>
+        </header>
+
+        <div class="session-scroll">
+          <section aria-labelledby="working-heading">
+            <button class="section-heading" id="working-heading" aria-expanded="true">
+              <svg><use href="#chevron-down"/></svg><span class="name">Working</span><span class="count">8</span>
+            </button>
+
+            <button class="session-row selected" aria-label="Open session: Finish native CodeLens reference lookup">
+              <span class="line"><svg class="glyph"><use href="#folder"/></svg><span class="project">mac-command-bar</span><span class="status"><span class="spinner"></span>2m 14s</span></span>
+              <span class="line"><span class="session-title">Finish native CodeLens reference lookup</span><span class="model-chip">5.6 Sol</span></span>
+              <span class="line"><svg class="glyph"><use href="#branch"/></svg><span class="branch">tsk-789-codelens-cancel</span></span>
+            </button>
+
+            <button class="session-row action-demo" aria-label="Open session: Verify year simulation accounting gates">
+              <span class="line"><svg class="glyph"><use href="#folder"/></svg><span class="project">rental-management</span><span class="status"><span class="spinner"></span>11m 38s</span></span>
+              <span class="line"><span class="session-title">Verify year simulation accounting gates</span><span class="model-chip">Default</span></span>
+              <span class="line"><svg class="glyph"><use href="#branch"/></svg><span class="branch">tsk-754-year-simulation</span></span>
+              <span class="hover-actions" aria-label="Row actions shown on hover">
+                <span class="action-button" title="Jump to session"><svg><use href="#jump"/></svg></span>
+                <span class="action-button" title="Open in editor"><svg><use href="#editor"/></svg></span>
+                <span class="action-button" title="Open Git"><svg><use href="#git"/></svg></span>
+              </span>
+            </button>
+
+            <button class="session-row" aria-label="Open session: Resolve Walmart 810 round-trip evidence">
+              <span class="line"><svg class="glyph"><use href="#folder"/></svg><span class="project">EdiPlatform</span><span class="attention"><svg><use href="#lock"/></svg>Permission waiting</span></span>
+              <span class="line"><span class="session-title">Resolve Walmart 810 round-trip evidence</span><span class="model-chip">5.6 Sol</span></span>
+              <span class="line"><svg class="glyph"><use href="#branch"/></svg><span class="branch">tsk-792-composition-claims</span></span>
+            </button>
+
+            <button class="session-row" aria-label="Open session: Map agent session records into SQLite">
+              <span class="line"><svg class="glyph"><use href="#folder"/></svg><span class="project">mac-command-bar</span><span class="status"><span class="spinner"></span>47s</span></span>
+              <span class="line"><span class="session-title">Map agent session records into SQLite</span><span class="model-chip">Default</span></span>
+              <span class="line"><svg class="glyph"><use href="#branch"/></svg><span class="branch">lane/sqlstore19</span></span>
+            </button>
+
+            <button class="session-row" aria-label="Open session: Review Unit Command Center mobile flow">
+              <span class="line"><svg class="glyph"><use href="#folder"/></svg><span class="project">rental-management</span><span class="status">3h</span></span>
+              <span class="line"><span class="session-title">Review Unit Command Center mobile flow</span><span class="model-chip">5.6 Sol</span></span>
+              <span class="line"><svg class="glyph"><use href="#branch"/></svg><span class="branch">tsk-668-unit-command-center</span></span>
+            </button>
+
+            <button class="session-row" aria-label="Open session: Tighten source-first EDI practice diagnostics">
+              <span class="line"><svg class="glyph"><use href="#folder"/></svg><span class="project">EdiPlatform</span><span class="status"><span class="spinner"></span>6m 02s</span></span>
+              <span class="line"><span class="session-title">Tighten source-first EDI practice diagnostics</span><span class="model-chip">Default</span></span>
+              <span class="line"><svg class="glyph"><use href="#branch"/></svg><span class="branch">tsk-703-practice-diagnostics</span></span>
+            </button>
+
+            <button class="session-row" aria-label="Open session: Audit release privacy labels and DNS">
+              <span class="line"><svg class="glyph"><use href="#folder"/></svg><span class="project">rental-management</span><span class="status"><span class="spinner"></span>24m 51s</span></span>
+              <span class="line"><span class="session-title">Audit release privacy labels and DNS</span><span class="model-chip">Default</span></span>
+              <span class="line"><svg class="glyph"><use href="#branch"/></svg><span class="branch">mobile-release-hardening</span></span>
+            </button>
+
+            <button class="session-row" aria-label="Open session: Preserve Roslyn source intelligence receipts">
+              <span class="line"><svg class="glyph"><use href="#folder"/></svg><span class="project">mac-command-bar</span><span class="idle-label">Suspended</span></span>
+              <span class="line"><span class="session-title">Preserve Roslyn source intelligence receipts</span><span class="model-chip">5.6 Sol</span></span>
+              <span class="line"><svg class="glyph"><use href="#branch"/></svg><span class="branch">tsk-799-native-codelens</span></span>
+            </button>
+          </section>
+
+          <section class="collapsed" aria-labelledby="done-heading">
+            <button class="section-heading" id="done-heading" aria-expanded="false">
+              <svg><use href="#chevron-right"/></svg><span class="name">Done</span><span class="count">18</span>
+            </button>
+          </section>
+          <section class="collapsed" aria-labelledby="settled-heading">
+            <button class="section-heading" id="settled-heading" aria-expanded="false">
+              <svg><use href="#chevron-right"/></svg><span class="name">Settled</span><span class="count">43</span>
+            </button>
+          </section>
+          <div class="scroll-spacer" aria-hidden="true"></div>
+        </div>
+      </aside>
+
+      <div class="context-menu" role="menu" aria-label="Session context menu mockup">
+        <p class="context-label">Session actions</p>
+        <button class="context-item" role="menuitem">Rename</button>
+        <button class="context-item" role="menuitem">Move to project</button>
+        <button class="context-item" role="menuitem">Archive (Settle)</button>
+        <div class="context-separator"></div>
+        <button class="context-item" role="menuitem">Copy session id</button>
+        <button class="context-item" role="menuitem">Copy worktree path</button>
+        <button class="context-item" role="menuitem">Continue in new session</button>
+        <div class="context-separator"></div>
+        <button class="context-item" role="menuitem">Open in editor</button>
+        <button class="context-item" role="menuitem">Reveal in Finder</button>
+        <div class="context-separator"></div>
+        <button class="context-item danger" role="menuitem">Delete</button>
+      </div>
+    </section>
+
+    <ol class="callouts" aria-label="Design decisions">
+      <li><span class="number">1</span><span>The full row is clickable from edge to edge; no tiny title-only target.</span></li>
+      <li><span class="number">2</span><span>Working status pairs one small spinner with exact elapsed time.</span></li>
+      <li><span class="number">3</span><span>Hover actions sit on an opaque backdrop over metadata; left content never moves.</span></li>
+      <li><span class="number">4</span><span>Working, Done, and Settled share one scroll area with sticky section headers.</span></li>
+      <li><span class="number">5</span><span>The native scrollbar stays thin but visible and has its own reserved gutter.</span></li>
+      <li><span class="number">6</span><span>Right-click exposes the complete session menu without crowding every row.</span></li>
+    </ol>
+    <p class="performance-note"><strong>Production constraint:</strong> the working spinner is the only looping motion and must pause whenever its row is offscreen or the sidebar is hidden. Reduced-motion mode makes it static.</p>
+  </main>
+</body>
+</html>
