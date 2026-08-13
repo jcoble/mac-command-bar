@@ -128,6 +128,7 @@ store.applyAgentConversationSnapshot({
     state: 'connected',
     nativeSessionId: 'thread-a'
   },
+  suspended: true,
   lastSequence: 3,
   events: [
     {
@@ -144,6 +145,7 @@ store.applyAgentConversationSnapshot({
     }
   ]
 });
+assert.equal(store.getConversationSession('owned-a').suspended, true);
 assert.deepEqual(
   store.getConversationSession('owned-a').timeline.map((item) => item.text),
   ['Visible question', 'Visible answer']
@@ -216,6 +218,7 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
 store.setConversationConnection({
   ownedId: 'owned-a', provider: 'codex', generation: 3, state: 'reconnecting'
 });
+assert.equal(store.getConversationSession('owned-a').suspended, false, 'ensuring the conversation clears suspension');
 store.applyAgentConversationSnapshot({
   connection: { ownedId: 'owned-a', provider: 'codex', generation: 2, state: 'connected' },
   lastSequence: 0,

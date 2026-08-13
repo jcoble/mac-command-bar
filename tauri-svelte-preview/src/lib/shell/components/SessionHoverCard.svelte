@@ -9,6 +9,7 @@
   interface Props {
     title: string;
     statusLabel: string;
+    statusDetail?: string;
     project: string;
     worktree: string;
     machine?: string | null;
@@ -22,6 +23,7 @@
   let {
     title,
     statusLabel,
+    statusDetail = statusLabel,
     project,
     worktree,
     machine = null,
@@ -37,7 +39,7 @@
 
 <aside class="session-card" data-testid="session-hover-card" aria-label="Session details">
   <div class="session-card-title" title={title}>{title}</div>
-  <div class="session-card-sub">{statusLabel}</div>
+  <div class="session-card-sub">{statusDetail}</div>
 
   <div class="session-card-lines">
     {#if project || detailPath}

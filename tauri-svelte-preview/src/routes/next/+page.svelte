@@ -676,7 +676,21 @@
         return;
       }
       setConversationMode(ownedId, 'structured');
-      if (activation.kind === 'view') return;
+      if (activation.kind === 'view') {
+        if (switching) {
+          void ensureStructuredConversation({
+            ownedId,
+            provider,
+            cwd: selected.cwd,
+            nativeSessionId: selected.nativeSessionId,
+            nativeSessionMode: 'resume',
+            reasoningEffort: reasoningEffort ?? conversation?.agentConfig.reasoningEffort
+          }).catch((error) => {
+            updateOwnedSession(ownedId, { lastError: describeError(error) });
+          });
+        }
+        return;
+      }
 
       const sessionReasoningEffort = reasoningEffort ?? conversation?.agentConfig.reasoningEffort;
       const structuredActivation = ensureStructuredConversation({

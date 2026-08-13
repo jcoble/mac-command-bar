@@ -15,6 +15,7 @@ export interface SessionPresenceHistory {
 export interface SessionPresenceSignals {
   terminalState: OwnedSessionState;
   connectionState?: ConversationConnectionState | null;
+  suspended?: boolean;
   activeTurnId?: string | null;
   sending?: boolean;
   pendingApprovalCount?: number;
@@ -114,14 +115,18 @@ export function deriveSessionPresence(
   history: SessionPresenceHistory,
   nowMs: number
 ): SessionPresenceView {
+  const unhealthy = signals.terminalState === 'exited'
+    || signals.connectionState === 'failed'
+    || signals.connectionState === 'closed';
+  if (unhealthy) return { state: 'disconnected', elapsedMs: null };
+  if (signals.suspended) return { state: 'idle', elapsedMs: null };
+
   const needsAttention = history.lastAttentionAt !== null
     && history.lastAttentionAt > (history.lastAckedAt ?? -1);
   if (needsAttention) return { state: 'needs-attention', elapsedMs: null };
 
-  const disconnected = signals.terminalState === 'exited'
-    || signals.connectionState === 'failed'
-    || signals.connectionState === 'closed'
-    || (signals.connectionState === 'disconnected' && signals.runtimeState !== 'starting');
+  const disconnected = signals.connectionState === 'disconnected'
+    && signals.runtimeState !== 'starting';
   if (disconnected) return { state: 'disconnected', elapsedMs: null };
 
   const waitingForApproval = (signals.pendingApprovalCount ?? 0) > 0;

@@ -612,6 +612,7 @@ export interface ConversationSessionState {
   lastSequence: number;
   desynchronized: boolean;
   connectionState: ConversationConnectionState;
+  suspended: boolean;
   nativeSessionId?: string;
   activeTurnId?: string;
   usage?: ConversationUsage;
@@ -629,6 +630,7 @@ export interface AgentConversationConnection {
 
 export interface AgentConversationSnapshot {
   connection: AgentConversationConnection;
+  suspended?: boolean;
   lastSequence: number;
   events: AgentConversationEvent[];
 }
