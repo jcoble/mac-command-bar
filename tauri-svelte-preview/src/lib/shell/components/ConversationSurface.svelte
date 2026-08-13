@@ -84,10 +84,20 @@
     ? conversation.children.find((child) => child.childId === conversation.selectedChildId) ?? null
     : null);
   const legacyTimeline = $derived(conversation?.selectedChildId ? conversation.childTimeline : conversation?.timeline ?? []);
+  let previousTimelineKey = '';
+  let previousVisibleTimeline: ConversationDisplayItem[] = [];
   const visibleTimeline = $derived.by((): ConversationDisplayItem[] => {
     if (!conversation) return [];
-    if (conversation.selectedChildId) return typedConversationTimeline([], legacyTimeline);
-    const items = typedConversationTimeline(conversation.agentItems, legacyTimeline);
+    const timelineKey = `${conversation.ownedId}:${conversation.selectedChildId ?? 'root'}`;
+    if (timelineKey !== previousTimelineKey) {
+      previousTimelineKey = timelineKey;
+      previousVisibleTimeline = [];
+    }
+    if (conversation.selectedChildId) {
+      previousVisibleTimeline = typedConversationTimeline([], legacyTimeline, {}, previousVisibleTimeline);
+      return previousVisibleTimeline;
+    }
+    const items = typedConversationTimeline(conversation.agentItems, legacyTimeline, {}, previousVisibleTimeline);
     const now = items.reduce((latest, item) => Math.max(latest, item.timestampMs), 0) + 1;
     const typedKinds = new Set(items.map((item) => item.kind));
     if (conversation.planSteps.length && !typedKinds.has('plan')) {
@@ -99,7 +109,8 @@
     // Live requests render inline above the composer, keeping their response
     // controls attached to the prompt. Resolved requests remain in the
     // normalized transcript returned above.
-    return items.sort((left, right) => left.timestampMs - right.timestampMs);
+    previousVisibleTimeline = items.sort((left, right) => left.timestampMs - right.timestampMs);
+    return previousVisibleTimeline;
   });
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
@@ -340,6 +351,7 @@
       <ConversationTimeline
         items={visibleTimeline}
         conversationId={active.ownedId}
+        timelineRevision={conversation.timelineRevision}
         anchorRequest={sendAnchorRequest}
         assistantLabel={selectedChild?.label ?? active.agent}
         savedScrollTop={conversation.selectedChildId ? conversation.childScrollTopById[conversation.selectedChildId] ?? 0 : conversation.scrollTop}

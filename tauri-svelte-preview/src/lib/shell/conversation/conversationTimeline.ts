@@ -407,7 +407,8 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
 export function typedConversationTimeline(
   items: readonly AgentItem[] = [],
   legacy: readonly ConversationTimelineEntry[] = [],
-  timestamps: Readonly<Record<string, number>> = {}
+  timestamps: Readonly<Record<string, number>> = {},
+  previous: readonly ConversationDisplayItem[] = []
 ): ConversationDisplayItem[] {
   const byId = new Map<string, ConversationDisplayItem>();
   legacy
@@ -418,7 +419,50 @@ export function typedConversationTimeline(
     item.id,
     displayItemFromAgentItem(item, timestamps[item.id] ?? displayTimestamp(item, legacyEnd + index + 1))
   ));
-  return [...byId.values()].sort((left, right) => left.timestampMs - right.timestampMs);
+  const next = [...byId.values()].sort((left, right) => left.timestampMs - right.timestampMs);
+  return reuseConversationDisplayItems(next, previous);
+}
+
+function shallowRecordEqual(
+  left: Readonly<Record<string, unknown>> | undefined,
+  right: Readonly<Record<string, unknown>> | undefined
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => Object.is(left[key], right[key]));
+}
+
+function sameDisplayItem(left: ConversationDisplayItem, right: ConversationDisplayItem): boolean {
+  if (left === right) return true;
+  if (left.kind !== right.kind || left.itemId !== right.itemId || left.timestampMs !== right.timestampMs) return false;
+  const leftRecord = left as unknown as Readonly<Record<string, unknown>>;
+  const rightRecord = right as unknown as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(leftRecord);
+  if (keys.length !== Object.keys(rightRecord).length) return false;
+  return keys.every((key) => {
+    if (key === 'metadata') {
+      return shallowRecordEqual(
+        leftRecord[key] as Readonly<Record<string, unknown>> | undefined,
+        rightRecord[key] as Readonly<Record<string, unknown>> | undefined
+      );
+    }
+    return Object.is(leftRecord[key], rightRecord[key]);
+  });
+}
+
+/** Reuse unchanged keyed rows so Svelte only invalidates the touched subtree. */
+export function reuseConversationDisplayItems(
+  next: readonly ConversationDisplayItem[],
+  previous: readonly ConversationDisplayItem[]
+): ConversationDisplayItem[] {
+  if (previous.length === 0) return next.slice();
+  const previousById = new Map(previous.map((item) => [item.itemId, item]));
+  return next.map((item) => {
+    const prior = previousById.get(item.itemId);
+    return prior && sameDisplayItem(item, prior) ? prior : item;
+  });
 }
 
 function eventIdentity(event: ConversationEvent, payload: StringRecord, prefix: string): string {
@@ -599,8 +643,11 @@ export function conversationEventAppendsItemContent(event: ConversationEvent): b
 export function mergeAgentItem(items: readonly AgentItem[], incoming: AgentItem, append: boolean): AgentItem[] {
   const index = items.findIndex((item) => item.id === incoming.id);
   if (index < 0) return [...items, incoming];
+  const existing = items[index];
+  const merged = mergedAgentItem(existing, incoming, append);
+  if (mergeLeftItemUnchanged(existing, merged)) return items as AgentItem[];
   const next = items.slice();
-  next[index] = mergedAgentItem(items[index], incoming, append);
+  next[index] = merged;
   return next;
 }
 
@@ -620,12 +667,30 @@ function mergedAgentItem(existing: AgentItem, incoming: AgentItem, append: boole
         ...incoming.content.slice(1)
       ];
   }
-  const providerMetadata = {
+  const providerMetadata: Record<string, AgentConfigValue> = {
     ...(existing.providerMetadata ?? {}),
-    ...(incoming.providerMetadata ?? {}),
-    startedAtMs: existing.providerMetadata?.startedAtMs ?? incoming.providerMetadata?.startedAtMs ?? 0
+    ...(incoming.providerMetadata ?? {})
   };
+  const startedAtMs = existing.providerMetadata?.startedAtMs ?? incoming.providerMetadata?.startedAtMs;
+  if (startedAtMs !== undefined) providerMetadata.startedAtMs = startedAtMs;
   return { ...existing, ...incoming, content, providerMetadata };
+}
+
+/** Whether a merge left the item exactly as it was, so callers can keep the
+ * previous array and every identity that hangs off it. */
+function mergeLeftItemUnchanged(existing: AgentItem, merged: AgentItem): boolean {
+  if (existing.type !== merged.type || existing.turnId !== merged.turnId) return false;
+  if (existing.content !== merged.content) {
+    if (existing.content.length !== merged.content.length) return false;
+    for (let contentIndex = 0; contentIndex < existing.content.length; contentIndex += 1) {
+      const previous = existing.content[contentIndex];
+      const candidate = merged.content[contentIndex];
+      if (previous.channel !== candidate.channel
+        || previous.text !== candidate.text
+        || previous.mimeType !== candidate.mimeType) return false;
+    }
+  }
+  return shallowRecordEqual(existing.providerMetadata, merged.providerMetadata);
 }
 
 /** Snapshot replay owns a private, unpublished array, so it can update by an

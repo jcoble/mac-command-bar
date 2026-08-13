@@ -2249,6 +2249,17 @@ async fn pump_inbound(
                         break 'update reached_quiescence;
                     }
                     let replay = is_replay_session_update(&params);
+                    if replay
+                        && session.native_session_mode == AgentNativeSessionMode::Resume
+                        && session.store.has_display_events(&session.owned_id).unwrap_or_else(|error| {
+                            crate::debug_log::stderr_log!(
+                                "Could not inspect existing conversation history: {error}"
+                            );
+                            false
+                        })
+                    {
+                        break 'update reached_quiescence;
+                    }
                     if session.active_turn_id.is_none() && !replay {
                         crate::debug_log::stderr_log!(
                             "[debug] Dropping ACP session update without an active conversation turn"
@@ -4516,6 +4527,70 @@ mod tests {
         assert_eq!(log.matches(r#""method":"session/new""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/resume""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/prompt""#).count(), 1);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resume_does_not_append_provider_history_to_an_existing_journal() {
+        let fixture = fixture_manager_with_acp_session("replay_on_resume").await;
+        {
+            let mut sessions = fixture
+                .manager
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::AssistantMessage {
+                    item_id: "live-message".into(),
+                    text: "canonical answer".into(),
+                    completed: true,
+                },
+            )
+            .unwrap();
+        }
+        fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+
+        let connection = fixture
+            .manager
+            .ensure_async(request(
+                fixture.root.to_str().unwrap(),
+                &fixture.owned_id,
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .expect("ensure suspended session");
+        fixture
+            .manager
+            .activate(&fixture.owned_id, connection.generation)
+            .await
+            .expect("resume suspended session");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap();
+        let item_ids = snapshot
+            .events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                AgentConversationPayload::UserMessage { item_id, .. }
+                | AgentConversationPayload::AssistantDelta { item_id, .. }
+                | AgentConversationPayload::AssistantMessage { item_id, .. }
+                | AgentConversationPayload::Tool { item_id, .. } => Some(item_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(item_ids, ["live-message"]);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();

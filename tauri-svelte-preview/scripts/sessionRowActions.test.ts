@@ -407,8 +407,8 @@ assert.match(
 );
 assert.match(
   row,
-  /if \(!onScreen \|\| !hasAge\) return;/,
-  'a row off screen holds no clock at all'
+  /if \(TICKER_DIAG_DISABLED \|\| !onScreen \|\| !hasAge\) return;/,
+  'a row off screen holds no clock at all, and the ticker stays behind its off switch'
 );
 
 // --- motion: plenty of it, and all of it ends ------------------------------
