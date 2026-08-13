@@ -23,6 +23,7 @@ pub enum AgentRuntimeState {
     WaitingApproval,
     WaitingInput,
     Interrupting,
+    Suspended,
     Failed,
     Closed,
 }
@@ -583,6 +584,7 @@ pub struct AgentConversationConnection {
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationSnapshot {
     pub connection: AgentConversationConnection,
+    pub suspended: bool,
     pub last_sequence: u64,
     pub events: Vec<AgentConversationEvent>,
 }

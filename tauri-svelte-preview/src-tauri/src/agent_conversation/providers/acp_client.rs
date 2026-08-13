@@ -1060,7 +1060,12 @@ while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
-    *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id" ;;
+	  *'"method":"initialize"'*)
+	    if [ "${{fixture#suspend_}}" != "$fixture" ] && [ "$fixture" != "suspend_no_resume" ]; then
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
+	    else
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
+	    fi ;;
     *'"method":"session/new"'*)
       if [ "$fixture" = "command_capture" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","availableCommands":[{{"name":"initial","description":"Initial command","input":{{"hint":"path"}}}}]}}}}\n' "$id"
@@ -1080,11 +1085,14 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"unmarked-update","content":{{"type":"text","text":"Must stay dropped"}},"turnId":"history-turn-2"}}}}}}\n'
       fi
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"loaded-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
-    *'"method":"session/resume"'*)
-      if [ "$fixture" = "replay_on_resume" ]; then
-        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn"}}}}}}\n'
-      fi
-	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
+	    *'"method":"session/resume"'*)
+	      if [ "$fixture" = "replay_on_resume" ]; then
+	        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn"}}}}}}\n'
+	      elif [ "${{fixture#suspend_}}" != "$fixture" ]; then
+	        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id"
+	        continue
+	      fi
+		      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"resumed-session","_meta":{{"model":"gpt-5.6-sol","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"high","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" ;;
     *'"method":"session/prompt"'*)
       turn=$(printf '%s\n' "$line" | sed -n 's/.*"turnId":"\([^"]*\)".*/\1/p')
       if [ -z "$turn" ]; then turn="turn-1"; fi

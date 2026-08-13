@@ -5582,6 +5582,7 @@ fn main() {
             conversation_events.set_emitter(Arc::new(move |event| {
                 let _ = handle.emit("agent-conversation-event", event);
             }));
+            conversation_events.start_idle_suspension_task();
             // Every time a language server starts, finishes reading a project, or stops,
             // tell the editor straight away. Without this the editor would have to ask
             // over and over to notice, which is what it used to do.

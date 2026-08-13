@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +33,9 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 const SNAPSHOT_EVENT_CAP: usize = 2_000;
 const JOURNAL_EVENT_CAP: usize = 10_000;
+const IDLE_RUNTIME_SUSPEND_TICK: std::time::Duration = std::time::Duration::from_secs(60);
+// Ten minutes keeps recently viewed sessions warm while reclaiming long-idle adapter processes.
+const IDLE_RUNTIME_SUSPEND_AFTER_MS: u128 = 10 * 60 * 1_000;
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 const CLAUDE_SESSION_EFFORTS: [(&str, &str); 4] = [
     ("low", "4000"),
@@ -110,6 +114,8 @@ pub struct ManagedAgentSession {
     connection: AgentConversationConnection,
     frontend_events: VecDeque<AgentConversationEvent>,
     journal: AgentEventJournal,
+    last_activity_ms: u128,
+    suspending: bool,
 }
 
 pub(crate) struct HandoffContext {
@@ -124,6 +130,8 @@ pub struct AgentRuntimeManager {
     providers: Arc<ProviderRegistry>,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+    active_owned_id: Arc<Mutex<Option<String>>>,
+    idle_suspend_task_started: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,7 +155,31 @@ impl AgentRuntimeManager {
             providers: Arc::new(providers),
             emitter: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
+            active_owned_id: Arc::new(Mutex::new(None)),
+            idle_suspend_task_started: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn start_idle_suspension_task(&self) {
+        if self
+            .idle_suspend_task_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let start = tokio::time::Instant::now() + IDLE_RUNTIME_SUSPEND_TICK;
+            let mut interval = tokio::time::interval_at(start, IDLE_RUNTIME_SUSPEND_TICK);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if let Err(error) = manager.suspend_idle_sessions_at(timestamp_millis()).await {
+                    crate::debug_log::stderr_log!("Idle runtime suspension failed: {error}");
+                }
+            }
+        });
     }
 
     pub fn providers(&self) -> &ProviderRegistry {
@@ -330,6 +362,8 @@ impl AgentRuntimeManager {
                 connection: connection.clone(),
                 frontend_events: VecDeque::new(),
                 journal: AgentEventJournal::new(JOURNAL_EVENT_CAP),
+                last_activity_ms: timestamp_millis(),
+                suspending: false,
             },
         );
         Ok((connection, previous_runtime))
@@ -342,12 +376,24 @@ impl AgentRuntimeManager {
     ) -> Result<AgentConversationConnection, String> {
         let activation_lock = self.activation_lock(owned_id)?;
         let _activation = activation_lock.lock().await;
-        let (provider, cwd, native_session_id, native_session_mode, reasoning_effort) = {
-            let sessions = self
+        *self
+            .active_owned_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owned_id.to_string());
+        let (
+            provider,
+            cwd,
+            native_session_id,
+            native_session_mode,
+            reasoning_effort,
+            was_suspended,
+        ) = {
+            let mut sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session(&sessions, owned_id, generation)?;
+            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            session.last_activity_ms = timestamp_millis();
             if session.runtime.is_some() {
                 if session.connection.state == ConversationConnectionState::Connected
                     && session.state != AgentRuntimeState::Failed
@@ -365,6 +411,7 @@ impl AgentRuntimeManager {
                 session.native_session_id.clone(),
                 session.native_session_mode,
                 session.spawn_reasoning_effort.clone(),
+                session.state == AgentRuntimeState::Suspended,
             )
         };
         let manifest = self.providers.manifest(provider)?;
@@ -443,6 +490,16 @@ impl AgentRuntimeManager {
         session.runtime = Some(runtime);
         session.transport = Some(Arc::clone(&transport));
         session.ordered_events = Some(ordered_tx);
+        if was_suspended {
+            record_payload_for_session_and_dispatch(
+                session,
+                &self.emitter,
+                AgentConversationPayload::Connection {
+                    state: ConversationConnectionState::Connected,
+                    native_session_id: session.native_session_id.clone(),
+                },
+            )?;
+        }
         let connection = session.connection.clone();
         drop(sessions);
         spawn_inbound_pump(
@@ -870,9 +927,108 @@ impl AgentRuntimeManager {
             .get(owned_id)
             .map(|session| AgentConversationSnapshot {
                 connection: session.connection.clone(),
+                suspended: session.state == AgentRuntimeState::Suspended,
                 last_sequence: session.next_sequence.saturating_sub(1),
                 events: session.frontend_events.iter().cloned().collect(),
             }))
+    }
+
+    pub async fn suspend_idle_sessions_at(&self, now_ms: u128) -> Result<Vec<String>, String> {
+        let active_owned_id = self
+            .active_owned_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let candidates = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions
+                .values()
+                .filter(|session| {
+                    idle_session_can_suspend(session, active_owned_id.as_deref(), now_ms)
+                })
+                .map(|session| (session.owned_id.clone(), session.generation))
+                .collect::<Vec<_>>()
+        };
+        let mut suspended = Vec::new();
+        for (owned_id, generation) in candidates {
+            let activation_lock = self.activation_lock(&owned_id)?;
+            let _activation = activation_lock.lock().await;
+            if self.suspend_if_idle(&owned_id, generation, now_ms).await? {
+                suspended.push(owned_id);
+            }
+        }
+        Ok(suspended)
+    }
+
+    async fn suspend_if_idle(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        now_ms: u128,
+    ) -> Result<bool, String> {
+        let active_owned_id = self
+            .active_owned_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let (runtime, transport, ordered_events) = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            if !idle_session_can_suspend(session, active_owned_id.as_deref(), now_ms) {
+                return Ok(false);
+            }
+            let Some(runtime) = session.runtime.take() else {
+                return Ok(false);
+            };
+            session.suspending = true;
+            (
+                runtime,
+                session.transport.take(),
+                session.ordered_events.take(),
+            )
+        };
+
+        let detach_result = {
+            let mut runtime_guard = runtime.lock().await;
+            runtime_guard.detach_session().await
+        };
+        if let Err(error) = detach_result {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
+                session.suspending = false;
+                session.runtime = Some(runtime);
+                session.transport = transport;
+                session.ordered_events = ordered_events;
+            }
+            return Err(error.to_string());
+        }
+
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = current_session_mut(&mut sessions, owned_id, generation)?;
+        session.suspending = false;
+        session.state = AgentRuntimeState::Suspended;
+        session.native_session_mode = AgentNativeSessionMode::Resume;
+        record_payload_for_session_and_dispatch(
+            session,
+            &self.emitter,
+            AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Disconnected,
+                native_session_id: session.native_session_id.clone(),
+            },
+        )?;
+        Ok(true)
     }
 
     pub async fn close(&self, owned_id: &str) -> Result<bool, String> {
@@ -1266,6 +1422,7 @@ fn record_payload_for_session(
         session.capabilities.commands = available_commands.clone();
     }
     let timestamp_ms = timestamp_millis();
+    session.last_activity_ms = timestamp_ms;
     let frontend_event = AgentConversationEvent {
         owned_id: session.owned_id.clone(),
         provider: session.provider,
@@ -1573,6 +1730,9 @@ async fn pump_inbound(
                 let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
                     return;
                 };
+                if session.suspending {
+                    return;
+                }
                 if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
                     let pending_permissions =
                         session.permission_requests.drain().collect::<Vec<_>>();
@@ -2471,6 +2631,25 @@ fn timestamp_millis() -> u128 {
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
 }
+
+fn idle_session_can_suspend(
+    session: &ManagedAgentSession,
+    active_owned_id: Option<&str>,
+    now_ms: u128,
+) -> bool {
+    active_owned_id != Some(session.owned_id.as_str())
+        && session.runtime.is_some()
+        && !session.suspending
+        && session.native_session_id.is_some()
+        && session.capabilities.session.resume
+        && session.state == AgentRuntimeState::Ready
+        && session.active_turn_id.is_none()
+        && !session.prompt_once_active
+        && session.permission_requests.is_empty()
+        && session.user_input_requests.is_empty()
+        && session.writer_lease_transition.is_none()
+        && now_ms.saturating_sub(session.last_activity_ms) > IDLE_RUNTIME_SUSPEND_AFTER_MS
+}
 fn required_id(value: &str, label: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
@@ -3043,6 +3222,279 @@ mod tests {
             1,
             "one pump must emit one update"
         );
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    fn age_session_for_suspend(fixture: &FixtureManager, active_owned_id: &str) {
+        *fixture.manager.active_owned_id.lock().unwrap() = Some(active_owned_id.to_string());
+        fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&fixture.owned_id)
+            .unwrap()
+            .last_activity_ms = timestamp_millis()
+            .saturating_sub(IDLE_RUNTIME_SUSPEND_AFTER_MS)
+            .saturating_sub(1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspend_skips_active_session() {
+        let fixture = fixture_manager_with_acp_session("suspend_active").await;
+        age_session_for_suspend(&fixture, &fixture.owned_id);
+
+        assert!(fixture
+            .manager
+            .suspend_idle_sessions_at(timestamp_millis())
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(fixture.manager.resource_roots().len(), 1);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspend_skips_running_turn() {
+        let fixture = fixture_manager_with_acp_session("suspend_running").await;
+        age_session_for_suspend(&fixture, "another-session");
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            session.active_turn_id = Some("turn-running".into());
+            session.state = AgentRuntimeState::Working;
+        }
+
+        assert!(fixture
+            .manager
+            .suspend_idle_sessions_at(timestamp_millis())
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(fixture.manager.resource_roots().len(), 1);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspend_skips_pending_permission() {
+        let fixture = fixture_manager_with_acp_session("suspend_permission").await;
+        age_session_for_suspend(&fixture, "another-session");
+        fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&fixture.owned_id)
+            .unwrap()
+            .permission_requests
+            .insert(
+                "permission-1".into(),
+                PendingPermission {
+                    wire_id: json!(1),
+                    options: Vec::new(),
+                    summary: "Pending permission".into(),
+                },
+            );
+
+        assert!(fixture
+            .manager
+            .suspend_idle_sessions_at(timestamp_millis())
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(fixture.manager.resource_roots().len(), 1);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspend_skips_pending_user_input() {
+        let fixture = fixture_manager_with_acp_session("suspend_input").await;
+        age_session_for_suspend(&fixture, "another-session");
+        fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&fixture.owned_id)
+            .unwrap()
+            .user_input_requests
+            .insert("input-1".into(), PendingUserInput { wire_id: json!(1) });
+
+        assert!(fixture
+            .manager
+            .suspend_idle_sessions_at(timestamp_millis())
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(fixture.manager.resource_roots().len(), 1);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspend_closes_runtime_but_keeps_record_and_native_id() {
+        let fixture = fixture_manager_with_acp_session("suspend_runtime").await;
+        age_session_for_suspend(&fixture, "another-session");
+        let pid = fixture.manager.resource_roots()[0].pid;
+        let native_session_id = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap()
+            .connection
+            .native_session_id
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .manager
+                .suspend_idle_sessions_at(timestamp_millis())
+                .await
+                .unwrap(),
+            [fixture.owned_id.clone()]
+        );
+        wait_until(|| !process_is_alive(pid)).await;
+        assert!(fixture.manager.resource_roots().is_empty());
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap();
+        assert!(snapshot.suspended);
+        assert_eq!(
+            snapshot.connection.native_session_id.as_deref(),
+            Some(native_session_id.as_str())
+        );
+        {
+            let sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get(&fixture.owned_id).unwrap();
+            assert_eq!(session.state, AgentRuntimeState::Suspended);
+            assert_eq!(session.owner, AgentExecutionOwner::Structured);
+        }
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ensure_after_suspend_resumes_with_same_native_session_id() {
+        let fixture = fixture_manager_with_acp_session("suspend_resume").await;
+        age_session_for_suspend(&fixture, "another-session");
+        let native_session_id = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap()
+            .connection
+            .native_session_id
+            .unwrap();
+        fixture
+            .manager
+            .suspend_idle_sessions_at(timestamp_millis())
+            .await
+            .unwrap();
+
+        let connection = fixture
+            .manager
+            .ensure_async(request(
+                fixture.root.to_str().unwrap(),
+                &fixture.owned_id,
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .expect("ensure suspended session");
+        let resumed = fixture
+            .manager
+            .activate(&fixture.owned_id, connection.generation)
+            .await
+            .expect("resume suspended session");
+        assert_eq!(
+            resumed.native_session_id.as_deref(),
+            Some(native_session_id.as_str())
+        );
+        assert_eq!(resumed.generation, fixture.generation);
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("after suspend"),
+            )
+            .await
+            .expect("prompt after resume");
+        wait_until(|| {
+            fixture
+                .manager
+                .sessions
+                .lock()
+                .unwrap()
+                .get(&fixture.owned_id)
+                .is_some_and(|session| session.active_turn_id.is_none())
+        })
+        .await;
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap();
+        assert!(!snapshot.suspended);
+        assert_eq!(
+            snapshot.connection.state,
+            ConversationConnectionState::Connected
+        );
+        let connection_states = snapshot
+            .events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                AgentConversationPayload::Connection { state, .. } => Some(*state),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            connection_states,
+            [
+                ConversationConnectionState::Disconnected,
+                ConversationConnectionState::Connected
+            ]
+        );
+        let log = fs::read_to_string(fixture.root.join("suspend_resume.jsonl")).unwrap();
+        assert_eq!(log.matches(r#""method":"session/new""#).count(), 1);
+        assert_eq!(log.matches(r#""method":"session/resume""#).count(), 1);
+        assert_eq!(log.matches(r#""method":"session/prompt""#).count(), 1);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn suspend_skips_provider_without_resume_capability() {
+        let fixture = fixture_manager_with_acp_session("suspend_no_resume").await;
+        age_session_for_suspend(&fixture, "another-session");
+        assert!(
+            !fixture
+                .manager
+                .capabilities(&fixture.owned_id, fixture.generation)
+                .unwrap()
+                .session
+                .resume
+        );
+
+        assert!(fixture
+            .manager
+            .suspend_idle_sessions_at(timestamp_millis())
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(fixture.manager.resource_roots().len(), 1);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
