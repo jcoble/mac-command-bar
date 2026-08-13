@@ -27,7 +27,7 @@
     annotating: boolean;
     annotations: readonly SessionBrowserAnnotation[];
     onSave(rect: SessionBrowserRect, comment: string): void;
-    onRemove(id: string): void;
+    onRemove(id: number): void;
   }
 
   let { annotating, annotations, onSave, onRemove }: Props = $props();

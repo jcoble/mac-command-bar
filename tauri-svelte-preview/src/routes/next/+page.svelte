@@ -34,7 +34,10 @@
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import RunButton from '$lib/shell/components/run/RunButton.svelte';
   import SessionBrowserButton from '$lib/shell/browser/SessionBrowserButton.svelte';
-  import { openSessionBrowserOverlay } from '$lib/shell/browser/sessionBrowserState.svelte.ts';
+  import {
+    loadSessionBrowserAnnotations,
+    openSessionBrowserOverlay
+  } from '$lib/shell/browser/sessionBrowserState.svelte.ts';
   import SessionLibraryWorkspace from '$lib/shell/sessionLibrary/SessionLibraryWorkspace.svelte';
   import WorkflowControlCenter from '$lib/shell/components/workflows/WorkflowControlCenter.svelte';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
@@ -641,6 +644,13 @@
     }
     setActiveOwned(ownedId);
     service?.show(ownedId);
+    if (switching) {
+      try {
+        await loadSessionBrowserAnnotations(ownedId);
+      } catch (error) {
+        rail.error = `could not load session annotations: ${describeError(error)}`;
+      }
+    }
     // Point the file tree, the context cards and any tab the user has already
     // opened at this session's project. Ignored while start-up is still
     // re-attaching sessions, so a reload still loads nothing on its own.

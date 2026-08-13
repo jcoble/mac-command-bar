@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mcb_core::session_store::{EventRow, SessionRow, SessionStore};
+use mcb_core::session_store::{AnnotationRow, EventRow, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
@@ -315,6 +315,37 @@ impl AgentRuntimeManager {
 
     pub fn providers(&self) -> &ProviderRegistry {
         &self.providers
+    }
+
+    pub fn add_session_annotation(
+        &self,
+        owned_id: &str,
+        url: &str,
+        rect_json: &str,
+        note: &str,
+    ) -> Result<AnnotationRow, String> {
+        let id = self
+            .store
+            .add_annotation(owned_id, url, rect_json, note)
+            .map_err(|error| error.to_string())?;
+        self.store
+            .list_annotations(owned_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|annotation| annotation.id == id)
+            .ok_or_else(|| "The saved session annotation was not found".to_string())
+    }
+
+    pub fn list_session_annotations(&self, owned_id: &str) -> Result<Vec<AnnotationRow>, String> {
+        self.store
+            .list_annotations(owned_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn delete_session_annotation(&self, id: i64) -> Result<(), String> {
+        self.store
+            .delete_annotation(id)
+            .map_err(|error| error.to_string())
     }
 
     pub fn set_emitter(&self, emitter: ConversationEmitter) {
@@ -4161,6 +4192,41 @@ mod tests {
                 .suspended
         );
         recovered.close(&connection.owned_id).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn session_annotations_survive_manager_restart() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let owned_id = "owned-annotation-restart";
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                owned_id,
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap();
+        let saved = manager
+            .add_session_annotation(
+                owned_id,
+                "https://example.test/restart",
+                r#"{"x":10,"y":20,"width":100,"height":50}"#,
+                "Keep this note",
+            )
+            .unwrap();
+        drop(manager);
+
+        let restarted = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        let annotations = restarted.list_session_annotations(owned_id).unwrap();
+        assert_eq!(annotations, [saved.clone()]);
+
+        restarted.delete_session_annotation(saved.id).unwrap();
+        assert!(restarted
+            .list_session_annotations(owned_id)
+            .unwrap()
+            .is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 

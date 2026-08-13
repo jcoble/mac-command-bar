@@ -143,7 +143,21 @@
   }
 
   function saveAnnotation(rect: SessionBrowserRect, comment: string): void {
-    addSessionBrowserAnnotation(sessionId, { rect, comment });
+    void addSessionBrowserAnnotation(sessionId, { rect, comment }).catch((error) => {
+      attachmentError = error instanceof Error ? error.message : String(error);
+    });
+  }
+
+  function removeAnnotation(id: number): void {
+    void removeSessionBrowserAnnotation(sessionId, id).catch((error) => {
+      attachmentError = error instanceof Error ? error.message : String(error);
+    });
+  }
+
+  function clearAnnotations(): void {
+    void clearSessionBrowserAnnotations(sessionId).catch((error) => {
+      attachmentError = error instanceof Error ? error.message : String(error);
+    });
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -160,11 +174,16 @@
     setConversationDraft(sessionId, '');
     try {
       await sendStructuredMessage(sessionId, message, session?.ptySessionId);
-      clearSessionBrowserAnnotations(sessionId);
     } catch {
       // Put the draft back so nothing typed over a page is lost. The notes stay
       // where they are, which is what lets the send be tried again.
       setConversationDraft(sessionId, conversation.draft);
+      return;
+    }
+    try {
+      await clearSessionBrowserAnnotations(sessionId);
+    } catch (error) {
+      attachmentError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -327,7 +346,7 @@
         </span>
         <IconButton
           label="Discard every annotation"
-          onclick={() => clearSessionBrowserAnnotations(sessionId)}
+          onclick={clearAnnotations}
         >
           <Trash2 aria-hidden="true" />
         </IconButton>
@@ -378,7 +397,7 @@
         annotating={view.annotating}
         annotations={view.annotations}
         onSave={saveAnnotation}
-        onRemove={(id) => removeSessionBrowserAnnotation(sessionId, id)}
+        onRemove={removeAnnotation}
       />
       {#if conversation && session}
         <ConversationComposer

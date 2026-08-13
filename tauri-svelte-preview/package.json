@@ -12,7 +12,7 @@
     "check:rust": "RUSTFLAGS=\"-D warnings\" cargo check --manifest-path src-tauri/Cargo.toml",
     "check:svelte": "svelte-kit sync && node scripts/checkSvelteNext.mjs",
     "orch:event": "node scripts/orchestrationEvent.mjs",
-    "test:session-browser-state": "node --experimental-strip-types scripts/sessionBrowserState.test.mjs",
+    "test:session-browser-state": "node --experimental-strip-types scripts/sessionBrowserState.test.ts",
     "test:paste-cleanup": "node --experimental-strip-types scripts/pasteCleanup.test.mjs",
     "test:agent-session-focus": "node --experimental-strip-types scripts/agentSessionFocus.test.mjs",
     "test:agent-conversation-protocol": "node --experimental-strip-types scripts/agentConversationProtocol.test.mjs",

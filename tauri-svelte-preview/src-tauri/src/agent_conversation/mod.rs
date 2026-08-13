@@ -11,6 +11,7 @@ pub mod terminal_projection;
 mod transcript;
 
 use manager::AgentRuntimeManager;
+use mcb_core::session_store::AnnotationRow;
 use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
@@ -19,6 +20,61 @@ use protocol::{
     RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
     SetAgentConversationConfigRequest, StopAgentConversationTurnRequest,
 };
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationSessionAnnotation {
+    id: i64,
+    owned_id: String,
+    url: String,
+    rect_json: String,
+    note: String,
+    created_at_ms: i64,
+}
+
+impl From<AnnotationRow> for AgentConversationSessionAnnotation {
+    fn from(row: AnnotationRow) -> Self {
+        Self {
+            id: row.id,
+            owned_id: row.owned_id,
+            url: row.url,
+            rect_json: row.rect_json,
+            note: row.note,
+            created_at_ms: row.created_at_ms,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn agent_conversation_add_session_annotation(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    url: String,
+    rect_json: String,
+    note: String,
+) -> Result<AgentConversationSessionAnnotation, String> {
+    manager
+        .add_session_annotation(&owned_id, &url, &rect_json, &note)
+        .map(Into::into)
+}
+
+#[tauri::command]
+pub fn agent_conversation_list_session_annotations(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> Result<Vec<AgentConversationSessionAnnotation>, String> {
+    manager
+        .list_session_annotations(&owned_id)
+        .map(|annotations| annotations.into_iter().map(Into::into).collect())
+}
+
+#[tauri::command]
+pub fn agent_conversation_delete_session_annotation(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    id: i64,
+) -> Result<(), String> {
+    manager.delete_session_annotation(id)
+}
 
 #[tauri::command]
 pub async fn ensure_agent_conversation(
