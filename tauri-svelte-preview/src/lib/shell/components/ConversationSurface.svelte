@@ -43,8 +43,6 @@
     type ConversationCommand
   } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import {
-    displayItemFromApproval,
-    displayItemFromInput,
     typedConversationTimeline,
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
@@ -94,14 +92,13 @@
     if (conversation.tasks.length && !typedKinds.has('tasks')) {
       items.push({ kind: 'tasks', itemId: 'tasks:current', title: 'Tasks', tasks: conversation.tasks, timestampMs: now });
     }
-    for (const request of Object.values(conversation.pendingApprovals)) {
-      if (!items.some((item) => item.itemId === `approval:${request.requestId}`)) items.push(displayItemFromApproval(request, now));
-    }
-    for (const request of Object.values(conversation.pendingInputs)) {
-      if (!items.some((item) => item.itemId === `input:${request.requestId}`)) items.push(displayItemFromInput(request, now));
-    }
+    // Live requests render inline above the composer, keeping their response
+    // controls attached to the prompt. Resolved requests remain in the
+    // normalized transcript returned above.
     return items.sort((left, right) => left.timestampMs - right.timestampMs);
   });
+  const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
+  const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
   const remainingContext = $derived(
     conversation?.provider === 'codex'
@@ -349,6 +346,9 @@
           configError={conversation.agentConfigError}
           commands={commandCatalog}
           contextRemainingPercent={remainingContext}
+          pendingApproval={pendingApprovals[0] ?? null}
+          pendingApprovalCount={pendingApprovals.length}
+          pendingInputs={pendingInputs}
           {attachmentError}
           onDraftChange={(value) => setConversationDraft(active.ownedId, value)}
           onSend={send}
@@ -357,6 +357,8 @@
           onDropFiles={dropFiles}
           onRemoveAttachment={removeAttachment}
           onCommandSelected={selectCommand}
+          onApprovalDecision={onApprovalDecision}
+          onInputSubmit={onInputSubmit}
           onConfigChange={(optionId, value) => void changeConfig(optionId, value)}
         />
       {:else}<div class="read-only-note" data-testid="conversation-read-only-note">Read-only sub-agent transcript</div>{/if}

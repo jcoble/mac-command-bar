@@ -53,9 +53,9 @@
 {/snippet}
 
 <style>
-  article{max-width:760px;user-select:text;-webkit-user-select:text}
-  .turn-label{margin-bottom:7px;color:var(--color-text-2);font-size:12px;font-weight:650;letter-spacing:.04em;text-transform:uppercase}
-  .turn-body{font-size:14px;line-height:1.65}
+  article{max-width:790px;user-select:text;-webkit-user-select:text}
+  .turn-label{margin-bottom:7px;color:var(--color-text-2);font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+  .turn-body{font-size:14px;line-height:1.62}
 
   /* Paragraphs and headings: one rhythm, 12px between blocks, and a heading
      that has more room above it than below so it reads as owning what follows. */
@@ -78,8 +78,8 @@
   .file-link{border:0;background:transparent;color:var(--color-accent);padding:0;text-decoration:underline;text-underline-offset:2px;font:inherit;cursor:pointer}
   .inline-code{padding:1.5px 5px;border-radius:5px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);background:color-mix(in srgb,var(--color-surface) 55%,var(--color-bg));font:13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}
 
-  .user{align-self:flex-end;max-width:min(680px,88%);padding:12px 15px;border-radius:16px;border:1px solid color-mix(in srgb,var(--color-accent) 16%,transparent);background:color-mix(in srgb,var(--color-surface) 82%,var(--color-accent) 18%)}
-  .user .turn-label{color:color-mix(in srgb,var(--color-accent) 70%,var(--color-text) 30%)}
+  .user{align-self:flex-end;max-width:min(690px,90%);margin-left:auto;padding:12px 15px;border:1px solid color-mix(in srgb,var(--color-accent) 18%,var(--color-border));border-radius:16px 16px 5px 16px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-accent) 22%)}
+  .user .turn-label{color:color-mix(in srgb,var(--color-accent) 72%,var(--color-text) 28%)}
 
   .table-scroll{overflow:auto;margin-bottom:12px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:8px}
   .table-scroll table{border-collapse:collapse;min-width:100%;font-size:13px}
@@ -88,8 +88,4 @@
   .table-scroll th{background:color-mix(in srgb,var(--color-surface) 65%,transparent);font-weight:620;white-space:nowrap}
   .turn-body input{margin-right:7px;accent-color:var(--color-accent)}
 
-  @media (prefers-reduced-motion:no-preference){
-    article{animation:message-in .14s ease-out both}
-    @keyframes message-in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
-  }
 </style>

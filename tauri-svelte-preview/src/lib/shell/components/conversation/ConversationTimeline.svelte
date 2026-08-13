@@ -89,15 +89,12 @@
 
 <style>
   .timeline-wrap{position:relative;flex:1;min-height:0}
-  .timeline-scroll{height:100%;overflow:auto;padding:34px max(28px,calc((100% - 820px)/2)) 220px;scrollbar-gutter:stable}
-  /* 16px between items; a new turn adds 8px of its own (see TimelineItem). */
-  .timeline-list{display:flex;flex-direction:column;gap:16px;min-height:1px}
-  .virtual-spacer{flex:none}
+  .timeline-scroll{height:100%;overflow:auto;padding:30px 24px 206px;scrollbar-gutter:stable}
+  .timeline-list{display:flex;flex-direction:column;gap:18px;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .virtual-spacer{flex:none;width:min(820px,100%);margin:0 auto}
   .empty{display:grid;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
-  .jump-latest{position:absolute;right:22px;bottom:192px;border:1px solid color-mix(in srgb,var(--color-border) 60%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 92%,var(--color-accent) 8%);color:inherit;padding:7px 12px;font-size:13px;box-shadow:var(--shadow-sm)}
+  .jump-latest{position:absolute;right:24px;bottom:188px;min-height:28px;padding:6px 12px;border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);font-size:13px;box-shadow:var(--shadow-sm);cursor:pointer}
   .jump-latest:hover{background:var(--color-hover)}
   .jump-latest:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
-  @media (prefers-reduced-motion:no-preference){
-    .jump-latest{transition:background .14s ease,box-shadow .14s ease}
-  }
+  @media (prefers-reduced-motion:no-preference){.jump-latest{transition:background .14s ease,box-shadow .14s ease}}
 </style>
