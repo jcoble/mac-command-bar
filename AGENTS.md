@@ -8,10 +8,14 @@ slow the app down or add idle resource cost.
 
 Rules for all work in this repo:
 
-- **No looping CSS animations at rest.** Pulsing dots, shimmer, spinner loops, and animated gradients
-  burn CPU/GPU continuously. Animations run only during a transition, then stop. Anything that must
-  loop (a working indicator) pauses when offscreen or when its panel is hidden
-  (`content-visibility`, IntersectionObserver, or removing the class).
+- **Animations are welcome — every one must END.** Finite, interaction-driven animation (hover
+  fades, menu pops, 150-250ms slides on transform/opacity) costs nothing once finished; use it
+  generously to make the app feel alive. What is forbidden is animation without an end: infinite
+  time-based loops at rest (pulsing dots, shimmer, spinner loops, animated gradients) force the
+  compositor to draw every frame forever. A loop is allowed only while tied to real activity (a
+  working indicator during an actual turn) and pauses when offscreen or hidden
+  (`content-visibility`, IntersectionObserver, or removing the class). Animate transform/opacity,
+  never layout properties (width/height/top).
 - **No idle timers doing visual work.** Intervals that re-render (sparklines, tickers) must be
   single-flight, scoped to the smallest component (one `<span>`, not a row), and stopped when the
   element is not visible. Prefer event-driven updates over polling.
