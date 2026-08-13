@@ -50,6 +50,14 @@ export function sessionLabel(session: Pick<OwnedSession, 'title' | 'ownedId'>): 
   return session.title || session.ownedId.slice(0, 8);
 }
 
+/** Mirror the native first-prompt title rule for the already-flowing live user
+ * message event. SQLite remains authoritative; this updates only the rail's
+ * in-memory projection without adding another event kind or backend read. */
+export function sessionTitleFromPrompt(prompt: string): string | null {
+  const firstLine = prompt.split(/\r?\n/, 1)[0]?.trim() ?? '';
+  return firstLine ? [...firstLine].slice(0, 64).join('') : null;
+}
+
 /** Split your sessions into Working and Done. The list handed in is left
  * exactly as it was; both lists come back new. */
 export function splitOwnedSessions(owned: OwnedSession[]): OwnedSplit {

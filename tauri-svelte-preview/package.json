@@ -85,7 +85,7 @@
     "test:panel-activation": "node --experimental-strip-types scripts/panelActivation.test.mjs",
     "test:session-card-model": "node --experimental-strip-types src/lib/shell/components/sessions/sessionCardModel.test.ts",
     "test:session-groups": "node --experimental-strip-types scripts/sessionGroups.test.mjs",
-    "test:session-strip": "node --experimental-strip-types scripts/sessionStrip.test.mjs",
+    "test:session-strip": "node --experimental-strip-types scripts/sessionStrip.test.ts",
     "test:session-workspaces": "node --experimental-strip-types scripts/sessionWorkspaces.test.ts",
     "test:relative-time": "node --experimental-strip-types scripts/relativeTime.test.mjs",
     "test:sidebar-views": "node --experimental-strip-types scripts/sidebarViews.test.mjs",

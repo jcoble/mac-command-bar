@@ -124,13 +124,11 @@
   }
 
   .session-card-title {
-    overflow: hidden;
     color: var(--color-text);
     font-size: 13.5px;
     font-weight: 600;
     line-height: 1.4;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
   .session-card-sub {

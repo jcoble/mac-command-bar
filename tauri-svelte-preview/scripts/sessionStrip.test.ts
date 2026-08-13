@@ -4,40 +4,64 @@ import {
   SESSIONS_COLLAPSED_KEY,
   readSessionsCollapsed,
   sessionLabel,
+  sessionTitleFromPrompt,
   splitOwnedSessions,
   stripCells,
   writeSessionsCollapsed
 } from '../src/lib/shell/sessionStrip.ts';
 import { deriveOwnedLibraryState } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
+import type { LayoutStorage } from '../src/lib/shell/layout/layoutStorage.ts';
+import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
 
-/** An owned session with only the fields these functions read. */
-function owned(ownedId, extra = {}) {
+/** A complete owned-session fixture with concise defaults. */
+function owned(ownedId: string, extra: Partial<OwnedSession> = {}): OwnedSession {
   return {
     ownedId,
     title: ownedId,
     agent: 'claude',
     viaCmux: false,
+    source: 'fresh',
+    projectPath: null,
+    cwd: '/tmp/project',
+    resumeCommand: null,
+    nativeSessionId: null,
+    ptySessionId: null,
     state: 'live',
     completedAt: null,
+    settledAt: null,
+    branch: null,
+    taskId: null,
+    pullRequest: null,
+    messageCount: null,
+    latestTurnPreview: null,
+    lastActivity: null,
     ...extra
   };
 }
 
+{
+  assert.equal(sessionTitleFromPrompt('  First line  \nsecond line'), 'First line');
+  assert.equal(sessionTitleFromPrompt(`${'é'.repeat(64)} trailing`), 'é'.repeat(64));
+  assert.equal(sessionTitleFromPrompt('   \nsecond line'), null);
+}
+
 /** A localStorage stand-in. `refuse` makes every write throw, the way a full
  * storage does. */
-function fakeStorage({ refuse = false, unreadable = false } = {}) {
-  const data = new Map();
+function fakeStorage(
+  { refuse = false, unreadable = false }: { refuse?: boolean; unreadable?: boolean } = {}
+): LayoutStorage & { data: Map<string, string> } {
+  const data = new Map<string, string>();
   return {
     data,
-    getItem(key) {
+    getItem(key: string): string | null {
       if (unreadable) throw new Error('storage is unavailable');
-      return data.has(key) ? data.get(key) : null;
+      return data.get(key) ?? null;
     },
-    setItem(key, value) {
+    setItem(key: string, value: string): void {
       if (refuse) throw new Error('quota exceeded');
       data.set(key, value);
     },
-    removeItem(key) {
+    removeItem(key: string): void {
       data.delete(key);
     }
   };
@@ -102,7 +126,11 @@ function fakeStorage({ refuse = false, unreadable = false } = {}) {
 // ── What a row is called ──────────────────────────────────────────────────
 
 {
-  assert.equal(sessionLabel(owned('x', { title: 'Fix the scanner' })), 'Fix the scanner');
+  assert.equal(
+    sessionLabel(owned('0f9c1d2e-7a4b-4c3d-9e8f-112233445566', { title: 'Stored session title' })),
+    'Stored session title',
+    'the persisted title wins over the UUID fallback'
+  );
   assert.equal(
     sessionLabel(owned('0f9c1d2e-7a4b-4c3d-9e8f-112233445566', { title: '' })),
     '0f9c1d2e',
@@ -144,8 +172,8 @@ function fakeStorage({ refuse = false, unreadable = false } = {}) {
     viaCmux: true,
     state: 'exited',
     done: false,
-    active: true,
-    });
+    active: true
+  });
   assert.equal(cells[2].done, true, 'a finished session still gets a cell, marked as done');
   assert.equal(
     cells.filter((cell) => cell.active).length,
