@@ -190,10 +190,14 @@
    * mark rather than on every tick. */
   const cadence = $derived(railElapsedCadenceFor(ageMs ?? 0, isWorking));
 
+  // Diagnostic A/B (owner request): popout and ticker off to isolate the slowdown.
+  const POPOUT_DIAG_DISABLED = true;
+  const TICKER_DIAG_DISABLED = true;
+
   // A row off screen needs no clock at all; one on screen asks for seconds only
   // while it is working or still in its first minute, and minutes after that.
   $effect(() => {
-    if (!onScreen || !hasAge) return;
+    if (TICKER_DIAG_DISABLED || !onScreen || !hasAge) return;
     const wanted = cadence;
     nowMs = Date.now();
     return watchRailElapsed((tick) => {
@@ -278,6 +282,7 @@
   }
 
   function showOverlay(event: { currentTarget: EventTarget | null }): void {
+    if (POPOUT_DIAG_DISABLED) return;
     const row = event.currentTarget;
     if (!(row instanceof HTMLElement)) return;
     clearCardTimer();
