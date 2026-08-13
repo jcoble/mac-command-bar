@@ -105,6 +105,7 @@
     "test:git-history-paging": "node --experimental-strip-types scripts/gitHistoryPaging.test.mjs",
     "test:worktree-manager": "node --experimental-strip-types scripts/worktreeManager.test.mjs",
     "test:stack-store": "node --experimental-strip-types scripts/stackStore.test.mjs",
+    "test:run-actions": "node --experimental-strip-types scripts/runActions.test.ts",
     "test:playwright-store": "node --experimental-strip-types scripts/playwrightStore.test.mjs",
     "test:new-session-flow": "node --experimental-strip-types scripts/newSessionFlow.test.mjs",
     "test:new-session-submission": "node --experimental-strip-types scripts/newSessionSubmission.test.ts",
