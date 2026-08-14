@@ -55,6 +55,7 @@ import {
   decideConversationActivation,
   generationForSend,
   sendSupportsImages,
+  sendTargetGeneration,
   shouldReviveBeforeSend
 } from './conversationActivation.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
@@ -478,7 +479,6 @@ export async function sendStructuredMessage(
   let state = getConversationSession(ownedId);
   if (!state) return;
   if (!text.trim() && state.attachments.length === 0) return;
-  let expectedGeneration = state.generation;
   setConversationSending(ownedId, true);
   try {
     let terminalSessionId = ptySessionId;
@@ -526,7 +526,6 @@ export async function sendStructuredMessage(
         throw new Error('The ensured conversation is not current');
       }
       state = revived;
-      expectedGeneration = nextGeneration;
       terminalSessionId = null;
     }
 
@@ -568,11 +567,9 @@ export async function sendStructuredMessage(
       ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY
     );
     const validatedState = getConversationSession(ownedId);
-    const validatedGeneration = validatedState?.generation === expectedGeneration
-      ? expectedGeneration
-      : null;
+    const validatedGeneration = sendTargetGeneration(validatedState);
     if (validatedGeneration === null || !validatedState) {
-      throw new Error('The conversation generation changed before sending');
+      throw new Error('This conversation is closed, so the message was not sent');
     }
     state = validatedState;
     if (owned) {

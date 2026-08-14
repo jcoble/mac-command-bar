@@ -155,6 +155,51 @@ assert.deepEqual(
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
 
+// A send failure belongs to the session it happened in. The conversation
+// surface is mounted once for the whole shell, so a failure held there was
+// painted under every session and outlived the send that fixed it.
+{
+  store.setConversationSendError('owned-a', 'This conversation is closed, so the message was not sent');
+  assert.equal(
+    store.getConversationSession('owned-a').sendError,
+    'This conversation is closed, so the message was not sent'
+  );
+  assert.equal(store.getConversationSession('owned-b').sendError, '', 'a failure in one session never surfaces in another');
+  store.setConversationSendError('owned-a', '');
+  assert.equal(store.getConversationSession('owned-a').sendError, '', 'the next send clears the session it belongs to');
+}
+
+// Re-ensuring a suspended session opens a new adapter incarnation that has no
+// events of its own yet, so the snapshot's history all belongs to the previous
+// one. The replayed transcript must survive and the session must still hold the
+// connection's generation, or the next send is addressed to an incarnation the
+// backend has already replaced.
+{
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId: 'owned-reensured', provider: 'codex', generation: 2,
+      state: 'connecting', nativeSessionId: 'thread-reensured'
+    },
+    lastSequence: 2,
+    events: [
+      {
+        ownedId: 'owned-reensured', provider: 'codex', generation: 1, sequence: 1, timestampMs: 200,
+        payload: { kind: 'userMessage', itemId: 'user-1', text: 'Earlier question', completed: true }
+      },
+      {
+        ownedId: 'owned-reensured', provider: 'codex', generation: 1, sequence: 2, timestampMs: 210,
+        payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Earlier answer', completed: true }
+      }
+    ]
+  });
+  assert.equal(store.getConversationSession('owned-reensured').generation, 2);
+  assert.equal(store.getConversationSession('owned-reensured').writerLease.generation, 2);
+  assert.deepEqual(
+    store.getConversationSession('owned-reensured').timeline.map((item) => item.text),
+    ['Earlier question', 'Earlier answer']
+  );
+}
+
 // Snapshot replay can repeat completed history after unrelated journal events.
 // The first repeated stable item identifies the contiguous replay block, so
 // both that item and the following replay-only items render zero extra rows.

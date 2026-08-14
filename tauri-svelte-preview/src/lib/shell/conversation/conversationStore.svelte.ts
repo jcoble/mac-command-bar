@@ -67,6 +67,10 @@ export const CONVERSATION_RECENT_EVENT_CAP = 200;
 
 export interface ConversationWorkspaceState extends ConversationSessionState {
   draft: string;
+  /** Why this session's last send did not go out, held beside its own draft:
+   * the surface is one component for every session, so a failure kept there
+   * showed up under every conversation and outlived the one it belonged to. */
+  sendError: string;
   mode: ConversationViewMode;
   sending: boolean;
   attachments: ConversationAttachment[];
@@ -127,6 +131,7 @@ function freshState(
   return {
     ...createConversationState(ownedId, provider),
     draft: '',
+    sendError: '',
     mode: 'structured',
     sending: false,
     attachments: [],
@@ -549,11 +554,20 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   // Build the complete snapshot off the reactive graph. Publishing this object
   // before replay made every event traverse Svelte's deep proxy machinery and
   // invalidated subscribers 2,000 times during a read-only load.
+  // Replay is seeded from the first retained event so no history is skipped,
+  // which leaves the rebuilt generation at whatever the window ended on. A
+  // session re-ensured after a suspend has a newer adapter incarnation and no
+  // events in it yet, so the connection's generation is the current one: keep
+  // it, or the next send is addressed to an incarnation the backend has
+  // already replaced and is refused.
+  const generation = Math.max(rebuilt.generation, snapshot.connection.generation);
   const restored: ConversationWorkspaceState = {
     ...rebuilt,
+    generation,
     suspended: snapshot.suspended === true,
     timelineRevision: current.timelineRevision + 1,
     draft: current.draft,
+    sendError: current.sendError,
     mode: current.mode,
     sending: current.sending,
     attachments: current.attachments,
@@ -564,7 +578,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     scrollTop: current.scrollTop,
     childScrollTopById: current.childScrollTopById,
     executionOwner: current.executionOwner,
-    writerLease: { ...current.writerLease, generation: rebuilt.generation },
+    writerLease: { ...current.writerLease, generation },
     writerLeaseTransition: current.writerLeaseTransition,
     attachmentIds: current.attachmentIds,
     sentAttachments: current.sentAttachments,
@@ -1062,6 +1076,13 @@ export function setConversationDraft(ownedId: string, draft: string): void {
   const current = conversationSessions[ownedId];
   if (!current || current.draft === draft) return;
   current.draft = draft;
+}
+
+/** Record or clear why this session's last send did not go out. */
+export function setConversationSendError(ownedId: string, message: string): void {
+  const current = conversationSessions[ownedId];
+  if (!current || current.sendError === message) return;
+  current.sendError = message;
 }
 
 export function setConversationMode(ownedId: string, mode: ConversationViewMode): void {

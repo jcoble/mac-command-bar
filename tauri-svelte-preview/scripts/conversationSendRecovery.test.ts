@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   generationForSend,
   sendSupportsImages,
-  validateStructuredSendGeneration,
+  sendTargetGeneration,
   shouldReviveBeforeSend
 } from '../src/lib/shell/conversation/conversationActivation.ts';
 import { readFileSync } from 'node:fs';
@@ -49,46 +49,46 @@ assert.equal(
 );
 
 assert.equal(
-  validateStructuredSendGeneration(
-    4,
-    { state: 'connected', generation: 4 },
-    { connectionState: 'connected', generation: 4 }
-  ),
+  sendTargetGeneration({ connectionState: 'connected', generation: 4 }),
   4,
-  'a successful connected ensure can validate an idempotent send generation'
-);
-assert.equal(
-  validateStructuredSendGeneration(
-    4,
-    { state: 'connected', generation: 4 },
-    { connectionState: 'connected', generation: 5 }
-  ),
-  null,
-  'a generation replacement between ensure and send fails before the request'
+  'a connected session sends on the generation it currently holds'
 );
 {
-  const stateAfterEnsure = { connectionState: 'connected', generation: 4 };
-  const expectedGeneration = stateAfterEnsure.generation;
-  stateAfterEnsure.generation = 5;
+  // The owner's report: a suspended session is ensured again while the message
+  // is being prepared, so the generation the composer started with is already
+  // an incarnation the backend has replaced. The message still goes out, on the
+  // generation that exists when the request is built.
+  const stateDuringSend = { connectionState: 'connected' as const, generation: 1 };
+  const startedOn = stateDuringSend.generation;
+  stateDuringSend.generation = 2;
   assert.equal(
-    validateStructuredSendGeneration(
-      expectedGeneration,
-      { state: 'connected', generation: expectedGeneration },
-      stateAfterEnsure
-    ),
-    null,
-    'a store mutation cannot replace the captured generation after ensure'
+    sendTargetGeneration(stateDuringSend),
+    2,
+    'a generation bumped while the message was prepared still sends, on the fresh generation'
   );
+  assert.notEqual(startedOn, 2, 'the send no longer depends on the generation captured at entry');
 }
 assert.equal(
-  validateStructuredSendGeneration(
-    4,
-    { state: 'disconnected', generation: 4 },
-    { connectionState: 'connected', generation: 4 }
-  ),
-  null,
-  'a non-connected ensure response cannot authorize a send'
+  sendTargetGeneration({ connectionState: 'connecting', generation: 2 }),
+  2,
+  'a reconnecting session sends: the backend activates the generation it is given'
 );
+assert.equal(
+  sendTargetGeneration({ connectionState: 'closed', generation: 4 }),
+  null,
+  'a closed conversation has nothing to send to'
+);
+assert.equal(
+  sendTargetGeneration({ connectionState: 'failed', generation: 4 }),
+  null,
+  'a failed conversation has nothing to send to'
+);
+assert.equal(
+  sendTargetGeneration({ connectionState: 'connected', generation: 0 }),
+  null,
+  'a conversation that never connected has no generation to send on'
+);
+assert.equal(sendTargetGeneration(null), null, 'a removed conversation has nothing to send to');
 
 const serviceSource = readFileSync(
   new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
@@ -101,8 +101,13 @@ assert.match(
 );
 assert.match(
   serviceSource,
-  /const validatedGeneration = validatedState\?\.generation === expectedGeneration[\s\S]*?if \(validatedGeneration === null/,
-  'the service must reject a replaced generation before invoking the send request'
+  /const validatedGeneration = sendTargetGeneration\(validatedState\);[\s\S]*?if \(validatedGeneration === null/,
+  'the send request carries the generation the session holds when it is built'
+);
+assert.doesNotMatch(
+  serviceSource,
+  /expectedGeneration/,
+  'no generation captured before the attachment reads can refuse the send'
 );
 assert.match(
   serviceSource,
@@ -125,6 +130,48 @@ assert.match(
   serviceSource,
   /catch \(error\) \{\s*(\/\/[^\n]*\n\s*)*recordSentConversationAttachments\(ownedId, \[\]\);/,
   'a failed send releases the screenshots it was holding'
+);
+
+// A send failure is the session's, not the surface's. One surface serves every
+// conversation, so a failure kept in component state was shown under all of
+// them and stayed after a later send succeeded.
+const surfaceSource = readFileSync(
+  new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
+  'utf8'
+);
+assert.match(
+  surfaceSource,
+  /const sendError = \$derived\(conversation\?\.sendError \?\? ''\)/,
+  'the banner reads the failure from the session being viewed'
+);
+assert.doesNotMatch(
+  surfaceSource,
+  /let sendError = \$state/,
+  'no shell-wide failure state can outlive the session it happened in'
+);
+assert.match(
+  surfaceSource,
+  /setConversationSendError\(activeOwnedId, ''\);[\s\S]*?await sendStructuredMessage/,
+  'a send clears its own session failure before it goes out'
+);
+assert.match(
+  surfaceSource,
+  /setConversationSendError\(activeOwnedId, error instanceof Error/,
+  'a failed send records the reason against the session it happened in'
+);
+assert.match(
+  surfaceSource,
+  /onDismissSendError=\{\(\) => setConversationSendError\(active\.ownedId, ''\)\}/,
+  'the banner can be dismissed for the session showing it'
+);
+const composerSource = readFileSync(
+  new URL('../src/lib/shell/components/conversation/ConversationComposer.svelte', import.meta.url),
+  'utf8'
+);
+assert.match(
+  composerSource,
+  /id: 'send-error'[^\n]*onDismiss: onDismissSendError/,
+  'the send failure banner offers its dismiss control'
 );
 
 const refusesImages = { prompt: { image: false } };
