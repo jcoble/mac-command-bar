@@ -23,6 +23,7 @@
 		type DotnetWorkspaceAction,
 	} from "./workspaceCodeLens";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
+	import { animateWhenVisible } from "$lib/shell/elementVisibility";
 	import { listThemes } from "$lib/shell/themes/themeRegistry";
 	import { currentTheme, registerMonacoApplier } from "$lib/shell/themes/themeService";
 	import {
@@ -2969,7 +2970,7 @@
 			<button type="button" class="start-retry" onclick={retryStartingEditor}>Try again</button>
 		</div>
 	{:else if loading || !isReady}
-		<div class="skeleton-code" aria-label="Loading source preview">
+		<div class="skeleton-code" use:animateWhenVisible aria-label="Loading source preview">
 			{#each Array.from({ length: 13 }) as _, index}
 				<span style={`--line-width: ${index % 4 === 0 ? 48 : index % 3 === 0 ? 66 : 86}%`}></span>
 			{/each}
@@ -3073,21 +3074,38 @@
 	}
 
 	.skeleton-code span {
+		position: relative;
 		display: block;
+		overflow: hidden;
 		width: var(--line-width);
 		height: 13px;
 		border-radius: 999px;
-		background: linear-gradient(90deg, #23262d, #343841, #23262d);
-		background-size: 180% 100%;
+		background: #23262d;
+	}
+
+	/* The sweep is a highlight that slides across the bar. Moving a gradient's
+	   background-position instead, which is what this used to do, repaints the
+	   whole bar every frame — thirteen bars at sixty frames a second, for as
+	   long as the editor takes to start, and forever if it never does. A
+	   transform is handed to the compositor and costs the main thread nothing.
+
+	   It also stops entirely once the bars scroll or tab out of sight: an
+	   animation off screen is still animated, and still charged for. */
+	.skeleton-code span::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background: linear-gradient(90deg, transparent, #343841, transparent);
 		animation: shimmer 1.2s ease-in-out infinite;
+		animation-play-state: var(--motion-state, running);
 	}
 
 	@keyframes shimmer {
 		from {
-			background-position: 100% 0;
+			transform: translateX(-100%);
 		}
 		to {
-			background-position: -80% 0;
+			transform: translateX(100%);
 		}
 	}
 </style>

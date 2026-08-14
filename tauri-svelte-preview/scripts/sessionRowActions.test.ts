@@ -619,6 +619,22 @@ for (const [name, source] of [['the row', row], ['the rail', rail]] as const) {
   );
 }
 
+// The row's spinner is the only loop in the rail, and it costs nothing when
+// nobody can see it. An animation off screen still recalculates style and
+// repaints every frame, so a long list of scrolled-away working rows would burn
+// a core at idle. The row asks the shared watcher whether it is on screen and
+// spins only when it is, and only when it is genuinely working.
+assert.match(
+  row,
+  /from '\$lib\/shell\/elementVisibility\.ts'/,
+  'the row reads its on-screen state from the one shared watcher, not its own observer'
+);
+assert.match(
+  row,
+  /const spinning = \$derived\(isWorking && onScreen\)/,
+  'the row spins only while it is both working and on screen'
+);
+
 // --- the age and the provider mark ----------------------------------------
 
 assert.match(

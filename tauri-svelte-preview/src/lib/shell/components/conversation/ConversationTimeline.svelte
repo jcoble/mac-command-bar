@@ -19,6 +19,7 @@
     type ConversationSendAnchorRequest
   } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
+  import { animateWhenVisible } from '$lib/shell/elementVisibility.ts';
   import TimelineItem from './TimelineItem.svelte';
 
   interface Props {
@@ -416,7 +417,7 @@
             <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} />
             {#if showWorking && item.itemId === anchoredUserItemId}
               <div class="working-row" data-testid="conversation-working-indicator" role="status">
-                <span class="working-dot" aria-hidden="true"></span>
+                <span class="working-dot" use:animateWhenVisible aria-hidden="true"></span>
                 <span>Working…</span>
               </div>
             {/if}
@@ -445,6 +446,9 @@
   .jump-latest{position:absolute;right:24px;bottom:calc(var(--composer-height) + 16px);min-height:28px;padding:6px 12px;border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);font-size:13px;box-shadow:var(--shadow-sm);cursor:pointer}
   .jump-latest:hover{background:var(--color-hover)}
   .jump-latest:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
+  /* The working dot pulses only while a reader can see it. A transcript scrolled
+     back to an older turn would otherwise keep animating a dot nobody is
+     looking at, and an off-screen animation costs the same as an on-screen one. */
   @keyframes working-pulse{0%,100%{opacity:.38;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
-  @media (prefers-reduced-motion:no-preference){.jump-latest{transition:background .14s ease,box-shadow .14s ease}.working-dot{animation:working-pulse 1.1s ease-in-out infinite}}
+  @media (prefers-reduced-motion:no-preference){.jump-latest{transition:background .14s ease,box-shadow .14s ease}.working-dot{animation:working-pulse 1.1s ease-in-out infinite;animation-play-state:var(--motion-state,running)}}
 </style>

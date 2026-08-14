@@ -43,7 +43,7 @@
     railElapsedCadenceFor,
     watchRailElapsed
   } from './railElapsedTicker.ts';
-  import { observeRailRowVisibility } from './railRowVisibility.ts';
+  import { observeElementVisibility } from '$lib/shell/elementVisibility.ts';
   import { sessionRowMenuItems, type SessionRowMenuAction } from './sessionRowMenu.ts';
   import SessionHoverCard from './SessionHoverCard.svelte';
   import { sessionRowJump } from './sessionRowJump';
@@ -196,7 +196,7 @@
   $effect(() => {
     const element = rowElement;
     if (!element) return;
-    return observeRailRowVisibility(element, (visible) => {
+    return observeElementVisibility(element, (visible) => {
       onScreen = visible;
     });
   });
