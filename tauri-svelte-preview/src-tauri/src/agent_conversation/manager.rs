@@ -1074,9 +1074,6 @@ impl AgentRuntimeManager {
             if session.active_turn_id.as_deref() != Some(turn_id) {
                 return;
             }
-            if let Some(task) = session.child_rollout_scan.take() {
-                task.abort();
-            }
             session.native_session_id.clone().map(|native_session_id| {
                 (native_session_id, session.child_rollout_parent_path.clone())
             })
@@ -1084,7 +1081,7 @@ impl AgentRuntimeManager {
         let Some((native_session_id, parent_path)) = scan else {
             return;
         };
-        let _ = scan_codex_children_once(
+        let outcome = scan_codex_children_once(
             &Arc::downgrade(&self.sessions),
             &self.emitter,
             owned_id,
@@ -1093,6 +1090,21 @@ impl AgentRuntimeManager {
             parent_path,
         )
         .await;
+        if outcome.is_some_and(|outcome| outcome.has_running_children) {
+            return;
+        }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
+            return;
+        };
+        if session.active_turn_id.as_deref() == Some(turn_id) {
+            if let Some(task) = session.child_rollout_scan.take() {
+                task.abort();
+            }
+        }
     }
 
     /// Run one product action through the current structured agent without
@@ -3147,7 +3159,7 @@ async fn run_child_rollout_scan(
 ) {
     let mut parent_path = None;
     loop {
-        parent_path = scan_codex_children_once(
+        let Some(outcome) = scan_codex_children_once(
             &sessions,
             &emitter,
             &owned_id,
@@ -3155,12 +3167,23 @@ async fn run_child_rollout_scan(
             &native_session_id,
             parent_path,
         )
-        .await;
-        if parent_path.is_none() {
+        .await
+        else {
+            return;
+        };
+        parent_path = Some(outcome.parent_path);
+        // After the turn ends, keep polling only while a child is still working.
+        if !outcome.keep_scanning {
             return;
         }
         tokio::time::sleep(CHILD_ROLLOUT_SCAN_INTERVAL).await;
     }
+}
+
+struct ChildRolloutScanOutcome {
+    parent_path: PathBuf,
+    has_running_children: bool,
+    keep_scanning: bool,
 }
 
 async fn scan_codex_children_once(
@@ -3170,7 +3193,7 @@ async fn scan_codex_children_once(
     generation: u64,
     native_session_id: &str,
     parent_path: Option<PathBuf>,
-) -> Option<PathBuf> {
+) -> Option<ChildRolloutScanOutcome> {
     let native_id = native_session_id.to_string();
     let scan_parent_id = native_id.clone();
     let scan = tokio::task::spawn_blocking(move || {
@@ -3199,20 +3222,50 @@ async fn scan_codex_children_once(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let session = current_session_mut(&mut sessions, owned_id, generation).ok()?;
+    let turn_active = session.active_turn_id.is_some();
+    let had_running_children = session
+        .codex_children
+        .values()
+        .any(|child| child.state == "running");
     if session.provider != AgentConversationProvider::Codex
-        || session.active_turn_id.is_none()
         || session.state == AgentRuntimeState::Closed
+        // Once the turn ends, only a previously running child earns another scan.
+        || (!turn_active && !had_running_children)
     {
         return None;
     }
     session.child_rollout_parent_path = Some(parent_path.clone());
-    for payload in changed_child_updates(native_session_id, &mut session.codex_children, children) {
+    let (updates, has_running_children, keep_scanning) = child_rollout_scan_updates(
+        native_session_id,
+        &mut session.codex_children,
+        children,
+        turn_active,
+    );
+    for payload in updates {
         if let Err(error) = record_payload_for_session_and_dispatch(session, emitter, payload) {
             crate::debug_log::stderr_log!("Could not record child session update: {error}");
             break;
         }
     }
-    Some(parent_path)
+    Some(ChildRolloutScanOutcome {
+        parent_path,
+        has_running_children,
+        keep_scanning,
+    })
+}
+
+fn child_rollout_scan_updates(
+    parent_id: &str,
+    known: &mut HashMap<String, CodexChildRollout>,
+    children: Vec<CodexChildRollout>,
+    turn_active: bool,
+) -> (Vec<AgentConversationPayload>, bool, bool) {
+    let has_running_children = children.iter().any(|child| child.state == "running");
+    (
+        changed_child_updates(parent_id, known, children),
+        has_running_children,
+        turn_active || has_running_children,
+    )
 }
 
 fn changed_child_updates(
@@ -4401,6 +4454,50 @@ mod tests {
         );
         assert!(changed_child_updates("parent", &mut known, children).is_empty());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn child_rollout_scan_outlives_turn_until_running_children_finish() {
+        let running = CodexChildRollout {
+            child_id: "child-1".into(),
+            label: "probe (explore)".into(),
+            state: "running".into(),
+            latest_activity: "Running".into(),
+        };
+        let finished = CodexChildRollout {
+            state: "finished".into(),
+            latest_activity: "Finished".into(),
+            ..running.clone()
+        };
+        let mut known = HashMap::new();
+
+        let (updates, _, keep_scanning) =
+            child_rollout_scan_updates("parent", &mut known, vec![running], true);
+        assert!(keep_scanning);
+        assert_eq!(
+            updates,
+            vec![AgentConversationPayload::ChildUpdate {
+                child_id: "child-1".into(),
+                parent_tool_call_id: "parent".into(),
+                label: Some("probe (explore)".into()),
+                state: "running".into(),
+                latest_activity: Some("Running".into()),
+            }]
+        );
+
+        let (updates, _, keep_scanning) =
+            child_rollout_scan_updates("parent", &mut known, vec![finished], false);
+        assert!(!keep_scanning);
+        assert_eq!(
+            updates,
+            vec![AgentConversationPayload::ChildUpdate {
+                child_id: "child-1".into(),
+                parent_tool_call_id: "parent".into(),
+                label: Some("probe (explore)".into()),
+                state: "finished".into(),
+                latest_activity: Some("Finished".into()),
+            }]
+        );
     }
 
     struct FixtureManager {
