@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   generationForSend,
+  sendSupportsImages,
   validateStructuredSendGeneration,
   shouldReviveBeforeSend
 } from '../src/lib/shell/conversation/conversationActivation.ts';
@@ -124,6 +125,34 @@ assert.match(
   serviceSource,
   /catch \(error\) \{\s*(\/\/[^\n]*\n\s*)*recordSentConversationAttachments\(ownedId, \[\]\);/,
   'a failed send releases the screenshots it was holding'
+);
+
+const refusesImages = { prompt: { image: false } };
+const acceptsImages = { prompt: { image: true } };
+assert.equal(
+  sendSupportsImages(refusesImages, 'connected'),
+  false,
+  'a connected session that reports no image prompts still refuses images'
+);
+assert.equal(
+  sendSupportsImages(acceptsImages, 'connected'),
+  true,
+  'a connected session that reports image prompts accepts images'
+);
+assert.equal(
+  sendSupportsImages(refusesImages, 'disconnected'),
+  true,
+  'a suspended session sends: its stored snapshot can predate a provider upgrade'
+);
+assert.equal(
+  sendSupportsImages(null, 'connected'),
+  true,
+  'an unread snapshot is not a refusal'
+);
+assert.match(
+  serviceSource,
+  /const supportsImages = sendSupportsImages\(state\.capabilities, state\.connectionState\)/,
+  'the send path must gate images on the connection state, not on the stored snapshot alone'
 );
 
 console.log('conversationSendRecovery.test.ts passed');

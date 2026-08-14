@@ -54,6 +54,7 @@ import { sessionTitleFromPrompt } from '../sessionStrip.ts';
 import {
   decideConversationActivation,
   generationForSend,
+  sendSupportsImages,
   shouldReviveBeforeSend
 } from './conversationActivation.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
@@ -555,10 +556,10 @@ export async function sendStructuredMessage(
       return;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
-    // An unread capability snapshot is not a refusal. Blocking the send here
-    // left a screenshot that could never go out and no way to learn why, so an
-    // unknown provider is asked and allowed to answer for itself.
-    const supportsImages = state.capabilities === null || state.capabilities.prompt.image === true;
+    // An unread or stale capability snapshot is not a refusal. Blocking the
+    // send here left a screenshot that could never go out and no way to learn
+    // why, so only a connected session's own answer refuses.
+    const supportsImages = sendSupportsImages(state.capabilities, state.connectionState);
     const hydratedAttachments = supportsImages
       ? await Promise.all(state.attachments.map((attachment) => hydrateAttachmentBytes(attachment as AttachmentWithBytes)))
       : state.attachments as AttachmentWithBytes[];

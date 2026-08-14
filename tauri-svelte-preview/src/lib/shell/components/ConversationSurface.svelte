@@ -194,8 +194,11 @@
 
   $effect(() => {
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex')) return;
-    const key = `${active.ownedId}:${conversation.generation}:${conversation.provider}`;
-    if (conversation.capabilities || capabilityRequest === key) return;
+    const key = `${active.ownedId}:${conversation.generation}:${conversation.provider}:${conversation.connectionState}`;
+    if (capabilityRequest === key) return;
+    // A connection re-reads the snapshot: the stored one can predate a provider
+    // upgrade, and activation refreshes it from the live handshake.
+    if (conversation.capabilities && conversation.connectionState !== 'connected') return;
     capabilityRequest = key;
     void loadConversationCapabilities(active.ownedId, conversation.provider).catch(() => undefined);
   });
