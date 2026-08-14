@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 
 export type AgentConversationConfigState = {
   model: string | null;

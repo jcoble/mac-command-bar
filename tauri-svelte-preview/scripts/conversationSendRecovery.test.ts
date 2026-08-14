@@ -117,6 +117,16 @@ const serviceSource = readFileSync(
   new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
   'utf8'
 );
+const configSource = readFileSync(
+  new URL('../src/lib/shell/conversation/conversationConfig.ts', import.meta.url),
+  'utf8'
+);
+
+assert.match(
+  configSource,
+  /invokeConversationCommand as invoke/,
+  'settings commands normalize structured Tauri rejections before the composer displays them'
+);
 
 {
   const lifecycleSource = serviceSource.match(
