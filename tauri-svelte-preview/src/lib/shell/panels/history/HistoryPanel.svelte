@@ -189,6 +189,14 @@
     />
   </div>
 
+  <!-- The list only exists in the document while its tab is showing. A hidden
+       tab used to keep every session card mounted under display:none, and the
+       browser engine walks that invisible text character by character during
+       mouse hit-tests and caret queries — over a hundred thousand hidden
+       characters froze the whole app for seconds at a time. The panel's own
+       state (search, open groups, paging) lives above and survives; reopening
+       the tab rebuilds the cards from it instantly. -->
+  {#if visible}
   <ScrollArea class="min-h-0 flex-1">
     {#if viewModel.projects.length === 0}
       <EmptyState
@@ -273,6 +281,7 @@
       {/each}
     {/if}
   </ScrollArea>
+  {/if}
 </div>
 
 <AlertDialog.Root
