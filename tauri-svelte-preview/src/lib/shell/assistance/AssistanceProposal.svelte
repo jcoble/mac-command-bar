@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatFullTime } from '$lib/shell/dateFormat.ts';
   import type { AssistanceProposal } from './assistanceTypes.ts';
 
   interface Props {
@@ -40,7 +41,7 @@
   <dl class="metadata">
     <div><dt>Provenance</dt><dd data-testid="assistance-provenance">{proposal.provenance}</dd></div>
     <div><dt>Confidence</dt><dd data-testid="assistance-confidence">{Math.round(proposal.confidence * 100)}%</dd></div>
-    <div><dt>Expires</dt><dd>{new Date(proposal.expiresAt).toLocaleTimeString()}</dd></div>
+    <div><dt>Expires</dt><dd>{formatFullTime(new Date(proposal.expiresAt))}</dd></div>
   </dl>
 
   {#if proposal.patches.length}

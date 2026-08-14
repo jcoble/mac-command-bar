@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
+import {
+  formatClockTime,
+  formatFullDateTime,
+  formatFullTime,
+  formatMonthDay,
+  formatMonthDayTime,
+  formatMonthDayYear
+} from '../src/lib/shell/dateFormat.ts';
 import { exactLocalTime, formatLastActivity } from '../src/lib/shell/relativeTime.ts';
 
 /**
@@ -9,7 +18,7 @@ import { exactLocalTime, formatLastActivity } from '../src/lib/shell/relativeTim
  */
 
 /** A local wall-clock moment, as the reader's own machine would see it. */
-function local(year, month, day, hour = 0, minute = 0, second = 0) {
+function local(year: number, month: number, day: number, hour = 0, minute = 0, second = 0): Date {
   return new Date(year, month - 1, day, hour, minute, second);
 }
 
@@ -80,9 +89,32 @@ assert.equal(formatLastActivity('', now), '');
 assert.equal(formatLastActivity('   ', now), '');
 assert.equal(formatLastActivity('not a date', now), '');
 
-// Codex writes microseconds and Claude writes milliseconds; both parse.
+// Both microsecond and millisecond timestamps parse.
 assert.equal(typeof formatLastActivity('2026-03-13T21:48:02.611673Z', now), 'string');
 assert.notEqual(formatLastActivity('2026-03-13T21:48:02.611673Z', now), '');
+
+const formatSample = local(2026, 8, 14, 13, 5, 9);
+assert.equal(formatClockTime(formatSample), formatSample.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+assert.equal(formatFullDateTime(formatSample), formatSample.toLocaleString());
+assert.equal(formatMonthDayTime(formatSample), formatSample.toLocaleString(undefined, {
+  month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+}));
+assert.equal(formatMonthDayYear(formatSample), formatSample.toLocaleDateString(undefined, {
+  month: 'short', day: 'numeric', year: 'numeric'
+}));
+assert.equal(formatMonthDay(formatSample), formatSample.toLocaleDateString([], { month: 'short', day: 'numeric' }));
+assert.equal(formatFullTime(formatSample), formatSample.toLocaleTimeString());
+
+for (const relativePath of [
+  '../src/lib/shell/relativeTime.ts',
+  '../src/lib/shell/components/conversation/TurnMetadata.svelte',
+  '../src/lib/shell/resources/WorkspaceSpaceWorkspace.svelte',
+  '../src/lib/shell/assistance/AssistanceProposal.svelte',
+  '../src/lib/shell/usage/UsageWorkspace.svelte'
+]) {
+  const source = fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /\.toLocale(?:Time|Date)?String\(/, `${relativePath} uses cached date formatters`);
+}
 
 // The exact moment stays one hover away from the shortened stamp, in local
 // time and with nothing unparseable getting through.

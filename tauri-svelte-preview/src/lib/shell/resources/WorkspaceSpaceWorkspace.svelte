@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatClockTime } from '$lib/shell/dateFormat.ts';
   import { scanWorkspaceSpaceRoots, workspaceSpaceState } from './workspaceSpaceStore.svelte.ts';
   import { diskProtectionLabel, filterWorkspaceEntries, reclaimableBytes } from './workspaceSpaceViewModel.ts';
   import { formatBytes } from './resourceViewModel.ts';
@@ -65,7 +66,7 @@
     <div><span>Scanned</span><strong>{report ? formatBytes(report.scannedBytes) : '—'}</strong></div>
     <div><span>Reclaimable</span><strong>{report ? formatBytes(report.reclaimableBytes) : '—'}</strong></div>
     <div><span>Workspaces</span><strong>{report?.entries.length ?? '—'}</strong></div>
-    <div><span>Updated</span><strong>{report ? new Date(report.capturedAtMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'not scanned'}</strong></div>
+    <div><span>Updated</span><strong>{report ? formatClockTime(new Date(report.capturedAtMs)) : 'not scanned'}</strong></div>
   </div>
   {#if report}
     <div class="space-layout">

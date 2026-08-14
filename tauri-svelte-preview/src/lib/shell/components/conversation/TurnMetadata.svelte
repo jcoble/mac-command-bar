@@ -12,6 +12,7 @@
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
   import { HoverActionButton, HoverActions } from '$lib/components/ui/hover-actions/index.js';
+  import { formatClockTime } from '$lib/shell/dateFormat.ts';
 
   interface Props {
     /** The text the copy action puts on the clipboard. */
@@ -25,7 +26,7 @@
 
   const time = $derived(
     timestampMs > 0
-      ? new Date(timestampMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+      ? formatClockTime(new Date(timestampMs))
       : ''
   );
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ChevronDown, RefreshCw, X } from '@lucide/svelte';
+  import { formatMonthDay } from '$lib/shell/dateFormat.ts';
   import {
     buildProviderUsageTrend,
     buildUsageHeatmap,
@@ -72,12 +73,12 @@
 
   function formatDay(day: string): string {
     const parsed = new Date(`${day}T00:00:00`);
-    return Number.isNaN(parsed.getTime()) ? day : parsed.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return Number.isNaN(parsed.getTime()) ? day : formatMonthDay(parsed);
   }
 
   function formatLastSeen(value: number | null): string {
     if (value == null) return 'No recent session';
-    return `Last seen ${new Date(value / 1_000).toLocaleDateString([], { month: 'short', day: 'numeric' })}`;
+    return `Last seen ${formatMonthDay(new Date(value / 1_000))}`;
   }
 
   function selectedProviderCard(provider: string): UsageProviderSummaryRow | null {

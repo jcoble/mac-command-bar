@@ -99,7 +99,7 @@
     "test:session-history-panel": "node --experimental-strip-types scripts/sessionHistoryPanel.test.ts",
     "test:session-strip": "node --experimental-strip-types scripts/sessionStrip.test.ts",
     "test:session-workspaces": "node --experimental-strip-types scripts/sessionWorkspaces.test.ts",
-    "test:relative-time": "node --experimental-strip-types scripts/relativeTime.test.mjs",
+    "test:relative-time": "node --experimental-strip-types scripts/relativeTime.test.ts",
     "test:sidebar-views": "node --experimental-strip-types scripts/sidebarViews.test.mjs",
     "test:git-graph-lanes": "node --experimental-strip-types scripts/gitGraphLanes.test.mjs",
     "test:git-bridge": "node --experimental-strip-types scripts/gitBridge.test.mjs",
