@@ -509,6 +509,23 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     snapshot.connection.provider
   );
   if (snapshot.connection.generation < current.generation) return;
+  // Re-selecting a session hands us a snapshot we have usually already applied.
+  // When it is the same generation, holds no event newer than what is on
+  // screen, and changes no connection fact, rebuilding would redo the whole
+  // replay and re-render for nothing — on long sessions that work is
+  // user-visible. Skip it outright. A desynchronized session never skips:
+  // its snapshot is the repair.
+  const newestSnapshotSequence = snapshot.events.length
+    ? snapshot.events[snapshot.events.length - 1].sequence
+    : 0;
+  if (
+    snapshot.connection.generation === current.generation
+    && current.lastSequence > 0
+    && newestSnapshotSequence <= current.lastSequence
+    && !current.desynchronized
+    && current.suspended === snapshot.suspended
+    && current.connectionState === snapshot.connection.state
+  ) return;
   let rebuilt = createConversationState(
     snapshot.connection.ownedId,
     snapshot.connection.provider
