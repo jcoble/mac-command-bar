@@ -16,7 +16,7 @@
    * file's changes, which land in the Diff tab in the middle of the shell, so
    * this panel never needs to know where that tab is.
    *
-   * No IO of its own and no `$effect`: every git call goes through `gitService`
+   * No IO of its own: every git call goes through `gitService`
    * (the working copy) or `gitCommitFilesService` (a commit's files), and only
    * ever from a press. The shell points the service at a folder with
    * `gitService.activate(root)`; until that happens the panel says so and stays
@@ -82,6 +82,7 @@
     canWrite?: boolean;
   }
   let {
+    visible,
     root,
     service = defaultService,
     commitFiles = defaultCommitFilesService,
@@ -106,8 +107,27 @@
   const staged = $derived(hasStagedChanges(panel.status));
   const busy = $derived(panel.actionBusy !== '');
 
-  /** Which sections are folded away. Open until somebody folds one. */
-  let collapsed = $state<Record<string, boolean>>({});
+  /** Which file sections the reader has opened. Starting collapsed keeps a
+   * large working copy from mounting every changed-file row in one pass. */
+  let openSections = $state<Record<string, boolean>>({});
+
+  /** The list DOM is rebuilt on return, but the reader stays at the same place. */
+  let scrollViewport = $state<HTMLElement | null>(null);
+  let savedScrollTop = 0;
+
+  $effect(() => {
+    const viewport = scrollViewport;
+    if (!viewport) return;
+    viewport.scrollTop = savedScrollTop;
+    const rememberScroll = () => {
+      savedScrollTop = viewport.scrollTop;
+    };
+    viewport.addEventListener('scroll', rememberScroll, { passive: true });
+    return () => {
+      savedScrollTop = viewport.scrollTop;
+      viewport.removeEventListener('scroll', rememberScroll);
+    };
+  });
 
   const stageablePaths = $derived(
     (panel.status?.files ?? [])
@@ -150,7 +170,7 @@
   }
 
   function toggleSection(id: string): void {
-    collapsed = { ...collapsed, [id]: !collapsed[id] };
+    openSections = { ...openSections, [id]: !openSections[id] };
   }
 
   function stageOne(file: ProjectGitFileStatus): void {
@@ -237,7 +257,12 @@
       {#snippet icon()}<GitBranch />{/snippet}
     </EmptyState>
   {:else}
-    <ScrollArea class="min-h-0 flex-1">
+    <!-- This body only exists in the document while its tab is showing. WebKit
+         re-checks sibling styling after every inserted node, so mounting a long
+         hidden file list grows quadratically and can freeze the whole app. The
+         selection and open-section state live above this gate and survive. -->
+    {#if visible}
+    <ScrollArea bind:viewportRef={scrollViewport} class="min-h-0 flex-1">
       <div class="flex flex-col gap-2 p-2">
         <label class="flex flex-col gap-1">
           <span class="sr-only">Commit message</span>
@@ -293,19 +318,19 @@
                      font-medium tracking-wide text-muted-foreground uppercase outline-none
                      transition-colors hover:text-foreground focus-visible:ring-3
                      focus-visible:ring-ring/50"
-              aria-expanded={!collapsed[section.id]}
+              aria-expanded={Boolean(openSections[section.id])}
               data-testid={`source-control-section-${section.id}`}
               onclick={() => toggleSection(section.id)}
             >
               <ChevronRight
-                class={`chevron size-3.5 ${collapsed[section.id] ? '' : 'is-open'}`}
+                class={`chevron size-3.5 ${openSections[section.id] ? 'is-open' : ''}`}
                 aria-hidden="true"
               />
               <span>{section.label}</span>
               <Chip tone="count">{section.files.length}</Chip>
             </button>
 
-            {#if !collapsed[section.id]}
+            {#if openSections[section.id]}
               {#if section.files.length === 0}
                 <p class="px-2 py-1 text-sm text-muted-foreground">
                   {section.id === 'untracked'
@@ -334,6 +359,7 @@
         <CommitTimeline {panel} {service} {commitFiles} {commitFilesState} />
       </div>
     </ScrollArea>
+    {/if}
   {/if}
 </div>
 

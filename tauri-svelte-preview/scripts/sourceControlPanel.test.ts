@@ -14,8 +14,20 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import type { ProjectGitFileStatus, ProjectGitStatus } from '../src/lib/tauriSource.ts';
+
+const panelSource = readFileSync(
+  new URL('../src/lib/shell/panels/sourceControl/SourceControlPanel.svelte', import.meta.url),
+  'utf8'
+);
+
+assert.match(
+  panelSource,
+  /\{#if visible\}[\s\S]*?<ScrollArea/,
+  'the heavy source-control body must not exist in the document while its tab is hidden'
+);
 
 // The store is a plain value bag; this is the shim, not a reactivity stand-in.
 (globalThis as unknown as { $state: <T>(value: T) => T }).$state = (value) => value;
