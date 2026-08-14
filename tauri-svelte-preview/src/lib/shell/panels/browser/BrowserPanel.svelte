@@ -344,7 +344,9 @@
   }
 
   function panelSnapshot(): BrowserPanelSessionSnapshot {
-    return {
+    // The snapshot store deep-copies with structuredClone, which throws
+    // DataCloneError on reactive proxies — hand it plain objects instead.
+    return $state.snapshot({
       annotations,
       strokes,
       description,
@@ -353,7 +355,7 @@
       capture,
       editingId,
       expanded
-    };
+    }) as BrowserPanelSessionSnapshot;
   }
 
   function restorePanelSnapshot(snapshot: BrowserPanelSessionSnapshot): void {
