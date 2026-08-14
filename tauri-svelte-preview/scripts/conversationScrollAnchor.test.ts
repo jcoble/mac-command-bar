@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import {
   decideConversationScroll,
   initialConversationScrollAnchorState,
+  nextWritingFollowScrollTop,
   USER_SEND_ANCHOR_OFFSET_PX
 } from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
 
@@ -54,6 +55,17 @@ assert.deepEqual(result.action, {
 });
 assert.equal(result.state.programmaticMotion, 'idle', 'reduced motion does not start an animation');
 
+assert.equal(
+  nextWritingFollowScrollTop(420, 380),
+  420,
+  'stream growth before the composer boundary keeps the sent prompt anchored'
+);
+assert.equal(
+  nextWritingFollowScrollTop(420, 468),
+  468,
+  'stream growth past the composer boundary follows exactly to the newest writing'
+);
+
 // The transcript keeps a screen-tall spacer under the newest user message so that
 // message can sit at the top of the screen. If the spacer went away when the turn
 // finished, the page would get shorter under the reader and the browser would drag
@@ -88,6 +100,11 @@ assert.ok(
   /scrollHeight - \(tail\?\.offsetHeight \?\? 0\) - host\.clientHeight/.test(timelineSource),
   'the follow target subtracts the trailing spacer so the last line lands just above the prompt box'
 );
+assert.ok(
+  timelineSource.includes('nextWritingFollowScrollTop(host.scrollTop, latestWritingScrollTop())'),
+  'stream growth explicitly follows the writing boundary'
+);
+assert.ok(timelineSource.includes('overflow-anchor:none'), 'native scroll anchoring cannot move past the explicit boundary');
 
 // Opening a session shows the newest turn, not the beginning of the transcript. The
 // stored messages arrive in batches, so the transcript keeps re-aiming at the newest

@@ -49,6 +49,12 @@ export const initialConversationScrollAnchorState: ConversationScrollAnchorState
   openingToLatest: false
 };
 
+/** Follow new writing without pulling the sent prompt backward before the reply
+ * reaches the composer. */
+export function nextWritingFollowScrollTop(currentScrollTop: number, writingScrollTop: number): number {
+  return Math.max(currentScrollTop, writingScrollTop);
+}
+
 function motionFor(reducedMotion: boolean): ConversationScrollMotion {
   return reducedMotion ? 'instant' : 'smooth';
 }

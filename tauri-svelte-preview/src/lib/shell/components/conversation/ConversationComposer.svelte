@@ -9,6 +9,7 @@
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import { draftAfterSlashCommand, moveSlashMenuIndex, slashCommandQuery, slashMenuState, snapshotConversationCommands } from '$lib/shell/conversation/composerSlashCommands.ts';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
+  import AttachmentLightbox from './AttachmentLightbox.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
   import ComposerConfigMenu from './ComposerConfigMenu.svelte';
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
@@ -258,7 +259,7 @@
             {#each attachments as attachment (attachment.id)}
               <figure data-testid="conversation-attachment-preview">
                 <div class="attachment-preview">
-                  <img src={attachment.previewUrl} alt={attachment.name} />
+                  <AttachmentLightbox src={attachment.previewUrl} name={attachment.name} variant="composer" />
                   <button class="attachment-remove" data-testid="conversation-attachment-remove" aria-label={`Remove ${attachment.name}`} type="button" onclick={() => void onRemoveAttachment?.(attachment.id)}><X size={13} /></button>
                 </div>
                 {#if onAnnotateAttachment}<button class="attachment-annotate" data-testid="conversation-attachment-annotate" type="button" onclick={() => onAnnotateAttachment?.(attachment.id)}>Annotate</button>{/if}
@@ -343,7 +344,6 @@
   .attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
   .attachments figure { display: grid; grid-template-columns: 60px minmax(0, 1fr); column-gap: 8px; min-width: 210px; max-width: 280px; margin: 0; padding: 6px; border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent); border-radius: 11px; background: color-mix(in srgb, var(--color-bg) 62%, var(--color-surface)); }
   .attachment-preview { position: relative; grid-row: span 2; width: 60px; height: 52px; }
-  .attachment-preview img { width: 100%; height: 100%; object-fit: cover; border-radius: 7px; }
   .attachment-remove { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 999px; background: color-mix(in srgb, var(--color-bg) 88%, transparent); color: var(--color-text); cursor: pointer; }
   .attachment-remove:hover { background: var(--color-bad-bg); color: var(--color-bad); }
   .attachment-remove:focus-visible, .attachment-annotate:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 1px; }

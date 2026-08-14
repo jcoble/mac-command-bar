@@ -50,7 +50,7 @@
     "test:source-pane-sizing": "node --experimental-strip-types scripts/sourcePaneSizing.test.mjs",
     "test:source-markdown-preview": "node --experimental-strip-types scripts/sourceMarkdownPreview.test.mjs",
     "test:source-data": "node --experimental-strip-types scripts/sourceData.test.mjs",
-    "test:source-ui": "node scripts/sourceUi.test.mjs",
+    "test:source-ui": "node --experimental-strip-types scripts/sourceUi.test.ts",
     "test:workspace-snapshot": "node --experimental-strip-types scripts/workspaceSnapshot.test.mjs",
     "test:workspace-snapshot-plan": "node --experimental-strip-types scripts/workspaceSnapshotPlan.test.mjs",
     "test:tauri-source": "node --experimental-strip-types scripts/tauriSource.test.mjs",

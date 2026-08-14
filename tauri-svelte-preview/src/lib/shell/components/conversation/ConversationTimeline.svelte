@@ -13,6 +13,7 @@
   import {
     decideConversationScroll,
     initialConversationScrollAnchorState,
+    nextWritingFollowScrollTop,
     type ConversationScrollAction,
     type ConversationScrollAnchorState,
     type ConversationScrollMotion,
@@ -318,7 +319,11 @@
     scrollState = decision.state;
     void tick().then(() => {
       perform(decision.action);
-      if (host) follow = distanceBelowReader() <= 80;
+      if (!host) return;
+      if (follow && decision.action.type === 'none') {
+        animateTo(nextWritingFollowScrollTop(host.scrollTop, latestWritingScrollTop()), 'instant');
+      }
+      follow = distanceBelowReader() <= 80;
     });
   });
 
@@ -432,7 +437,7 @@
 
 <style>
   .timeline-wrap{position:relative;flex:1;min-height:0}
-  .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;padding:30px 24px calc(var(--composer-height) + 16px);scrollbar-gutter:stable;overscroll-behavior:contain}
+  .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;overflow-anchor:none;padding:30px 24px calc(var(--composer-height) + 16px);scrollbar-gutter:stable;overscroll-behavior:contain}
   .timeline-list{display:flex;flex-direction:column;gap:16px;width:min(820px,100%);min-height:1px;margin:0 auto}
   .earlier-row{display:flex;justify-content:center;min-height:28px}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
