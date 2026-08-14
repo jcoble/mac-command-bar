@@ -142,6 +142,20 @@
   const showsStill = $derived(backdrop !== null && tool !== 'picking');
   /** Marking is a mode, and the panel says so until it is sent or thrown away. */
   const annotating = $derived(backdrop !== null || tool === 'picking' || annotations.length > 0);
+  const markupBounds = $derived.by(() => {
+    layoutTick;
+    const placement = wantedPlacement(true, expanded);
+    if (placement.kind !== 'bounds' || typeof window === 'undefined') {
+      return { x: 0, y: 0, right: 0, bottom: 0 };
+    }
+    const { x, y, width, height } = placement.bounds;
+    return {
+      x,
+      y,
+      right: Math.max(0, window.innerWidth - x - width),
+      bottom: Math.max(0, window.innerHeight - y - height)
+    };
+  });
   const addressValue = $derived(addressEdited ? address : browser.inputUrl || browser.url);
   const errorText = $derived(failure || browser.error);
   const pageHostName = $derived(hostName(browser.url));
@@ -162,6 +176,11 @@
     } catch {
       return url;
     }
+  }
+
+  function bodyPortal(node: HTMLElement): { destroy(): void } {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
   }
 
   // ── Where the native view goes ─────────────────────────────────────────────
@@ -628,43 +647,9 @@
           {/if}
         </Button>
       </div>
-    {/if}
-  </div>
-
-  <div class="page" class:filled={showsStill} bind:this={pageHost} data-testid="browser-page-host">
-    {#if !browser.url}
-      <EmptyState
-        title="No page open"
-        body="Enter an http or https address above to open one here."
-      >
-        {#snippet icon()}<Globe strokeWidth={1.5} aria-hidden="true" />{/snippet}
-      </EmptyState>
-    {:else if showsStill}
-      <div class="still">
-        <AnnotationCanvas
-          tool={tool === 'region' ? 'region' : tool === 'drawing' ? 'drawing' : 'erasing'}
-          shapes={marks}
-          {backdrop}
-          onAdd={addShape}
-          onErase={eraseShape}
-          onResize={(size) => (layerSize = size)}
-        />
-        <AnnotationBadges
-          annotations={numbered}
-          {editingId}
-          surface={layerSize}
-          onLabel={(id, label) => (annotations = labelAnnotation(annotations, id, label))}
-          onDoneEditing={() => (editingId = null)}
-        />
-      </div>
-    {/if}
-
-    <!-- The card floats inside the page host, so it is only there while the
-         still is: over the live view it would be behind a native view, which
-         is a card that cannot be read or typed into. Select is the one tool
-         that runs on the live page, and the strip above still says so. -->
-    {#if annotating && showsStill}
-      <div class="floating">
+      <!-- The native picker replaces the still temporarily, so the controlled
+           prompt belongs in chrome where neither it nor its count unmounts. -->
+      <div class="chrome-composer">
         <BrowserMiniComposer
           {description}
           annotations={numbered}
@@ -682,6 +667,43 @@
       </div>
     {/if}
   </div>
+
+  <div class="page" bind:this={pageHost} data-testid="browser-page-host">
+    {#if !browser.url}
+      <EmptyState
+        title="No page open"
+        body="Enter an http or https address above to open one here."
+      >
+        {#snippet icon()}<Globe strokeWidth={1.5} aria-hidden="true" />{/snippet}
+      </EmptyState>
+    {/if}
+  </div>
+
+  {#if showsStill}
+    <div
+      class="markup-layer"
+      use:bodyPortal
+      style="top: {markupBounds.y}px; right: {markupBounds.right}px; bottom: {markupBounds.bottom}px; left: {markupBounds.x}px"
+    >
+      <div class="still">
+        <AnnotationCanvas
+          tool={tool === 'region' ? 'region' : tool === 'drawing' ? 'drawing' : 'erasing'}
+          shapes={marks}
+          {backdrop}
+          onAdd={addShape}
+          onErase={eraseShape}
+          onResize={(size) => (layerSize = size)}
+        />
+        <AnnotationBadges
+          annotations={numbered}
+          {editingId}
+          surface={layerSize}
+          onLabel={(id, label) => (annotations = labelAnnotation(annotations, id, label))}
+          onDoneEditing={() => (editingId = null)}
+        />
+      </div>
+    </div>
+  {/if}
 
   {#if errorText}
     <p class="failure" role="alert" data-testid="browser-panel-error">{errorText}</p>
@@ -741,8 +763,19 @@
      the still is the panel. A centred row is sized by its content, so a still
      asked to fill one measures no height at all — and marks placed on a
      surface with no height have nowhere to be. */
-  .page.filled {
-    align-content: stretch;
+  .markup-layer {
+    position: fixed;
+    z-index: 2;
+    display: grid;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--color-surface);
+  }
+
+  .chrome-composer {
+    display: flex;
+    justify-content: center;
+    padding: 8px 12px 0;
   }
 
   /* The canvas and the numbers on it share one box, so a circle lands on the
@@ -752,22 +785,6 @@
     min-height: 0;
     height: 100%;
     width: 100%;
-  }
-
-  /* The card belongs to the page it is about, so it floats at the foot of the
-     picture rather than becoming another row of panel chrome under it. */
-  .floating {
-    position: absolute;
-    right: 0;
-    bottom: 12px;
-    left: 0;
-    display: flex;
-    justify-content: center;
-    pointer-events: none;
-  }
-
-  .floating > :global(*) {
-    pointer-events: auto;
   }
 
   /* Expanding and collapsing move the native view, which the shell repositions

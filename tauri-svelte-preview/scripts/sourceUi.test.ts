@@ -46,6 +46,21 @@ assert.match(
   /setBrowserPresentationMode\(browserModelContext\(\)/,
   'The Browser panel should host the native browser view itself, by pushing its own bounds'
 );
+assert.match(
+  browserPanelSource,
+  /\{#if annotating\}[\s\S]*?class="chrome-composer"[\s\S]*?<BrowserMiniComposer/,
+  'Picking another element should keep the existing annotations and prompt mounted in browser chrome'
+);
+assert.doesNotMatch(
+  browserPanelSource,
+  /\{#if annotating && showsStill\}/,
+  'The annotation composer should not disappear while Select temporarily shows the live page'
+);
+assert.match(
+  browserPanelSource,
+  /const markupBounds = \$derived\.by\([\s\S]*?wantedPlacement\(true, expanded\)[\s\S]*?use:bodyPortal[\s\S]*?markupBounds\.x/,
+  'Widen should apply the measured expanded bounds to the annotated still'
+);
 assert.doesNotMatch(
   nextPageSource,
   /browser-center-proxy|browserInputUrl|openRuntimeContextInBrowserDock|aria-label="Browser dock"/,
@@ -73,4 +88,4 @@ assert.match(
   'Runtime panels should be normalized out of the retired bottom dock'
 );
 
-console.log('sourceUi: Activity-owned source browser styles and the single session browser overlay are pinned');
+console.log('sourceUi: browser annotation persistence and widening are pinned');
