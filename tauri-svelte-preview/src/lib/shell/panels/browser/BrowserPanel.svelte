@@ -50,6 +50,7 @@
     beginBrowserElementPicker,
     cancelBrowserAnnotation,
     collapseBrowserToControl,
+    describeBrowserError,
     setBrowserPresentationMode
   } from '$lib/shell/browser/browserModel.ts';
   import type {
@@ -151,7 +152,7 @@
   }
 
   function say(error: unknown): void {
-    failure = error instanceof Error ? error.message : String(error);
+    failure = describeBrowserError(error);
   }
 
   /** The address without the scheme or the path — what the strip calls the page. */

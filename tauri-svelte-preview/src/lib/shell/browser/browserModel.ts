@@ -179,8 +179,20 @@ function nowFor(context: BrowserModelContext, explicit?: string): string {
   return explicit?.trim() || context.now?.() || new Date().toISOString();
 }
 
+/** A backend rejection is a plain `{ code, message }` object, not an Error;
+ * stringifying it raw reads "[object Object]" in the panel. */
+export function describeBrowserError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object') {
+    const { message, code } = error as { message?: unknown; code?: unknown };
+    if (typeof message === 'string' && message) return message;
+    if (typeof code === 'string' && code) return code;
+  }
+  return String(error);
+}
+
 function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return describeBrowserError(error);
 }
 
 function callBackend<T>(

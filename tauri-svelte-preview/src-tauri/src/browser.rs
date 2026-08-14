@@ -304,6 +304,14 @@ pub(crate) trait BrowserView: Send + Sync {
     fn set_viewport(&self, _viewport: &BrowserViewport) -> Result<(), BrowserCommandError> {
         Ok(())
     }
+    /// A rendered still of the page as PNG bytes with its pixel size. Views
+    /// that cannot draw one refuse rather than guess.
+    fn snapshot(&self) -> Result<(Vec<u8>, u32, u32), BrowserCommandError> {
+        Err(BrowserCommandError::new(
+            BrowserErrorCode::Unsupported,
+            "This view cannot render a snapshot",
+        ))
+    }
     fn eval(&self, script: &str) -> Result<(), BrowserCommandError>;
     fn eval_with_callback(
         &self,
@@ -944,12 +952,21 @@ impl BrowserRegistry {
     }
 
     fn capture(&self, target: BrowserTarget) -> Result<BrowserMarkupCapture, BrowserCommandError> {
-        let workspaces = self.validate_target(&target)?;
-        let _ = Self::require_tab(&workspaces, &target)?;
-        Err(BrowserCommandError::new(
-            BrowserErrorCode::Unsupported,
-            "Native viewport snapshots are unavailable: Tauri 2.11.2/wry 0.55.1 expose no safe WKWebView takeSnapshot wrapper",
-        ))
+        let view = {
+            let workspaces = self.validate_target(&target)?;
+            Self::require_tab(&workspaces, &target)?.view.clone()
+        };
+        // The registry lock is released before the snapshot: the view waits on
+        // the page rendering a still, and holding the lock for that long would
+        // stall every other browser command.
+        let (bytes, width, height) = view.snapshot()?;
+        Ok(BrowserMarkupCapture {
+            mime_type: "image/png".to_string(),
+            bytes,
+            width,
+            height,
+            source_hash: String::new(),
+        })
     }
 
     /// Called by the application event loop before Tauri exits. Every child
