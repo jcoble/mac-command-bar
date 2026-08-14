@@ -24,8 +24,9 @@
   import * as Select from '$lib/components/ui/select/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import { Input } from '$lib/components/ui/input/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import { resolveOwnedSessionProject, type OwnedSession } from '$lib/shell/ownedSessions';
   import { AGENT_ICONS } from '$lib/shell/agentIcons';
   import { registerSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
@@ -121,6 +122,31 @@
     openSessionLibrary();
   }
 
+  /** The rail's own filter: a strip under the header, open only while in use. */
+  let filterOpen = $state(false);
+  let filterText = $state('');
+  let filterInput = $state<HTMLInputElement | null>(null);
+
+  const filtered = $derived.by(() => {
+    const needle = filterText.trim().toLowerCase();
+    if (!needle) return owned;
+    return owned.filter((session) => {
+      const title = sessionLabel(session).toLowerCase();
+      const project = resolveOwnedSessionProject(session).label.toLowerCase();
+      return title.includes(needle) || project.includes(needle);
+    });
+  });
+
+  function showFilter(): void {
+    filterOpen = true;
+    queueMicrotask(() => filterInput?.focus());
+  }
+
+  function hideFilter(): void {
+    filterOpen = false;
+    filterText = '';
+  }
+
   function askAboutRemoving(ownedId: string): void {
     removing = owned.find((session) => session.ownedId === ownedId) ?? null;
     removeOpen = removing !== null;
@@ -206,7 +232,7 @@
             size="xs"
             side="bottom"
             class={ACTION_CLASS}
-            onclick={openFinder}
+            onclick={showFilter}
           >
             <Search class="size-3.5" aria-hidden="true" />
           </IconButton>
@@ -298,9 +324,23 @@
         </div>
       </header>
 
+      {#if filterOpen}
+        <div class="filter-strip">
+          <Input
+            bind:ref={filterInput}
+            bind:value={filterText}
+            data-testid="session-rail-filter"
+            placeholder="Filter sessions"
+            aria-label="Filter sessions by title or project"
+            onkeydown={(event: KeyboardEvent) => { if (event.key === 'Escape') hideFilter(); }}
+            onblur={hideFilter}
+          />
+        </div>
+      {/if}
+
       <div class="min-h-0 flex-1 overflow-hidden">
         <SessionRail
-          sessions={owned}
+          sessions={filtered}
           options={viewOptions}
           {activeOwnedId}
           {onSelect}
@@ -383,6 +423,12 @@
   }
 
   .sessions-header .header-actions { gap: 5px; }
+
+  .filter-strip {
+    flex: 0 0 auto;
+    padding: 7px 9px 7px 13px;
+    border-bottom: 1px solid var(--color-border);
+  }
 
   .sessions-header :global(button svg) {
     width: 16px;

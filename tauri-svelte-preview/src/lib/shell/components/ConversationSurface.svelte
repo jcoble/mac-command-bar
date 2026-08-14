@@ -2,7 +2,6 @@
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import TerminalSurface from './TerminalSurface.svelte';
-  import ConversationHeader from './conversation/ConversationHeader.svelte';
   import ConversationInspector from './conversation/ConversationInspector.svelte';
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
@@ -52,7 +51,6 @@
   import { remainingContextPercent } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { requestOpenFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
-  import { requestSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
 
   interface Props {
@@ -359,14 +357,6 @@
   <div class:covered={structured} class="terminal-layer"><TerminalSurface {owned} {activeOwnedId} {registerHost} {onHostLayout} /></div>
   {#if structured && active && conversation}
     <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
-      <ConversationHeader
-        {active}
-        {conversation}
-        {selectedChild}
-        onRestart={() => requestSessionRestart(active.ownedId, active.state === 'exited')}
-        onModeChange={(mode) => { if (!appOwned) setConversationMode(active.ownedId, mode); }}
-        onInspectorToggle={() => { if (appOwned) inspectorOpen = !inspectorOpen; }}
-      />
       {#if !appOwned}
         <div class="handoff-actions" aria-label="Conversation handoff actions">
           <button type="button" data-testid="open-native-cli" onclick={() => void onOpenNativeCli?.(active.ownedId)}>
@@ -377,6 +367,17 @@
               Fork to native CLI
             </button>
           {/if}
+          <button type="button" data-testid="conversation-open-raw" onclick={() => setConversationMode(active.ownedId, 'raw')}>
+            Open raw terminal
+          </button>
+        </div>
+      {:else}
+        <!-- The inspector toggle floats in the corner rather than sitting in a
+             bar of its own, so the transcript keeps the full height. -->
+        <div class="inspector-actions">
+          <button class="structured-toggle" data-testid="conversation-inspector-toggle" type="button" onclick={() => (inspectorOpen = !inspectorOpen)}>
+            Inspector
+          </button>
         </div>
       {/if}
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
@@ -444,4 +445,4 @@
   {/if}
 </div>
 
-<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions{position:absolute;right:12px;top:12px;z-index:2}.read-only-note{padding:10px;text-align:center;border-top:1px solid var(--color-border);color:var(--color-text-2);font-size:12px}</style>
+<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions,.inspector-actions{position:absolute;right:12px;top:12px;z-index:2}.read-only-note{padding:10px;text-align:center;border-top:1px solid var(--color-border);color:var(--color-text-2);font-size:12px}</style>
