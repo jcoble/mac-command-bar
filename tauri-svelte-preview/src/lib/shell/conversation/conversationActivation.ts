@@ -47,6 +47,23 @@ export function shouldReviveBeforeSend(state: ConversationSendState): boolean {
     || DEAD_CONNECTION_STATES.includes(state.connectionState);
 }
 
+/**
+ * Decide whether a send may carry image attachments.
+ *
+ * Only a connected session answers for itself: a suspended session still holds
+ * the capability snapshot recorded when it was last connected, which can
+ * predate the provider gaining image prompts. Refusing on that snapshot leaves
+ * a screenshot that can never go out, so an unconnected session sends and the
+ * provider — reconnected with a fresh handshake — decides.
+ */
+export function sendSupportsImages(
+  capabilities: { prompt: { image: boolean } } | null | undefined,
+  connectionState: ConversationConnectionState | null | undefined
+): boolean {
+  if (connectionState !== 'connected' || !capabilities) return true;
+  return capabilities.prompt.image === true;
+}
+
 /** Select a usable activation generation that is not older than the pre-ensure state. */
 export function generationForSend(previousGeneration: number, activationGeneration: number): number | null {
   if (!Number.isInteger(previousGeneration) || !Number.isInteger(activationGeneration)) return null;

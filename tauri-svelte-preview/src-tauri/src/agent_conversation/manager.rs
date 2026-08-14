@@ -4749,6 +4749,65 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn activation_refreshes_and_persists_a_stale_capability_snapshot() {
+        let fixture = fixture_manager_with_acp_session("suspend_stale_capabilities").await;
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
+        // A session started before the provider gained image prompts keeps that
+        // answer in its stored row, so the row is rewritten the same way here.
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            session.capabilities.prompt.image = false;
+            persist_session(session).unwrap();
+        }
+        assert!(!stored_capabilities(&fixture).prompt.image);
+
+        let connection = fixture
+            .manager
+            .ensure_async(request(
+                fixture.root.to_str().unwrap(),
+                &fixture.owned_id,
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .expect("ensure suspended session");
+        fixture
+            .manager
+            .activate(&fixture.owned_id, connection.generation)
+            .await
+            .expect("activate suspended session");
+
+        assert!(
+            fixture
+                .manager
+                .capabilities_for_owned_id(&fixture.owned_id)
+                .unwrap()
+                .prompt
+                .image
+        );
+        assert!(stored_capabilities(&fixture).prompt.image);
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    fn stored_capabilities(fixture: &FixtureManager) -> AgentCapabilities {
+        let row = fixture
+            .manager
+            .store
+            .get_session(&fixture.owned_id)
+            .unwrap()
+            .expect("stored session row");
+        serde_json::from_str::<StoredSessionExtra>(&row.extra_json)
+            .unwrap()
+            .capabilities
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn ensure_after_suspend_resumes_with_same_native_session_id() {
         let fixture = fixture_manager_with_acp_session("suspend_resume").await;
         let native_session_id = fixture
