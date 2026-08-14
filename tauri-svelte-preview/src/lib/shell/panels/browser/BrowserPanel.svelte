@@ -658,7 +658,11 @@
       </div>
     {/if}
 
-    {#if annotating}
+    <!-- The card floats inside the page host, so it is only there while the
+         still is: over the live view it would be behind a native view, which
+         is a card that cannot be read or typed into. Select is the one tool
+         that runs on the live page, and the strip above still says so. -->
+    {#if annotating && showsStill}
       <div class="floating">
         <BrowserMiniComposer
           {description}

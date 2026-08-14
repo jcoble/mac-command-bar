@@ -2296,6 +2296,8 @@ dependencies = [
  "httpdate",
  "libc",
  "mcb-core",
+ "objc2",
+ "objc2-foundation",
  "portable-pty",
  "reqwest 0.12.28",
  "rusqlite",

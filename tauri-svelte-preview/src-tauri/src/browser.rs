@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -507,6 +507,10 @@ impl BrowserRegistry {
             .factory
             .create(app, &input, &profile, callbacks)?;
         if let Some(bounds) = bounds {
+            // The factory already built the view at this rectangle. It is not
+            // set again here: these are the bounds the workspace was holding,
+            // not ones the panel measured, and a view placed by them would
+            // count as placed and come on screen over the middle of the shell.
             stderr_log!(
                 "browser: view created tab={} x={} y={} w={} h={}",
                 input.tab_id,
@@ -515,7 +519,6 @@ impl BrowserRegistry {
                 bounds.width.round(),
                 bounds.height.round()
             );
-            view.set_bounds(bounds)?;
         }
         view.show()?;
 
@@ -1375,26 +1378,112 @@ impl BrowserProfile {
     }
 }
 
+/// How far the window's content area sits below and right of its own
+/// top-left corner, in logical pixels — the title bar, on a window that has
+/// one.
+///
+/// A child webview is positioned against the window, and on macOS the window
+/// begins at the top of its title bar; the panel measures the rectangle it
+/// wants filled in the document, which begins below that bar. Handing the
+/// measured rectangle over unchanged draws the page a title bar too high,
+/// over the panel's own address and tool rows — and nothing in the document
+/// can be drawn back over a native view. Tauri's inner and outer position and
+/// size report identical values for this window, so the window itself is
+/// asked. A window that cannot be asked gets no correction, which is the old
+/// behaviour rather than a wrong guess.
+#[cfg(target_os = "macos")]
+fn content_inset(window: &tauri::Window) -> (f64, f64) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSRect;
+    let Ok(ptr) = window.ns_window() else {
+        return (0.0, 0.0);
+    };
+    if ptr.is_null() {
+        return (0.0, 0.0);
+    }
+    let ns = ptr.cast::<AnyObject>();
+    // SAFETY: the pointer is this window's NSWindow and outlives the borrow;
+    // both calls are struct-returning getters. AppKit rectangles are in
+    // logical points with a bottom-left origin, so the title bar is the space
+    // between the top of the frame and the top of the content layout area.
+    let frame: NSRect = unsafe { msg_send![&*ns, frame] };
+    let content: NSRect = unsafe { msg_send![&*ns, contentLayoutRect] };
+    let top = frame.size.height - (content.origin.y + content.size.height);
+    let left = content.origin.x;
+    let keep = |inset: f64| {
+        if inset.is_finite() && inset > 0.0 {
+            inset
+        } else {
+            0.0
+        }
+    };
+    (keep(left), keep(top))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn content_inset(_window: &tauri::Window) -> (f64, f64) {
+    (0.0, 0.0)
+}
+
+/// The same rectangle, moved from the document's space into the window's.
+fn into_window_space(bounds: BrowserBounds, inset: (f64, f64)) -> BrowserBounds {
+    BrowserBounds {
+        x: bounds.x + inset.0,
+        y: bounds.y + inset.1,
+        width: bounds.width,
+        height: bounds.height,
+    }
+}
+
 struct TauriBrowserView {
     webview: tauri::Webview,
     navigation_generation: Arc<AtomicU64>,
+    /// Whether the view has been given a rectangle the panel measured. Until
+    /// then the only rectangle it has is whatever the workspace was holding —
+    /// on a restored session, the floating default over the middle of the
+    /// shell — so it waits off screen rather than painting a frame there.
+    placed: AtomicBool,
+    /// A show asked for before that rectangle arrived, honoured once it does.
+    pending_show: AtomicBool,
 }
 
 impl BrowserView for TauriBrowserView {
     fn set_bounds(&self, bounds: BrowserBounds) -> Result<(), BrowserCommandError> {
+        let inset = content_inset(&self.webview.window());
+        let bounds = into_window_space(bounds, inset);
+        stderr_log!(
+            "browser: view placed x={} y={} w={} h={} inset=({}, {})",
+            bounds.x.round(),
+            bounds.y.round(),
+            bounds.width.round(),
+            bounds.height.round(),
+            inset.0.round(),
+            inset.1.round()
+        );
         self.webview
             .set_bounds(tauri::Rect {
                 position: tauri::Position::Logical(tauri::LogicalPosition::new(bounds.x, bounds.y)),
                 size: tauri::Size::Logical(tauri::LogicalSize::new(bounds.width, bounds.height)),
             })
-            .map_err(native_error)
+            .map_err(native_error)?;
+        self.placed.store(true, Ordering::Release);
+        if self.pending_show.swap(false, Ordering::AcqRel) {
+            self.webview.show().map_err(native_error)?;
+        }
+        Ok(())
     }
 
     fn show(&self) -> Result<(), BrowserCommandError> {
+        if !self.placed.load(Ordering::Acquire) {
+            self.pending_show.store(true, Ordering::Release);
+            return Ok(());
+        }
         self.webview.show().map_err(native_error)
     }
 
     fn hide(&self) -> Result<(), BrowserCommandError> {
+        self.pending_show.store(false, Ordering::Release);
         self.webview.hide().map_err(native_error)
     }
 
@@ -1539,9 +1628,13 @@ impl BrowserViewFactory for TauriBrowserViewFactory {
                 tauri::LogicalSize::new(bounds.width, bounds.height),
             )
             .map_err(native_error)?;
+        // Off screen until the panel says where it goes: see `placed`.
+        webview.hide().map_err(native_error)?;
         Ok(Arc::new(TauriBrowserView {
             webview,
             navigation_generation,
+            placed: AtomicBool::new(false),
+            pending_show: AtomicBool::new(false),
         }))
     }
 }
@@ -1827,11 +1920,13 @@ mod tests {
     #[derive(Default)]
     struct FakeView {
         close_calls: AtomicUsize,
+        set_bounds_calls: AtomicUsize,
         evals: Mutex<Vec<String>>,
     }
 
     impl BrowserView for FakeView {
         fn set_bounds(&self, _bounds: BrowserBounds) -> Result<(), BrowserCommandError> {
+            self.set_bounds_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
@@ -2111,6 +2206,57 @@ mod tests {
             registry.inner.workspaces.lock().unwrap()["workspace"].tabs["tab"].generation,
             1
         );
+    }
+
+    #[test]
+    fn a_new_tab_stays_off_screen_until_the_panel_places_it() {
+        let factory = Arc::new(FakeFactory::default());
+        let registry = BrowserRegistry::with_factory(factory.clone());
+        let sink = Arc::new(FakeSink::default());
+        registry
+            .create_tab(
+                None,
+                input("workspace", "tab", 1, "https://example.test/"),
+                sink.clone(),
+            )
+            .unwrap();
+
+        let views = factory.views.lock().unwrap();
+        let view = views[0].clone();
+        drop(views);
+        // Creation asks for the view to be shown, and the bounds it was created
+        // with are whatever the workspace held — not a measured rectangle.
+        assert_eq!(view.set_bounds_calls.load(Ordering::SeqCst), 0);
+
+        registry
+            .set_bounds(
+                target("workspace", "tab", 1),
+                BrowserBounds {
+                    x: 960.0,
+                    y: 123.0,
+                    width: 640.0,
+                    height: 818.0,
+                },
+            )
+            .unwrap();
+        assert_eq!(view.set_bounds_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn document_bounds_move_into_the_window_by_the_content_inset() {
+        let measured = BrowserBounds {
+            x: 960.0,
+            y: 123.0,
+            width: 640.0,
+            height: 818.0,
+        };
+        let placed = into_window_space(measured, (0.0, 31.0));
+        assert_eq!(placed.x, 960.0);
+        assert_eq!(placed.y, 154.0);
+        assert_eq!(placed.width, 640.0);
+        assert_eq!(placed.height, 818.0);
+        // A window with no chrome above its document leaves the rectangle alone.
+        assert_eq!(into_window_space(measured, (0.0, 0.0)), measured);
     }
 
     #[test]
