@@ -431,6 +431,17 @@ export type AgentConversationPayload =
       usedTokens?: number;
       contextWindow?: number;
     }
+  | {
+      kind: 'terminalProjection';
+      eventType: AgentEventType;
+      providerInstanceId: string;
+      timestampMs: number | null;
+      nativeSessionId: string;
+      itemId: string | null;
+      payload: Record<string, AgentConfigValue>;
+      providerMetadata: Record<string, AgentConfigValue>;
+      rawFrameReference: AgentRawFrameReference;
+    }
   | { kind: 'error'; code: string; message: string; recoverable: boolean };
 
 /**

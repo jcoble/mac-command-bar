@@ -197,6 +197,9 @@ export function applyConversationEvent(
         }
       };
 
+    case 'terminalProjection':
+      return next;
+
     case 'error':
       return {
         ...next,

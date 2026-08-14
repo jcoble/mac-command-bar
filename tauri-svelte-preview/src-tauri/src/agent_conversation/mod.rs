@@ -314,11 +314,11 @@ pub async fn read_agent_conversation_transcript(
 
 #[tauri::command]
 pub async fn start_agent_conversation_terminal_projection(
-    app: tauri::AppHandle,
+    manager: tauri::State<'_, AgentRuntimeManager>,
     registry: tauri::State<'_, terminal_projection::TerminalProjectionRegistry>,
     request: terminal_projection::StartTerminalProjectionRequest,
 ) -> Result<terminal_projection::TerminalProjectionRegistration, String> {
-    registry.start(app, request)
+    registry.start(manager.inner().clone(), request)
 }
 
 #[tauri::command]

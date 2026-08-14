@@ -515,24 +515,53 @@ assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnect
   assert.equal(store.getConversationSession(ownedId).capabilitiesGeneration, 0);
 }
 
-// Canonical turn events drive the same active-turn authority as legacy events.
-store.applyAgentConversationEvent({
-  type: 'session.started', ownedId: 'owned-canonical', provider: 'codex',
-  providerInstanceId: 'provider-canonical', generation: 1, sequence: 1, timestampMs: 400,
-  payload: {}
-});
-store.applyAgentConversationEvent({
-  type: 'turn.started', ownedId: 'owned-canonical', provider: 'codex',
-  providerInstanceId: 'provider-canonical', generation: 1, sequence: 2, timestampMs: 410,
-  turnId: 'turn-canonical', payload: {}
-});
-assert.equal(store.getConversationSession('owned-canonical').activeTurnId, 'turn-canonical');
-store.applyAgentConversationEvent({
-  type: 'turn.completed', ownedId: 'owned-canonical', provider: 'codex',
-  providerInstanceId: 'provider-canonical', generation: 1, sequence: 3, timestampMs: 420,
-  turnId: 'turn-canonical', payload: {}
-});
-assert.equal(store.getConversationSession('owned-canonical').activeTurnId, undefined);
+// Terminal transcript items arrive inside the same journal envelope as every
+// structured event. The common sequence rule must reject a repeated envelope
+// before its nested projection can render another item.
+{
+  const projectedEvent = {
+    ownedId: 'owned-projection', provider: 'codex', generation: 1,
+    sequence: 1, timestampMs: 400,
+    payload: {
+      kind: 'terminalProjection',
+      eventType: 'item.completed',
+      providerInstanceId: 'terminal-transcript:native-projection',
+      timestampMs: 390,
+      nativeSessionId: 'native-projection',
+      itemId: 'projected-answer',
+      payload: {
+        item: {
+          id: 'projected-answer', type: 'assistant-message',
+          content: [{ channel: 'assistant', text: 'Projected answer' }]
+        }
+      },
+      providerMetadata: { source: 'terminal-transcript', historical: true },
+      rawFrameReference: { id: 'frame-projection', redacted: true }
+    }
+  };
+  assert.equal(store.applyAgentConversationEvent(projectedEvent), true);
+  const current = store.getConversationSession('owned-projection');
+  assert.equal(current.lastSequence, 1);
+  assert.equal(current.agentItems.length, 1);
+  assert.equal(current.agentItems[0].content[0].text, 'Projected answer');
+
+  const staleProjection = {
+    ...projectedEvent,
+    payload: {
+      ...projectedEvent.payload,
+      itemId: 'stale-projected-answer',
+      payload: {
+        item: {
+          id: 'stale-projected-answer', type: 'assistant-message',
+          content: [{ channel: 'assistant', text: 'Stale projected answer' }]
+        }
+      }
+    }
+  };
+  assert.equal(store.applyAgentConversationEvent(staleProjection), false);
+  assert.equal(current.lastSequence, 1);
+  assert.equal(current.agentItems.length, 1);
+}
 
 const saved = store.captureConversationWorkspace('owned-b');
 store.setConversationDraft('owned-b', 'Changed');

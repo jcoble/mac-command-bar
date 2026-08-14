@@ -223,6 +223,19 @@ pub struct AgentRawFrameReference {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TerminalProjectionPayload {
+    pub event_type: AgentEventType,
+    pub provider_instance_id: String,
+    pub timestamp_ms: Option<u64>,
+    pub native_session_id: String,
+    pub item_id: Option<String>,
+    pub payload: BTreeMap<String, Value>,
+    pub provider_metadata: BTreeMap<String, Value>,
+    pub raw_frame_reference: AgentRawFrameReference,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentEvent {
     #[serde(rename = "type")]
     pub event_type: AgentEventType,
@@ -465,6 +478,7 @@ pub enum AgentConversationPayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         context_window: Option<u64>,
     },
+    TerminalProjection(TerminalProjectionPayload),
     Error {
         code: String,
         message: String,

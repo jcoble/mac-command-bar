@@ -21,7 +21,8 @@ use super::protocol::{
     AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities,
     AgentUserInputResponse, AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition,
     ApprovalState, ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
-    SetAgentConversationConfigRequest, ToolState, UpdateAgentConversationSessionMetaRequest,
+    SetAgentConversationConfigRequest, TerminalProjectionPayload, ToolState,
+    UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
@@ -1324,6 +1325,25 @@ impl AgentRuntimeManager {
                     .map_err(|error| format!("Could not decode stored conversation event: {error}"))
             })
             .collect()
+    }
+
+    pub fn submit_terminal_projection(
+        &self,
+        owned_id: &str,
+        projection: TerminalProjectionPayload,
+    ) -> Result<AgentConversationEvent, String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = sessions
+            .get_mut(owned_id)
+            .ok_or_else(|| "Agent conversation session was not found".to_string())?;
+        record_payload_for_session_and_dispatch(
+            session,
+            &self.emitter,
+            AgentConversationPayload::TerminalProjection(projection),
+        )
     }
 
     fn list_recent_events(&self, owned_id: &str) -> Result<Vec<AgentConversationEvent>, String> {
@@ -3104,8 +3124,30 @@ fn canonical_event(
         } => AgentEventType::TurnInterrupted,
         AgentConversationPayload::Turn { .. } => AgentEventType::TurnCompleted,
         AgentConversationPayload::Usage { .. } => AgentEventType::UsageUpdated,
+        AgentConversationPayload::TerminalProjection(projection) => projection.event_type,
         AgentConversationPayload::Error { .. } => AgentEventType::RuntimeError,
     };
+    if let AgentConversationPayload::TerminalProjection(projection) = payload {
+        return Ok(AgentEvent {
+            event_type,
+            owned_id: session.owned_id.clone(),
+            provider: session.provider,
+            provider_instance_id: projection.provider_instance_id.clone(),
+            generation: session.generation,
+            sequence,
+            timestamp_ms: projection
+                .timestamp_ms
+                .map(u128::from)
+                .unwrap_or(timestamp_ms),
+            native_session_id: Some(projection.native_session_id.clone()),
+            turn_id: None,
+            item_id: projection.item_id.clone(),
+            request_id: None,
+            payload: projection.payload.clone(),
+            provider_metadata: Some(projection.provider_metadata.clone()),
+            raw_frame_reference: Some(projection.raw_frame_reference.clone()),
+        });
+    }
     let payload_value = serde_json::to_value(payload).map_err(|error| error.to_string())?;
     let payload = payload_value
         .as_object()
@@ -3754,6 +3796,7 @@ mod tests {
             AgentConversationPayload::Turn { .. } => "turn",
             AgentConversationPayload::AvailableCommandsUpdate { .. } => "availableCommandsUpdate",
             AgentConversationPayload::Usage { .. } => "usage",
+            AgentConversationPayload::TerminalProjection(_) => "terminalProjection",
             AgentConversationPayload::Error { .. } => "error",
         }
     }
@@ -6299,6 +6342,74 @@ mod tests {
         assert!(snapshot
             .windows(2)
             .all(|pair| pair[1].sequence == pair[0].sequence + 1));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn projected_terminal_payload_continues_the_journal_sequence() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::default();
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-projection",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session =
+                current_session_mut(&mut sessions, "owned-projection", connection.generation)
+                    .unwrap();
+            record_payload_for_session_and_dispatch(
+                session,
+                &manager.emitter,
+                AgentConversationPayload::Error {
+                    code: "fixture".into(),
+                    message: "first journal event".into(),
+                    recoverable: true,
+                },
+            )
+            .unwrap();
+        }
+
+        manager
+            .submit_terminal_projection(
+                "owned-projection",
+                super::super::protocol::TerminalProjectionPayload {
+                    event_type: AgentEventType::ItemCompleted,
+                    provider_instance_id: "terminal-transcript:native-projection".into(),
+                    timestamp_ms: Some(42),
+                    native_session_id: "native-projection".into(),
+                    item_id: Some("projected-item".into()),
+                    payload: BTreeMap::from([(
+                        "text".into(),
+                        Value::String("projected answer".into()),
+                    )]),
+                    provider_metadata: BTreeMap::from([(
+                        "source".into(),
+                        Value::String("terminal-transcript".into()),
+                    )]),
+                    raw_frame_reference: super::super::protocol::AgentRawFrameReference {
+                        id: "frame-projection".into(),
+                        redacted: true,
+                    },
+                },
+            )
+            .unwrap();
+
+        let stored = manager.list_events("owned-projection", 0).unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[1].generation, connection.generation);
+        assert_eq!(stored[1].sequence, 2);
+        assert!(matches!(
+            stored[1].payload,
+            AgentConversationPayload::TerminalProjection(_)
+        ));
+        let snapshot = manager.snapshot("owned-projection").unwrap().unwrap();
+        assert_eq!(snapshot.last_sequence, 2);
+        assert_eq!(snapshot.events, stored);
         fs::remove_dir_all(root).unwrap();
     }
 

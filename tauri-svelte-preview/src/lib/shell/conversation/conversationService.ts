@@ -23,7 +23,6 @@ import type {
   AgentCapabilities,
   AgentConversationConnection,
   AgentConversationEvent,
-  AgentEvent,
   AgentConversationProvider,
   AgentConfigOption,
   AgentConfigValue,
@@ -75,11 +74,6 @@ const sessionDraftPersistence = new ConversationDraftPersistence(
   },
   setConversationDraft
 );
-
-type TerminalProjectionRegistration = {
-  generation: number;
-  events: AgentEvent[];
-};
 
 export function persistConversationSessionDraft(ownedId: string, text: string): void {
   if (isTauri()) sessionDraftPersistence.schedule(ownedId, text);
@@ -305,11 +299,8 @@ export function startConversationTerminalProjection(input: {
   const signature = `${input.provider}:${input.nativeSessionId}`;
   if (terminalProjections.get(input.ownedId) === signature) return;
   terminalProjections.set(input.ownedId, signature);
-  const generation = getConversationSession(input.ownedId)?.generation ?? 0;
-  void invoke<TerminalProjectionRegistration>('start_agent_conversation_terminal_projection', {
-    request: { ...input, generation }
-  }).then((registration) => {
-    for (const event of registration.events) applyAgentConversationEvent(event);
+  void invoke<Record<string, never>>('start_agent_conversation_terminal_projection', {
+    request: input
   }).catch(() => {
     // The transcript may not exist until the agent accepts its first prompt.
     // Dropping the signature lets the next activation register again.
@@ -408,11 +399,10 @@ export async function startConversationEvents(): Promise<void> {
   conversationEventsDisposed = false;
   if (conversationEventsSetup) return conversationEventsSetup;
   conversationEventsSetup = (async () => {
-    const stop = await listen<AgentConversationEvent | AgentEvent>('agent-conversation-event', ({ payload }) => {
+    const stop = await listen<AgentConversationEvent>('agent-conversation-event', ({ payload }) => {
       applyAgentConversationEvent(payload);
       if (
-        'payload' in payload
-        && payload.payload.kind === 'userMessage'
+        payload.payload.kind === 'userMessage'
         && typeof payload.payload.text === 'string'
       ) {
         const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);

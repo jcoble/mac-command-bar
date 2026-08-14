@@ -183,29 +183,38 @@ export function ensureConversationSession(
   return created;
 }
 
-export function applyAgentConversationEvent(event: AgentConversationEvent | AgentEvent): boolean {
+export function applyAgentConversationEvent(event: AgentConversationEvent): boolean {
   const existing = conversationSessions[event.ownedId];
   if (existing && event.provider !== existing.provider) return false;
   const current = ensureConversationSession(event.ownedId, event.provider);
   appendRecentEvent(current, event);
-  if ('type' in event) {
-    const applied = applyCanonicalAgentEvent(event);
-    if (applied && !conversationSessions[event.ownedId]?.desynchronized) {
-      recordConversationPresenceEvent(event);
-    }
-    return applied;
-  }
   const applied = applyLegacyEventInPlace(current, event);
   if (!applied) return false;
-  const typedItem = agentItemFromEvent(event);
+  const displayEvent: AgentConversationEvent | AgentEvent = event.payload.kind === 'terminalProjection'
+    ? {
+        type: event.payload.eventType,
+        ownedId: event.ownedId,
+        provider: event.provider,
+        providerInstanceId: event.payload.providerInstanceId,
+        generation: event.generation,
+        sequence: event.sequence,
+        timestampMs: event.payload.timestampMs ?? event.timestampMs,
+        nativeSessionId: event.payload.nativeSessionId,
+        itemId: event.payload.itemId ?? undefined,
+        payload: event.payload.payload,
+        providerMetadata: event.payload.providerMetadata,
+        rawFrameReference: event.payload.rawFrameReference
+      }
+    : event;
+  const typedItem = agentItemFromEvent(displayEvent);
   if (typedItem) {
-    if (mergeAgentItemInPlace(current, typedItem, conversationEventAppendsItemContent(event))
+    if (mergeAgentItemInPlace(current, typedItem, conversationEventAppendsItemContent(displayEvent))
       && !['userMessage', 'assistantDelta', 'assistantMessage', 'tool'].includes(event.payload.kind)) {
       current.timelineRevision += 1;
     }
   }
-  applyTypedEventPayload(current, event);
-  if (!current.desynchronized) recordConversationPresenceEvent(event);
+  applyTypedEventPayload(current, displayEvent);
+  if (!current.desynchronized) recordConversationPresenceEvent(displayEvent);
   return true;
 }
 
@@ -368,6 +377,8 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
         contextWindow: payload.contextWindow ?? current.usage?.contextWindow
       };
       break;
+    case 'terminalProjection':
+      break;
     case 'agentThoughtChunk':
     case 'toolCall':
     case 'toolCallUpdate':
@@ -443,47 +454,6 @@ function summarizeRecentEvent(event: AgentConversationEvent | AgentEvent): strin
   if (Array.isArray(payload.items)) return `${payload.items.length} items`;
   if (Array.isArray(payload.tasks)) return `${payload.tasks.length} tasks`;
   return 'Event received';
-}
-
-function applyCanonicalAgentEvent(event: AgentEvent): boolean {
-  const current = ensureConversationSession(event.ownedId, event.provider);
-  if (event.generation < current.generation) return false;
-  const newGeneration = event.generation > current.generation;
-  const previousSequence = newGeneration ? 0 : current.lastSequence;
-  if (!newGeneration && event.sequence <= previousSequence) return false;
-  const hasGap = event.sequence !== previousSequence + 1;
-  if (hasGap) {
-    current.generation = event.generation;
-    current.lastSequence = event.sequence;
-    current.desynchronized = true;
-    current.writerLease.generation = event.generation;
-    return true;
-  }
-  const payload = event.payload as Record<string, unknown>;
-  current.generation = event.generation;
-  current.lastSequence = event.sequence;
-  current.desynchronized = newGeneration ? false : current.desynchronized;
-  current.connectionState = event.type === 'session.closed' ? 'closed'
-      : event.type === 'session.started' ? 'connected'
-        : event.type === 'runtime.error' && payload.recoverable === false ? 'failed' : current.connectionState;
-  current.activeTurnId = event.type === 'turn.started'
-      ? event.turnId ?? asString(payload.turnId) ?? current.activeTurnId
-      : event.type === 'turn.completed'
-        || event.type === 'turn.interrupted'
-        || event.type === 'session.closed'
-        || event.type === 'runtime.error'
-        ? undefined
-        : current.activeTurnId;
-  current.nativeSessionId = event.nativeSessionId ?? current.nativeSessionId;
-  current.writerLease.generation = event.generation;
-  const typedItem = agentItemFromEvent(event);
-  if (typedItem) {
-    if (mergeAgentItemInPlace(current, typedItem, conversationEventAppendsItemContent(event))) {
-      current.timelineRevision += 1;
-    }
-  }
-  applyTypedEventPayload(current, event);
-  return true;
 }
 
 /**

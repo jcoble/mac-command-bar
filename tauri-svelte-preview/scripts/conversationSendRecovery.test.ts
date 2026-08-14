@@ -186,6 +186,11 @@ assert.doesNotMatch(
   /expectedGeneration/,
   'no generation captured before the attachment reads can refuse the send'
 );
+assert.doesNotMatch(
+  serviceSource,
+  /registration\.events|request: \{ \.\.\.input, generation \}/,
+  'terminal projection registration neither replays events nor sends a frontend generation'
+);
 assert.match(
   serviceSource,
   /nativeSessionMode,[\s\S]*?reasoningEffort: startConfig\?\.reasoningEffort \?\? state\.agentConfig\.reasoningEffort/,

@@ -1,22 +1,22 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{Emitter, Runtime};
+use std::time::Duration;
 
-use super::protocol::{AgentConversationProvider, AgentEvent, AgentRawFrameReference};
+use super::manager::AgentRuntimeManager;
+use super::protocol::{
+    AgentConversationProvider, AgentRawFrameReference, TerminalProjectionPayload,
+};
 use super::transcript::{self, FileIdentity, ProjectedRecord, TranscriptLocation};
 
-pub const TERMINAL_PROJECTION_EVENT: &str = "agent-conversation-event";
 const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_INCREMENTAL_BYTES: u64 = 1024 * 1024;
 const RECONCILE_EVERY_POLLS: u32 = 40;
 const MAX_RECONCILIATION_EVENTS: usize = 512;
 const MAX_SEEN_RECORDS: usize = 4096;
-const MAX_RECENT_EVENTS: usize = 2000;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,15 +24,11 @@ pub struct StartTerminalProjectionRequest {
     pub owned_id: String,
     pub provider: AgentConversationProvider,
     pub native_session_id: String,
-    pub generation: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TerminalProjectionRegistration {
-    pub generation: u64,
-    pub events: Vec<AgentEvent>,
-}
+pub struct TerminalProjectionRegistration {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReconcileReason {
@@ -176,7 +172,6 @@ impl TranscriptProjector {
 }
 
 struct WatcherHandle {
-    generation: u64,
     stop: Sender<()>,
     join: Option<JoinHandle<()>>,
 }
@@ -196,9 +191,9 @@ pub struct TerminalProjectionRegistry {
 }
 
 impl TerminalProjectionRegistry {
-    pub fn start<R: Runtime>(
+    pub fn start(
         &self,
-        app: tauri::AppHandle<R>,
+        manager: AgentRuntimeManager,
         request: StartTerminalProjectionRequest,
     ) -> Result<TerminalProjectionRegistration, String> {
         let owned_id = required_id(&request.owned_id, "Owned session id")?;
@@ -208,42 +203,19 @@ impl TerminalProjectionRegistry {
             .lock()
             .map_err(|_| "Terminal projection registry is unavailable".to_string())?
             .remove(&owned_id);
-        let previous_generation = previous
-            .as_ref()
-            .map(|watcher| watcher.generation)
-            .unwrap_or(0);
         if let Some(previous) = previous {
             previous.stop();
         }
-        let generation = request
-            .generation
-            .max(previous_generation)
-            .saturating_add(1);
         let mut projector = TranscriptProjector::new(request.provider, native_session_id.clone());
         let initial = projector.poll()?;
-        let events = Arc::new(Mutex::new(VecDeque::new()));
-        let mut next_sequence = 1_u64;
         for record in initial {
-            let event = canonical_event(
+            manager.submit_terminal_projection(
                 &owned_id,
-                request.provider,
-                &native_session_id,
-                generation,
-                next_sequence,
-                record,
-            );
-            next_sequence = next_sequence.saturating_add(1);
-            remember_and_emit(&app, &events, event);
+                projection_payload(&native_session_id, record),
+            )?;
         }
-        let registration_events = events
-            .lock()
-            .map_err(|_| "Terminal projection snapshot is unavailable".to_string())?
-            .iter()
-            .cloned()
-            .collect();
         let (stop, stopped) = mpsc::channel();
         let thread_owned_id = owned_id.clone();
-        let thread_events = Arc::clone(&events);
         let join = thread::Builder::new()
             .name(format!("terminal-projection-{owned_id}"))
             .spawn(move || loop {
@@ -255,16 +227,10 @@ impl TerminalProjectionRegistry {
                     continue;
                 };
                 for record in records {
-                    let event = canonical_event(
+                    let _ = manager.submit_terminal_projection(
                         &thread_owned_id,
-                        request.provider,
-                        &native_session_id,
-                        generation,
-                        next_sequence,
-                        record,
+                        projection_payload(&native_session_id, record),
                     );
-                    next_sequence = next_sequence.saturating_add(1);
-                    remember_and_emit(&app, &thread_events, event);
                 }
             })
             .map_err(|error| format!("Could not start terminal transcript projection: {error}"))?;
@@ -274,15 +240,11 @@ impl TerminalProjectionRegistry {
             .insert(
                 owned_id,
                 WatcherHandle {
-                    generation,
                     stop,
                     join: Some(join),
                 },
             );
-        Ok(TerminalProjectionRegistration {
-            generation,
-            events: registration_events,
-        })
+        Ok(TerminalProjectionRegistration {})
     }
 
     pub fn stop(&self, owned_id: &str) -> Result<bool, String> {
@@ -315,57 +277,31 @@ impl Drop for TerminalProjectionRegistry {
     }
 }
 
-fn canonical_event(
-    owned_id: &str,
-    provider: AgentConversationProvider,
+fn projection_payload(
     native_session_id: &str,
-    generation: u64,
-    sequence: u64,
     record: ProjectedRecord,
-) -> AgentEvent {
-    AgentEvent {
+) -> TerminalProjectionPayload {
+    TerminalProjectionPayload {
         event_type: record.event_type,
-        owned_id: owned_id.to_string(),
-        provider,
         provider_instance_id: format!("terminal-transcript:{native_session_id}"),
-        generation,
-        sequence,
-        timestamp_ms: if record.timestamp_ms == 0 {
-            now_millis()
-        } else {
-            record.timestamp_ms
-        },
-        native_session_id: Some(native_session_id.to_string()),
-        turn_id: None,
+        timestamp_ms: u64::try_from(record.timestamp_ms)
+            .ok()
+            .filter(|value| *value != 0),
+        native_session_id: native_session_id.to_string(),
         item_id: record.item_id.clone(),
-        request_id: None,
         payload: record.payload,
-        provider_metadata: Some(std::collections::BTreeMap::from([
+        provider_metadata: BTreeMap::from([
             (
                 "source".into(),
                 serde_json::Value::String("terminal-transcript".into()),
             ),
             ("historical".into(), serde_json::Value::Bool(true)),
-        ])),
-        raw_frame_reference: Some(AgentRawFrameReference {
+        ]),
+        raw_frame_reference: AgentRawFrameReference {
             id: record.key,
             redacted: true,
-        }),
+        },
     }
-}
-
-fn remember_and_emit<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    events: &Arc<Mutex<VecDeque<AgentEvent>>>,
-    event: AgentEvent,
-) {
-    if let Ok(mut recent) = events.lock() {
-        recent.push_back(event.clone());
-        while recent.len() > MAX_RECENT_EVENTS {
-            recent.pop_front();
-        }
-    }
-    let _ = app.emit(TERMINAL_PROJECTION_EVENT, event);
 }
 
 fn required_id(value: &str, label: &str) -> Result<String, String> {
@@ -377,19 +313,13 @@ fn required_id(value: &str, label: &str) -> Result<String, String> {
     }
 }
 
-fn now_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     fn temp_file(name: &str, contents: &[u8]) -> PathBuf {
         let root =
@@ -634,7 +564,6 @@ mod tests {
         registry.watchers.lock().unwrap().insert(
             "owned-a".into(),
             WatcherHandle {
-                generation: 1,
                 stop,
                 join: Some(join),
             },
