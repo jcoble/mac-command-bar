@@ -54,6 +54,14 @@ export interface SessionHistoryViewModel {
   projects: SessionHistoryProjectGroup[];
 }
 
+/**
+ * Which groups the reader has opened. The sets hold OPEN keys, so everything
+ * starts collapsed. That default is load-bearing: this machine has hundreds of
+ * past sessions, and mounting every card at once used to freeze the whole app
+ * for seconds — the browser engine re-checks sibling styling on every inserted
+ * node, which grows quadratic in a long flat list. Opening one group at a time
+ * keeps each mount small.
+ */
 export interface SessionHistoryCollapseState {
   projects: ReadonlySet<string>;
   worktrees: ReadonlySet<string>;
@@ -325,7 +333,7 @@ export function isSessionHistoryGroupOpen(
   level: 'project' | 'worktree',
   key: string
 ): boolean {
-  return !state[`${level}s` as SessionHistoryGroupLevel].has(key);
+  return state[`${level}s` as SessionHistoryGroupLevel].has(key);
 }
 
 export function toggleSessionHistoryGroup(

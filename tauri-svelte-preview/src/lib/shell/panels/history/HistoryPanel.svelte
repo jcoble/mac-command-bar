@@ -207,8 +207,12 @@
         {#snippet icon()}<History />{/snippet}
       </EmptyState>
     {:else}
+      <!-- Groups start collapsed and open one click at a time — mounting every
+           card at once is what used to freeze the app. A search is the
+           exception: its results are already few, so they all show. -->
       {#each viewModel.projects as project (project.key)}
-        {@const open = isSessionHistoryGroupOpen(collapseState, 'project', project.key)}
+        {@const searching = query.trim().length > 0}
+        {@const open = searching || isSessionHistoryGroupOpen(collapseState, 'project', project.key)}
         <section>
           <h2 class="sticky top-0 z-10 bg-card">
             <button
@@ -233,6 +237,7 @@
             {#each project.worktrees as worktree (worktree.key)}
               {@const worktreeOpen =
                 project.singleCheckout
+                || searching
                 || isSessionHistoryGroupOpen(collapseState, 'worktree', worktree.key)}
               {#if !project.singleCheckout}
                 <button
