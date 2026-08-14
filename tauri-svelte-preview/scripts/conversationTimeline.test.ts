@@ -236,4 +236,32 @@ const silentError = displayItemsFromConversationEvents([
 assert.equal(silentError.length, 1);
 assert.ok((silentError[0].text ?? '').trim().length > 0, 'an error card is never empty');
 
+// The sent screenshot is carried onto the user card it was sent with.
+const withAttachments = typedConversationTimeline(
+  [],
+  [{ kind: 'user', itemId: 'user-shot', text: 'Look', completed: true, timestampMs: 1 }],
+  {},
+  [],
+  {
+    'user-shot': [{
+      id: 'image-sent', name: 'shot.png', mimeType: 'image/png',
+      path: '/managed/shot.png', previewUrl: 'blob:sent'
+    }]
+  }
+);
+assert.equal(withAttachments.length, 1);
+assert.deepEqual(
+  (withAttachments[0].attachments ?? []).map((item) => item.name),
+  ['shot.png'],
+  'the user card renders the screenshot that went out with it'
+);
+assert.equal(
+  typedConversationTimeline(
+    [],
+    [{ kind: 'user', itemId: 'user-plain', text: 'Hi', completed: true, timestampMs: 1 }]
+  )[0].attachments,
+  undefined,
+  'a message sent without a screenshot gains no attachment field'
+);
+
 console.log('conversationTimeline.test.ts passed');

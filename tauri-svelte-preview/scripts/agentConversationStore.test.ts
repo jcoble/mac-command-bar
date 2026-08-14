@@ -427,6 +427,42 @@ assert.equal(saved.owner, 'terminal');
 assert.equal(saved.generation, 2);
 assert.equal(saved.writerLease.owner, 'terminal');
 
+// A sent screenshot has to stay visible in the transcript. The provider never
+// echoes the image back, so the store keeps the sent copy against the user
+// message the send produced.
+const sent = store.ensureConversationSession('owned-sent', 'claude');
+assert.deepEqual(sent.sentAttachments, {});
+store.recordSentConversationAttachments('owned-sent', [{
+  id: 'image-sent', name: 'shot.png', mimeType: 'image/png',
+  path: '/managed/shot.png', previewUrl: 'blob:sent'
+}]);
+store.applyAgentConversationEvent({
+  ownedId: 'owned-sent',
+  provider: 'claude',
+  generation: 1,
+  sequence: 1,
+  timestampMs: 500,
+  payload: { kind: 'userMessage', itemId: 'user-turn-sent', text: 'Look', completed: true }
+});
+assert.deepEqual(
+  store.getConversationSession('owned-sent').sentAttachments['user-turn-sent'].map((item) => item.id),
+  ['image-sent'],
+  'the sent screenshot is claimed by the user message it was sent with'
+);
+store.applyAgentConversationEvent({
+  ownedId: 'owned-sent',
+  provider: 'claude',
+  generation: 1,
+  sequence: 2,
+  timestampMs: 510,
+  payload: { kind: 'userMessage', itemId: 'user-turn-later', text: 'And again', completed: true }
+});
+assert.equal(
+  store.getConversationSession('owned-sent').sentAttachments['user-turn-later'],
+  undefined,
+  'a later message without attachments claims nothing'
+);
+
 store.removeConversationSession('owned-a');
 assert.equal(store.getConversationSession('owned-a'), null);
 assert.ok(store.getConversationSession('owned-b'));

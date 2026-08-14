@@ -26,6 +26,7 @@
     commands: readonly ConversationCommand[];
     contextRemainingPercent?: number | null;
     attachmentError?: string;
+    sendError?: string;
     pendingApproval?: AgentPermissionRequest | null;
     pendingApprovalCount?: number;
     pendingInputs?: readonly AgentUserInputRequest[];
@@ -56,6 +57,7 @@
     commands,
     contextRemainingPercent = null,
     attachmentError = '',
+    sendError = '',
     pendingApproval = null,
     pendingApprovalCount = 1,
     pendingInputs = [],
@@ -111,6 +113,7 @@
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
   const bannerItems = $derived.by((): ComposerBannerItem[] => {
     const items: ComposerBannerItem[] = [];
+    if (sendError) items.push({ id: 'send-error', variant: 'error', title: 'Message not sent', description: sendError });
     if (attachmentError) items.push({ id: 'attachment-error', variant: 'error', title: 'Attachment unavailable', description: attachmentError });
     if (configError) items.push({ id: 'config-error', variant: 'warning', title: 'Settings unavailable', description: configError });
     return items;

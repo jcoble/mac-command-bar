@@ -9,6 +9,7 @@ import {
   setConversationDraft,
   setConversationConnection,
   setConversationAttachments,
+  recordSentConversationAttachments,
   setConversationSending,
   beginConversationConfigChange,
   confirmConversationConfigChange,
@@ -554,14 +555,14 @@ export async function sendStructuredMessage(
       return;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
-    const hydratedAttachments = state.capabilities?.prompt.image === true
+    // An unread capability snapshot is not a refusal. Blocking the send here
+    // left a screenshot that could never go out and no way to learn why, so an
+    // unknown provider is asked and allowed to answer for itself.
+    const supportsImages = state.capabilities === null || state.capabilities.prompt.image === true;
+    const hydratedAttachments = supportsImages
       ? await Promise.all(state.attachments.map((attachment) => hydrateAttachmentBytes(attachment as AttachmentWithBytes)))
       : state.attachments as AttachmentWithBytes[];
-    const prompt = buildConversationPrompt(
-      text,
-      hydratedAttachments,
-      state.capabilities?.prompt.image === true
-    );
+    const prompt = buildConversationPrompt(text, hydratedAttachments, supportsImages);
     const liveConversationEvents = await hasBackendCapability(
       ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY
     );
@@ -592,9 +593,11 @@ export async function sendStructuredMessage(
         approvalPolicy: startConfig?.approvalPolicy ?? null
       }
     });
-    if (!liveConversationEvents) await resyncConversation(ownedId);
-    state.attachments.forEach(cleanupConversationAttachmentPreview);
+    // The preview URLs stay alive: the transcript now shows what went out, and
+    // no provider echoes the image back for it to render from.
+    recordSentConversationAttachments(ownedId, [...state.attachments]);
     setConversationAttachments(ownedId, []);
+    if (!liveConversationEvents) await resyncConversation(ownedId);
   } catch (error) {
     setConversationSending(ownedId, false);
     throw error;

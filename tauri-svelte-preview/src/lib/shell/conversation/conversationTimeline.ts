@@ -11,6 +11,7 @@ import type {
   AgentPermissionRequest,
   AgentUserInputRequest,
   AgentUserInputField,
+  ConversationAttachment,
   ConversationTimelineEntry
 } from './conversationTypes.ts';
 
@@ -46,7 +47,7 @@ export type ConversationTextDisplayItem = {
 };
 
 export type ConversationDisplayItem = (
-  | (ConversationTextDisplayItem & { kind: 'user' })
+  | (ConversationTextDisplayItem & { kind: 'user'; attachments?: readonly ConversationAttachment[] })
   | (ConversationTextDisplayItem & { kind: 'assistant' })
   | (ConversationTextDisplayItem & { kind: 'reasoning' })
   | (ConversationTextDisplayItem & { kind: 'command' })
@@ -584,7 +585,8 @@ export function typedConversationTimeline(
   items: readonly AgentItem[] = [],
   legacy: readonly ConversationTimelineEntry[] = [],
   timestamps: Readonly<Record<string, number>> = {},
-  previous: readonly ConversationDisplayItem[] = []
+  previous: readonly ConversationDisplayItem[] = [],
+  sentAttachments: Readonly<Record<string, readonly ConversationAttachment[]>> = {}
 ): ConversationDisplayItem[] {
   const byId = new Map<string, ConversationDisplayItem>();
   legacy
@@ -595,7 +597,12 @@ export function typedConversationTimeline(
     item.id,
     displayItemFromAgentItem(item, timestamps[item.id] ?? displayTimestamp(item, legacyEnd + index + 1))
   ));
-  const next = [...byId.values()].sort((left, right) => left.timestampMs - right.timestampMs);
+  const next = [...byId.values()]
+    .map((item) => {
+      const sent = item.kind === 'user' ? sentAttachments[item.itemId] : undefined;
+      return sent?.length ? { ...item, attachments: sent } : item;
+    })
+    .sort((left, right) => left.timestampMs - right.timestampMs);
   return reuseConversationDisplayItems(next, previous);
 }
 
