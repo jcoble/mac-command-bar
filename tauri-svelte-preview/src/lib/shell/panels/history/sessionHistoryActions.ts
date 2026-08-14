@@ -11,6 +11,7 @@
  * real or it is off with a plain-English reason. Nothing pretends.
  */
 import type { SessionLibraryRecord } from '../../sessionLibrary/sessionLibraryModel.ts';
+import type { StartSessionRequest } from '../../workbenchNavigation.ts';
 
 export type SessionHistoryActionId =
   | 'resume-worktree'
@@ -71,6 +72,26 @@ export function sessionHistoryIdentity(record: SessionLibraryRecord): string {
   return record.nativeSessionId ?? record.key;
 }
 
+/**
+ * What Continue in New Session asks for: this card's folder, this card's
+ * agent. Both used to be dropped on the way — the folder because the request
+ * was built from fields the card had already blanked, and the agent because
+ * the request never carried one, so every continued session started as codex.
+ */
+export function sessionHistoryStartRequest(record: SessionLibraryRecord): StartSessionRequest {
+  const folder = record.canonicalCwd?.trim() || record.projectPath?.trim() || '';
+  const provider = record.provider === 'claude' || record.provider === 'codex'
+    ? record.provider
+    : undefined;
+  return {
+    prompt: record.firstPrompt ?? '',
+    cwd: folder,
+    projectPath: record.projectPath?.trim() || folder,
+    title: record.title,
+    ...(provider ? { provider } : {})
+  };
+}
+
 function action(
   id: SessionHistoryActionId,
   label: string,
@@ -91,10 +112,14 @@ function action(
 export function sessionHistoryActions(record: SessionLibraryRecord): SessionHistoryAction[] {
   const hasLog = Boolean(record.logPath?.trim());
   const hasFolder = Boolean(record.canonicalCwd?.trim());
-  const canResume = Boolean(record.ownedId || record.available);
+  // A scanned session is resumed by starting an agent in its folder, so a row
+  // whose scan never found one has nothing to resume into. Sessions this app
+  // already owns keep their folder in the database and do not need the scan.
+  const canResume = Boolean(record.ownedId) || Boolean(record.available && hasFolder);
+  const resumeReason = record.available && !hasFolder ? NO_FOLDER : NOT_RESUMABLE;
 
   return [
-    action('resume-worktree', 'Resume in Worktree', canResume, NOT_RESUMABLE),
+    action('resume-worktree', 'Resume in Worktree', canResume, resumeReason),
     action('continue-new-session', 'Continue in New Session', hasFolder, NO_FOLDER),
     action('view-log', 'View Log', hasLog, NO_TRANSCRIPT),
     action(

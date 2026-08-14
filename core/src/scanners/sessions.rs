@@ -156,6 +156,36 @@ fn with_log_path(records: Vec<AgentSessionRecord>, log_path: &Path) -> Vec<Agent
         .collect()
 }
 
+/// Which rollout files the codex scan reads, given every rollout file newest
+/// first and the thread ids the session index listed.
+///
+/// The newest `CODEX_SESSION_FILE_LIMIT` files are read as before. On top of
+/// those, an older file is read when the index still lists its thread, because
+/// the index row alone carries no working folder: without the rollout the row
+/// reaches the History panel with nothing to resume into, and both Resume and
+/// Continue in New Session have no folder to hand the agent. The index is the
+/// bound here, so this cannot grow past the number of rows a person can see.
+fn codex_rollout_files_to_read(files: Vec<PathBuf>, indexed_ids: &HashSet<String>) -> Vec<PathBuf> {
+    files
+        .into_iter()
+        .enumerate()
+        .filter(|(position, file)| {
+            *position < CODEX_SESSION_FILE_LIMIT || rollout_file_is_indexed(file, indexed_ids)
+        })
+        .map(|(_, file)| file)
+        .collect()
+}
+
+/// True when a rollout file's name carries one of the indexed thread ids. Codex
+/// names the file `rollout-<timestamp>-<id>.jsonl`, so the id is readable
+/// without opening the file.
+fn rollout_file_is_indexed(file: &Path, indexed_ids: &HashSet<String>) -> bool {
+    let Some(name) = file.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    indexed_ids.iter().any(|id| name.ends_with(id.as_str()))
+}
+
 pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -199,8 +229,12 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     codex_records = drop_codex_subagent_sessions(codex_records, &codex_subagent_ids);
 
     codex_files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
+    let indexed_ids: HashSet<String> = codex_records
+        .iter()
+        .map(|record| record.id.clone())
+        .collect();
     let mut codex_metadata = Vec::new();
-    for file in codex_files.into_iter().take(CODEX_SESSION_FILE_LIMIT) {
+    for file in codex_rollout_files_to_read(codex_files, &indexed_ids) {
         if let Ok(contents) =
             read_head_and_tail_utf8(&file, CODEX_SESSION_HEAD_BYTES, CODEX_SESSION_TAIL_BYTES)
         {
@@ -2234,6 +2268,37 @@ mod tests {
             kept.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
             vec!["019fa964", "019c230d"]
         );
+    }
+
+    /// An index row on its own has no working folder, so a thread whose rollout
+    /// file falls outside the newest-files budget used to reach the History
+    /// panel with nowhere to resume into. The budget still bounds how much is
+    /// read; it just no longer excludes a file the index is still pointing at.
+    #[test]
+    fn codex_rollout_files_the_index_still_names_are_read_past_the_budget() {
+        let newest: Vec<PathBuf> = (0..CODEX_SESSION_FILE_LIMIT)
+            .map(|position| {
+                PathBuf::from(format!(
+                    "/sessions/rollout-2026-08-13T00-00-{position:04}-newest{position}.jsonl"
+                ))
+            })
+            .collect();
+        let indexed_old =
+            PathBuf::from("/sessions/rollout-2026-03-13T21-48-02-019c230d-2835-7b23.jsonl");
+        let forgotten_old =
+            PathBuf::from("/sessions/rollout-2026-03-12T10-00-00-019c0000-0000-0000.jsonl");
+
+        let mut files = newest.clone();
+        files.push(indexed_old.clone());
+        files.push(forgotten_old.clone());
+
+        let indexed_ids = HashSet::from(["019c230d-2835-7b23".to_string()]);
+        let selected = codex_rollout_files_to_read(files, &indexed_ids);
+
+        assert_eq!(selected.len(), CODEX_SESSION_FILE_LIMIT + 1);
+        assert!(selected.contains(&indexed_old));
+        assert!(!selected.contains(&forgotten_old));
+        assert_eq!(selected[..CODEX_SESSION_FILE_LIMIT], newest[..]);
     }
 
     #[test]

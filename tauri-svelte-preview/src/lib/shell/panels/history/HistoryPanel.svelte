@@ -51,6 +51,7 @@
   import {
     sessionHistoryActions,
     sessionHistoryIdentity,
+    sessionHistoryStartRequest,
     sessionResumeCommand,
     type SessionHistoryActionId
   } from './sessionHistoryActions.ts';
@@ -122,12 +123,7 @@
         await host.service.resume(record);
         return;
       case 'continue-new-session':
-        await startWorkbenchSession({
-          prompt: record.firstPrompt ?? '',
-          cwd: record.canonicalCwd,
-          projectPath: record.projectPath ?? record.canonicalCwd,
-          title: record.title
-        });
+        await startWorkbenchSession(sessionHistoryStartRequest(record));
         return;
       case 'view-log':
         if (record.logPath) openFileInEditor({ path: record.logPath });

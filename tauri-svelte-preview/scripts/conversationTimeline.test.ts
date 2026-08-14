@@ -194,4 +194,46 @@ const wholeTurnWindow = conversationRenderWindow(windowItems, 'window-boundary')
 assert.equal(wholeTurnWindow.hiddenCount, 0, 'a render window expands backward instead of splitting a turn');
 assert.equal(wholeTurnWindow.items[0].itemId, 'boundary-0');
 
+// An error arrives once and must be shown once, with what it said. The typed
+// item used to be built by the generic path, which reads `text` and never
+// `message`, so a resume failure drew its real card and a second empty one.
+const resumeFailure = displayItemsFromConversationEvents([
+  event(4, {
+    kind: 'error',
+    code: 'session-resume-failed',
+    message: 'The stored provider session could not be resumed: no rollout found',
+    recoverable: true
+  })
+]);
+assert.equal(resumeFailure.length, 1, 'one error event draws one card');
+assert.equal(resumeFailure[0].kind, 'error');
+assert.equal(
+  resumeFailure[0].text,
+  'The stored provider session could not be resumed: no rollout found'
+);
+
+// The reducer names its entry `error:<generation>:<sequence>`; the typed item
+// has to use the same name or the two become separate cards.
+const mergedError = typedConversationTimeline(
+  [{ id: 'error:1:4', type: 'error', content: [{ channel: 'assistant', text: 'Adapter closed' }] }],
+  [
+    {
+      kind: 'error',
+      itemId: 'error:1:4',
+      code: 'session-resume-failed',
+      message: 'Adapter closed',
+      recoverable: true,
+      timestampMs: 4
+    }
+  ]
+);
+assert.equal(mergedError.length, 1, 'the typed item and the reducer entry are one card');
+
+// An error with no message still says something a reader can act on.
+const silentError = displayItemsFromConversationEvents([
+  event(5, { kind: 'error', code: 'session-resume-failed', message: '', recoverable: true })
+]);
+assert.equal(silentError.length, 1);
+assert.ok((silentError[0].text ?? '').trim().length > 0, 'an error card is never empty');
+
 console.log('conversationTimeline.test.ts passed');

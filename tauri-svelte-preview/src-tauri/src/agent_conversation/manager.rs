@@ -669,7 +669,12 @@ impl AgentRuntimeManager {
                     &self.emitter,
                     AgentConversationPayload::Error {
                         code: "session-resume-failed".to_string(),
-                        message: "The stored provider session could not be resumed".to_string(),
+                        // The card names the underlying cause. Without it the
+                        // reader is told the resume failed and nothing about
+                        // why, which is the one thing they need to act on.
+                        message: format!(
+                            "The stored provider session could not be resumed: {error}"
+                        ),
                         recoverable: true,
                     },
                 )?;
@@ -1177,7 +1182,9 @@ impl AgentRuntimeManager {
                 .clone()
                 .ok_or_else(|| "Structured provider session has not started".to_string())?
         };
-        let runtime = self.runtime(&request.owned_id, request.generation)?;
+        let runtime = self
+            .runtime_or_activate(&request.owned_id, request.generation)
+            .await?;
         let config = runtime
             .lock()
             .await
@@ -1807,6 +1814,43 @@ impl AgentRuntimeManager {
             .runtime
             .clone()
             .ok_or_else(|| "Structured provider is still connecting".to_string())
+    }
+
+    /// The runtime for a session, waking a suspended one first.
+    ///
+    /// A session restored from the database has no runtime until something
+    /// activates it. Sending a message does that on the way through, so a
+    /// session a person has been talking to is awake; changing a setting used
+    /// to be refused outright instead, which read as "still connecting" on a
+    /// session that was demonstrably live.
+    async fn runtime_or_activate(
+        &self,
+        owned_id: &str,
+        generation: u64,
+    ) -> Result<Arc<AsyncMutex<StructuredRuntimeHandle>>, String> {
+        match self.runtime(owned_id, generation) {
+            Ok(runtime) => Ok(runtime),
+            Err(error) => {
+                if !self.session_is_suspended(owned_id, generation) {
+                    return Err(error);
+                }
+                self.activate(owned_id, generation).await?;
+                self.runtime(owned_id, generation)
+            }
+        }
+    }
+
+    /// True when a session is stored and recoverable but has no runtime yet.
+    fn session_is_suspended(&self, owned_id: &str, generation: u64) -> bool {
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        current_session(&sessions, owned_id, generation)
+            .map(|session| {
+                session.runtime.is_none() && session.state == AgentRuntimeState::Suspended
+            })
+            .unwrap_or(false)
     }
 
     #[cfg(test)]
@@ -5071,10 +5115,21 @@ mod tests {
             .contains("could not be resumed"));
         let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
         assert!(snapshot.suspended);
-        assert!(snapshot.events.iter().any(|event| matches!(
-            &event.payload,
-            AgentConversationPayload::Error { code, .. } if code == "session-resume-failed"
-        )));
+        // The card has to name the cause, not just report that a resume failed.
+        let resume_error = snapshot
+            .events
+            .iter()
+            .find_map(|event| match &event.payload {
+                AgentConversationPayload::Error { code, message, .. }
+                    if code == "session-resume-failed" =>
+                {
+                    Some(message.clone())
+                }
+                _ => None,
+            })
+            .expect("resume failure is recorded");
+        assert!(resume_error.starts_with("The stored provider session could not be resumed: "));
+        assert!(resume_error.len() > "The stored provider session could not be resumed: ".len());
         let requests = fs::read_to_string(&log).unwrap();
         assert!(requests.contains(r#""method":"session/resume""#));
         assert!(!requests.contains(r#""method":"session/new""#));
@@ -5658,6 +5713,38 @@ mod tests {
         let requests = fs::read_to_string(fixture.root.join("config_update_failure.jsonl"))
             .expect("fixture request log");
         assert!(requests.contains(r#""method":"session/set_config_option""#));
+
+        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_change_wakes_a_suspended_session() {
+        let fixture = fixture_manager_with_acp_session("suspend_config_wake").await;
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
+
+        let configured = fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: Some("gpt-5.6-terra".into()),
+                reasoning_effort: None,
+                approval_policy: None,
+            })
+            .await
+            .expect("a suspended session wakes for a settings change");
+        assert_eq!(configured.model.as_deref(), Some("gpt-5.6-terra"));
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap();
+        assert!(!snapshot.suspended);
 
         fixture.manager.close(&fixture.owned_id).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
