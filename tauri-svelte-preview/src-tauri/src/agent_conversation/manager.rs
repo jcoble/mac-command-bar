@@ -3278,6 +3278,11 @@ async fn handle_ordered_session_event(
                     }
                 }
             }
+            // A finished turn stops the adapter process as soon as no prompt,
+            // approval, input request, or tool work remains. The stored native
+            // session survives for resume on the next send; only the idle
+            // process tree is removed because those trees otherwise retain
+            // hundreds of megabytes between turns.
             if let Err(error) = manager.suspend_if_quiescent(owned_id, generation).await {
                 crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
             }
@@ -5238,6 +5243,57 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn turn_completion_suspends_and_stops_the_runtime() {
+        let fixture = fixture_manager_with_acp_session("suspend_turn_completion").await;
+        let pid = fixture.manager.resource_roots()[0].pid;
+        let native_session_id = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap()
+            .connection
+            .native_session_id
+            .unwrap();
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("finish this turn"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            fixture
+                .manager
+                .snapshot(&fixture.owned_id)
+                .unwrap()
+                .is_some_and(|snapshot| snapshot.suspended)
+        })
+        .await;
+        wait_until(|| !process_is_alive(pid)).await;
+
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            snapshot.connection.native_session_id.as_deref(),
+            Some(native_session_id.as_str())
+        );
+        assert!(fixture.manager.resource_roots().is_empty());
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn teardown_at_quiescence() {
         let fixture = fixture_manager_with_acp_session("suspend_active").await;
 
@@ -5281,7 +5337,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn approval_lease_never_expires() {
+    async fn suspend_skips_pending_permission() {
         let fixture = fixture_manager_with_acp_session("suspend_permission").await;
         fixture
             .manager
@@ -5472,6 +5528,12 @@ mod tests {
             .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        let sequence_before_resume = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap()
+            .last_sequence;
 
         let connection = fixture
             .manager
@@ -5537,6 +5599,18 @@ mod tests {
                 ConversationConnectionState::Disconnected
             ]
         );
+        let resumed_events = fixture
+            .manager
+            .list_events(&fixture.owned_id, sequence_before_resume)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.sequence > sequence_before_resume)
+            .collect::<Vec<_>>();
+        assert_eq!(resumed_events[0].sequence, sequence_before_resume + 1);
+        assert!(resumed_events
+            .windows(2)
+            .all(|events| events[1].sequence == events[0].sequence + 1));
+        assert!(fixture.manager.resource_roots().is_empty());
         let log = fs::read_to_string(fixture.root.join("suspend_resume.jsonl")).unwrap();
         assert_eq!(log.matches(r#""method":"session/new""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/resume""#).count(), 1);
