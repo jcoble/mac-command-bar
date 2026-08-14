@@ -49,7 +49,7 @@ export function agentStatus(state: string): AgentStatus {
 }
 
 function firstLine(text: string): string {
-  const line = text.split('\n').find((candidate) => candidate.trim().length > 0)?.trim() ?? '';
+  const line = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   return line.length > ACTIVITY_LINE_LIMIT ? `${line.slice(0, ACTIVITY_LINE_LIMIT - 1).trimEnd()}…` : line;
 }
 
@@ -60,6 +60,7 @@ function firstLine(text: string): string {
 function lineFor(entry: ConversationTimelineEntry): string {
   switch (entry.kind) {
     case 'user':
+      return '';
     case 'assistant':
       return firstLine(entry.text);
     case 'tool':
@@ -96,11 +97,12 @@ export function agentActivityRows(
     .sort((left, right) => right.updatedAtMs - left.updatedAtMs)
     .map((child) => {
       const timeline = timelineByChild[child.childId] ?? null;
+      const transcriptActivity = timeline ? activityFrom(timeline) : '';
       return {
         childId: child.childId,
         label: child.label,
         status: agentStatus(child.state),
-        activity: timeline ? activityFrom(timeline) : firstLine(child.latestActivity ?? ''),
+        activity: transcriptActivity || firstLine(child.latestActivity ?? ''),
         messageCount: timeline ? timeline.length : null,
         // A child agent record carries no log path, so there is never one to
         // offer. This stays here rather than being dropped so the panel can say

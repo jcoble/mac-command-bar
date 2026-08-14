@@ -91,6 +91,35 @@ const read = agentActivityRows([child({ childId: 'read' })], {
 assert.equal(read.messageCount, 3, 'a read transcript of three entries counts three');
 assert.equal(read.activity, 'Three', 'the activity line comes from the newest entry');
 
+const instructionOnly = agentActivityRows([child({
+  childId: 'instruction-only',
+  latestActivity: 'Starting work'
+})], {
+  'instruction-only': [{
+    kind: 'user',
+    itemId: 'instructions',
+    text: '<recommended_plugins>\n  Internal setup details',
+    completed: true,
+    timestampMs: 1
+  }]
+})[0];
+assert.equal(instructionOnly.activity, 'Starting work', 'instruction text does not replace stored live activity');
+assert.doesNotMatch(instructionOnly.activity, /recommended_plugins/);
+
+const assistantAfterInstructions = agentActivityRows([child({ childId: 'assistant-after-instructions' })], {
+  'assistant-after-instructions': [
+    {
+      kind: 'user',
+      itemId: 'instructions',
+      text: '<instructions>Ignore this context</instructions>',
+      completed: true,
+      timestampMs: 1
+    },
+    message('assistant-work', '<status>  Reviewing   the\nactivity line  </status>', 2)
+  ]
+})[0];
+assert.equal(assistantAfterInstructions.activity, 'Reviewing the activity line', 'later assistant work is sanitized and shown');
+
 const emptyTranscript = agentActivityRows([child({ childId: 'empty' })], { empty: [] })[0];
 assert.equal(emptyTranscript.messageCount, 0, 'a transcript that was read and holds nothing really is zero');
 
