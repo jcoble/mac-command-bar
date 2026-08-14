@@ -10,12 +10,22 @@
    *
    * Text files use Monaco's real diff editor with full bounded models supplied
    * by Rust. The unified-text renderer stays only as a fallback for an older
-   * backend or a file whose full models are intentionally unavailable.
+   * backend or a file whose full models are intentionally unavailable — and for
+   * a diff that is loaded but not in front, because starting Monaco's diff
+   * editor starts the VS Code service container with it.
    */
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { parseUnifiedDiff, summarizeParsedDiff } from '$lib/shell/git/parseUnifiedDiff';
   import NativeGitDiffEditor from '$lib/shell/components/git/NativeGitDiffEditor.svelte';
   import { requestOpenFile } from '$lib/shell/openFileBus';
+
+  interface Props {
+    /** Whether the Diff tab is the center tab in front. A session that
+     * remembered a diff has it put back at launch, and Monaco must not start
+     * for a comparison nobody is looking at. */
+    showing?: boolean;
+  }
+  let { showing = false }: Props = $props();
 
   /** Long diffs are trimmed so one huge file cannot stall the panel. */
   const MAX_RENDERED_LINES = 2000;
@@ -107,7 +117,7 @@
       <p class="notice">This is a binary file, so there is no line-by-line comparison.</p>
     {:else if parsed.isEmpty}
       <p class="notice">This file has no line changes compared with the last commit.</p>
-    {:else if hasNativeModels && diff && gitPanel.root}
+    {:else if showing && hasNativeModels && diff && gitPanel.root}
       <div class="native-body">
         <NativeGitDiffEditor
           root={gitPanel.root}

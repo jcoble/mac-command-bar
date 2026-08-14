@@ -1634,6 +1634,7 @@
        Except while a session's files are being put back — that is not a request for anything, and
        it must not drag the user off the terminal they were watching. -->
   <EditorPanel
+    showing={centerTab === 'editor'}
     onFileOpened={() => {
       if (!restoringWorkspace) selectCenterTab('editor');
     }}
@@ -1650,7 +1651,7 @@
      reads that selection itself and takes no props, so it can simply live here
      as a tab of its own — which is what gives a diff the width of the middle
      instead of a column. -->
-{#snippet diffArea()}<GitDiffView />{/snippet}
+{#snippet diffArea()}<GitDiffView showing={centerTab === 'diff'} />{/snippet}
 
 <!-- The webview's own right-click menu runs a native tracking loop that stalls
      the whole window for seconds, which reads as a freeze. Surfaces with a menu
