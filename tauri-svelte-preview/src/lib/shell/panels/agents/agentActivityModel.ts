@@ -100,7 +100,7 @@ export function agentActivityRows(
         childId: child.childId,
         label: child.label,
         status: agentStatus(child.state),
-        activity: timeline ? activityFrom(timeline) : '',
+        activity: timeline ? activityFrom(timeline) : firstLine(child.latestActivity ?? ''),
         messageCount: timeline ? timeline.length : null,
         // A child agent record carries no log path, so there is never one to
         // offer. This stays here rather than being dropped so the panel can say

@@ -3446,6 +3446,7 @@ fn canonical_event(
         AgentConversationPayload::AssistantDelta { .. } => AgentEventType::ContentDelta,
         AgentConversationPayload::AssistantMessage { .. } => AgentEventType::ItemCompleted,
         AgentConversationPayload::Tool { .. } => AgentEventType::ItemUpdated,
+        AgentConversationPayload::ChildUpdate { .. } => AgentEventType::ChildrenUpdated,
         AgentConversationPayload::Approval { .. } => AgentEventType::ApprovalRequested,
         AgentConversationPayload::UserInputRequested { .. } => AgentEventType::UserInputRequested,
         AgentConversationPayload::UserInputResolved { .. } => AgentEventType::UserInputResolved,
@@ -3699,6 +3700,12 @@ fn payload_from_session_update_for_turn(
             .unwrap_or("unknown")
     });
 
+    if matches!(kind, "tool_call" | "tool_call_update")
+        && update.get("kind").and_then(Value::as_str) == Some("subagent")
+    {
+        return child_update_payload(update, kind);
+    }
+
     match kind {
         "available_commands_update" | "available-commands-update" => {
             Some(AgentConversationPayload::AvailableCommandsUpdate {
@@ -3811,6 +3818,47 @@ fn payload_from_session_update_for_turn(
             None
         }
     }
+}
+
+fn child_update_payload(update: &Value, update_kind: &str) -> Option<AgentConversationPayload> {
+    let child_id = update
+        .get("childSessionId")
+        .or_else(|| update.get("child_session_id"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let parent_tool_call_id = update
+        .get("parentToolCallId")
+        .or_else(|| update.get("parent_tool_call_id"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let label = update
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map(str::to_string);
+    let terminal = update_kind == "tool_call_update"
+        && matches!(
+            update.get("status").and_then(Value::as_str),
+            Some("completed" | "failed" | "cancelled" | "canceled" | "stopped" | "done")
+        );
+    // Keep this line small because it is persisted and rendered in a compact row.
+    let latest_activity = tool_summary(update)
+        .or_else(|| {
+            update
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .or_else(|| label.clone())
+        .map(|text| text.chars().take(160).collect());
+    Some(AgentConversationPayload::ChildUpdate {
+        child_id,
+        parent_tool_call_id,
+        label,
+        state: if terminal { "finished" } else { "running" }.into(),
+        latest_activity,
+    })
 }
 
 fn is_replay_session_update(params: &Value) -> bool {
@@ -4126,6 +4174,7 @@ mod tests {
             AgentConversationPayload::AssistantDelta { .. } => "assistantDelta",
             AgentConversationPayload::AssistantMessage { .. } => "assistantMessage",
             AgentConversationPayload::Tool { .. } => "tool",
+            AgentConversationPayload::ChildUpdate { .. } => "childUpdate",
             AgentConversationPayload::Approval { .. } => "approval",
             AgentConversationPayload::UserInputRequested { .. } => "userInputRequested",
             AgentConversationPayload::UserInputResolved { .. } => "userInputResolved",
@@ -4217,6 +4266,35 @@ mod tests {
             }
             other => panic!("expected Tool, got {other:?}"),
         }
+        let child_started = json!({ "sessionId": "s", "update": {
+            "sessionUpdate": "tool_call", "toolCallId": "child-tool-1", "kind": "subagent",
+            "childSessionId": "child-session-1", "parentToolCallId": "parent-tool-1",
+            "label": "Review the change" } });
+        assert_eq!(
+            payload_from_session_update_for_turn(&child_started, None),
+            Some(AgentConversationPayload::ChildUpdate {
+                child_id: "child-session-1".into(),
+                parent_tool_call_id: "parent-tool-1".into(),
+                label: Some("Review the change".into()),
+                state: "running".into(),
+                latest_activity: Some("Review the change".into()),
+            })
+        );
+        let child_finished = json!({ "sessionId": "s", "update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "child-tool-1", "kind": "subagent",
+            "status": "completed", "childSessionId": "child-session-1",
+            "parentToolCallId": "parent-tool-1",
+            "content": [{ "type": "text", "text": "Review complete" }] } });
+        assert_eq!(
+            payload_from_session_update_for_turn(&child_finished, None),
+            Some(AgentConversationPayload::ChildUpdate {
+                child_id: "child-session-1".into(),
+                parent_tool_call_id: "parent-tool-1".into(),
+                label: None,
+                state: "finished".into(),
+                latest_activity: Some("Review complete".into()),
+            })
+        );
         let plan = json!({ "sessionId": "s", "update": {
             "sessionUpdate": "plan", "entries": [
                 { "content": "step one", "status": "pending" }

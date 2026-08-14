@@ -71,6 +71,12 @@ assert.equal(unread.label, 'Reader');
 assert.equal(unread.status, 'working');
 assert.equal(unread.activity, '', 'nothing is known about an unread agent beyond its status');
 
+const liveUnread = agentActivityRows([child({
+  childId: 'live-unread',
+  latestActivity: 'Reviewing the conversation store'
+})], {})[0];
+assert.equal(liveUnread.activity, 'Reviewing the conversation store', 'live activity is shown before a child transcript is read');
+
 const message = (itemId: string, text: string, timestampMs: number): ConversationTimelineEntry => ({
   kind: 'assistant',
   itemId,

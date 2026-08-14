@@ -105,6 +105,51 @@ store.applyAgentConversationEvent({
 assert.equal(store.getConversationSession('owned-a').timeline.length, 2);
 assert.equal(store.getConversationSession('owned-b').timeline.length, 0);
 
+// Live subagent updates create one durable row, then update that same row
+// without losing the spawn label when a completion update omits it.
+{
+  const ownedId = 'owned-live-child';
+  store.ensureConversationSession(ownedId, 'codex');
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 150,
+    payload: {
+      kind: 'childUpdate', childId: 'child-live', parentToolCallId: 'parent-tool',
+      label: 'Review the change', state: 'running', latestActivity: 'Review the change'
+    }
+  });
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 160,
+    payload: {
+      kind: 'childUpdate', childId: 'child-live', parentToolCallId: 'parent-tool',
+      state: 'finished', latestActivity: 'Review complete'
+    }
+  });
+  assert.deepEqual(store.getConversationSession(ownedId).children, [{
+    childId: 'child-live', parentId: 'parent-tool', parentToolCallId: 'parent-tool',
+    provider: 'codex', label: 'Review the change', state: 'finished',
+    latestActivity: 'Review complete', updatedAtMs: 160
+  }]);
+
+  // Canonical transcript projections use the same merge path and may add a
+  // different child without replacing finished rows from this session.
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 3, timestampMs: 170,
+    payload: {
+      kind: 'terminalProjection', eventType: 'children.updated',
+      providerInstanceId: 'fixture', timestampMs: 170, nativeSessionId: 'thread-live',
+      itemId: null, providerMetadata: {}, rawFrameReference: { id: 'raw-1', redacted: true },
+      payload: { children: [{
+        childId: 'child-two', parentId: 'thread-live', provider: 'codex',
+        label: 'Inspect tests', state: 'historical', updatedAtMs: 165,
+        latestActivity: 'Inspecting tests'
+      }] }
+    }
+  });
+  assert.equal(store.getConversationSession(ownedId).children.length, 2);
+  assert.equal(store.getConversationSession(ownedId).children[0].state, 'finished');
+  assert.equal(store.getConversationSession(ownedId).children[1].latestActivity, 'Inspecting tests');
+}
+
 // A live turn start keeps the composer busy; only a terminal turn clears it.
 store.setConversationSending('owned-a', true);
 const startedTurn = {

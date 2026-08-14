@@ -324,6 +324,8 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
       }
       break;
     }
+    case 'childUpdate':
+      break;
     case 'approval': {
       const itemId = `approval:${payload.requestId}`;
       const existing = timelineEntry(current, itemId);
@@ -623,6 +625,42 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+function mergeConversationChild(
+  current: ConversationWorkspaceState,
+  value: unknown,
+  provider: AgentConversationProvider,
+  timestampMs: number
+): void {
+  if (!isRecord(value)) return;
+  const childId = asString(value.childId);
+  if (!childId) return;
+  const index = current.children.findIndex((child) => child.childId === childId);
+  const existing = index >= 0 ? current.children[index] : null;
+  const parentToolCallId = asString(value.parentToolCallId) ?? existing?.parentToolCallId;
+  const parentId = asString(value.parentId) ?? parentToolCallId ?? existing?.parentId;
+  if (!parentId) return;
+  const rawProvider = asString(value.provider);
+  const childProvider = rawProvider === 'codex' || rawProvider === 'claude'
+    ? rawProvider
+    : existing?.provider ?? provider;
+  const child: ConversationChildAgent = {
+    childId,
+    parentId,
+    ...(parentToolCallId ? { parentToolCallId } : {}),
+    provider: childProvider,
+    label: asString(value.label) ?? existing?.label ?? 'Sub-agent',
+    state: asString(value.state) ?? existing?.state ?? 'finished',
+    ...(asString(value.latestActivity) || existing?.latestActivity
+      ? { latestActivity: asString(value.latestActivity) ?? existing?.latestActivity }
+      : {}),
+    updatedAtMs: typeof value.updatedAtMs === 'number' && Number.isFinite(value.updatedAtMs)
+      ? value.updatedAtMs
+      : timestampMs
+  };
+  if (index >= 0) current.children[index] = child;
+  else current.children.push(child);
+}
+
 function permissionOptions(value: unknown): AgentPermissionOption[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
@@ -714,6 +752,14 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
   }
   if (eventType === 'tasks.updated' || payload.kind === 'tasks') {
     if (Array.isArray(payload.tasks)) current.tasks = parseTasks(payload.tasks);
+  }
+  if (payload.kind === 'childUpdate') {
+    mergeConversationChild(current, payload, event.provider, event.timestampMs);
+  }
+  if (eventType === 'children.updated' && Array.isArray(payload.children)) {
+    for (const child of payload.children) {
+      mergeConversationChild(current, child, event.provider, event.timestampMs);
+    }
   }
   const richPermission = permissionRequestFromEvent(event);
   if (richPermission) {

@@ -465,6 +465,15 @@ pub enum AgentConversationPayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
     },
+    ChildUpdate {
+        child_id: String,
+        parent_tool_call_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        state: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        latest_activity: Option<String>,
+    },
     Approval {
         request_id: String,
         state: ApprovalState,

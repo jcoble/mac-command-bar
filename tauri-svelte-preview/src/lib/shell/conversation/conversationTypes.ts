@@ -416,6 +416,14 @@ export type AgentConversationPayload =
   | { kind: 'assistantDelta'; itemId: string; delta: string }
   | { kind: 'assistantMessage'; itemId: string; text: string; completed: true }
   | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string }
+  | {
+      kind: 'childUpdate';
+      childId: string;
+      parentToolCallId: string;
+      label?: string;
+      state: string;
+      latestActivity?: string;
+    }
   | { kind: 'approval'; requestId: string; state: ApprovalState; summary: string }
   | {
       kind: 'plan';
@@ -595,9 +603,11 @@ export interface ConversationMetadata {
 export interface ConversationChildAgent {
   childId: string;
   parentId: string;
+  parentToolCallId?: string;
   provider: AgentConversationProvider;
   label: string;
   state: string;
+  latestActivity?: string;
   updatedAtMs: number;
 }
 
