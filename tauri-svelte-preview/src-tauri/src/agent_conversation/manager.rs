@@ -3890,6 +3890,14 @@ fn payload_from_session_update_for_turn(
     {
         return child_update_payload(update, kind);
     }
+    if matches!(kind, "tool_call" | "tool_call_update")
+        && update
+            .pointer("/_meta/claudeCode/toolName")
+            .and_then(Value::as_str)
+            == Some("Task")
+    {
+        return task_child_update_payload(update, kind);
+    }
 
     match kind {
         "available_commands_update" | "available-commands-update" => {
@@ -4044,6 +4052,58 @@ fn child_update_payload(update: &Value, update_kind: &str) -> Option<AgentConver
         state: if terminal { "finished" } else { "running" }.into(),
         latest_activity,
     })
+}
+
+fn task_child_update_payload(
+    update: &Value,
+    update_kind: &str,
+) -> Option<AgentConversationPayload> {
+    let tool_call_id = update
+        .get("toolCallId")
+        .or_else(|| update.get("tool_call_id"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let label = update
+        .get("title")
+        .and_then(Value::as_str)
+        .and_then(|title| title.lines().next())
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string);
+    let summary = tool_summary(update);
+    let async_child_id = summary.as_deref().and_then(async_agent_id);
+    let is_async = async_child_id.is_some();
+    let terminal = !is_async
+        && update_kind == "tool_call_update"
+        && matches!(
+            update.get("status").and_then(Value::as_str),
+            Some("completed" | "failed" | "cancelled" | "canceled" | "stopped" | "done")
+        );
+    let child_id = async_child_id.unwrap_or_else(|| tool_call_id.clone());
+    let label = label.or_else(|| is_async.then(|| format!("Background agent {child_id}")));
+    let latest_activity = summary
+        .or_else(|| label.clone())
+        .map(|text| text.chars().take(160).collect());
+
+    Some(AgentConversationPayload::ChildUpdate {
+        child_id,
+        parent_tool_call_id: tool_call_id,
+        label,
+        state: if terminal { "finished" } else { "running" }.into(),
+        latest_activity,
+    })
+}
+
+fn async_agent_id(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    if lines.next()? != "Async agent launched successfully." {
+        return None;
+    }
+    lines
+        .find_map(|line| line.strip_prefix("agentId:"))
+        .and_then(|value| value.split_whitespace().next())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn is_replay_session_update(params: &Value) -> bool {
@@ -4647,6 +4707,106 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn task_tool_call_maps_to_running_child() {
+        let task = json!({ "sessionId": "s", "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "task-tool-1",
+            "title": "Review the change",
+            "kind": "think",
+            "status": "pending",
+            "content": [{ "type": "content", "content": {
+                "type": "text", "text": "Inspect the implementation"
+            }}],
+            "rawInput": { "description": "Review the change", "subagent_type": "Explore" },
+            "_meta": { "claudeCode": { "toolName": "Task" } }
+        }});
+
+        assert_eq!(
+            payload_from_session_update_for_turn(&task, None),
+            Some(AgentConversationPayload::ChildUpdate {
+                child_id: "task-tool-1".into(),
+                parent_tool_call_id: "task-tool-1".into(),
+                label: Some("Review the change".into()),
+                state: "running".into(),
+                latest_activity: Some("Inspect the implementation".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn task_terminal_update_maps_to_finished_child() {
+        for (status, activity) in [
+            ("completed", "Review complete"),
+            ("failed", "Review failed"),
+        ] {
+            let task = json!({ "sessionId": "s", "update": {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "task-tool-1",
+                "status": status,
+                "content": [{ "type": "content", "content": {
+                    "type": "text", "text": activity
+                }}],
+                "_meta": { "claudeCode": { "toolName": "Task" } }
+            }});
+
+            assert_eq!(
+                payload_from_session_update_for_turn(&task, None),
+                Some(AgentConversationPayload::ChildUpdate {
+                    child_id: "task-tool-1".into(),
+                    parent_tool_call_id: "task-tool-1".into(),
+                    label: None,
+                    state: "finished".into(),
+                    latest_activity: Some(activity.into()),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn async_task_launch_maps_agent_id_to_running_child() {
+        let task = json!({ "sessionId": "s", "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "task-tool-2",
+            "title": "Investigate startup",
+            "status": "completed",
+            "content": [{ "type": "content", "content": {
+                "type": "text",
+                "text": "Async agent launched successfully.\nagentId: ad9a1e2 (internal ID 123)\noutput_file: /private/tmp/task.output"
+            }}],
+            "_meta": { "claudeCode": { "toolName": "Task" } }
+        }});
+
+        assert_eq!(
+            payload_from_session_update_for_turn(&task, None),
+            Some(AgentConversationPayload::ChildUpdate {
+                child_id: "ad9a1e2".into(),
+                parent_tool_call_id: "task-tool-2".into(),
+                label: Some("Investigate startup".into()),
+                state: "running".into(),
+                latest_activity: Some(
+                    "Async agent launched successfully.\nagentId: ad9a1e2 (internal ID 123)\noutput_file: /private/tmp/task.output".into()
+                ),
+            })
+        );
+    }
+
+    #[test]
+    fn ordinary_think_tool_call_does_not_map_to_child() {
+        let thought = json!({ "sessionId": "s", "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "think-tool-1",
+            "title": "Think",
+            "kind": "think",
+            "status": "pending"
+        }});
+
+        assert!(matches!(
+            payload_from_session_update_for_turn(&thought, None),
+            Some(AgentConversationPayload::Tool { .. })
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
