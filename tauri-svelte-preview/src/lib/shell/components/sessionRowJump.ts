@@ -28,9 +28,9 @@ export interface SessionRowJumpPlan {
 }
 
 export interface SessionRowJumpTarget {
-  selectSession(ownedId: string): void;
-  showCenterPanel(id: string): void;
-  showSidebarView(id: string): void;
+  selectSession(ownedId: string): Promise<void>;
+  showCenterPanel(ownedId: string, id: string): void;
+  showSidebarView(ownedId: string, id: string): void;
 }
 
 export function isSessionRowSurface(value: unknown): value is SessionRowSurface {
@@ -80,11 +80,11 @@ export function registerSessionRowJumpTarget(target: SessionRowJumpTarget): () =
  * opens already showing the session the row named. False means nothing ran:
  * either the jump could not be planned or no host is registered.
  */
-export function sessionRowJump(ownedId: unknown, surface: unknown): boolean {
+export async function sessionRowJump(ownedId: unknown, surface: unknown): Promise<boolean> {
   const plan = planSessionRowJump(ownedId, surface);
   if (!plan || !activeTarget) return false;
-  activeTarget.selectSession(plan.ownedId);
-  if (plan.centerPanelId) activeTarget.showCenterPanel(plan.centerPanelId);
-  if (plan.sidebarViewId) activeTarget.showSidebarView(plan.sidebarViewId);
+  await activeTarget.selectSession(plan.ownedId);
+  if (plan.centerPanelId) activeTarget.showCenterPanel(plan.ownedId, plan.centerPanelId);
+  if (plan.sidebarViewId) activeTarget.showSidebarView(plan.ownedId, plan.sidebarViewId);
   return true;
 }

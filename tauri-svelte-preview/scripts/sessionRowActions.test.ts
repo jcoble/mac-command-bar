@@ -50,9 +50,9 @@ const shellPage = readFileSync(
 
 interface RecordingTarget {
   calls: string[];
-  selectSession(ownedId: string): void;
-  showCenterPanel(id: string): void;
-  showSidebarView(id: string): void;
+  selectSession(ownedId: string): Promise<void>;
+  showCenterPanel(ownedId: string, id: string): void;
+  showSidebarView(ownedId: string, id: string): void;
 }
 
 /** A target that records what it was asked to do, in order. */
@@ -60,13 +60,13 @@ function recordingTarget(): RecordingTarget {
   const calls: string[] = [];
   return {
     calls,
-    selectSession: (ownedId: string) => {
+    selectSession: async (ownedId: string) => {
       calls.push(`select:${ownedId}`);
     },
-    showCenterPanel: (id: string) => {
+    showCenterPanel: (_ownedId: string, id: string) => {
       calls.push(`center:${id}`);
     },
-    showSidebarView: (id: string) => {
+    showSidebarView: (_ownedId: string, id: string) => {
       calls.push(`view:${id}`);
     }
   };
@@ -136,15 +136,50 @@ for (const surface of SESSION_ROW_SURFACES) {
 // --- the dispatch ----------------------------------------------------------
 
 assert.equal(
-  sessionRowJump('s1', 'session'),
+  await sessionRowJump('s1', 'session'),
   false,
   'with nothing registered the jump reports that it did not happen'
 );
 
+let delayedActiveOwnedId = 'old-session';
+const delayedTabWrites: string[] = [];
+const releaseDelayed = registerSessionRowJumpTarget({
+  selectSession: async (ownedId: string) => {
+    await Promise.resolve();
+    delayedActiveOwnedId = ownedId;
+  },
+  showCenterPanel: (ownedId: string, id: string) => {
+    delayedTabWrites.push(`${ownedId}:${id}:${delayedActiveOwnedId}`);
+  },
+  showSidebarView: () => undefined
+});
+assert.equal(await sessionRowJump('new-session', 'editor'), true);
+assert.deepEqual(
+  delayedTabWrites,
+  ['new-session:editor:new-session'],
+  'a delayed activation finishes before the tab is written for the jumped-to session'
+);
+releaseDelayed();
+
+let activeOwnedId = 'active-session';
+let activationCalls = 0;
+const releaseActive = registerSessionRowJumpTarget({
+  selectSession: async (ownedId: string) => {
+    if (activeOwnedId === ownedId) return;
+    activationCalls += 1;
+    activeOwnedId = ownedId;
+  },
+  showCenterPanel: () => undefined,
+  showSidebarView: () => undefined
+});
+assert.equal(await sessionRowJump('active-session', 'session'), true);
+assert.equal(activationCalls, 0, 'jumping within the active session does not activate it again');
+releaseActive();
+
 const target = recordingTarget();
 const release = registerSessionRowJumpTarget(target);
 
-assert.equal(sessionRowJump('s1', 'session'), true);
+assert.equal(await sessionRowJump('s1', 'session'), true);
 assert.deepEqual(
   target.calls,
   ['select:s1', 'center:session'],
@@ -152,33 +187,33 @@ assert.deepEqual(
 );
 
 target.calls.length = 0;
-assert.equal(sessionRowJump('s2', 'editor'), true);
+assert.equal(await sessionRowJump('s2', 'editor'), true);
 assert.deepEqual(target.calls, ['select:s2', 'center:editor']);
 
 target.calls.length = 0;
-assert.equal(sessionRowJump('s3', 'source-control'), true);
+assert.equal(await sessionRowJump('s3', 'source-control'), true);
 assert.deepEqual(target.calls, ['select:s3', 'view:source-control']);
 
 target.calls.length = 0;
-assert.equal(sessionRowJump('', 'session'), false, 'an unplannable jump does nothing');
-assert.equal(sessionRowJump('s1', 'nowhere'), false);
+assert.equal(await sessionRowJump('', 'session'), false, 'an unplannable jump does nothing');
+assert.equal(await sessionRowJump('s1', 'nowhere'), false);
 assert.deepEqual(target.calls, [], 'and it never touches the target');
 
 const second = recordingTarget();
 const releaseSecond = registerSessionRowJumpTarget(second);
 target.calls.length = 0;
-assert.equal(sessionRowJump('s4', 'session'), true);
+assert.equal(await sessionRowJump('s4', 'session'), true);
 assert.deepEqual(second.calls, ['select:s4', 'center:session'], 'the newest host wins');
 assert.deepEqual(target.calls, [], 'the replaced host is not called');
 
 // A stale release must not unregister the host that replaced it.
 release();
 second.calls.length = 0;
-assert.equal(sessionRowJump('s5', 'session'), true);
+assert.equal(await sessionRowJump('s5', 'session'), true);
 assert.deepEqual(second.calls, ['select:s5', 'center:session']);
 
 releaseSecond();
-assert.equal(sessionRowJump('s6', 'session'), false, 'releasing the host stops the jumps');
+assert.equal(await sessionRowJump('s6', 'session'), false, 'releasing the host stops the jumps');
 
 // --- the wiring ------------------------------------------------------------
 
@@ -349,6 +384,11 @@ assert.match(
   shellPage,
   /registerSessionRowJumpTarget\(\{[\s\S]*?selectSession[\s\S]*?showCenterPanel[\s\S]*?showSidebarView[\s\S]*?\}\)/,
   'the page registers the one host that can activate a session and a surface'
+);
+assert.match(
+  shellPage,
+  /selectSession: async \(ownedId\) => \{[\s\S]*?rail\.activeOwnedId === ownedId[\s\S]*?await selectOwned\(ownedId\)/,
+  'the page skips activation when the jumped-to session is already active'
 );
 assert.match(
   shellPage,

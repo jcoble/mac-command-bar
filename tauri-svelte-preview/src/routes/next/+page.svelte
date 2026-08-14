@@ -318,9 +318,9 @@
   }
 
   /** A center tab the user clicked: shown, and remembered for this session. */
-  function selectCenterTab(id: CenterTabId): void {
+  function selectCenterTab(id: CenterTabId, ownedId = rail.activeOwnedId): void {
     applyCenterTab(id);
-    writeCenterTab(window.localStorage, rail.activeOwnedId, id);
+    writeCenterTab(window.localStorage, ownedId, id);
   }
 
   /**
@@ -340,9 +340,9 @@
   }
 
   /** A right tab the user clicked: shown, and remembered for this session. */
-  function selectRightTab(id: RightTabId): void {
+  function selectRightTab(id: RightTabId, ownedId = rail.activeOwnedId): void {
     applyRightTab(id);
-    writeRightTab(window.localStorage, rail.activeOwnedId, id);
+    writeRightTab(window.localStorage, ownedId, id);
   }
 
   /** Put both columns back on the tabs this session was left on. */
@@ -465,12 +465,17 @@
    * the frame and the views to the tool column. Bookkeeping like the palette
    * actions above; nothing runs until a row button is clicked. */
   registerSessionRowJumpTarget({
-    selectSession: (ownedId) => void selectOwned(ownedId),
-    showCenterPanel: (id) => showSurface(id),
-    showSidebarView: (id) => {
+    selectSession: async (ownedId) => {
+      if (rail.activeOwnedId === ownedId) return;
+      await selectOwned(ownedId);
+    },
+    showCenterPanel: (ownedId, id) => {
+      if (isCenterTabId(id)) selectCenterTab(id, ownedId);
+    },
+    showSidebarView: (ownedId, id) => {
       if (!isSidebarViewId(id)) return;
       const tab = rightTabForView(id);
-      if (tab) selectRightTab(tab);
+      if (tab) selectRightTab(tab, ownedId);
     }
   });
 
