@@ -72,22 +72,23 @@ export function generationForSend(previousGeneration: number, activationGenerati
 }
 
 /**
- * Validate the connection returned by ensure immediately before a send.
+ * Read the generation a send must carry from the state as it stands when the
+ * request goes out.
  *
- * The current state must still describe that same connected generation. A
- * later activation is therefore rejected rather than sending with a stale
- * generation, while an idempotent ensure remains valid.
+ * A generation names the adapter incarnation, not the conversation: re-ensuring
+ * a session after a suspend keeps the same owned id, working folder and
+ * transcript, so a generation that moved while the message was being prepared
+ * is no reason to drop what the user typed — the send follows the current one,
+ * which is also the only one the backend will accept. A conversation that is
+ * gone, never connected, closed or failed has nothing to send to, and only that
+ * refuses.
  */
-export function validateStructuredSendGeneration(
-  previousGeneration: number,
-  activation: { generation: number; state?: ConversationConnectionState; connectionState?: ConversationConnectionState } | null | undefined,
+export function sendTargetGeneration(
   current: Pick<ConversationSendState, 'connectionState' | 'generation'> | null | undefined
 ): number | null {
-  const activatedState = activation?.state ?? activation?.connectionState;
-  const nextGeneration = generationForSend(previousGeneration, activation?.generation ?? -1);
-  if (nextGeneration === null || activatedState !== 'connected') return null;
-  if (!current || current.connectionState !== 'connected' || current.generation !== nextGeneration) return null;
-  return nextGeneration;
+  if (!current || !Number.isInteger(current.generation) || current.generation < 1) return null;
+  if (current.connectionState === 'closed' || current.connectionState === 'failed') return null;
+  return current.generation;
 }
 
 function connectedSessionMatches(

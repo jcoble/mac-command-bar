@@ -28,6 +28,9 @@
     contextRemainingPercent?: number | null;
     attachmentError?: string;
     sendError?: string;
+    /** Clears the send failure. Given only where the failure is per-session
+     * state that can be cleared; the draft composer has none. */
+    onDismissSendError?(): void;
     pendingApproval?: AgentPermissionRequest | null;
     pendingApprovalCount?: number;
     pendingInputs?: readonly AgentUserInputRequest[];
@@ -63,6 +66,7 @@
     contextRemainingPercent = null,
     attachmentError = '',
     sendError = '',
+    onDismissSendError,
     pendingApproval = null,
     pendingApprovalCount = 1,
     pendingInputs = [],
@@ -119,7 +123,7 @@
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
   const bannerItems = $derived.by((): ComposerBannerItem[] => {
     const items: ComposerBannerItem[] = [];
-    if (sendError) items.push({ id: 'send-error', variant: 'error', title: 'Message not sent', description: sendError });
+    if (sendError) items.push({ id: 'send-error', variant: 'error', title: 'Message not sent', description: sendError, dismissLabel: 'Dismiss send failure', onDismiss: onDismissSendError });
     if (attachmentError) items.push({ id: 'attachment-error', variant: 'error', title: 'Attachment unavailable', description: attachmentError });
     if (configError) items.push({ id: 'config-error', variant: 'warning', title: 'Settings unavailable', description: configError });
     return items;
@@ -347,6 +351,12 @@
   .attachment-annotate { grid-column: 2; justify-self: start; border: 0; background: transparent; color: var(--color-accent); padding: 1px 0; font-size: 12px; cursor: pointer; }
   .drop-hint { margin: 0; padding: 0 16px 10px; color: var(--color-accent); font-size: 13px; }
   .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 5px auto 0; color: var(--color-text-3); font-size: 12px; }
-  @container composer (max-width: 680px) { .wide-controls { display: none; } .compact-controls { display: block; } .attach-control span { display: none; } .composer-footer { gap: 7px; } }
+  /* The settings row is a fixed 211px — approval on the left, the model pill on
+     the right — and Attach beside it needs about 80px more. Measured in the
+     browser, the pair still sits unclipped in a 438px composer, so collapsing
+     them into the overflow menu at 680px hid controls that had room to spare in
+     any window narrower than about 1100px. Collapse only when they genuinely
+     stop fitting. */
+  @container composer (max-width: 440px) { .wide-controls { display: none; } .compact-controls { display: block; } .attach-control span { display: none; } .composer-footer { gap: 7px; } }
   @media (prefers-reduced-motion: no-preference) { .composer-box, .send { transition: border-color .14s ease, background-color .14s ease, filter .14s ease, transform .14s ease, opacity .14s ease; } }
 </style>

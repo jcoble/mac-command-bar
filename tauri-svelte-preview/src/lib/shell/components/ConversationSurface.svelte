@@ -15,6 +15,7 @@
     setConversationAgentConfigState,
     setConversationAttachments,
     setConversationDraft,
+    setConversationSendError,
     setConversationMode,
     setConversationScrollTop,
     setConversationSelectedChild
@@ -126,7 +127,10 @@
   );
 
   let attachmentError = $state('');
-  let sendError = $state('');
+  // Read from the session rather than held here: this surface is mounted once
+  // for the whole shell, so a failure kept in component state was shown under
+  // every conversation and survived the send that fixed it.
+  const sendError = $derived(conversation?.sendError ?? '');
   let capabilityRequest = $state('');
   let configRequest = $state('');
   let inspectorOpen = $state(false);
@@ -223,7 +227,7 @@
     localTurnActive = true;
     localTurnStarted = false;
     setConversationDraft(activeOwnedId, '');
-    sendError = '';
+    setConversationSendError(activeOwnedId, '');
     try {
       await clearConversationSessionDraft(activeOwnedId);
       await sendStructuredMessage(activeOwnedId, text, active?.ptySessionId);
@@ -232,7 +236,7 @@
       // store on every failure, so the user can retry without data loss. The
       // reason has to be said out loud: a swallowed failure here reads as a
       // composer that silently refuses every Enter.
-      sendError = error instanceof Error ? error.message : String(error);
+      setConversationSendError(activeOwnedId, error instanceof Error ? error.message : String(error));
       setConversationDraft(activeOwnedId, text);
       persistConversationSessionDraft(activeOwnedId, text);
       await flushConversationSessionDraft(activeOwnedId).catch(() => undefined);
@@ -432,6 +436,7 @@
           pendingInputs={pendingInputs}
           {attachmentError}
           {sendError}
+          onDismissSendError={() => setConversationSendError(active.ownedId, '')}
           onDraftChange={(value) => {
             setConversationDraft(active.ownedId, value);
             persistConversationSessionDraft(active.ownedId, value);
