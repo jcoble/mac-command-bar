@@ -1443,6 +1443,104 @@ fn content_inset(_window: &tauri::Window) -> (f64, f64) {
     (0.0, 0.0)
 }
 
+/// Asks a WKWebView to draw the page it is showing. The answer arrives later
+/// on the main thread, so the completion handler encodes it and sends the
+/// result down the channel the caller is waiting on.
+///
+/// # Safety
+///
+/// `wk` must be a live WKWebView owned by the calling (main) thread.
+#[cfg(target_os = "macos")]
+unsafe fn take_wk_snapshot(
+    wk: *mut objc2::runtime::AnyObject,
+    tx: mpsc::Sender<Result<(Vec<u8>, u32, u32), String>>,
+) -> Result<(), String> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    if wk.is_null() {
+        return Err("The page's native view is gone".to_string());
+    }
+    // SAFETY: the caller guarantees the receiver; the configuration is a
+    // freshly allocated object owned by this function, and the block outlives
+    // the call because WebKit retains it until it answers.
+    unsafe {
+        let config: Retained<AnyObject> = msg_send![class!(WKSnapshotConfiguration), new];
+        let block = block2::RcBlock::new(move |image: *mut AnyObject, error: *mut AnyObject| {
+            let _ = tx.send(encode_snapshot_png(image, error));
+        });
+        let () =
+            msg_send![&*wk, takeSnapshotWithConfiguration: &*config, completionHandler: &*block];
+    }
+    Ok(())
+}
+
+/// Turns the image WebKit drew into PNG bytes and its pixel size, or explains
+/// in plain English why it could not.
+///
+/// # Safety
+///
+/// `image` must be nil or an NSImage, and `error` nil or an NSError.
+#[cfg(target_os = "macos")]
+unsafe fn encode_snapshot_png(
+    image: *mut objc2::runtime::AnyObject,
+    error: *mut objc2::runtime::AnyObject,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    // SAFETY: every message below is sent to an object the caller vouched
+    // for, or to one returned by the previous step and null-checked here.
+    unsafe {
+        if image.is_null() {
+            if !error.is_null() {
+                let description: Option<Retained<AnyObject>> =
+                    msg_send![&*error, localizedDescription];
+                if let Some(description) = description {
+                    let utf8: *const std::ffi::c_char = msg_send![&*description, UTF8String];
+                    if !utf8.is_null() {
+                        if let Ok(text) = std::ffi::CStr::from_ptr(utf8).to_str() {
+                            return Err(text.to_string());
+                        }
+                    }
+                }
+            }
+            return Err("The page could not be drawn".to_string());
+        }
+        let tiff: Option<Retained<AnyObject>> = msg_send![&*image, TIFFRepresentation];
+        let Some(tiff) = tiff else {
+            return Err("The drawn page held no image data".to_string());
+        };
+        let rep: Option<Retained<AnyObject>> =
+            msg_send![class!(NSBitmapImageRep), imageRepWithData: &*tiff];
+        let Some(rep) = rep else {
+            return Err("The drawn page could not be read as an image".to_string());
+        };
+        let width: isize = msg_send![&*rep, pixelsWide];
+        let height: isize = msg_send![&*rep, pixelsHigh];
+        if width <= 0 || height <= 0 {
+            return Err("The drawn page had no size".to_string());
+        }
+        let properties: Retained<AnyObject> = msg_send![class!(NSDictionary), dictionary];
+        // 4 is NSBitmapImageFileTypePNG.
+        let png: Option<Retained<AnyObject>> =
+            msg_send![&*rep, representationUsingType: 4usize, properties: &*properties];
+        let Some(png) = png else {
+            return Err("The drawn page could not be encoded as PNG".to_string());
+        };
+        let bytes: *const u8 = msg_send![&*png, bytes];
+        let length: usize = msg_send![&*png, length];
+        if bytes.is_null() || length == 0 {
+            return Err("The encoded page image was empty".to_string());
+        }
+        Ok((
+            std::slice::from_raw_parts(bytes, length).to_vec(),
+            width as u32,
+            height as u32,
+        ))
+    }
+}
+
 /// The same rectangle, moved from the document's space into the window's.
 fn into_window_space(bounds: BrowserBounds, inset: (f64, f64)) -> BrowserBounds {
     BrowserBounds {
@@ -1537,6 +1635,32 @@ impl BrowserView for TauriBrowserView {
         self.webview
             .eval("window.history.forward();")
             .map_err(native_error)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn snapshot(&self) -> Result<(Vec<u8>, u32, u32), BrowserCommandError> {
+        let (tx, rx) = mpsc::channel();
+        self.webview
+            .with_webview(move |platform| {
+                // Main thread: ask the page's native view for a rendered still.
+                // The completion handler encodes it as PNG and answers the
+                // channel, so the caller's wait below ends either way.
+                let failure = tx.clone();
+                // SAFETY: `inner` is this view's live WKWebView, and the call
+                // is made on the thread that owns it.
+                if let Err(message) = unsafe { take_wk_snapshot(platform.inner().cast(), tx) } {
+                    let _ = failure.send(Err(message));
+                }
+            })
+            .map_err(native_error)?;
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(message)) => Err(BrowserCommandError::new(BrowserErrorCode::Native, message)),
+            Err(_) => Err(BrowserCommandError::new(
+                BrowserErrorCode::Native,
+                "Timed out waiting for the page snapshot",
+            )),
+        }
     }
 
     fn eval(&self, script: &str) -> Result<(), BrowserCommandError> {
@@ -1976,6 +2100,10 @@ mod tests {
             Ok(())
         }
 
+        fn snapshot(&self) -> Result<(Vec<u8>, u32, u32), BrowserCommandError> {
+            Ok((vec![1, 2, 3], 4, 5))
+        }
+
         fn eval(&self, script: &str) -> Result<(), BrowserCommandError> {
             self.evals
                 .lock()
@@ -2069,6 +2197,25 @@ mod tests {
             tab_id: tab_id.to_string(),
             generation,
         }
+    }
+
+    #[test]
+    fn capture_maps_a_view_snapshot_into_png_markup_capture() {
+        let registry = BrowserRegistry::with_factory(Arc::new(FakeFactory::default()));
+        registry
+            .create_tab(
+                None,
+                input("workspace", "tab", 1, "https://example.test/"),
+                Arc::new(FakeSink::default()),
+            )
+            .unwrap();
+
+        let capture = registry.capture(target("workspace", "tab", 1)).unwrap();
+
+        assert_eq!(capture.mime_type, "image/png");
+        assert_eq!(capture.bytes, vec![1, 2, 3]);
+        assert_eq!(capture.width, 4);
+        assert_eq!(capture.height, 5);
     }
 
     #[test]

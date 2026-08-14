@@ -2292,6 +2292,7 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "axum",
+ "block2",
  "futures-util",
  "httpdate",
  "libc",

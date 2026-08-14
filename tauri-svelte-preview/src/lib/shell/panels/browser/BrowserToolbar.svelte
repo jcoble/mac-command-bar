@@ -2,7 +2,7 @@
   /**
    * BrowserToolbar.svelte — the address and the four tools.
    *
-   * Two lines: where you are, and what the pointer does. Select picks a real
+   * Two lines: where you are, and what the pointer does. Annotate picks a real
    * element out of the live page; Region, Draw and Erase work on a still of it.
    * The expand control is here too, beside the address, because it changes the
    * same thing the address does — how much of the page you can see.
@@ -60,7 +60,7 @@
   }: Props = $props();
 
   const tools: readonly SegmentedControlItem[] = [
-    { value: 'picking', label: 'Select', icon: MousePointer2 },
+    { value: 'picking', label: 'Annotate', icon: MousePointer2 },
     { value: 'region', label: 'Region', icon: SquareDashed },
     { value: 'drawing', label: 'Draw', icon: PenLine },
     { value: 'erasing', label: 'Erase', icon: Eraser }
