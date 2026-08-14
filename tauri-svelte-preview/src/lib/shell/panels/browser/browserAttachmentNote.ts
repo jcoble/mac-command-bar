@@ -29,6 +29,8 @@ export function elementTagFromSelector(selector: string | null | undefined): str
 export interface AnnotationNote {
   number: number;
   tag: string;
+  /** The page's own role for the element, when it has one. */
+  role?: string | null;
   label: string;
   selector?: string | null;
   accessibleName?: string | null;
@@ -61,8 +63,9 @@ export function formatAnnotationRequest(input: {
     lines.push('Marked on the page:');
     for (const note of input.annotations) {
       const label = clean(note.label);
-      const tag = clean(note.tag) || 'region';
-      lines.push(label ? `${note.number}. ${tag} — ${label}` : `${note.number}. ${tag}`);
+      // The role names the thing the way the page does; the tag is the fallback.
+      const kind = clean(note.role) || clean(note.tag) || 'region';
+      lines.push(label ? `${note.number}. ${kind} — ${label}` : `${note.number}. ${kind}`);
       const selector = clean(note.selector).replace(/\s+/g, ' ');
       const accessibleName = clean(note.accessibleName).replace(/\s+/g, ' ');
       const textSnippet = clean(note.textSnippet).replace(/\s+/g, ' ');

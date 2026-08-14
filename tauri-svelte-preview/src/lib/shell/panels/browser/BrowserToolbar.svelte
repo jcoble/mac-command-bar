@@ -2,10 +2,11 @@
   /**
    * BrowserToolbar.svelte — the address and the four tools.
    *
-   * Two lines: where you are, and what the pointer does. Annotate picks a real
-   * element out of the live page; Region, Draw and Erase work on a still of it.
-   * The expand control is here too, beside the address, because it changes the
-   * same thing the address does — how much of the page you can see.
+   * Two lines: where you are, and what the pointer does. All four tools work
+   * on a still of the page; Annotate is the one that asks the page what is
+   * under the pointer instead of taking the shape by hand. The expand control
+   * is here too, beside the address, because it changes the same thing the
+   * address does — how much of the page you can see.
    */
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
@@ -17,29 +18,26 @@
   import RotateCw from '@lucide/svelte/icons/rotate-cw';
   import SquareDashed from '@lucide/svelte/icons/square-dashed';
 
-  import { Chip } from '$lib/components/ui/chip/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import type { SegmentedControlItem } from '$lib/components/ui/segmented-control/types.js';
 
-  // The tools are the browser's own interaction modes; `browse` is none armed.
-  import type { BrowserInteractionMode } from '$lib/shell/browser/browserTypes.ts';
+  // `browse` is none armed.
+  import type { BrowserPanelTool } from '$lib/shell/browser/browserTypes.ts';
 
   interface Props {
     address: string;
-    tool: BrowserInteractionMode;
+    tool: BrowserPanelTool;
     canGoBack: boolean;
     canGoForward: boolean;
     expanded: boolean;
-    /** The picked element's tag, shown beside the tools when Select found one. */
-    elementTag: string | null;
     onAddressInput(value: string): void;
     onNavigate(): void;
     onBack(): void;
     onForward(): void;
     onReload(): void;
-    onToolChange(tool: BrowserInteractionMode): void;
+    onToolChange(tool: BrowserPanelTool): void;
     onToggleExpand(): void;
   }
 
@@ -49,7 +47,6 @@
     canGoBack,
     canGoForward,
     expanded,
-    elementTag,
     onAddressInput,
     onNavigate,
     onBack,
@@ -60,7 +57,7 @@
   }: Props = $props();
 
   const tools: readonly SegmentedControlItem[] = [
-    { value: 'picking', label: 'Annotate', icon: MousePointer2 },
+    { value: 'element', label: 'Annotate', icon: MousePointer2 },
     { value: 'region', label: 'Region', icon: SquareDashed },
     { value: 'drawing', label: 'Draw', icon: PenLine },
     { value: 'erasing', label: 'Erase', icon: Eraser }
@@ -71,7 +68,7 @@
   const selected = $derived(tool === 'browse' ? '' : tool);
 
   function choose(next: string): void {
-    onToolChange(next === tool ? 'browse' : (next as BrowserInteractionMode));
+    onToolChange(next === tool ? 'browse' : (next as BrowserPanelTool));
   }
 </script>
 
@@ -131,9 +128,6 @@
       aria-label="What the pointer does on the page"
       onValueChange={choose}
     />
-    {#if elementTag}
-      <Chip tone="neutral" data-testid="browser-element-tag">{elementTag}</Chip>
-    {/if}
   </div>
 </div>
 

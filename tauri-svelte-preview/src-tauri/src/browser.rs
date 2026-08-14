@@ -46,6 +46,7 @@ const MAX_TITLE_BYTES: usize = 2 * 1024;
 const MAX_SELECTOR_BYTES: usize = 2 * 1024;
 const MAX_TEXT_CHARS: usize = 500;
 const MAX_ACCESSIBLE_NAME_CHARS: usize = 500;
+const MAX_ROLE_CHARS: usize = 64;
 const MAX_CLASSES: usize = 32;
 const MAX_CLASS_NAME_BYTES: usize = 128;
 const MAX_INSPECTOR_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -225,6 +226,8 @@ pub struct BrowserElementSelectedEvent {
 #[serde(rename_all = "camelCase")]
 pub struct BrowserElementMetadata {
     pub selector: Option<String>,
+    /// The element's own ARIA role attribute when it has one.
+    pub role: Option<String>,
     pub accessible_name: Option<String>,
     pub text_snippet: Option<String>,
     pub rect: Option<BrowserRect>,
@@ -304,6 +307,7 @@ struct NativePickerPayload {
     url: Option<String>,
     title: Option<String>,
     selector: Option<String>,
+    role: Option<String>,
     accessible_name: Option<String>,
     text_snippet: Option<String>,
     rect: Option<BrowserRect>,
@@ -981,6 +985,7 @@ impl BrowserRegistry {
             .collect();
         Ok(Some(BrowserElementMetadata {
             selector: bounded_utf8_bytes(payload.selector.as_deref(), MAX_SELECTOR_BYTES),
+            role: bounded_chars(payload.role.as_deref().unwrap_or_default(), MAX_ROLE_CHARS),
             accessible_name: bounded_chars(
                 payload.accessible_name.as_deref().unwrap_or_default(),
                 MAX_ACCESSIBLE_NAME_CHARS,
@@ -2134,6 +2139,7 @@ struct BrowserPickerPayloadWire {
     url: Option<String>,
     title: Option<String>,
     selector: Option<String>,
+    role: Option<String>,
     accessible_name: Option<String>,
     text_snippet: Option<String>,
     rect: Option<BrowserRect>,
@@ -2171,6 +2177,7 @@ fn parse_picker_payload(raw: &str) -> Result<NativePickerPayload, BrowserCommand
         url: payload.url,
         title: payload.title,
         selector: payload.selector,
+        role: payload.role,
         accessible_name: payload.accessible_name,
         text_snippet: payload.text_snippet,
         rect: payload.rect,

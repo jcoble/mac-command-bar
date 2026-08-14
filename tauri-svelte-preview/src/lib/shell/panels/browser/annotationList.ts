@@ -26,15 +26,28 @@ export interface BrowserAnnotation {
   id: string;
   /** Where it sits, in the marking surface's own pixels. */
   box: AnnotationBox;
+  /** Where the numbered pin sits — the spot that was clicked, not the corner. */
+  pin: { x: number; y: number };
   /** What the reader typed for this spot. Empty until they say something. */
   label: string;
-  /** The element's tag when the picker found one, otherwise `region`. */
+  /** The element's tag when the page named one, otherwise `region`. */
   tag: string;
   /** Bounded DOM context from the native page inspector, when one was found. */
   selector: string | null;
+  role: string | null;
   accessibleName: string | null;
   textSnippet: string | null;
   classes: string[];
+}
+
+/**
+ * What the chip beside an annotation says it points at. The page's own role is
+ * what a reader recognises — a search box says `combobox`, not `input` — so it
+ * wins over the tag read off the selector.
+ */
+export function annotationKind(item: Pick<BrowserAnnotation, 'role' | 'tag'>): string {
+  const role = typeof item.role === 'string' ? item.role.trim() : '';
+  return role || item.tag || 'region';
 }
 
 /** An annotation with the number shown on its badge. */

@@ -4,7 +4,7 @@
  * deliberately reloaded when another session takes ownership of the view.
  */
 import type { SessionBrowserWorkspace } from '../sessionWorkspaces.ts';
-import type { BrowserInteractionMode, BrowserMarkupCapture } from './browserTypes.ts';
+import type { BrowserMarkupCapture, BrowserPanelTool } from './browserTypes.ts';
 import type { PlacedAnnotationShape } from '../panels/browser/annotationComposite.ts';
 import type { BrowserAnnotation } from '../panels/browser/annotationList.ts';
 
@@ -13,7 +13,7 @@ export interface BrowserPanelSessionSnapshot {
   strokes: PlacedAnnotationShape[];
   description: string;
   listOpen: boolean;
-  tool: BrowserInteractionMode;
+  tool: BrowserPanelTool;
   capture: BrowserMarkupCapture | null;
   editingId: string | null;
   expanded: boolean;

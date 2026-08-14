@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   addAnnotation,
   annotationCountLabel,
+  annotationKind,
   composeMarks,
   labelAnnotation,
   numberAnnotations,
@@ -23,13 +24,15 @@ import {
   writeBrowserSessionSnapshot
 } from '../src/lib/shell/browser/browserSessionSnapshots.ts';
 
-function element(id: string, tag: string, label = ''): BrowserAnnotation {
+function element(id: string, tag: string, label = '', role: string | null = null): BrowserAnnotation {
   return {
     id,
     box: { kind: 'element', x: 10, y: 20, width: 100, height: 40, tag },
+    pin: { x: 44, y: 38 },
     label,
     tag,
     selector: `main > ${tag}.target`,
+    role,
     accessibleName: 'Target element',
     textSnippet: 'Nearby words',
     classes: ['target']
@@ -40,14 +43,23 @@ function region(id: string, label = ''): BrowserAnnotation {
   return {
     id,
     box: { kind: 'region', x: 5, y: 5, width: 50, height: 50 },
+    pin: { x: 5, y: 5 },
     label,
     tag: 'region',
     selector: null,
+    role: null,
     accessibleName: null,
     textSnippet: null,
     classes: []
   };
 }
+
+// The chip beside an annotation says what the page calls the element. A search
+// box is a `combobox` to anyone reading it, and an `input` only to the selector.
+assert.equal(annotationKind(element('k', 'input', '', 'combobox')), 'combobox');
+assert.equal(annotationKind(element('k', 'button')), 'button');
+assert.equal(annotationKind(element('k', 'button', '', '  ')), 'button');
+assert.equal(annotationKind(region('k')), 'region');
 
 // Annotations keep the order they were made in, and adding never touches the
 // list that was there — the panel hands the old one straight back to Svelte.
@@ -115,7 +127,7 @@ assert.equal(annotationCountLabel(4), '4 annotations');
 writeBrowserSessionSnapshot('session-a', {
   browser: { url: 'https://example.com/a', inputUrl: 'example.com/a', activated: true },
   panel: {
-    annotations: [element('saved', 'button', 'make this clearer')],
+    annotations: [element('saved', 'input', 'make this clearer', 'combobox')],
     strokes: [],
     description: 'Please update this page',
     listOpen: true,
@@ -133,7 +145,9 @@ const restoredA = readBrowserSessionSnapshot('session-a');
 assert.equal(restoredA.browser.url, 'https://example.com/a');
 assert.equal(restoredA.panel.description, 'Please update this page');
 assert.equal(restoredA.panel.listOpen, true);
-assert.equal(restoredA.panel.annotations[0].selector, 'main > button.target');
+assert.equal(restoredA.panel.annotations[0].selector, 'main > input.target');
+assert.equal(restoredA.panel.annotations[0].role, 'combobox');
+assert.deepEqual(restoredA.panel.annotations[0].pin, { x: 44, y: 38 });
 assert.equal(restoredA.panel.annotations[0].accessibleName, 'Target element');
 assert.equal(restoredA.panel.annotations[0].textSnippet, 'Nearby words');
 assert.deepEqual(restoredA.panel.annotations[0].classes, ['target']);

@@ -14,6 +14,15 @@ export type BrowserPresentationMode = 'docked' | 'floating' | 'maximized' | 'col
  */
 export type BrowserInteractionMode = 'browse' | 'picking' | 'region' | 'drawing' | 'erasing';
 
+/**
+ * What the pointer does on the still of the page in the browser panel.
+ * `element` asks the page what is under the pointer; the other three mark the
+ * still by hand. This is the panel's own state and not the workspace's
+ * interaction mode: marking never arms the native page picker, because the
+ * still has to stay up for the marks and the prompt to stay on screen.
+ */
+export type BrowserPanelTool = 'browse' | 'element' | 'region' | 'drawing' | 'erasing';
+
 export type BrowserViewportPreset =
   | 'responsive'
   | 'mobile-s'
@@ -54,6 +63,8 @@ export interface BrowserRect {
 /** Bounded page metadata returned by the native inspector. */
 export interface BrowserElementMetadata {
   selector: string | null;
+  /** The element's own ARIA role attribute, when it has one. */
+  role: string | null;
   accessibleName: string | null;
   textSnippet: string | null;
   rect: BrowserRect | null;

@@ -120,6 +120,25 @@ assert.equal(request.includes('  Classes: hero, wide'), true);
 assert.equal(request.includes('2. region'), true);
 assert.equal(request.includes('2. region —'), false);
 
+// The page's own role names the element the way a reader recognises it, so it
+// wins over the tag read off the selector.
+assert.equal(
+  formatAnnotationRequest({
+    url: '',
+    description: '',
+    annotations: [{ number: 1, tag: 'input', role: 'combobox', label: 'widen this' }]
+  }).includes('1. combobox — widen this'),
+  true
+);
+assert.equal(
+  formatAnnotationRequest({
+    url: '',
+    description: '',
+    annotations: [{ number: 1, tag: 'button', role: '  ', label: '' }]
+  }).includes('1. button'),
+  true
+);
+
 // A tag that never arrived still reads as something.
 assert.equal(
   formatAnnotationRequest({

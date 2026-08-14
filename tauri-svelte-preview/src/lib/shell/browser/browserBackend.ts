@@ -206,9 +206,33 @@ export class InMemoryBrowserBackend implements BrowserBackend {
     this.record('cancel_browser_element_picker', input);
   }
 
-  inspect_browser_rect(input: BrowserBackendRectInput): BrowserElementMetadata | null {
+  /**
+   * A page without a page. The answer is the cell of a coarse grid the asked-for
+   * rectangle starts in, so the same spot always describes the same "element"
+   * and the preview build can be marked up the way the desktop one is.
+   */
+  inspect_browser_rect(input: BrowserBackendRectInput): BrowserElementMetadata {
     this.record('inspect_browser_rect', input);
-    return null;
+    const CELL_WIDTH = 180;
+    const CELL_HEIGHT = 44;
+    const column = Math.floor(input.rect.x / CELL_WIDTH);
+    const row = Math.floor(input.rect.y / CELL_HEIGHT);
+    const kinds = ['button', 'combobox', 'link', 'heading'] as const;
+    const kind = kinds[Math.abs(column + row) % kinds.length];
+    return {
+      selector: `main > section:nth-of-type(${row + 1}) > div.cell:nth-of-type(${column + 1})`,
+      role: kind,
+      accessibleName: `Preview ${kind} ${row + 1}.${column + 1}`,
+      textSnippet: `Row ${row + 1}, column ${column + 1}`,
+      rect: {
+        x: column * CELL_WIDTH,
+        y: row * CELL_HEIGHT,
+        width: CELL_WIDTH,
+        height: CELL_HEIGHT
+      },
+      classes: ['cell', kind],
+      classCount: 2
+    };
   }
 
   capture_browser_viewport(input: BrowserBackendTarget): BrowserMarkupCapture {
@@ -217,9 +241,15 @@ export class InMemoryBrowserBackend implements BrowserBackend {
     if (existing) return copy(existing);
     const capture: BrowserMarkupCapture = {
       mimeType: 'image/png',
-      bytes: [137, 80, 78, 71, input.tabId.length & 0xff, input.generation & 0xff],
-      width: 1,
-      height: 1,
+      // A real, if very small, picture: the preview build draws it, and an
+      // image that cannot be decoded is a marking surface with nothing on it.
+      bytes: [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 2,
+        0, 0, 0, 253, 212, 154, 115, 0, 0, 0, 14, 73, 68, 65, 84, 120, 156, 99, 248, 5, 6, 12, 16,
+        10, 0, 82, 22, 11, 185, 152, 58, 126, 116, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130
+      ],
+      width: 2,
+      height: 2,
       sourceHash: `fake-capture:${input.tabId}:${input.generation}`
     };
     this.captures.set(input.tabId, capture);

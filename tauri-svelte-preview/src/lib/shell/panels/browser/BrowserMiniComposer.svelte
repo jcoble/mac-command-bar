@@ -3,28 +3,29 @@
    * BrowserMiniComposer.svelte — the card that floats over the page being
    * marked up.
    *
-   * It sits inside the browser area rather than under it, because what it says
-   * is about the picture directly above it: this many places marked, and here
-   * is the sentence that goes with them. In the panel's footer it read as
-   * another row of chrome and people typed into the session's composer
-   * instead.
+   * It sits over the foot of the page, not under it, because what it says is
+   * about the picture directly above it: this many places marked, and here is
+   * the sentence that goes with them. In the panel's chrome it read as another
+   * row of controls, and it pushed the page down every time marking started.
    *
    * Send is a send. The words and the marked-up picture go to the session as
    * one turn, and the session comes forward — the reader watches it go rather
    * than finding a staged draft somewhere else and pressing Enter again.
    *
    * The chip is the list. Closed it counts; open it shows every annotation
-   * with a crop of the place it points at, so a note that ended up on the
-   * wrong thing can be taken out before the turn leaves.
+   * with a crop of the place it points at and what the page calls that place,
+   * so a note that ended up on the wrong thing can be taken out before the turn
+   * leaves. The cross on the chip throws all of it away and gives the live page
+   * back.
    */
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
-  import ListChecks from '@lucide/svelte/icons/list-checks';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
   import X from '@lucide/svelte/icons/x';
 
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
 
-  import { annotationCountLabel, type NumberedAnnotation } from './annotationList.ts';
+  import { annotationCountLabel, annotationKind, type NumberedAnnotation } from './annotationList.ts';
 
   interface Props {
     description: string;
@@ -37,11 +38,11 @@
     busy: boolean;
     /** Nothing to send: no session, or no page. */
     disabled: boolean;
-    error: string;
     listOpen: boolean;
     onDescriptionChange(value: string): void;
     onToggleList(): void;
     onRemove(id: string): void;
+    onDiscard(): void;
     onSend(): void;
   }
 
@@ -52,17 +53,17 @@
     surface,
     busy,
     disabled,
-    error,
     listOpen,
     onDescriptionChange,
     onToggleList,
     onRemove,
+    onDiscard,
     onSend
   }: Props = $props();
 
   /** The crop tile in the list, in CSS pixels. */
-  const THUMB_WIDTH = 44;
-  const THUMB_HEIGHT = 32;
+  const THUMB_WIDTH = 30;
+  const THUMB_HEIGHT = 20;
 
   const canSend = $derived(!disabled && !busy && (description.trim().length > 0 || annotations.length > 0));
 
@@ -92,61 +93,74 @@
   }
 </script>
 
-<div class="card" data-testid="browser-mini-composer">
+<div class="composer" data-testid="browser-mini-composer">
   {#if listOpen && annotations.length > 0}
     <ul class="list" data-testid="browser-annotation-list">
       {#each annotations as item (item.id)}
         <li class="row">
-          <span class="number">{item.number}</span>
-          {#if backdrop}
-            <span
-              class="thumb"
-              style={`background-image:url(${backdrop});${crop(item)}`}
-              aria-hidden="true"
-            ></span>
-          {/if}
           <span class="what">
-            <Chip tone="neutral">{item.tag}</Chip>
-            <span class="said">{item.label || 'No note'}</span>
+            <span class="number">{item.number}</span>
+            {#if backdrop}
+              <span
+                class="thumb"
+                style={`background-image:url(${backdrop});${crop(item)}`}
+                aria-hidden="true"
+              ></span>
+            {/if}
+            <Chip tone="neutral">{annotationKind(item)}</Chip>
+            <span class="spacer"></span>
+            <IconButton
+              label={`Remove annotation ${item.number}`}
+              size="xs"
+              variant="ghost"
+              data-testid="browser-annotation-remove"
+              onclick={() => onRemove(item.id)}
+            >
+              <X aria-hidden="true" />
+            </IconButton>
           </span>
-          <IconButton
-            label={`Remove annotation ${item.number}`}
-            size="xs"
-            variant="ghost"
-            data-testid="browser-annotation-remove"
-            onclick={() => onRemove(item.id)}
-          >
-            <X aria-hidden="true" />
-          </IconButton>
+          <span class="said">{item.label || 'No note'}</span>
         </li>
       {/each}
     </ul>
   {/if}
 
-  <form class="prompt" onsubmit={submit}>
+  <form class="card" onsubmit={submit}>
     {#if annotations.length > 0}
-      <button
-        type="button"
-        class="count"
-        aria-expanded={listOpen}
-        data-testid="browser-annotation-count"
-        onclick={onToggleList}
-      >
-        <ListChecks aria-hidden="true" />
-        {annotationCountLabel(annotations.length)}
-      </button>
+      <div class="chip-row">
+        <button
+          type="button"
+          class="count"
+          aria-expanded={listOpen}
+          data-testid="browser-annotation-count"
+          onclick={onToggleList}
+        >
+          <MessageSquare aria-hidden="true" />
+          {annotationCountLabel(annotations.length)}
+        </button>
+        <IconButton
+          label="Discard these annotations"
+          size="xs"
+          variant="ghost"
+          data-testid="browser-annotating-discard"
+          onclick={onDiscard}
+        >
+          <X aria-hidden="true" />
+        </IconButton>
+      </div>
     {/if}
 
-    <div class="entry">
-      <input
-        class="say"
-        aria-label="Describe the change"
-        placeholder="Describe the change…"
-        value={description}
-        disabled={busy}
-        data-testid="browser-mini-composer-input"
-        oninput={(event) => onDescriptionChange(event.currentTarget.value)}
-      />
+    <input
+      class="say"
+      aria-label="Describe the change"
+      placeholder="Do anything"
+      value={description}
+      disabled={busy}
+      data-testid="browser-mini-composer-input"
+      oninput={(event) => onDescriptionChange(event.currentTarget.value)}
+    />
+
+    <div class="actions">
       <IconButton
         label={busy ? 'Sending' : 'Send to the session'}
         size="sm"
@@ -159,52 +173,82 @@
       </IconButton>
     </div>
   </form>
-
-  {#if error}
-    <p class="failure" role="alert" data-testid="browser-mini-composer-error">{error}</p>
-  {/if}
 </div>
 
 <style>
+  .composer {
+    display: flex;
+    width: min(720px, calc(100% - 32px));
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
   .card {
     display: flex;
-    width: min(560px, calc(100% - 24px));
+    width: 100%;
     flex-direction: column;
-    gap: 6px;
+    gap: 10px;
     border: 1px solid var(--color-border);
-    border-radius: 14px;
-    background: var(--color-surface);
-    padding: 8px;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+    border-radius: 18px;
+    background: var(--color-elevated);
+    padding: 12px 14px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38);
   }
 
   .list {
     display: flex;
-    max-height: 176px;
+    width: min(400px, 100%);
+    max-height: 200px;
     flex-direction: column;
-    gap: 2px;
     overflow-y: auto;
     margin: 0;
+    border: 1px solid var(--color-border);
+    border-radius: 14px;
+    background: var(--color-elevated);
     padding: 0;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.38);
     list-style: none;
   }
 
   .row {
     display: flex;
-    align-items: center;
-    gap: 8px;
-    border-radius: 10px;
-    padding: 4px 6px;
+    flex-direction: column;
+    gap: 6px;
+    border-bottom: 1px solid var(--color-border);
+    padding: 10px 12px;
   }
 
-  .row:hover {
-    background: var(--color-elevated);
+  .row:last-child {
+    border-bottom: 0;
+  }
+
+  .what {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .spacer {
+    flex: 1;
+  }
+
+  .thumb {
+    display: block;
+    height: 20px;
+    width: 30px;
+    flex: none;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    background-color: var(--color-surface);
+    background-repeat: no-repeat;
   }
 
   .number {
     display: inline-flex;
-    height: 18px;
-    min-width: 18px;
+    height: 17px;
+    min-width: 17px;
     flex: none;
     align-items: center;
     justify-content: center;
@@ -216,38 +260,23 @@
     color: rgb(255, 255, 255);
   }
 
-  .thumb {
-    display: block;
-    height: 32px;
-    width: 44px;
-    flex: none;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background-color: var(--color-elevated);
-    background-repeat: no-repeat;
-  }
-
-  .what {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    align-items: center;
-    gap: 6px;
-  }
-
   .said {
     overflow: hidden;
-    font-size: 12px;
+    font-size: 13px;
     color: var(--color-text);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .prompt {
+  .chip-row {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
+    align-items: center;
+    gap: 2px;
+    align-self: flex-start;
+    border: 1px solid var(--color-border);
+    border-radius: 999px;
+    background: var(--color-surface);
+    padding: 2px 4px 2px 2px;
   }
 
   .count {
@@ -255,10 +284,10 @@
     height: 22px;
     align-items: center;
     gap: 6px;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 999px;
-    background: var(--color-elevated);
-    padding: 0 10px;
+    background: transparent;
+    padding: 0 6px;
     font-size: 12px;
     color: var(--color-text);
     cursor: pointer;
@@ -269,20 +298,13 @@
     width: 12px;
   }
 
-  .entry {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    gap: 6px;
-  }
-
   .say {
+    width: 100%;
     min-width: 0;
-    flex: 1;
     border: 0;
     background: transparent;
-    padding: 4px 2px;
-    font-size: 13px;
+    padding: 2px 2px 8px;
+    font-size: 14px;
     color: var(--color-text);
     outline: none;
   }
@@ -291,10 +313,10 @@
     color: var(--color-text-2);
   }
 
-  .failure {
-    margin: 0;
-    padding: 0 4px;
-    font-size: 12px;
-    color: var(--color-bad);
+  .actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
   }
 </style>

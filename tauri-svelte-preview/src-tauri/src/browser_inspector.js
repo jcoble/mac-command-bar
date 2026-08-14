@@ -123,6 +123,7 @@
     return {
       status: 'selected',
       selector: selectorFor(element),
+      role: bounded(element.getAttribute('role'), 64),
       accessibleName: accessibleName(element),
       textSnippet: boundedText(element),
       rect: {

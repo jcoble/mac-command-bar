@@ -17,19 +17,30 @@
   import { drawShapes, shapeAtPoint, type AnnotationShape, type PlacedAnnotationShape } from './annotationComposite.ts';
 
   interface Props {
-    /** Which tool is armed. Only these three take the pointer. */
-    tool: 'region' | 'drawing' | 'erasing';
+    /** Which tool is armed. `browse` leaves the still alone. */
+    tool: 'browse' | 'element' | 'region' | 'drawing' | 'erasing';
     /** The marks already made, in this surface's own pixels. */
     shapes: readonly PlacedAnnotationShape[];
     /** The still of the page being marked up. */
     backdrop: string | null;
+    /**
+     * What the page says is under the pointer, outlined while Annotate is
+     * armed. It is a box in the document rather than ink on the canvas: it
+     * follows the pointer and must never be burned into the picture that goes.
+     */
+    highlight: { x: number; y: number; width: number; height: number } | null;
     onAdd(shape: AnnotationShape): void;
     onErase(id: string): void;
+    /** Where the pointer is while Annotate is armed, and where it left. */
+    onHover(point: { x: number; y: number } | null): void;
+    /** A click while Annotate is armed: mark whatever is at this point. */
+    onPick(point: { x: number; y: number }): void;
     /** Reports the surface's size so the export can scale the marks onto the picture. */
     onResize(size: { width: number; height: number }): void;
   }
 
-  let { tool, shapes, backdrop, onAdd, onErase, onResize }: Props = $props();
+  let { tool, shapes, backdrop, highlight, onAdd, onErase, onHover, onPick, onResize }: Props =
+    $props();
 
   let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
@@ -37,7 +48,7 @@
   let inProgress = $state<AnnotationShape | null>(null);
   let origin: { x: number; y: number } | null = null;
 
-  const cursor = $derived(tool === 'erasing' ? 'cell' : 'crosshair');
+  const cursor = $derived(tool === 'browse' ? 'default' : tool === 'erasing' ? 'cell' : 'crosshair');
 
   function pointIn(event: PointerEvent): { x: number; y: number } {
     const rect = canvas?.getBoundingClientRect();
@@ -61,7 +72,12 @@
 
   function down(event: PointerEvent): void {
     if (event.button !== 0) return;
+    if (tool === 'browse') return;
     const point = pointIn(event);
+    if (tool === 'element') {
+      onPick(point);
+      return;
+    }
     if (tool === 'erasing') {
       const hit = shapeAtPoint(shapes, point.x, point.y);
       if (hit) onErase(hit);
@@ -77,6 +93,10 @@
   }
 
   function move(event: PointerEvent): void {
+    if (tool === 'element') {
+      onHover(pointIn(event));
+      return;
+    }
     const current = inProgress;
     if (!current || !origin) return;
     const point = pointIn(event);
@@ -131,6 +151,16 @@
   {#if backdrop}
     <img class="backdrop" src={backdrop} alt="The page as it was when marking started" draggable="false" />
   {/if}
+  {#if highlight}
+    <div
+      class="highlight"
+      style:left={`${highlight.x}px`}
+      style:top={`${highlight.y}px`}
+      style:width={`${highlight.width}px`}
+      style:height={`${highlight.height}px`}
+      data-testid="browser-annotation-highlight"
+    ></div>
+  {/if}
   <canvas
     bind:this={canvas}
     class="ink"
@@ -143,6 +173,7 @@
     onpointermove={move}
     onpointerup={up}
     onpointercancel={cancel}
+    onpointerleave={() => onHover(null)}
   ></canvas>
 </div>
 
@@ -170,5 +201,15 @@
     position: absolute;
     inset: 0;
     touch-action: none;
+  }
+
+  /* Follows the pointer, so it moves by moving — no size or position
+     animation, and nothing left running when the pointer stops. */
+  .highlight {
+    position: absolute;
+    border: 2px solid rgba(37, 99, 235, 0.95);
+    border-radius: 3px;
+    background: rgba(37, 99, 235, 0.14);
+    pointer-events: none;
   }
 </style>

@@ -11,11 +11,18 @@
    * screen entirely, or it would sit over whichever panel replaced it.
    *
    * Marking up works on a still of the page rather than the live view, for the
-   * same reason: nothing in the document can be drawn over a native view. Arming
-   * Region, Draw or Erase captures the page, hides the view, and puts that
-   * picture under the canvas — so what gets marked is exactly what gets sent.
-   * Select is the one tool that needs the live page, and it uses the shell's own
-   * element picker; the still comes back the moment it has an answer.
+   * same reason: nothing in the document can be drawn over a native view. The
+   * first tool armed captures the page, hides the view, and puts that picture
+   * under the canvas — so what gets marked is exactly what gets sent, and the
+   * still stays up until the turn goes or the marks are thrown away. Nothing
+   * about the panel's own rows changes while it is up: the still fills the
+   * rectangle the page filled, and everything marking needs floats over it.
+   *
+   * Annotate asks the page what is under the pointer and outlines it. It does
+   * that through the metadata inspector rather than the shell's element picker,
+   * because the picker needs the live view in front — and a live view in front
+   * takes the still, the marks already made and the half-typed sentence off the
+   * screen every time another place is pointed at.
    *
    * Marking a place is a numbered thing with words attached, not just ink. Each
    * element picked and each region drawn gets a circle on the picture and a row
@@ -27,17 +34,10 @@
    */
   import { untrack } from 'svelte';
   import Globe from '@lucide/svelte/icons/globe';
-  import X from '@lucide/svelte/icons/x';
 
-  import { Button } from '$lib/components/ui/button/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
-  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { saveConversationClipboardImage } from '$lib/shell/conversation/conversationService.ts';
   import { sendToSession } from '$lib/shell/workbenchNavigation.ts';
-  import {
-    listenToBrowserElementSelected,
-    type BrowserElementSelectedEvent
-  } from '$lib/shell/browser/browserElementEvents.ts';
   import {
     activateBrowser,
     browser,
@@ -48,17 +48,15 @@
   } from '$lib/shell/browser/browserStore.svelte.ts';
   import { listenToBrowserNavigation } from '$lib/shell/browser/browserBackend.ts';
   import {
-    acceptBrowserElementSelection,
-    beginBrowserElementPicker,
-    cancelBrowserAnnotation,
     collapseBrowserToControl,
     describeBrowserError,
     setBrowserPresentationMode
   } from '$lib/shell/browser/browserModel.ts';
   import type {
     BrowserElementMetadata,
-    BrowserInteractionMode,
     BrowserMarkupCapture,
+    BrowserPanelTool,
+    BrowserRect,
     BrowserTabState
   } from '$lib/shell/browser/browserTypes.ts';
   import { normalizeBrowserUrl } from '$lib/shell/browser/normalizeBrowserUrl.ts';
@@ -104,7 +102,7 @@
   let pageHost = $state<HTMLDivElement | null>(null);
   /** The panel's own rows above the page — measured, never assumed. */
   let chromeHost = $state<HTMLDivElement | null>(null);
-  let tool = $state<BrowserInteractionMode>('browse');
+  let tool = $state<BrowserPanelTool>('browse');
   let expanded = $state(false);
   let address = $state('');
   let addressEdited = $state(false);
@@ -122,7 +120,19 @@
 
   let capture = $state<BrowserMarkupCapture | null>(null);
   let backdrop = $state<string | null>(null);
-  let pickedTag = $state<string | null>(null);
+  /** What the page says is under the pointer while Annotate is armed. */
+  let hovered = $state<BrowserRect | null>(null);
+  /**
+   * One question to the page at a time. The pointer moves far faster than a
+   * round trip to the page, so the newest point waits for the answer in flight
+   * and the ones behind it are dropped — the outline follows the pointer
+   * without a queue of stale questions building up behind it.
+   */
+  let askingPage = false;
+  let pendingPoint: { x: number; y: number } | null = null;
+  /** Bumped when the outline is called off, so an answer already in flight for
+   *  a pointer that has since left does not put it back. */
+  let hoverEpoch = 0;
 
   /** Bumped whenever the host rectangle could have moved. */
   let layoutTick = $state(0);
@@ -142,15 +152,13 @@
   const marks = $derived(liveShapes(composeMarks(annotations, strokes), NOTHING_ERASED));
   const numbered = $derived(numberAnnotations(annotations));
   /**
-   * The picker works on the live page, so the still steps aside for exactly as
-   * long as Select is armed and comes back with the answer. Every other tool
-   * marks the still, and it stays up between them: switching from Region to
-   * Draw must not re-capture, or the second mark lands on a different picture
-   * from the first.
+   * The still is up from the moment the first tool is armed until the turn is
+   * sent or thrown away. It never steps aside for a tool change: switching from
+   * Region to Draw must not re-capture, or the second mark lands on a different
+   * picture from the first — and disarming must not take what has been marked
+   * and typed off the screen.
    */
-  const showsStill = $derived(backdrop !== null && tool !== 'picking');
-  /** Marking is a mode, and the panel says so until it is sent or thrown away. */
-  const annotating = $derived(backdrop !== null || tool === 'picking' || annotations.length > 0);
+  const showsStill = $derived(backdrop !== null);
   const markupBounds = $derived.by(() => {
     layoutTick;
     const placement = wantedPlacement(true, expanded);
@@ -166,8 +174,12 @@
     };
   });
   const addressValue = $derived(addressEdited ? address : browser.inputUrl || browser.url);
+  /**
+   * One place for anything that went wrong, under the page and never over it:
+   * the still covers the page area exactly, so a message drawn inside it is a
+   * message that comes and goes with the marking.
+   */
   const errorText = $derived(failure || browser.error);
-  const pageHostName = $derived(hostName(browser.url));
 
   function markId(): string {
     nextMarkId += 1;
@@ -176,15 +188,6 @@
 
   function say(error: unknown): void {
     failure = describeBrowserError(error);
-  }
-
-  /** The address without the scheme or the path — what the strip calls the page. */
-  function hostName(url: string): string {
-    try {
-      return new URL(url).hostname || url;
-    } catch {
-      return url;
-    }
   }
 
   function bodyPortal(node: HTMLElement): { destroy(): void } {
@@ -250,8 +253,10 @@
     if (placed && samePlacement(next, placed)) return;
     try {
       if (next.kind === 'hidden') {
-        // Nothing has been opened yet, so there is no view to take away.
-        if (!browser.workspace.activeTabId) {
+        // Nothing has been put on screen, so there is no view to take away —
+        // and asking the shell to hide a workspace it never opened comes back
+        // as a page error the reader can neither act on nor dismiss.
+        if (!browser.workspace.activeTabId || !browser.workspace.activated) {
           placed = next;
           return;
         }
@@ -351,7 +356,7 @@
       strokes,
       description,
       listOpen,
-      tool: tool === 'picking' ? 'browse' : tool,
+      tool,
       capture,
       editingId,
       expanded
@@ -374,11 +379,12 @@
     address = '';
     addressEdited = false;
     failure = '';
-    pickedTag = null;
+    stopHover();
     layoutTick += 1;
   }
 
   function dropStill(): void {
+    stopHover();
     if (backdrop) URL.revokeObjectURL(backdrop);
     backdrop = null;
     capture = null;
@@ -386,18 +392,10 @@
     strokes = [];
     editingId = null;
     listOpen = false;
-    pickedTag = null;
   }
 
-  /** The X on the strip: everything marked goes, and the live page comes back. */
+  /** The cross on the chip: everything marked goes, and the live page is back. */
   function discard(): void {
-    if (tool === 'picking') {
-      try {
-        cancelBrowserAnnotation(browserModelContext());
-      } catch (error) {
-        say(error);
-      }
-    }
     tool = 'browse';
     description = '';
     failure = '';
@@ -406,42 +404,29 @@
 
   // ── The four tools ─────────────────────────────────────────────────────────
 
-  async function chooseTool(next: BrowserInteractionMode): Promise<void> {
+  /**
+   * Every tool works on the still, so arming one takes the picture if there
+   * is not one already. Disarming leaves it up: what has been marked and typed
+   * is the turn being written, and it does not go away because the pointer
+   * went back to doing nothing.
+   */
+  async function chooseTool(next: BrowserPanelTool): Promise<void> {
     failure = '';
-    if (tool === 'picking' && next !== 'picking') {
-      try {
-        cancelBrowserAnnotation(browserModelContext());
-      } catch (error) {
-        say(error);
-      }
-    }
-
-    if (next === 'region' || next === 'drawing' || next === 'erasing') {
-      if (!capture) {
-        try {
-          showStill(await captureNow());
-        } catch (error) {
-          say(error);
-          tool = 'browse';
-          return;
-        }
-      }
-      tool = next;
+    stopHover();
+    if (next === 'browse') {
+      tool = 'browse';
       return;
     }
-
-    if (next === 'picking') {
+    if (!capture) {
       try {
-        beginBrowserElementPicker(browserModelContext(), 'grab');
-        tool = 'picking';
+        showStill(await captureNow());
       } catch (error) {
         say(error);
         tool = 'browse';
+        return;
       }
-      return;
     }
-
-    tool = 'browse';
+    tool = next;
   }
 
   /**
@@ -451,13 +436,17 @@
    * in one paragraph about everything. Freehand ink is not a place and does not
    * ask.
    */
-  async function addShape(shape: AnnotationShape, supplied?: BrowserElementMetadata | null): Promise<void> {
+  async function addShape(
+    shape: AnnotationShape,
+    supplied?: BrowserElementMetadata | null,
+    pin?: { x: number; y: number }
+  ): Promise<void> {
     if (shape.kind === 'stroke') {
       strokes = [...strokes, { id: markId(), shape }];
       return;
     }
     let metadata = supplied ?? null;
-    if (shape.kind === 'region' && shape.width > 0 && shape.height > 0 && activeTab) {
+    if (!metadata && shape.width > 0 && shape.height > 0 && activeTab) {
       try {
         metadata = await browser.backend.inspect_browser_rect({
           workspaceId: activeTab.workspaceId,
@@ -473,14 +462,112 @@
     annotations = addAnnotation(annotations, {
       id,
       box: shape as AnnotationBox,
+      pin: pin ?? { x: shape.x, y: shape.y },
       label: '',
       tag: shape.kind === 'element' ? shape.tag : elementTagFromSelector(metadata?.selector) ?? 'region',
       selector: metadata?.selector ?? null,
+      role: metadata?.role ?? null,
       accessibleName: metadata?.accessibleName ?? null,
       textSnippet: metadata?.textSnippet ?? null,
       classes: metadata?.classes ?? []
     });
     editingId = id;
+  }
+
+  // ── Asking the page what is under the pointer ──────────────────────────────
+
+  /**
+   * The still is a picture, so the panel cannot read anything off it. What is
+   * at a point comes from the page itself, which is still loaded behind the
+   * still and answers about the same coordinates the still is drawn in.
+   */
+  async function elementAt(point: { x: number; y: number }): Promise<BrowserElementMetadata | null> {
+    if (!activeTab) return null;
+    return await browser.backend.inspect_browser_rect({
+      workspaceId: activeTab.workspaceId,
+      tabId: activeTab.id,
+      generation: activeTab.generation,
+      rect: { x: Math.max(0, point.x), y: Math.max(0, point.y), width: 1, height: 1 }
+    });
+  }
+
+  function stopHover(): void {
+    hoverEpoch += 1;
+    pendingPoint = null;
+    hovered = null;
+  }
+
+  function hoverAt(point: { x: number; y: number } | null): void {
+    if (!point) {
+      stopHover();
+      return;
+    }
+    pendingPoint = point;
+    if (askingPage) return;
+    void (async () => {
+      askingPage = true;
+      try {
+        while (pendingPoint) {
+          const asked = pendingPoint;
+          const epoch = hoverEpoch;
+          pendingPoint = null;
+          // Still inside the box already outlined: the answer cannot change.
+          if (hovered && withinRect(hovered, asked)) continue;
+          const found = await elementAt(asked);
+          if (epoch !== hoverEpoch) return;
+          hovered = found?.rect ?? null;
+        }
+      } catch {
+        hovered = null;
+      } finally {
+        askingPage = false;
+      }
+    })();
+  }
+
+  function withinRect(rect: BrowserRect, point: { x: number; y: number }): boolean {
+    return (
+      point.x >= rect.x
+      && point.x <= rect.x + rect.width
+      && point.y >= rect.y
+      && point.y <= rect.y + rect.height
+    );
+  }
+
+  /**
+   * A click while Annotate is armed. The pin goes where the pointer was, so
+   * three marks on one row of buttons are told apart by where they are rather
+   * than by three circles stacked in the same corner. The mode stays armed:
+   * the next place is another click, not another trip to the toolbar.
+   */
+  async function pickAt(point: { x: number; y: number }): Promise<void> {
+    pendingPoint = null;
+    const epoch = hoverEpoch;
+    let metadata: BrowserElementMetadata | null = null;
+    try {
+      metadata = await elementAt(point);
+    } catch (error) {
+      say(error);
+      return;
+    }
+    const rect = metadata?.rect;
+    if (!rect || rect.width < 1 || rect.height < 1) {
+      failure = 'Nothing on the page answered for that spot.';
+      return;
+    }
+    if (epoch === hoverEpoch) hovered = rect;
+    await addShape(
+      {
+        kind: 'element',
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        tag: elementTagFromSelector(metadata?.selector) ?? 'element'
+      },
+      metadata,
+      point
+    );
   }
 
   /** An erase click, from wherever the mark came from. */
@@ -496,58 +583,6 @@
     annotations = removeAnnotation(annotations, id);
     if (editingId === id) editingId = null;
     if (annotations.length === 0) listOpen = false;
-  }
-
-  /** The pick the shell sends back after Select armed the picker. */
-  function receiveElement(event: BrowserElementSelectedEvent): void {
-    if (event.workspaceId !== browser.workspace.workspaceId) return;
-    if (event.status !== 'selected') {
-      failure = event.reason?.trim() || 'That page would not hand over an element.';
-      tool = 'browse';
-      return;
-    }
-    try {
-      acceptBrowserElementSelection(browserModelContext(), {
-        selector: event.selector,
-        accessibleName: event.accessibleName,
-        textSnippet: event.textSnippet,
-        rect: event.rect,
-        classes: event.classes,
-        classCount: event.classCount,
-        sourceHash: event.sourceHash,
-        url: event.url ?? undefined,
-        title: event.title ?? undefined,
-        generation: event.generation
-      });
-    } catch (error) {
-      say(error);
-      tool = 'browse';
-      return;
-    }
-    pickedTag = elementTagFromSelector(event.selector);
-    const rect = event.rect;
-    const metadata = browser.workspace.pendingSelection;
-    const tag = pickedTag ?? 'element';
-    tool = 'browse';
-    if (!rect) return;
-    // The picker works on the live page, so the picture the circle goes on has
-    // to be taken now — after the click, with the element outlined on it.
-    void (async () => {
-      try {
-        if (!capture) showStill(await captureNow());
-      } catch (error) {
-        say(error);
-        return;
-      }
-      void addShape({
-        kind: 'element',
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
-        tag
-      }, metadata);
-    })();
   }
 
   // ── Sending it ─────────────────────────────────────────────────────────────
@@ -585,6 +620,7 @@
           annotations: numbered.map((item) => ({
             number: item.number,
             tag: item.tag,
+            role: item.role,
             label: item.label,
             selector: item.selector,
             accessibleName: item.accessibleName,
@@ -641,6 +677,24 @@
     untrack(() => sendPlacement(wantedPlacement(onScreen, stretched)));
   });
 
+  /**
+   * A session that comes back to a page it had open comes back to the page.
+   * Switching away closes the native view — one view, and the next session's
+   * page is not this one's — so the address survives the switch but the view
+   * does not, and the session returns to a panel that says it is on a page and
+   * shows nothing. Opening it again here is also what clears whatever the last
+   * session's teardown left in the workspace's error.
+   */
+  $effect(() => {
+    const wanted = visible && Boolean(browser.url) && !browser.workspace.activeTabId;
+    if (!wanted) return;
+    untrack(() => {
+      placeBeforeOpening();
+      activateBrowser();
+      layoutTick += 1;
+    });
+  });
+
   // Whatever unmounts this panel — a different session, a rebuilt shell — the
   // view must not be left on screen behind it.
   $effect(() => () => untrack(() => sendPlacement(HIDDEN_PLACEMENT)));
@@ -663,15 +717,8 @@
   });
 
   $effect(() => {
-    let stopElements: (() => void) | null = null;
     let stopNavigation: (() => void) | null = null;
     let dropped = false;
-    void listenToBrowserElementSelected(receiveElement)
-      .then((unsubscribe) => {
-        if (dropped) unsubscribe();
-        else stopElements = unsubscribe;
-      })
-      .catch(() => undefined);
     void listenToBrowserNavigation(syncBrowserNavigation)
       .then((unsubscribe) => {
         if (dropped) unsubscribe();
@@ -680,7 +727,6 @@
       .catch(() => undefined);
     return () => {
       dropped = true;
-      stopElements?.();
       stopNavigation?.();
     };
   });
@@ -703,7 +749,6 @@
       {expanded}
       canGoBack={activeTab?.canGoBack ?? false}
       canGoForward={activeTab?.canGoForward ?? false}
-      elementTag={pickedTag}
       onAddressInput={(value) => {
         addressEdited = true;
         address = value;
@@ -718,49 +763,6 @@
         layoutTick += 1;
       }}
     />
-
-    {#if annotating}
-      <div class="strip" data-testid="browser-annotating-strip">
-        <IconButton
-          label="Discard these annotations"
-          size="xs"
-          data-testid="browser-annotating-discard"
-          onclick={discard}
-        >
-          <X aria-hidden="true" />
-        </IconButton>
-        <span class="strip-title">Annotating · {pageHostName}</span>
-        <Button
-          size="sm"
-          disabled={!canSend || busy}
-          data-testid="browser-annotating-send"
-          onclick={() => void send()}
-        >
-          {busy ? 'Sending' : 'Send'}
-          {#if annotations.length > 0}
-            <span class="strip-count">{annotations.length}</span>
-          {/if}
-        </Button>
-      </div>
-      <!-- The native picker replaces the still temporarily, so the controlled
-           prompt belongs in chrome where neither it nor its count unmounts. -->
-      <div class="chrome-composer">
-        <BrowserMiniComposer
-          {description}
-          annotations={numbered}
-          {backdrop}
-          surface={layerSize}
-          {busy}
-          {listOpen}
-          disabled={!canSend}
-          error=""
-          onDescriptionChange={(value) => (description = value)}
-          onToggleList={() => (listOpen = !listOpen)}
-          onRemove={forgetAnnotation}
-          onSend={() => void send()}
-        />
-      </div>
-    {/if}
   </div>
 
   <div class="page" bind:this={pageHost} data-testid="browser-page-host">
@@ -782,11 +784,14 @@
     >
       <div class="still">
         <AnnotationCanvas
-          tool={tool === 'region' ? 'region' : tool === 'drawing' ? 'drawing' : 'erasing'}
+          {tool}
           shapes={marks}
           {backdrop}
+          highlight={tool === 'element' ? hovered : null}
           onAdd={addShape}
           onErase={eraseShape}
+          onHover={hoverAt}
+          onPick={(point) => void pickAt(point)}
           onResize={(size) => (layerSize = size)}
         />
         <AnnotationBadges
@@ -794,8 +799,25 @@
           {editingId}
           surface={layerSize}
           onLabel={(id, label) => (annotations = labelAnnotation(annotations, id, label))}
+          onEdit={(id) => (editingId = id)}
           onDoneEditing={() => (editingId = null)}
         />
+        <div class="floating-composer">
+          <BrowserMiniComposer
+            {description}
+            annotations={numbered}
+            {backdrop}
+            surface={layerSize}
+            {busy}
+            {listOpen}
+            disabled={!canSend}
+            onDescriptionChange={(value) => (description = value)}
+            onToggleList={() => (listOpen = !listOpen)}
+            onRemove={forgetAnnotation}
+            onDiscard={discard}
+            onSend={() => void send()}
+          />
+        </div>
       </div>
     </div>
   {/if}
@@ -812,38 +834,6 @@
     width: 100%;
     grid-template-rows: auto minmax(0, 1fr) auto;
     background: var(--color-surface);
-  }
-
-  .strip {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    border-top: 1px solid var(--color-border);
-    padding: 6px 4px 0;
-  }
-
-  .strip-title {
-    min-width: 0;
-    flex: 1;
-    overflow: hidden;
-    font-size: 12px;
-    color: var(--color-text-2);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .strip-count {
-    display: inline-flex;
-    height: 16px;
-    min-width: 16px;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    background: rgba(0, 0, 0, 0.25);
-    padding: 0 4px;
-    font-size: 12px;
-    font-weight: 600;
-    line-height: 1;
   }
 
   .page {
@@ -867,10 +857,24 @@
     background: var(--color-surface);
   }
 
-  .chrome-composer {
+  /* Over the foot of the page, never under it: marking must not move the page
+     it is about, and the page is a native view that resizes when it is asked
+     to. */
+  .floating-composer {
+    position: absolute;
+    right: 0;
+    bottom: 16px;
+    left: 0;
     display: flex;
     justify-content: center;
-    padding: 8px 12px 0;
+    /* The row is as wide as the page; only the card in it is a thing to click.
+       Left solid, it would be a strip across the foot of the page where marks
+       cannot be made. */
+    pointer-events: none;
+  }
+
+  .floating-composer > :global(*) {
+    pointer-events: auto;
   }
 
   /* The canvas and the numbers on it share one box, so a circle lands on the
