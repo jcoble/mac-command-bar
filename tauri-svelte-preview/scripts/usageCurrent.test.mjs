@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeProviderUsage, usageQuotaWindowLabel, usageWindowDurationLabel } from '../src/lib/shell/usage/usageCurrent.ts';
+import { normalizeProviderUsage, usageDisplayLabel, usageDisplayPercent, usageQuotaWindowLabel, usageWindowDurationLabel } from '../src/lib/shell/usage/usageCurrent.ts';
 
 const unavailable = normalizeProviderUsage({ provider: 'local', state: 'unavailable', reason: 'No quota data' });
 assert.equal(unavailable.state, 'unavailable');
@@ -35,4 +35,10 @@ const fiveHourAndWeekly = normalizeProviderUsage({
 assert.deepEqual(fiveHourAndWeekly.windows.map((window) => window.label), ['5-hour', 'Weekly']);
 assert.equal(usageWindowDurationLabel(720), '12-hour');
 assert.equal(usageQuotaWindowLabel(fiveHourAndWeekly.windows[0]), 'Session (5-hour) window');
+// A quota can be read either way round, and both readings stay inside 0–100.
+assert.equal(usageDisplayLabel({ usedPercent: 37 }, 'used'), '37% used');
+assert.equal(usageDisplayLabel({ usedPercent: 37 }, 'remaining'), '63% left');
+assert.equal(usageDisplayPercent({ usedPercent: 140 }, 'remaining'), 0);
+assert.equal(usageDisplayPercent({ usedPercent: -5 }, 'remaining'), 100);
+
 console.log('current usage tests passed');

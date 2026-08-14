@@ -2,7 +2,16 @@
   import { tick } from 'svelte';
   import { RefreshCw } from '@lucide/svelte';
   import { refreshCurrentUsage, refreshUsageHistory, usageState } from './usageStore.svelte.ts';
-  import { usagePercent, usageProviderLabel, usageQuotaWindowLabel, usageResetLabel } from './usageCurrent.ts';
+  import {
+    readUsageDisplayMode,
+    usageDisplayLabel,
+    usageDisplayPercent,
+    usageProviderLabel,
+    usageQuotaWindowLabel,
+    usageResetLabel,
+    writeUsageDisplayMode,
+    type UsageDisplayMode
+  } from './usageCurrent.ts';
   import UsageWorkspace from './UsageWorkspace.svelte';
   import type { ProviderUsageSnapshot } from './usageTypes.ts';
   import { afterFloatingSurfacePaint } from '$lib/shell/floatingSurface.ts';
@@ -16,6 +25,13 @@
   let modalSurface = $state<HTMLDivElement>();
   let menuSnapshots = $state<Record<string, ProviderUsageSnapshot>>({});
   let menuLoading = $state(false);
+  /** Read the quotas as how much has gone, or as how much is left. */
+  let displayMode = $state<UsageDisplayMode>(readUsageDisplayMode());
+
+  function toggleDisplayMode(): void {
+    displayMode = displayMode === 'used' ? 'remaining' : 'used';
+    writeUsageDisplayMode(displayMode);
+  }
 
   function snapshotFor(providerName: string): ProviderUsageSnapshot | null {
     return menuSnapshots[providerName] ?? null;
@@ -122,9 +138,17 @@
                       <span>{usageQuotaWindowLabel(window)}</span>
                       <small>{usageResetLabel(window.resetsAt)}</small>
                     </div>
-                    <strong>{Math.round(usagePercent(window))}% used</strong>
-                    <div class="quota-bar" aria-label={`${usageQuotaWindowLabel(window)}, ${Math.round(usagePercent(window))}% used`}>
-                      <i style={`width: ${usagePercent(window)}%`}></i>
+                    <button
+                      type="button"
+                      class="quota-figure"
+                      data-testid="usage-display-toggle"
+                      title={displayMode === 'used' ? 'Show how much is left' : 'Show how much has been used'}
+                      onclick={toggleDisplayMode}
+                    >
+                      {usageDisplayLabel(window, displayMode)}
+                    </button>
+                    <div class="quota-bar" aria-label={`${usageQuotaWindowLabel(window)}, ${usageDisplayLabel(window, displayMode)}`}>
+                      <i style={`width: ${usageDisplayPercent(window, displayMode)}%`}></i>
                     </div>
                   </div>
                 {/each}
@@ -211,7 +235,8 @@
   .quota-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: end; }
   .quota-copy { min-width: 0; flex-direction: column; gap: 2px; }
   .quota-copy span { font-size: 0.78rem; font-weight: 570; }
-  .quota-row > strong { font-size: 0.76rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .quota-figure { padding: 0; border-radius: 5px; background: transparent; color: var(--color-text); font-size: 0.76rem; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .quota-figure:hover { color: var(--color-accent); }
   .quota-bar { grid-column: 1 / -1; height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--color-border) 45%, transparent); }
   .quota-bar i { display: block; height: 100%; border-radius: inherit; background: var(--color-accent); }
   .unavailable { color: var(--color-text-2); font-size: 0.76rem; line-height: 1.45; }

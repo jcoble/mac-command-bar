@@ -118,16 +118,21 @@
       aria-hidden="true"
     />
     <FolderGit2 class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-    <span class="min-w-0 flex-1 truncate font-medium" title={row.path}>{row.branch}</span>
-    {#if row.isPrimary}
-      <Chip>main checkout</Chip>
-    {/if}
-    {#if row.taskId}
-      <Chip>{row.taskId}</Chip>
-    {/if}
-    {#each row.chips as chip (chip.id)}
-      <Chip tone={CHIP_TONE[chip.tone]}>{chip.short}</Chip>
-    {/each}
+    <!-- The branch keeps a readable minimum; the chips beside it give way first. -->
+    <span class="min-w-16 flex-1 truncate font-medium" title={row.path}>{row.branch}</span>
+    <!-- The chips shrink as a group and clip, so a row with a lot to say still
+         ends at the panel edge instead of pushing past it. -->
+    <span class="flex min-w-0 shrink items-center gap-1 overflow-hidden">
+      {#if row.isPrimary}
+        <Chip>main checkout</Chip>
+      {/if}
+      {#if row.taskId}
+        <Chip>{row.taskId}</Chip>
+      {/if}
+      {#each row.chips as chip (chip.id)}
+        <Chip tone={CHIP_TONE[chip.tone]}>{chip.short}</Chip>
+      {/each}
+    </span>
     {#if busy}
       <span class="shrink-0 text-sm leading-tight text-muted-foreground">Starting…</span>
     {/if}

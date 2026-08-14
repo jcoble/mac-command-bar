@@ -7,7 +7,16 @@
     usageRangeOptions
   } from './usageAnalytics.ts';
   import { USAGE_COST_RATE_VERSION } from './usageCostModel.ts';
-  import { usagePercent, usageProviderLabel, usageQuotaWindowLabel, usageResetLabel } from './usageCurrent.ts';
+  import {
+    readUsageDisplayMode,
+    usageDisplayLabel,
+    usageDisplayPercent,
+    usageProviderLabel,
+    usageQuotaWindowLabel,
+    usageResetLabel,
+    writeUsageDisplayMode,
+    type UsageDisplayMode
+  } from './usageCurrent.ts';
   import { refreshUsageHistory, selectUsageRange, usageState } from './usageStore.svelte.ts';
   import type { UsageProviderSummaryRow } from './usageTypes.ts';
 
@@ -27,6 +36,14 @@
   const preciseCurrency = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const donutRadius = 39;
   const donutCircumference = 2 * Math.PI * donutRadius;
+
+  /** Read the quotas as how much has gone, or as how much is left. */
+  let displayMode = $state<UsageDisplayMode>(readUsageDisplayMode());
+
+  function toggleDisplayMode(): void {
+    displayMode = displayMode === 'used' ? 'remaining' : 'used';
+    writeUsageDisplayMode(displayMode);
+  }
 
   let totalTokens = $derived(usageState.summary?.totalTokens ?? 0);
   let cacheShare = $derived(usageState.summary?.cacheSharePercent ?? 0);
@@ -248,8 +265,16 @@
                 {#each snapshot.windows as window, index (`${window.label}-${window.windowMinutes ?? index}`)}
                   <div class="live-window">
                     <div><span>{usageQuotaWindowLabel(window)}</span><small>{usageResetLabel(window.resetsAt)}</small></div>
-                    <strong>{Math.round(usagePercent(window))}% used</strong>
-                    <div class="quota-bar"><i style={`width: ${usagePercent(window)}%`}></i></div>
+                    <button
+                      type="button"
+                      class="quota-figure"
+                      data-testid="usage-display-toggle"
+                      title={displayMode === 'used' ? 'Show how much is left' : 'Show how much has been used'}
+                      onclick={toggleDisplayMode}
+                    >
+                      {usageDisplayLabel(window, displayMode)}
+                    </button>
+                    <div class="quota-bar"><i style={`width: ${usageDisplayPercent(window, displayMode)}%`}></i></div>
                   </div>
                 {/each}
               </div>
@@ -401,7 +426,8 @@
   .live-window > div:first-child { display: grid; gap: 1px; }
   .live-window span, .quota-empty span { font-size: 0.75rem; font-weight: 600; }
   .live-window small { font-size: 0.75rem; }
-  .live-window > strong { font-size: 0.75rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .quota-figure { padding: 0; border-radius: 5px; background: transparent; color: var(--color-text); font-size: 0.75rem; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .quota-figure:hover { color: var(--color-accent); }
   .live-window .quota-bar { grid-column: 1 / -1; }
   .quota-bar i { background: var(--color-accent); }
   .quota-empty { display: grid; gap: 2px; padding: 9px 10px; border-radius: var(--radius-sm, 7px); background: color-mix(in srgb, var(--color-bg) 48%, transparent); }
