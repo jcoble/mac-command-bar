@@ -2,11 +2,16 @@
   /**
    * CommitTimeline.svelte — the commits under the changed files.
    *
-   * One row per commit: its subject, who wrote it, and when. Opening a row reads
-   * what that commit changed and lists it; picking one of those files shows its
-   * changes in the middle of the shell. Hovering the subject shows it in full,
-   * because a narrow panel cuts most subjects off and two commits cut off at the
-   * same word are impossible to tell apart.
+   * One row per commit: where it sits (the branch, tag or HEAD names pointing at
+   * it), its subject, who wrote it, and when. Opening a row reads what that
+   * commit changed and lists it; picking one of those files shows its changes in
+   * the middle of the shell. Hovering the subject shows it in full, because a
+   * narrow panel cuts most subjects off and two commits cut off at the same word
+   * are impossible to tell apart.
+   *
+   * The ref names are drawn on the row rather than left in the hover card: which
+   * commit a branch is on is the question a history is read for, and an answer
+   * that needs a hover is an answer nobody sees.
    *
    * WHAT IS SHOWN IS WHAT THE APP RETURNS. The commit list carries a subject, an
    * author, a date and the commit id — not the message body — so the hover card
@@ -18,9 +23,12 @@
    */
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import { gitCommitRefSummary } from '$lib/gitGraphViewModel';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
   import type { GitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
   import {
@@ -57,6 +65,31 @@
     return formatLastActivity(committedAt, new Date());
   }
 
+  /**
+   * The names pointing at one commit, as short pills. A branch that HEAD is on
+   * is already spelled out in the HEAD label, so it is not repeated beside it.
+   *
+   * `HEAD -> name` is drawn as just the name: the panel's title bar already says
+   * which branch this is, and in a column this narrow the four extra characters
+   * come straight out of the commit's subject.
+   */
+  function refPills(refs: string): { label: string; tone: 'good' | 'attention' | 'neutral' }[] {
+    const summary = gitCommitRefSummary(refs);
+    const pills: { label: string; tone: 'good' | 'attention' | 'neutral' }[] =
+      summary.headLabels.map((label) => ({
+        label: label.replace(/^HEAD\s*->\s*/, ''),
+        tone: 'good' as const
+      }));
+    for (const label of summary.branchLabels) {
+      if (summary.headLabels.some((head) => head.includes(label))) continue;
+      pills.push({ label, tone: 'neutral' as const });
+    }
+    for (const label of summary.tagLabels) {
+      pills.push({ label: label.replace(/^tag:\s*/, ''), tone: 'attention' as const });
+    }
+    return pills;
+  }
+
   function toggle(sha: string, parentCount: number): void {
     commitFiles.activate(panel.root);
     void commitFiles.toggleCommit(sha, parentCount > 1);
@@ -90,6 +123,18 @@
     {#if countLabel !== ''}
       <Chip tone="count">{countLabel}</Chip>
     {/if}
+    <span class="ml-auto">
+      <IconButton
+        label="Read the commit history again"
+        size="sm"
+        side="left"
+        disabled={panel.historyLoading || panel.historyLoadingMore}
+        data-testid="source-control-refresh-history"
+        onclick={() => void service.refreshHistory()}
+      >
+        <RefreshCw class="size-3.5" aria-hidden="true" />
+      </IconButton>
+    </span>
   </div>
 
   {#if panel.historyLoading}
@@ -99,7 +144,9 @@
   {:else if panel.history.length === 0}
     <p class="px-2 py-1 text-sm text-muted-foreground">This repository has no commits yet.</p>
   {:else}
-    <ol class="flex min-w-0 flex-col">
+    <!-- An ordered list, but not a numbered one: the browser's own markers and
+         their 40px indent were pushing every commit row off to the right. -->
+    <ol class="flex min-w-0 list-none flex-col p-0">
       {#each panel.history as commit (commit.sha)}
         {@const expanded = isCommitExpanded(commitFilesState, commit.sha)}
         {@const entry = commitFilesEntry(commitFilesState, commit.sha)}
@@ -120,6 +167,11 @@
                         }`}
                         aria-hidden="true"
                       />
+                      {#each refPills(commit.refs) as pill (pill.label)}
+                        <Chip tone={pill.tone} class="max-w-[40%] overflow-hidden text-ellipsis">
+                          {pill.label}
+                        </Chip>
+                      {/each}
                       <span class="min-w-0 flex-1 truncate">{commit.subject}</span>
                       <span class="shrink-0 text-sm text-muted-foreground">
                         {commit.author} · {whenCommitted(commit.committedAt)}
