@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   SESSION_HISTORY_ACTION_IDS,
   sessionHistoryActions,
+  sessionHistoryStartRequest,
   type SessionHistoryActionId
 } from '../src/lib/shell/panels/history/sessionHistoryActions.ts';
 import type { SessionLibraryRecord } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
@@ -154,6 +155,81 @@ const LOG_ACTIONS: SessionHistoryActionId[] = [
     assert.equal(action.enabled, false, `${id} should be off without a folder`);
     assert.ok(action.disabledReason);
   }
+}
+
+{
+  // A scanned session with no folder has nothing to resume into, and the card
+  // says so rather than starting an agent that lands nowhere.
+  const scanned = {
+    provider: 'codex',
+    id: 'S9',
+    title: 'Fix the resume rail',
+    model: null,
+    projectPath: null,
+    lastActivity: '2026-08-01T10:00:00Z',
+    resumeCommands: ['codex resume S9']
+  };
+  const folderless = byId(
+    sessionHistoryActions(record({ canonicalCwd: '', projectPath: null, available: scanned })),
+    'resume-worktree'
+  );
+  assert.equal(folderless.enabled, false);
+  assert.equal(folderless.disabledReason, 'This session has no folder recorded.');
+
+  // The same session once the scan found its folder.
+  const located = byId(
+    sessionHistoryActions(
+      record({ available: { ...scanned, projectPath: '/Users/dev/work/mac-command-bar' } })
+    ),
+    'resume-worktree'
+  );
+  assert.equal(located.enabled, true);
+  assert.equal(located.disabledReason, null);
+
+  // A session this app owns keeps its folder in the database, so it resumes
+  // whether or not a scan found anything.
+  const owned = byId(
+    sessionHistoryActions(record({ ownedId: 'owned-1', canonicalCwd: '', projectPath: null })),
+    'resume-worktree'
+  );
+  assert.equal(owned.enabled, true);
+}
+
+{
+  // Continue in New Session asks for this card's folder and this card's agent.
+  const request = sessionHistoryStartRequest(
+    record({
+      provider: 'claude',
+      canonicalCwd: '/Users/dev/work/rental-management',
+      projectPath: '/Users/dev/work/rental-management',
+      firstPrompt: 'Look at the ledger posting order',
+      title: 'Ledger posting'
+    })
+  );
+  assert.deepEqual(request, {
+    prompt: 'Look at the ledger posting order',
+    cwd: '/Users/dev/work/rental-management',
+    projectPath: '/Users/dev/work/rental-management',
+    title: 'Ledger posting',
+    provider: 'claude'
+  });
+
+  // A codex row keeps its own agent rather than falling back to a default.
+  assert.equal(sessionHistoryStartRequest(record({ provider: 'codex' })).provider, 'codex');
+
+  // An agent this app does not start leaves the choice to the caller.
+  assert.equal('provider' in sessionHistoryStartRequest(record({ provider: 'alpha' })), false);
+
+  // The folder survives when only one of the two fields carries it.
+  assert.equal(
+    sessionHistoryStartRequest(record({ canonicalCwd: '', projectPath: '/Users/dev/work/edi' })).cwd,
+    '/Users/dev/work/edi'
+  );
+  assert.equal(
+    sessionHistoryStartRequest(record({ canonicalCwd: '/Users/dev/work/edi', projectPath: null }))
+      .projectPath,
+    '/Users/dev/work/edi'
+  );
 }
 
 {

@@ -557,7 +557,7 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
   if (entry.kind === 'error') return {
     kind: 'error',
     itemId: entry.itemId,
-    text: entry.message,
+    text: conversationErrorText(entry.message),
     timestampMs: entry.timestampMs,
     metadata: { code: entry.code, recoverable: entry.recoverable }
   };
@@ -568,6 +568,15 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
     timestampMs: entry.timestampMs
   };
   return { kind: 'unknown', itemId: entry.itemId, text: '', timestampMs: 0 };
+}
+
+/**
+ * What an error card says. An error that arrives without a message still has
+ * to say something: a card with an empty body tells the reader only that the
+ * app is confused.
+ */
+export function conversationErrorText(message: string | null | undefined): string {
+  return (message ?? '').trim() || 'The agent reported an error without saying what went wrong.';
 }
 
 /** Merge typed provider items with legacy reducer entries without flattening them. */
@@ -755,6 +764,23 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
         state: 'completed',
         completed: true,
         summary: `${commands.length} command${commands.length === 1 ? '' : 's'} available`
+      })
+    };
+  }
+
+  if (payloadKind === 'error') {
+    // Same identity the reducer gives its own error entry, so the typed item
+    // and the legacy entry are one card rather than two — and the message
+    // lives under `message`, which the generic text lookup below never reads.
+    return {
+      id: `error:${event.generation}:${event.sequence}`,
+      type: 'error',
+      turnId: 'turnId' in event ? event.turnId : stringOf(payload.turnId) || undefined,
+      content: [{ channel: 'assistant', text: conversationErrorText(stringOf(payload.message)) }],
+      providerMetadata: eventMetadata(event, payload, {
+        completed: true,
+        code: stringOf(payload.code) || undefined,
+        recoverable: booleanOf(payload.recoverable, true)
       })
     };
   }

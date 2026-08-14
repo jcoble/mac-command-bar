@@ -945,6 +945,13 @@
   /** EXPLICIT IO: adopt a scanned session, spawn its PTY, replay the resume command. */
   async function adopt(record: AgentSession): Promise<void> {
     if (!service || disposed) return;
+    // A scan that never found the session's folder cannot be resumed into one.
+    // Checked before the row is added, because a row added here and refused by
+    // the backend a moment later is an orphan nothing can start or clear.
+    if (!record.projectPath?.trim()) {
+      rail.error = `no working folder was recorded for "${record.title}", so it cannot be resumed`;
+      return;
+    }
     const owned = adoptAgentSession(record);
     addOwnedSession(owned);
     const provider = conversationProviderFor(owned.ownedId);
