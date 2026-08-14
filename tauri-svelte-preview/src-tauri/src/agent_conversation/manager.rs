@@ -136,6 +136,87 @@ pub struct ManagedAgentSession {
     suspending: bool,
 }
 
+/// Holds only the in-memory fields that an event is allowed to advance.
+///
+/// Building this copy first keeps the live session unchanged until SQLite has
+/// accepted the matching session row and event row.
+struct SessionEventCandidate {
+    native_session_id: Option<String>,
+    native_session_mode: AgentNativeSessionMode,
+    state: AgentRuntimeState,
+    owner: AgentExecutionOwner,
+    capabilities: AgentCapabilities,
+    next_sequence: u64,
+    connection: AgentConversationConnection,
+    writer_owner: AgentWriterLeaseOwner,
+    last_activity_ms: u128,
+    live_tool_calls: HashSet<String>,
+}
+
+#[derive(Clone, Copy)]
+struct SessionLifecycleUpdate {
+    state: AgentRuntimeState,
+    connection_state: ConversationConnectionState,
+    owner: AgentExecutionOwner,
+    writer_owner: AgentWriterLeaseOwner,
+    native_session_mode: Option<AgentNativeSessionMode>,
+}
+
+impl SessionEventCandidate {
+    /// Copies the small event-owned portion of a live session for a pending write.
+    fn from_session(session: &ManagedAgentSession) -> Self {
+        Self {
+            native_session_id: session.native_session_id.clone(),
+            native_session_mode: session.native_session_mode,
+            state: session.state,
+            owner: session.owner,
+            capabilities: session.capabilities.clone(),
+            next_sequence: session.next_sequence,
+            connection: session.connection.clone(),
+            writer_owner: session.writer_lease.owner,
+            last_activity_ms: session.last_activity_ms,
+            live_tool_calls: session.live_tool_calls.clone(),
+        }
+    }
+
+    /// Validates and stages a lifecycle transition without changing live memory.
+    fn transition_lifecycle(
+        &mut self,
+        state: AgentRuntimeState,
+        connection_state: ConversationConnectionState,
+        owner: AgentExecutionOwner,
+        writer_owner: AgentWriterLeaseOwner,
+    ) -> Result<(), String> {
+        let terminal = self.state == AgentRuntimeState::Closed
+            || self.connection.state == ConversationConnectionState::Closed;
+        if terminal
+            && (state != AgentRuntimeState::Closed
+                || connection_state != ConversationConnectionState::Closed)
+        {
+            return Err("Closed conversation sessions cannot be revived".to_string());
+        }
+        self.state = state;
+        self.connection.state = connection_state;
+        self.owner = owner;
+        self.writer_owner = writer_owner;
+        Ok(())
+    }
+
+    /// Publishes a committed candidate to the live session in one replacement step.
+    fn apply(self, session: &mut ManagedAgentSession) {
+        session.native_session_id = self.native_session_id;
+        session.native_session_mode = self.native_session_mode;
+        session.state = self.state;
+        session.owner = self.owner;
+        session.capabilities = self.capabilities;
+        session.next_sequence = self.next_sequence;
+        session.connection = self.connection;
+        session.writer_lease.owner = self.writer_owner;
+        session.last_activity_ms = self.last_activity_ms;
+        session.live_tool_calls = self.live_tool_calls;
+    }
+}
+
 impl ManagedAgentSession {
     fn transition_lifecycle(
         &mut self,
@@ -701,13 +782,7 @@ impl AgentRuntimeManager {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
-                session.transition_lifecycle(
-                    AgentRuntimeState::Suspended,
-                    ConversationConnectionState::Disconnected,
-                    AgentExecutionOwner::Stopped,
-                    AgentWriterLeaseOwner::None,
-                )?;
-                record_payload_for_session_and_dispatch(
+                record_payload_for_session_and_dispatch_with_lifecycle(
                     session,
                     &self.emitter,
                     AgentConversationPayload::Error {
@@ -719,6 +794,13 @@ impl AgentRuntimeManager {
                             "The stored provider session could not be resumed: {error}"
                         ),
                         recoverable: true,
+                    },
+                    SessionLifecycleUpdate {
+                        state: AgentRuntimeState::Suspended,
+                        connection_state: ConversationConnectionState::Disconnected,
+                        owner: AgentExecutionOwner::Stopped,
+                        writer_owner: AgentWriterLeaseOwner::None,
+                        native_session_mode: None,
                     },
                 )?;
                 return Err(format!("Stored session could not be resumed: {error}"));
@@ -800,26 +882,34 @@ impl AgentRuntimeManager {
                 AgentWriterLeaseOwner::Structured,
             )
         };
-        session.transition_lifecycle(
-            AgentRuntimeState::Ready,
-            ConversationConnectionState::Connected,
-            owner,
-            writer_owner,
-        )?;
         session.runtime = Some(runtime);
         session.pool_key = Some(pool_key);
         session.transport = Some(Arc::clone(&transport));
         session.ordered_events = Some(ordered_tx);
-        persist_session(session)?;
         if was_suspended {
-            record_payload_for_session_and_dispatch(
+            record_payload_for_session_and_dispatch_with_lifecycle(
                 session,
                 &self.emitter,
                 AgentConversationPayload::Connection {
                     state: ConversationConnectionState::Connected,
                     native_session_id: session.native_session_id.clone(),
                 },
+                SessionLifecycleUpdate {
+                    state: AgentRuntimeState::Ready,
+                    connection_state: ConversationConnectionState::Connected,
+                    owner,
+                    writer_owner,
+                    native_session_mode: None,
+                },
             )?;
+        } else {
+            session.transition_lifecycle(
+                AgentRuntimeState::Ready,
+                ConversationConnectionState::Connected,
+                owner,
+                writer_owner,
+            )?;
+            persist_session(session)?;
         }
         let connection = session.connection.clone();
         drop(sessions);
@@ -882,7 +972,6 @@ impl AgentRuntimeManager {
                 .clone()
                 .ok_or_else(|| "Structured event pump has not started".to_string())?;
             session.active_turn_id = Some(turn_id.clone());
-            session.state = AgentRuntimeState::Working;
             if session_title_is_empty(session.rail_meta.title.as_deref()) {
                 let is_first_user_prompt = session
                     .store
@@ -893,13 +982,19 @@ impl AgentRuntimeManager {
                     session.rail_meta.title = prompt_title(&input.text);
                 }
             }
-            record_payload_for_session_and_dispatch(
+            let lifecycle = lifecycle_update_for_state(
+                session,
+                AgentRuntimeState::Working,
+                session.connection.state,
+            );
+            record_payload_for_session_and_dispatch_with_lifecycle(
                 session,
                 &self.emitter,
                 AgentConversationPayload::Turn {
                     turn_id: turn_id.clone(),
                     state: super::protocol::TurnState::Started,
                 },
+                lifecycle,
             )?;
             // Agents are not required to echo the prompt back as a
             // user_message_chunk, so the app records its own copy.
@@ -1512,19 +1607,19 @@ impl AgentRuntimeManager {
             );
         }
         session.suspending = false;
-        session.native_session_mode = AgentNativeSessionMode::Resume;
-        session.transition_lifecycle(
-            AgentRuntimeState::Suspended,
-            ConversationConnectionState::Disconnected,
-            AgentExecutionOwner::Stopped,
-            AgentWriterLeaseOwner::None,
-        )?;
-        record_payload_for_session_and_dispatch(
+        record_payload_for_session_and_dispatch_with_lifecycle(
             session,
             &self.emitter,
             AgentConversationPayload::Connection {
                 state: ConversationConnectionState::Disconnected,
                 native_session_id: session.native_session_id.clone(),
+            },
+            SessionLifecycleUpdate {
+                state: AgentRuntimeState::Suspended,
+                connection_state: ConversationConnectionState::Disconnected,
+                owner: AgentExecutionOwner::Stopped,
+                writer_owner: AgentWriterLeaseOwner::None,
+                native_session_mode: Some(AgentNativeSessionMode::Resume),
             },
         )?;
         Ok(true)
@@ -1545,12 +1640,6 @@ impl AgentRuntimeManager {
                     "Conversation connection changed; retry on the current session".to_string(),
                 );
             }
-            session.transition_lifecycle(
-                AgentRuntimeState::Closed,
-                ConversationConnectionState::Closed,
-                AgentExecutionOwner::Stopped,
-                AgentWriterLeaseOwner::None,
-            )?;
             let transport = session.transport.take();
             session.ordered_events = None;
             let pending_permission_rows = session.permission_requests.drain().collect::<Vec<_>>();
@@ -1580,12 +1669,19 @@ impl AgentRuntimeManager {
                 );
                 pending_inputs.push(pending.wire_id);
             }
-            record_payload_for_session_and_dispatch(
+            record_payload_for_session_and_dispatch_with_lifecycle(
                 session,
                 &self.emitter,
                 AgentConversationPayload::Connection {
                     state: ConversationConnectionState::Closed,
                     native_session_id: session.native_session_id.clone(),
+                },
+                SessionLifecycleUpdate {
+                    state: AgentRuntimeState::Closed,
+                    connection_state: ConversationConnectionState::Closed,
+                    owner: AgentExecutionOwner::Stopped,
+                    writer_owner: AgentWriterLeaseOwner::None,
+                    native_session_mode: None,
                 },
             )?;
             (
@@ -2031,18 +2127,28 @@ struct StoredSessionExtra {
     rail_meta: AgentConversationSessionMeta,
 }
 
-fn persist_session(session: &ManagedAgentSession) -> Result<(), String> {
+/// Builds the durable row from the current live session for metadata-only writes.
+fn persisted_session_row(session: &ManagedAgentSession) -> Result<SessionRow, String> {
+    let candidate = SessionEventCandidate::from_session(session);
+    persisted_session_row_for_candidate(session, &candidate)
+}
+
+/// Builds the session row that must become visible with a pending event.
+fn persisted_session_row_for_candidate(
+    session: &ManagedAgentSession,
+    candidate: &SessionEventCandidate,
+) -> Result<SessionRow, String> {
     let extra = StoredSessionExtra {
         generation: session.generation,
-        native_session_mode: session.native_session_mode,
-        owner: session.owner,
+        native_session_mode: candidate.native_session_mode,
+        owner: candidate.owner,
         config: session.config.clone(),
-        capabilities: session.capabilities.clone(),
+        capabilities: candidate.capabilities.clone(),
         rail_meta: session.rail_meta.clone(),
     };
-    let row = SessionRow {
+    Ok(SessionRow {
         owned_id: session.owned_id.clone(),
-        native_session_id: session.native_session_id.clone(),
+        native_session_id: candidate.native_session_id.clone(),
         provider: enum_storage_value(session.provider)?,
         model: session.config.model.clone(),
         effort: session
@@ -2059,13 +2165,18 @@ fn persist_session(session: &ManagedAgentSession) -> Result<(), String> {
         branch: session.rail_meta.branch.clone(),
         title: session.rail_meta.title.clone(),
         project: session.rail_meta.project.clone(),
-        state: enum_storage_value(session.state)?,
-        suspended: session.state == AgentRuntimeState::Suspended,
+        state: enum_storage_value(candidate.state)?,
+        suspended: candidate.state == AgentRuntimeState::Suspended,
         created_at_ms: store_timestamp(session.created_at_ms),
-        last_activity_at_ms: store_timestamp(session.last_activity_ms),
+        last_activity_at_ms: store_timestamp(candidate.last_activity_ms),
         extra_json: serde_json::to_string(&extra)
             .map_err(|error| format!("Could not encode stored session metadata: {error}"))?,
-    };
+    })
+}
+
+/// Persists rail-only metadata when no event needs to share the transaction.
+fn persist_session(session: &ManagedAgentSession) -> Result<(), String> {
+    let row = persisted_session_row(session)?;
     session
         .store
         .upsert_session(&row)
@@ -2256,28 +2367,50 @@ fn lifecycle_session_mut<'a>(
     Ok(session)
 }
 
+/// Records one payload while leaving live memory untouched if SQLite rejects it.
 fn record_payload_for_session(
     session: &mut ManagedAgentSession,
     payload: AgentConversationPayload,
 ) -> Result<AgentConversationEvent, String> {
-    let sequence = session.next_sequence;
-    session.next_sequence = session.next_sequence.saturating_add(1);
+    record_payload_for_session_with_lifecycle(session, payload, None)
+}
+
+/// Commits an event and an optional lifecycle change before publishing either in memory.
+fn record_payload_for_session_with_lifecycle(
+    session: &mut ManagedAgentSession,
+    payload: AgentConversationPayload,
+    lifecycle: Option<SessionLifecycleUpdate>,
+) -> Result<AgentConversationEvent, String> {
+    let mut candidate = SessionEventCandidate::from_session(session);
+    if let Some(lifecycle) = lifecycle {
+        candidate.transition_lifecycle(
+            lifecycle.state,
+            lifecycle.connection_state,
+            lifecycle.owner,
+            lifecycle.writer_owner,
+        )?;
+        if let Some(native_session_mode) = lifecycle.native_session_mode {
+            candidate.native_session_mode = native_session_mode;
+        }
+    }
+    let sequence = candidate.next_sequence;
+    candidate.next_sequence = candidate.next_sequence.saturating_add(1);
     if let AgentConversationPayload::Connection {
         state,
         native_session_id,
     } = &payload
     {
-        session.connection.state = *state;
+        candidate.connection.state = *state;
         if native_session_id.is_some() {
-            session.connection.native_session_id = native_session_id.clone();
-            session.native_session_id = native_session_id.clone();
+            candidate.connection.native_session_id = native_session_id.clone();
+            candidate.native_session_id = native_session_id.clone();
         }
     }
     if let AgentConversationPayload::AvailableCommandsUpdate { available_commands } = &payload {
-        session.capabilities.commands = available_commands.clone();
+        candidate.capabilities.commands = available_commands.clone();
     }
     let timestamp_ms = timestamp_millis();
-    session.last_activity_ms = timestamp_ms;
+    candidate.last_activity_ms = timestamp_ms;
     let frontend_event = AgentConversationEvent {
         owned_id: session.owned_id.clone(),
         provider: session.provider,
@@ -2286,14 +2419,20 @@ fn record_payload_for_session(
         timestamp_ms,
         payload: payload.clone(),
     };
-    let canonical = canonical_event(session, sequence, timestamp_ms, &payload)?;
+    let canonical = canonical_event(
+        session,
+        candidate.native_session_id.clone(),
+        sequence,
+        timestamp_ms,
+        &payload,
+    )?;
     match &payload {
         AgentConversationPayload::Tool { item_id, state, .. } => match state {
             ToolState::Started | ToolState::Updated => {
-                session.live_tool_calls.insert(item_id.clone());
+                candidate.live_tool_calls.insert(item_id.clone());
             }
             ToolState::Completed | ToolState::Failed => {
-                session.live_tool_calls.remove(item_id);
+                candidate.live_tool_calls.remove(item_id);
             }
         },
         AgentConversationPayload::Turn { state, .. }
@@ -2304,37 +2443,36 @@ fn record_payload_for_session(
                     | super::protocol::TurnState::Failed
             ) =>
         {
-            session.live_tool_calls.clear();
+            candidate.live_tool_calls.clear();
         }
         _ => {}
     }
     let payload_json = serde_json::to_string(&frontend_event)
         .map_err(|error| format!("Could not encode the stored conversation event: {error}"))?;
     let kind = enum_storage_value(canonical.event_type)?;
+    let row = persisted_session_row_for_candidate(session, &candidate)?;
+    let event_row = EventRow {
+        owned_id: session.owned_id.clone(),
+        seq: i64::try_from(sequence)
+            .map_err(|_| "Conversation event sequence exceeded the store limit".to_string())?,
+        turn_id: canonical.turn_id.clone(),
+        kind,
+        payload_json,
+        created_at_ms: store_timestamp(timestamp_ms),
+    };
     session
         .store
-        .append_event(&EventRow {
-            owned_id: session.owned_id.clone(),
-            seq: i64::try_from(sequence)
-                .map_err(|_| "Conversation event sequence exceeded the store limit".to_string())?,
-            turn_id: canonical.turn_id.clone(),
-            kind,
-            payload_json,
-            created_at_ms: store_timestamp(timestamp_ms),
-        })
+        .upsert_session_with_event(&row, Some(&event_row), STORE_EVENT_CAP)
         .map_err(|error| error.to_string())?;
-    session
-        .store
-        .enforce_event_cap(&session.owned_id, STORE_EVENT_CAP)
-        .map_err(|error| error.to_string())?;
+    candidate.apply(session);
     session.recent_events.push_back(canonical);
     while session.recent_events.len() > SNAPSHOT_EVENT_CAP {
         session.recent_events.pop_front();
     }
-    persist_session(session)?;
     Ok(frontend_event)
 }
 
+/// Records durably, then emits while the session lock still preserves event order.
 fn record_payload_for_session_and_dispatch(
     session: &mut ManagedAgentSession,
     emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
@@ -2346,6 +2484,33 @@ fn record_payload_for_session_and_dispatch(
     // operation for this session.
     dispatch_event(emitter, &event);
     Ok(event)
+}
+
+/// Records a lifecycle event transactionally, then emits the committed event.
+fn record_payload_for_session_and_dispatch_with_lifecycle(
+    session: &mut ManagedAgentSession,
+    emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
+    payload: AgentConversationPayload,
+    lifecycle: SessionLifecycleUpdate,
+) -> Result<AgentConversationEvent, String> {
+    let event = record_payload_for_session_with_lifecycle(session, payload, Some(lifecycle))?;
+    dispatch_event(emitter, &event);
+    Ok(event)
+}
+
+/// Describes a state-only lifecycle change while preserving current ownership.
+fn lifecycle_update_for_state(
+    session: &ManagedAgentSession,
+    state: AgentRuntimeState,
+    connection_state: ConversationConnectionState,
+) -> SessionLifecycleUpdate {
+    SessionLifecycleUpdate {
+        state,
+        connection_state,
+        owner: session.owner,
+        writer_owner: session.writer_lease.owner,
+        native_session_mode: None,
+    }
 }
 
 fn dispatch_event(
@@ -2631,8 +2796,12 @@ async fn pump_inbound(
                     session
                         .user_input_requests
                         .insert(request_id.clone(), PendingUserInput { wire_id });
-                    session.state = AgentRuntimeState::WaitingInput;
-                    if let Err(error) = record_payload_for_session_and_dispatch(
+                    let lifecycle = lifecycle_update_for_state(
+                        session,
+                        AgentRuntimeState::WaitingInput,
+                        session.connection.state,
+                    );
+                    if let Err(error) = record_payload_for_session_and_dispatch_with_lifecycle(
                         session,
                         &emitter,
                         AgentConversationPayload::UserInputRequested {
@@ -2641,6 +2810,7 @@ async fn pump_inbound(
                             description,
                             fields,
                         },
+                        lifecycle,
                     ) {
                         crate::debug_log::stderr_log!(
                             "Could not record ACP user input request: {error}"
@@ -2669,8 +2839,12 @@ async fn pump_inbound(
                         summary: summary.clone(),
                     },
                 );
-                session.state = AgentRuntimeState::WaitingApproval;
-                if let Err(error) = record_payload_for_session_and_dispatch(
+                let lifecycle = lifecycle_update_for_state(
+                    session,
+                    AgentRuntimeState::WaitingApproval,
+                    session.connection.state,
+                );
+                if let Err(error) = record_payload_for_session_and_dispatch_with_lifecycle(
                     session,
                     &emitter,
                     AgentConversationPayload::Approval {
@@ -2678,6 +2852,7 @@ async fn pump_inbound(
                         state: ApprovalState::Requested,
                         summary,
                     },
+                    lifecycle,
                 ) {
                     crate::debug_log::stderr_log!(
                         "Could not record ACP permission request: {error}"
@@ -2745,14 +2920,19 @@ async fn settle_closed_transport(
                 );
             }
             session.prompt_once_active = false;
-            session.state = AgentRuntimeState::Failed;
-            let _ = record_payload_for_session_and_dispatch(
+            let lifecycle = lifecycle_update_for_state(
+                session,
+                AgentRuntimeState::Failed,
+                ConversationConnectionState::Failed,
+            );
+            let _ = record_payload_for_session_and_dispatch_with_lifecycle(
                 session,
                 &emitter,
                 AgentConversationPayload::Connection {
                     state: ConversationConnectionState::Failed,
                     native_session_id: session.native_session_id.clone(),
                 },
+                lifecycle,
             );
             let _ = record_payload_for_session_and_dispatch(
                 session,
@@ -2894,7 +3074,14 @@ async fn handle_ordered_session_event(
             if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                 return true;
             }
-            if let Err(error) = record_payload_for_session_and_dispatch(
+            let next_state = if session.active_turn_id.is_some() {
+                AgentRuntimeState::Working
+            } else {
+                AgentRuntimeState::Ready
+            };
+            let lifecycle =
+                lifecycle_update_for_state(session, next_state, session.connection.state);
+            if let Err(error) = record_payload_for_session_and_dispatch_with_lifecycle(
                 session,
                 &emitter,
                 AgentConversationPayload::Approval {
@@ -2902,17 +3089,13 @@ async fn handle_ordered_session_event(
                     state,
                     summary,
                 },
+                lifecycle,
             ) {
                 crate::debug_log::stderr_log!(
                     "Could not record ACP permission resolution: {error}"
                 );
                 return false;
             }
-            session.state = if session.active_turn_id.is_some() {
-                AgentRuntimeState::Working
-            } else {
-                AgentRuntimeState::Ready
-            };
             true
         }
         OrderedSessionEvent::UserInputResolved {
@@ -2928,24 +3111,27 @@ async fn handle_ordered_session_event(
             if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                 return true;
             }
-            if let Err(error) = record_payload_for_session_and_dispatch(
+            let next_state = if session.active_turn_id.is_some() {
+                AgentRuntimeState::Working
+            } else {
+                AgentRuntimeState::Ready
+            };
+            let lifecycle =
+                lifecycle_update_for_state(session, next_state, session.connection.state);
+            if let Err(error) = record_payload_for_session_and_dispatch_with_lifecycle(
                 session,
                 &emitter,
                 AgentConversationPayload::UserInputResolved {
                     request_id,
                     cancelled,
                 },
+                lifecycle,
             ) {
                 crate::debug_log::stderr_log!(
                     "Could not record ACP user input resolution: {error}"
                 );
                 return false;
             }
-            session.state = if session.active_turn_id.is_some() {
-                AgentRuntimeState::Working
-            } else {
-                AgentRuntimeState::Ready
-            };
             true
         }
         OrderedSessionEvent::PromptResult { turn_id, result } => {
@@ -3026,9 +3212,14 @@ async fn handle_ordered_session_event(
                         state: super::protocol::TurnState::Failed,
                     },
                 };
-                if let Err(error) =
-                    record_payload_for_session_and_dispatch(session, &emitter, payload)
-                {
+                let lifecycle = lifecycle_update_for_state(
+                    session,
+                    AgentRuntimeState::Ready,
+                    session.connection.state,
+                );
+                if let Err(error) = record_payload_for_session_and_dispatch_with_lifecycle(
+                    session, &emitter, payload, lifecycle,
+                ) {
                     crate::debug_log::stderr_log!("Could not record ACP turn completion: {error}");
                     return false;
                 }
@@ -3048,7 +3239,6 @@ async fn handle_ordered_session_event(
                 }
                 session.active_turn_id = None;
                 session.prompt_once_active = false;
-                session.state = AgentRuntimeState::Ready;
                 (pending_permissions, pending_inputs)
             };
 
@@ -3231,6 +3421,7 @@ fn is_reject_kind(kind: &str) -> bool {
 
 fn canonical_event(
     session: &ManagedAgentSession,
+    native_session_id: Option<String>,
     sequence: u64,
     timestamp_ms: u128,
     payload: &AgentConversationPayload,
@@ -3302,7 +3493,7 @@ fn canonical_event(
         generation: session.generation,
         sequence,
         timestamp_ms,
-        native_session_id: session.native_session_id.clone(),
+        native_session_id,
         turn_id: session.active_turn_id.clone(),
         item_id: None,
         request_id: None,
@@ -6749,6 +6940,58 @@ mod tests {
                 .len(),
             1
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_event_write_leaves_memory_and_dispatch_unchanged() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::default();
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-failed-event",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        manager.set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        let mut sessions = manager.sessions.lock().unwrap();
+        let session =
+            current_session_mut(&mut sessions, "owned-failed-event", connection.generation)
+                .unwrap();
+        let sequence = session.next_sequence;
+        let last_activity_ms = session.last_activity_ms;
+        session
+            .store
+            .append_event(&EventRow {
+                owned_id: session.owned_id.clone(),
+                seq: i64::try_from(sequence).unwrap(),
+                turn_id: None,
+                kind: "error".into(),
+                payload_json: "{}".into(),
+                created_at_ms: store_timestamp(last_activity_ms),
+            })
+            .unwrap();
+
+        let result = record_payload_for_session_and_dispatch(
+            session,
+            &manager.emitter,
+            AgentConversationPayload::Error {
+                code: "duplicate-sequence".into(),
+                message: "fixture".into(),
+                recoverable: true,
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(session.next_sequence, sequence);
+        assert_eq!(session.last_activity_ms, last_activity_ms);
+        assert!(seen.lock().unwrap().is_empty());
+        drop(sessions);
         fs::remove_dir_all(root).unwrap();
     }
 

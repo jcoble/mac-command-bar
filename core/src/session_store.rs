@@ -201,47 +201,61 @@ impl SessionStore {
 
     pub fn upsert_session(&self, row: &SessionRow) -> Result<()> {
         let connection = self.lock()?;
-        connection
-            .execute(
-                "INSERT INTO sessions (
-                    owned_id, native_session_id, provider, model, effort, cwd, worktree,
-                    branch, title, project, state, suspended, created_at, last_activity_at, extra
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(owned_id) DO UPDATE SET
-                    native_session_id = excluded.native_session_id,
-                    provider = excluded.provider,
-                    model = excluded.model,
-                    effort = excluded.effort,
-                    cwd = excluded.cwd,
-                    worktree = excluded.worktree,
-                    branch = excluded.branch,
-                    title = excluded.title,
-                    project = excluded.project,
-                    state = excluded.state,
-                    suspended = excluded.suspended,
-                    created_at = excluded.created_at,
-                    last_activity_at = excluded.last_activity_at,
-                    extra = excluded.extra",
-                params![
-                    row.owned_id,
-                    row.native_session_id,
-                    row.provider,
-                    row.model,
-                    row.effort,
-                    row.cwd,
-                    row.worktree,
-                    row.branch,
-                    row.title,
-                    row.project,
-                    row.state,
-                    row.suspended,
-                    row.created_at_ms,
-                    row.last_activity_at_ms,
-                    row.extra_json,
-                ],
-            )
-            .map_err(|error| StoreError::sqlite("could not save the session", error))?;
+        upsert_session_on(&connection, row)?;
         Ok(())
+    }
+
+    /// Saves the next session row and its optional event as one durable change.
+    ///
+    /// The immediate transaction guarantees that a failed event insert cannot
+    /// leave the session row ahead of its journal, and caps that journal before
+    /// either row becomes visible to another reader.
+    pub fn upsert_session_with_event(
+        &self,
+        session: &SessionRow,
+        event: Option<&EventRow>,
+        event_cap: u32,
+    ) -> Result<()> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the session event write", error)
+            })?;
+        upsert_session_on(&transaction, session)?;
+        if let Some(event) = event {
+            transaction
+                .execute(
+                    "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                    params![
+                        event.owned_id,
+                        event.seq,
+                        event.turn_id,
+                        event.kind,
+                        event.payload_json,
+                        event.created_at_ms
+                    ],
+                )
+                .map_err(|error| StoreError::sqlite("could not append the event", error))?;
+            transaction
+                .execute(
+                    "DELETE FROM events
+                     WHERE owned_id = ?
+                       AND seq NOT IN (
+                           SELECT seq
+                           FROM events
+                           WHERE owned_id = ?
+                           ORDER BY seq DESC
+                           LIMIT ?
+                       )",
+                    params![event.owned_id, event.owned_id, i64::from(event_cap)],
+                )
+                .map_err(|error| StoreError::sqlite("could not enforce the event limit", error))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| StoreError::sqlite("could not finish the session event write", error))
     }
 
     pub fn get_session(&self, owned_id: &str) -> Result<Option<SessionRow>> {
@@ -538,6 +552,51 @@ impl SessionStore {
     }
 }
 
+/// Writes every persisted session field on the caller's connection or transaction.
+fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
+    connection
+        .execute(
+            "INSERT INTO sessions (
+                owned_id, native_session_id, provider, model, effort, cwd, worktree,
+                branch, title, project, state, suspended, created_at, last_activity_at, extra
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(owned_id) DO UPDATE SET
+                native_session_id = excluded.native_session_id,
+                provider = excluded.provider,
+                model = excluded.model,
+                effort = excluded.effort,
+                cwd = excluded.cwd,
+                worktree = excluded.worktree,
+                branch = excluded.branch,
+                title = excluded.title,
+                project = excluded.project,
+                state = excluded.state,
+                suspended = excluded.suspended,
+                created_at = excluded.created_at,
+                last_activity_at = excluded.last_activity_at,
+                extra = excluded.extra",
+            params![
+                row.owned_id,
+                row.native_session_id,
+                row.provider,
+                row.model,
+                row.effort,
+                row.cwd,
+                row.worktree,
+                row.branch,
+                row.title,
+                row.project,
+                row.state,
+                row.suspended,
+                row.created_at_ms,
+                row.last_activity_at_ms,
+                row.extra_json,
+            ],
+        )
+        .map_err(|error| StoreError::sqlite("could not save the session", error))?;
+    Ok(())
+}
+
 fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
         owned_id: row.get(0)?,
@@ -761,6 +820,59 @@ mod tests {
                 .list_events(&session.owned_id, 0, 10)
                 .expect("list events"),
             [event]
+        );
+    }
+
+    #[test]
+    fn session_and_event_commit_is_atomic_and_caps_events() {
+        let (_directory, _path, store) = open_temp_store();
+        let original = fixture_session("owned-atomic", 2_000);
+        store.upsert_session(&original).expect("insert session");
+        let duplicate = fixture_event(&original.owned_id, 1);
+        store
+            .append_event(&duplicate)
+            .expect("seed duplicate event");
+
+        let mut failed_candidate = original.clone();
+        failed_candidate.state = "working".into();
+        failed_candidate.last_activity_at_ms = 30_000;
+        assert!(store
+            .upsert_session_with_event(&failed_candidate, Some(&duplicate), 2)
+            .is_err());
+        let stored_after_failure = store
+            .get_session(&original.owned_id)
+            .expect("read session after failure")
+            .expect("session remains");
+        assert_eq!(stored_after_failure.state, original.state);
+        assert_eq!(
+            stored_after_failure.last_activity_at_ms,
+            duplicate.created_at_ms
+        );
+
+        for seq in 2..=3 {
+            store
+                .append_event(&fixture_event(&original.owned_id, seq))
+                .expect("seed event for cap");
+        }
+        let committed_event = fixture_event(&original.owned_id, 4);
+        let mut committed_session = failed_candidate;
+        committed_session.last_activity_at_ms = committed_event.created_at_ms;
+        store
+            .upsert_session_with_event(&committed_session, Some(&committed_event), 2)
+            .expect("commit session and event");
+
+        assert_eq!(
+            store
+                .get_session(&original.owned_id)
+                .expect("read committed session"),
+            Some(committed_session)
+        );
+        let events = store
+            .list_events(&original.owned_id, 0, 10)
+            .expect("read capped events");
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            [3, 4]
         );
     }
 
