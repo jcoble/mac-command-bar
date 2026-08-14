@@ -112,11 +112,11 @@
 
 <Dialog.Root bind:open>
   <Dialog.Content
-    class="w-[min(580px,calc(100vw-3rem))] sm:max-w-none max-h-[calc(100vh-3rem)] gap-0
-           overflow-y-auto rounded-lg bg-background p-0 text-foreground ring-border
-           shadow-[var(--shadow-lg)]"
+    class="flex w-[min(580px,calc(100vw-3rem))] max-h-[calc(100vh-3rem)] flex-col gap-0
+           overflow-hidden rounded-lg bg-background p-0 text-foreground ring-border
+           shadow-[var(--shadow-lg)] sm:max-w-none"
   >
-    <Dialog.Header class="gap-1 border-b px-5 pt-5 pb-4">
+    <Dialog.Header class="shrink-0 gap-1 border-b px-5 pt-5 pb-4">
       <Dialog.Title class="text-[14px] leading-[1.4] font-semibold">{heading}</Dialog.Title>
       <Dialog.Description class="text-sm leading-[1.5] text-muted-foreground">
         One saved way to start something. Running it opens a terminal in the folder below and runs
@@ -124,7 +124,9 @@
       </Dialog.Description>
     </Dialog.Header>
 
-    <div class="flex flex-col gap-5 px-5 py-4">
+    <!-- Only the fields scroll: the heading stays readable and Save stays
+         reachable however short the window is. -->
+    <div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-4">
       <section class="flex flex-col gap-2">
         <label for="run-action-name" class="text-[13px] leading-[1.3] font-medium">Name</label>
         <Input
@@ -283,7 +285,9 @@
       {/if}
     </div>
 
-    <Dialog.Footer class="gap-2 border-t px-5 py-3">
+    <!-- `m-0` undoes the kit footer's negative margins, which assume the dialog
+         keeps its own padding; this one sets `p-0` and lays the footer out itself. -->
+    <Dialog.Footer class="m-0 shrink-0 gap-2 border-t px-5 py-3">
       <Button variant="ghost" size="sm" class="text-[13px]" onclick={() => (open = false)}>
         Cancel
       </Button>

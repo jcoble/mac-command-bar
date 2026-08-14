@@ -89,3 +89,43 @@ export function usageResetLabel(resetsAt: string | null): string {
 export function usagePercent(window: { usedPercent: number }): number {
   return Math.max(0, Math.min(100, window.usedPercent));
 }
+
+/** Which way round a quota is read: how much has gone, or how much is left. */
+export type UsageDisplayMode = 'used' | 'remaining';
+
+export const USAGE_DISPLAY_STORAGE_KEY = 'mac-command-bar.next.usage-display-v1';
+
+/** The number a quota shows, 0–100, in whichever direction is being read. */
+export function usageDisplayPercent(
+  window: { usedPercent: number },
+  mode: UsageDisplayMode
+): number {
+  const used = usagePercent(window);
+  return mode === 'remaining' ? 100 - used : used;
+}
+
+export function usageDisplayLabel(
+  window: { usedPercent: number },
+  mode: UsageDisplayMode
+): string {
+  return `${Math.round(usageDisplayPercent(window, mode))}% ${mode === 'remaining' ? 'left' : 'used'}`;
+}
+
+export function readUsageDisplayMode(): UsageDisplayMode {
+  if (typeof localStorage === 'undefined') return 'used';
+  try {
+    return localStorage.getItem(USAGE_DISPLAY_STORAGE_KEY) === 'remaining' ? 'remaining' : 'used';
+  } catch {
+    return 'used';
+  }
+}
+
+/** Remember which way round the reader wants it. Failing this is not worth a word. */
+export function writeUsageDisplayMode(mode: UsageDisplayMode): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(USAGE_DISPLAY_STORAGE_KEY, mode);
+  } catch {
+    // Storage off; the choice just does not survive a reload.
+  }
+}

@@ -98,20 +98,24 @@
   {#if row.sessions.length > 0}
     <div class="flex flex-col gap-1">
       <h4 class="m-0 text-sm leading-normal font-semibold text-muted-foreground">Sessions here</h4>
-      <ul class="m-0 flex list-none flex-wrap gap-1 p-0">
+      <ul class="m-0 flex min-w-0 list-none flex-wrap gap-1 p-0">
         {#each row.sessions as link (link.ownedId)}
-          <li>
+          {@const label = `${link.title.trim() || 'Untitled session'}${
+            link.isRunning ? ' · running' : ''
+          }`}
+          <li class="min-w-0 max-w-full">
             {#if onOpenSession}
               <Button
                 size="xs"
                 variant="secondary"
-                class="text-sm"
+                class="max-w-full min-w-0 text-sm"
+                title={label}
                 onclick={() => onOpenSession?.(link.ownedId)}
               >
-                {link.title}{link.isRunning ? ' · running' : ''}
+                <span class="truncate">{label}</span>
               </Button>
             {:else}
-              <Chip>{link.title}{link.isRunning ? ' · running' : ''}</Chip>
+              <Chip class="max-w-full min-w-0"><span class="truncate" title={label}>{label}</span></Chip>
             {/if}
           </li>
         {/each}
