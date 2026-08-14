@@ -1,12 +1,15 @@
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use super::{
     home_dir, object, parse_json_lines, read_snapshot_text, stable_key, timestamp,
-    ChildAgentDescriptor, ConversationMetadata, ProjectedRecord, TranscriptMessage,
-    TranscriptSnapshot,
+    ChildAgentDescriptor, CodexChildRollout, ConversationMetadata, ProjectedRecord,
+    TranscriptMessage, TranscriptSnapshot,
 };
 use crate::agent_conversation::protocol::AgentEventType;
 
@@ -18,6 +21,77 @@ pub(super) fn discover_path(id: &str) -> Option<PathBuf> {
     ]
     .into_iter()
     .find_map(|root| find(&root, id))
+}
+
+pub(super) fn scan_child_rollouts(
+    parent_path: &Path,
+    parent_id: &str,
+    active_after: SystemTime,
+) -> Result<Vec<CodexChildRollout>, String> {
+    let directory = parent_path
+        .parent()
+        .ok_or_else(|| "The parent transcript has no dated directory".to_string())?;
+    let entries = fs::read_dir(directory)
+        .map_err(|error| format!("Could not scan child transcripts: {error}"))?;
+    let mut children = entries
+        .flatten()
+        .filter_map(|entry| child_rollout_from_first_line(&entry.path(), parent_id, active_after))
+        .collect::<Vec<_>>();
+    children.sort_by(|left, right| left.child_id.cmp(&right.child_id));
+    Ok(children)
+}
+
+fn child_rollout_from_first_line(
+    path: &Path,
+    parent_id: &str,
+    active_after: SystemTime,
+) -> Option<CodexChildRollout> {
+    if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+        return None;
+    }
+    let metadata = path.metadata().ok()?;
+    let modified = metadata.modified().ok()?;
+    let mut first_line = String::new();
+    BufReader::new(File::open(path).ok()?)
+        .read_line(&mut first_line)
+        .ok()?;
+    let value: Value = serde_json::from_str(&first_line).ok()?;
+    let payload = value
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|kind| *kind == "session_meta")
+        .and_then(|_| value.get("payload"))?;
+    if payload.get("parent_thread_id").and_then(Value::as_str) != Some(parent_id)
+        || payload.get("thread_source").and_then(Value::as_str) != Some("subagent")
+    {
+        return None;
+    }
+    let child_id = payload.get("id").and_then(Value::as_str)?.to_string();
+    let spawn = payload.pointer("/source/subagent/thread_spawn");
+    let role = spawn
+        .and_then(|value| value.get("agent_role"))
+        .or_else(|| payload.get("agent_role"))
+        .and_then(Value::as_str);
+    let name = spawn
+        .and_then(|value| value.get("agent_path"))
+        .or_else(|| payload.get("agent_path"))
+        .and_then(Value::as_str)
+        .and_then(|path| path.rsplit('/').find(|part| !part.is_empty()))
+        .or_else(|| {
+            spawn
+                .and_then(|value| value.get("agent_nickname"))
+                .or_else(|| payload.get("agent_nickname"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("Sub-agent");
+    let label = role.map_or_else(|| name.to_string(), |role| format!("{name} ({role})"));
+    let running = modified >= active_after;
+    Some(CodexChildRollout {
+        child_id,
+        label,
+        state: if running { "running" } else { "finished" }.to_string(),
+        latest_activity: if running { "Running" } else { "Finished" }.to_string(),
+    })
 }
 
 fn find(root: &Path, id: &str) -> Option<PathBuf> {

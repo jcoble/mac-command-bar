@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mcb_core::session_store::{AnnotationRow, EventRow, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
@@ -32,11 +32,13 @@ use super::providers::{
     AgentRuntimeAdapter, AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession,
     NewAgentSession, PermissionResponse, ProviderRegistry, StructuredRuntimeHandle,
 };
+use super::transcript::{self, CodexChildRollout};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 const SNAPSHOT_EVENT_CAP: usize = 2_000;
 const STORE_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
+const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 const CLAUDE_SESSION_EFFORTS: [(&str, &str); 4] = [
     ("low", "4000"),
@@ -132,6 +134,9 @@ pub struct ManagedAgentSession {
     last_activity_ms: u128,
     live_tool_calls: HashSet<String>,
     background_work: HashSet<String>,
+    child_rollout_scan: Option<tokio::task::JoinHandle<()>>,
+    child_rollout_parent_path: Option<PathBuf>,
+    codex_children: HashMap<String, CodexChildRollout>,
     rail_meta: AgentConversationSessionMeta,
     suspending: bool,
 }
@@ -524,7 +529,13 @@ impl AgentRuntimeManager {
                 return Ok((current.connection.clone(), None));
             }
         }
-        let prior = sessions.remove(&owned_id);
+        let mut prior = sessions.remove(&owned_id);
+        if let Some(task) = prior
+            .as_mut()
+            .and_then(|session| session.child_rollout_scan.take())
+        {
+            task.abort();
+        }
         let previous_runtime = prior
             .as_ref()
             .and_then(|session| Some((session.runtime.clone()?, session.transport.clone()?)));
@@ -585,6 +596,9 @@ impl AgentRuntimeManager {
                 last_activity_ms: created_at_ms,
                 live_tool_calls: HashSet::new(),
                 background_work: HashSet::new(),
+                child_rollout_scan: None,
+                child_rollout_parent_path: None,
+                codex_children: HashMap::new(),
                 rail_meta: AgentConversationSessionMeta::default(),
                 suspending: false,
             },
@@ -1016,9 +1030,69 @@ impl AgentRuntimeManager {
             (native_session_id, ordered_events)
         };
 
+        self.start_child_rollout_scan(owned_id, generation)?;
         let params = prompt_params(native_session_id, input);
         spawn_prompt_completion(transport, ordered_events, turn_id, params);
         Ok(())
+    }
+
+    fn start_child_rollout_scan(&self, owned_id: &str, generation: u64) -> Result<(), String> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = current_session_mut(&mut sessions, owned_id, generation)?;
+        if session.provider != AgentConversationProvider::Codex {
+            return Ok(());
+        }
+        if let Some(task) = session.child_rollout_scan.take() {
+            task.abort();
+        }
+        let native_session_id = session
+            .native_session_id
+            .clone()
+            .ok_or_else(|| "Structured provider session has not started".to_string())?;
+        let sessions = Arc::downgrade(&self.sessions);
+        let emitter = Arc::clone(&self.emitter);
+        let owned_id = owned_id.to_string();
+        session.child_rollout_scan = Some(tokio::spawn(async move {
+            run_child_rollout_scan(sessions, emitter, owned_id, generation, native_session_id)
+                .await;
+        }));
+        Ok(())
+    }
+
+    async fn finish_child_rollout_scan(&self, owned_id: &str, generation: u64, turn_id: &str) {
+        let scan = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
+                return;
+            };
+            if session.active_turn_id.as_deref() != Some(turn_id) {
+                return;
+            }
+            if let Some(task) = session.child_rollout_scan.take() {
+                task.abort();
+            }
+            session.native_session_id.clone().map(|native_session_id| {
+                (native_session_id, session.child_rollout_parent_path.clone())
+            })
+        };
+        let Some((native_session_id, parent_path)) = scan else {
+            return;
+        };
+        let _ = scan_codex_children_once(
+            &Arc::downgrade(&self.sessions),
+            &self.emitter,
+            owned_id,
+            generation,
+            &native_session_id,
+            parent_path,
+        )
+        .await;
     }
 
     /// Run one product action through the current structured agent without
@@ -1647,6 +1721,9 @@ impl AgentRuntimeManager {
                 );
             }
             let transport = session.transport.take();
+            if let Some(task) = session.child_rollout_scan.take() {
+                task.abort();
+            }
             session.ordered_events = None;
             let pending_permission_rows = session.permission_requests.drain().collect::<Vec<_>>();
             let mut pending_permissions = Vec::with_capacity(pending_permission_rows.len());
@@ -2290,6 +2367,9 @@ fn recover_sessions_from_store(
             last_activity_ms: row.last_activity_at_ms.max(0) as u128,
             live_tool_calls: HashSet::new(),
             background_work: HashSet::new(),
+            child_rollout_scan: None,
+            child_rollout_parent_path: None,
+            codex_children: HashMap::new(),
             rail_meta: stored.rail_meta,
             suspending: false,
         };
@@ -2886,6 +2966,9 @@ async fn settle_closed_transport(
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, transport))
         }) {
+            if let Some(task) = session.child_rollout_scan.take() {
+                task.abort();
+            }
             session.runtime = None;
             session.transport = None;
             session.ordered_events = None;
@@ -3055,6 +3138,105 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
     terminal && session_is_quiescent(session)
 }
 
+async fn run_child_rollout_scan(
+    sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
+    emitter: Arc<Mutex<Option<ConversationEmitter>>>,
+    owned_id: String,
+    generation: u64,
+    native_session_id: String,
+) {
+    let mut parent_path = None;
+    loop {
+        parent_path = scan_codex_children_once(
+            &sessions,
+            &emitter,
+            &owned_id,
+            generation,
+            &native_session_id,
+            parent_path,
+        )
+        .await;
+        if parent_path.is_none() {
+            return;
+        }
+        tokio::time::sleep(CHILD_ROLLOUT_SCAN_INTERVAL).await;
+    }
+}
+
+async fn scan_codex_children_once(
+    sessions: &Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
+    emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
+    owned_id: &str,
+    generation: u64,
+    native_session_id: &str,
+    parent_path: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let native_id = native_session_id.to_string();
+    let scan_parent_id = native_id.clone();
+    let scan = tokio::task::spawn_blocking(move || {
+        let path = match parent_path {
+            Some(path) => path,
+            None => {
+                transcript::discover(AgentConversationProvider::Codex, &native_id)
+                    .ok()
+                    .flatten()?
+                    .canonical_path
+            }
+        };
+        let active_after = SystemTime::now()
+            .checked_sub(CHILD_ROLLOUT_SCAN_INTERVAL.saturating_mul(2))
+            .unwrap_or(UNIX_EPOCH);
+        transcript::scan_codex_child_rollouts(&path, &scan_parent_id, active_after)
+            .ok()
+            .map(|children| (path, children))
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let (parent_path, children) = scan;
+    let sessions = sessions.upgrade()?;
+    let mut sessions = sessions
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let session = current_session_mut(&mut sessions, owned_id, generation).ok()?;
+    if session.provider != AgentConversationProvider::Codex
+        || session.active_turn_id.is_none()
+        || session.state == AgentRuntimeState::Closed
+    {
+        return None;
+    }
+    session.child_rollout_parent_path = Some(parent_path.clone());
+    for payload in changed_child_updates(native_session_id, &mut session.codex_children, children) {
+        if let Err(error) = record_payload_for_session_and_dispatch(session, emitter, payload) {
+            crate::debug_log::stderr_log!("Could not record child session update: {error}");
+            break;
+        }
+    }
+    Some(parent_path)
+}
+
+fn changed_child_updates(
+    parent_id: &str,
+    known: &mut HashMap<String, CodexChildRollout>,
+    children: Vec<CodexChildRollout>,
+) -> Vec<AgentConversationPayload> {
+    let mut updates = Vec::new();
+    for child in children {
+        if known.get(&child.child_id) == Some(&child) {
+            continue;
+        }
+        updates.push(AgentConversationPayload::ChildUpdate {
+            child_id: child.child_id.clone(),
+            parent_tool_call_id: parent_id.to_string(),
+            label: Some(child.label.clone()),
+            state: child.state.clone(),
+            latest_activity: Some(child.latest_activity.clone()),
+        });
+        known.insert(child.child_id.clone(), child);
+    }
+    updates
+}
+
 async fn handle_ordered_session_event(
     ordered: OrderedSessionEvent,
     manager: &AgentRuntimeManager,
@@ -3140,6 +3322,9 @@ async fn handle_ordered_session_event(
             true
         }
         OrderedSessionEvent::PromptResult { turn_id, result } => {
+            manager
+                .finish_child_rollout_scan(owned_id, generation, &turn_id)
+                .await;
             let cancelled = result
                 .as_ref()
                 .ok()
@@ -4112,6 +4297,46 @@ mod tests {
         let path = std::env::temp_dir().join(format!("mcb-runtime-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn child_rollout_scan_emits_once_until_metadata_changes() {
+        let root = temp_root();
+        let parent = root.join("rollout-parent.jsonl");
+        fs::write(
+            &parent,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"parent\"}}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("rollout-child.jsonl"),
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{",
+                "\"id\":\"child-1\",\"parent_thread_id\":\"parent\",",
+                "\"thread_source\":\"subagent\",",
+                "\"source\":{\"subagent\":{\"thread_spawn\":{",
+                "\"agent_path\":\"/root/probe\",\"agent_role\":\"explore\"}}}}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"text\":\"ignored\"}}\n"
+            ),
+        )
+        .unwrap();
+        let active_after = SystemTime::now() - Duration::from_secs(20);
+        let children =
+            transcript::scan_codex_child_rollouts(&parent, "parent", active_after).unwrap();
+        let mut known = HashMap::new();
+
+        assert_eq!(
+            changed_child_updates("parent", &mut known, children.clone()),
+            vec![AgentConversationPayload::ChildUpdate {
+                child_id: "child-1".into(),
+                parent_tool_call_id: "parent".into(),
+                label: Some("probe (explore)".into()),
+                state: "running".into(),
+                latest_activity: Some("Running".into()),
+            }]
+        );
+        assert!(changed_child_updates("parent", &mut known, children).is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     struct FixtureManager {

@@ -8,6 +8,7 @@ use std::fs::{self, File, Metadata};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use super::protocol::{AgentConversationProvider, AgentEventType};
 
@@ -41,6 +42,14 @@ pub struct ChildAgentDescriptor {
     pub label: String,
     pub state: String,
     pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CodexChildRollout {
+    pub child_id: String,
+    pub label: String,
+    pub state: String,
+    pub latest_activity: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -109,6 +118,14 @@ pub fn discover(
         AgentConversationProvider::Claude => claude::discover_path(&id)?,
     };
     path.map(location).transpose()
+}
+
+pub(crate) fn scan_codex_child_rollouts(
+    parent_path: &Path,
+    parent_id: &str,
+    active_after: SystemTime,
+) -> Result<Vec<CodexChildRollout>, String> {
+    codex::scan_child_rollouts(parent_path, parent_id, active_after)
 }
 
 pub fn inspect(path: &Path) -> Result<Option<TranscriptLocation>, String> {
