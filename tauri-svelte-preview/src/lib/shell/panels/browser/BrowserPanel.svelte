@@ -20,6 +20,7 @@
    * Attach hands over; it never sends. The picture and a short note go to the
    * session's composer and the session comes forward, and the person sends it.
    */
+  import { untrack } from 'svelte';
   import Globe from '@lucide/svelte/icons/globe';
 
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
@@ -55,7 +56,15 @@
   import BrowserToolbar from './BrowserToolbar.svelte';
   import { compositeAnnotations, liveShapes, type AnnotationShape, type PlacedAnnotationShape } from './annotationComposite.ts';
   import { elementTagFromSelector, formatAttachmentNote } from './browserAttachmentNote.ts';
-  import { boundsForHost, expandedBoundsForHost } from './browserPanelBounds.ts';
+  import {
+    boundsForHost,
+    expandedBoundsForHost,
+    samePlacement,
+    usableHostRect,
+    HIDDEN_PLACEMENT,
+    HOST_MIN_SIZE,
+    type HostPlacement
+  } from './browserPanelBounds.ts';
 
   interface Props {
     visible: boolean;
@@ -121,26 +130,74 @@
     return rail ? rail.getBoundingClientRect().right : 0;
   }
 
-  function placeNativeView(): void {
+  function windowSize(): { width: number; height: number } {
+    return { width: window.innerWidth, height: window.innerHeight };
+  }
+
+  /** Where the view belongs right now, measured fresh. */
+  function wantedPlacement(onScreen: boolean, stretched: boolean): HostPlacement {
+    if (!onScreen || typeof window === 'undefined') return HIDDEN_PLACEMENT;
     const rect = hostRect();
-    if (!rect || typeof window === 'undefined') return;
-    const size = { width: window.innerWidth, height: window.innerHeight };
-    const bounds = expanded
-      ? expandedBoundsForHost(rect, railRightEdge(), size)
-      : boundsForHost(rect, size);
+    if (!usableHostRect(rect)) return HIDDEN_PLACEMENT;
+    const size = windowSize();
+    return {
+      kind: 'bounds',
+      bounds: stretched
+        ? expandedBoundsForHost(rect, railRightEdge(), size)
+        : boundsForHost(rect, size)
+    };
+  }
+
+  /**
+   * What the shell was last asked for. A plain variable on purpose: the panel
+   * re-measures on every layout change, and only a rectangle that actually
+   * moved is worth a call.
+   */
+  let placed: HostPlacement | null = null;
+
+  function sendPlacement(next: HostPlacement): void {
+    if (placed && samePlacement(next, placed)) return;
     try {
-      setBrowserPresentationMode(browserModelContext(), 'floating', { window: size, bounds });
+      if (next.kind === 'hidden') {
+        // Nothing has been opened yet, so there is no view to take away.
+        if (!browser.workspace.activeTabId) {
+          placed = next;
+          return;
+        }
+        collapseBrowserToControl(browserModelContext());
+      } else {
+        setBrowserPresentationMode(browserModelContext(), 'floating', {
+          window: windowSize(),
+          bounds: next.bounds,
+          minSize: HOST_MIN_SIZE
+        });
+      }
+      placed = next;
     } catch (error) {
       say(error);
     }
   }
 
-  function takeNativeViewOffScreen(): void {
+  /**
+   * The native view is created at whatever rectangle the workspace is holding,
+   * so the panel's own has to be in place before a page exists — otherwise the
+   * first frame is painted wherever the browser last was, over the middle of
+   * the shell.
+   */
+  function placeBeforeOpening(): void {
+    const wanted = wantedPlacement(true, expanded);
+    if (wanted.kind !== 'bounds') return;
     try {
-      collapseBrowserToControl(browserModelContext());
+      setBrowserPresentationMode(browserModelContext(), 'floating', {
+        window: windowSize(),
+        bounds: wanted.bounds,
+        minSize: HOST_MIN_SIZE
+      });
     } catch (error) {
       say(error);
     }
+    // The view about to be created still needs its own placement call.
+    placed = null;
   }
 
   // ── The page ───────────────────────────────────────────────────────────────
@@ -153,6 +210,7 @@
     }
     failure = '';
     if (ownedId) browser.workspace.ownedId = ownedId;
+    placeBeforeOpening();
     activateBrowser();
     setBrowserUrl(next);
     addressEdited = false;
@@ -362,18 +420,21 @@
 
   $effect(() => {
     // Every input that can move the view, read so the effect re-runs.
-    visible;
-    expanded;
-    showsStill;
+    const onScreen = visible && !showsStill && Boolean(browser.url);
+    const stretched = expanded;
     layoutTick;
-    browser.url;
     browser.workspace.activeTabId;
-    if (!visible || showsStill || !browser.url) {
-      takeNativeViewOffScreen();
-      return;
-    }
-    placeNativeView();
+    // Placing the view writes to the same shell state this effect reads from,
+    // and a rectangle is a new object every time it is measured. Left tracked,
+    // the effect would invalidate itself on its own writes and be torn down as
+    // a runaway loop — which is what left the view stranded over the shell with
+    // nothing able to move or hide it again short of restarting.
+    untrack(() => sendPlacement(wantedPlacement(onScreen, stretched)));
   });
+
+  // Whatever unmounts this panel — a different session, a rebuilt shell — the
+  // view must not be left on screen behind it.
+  $effect(() => () => untrack(() => sendPlacement(HIDDEN_PLACEMENT)));
 
   $effect(() => {
     let stop: (() => void) | null = null;
