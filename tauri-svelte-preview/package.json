@@ -113,6 +113,7 @@
     "test:new-session-submission": "node --experimental-strip-types scripts/newSessionSubmission.test.ts",
     "test:new-session-git-refs": "node --experimental-strip-types scripts/newSessionGitRefs.test.ts",
     "test:thread-start-flow": "node --experimental-strip-types scripts/threadStartFlow.test.ts",
+    "test:draft-session-lifecycle": "node --experimental-strip-types scripts/draftSessionLifecycle.test.ts",
     "test:session-rail": "node --experimental-strip-types scripts/sessionRowActions.test.ts && node --experimental-strip-types scripts/ownedSessions.test.ts && node --experimental-strip-types scripts/centerDock.test.mjs && node --experimental-strip-types scripts/myWorkViewOptions.test.mjs && node --experimental-strip-types scripts/errorPresentation.test.ts && node --experimental-strip-types scripts/railElapsedTicker.test.ts && node --experimental-strip-types scripts/paneLayout.test.mjs",
     "test:theme-registry": "node --experimental-strip-types scripts/themeRegistry.test.mjs",
     "test:extension-integration": "node scripts/extensionIntegration.test.mjs",

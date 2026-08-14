@@ -1,0 +1,484 @@
+<!--
+  DraftSessionSurface.svelte — what "+" opens.
+
+  Not a form and not a dialog: an empty session, in the Session tab, with the
+  ordinary composer at the bottom and the caret already in it. Everything that
+  used to be a field of the new-session form is a control ON that composer —
+  provider, project and branch on the left of the footer, and model, effort and
+  approval through the same `ComposerConfigMenu` a running session uses.
+
+  Nothing is created here. The surface holds one `ThreadStartPickerState` and
+  hands it to `onSend` on the first message; the route owns every side effect
+  from there. Abandoning it — switching session, or the close button — discards
+  the state and leaves nothing behind.
+-->
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import Check from '@lucide/svelte/icons/check';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import FolderPlus from '@lucide/svelte/icons/folder-plus';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
+  import Search from '@lucide/svelte/icons/search';
+  import X from '@lucide/svelte/icons/x';
+
+  import { Button } from '$lib/components/ui/button/index.js';
+  import { Input } from '$lib/components/ui/input/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
+  import type {
+    AgentConversationConfigField,
+    AgentConversationConfigState
+  } from '$lib/shell/conversation/conversationConfig.ts';
+  import {
+    addCustomRoot,
+    hydrate,
+    initialRootPath,
+    knownRoots,
+    setSessionRoots
+  } from '$lib/shell/newSession/projectRootsStore.svelte';
+  import {
+    accessChoicesFor,
+    buildThreadStartRequest,
+    canSelectThreadStartGitRef,
+    defaultThreadStartState,
+    effortChoicesFor,
+    filterThreadStartGitRefs,
+    groupProviderModels,
+    validateThreadStart,
+    type ThreadStartPickerState,
+    type ThreadStartProvider,
+    type ThreadStartProviderConfig,
+    type ThreadStartRequest
+  } from '$lib/shell/newSession/threadStartFlow.ts';
+  import {
+    listGitRefs,
+    pickProjectFolder,
+    type BackendAnswer,
+    type ProjectGitRef
+  } from '$lib/shell/newSession/newSessionBackend.ts';
+
+  interface Props {
+    /** Folders the sessions on the rail are running in, so the project picker
+     * knows about projects nobody added by hand. */
+    sessionRoots: string[];
+    presetProjectPath: string | null;
+    providerConfigs: ThreadStartProviderConfig[];
+    onSend: (request: ThreadStartRequest) => void | Promise<void>;
+    onClose: () => void;
+  }
+
+  let { sessionRoots, presetProjectPath, providerConfigs, onSend, onClose }: Props = $props();
+
+  const PROVIDERS: readonly ThreadStartProvider[] = ['codex', 'claude'];
+  /** This build has no create-worktree command, so only existing checkouts. */
+  const canCreateWorktree = false;
+
+  function preferredRoot(preset: string | null): string {
+    const requested = preset?.trim();
+    if (requested?.startsWith('/')) return requested;
+    return initialRootPath() ?? knownRoots()[0]?.path ?? '';
+  }
+
+  // The preset is applied on mount, once the stored roots have been read; this
+  // is only what the first frame paints.
+  let draft = $state<ThreadStartPickerState>(
+    defaultThreadStartState({ projectPath: preferredRoot(null) })
+  );
+  let composer = $state<{ focus(): void } | null>(null);
+  let gitRefs = $state<ProjectGitRef[]>([]);
+  let refsLoading = $state(false);
+  let refsMessage = $state<string | null>(null);
+  let refSearch = $state('');
+  let submitting = $state(false);
+  let submitError = $state('');
+  let loadSequence = 0;
+
+  const roots = $derived(knownRoots());
+  const modelGroups = $derived(groupProviderModels(providerConfigs));
+  const problems = $derived(validateThreadStart(draft));
+  const filteredRefs = $derived(filterThreadStartGitRefs(gitRefs, refSearch));
+  const selectedRef = $derived(gitRefs.find((ref) => ref.name === draft.branch) ?? null);
+  const projectName = $derived(draft.projectPath.split('/').filter(Boolean).at(-1) ?? '');
+
+  /**
+   * The draft's own answer to the question the composer's settings menu asks a
+   * running session. Same shape, same menu — the difference is that a change
+   * lands in this state instead of being written to an agent that does not
+   * exist yet.
+   */
+  const configState = $derived<AgentConversationConfigState>({
+    model: draft.model || null,
+    availableModels:
+      modelGroups
+        .find((group) => group.provider === draft.provider)
+        ?.models.filter((model) => model.available)
+        .map((model) => model.id) ?? [],
+    reasoningEffort: draft.effort || null,
+    availableEfforts: effortChoicesFor(draft.provider, providerConfigs),
+    approvalPolicy: draft.access || null,
+    availableApprovalPolicies: accessChoicesFor(draft.provider, providerConfigs)
+  });
+
+  function updateDraft(patch: Partial<ThreadStartPickerState>): void {
+    draft = { ...draft, ...patch };
+    submitError = '';
+  }
+
+  async function loadRefs(projectPath: string): Promise<void> {
+    const sequence = ++loadSequence;
+    refsLoading = true;
+    refsMessage = null;
+    const answer: BackendAnswer<ProjectGitRef[]> = await listGitRefs(projectPath);
+    if (sequence !== loadSequence) return;
+    refsLoading = false;
+    if (answer.status === 'failed') {
+      gitRefs = [];
+      refsMessage = answer.message;
+    } else {
+      gitRefs = answer.status === 'ok' ? answer.value : [];
+      if (answer.status === 'unavailable') refsMessage = answer.message;
+    }
+    const first = gitRefs.find((ref) => ref.isCurrent)
+      ?? gitRefs.find((ref) => ref.checkoutPath)
+      ?? null;
+    updateDraft({ cwd: first?.checkoutPath ?? projectPath, branch: first?.name ?? '' });
+  }
+
+  function selectProject(path: string): void {
+    updateDraft({ projectPath: path, cwd: path, branch: '' });
+    gitRefs = [];
+    refSearch = '';
+    void loadRefs(path);
+  }
+
+  async function addProject(): Promise<void> {
+    const answer = await pickProjectFolder();
+    if (answer.status !== 'ok') {
+      refsMessage = answer.message;
+      return;
+    }
+    if (!answer.value) return;
+    addCustomRoot(answer.value);
+    selectProject(answer.value);
+  }
+
+  function selectProvider(provider: ThreadStartProvider): void {
+    if (provider === draft.provider) return;
+    const next = defaultThreadStartState({
+      projectPath: draft.projectPath,
+      cwd: draft.cwd,
+      branch: draft.branch,
+      provider,
+      providerConfigs
+    });
+    updateDraft({ provider, model: next.model, effort: next.effort, access: next.access });
+  }
+
+  function chooseRef(ref: ProjectGitRef): void {
+    if (!canSelectThreadStartGitRef(ref, canCreateWorktree)) return;
+    updateDraft({ cwd: ref.checkoutPath ?? draft.projectPath, branch: ref.name });
+  }
+
+  function changeConfig(field: AgentConversationConfigField, value: string): void {
+    if (field === 'model') updateDraft({ model: value });
+    else if (field === 'reasoningEffort') updateDraft({ effort: value });
+    else updateDraft({ access: value });
+  }
+
+  async function send(): Promise<void> {
+    if (submitting) return;
+    const request = buildThreadStartRequest(draft);
+    if (!request) {
+      submitError = problems[0]?.message ?? 'This draft is not ready to send.';
+      return;
+    }
+    submitting = true;
+    submitError = '';
+    try {
+      await onSend(request);
+    } catch (error) {
+      submitError = error instanceof Error ? error.message : String(error);
+    } finally {
+      submitting = false;
+    }
+  }
+
+  onMount(() => {
+    hydrate();
+    setSessionRoots(sessionRoots);
+    const projectPath = preferredRoot(presetProjectPath);
+    draft = defaultThreadStartState({ projectPath, providerConfigs });
+    void loadRefs(projectPath);
+    composer?.focus();
+  });
+</script>
+
+{#snippet draftControls()}
+  <DropdownMenu.Root>
+    <DropdownMenu.Trigger>
+      {#snippet child({ props })}
+        <Button {...props} data-testid="draft-session-provider" variant="ghost" size="xs" class="draft-control">
+          {draft.provider}
+          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
+        </Button>
+      {/snippet}
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Content side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
+      <DropdownMenu.Label>Which agent runs this</DropdownMenu.Label>
+      {#each PROVIDERS as provider (provider)}
+        <DropdownMenu.Item
+          data-testid={`draft-session-provider-${provider}`}
+          onSelect={() => selectProvider(provider)}
+        >
+          <span class="draft-check">
+            {#if draft.provider === provider}<Check aria-hidden="true" class="size-3.5" />{/if}
+          </span>
+          {provider}
+        </DropdownMenu.Item>
+      {/each}
+    </DropdownMenu.Content>
+  </DropdownMenu.Root>
+
+  <DropdownMenu.Root>
+    <DropdownMenu.Trigger>
+      {#snippet child({ props })}
+        <Button {...props} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
+          {projectName || 'Choose a project'}
+          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
+        </Button>
+      {/snippet}
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Content
+      side="top"
+      align="start"
+      sideOffset={8}
+      avoidCollisions
+      collisionPadding={12}
+      class="w-[300px]"
+    >
+      <DropdownMenu.Label>Project workspace</DropdownMenu.Label>
+      {#each roots as root (root.path)}
+        <DropdownMenu.Item
+          data-testid={`draft-session-project-${root.id}`}
+          class="items-start gap-2"
+          onSelect={() => selectProject(root.path)}
+        >
+          <span class="draft-check">
+            {#if draft.projectPath === root.path}<Check aria-hidden="true" class="size-3.5" />{/if}
+          </span>
+          <span class="flex min-w-0 flex-col gap-0.5">
+            <span>{root.name}</span>
+            <span class="draft-hint truncate">{root.path}</span>
+          </span>
+        </DropdownMenu.Item>
+      {/each}
+      {#if roots.length === 0}
+        <DropdownMenu.Item disabled>No project workspaces yet</DropdownMenu.Item>
+      {/if}
+      <DropdownMenu.Separator />
+      <DropdownMenu.Item data-testid="draft-session-new-project" onSelect={() => void addProject()}>
+        <FolderPlus aria-hidden="true" class="size-3.5" />
+        <span>New project</span>
+      </DropdownMenu.Item>
+    </DropdownMenu.Content>
+  </DropdownMenu.Root>
+
+  <DropdownMenu.Root onOpenChange={(open) => { if (!open) refSearch = ''; }}>
+    <DropdownMenu.Trigger>
+      {#snippet child({ props })}
+        <Button {...props} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
+          <GitBranch aria-hidden="true" class="size-3.5" />
+          <span class="truncate">{(selectedRef?.name ?? draft.branch) || 'Choose a branch'}</span>
+          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
+        </Button>
+      {/snippet}
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Content
+      side="top"
+      align="start"
+      sideOffset={8}
+      avoidCollisions
+      collisionPadding={12}
+      class="max-h-[430px] w-[min(440px,calc(100vw-32px))] overflow-y-auto"
+    >
+      <div class="draft-ref-search">
+        <Search aria-hidden="true" class="size-3.5" />
+        <Input
+          data-testid="draft-session-ref-search"
+          aria-label="Search branches"
+          placeholder="Search branches"
+          bind:value={refSearch}
+          onclick={(event) => event.stopPropagation()}
+          onkeydown={(event) => event.stopPropagation()}
+          class="h-[30px] border-0 bg-transparent shadow-none"
+        />
+      </div>
+      <DropdownMenu.Separator />
+      {#if refsLoading}
+        <DropdownMenu.Item disabled>Reading branches…</DropdownMenu.Item>
+      {:else}
+        {#each filteredRefs.visible as ref (ref.name)}
+          <DropdownMenu.Item
+            data-testid={`draft-session-ref-${ref.name}`}
+            disabled={!canSelectThreadStartGitRef(ref, canCreateWorktree)}
+            title={canSelectThreadStartGitRef(ref, canCreateWorktree)
+              ? ref.checkoutPath ?? undefined
+              : 'needs a worktree'}
+            onSelect={() => chooseRef(ref)}
+          >
+            <span class="draft-check">
+              {#if draft.branch === ref.name}<Check aria-hidden="true" class="size-3.5" />{/if}
+            </span>
+            <span class="draft-ref-name">{ref.name}</span>
+            <span class="draft-ref-tags">
+              {#if ref.isCurrent}<span>current</span>{/if}
+              {#if ref.isDefault}<span>default</span>{/if}
+              {#if !canSelectThreadStartGitRef(ref, canCreateWorktree)}<small>needs a worktree</small>{/if}
+            </span>
+          </DropdownMenu.Item>
+        {/each}
+        {#if filteredRefs.total === 0}<DropdownMenu.Item disabled>No matching branches</DropdownMenu.Item>{/if}
+      {/if}
+      {#if filteredRefs.total > filteredRefs.visible.length}
+        <div class="draft-ref-footer">
+          Showing {filteredRefs.visible.length} of {filteredRefs.total} branches
+        </div>
+      {/if}
+    </DropdownMenu.Content>
+  </DropdownMenu.Root>
+{/snippet}
+
+<section class="draft-surface" data-testid="draft-session-surface" aria-label="New session">
+  <div class="draft-topline">
+    <span data-testid="draft-session-note">Nothing is created until you send.</span>
+    <Button
+      data-testid="draft-session-close"
+      variant="ghost"
+      size="icon-sm"
+      aria-label="Discard this draft"
+      onclick={onClose}
+    >
+      <X aria-hidden="true" class="size-4" />
+    </Button>
+  </div>
+
+  <div class="draft-transcript" data-testid="draft-session-transcript">
+    <p>Start the conversation below.</p>
+    {#if refsMessage}<p class="draft-warning" data-testid="draft-session-refs-note">{refsMessage}</p>{/if}
+  </div>
+
+  <ConversationComposer
+    bind:this={composer}
+    provider={draft.provider}
+    draft={draft.prompt}
+    attachments={[]}
+    sending={submitting}
+    {configState}
+    pendingConfig={{}}
+    commands={[]}
+    sendError={submitError}
+    leadingControls={draftControls}
+    onDraftChange={(value) => updateDraft({ prompt: value })}
+    onSend={send}
+    onConfigChange={changeConfig}
+  />
+</section>
+
+<style>
+  .draft-surface {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font: 13px ui-sans-serif, system-ui;
+  }
+
+  .draft-topline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px 6px 14px;
+    color: var(--color-text-3);
+    font-size: 12px;
+  }
+
+  .draft-transcript {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 24px;
+    color: var(--color-text-3);
+    text-align: center;
+  }
+
+  .draft-transcript p { margin: 0; font-size: 13px; }
+  .draft-warning { color: var(--color-attention); }
+
+  :global(.draft-control) {
+    max-width: 200px;
+    gap: 4px;
+    padding: 0 6px;
+    color: var(--color-text-2);
+    font-size: 13px;
+    font-weight: 400;
+  }
+
+  :global(.draft-control:hover) { color: var(--color-text); }
+  :global(.draft-branch) { max-width: 220px; min-width: 0; }
+
+  .draft-check {
+    display: inline-flex;
+    width: 14px;
+    min-width: 14px;
+    justify-content: center;
+    color: var(--color-accent);
+  }
+
+  .draft-hint { color: var(--secondary-label); font-size: 13px; }
+
+  .draft-ref-search {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 5px;
+    color: var(--secondary-label);
+  }
+
+  .draft-ref-name {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    color: var(--color-text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .draft-ref-tags { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+
+  .draft-ref-tags span {
+    padding: 1px 5px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--secondary-label);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .draft-ref-tags small { color: var(--secondary-label); font-size: 12px; }
+
+  .draft-ref-footer {
+    padding: 7px 8px 4px;
+    border-top: 1px solid var(--color-border);
+    color: var(--secondary-label);
+    font-size: 12px;
+  }
+</style>

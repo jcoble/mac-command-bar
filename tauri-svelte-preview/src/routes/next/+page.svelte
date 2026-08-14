@@ -33,6 +33,7 @@
   import RightPanel from '$lib/shell/components/RightPanel.svelte';
   import SettingsGearButton from '$lib/shell/components/SettingsGearButton.svelte';
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
+  import DraftSessionSurface from '$lib/shell/newSession/DraftSessionSurface.svelte';
   import LanguageIntelligenceControls from '$lib/shell/components/LanguageIntelligenceControls.svelte';
   import { openBrowserUrl } from '$lib/shell/browser/browserStore.svelte.ts';
   import type { UtilityId } from '$lib/shell/components/utilityStrip';
@@ -231,9 +232,16 @@
   /** The overlay layer, for opening the dialogs and surfaces it owns. */
   let overlays: {
     openSettings(): void;
-    openNewSession(projectPath?: string): void;
     openUtility(id: UtilityId, anchor: { left: number; top: number; width: number; height: number }): void;
   } | null = null;
+  /**
+   * The draft session, if one is open. It is NOT a session: no row on the rail,
+   * no conversation, nothing in the backend. It is the Session tab showing an
+   * empty transcript and a composer, and it becomes a session on the first send
+   * and at no other moment. Switching to another session throws it away.
+   */
+  let draftOpen = $state(false);
+  let draftProjectPath = $state<string | null>(null);
   /** The conversation surface, for putting the caret in its prompt box when a
    * panel hands the composer something. */
   let conversationSurface: { focusComposer(): void } | null = null;
@@ -251,8 +259,11 @@
     return recent?.projectPath?.trim() || recent?.cwd.trim() || undefined;
   }
 
+  /** Open a draft in the Session tab, ready to type in. Nothing is created. */
   function openNewSessionForProject(projectPath?: string): void {
-    overlays?.openNewSession(projectPath?.trim() || mostRecentProjectPath());
+    draftProjectPath = projectPath?.trim() || mostRecentProjectPath() || null;
+    draftOpen = true;
+    selectCenterTab('session');
   }
 
   function openNewSession(): void {
@@ -815,6 +826,9 @@
     ownedId: string,
     propagateStructuredFailure = false
   ): Promise<void> {
+    // A draft is discarded the moment another session takes the Session tab.
+    // It never existed anywhere but this flag, so there is nothing to clean up.
+    draftOpen = false;
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
     const selected = rail.owned.find((session) => session.ownedId === ownedId);
@@ -1033,10 +1047,23 @@
       runtimeState: 'starting',
       lastError: null
     });
-    selectCenterTab('session');
+    // Starting a session is the user's doing, so the panels may follow it — even
+    // if start-up has not finished opening that gate yet. Without this a session
+    // started in the first seconds after launch got a file tree and an editor
+    // that were never pointed at its folder, and nothing came along later to
+    // point them: the pick that would have done it was the one being ignored.
+    shellPanels.allowSessionLoads();
 
     try {
       await selectOwned(owned.ownedId, true);
+      // Said again here rather than relied upon: the pick above is what loads
+      // the file tree and re-points the open tabs, and this is the one place
+      // that must be certain it happened for the folder the user chose.
+      shellPanels.sessionPicked();
+      // Only now — both tabs are remembered under the session that is actually
+      // active, and a new session opens on its own transcript and its own files.
+      selectCenterTab('session');
+      selectRightTab('files');
       await sendStructuredMessage(owned.ownedId, request.prompt, null, {
         reasoningEffort: request.reasoningEffort,
         model: request.model,
@@ -1572,17 +1599,35 @@
        a hidden host, where one character measures zero pixels wide, so the fit
        that runs when the panel is shown does nothing. The surface says when a
        host appears, changes size, or the terminal font lands. -->
-  <ConversationSurface
-    bind:this={conversationSurface}
-    owned={rail.owned}
-    activeOwnedId={rail.activeOwnedId}
-    activeOrigin={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.origin}
-    {registerHost}
-    onHostLayout={scheduleRefit}
-    onOpenNativeCli={openNativeCli}
-    onForkNativeCli={forkNativeCli}
-    onReturnToStructured={returnToStructured}
-  />
+  <!-- A draft is LAYERED over the conversation rather than replacing it: the
+       terminal hosts of every live session live inside this component, and
+       unmounting it to show a draft would take them down with it. -->
+  <div class="session-area">
+    <ConversationSurface
+      bind:this={conversationSurface}
+      owned={rail.owned}
+      activeOwnedId={rail.activeOwnedId}
+      activeOrigin={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.origin}
+      {registerHost}
+      onHostLayout={scheduleRefit}
+      onOpenNativeCli={openNativeCli}
+      onForkNativeCli={forkNativeCli}
+      onReturnToStructured={returnToStructured}
+    />
+    {#if draftOpen}
+      <DraftSessionSurface
+        sessionRoots={deriveThreadStartProjects(
+          rail.owned.map((session) => session.projectPath ?? session.cwd)
+        ).map((project) => project.path)}
+        presetProjectPath={draftProjectPath}
+        providerConfigs={providerConfigsForNewSession()}
+        onSend={async (request) => {
+          await startNewSession(request);
+        }}
+        onClose={() => (draftOpen = false)}
+      />
+    {/if}
+  </div>
 {/snippet}
 {#snippet editorArea()}
   <!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight.
@@ -1682,13 +1727,6 @@
     bind:this={overlays}
     onResetLayout={resetLayout}
     onRescanSessions={scanRail}
-    onStartNewSession={async (request) => {
-      await startNewSession(request);
-    }}
-    newSessionProviderConfigs={providerConfigsForNewSession}
-    newSessionRoots={deriveThreadStartProjects(
-      rail.owned.map((session) => session.projectPath ?? session.cwd)
-    ).map((project) => project.path)}
     message={[layoutError, centerTab === 'session' ? rail.error : null].filter(Boolean).join('; ') || null}
     onProblemsLocationChange={applyProblemsLocation}
     onUtilityStateChange={(id, open) => {
@@ -1724,6 +1762,15 @@
     overflow: hidden;
     background: var(--color-bg);
     color: var(--color-text);
+  }
+
+  /* The draft layer is absolute inside this, so the conversation underneath
+     keeps its own size and its terminals keep their hosts. */
+  .session-area {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
   }
 
   .sessions-region {

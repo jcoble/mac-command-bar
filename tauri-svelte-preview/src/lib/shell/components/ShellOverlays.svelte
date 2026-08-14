@@ -12,7 +12,6 @@
   import { onMount, tick } from 'svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
-  import ThreadStartHost from '$lib/shell/newSession/ThreadStartHost.svelte';
   import PalettePanel from './PalettePanel.svelte';
   import SettingsHost from './SettingsHost.svelte';
   import AssistanceHost from '$lib/shell/assistance/AssistanceHost.svelte';
@@ -22,10 +21,6 @@
   import { resourceManagerState } from '$lib/shell/resources/resourceSampleStore.svelte';
   import UsagePopover from '$lib/shell/usage/UsagePopover.svelte';
   import type { ProblemsLocation } from '$lib/settingsStore.svelte';
-  import type {
-    ThreadStartProviderConfig,
-    ThreadStartRequest
-  } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
     utilityAnchorStyle,
     type UtilityAnchor,
@@ -37,13 +32,6 @@
     onResetLayout: () => void;
     /** Look for agent sessions again. */
     onRescanSessions: () => void | Promise<void>;
-    /** Start the session described by the thread-first draft. */
-    onStartNewSession: (request: ThreadStartRequest) => void | Promise<void>;
-    /** Read configuration only when a new-session draft opens. */
-    newSessionProviderConfigs: () => ThreadStartProviderConfig[];
-    /** The folders the sessions on the rail are running in, so the project
-     * picker knows about projects nobody added by hand. */
-    newSessionRoots: string[];
     /** One line describing whatever has gone wrong, or null when all is well. */
     message: string | null;
     /** The user moved the Problems list from the settings dialog, which lives
@@ -56,23 +44,12 @@
   let {
     onResetLayout,
     onRescanSessions,
-    onStartNewSession,
-    newSessionProviderConfigs,
-    newSessionRoots,
     message,
     onProblemsLocationChange,
     onUtilityStateChange
   }: Props = $props();
 
   let settingsHost: { open: () => void; close: () => void } | null = null;
-  let newSessionHost: {
-    openNewSession: (input?: {
-      sessionRoots?: string[];
-      providerConfigs?: ThreadStartProviderConfig[];
-      projectPath?: string;
-    }) => void;
-    close(): void;
-  } | null = null;
   let resourcePopoverHost: HTMLDivElement | null = null;
   let usagePopoverHost: HTMLDivElement | null = null;
   let resourceAnchor = $state<UtilityAnchor | null>(null);
@@ -131,17 +108,6 @@
   export function openSettings(): void {
     settingsHost?.open();
   }
-
-  /** Open the thread-first new-session pane from outside. Both ways in reach the same
-   * instance: the "New session" button in the sessions column, and the palette
-   * command the page registers. */
-  export function openNewSession(projectPath?: string): void {
-    newSessionHost?.openNewSession({
-      sessionRoots: newSessionRoots,
-      providerConfigs: newSessionProviderConfigs(),
-      projectPath
-    });
-  }
 </script>
 
 <PalettePanel
@@ -150,7 +116,6 @@
   onOpenSettings={() => settingsHost?.open()}
 />
 <SettingsHost bind:this={settingsHost} {onProblemsLocationChange} />
-<ThreadStartHost bind:this={newSessionHost} onStart={onStartNewSession} />
 <!-- The session's own browser, over the whole window including the sessions
      column. It reads the active session itself and takes no props. -->
 <AssistanceHost />
