@@ -88,6 +88,7 @@
     "test:normalize-browser-url": "node --experimental-strip-types scripts/normalizeBrowserUrl.test.mjs",
     "test:browser-panel-bounds": "node --experimental-strip-types scripts/browserPanelBounds.test.ts",
     "test:browser-annotation-composite": "node --experimental-strip-types scripts/browserAnnotationComposite.test.ts",
+    "test:browser-annotation-list": "node --experimental-strip-types scripts/browserAnnotationList.test.ts",
     "test:command-registry": "node --experimental-strip-types scripts/commandRegistry.test.mjs",
     "test:next-tokens": "node --experimental-strip-types scripts/nextTokens.test.mjs",
     "test:panel-activation": "node --experimental-strip-types scripts/panelActivation.test.mjs",

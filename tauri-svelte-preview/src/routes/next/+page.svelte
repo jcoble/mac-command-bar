@@ -498,6 +498,17 @@
       await tick();
       conversationSurface?.focusComposer();
     },
+    sendToSession: async (request) => {
+      // The same two steps the composer takes: the attachments go on the
+      // session, then the send picks them up. A send that fails leaves them
+      // there, which is what the service does for the composer too.
+      if (request.attachments?.length) {
+        const existing = getConversationSession(request.ownedId)?.attachments ?? [];
+        setConversationAttachments(request.ownedId, [...existing, ...request.attachments]);
+      }
+      const owned = rail.owned.find((session) => session.ownedId === request.ownedId) ?? null;
+      await sendStructuredMessage(request.ownedId, request.text, owned?.ptySessionId);
+    },
     startSession: async (request) => {
       const provider = request.provider ?? 'codex';
       const config = providerConfigsForNewSession().find((entry) => entry.provider === provider);
