@@ -203,6 +203,8 @@ impl SessionEventCandidate {
     }
 
     /// Publishes a committed candidate to the live session in one replacement step.
+    /// The live session owns the next unused sequence and advances it only here,
+    /// after SQLite accepts the event that used the previous value.
     fn apply(self, session: &mut ManagedAgentSession) {
         session.native_session_id = self.native_session_id;
         session.native_session_mode = self.native_session_mode;
@@ -530,6 +532,10 @@ impl AgentRuntimeManager {
             .as_ref()
             .map(|session| session.generation.saturating_add(1))
             .unwrap_or(1);
+        // A replacement generation continues the same owned event journal, so
+        // it inherits the prior session's next unused sequence instead of
+        // starting again at one.
+        let next_sequence = prior.as_ref().map_or(1, |session| session.next_sequence);
         let connection = AgentConversationConnection {
             owned_id: owned_id.clone(),
             provider: request.provider,
@@ -552,7 +558,7 @@ impl AgentRuntimeManager {
                 owner: AgentExecutionOwner::Stopped,
                 state: AgentRuntimeState::Starting,
                 capabilities: empty_capabilities(request.provider),
-                next_sequence: 1,
+                next_sequence,
                 active_turn_id: None,
                 prompt_once_active: false,
                 runtime: None,
@@ -4452,6 +4458,76 @@ mod tests {
             .close(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn prompt_after_failed_session_replacement_continues_the_event_sequence() {
+        let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
+
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("first"))
+            .await
+            .expect("first prompt");
+        wait_until(|| {
+            fixture
+                .manager
+                .sessions
+                .lock()
+                .unwrap()
+                .get(&fixture.owned_id)
+                .is_some_and(|session| session.active_turn_id.is_none())
+        })
+        .await;
+        let first_last_sequence = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap()
+            .last_sequence;
+
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            session.state = AgentRuntimeState::Failed;
+            session.connection.state = ConversationConnectionState::Failed;
+        }
+        let replacement = fixture
+            .manager
+            .ensure_async(request(
+                fixture.root.to_str().unwrap(),
+                &fixture.owned_id,
+                AgentConversationProvider::Codex,
+            ))
+            .await
+            .expect("replace failed session");
+        fixture
+            .manager
+            .activate(&fixture.owned_id, replacement.generation)
+            .await
+            .expect("activate replacement");
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                replacement.generation,
+                test_prompt("second"),
+            )
+            .await
+            .expect("second prompt after replacement");
+
+        let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
+        let second_start = events
+            .iter()
+            .find(|event| event.sequence > first_last_sequence)
+            .expect("replacement prompt event");
+        assert_eq!(second_start.sequence, first_last_sequence + 1);
+
+        let _ = fixture
+            .manager
+            .close(&fixture.owned_id, replacement.generation)
+            .await;
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
