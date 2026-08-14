@@ -121,6 +121,7 @@
     "test:problems-store": "node --experimental-strip-types scripts/problemsStore.test.mjs",
     "test:language-server-status": "node --experimental-strip-types src/lib/shell/components/editor/languageServerStatus.test.ts",
     "test:editor-panel-language-server": "node --experimental-strip-types src/lib/shell/components/editor/editorPanelLanguageServer.test.ts",
+    "test:editor-startup": "node --experimental-strip-types src/lib/shell/components/editor/editorStartup.test.ts",
     "test:language-intelligence-mode": "node --experimental-strip-types src/lib/shell/editor/languageIntelligenceMode.test.ts",
     "test:editor-modes-wiring": "node --experimental-strip-types src/lib/shell/components/editor/editorModesWiring.test.ts",
     "test:resource-view-model": "node --experimental-strip-types scripts/resourceViewModel.test.mjs",

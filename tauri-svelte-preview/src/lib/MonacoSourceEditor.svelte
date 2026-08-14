@@ -28,6 +28,11 @@
 		configureMonacoWorkers,
 		monacoVscodeApiIsInitialized,
 	} from "$lib/shell/editor/monacoWorkers";
+	import {
+		editorStartFailureMessage,
+		waitForConnectedHost,
+		EDITOR_START_LIMIT_MS,
+	} from "$lib/shell/components/editor/editorStartup";
 	import { isNativeTauriRuntime } from "./tauriSource";
 	import {
 		extractSourceSemanticTokens,
@@ -344,6 +349,16 @@
 	let handledIntelligenceCommandId = -1;
 	let applyingContent = false;
 	let isReady = $state(false);
+	/**
+	 * Why the editor never appeared, in a sentence — shown INSTEAD of the
+	 * placeholder bars. Nothing but `isReady` can end those bars, so every way
+	 * of failing to become ready has to land here or the reader is left looking
+	 * at a shimmer for the rest of the session with no idea what went wrong.
+	 */
+	let startError = $state<string | null>(null);
+	/** True once starting has been given up on, so waits stop waiting. */
+	let gaveUpStarting = false;
+	let startLimitTimer = 0;
 	// One short line in the corner of the editor, for work the user started that
 	// takes long enough to look broken — today only the reference lookup behind
 	// the "N references" margin numbers. Empty means nothing is shown.
@@ -2418,11 +2433,22 @@
 		};
 	}
 
-	async function waitForConnectedMountHost(mountHost: HTMLDivElement) {
-		if (mountHost.isConnected) return true;
-
-		await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-		return !componentDestroyed && host === mountHost && mountHost.isConnected;
+	/**
+	 * Wait until the element the editor is built into is back in the document.
+	 *
+	 * The shell moves the center surfaces into their dock hosts AFTER the panels
+	 * inside them have mounted, so at launch — with a file already open — this
+	 * element is off the document for a stretch of frames. Waiting one frame and
+	 * giving up was what left the placeholder bars on screen with nothing behind
+	 * them. The time limit on starting is what ends this wait if it never can.
+	 */
+	function waitForConnectedMountHost(mountHost: HTMLDivElement) {
+		return waitForConnectedHost({
+			isConnected: () => mountHost.isConnected,
+			isWanted: () => !componentDestroyed && !gaveUpStarting && host === mountHost,
+			nextFrame: () =>
+				new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+		});
 	}
 
 	/**
@@ -2473,10 +2499,65 @@
 		reconciledNativeCsharpMode = nativeMode;
 	}
 
-	onMount(async () => {
-		const mountHost = host;
-		if (!mountHost) return;
+	/**
+	 * Build the editor, or say why it could not be built.
+	 *
+	 * Everything in here is wrapped, because the placeholder bars end in exactly
+	 * one place — `isReady` — and a throw on the way there (a chunk that will not
+	 * download, services that came up half-initialized) used to become an
+	 * unhandled rejection nobody sees. The time limit covers the other half: work
+	 * that neither finishes nor fails. Either way the reader gets a sentence and
+	 * a way to try again rather than a shimmer that never stops.
+	 */
+	async function startEditor(mountHost: HTMLDivElement): Promise<void> {
+		startError = null;
+		gaveUpStarting = false;
+		if (startLimitTimer) window.clearTimeout(startLimitTimer);
+		startLimitTimer = window.setTimeout(() => {
+			startLimitTimer = 0;
+			// "It never finished" is the weakest thing that can be said, so it is
+			// only ever said when there is nothing better: an editor that is up, or
+			// a failure that already named itself, both leave this alone.
+			if (componentDestroyed || isReady || startError) return;
+			gaveUpStarting = true;
+			startError = editorStartFailureMessage(preview.relativePath);
+		}, EDITOR_START_LIMIT_MS);
 
+		try {
+			await buildEditor(mountHost);
+		} catch (error) {
+			if (componentDestroyed) return;
+			gaveUpStarting = true;
+			startError = editorStartFailureMessage(preview.relativePath, error);
+			if (startLimitTimer) {
+				window.clearTimeout(startLimitTimer);
+				startLimitTimer = 0;
+			}
+		} finally {
+			// Only a finished editor cancels the limit. Returning without one and
+			// without a message is the case the limit exists for.
+			if (isReady && startLimitTimer) {
+				window.clearTimeout(startLimitTimer);
+				startLimitTimer = 0;
+			}
+		}
+	}
+
+	/** Throw away a half-built editor and try the whole thing again. */
+	function retryStartingEditor(): void {
+		const mountHost = host;
+		if (!mountHost || componentDestroyed) return;
+		for (const disposable of editorActionDisposables) disposable.dispose();
+		editorActionDisposables = [];
+		editor?.dispose();
+		editor = null;
+		// Provider ownership is registered during the build, so it has to be
+		// decided again rather than remembered from the attempt that failed.
+		reconciledNativeCsharpMode = null;
+		void startEditor(mountHost);
+	}
+
+	async function buildEditor(mountHost: HTMLDivElement) {
 		window.addEventListener("error", handleMonacoCancellationWindowError);
 		window.addEventListener("unhandledrejection", handleMonacoCancellationRejection);
 		installWorker();
@@ -2748,9 +2829,18 @@
 			requestDefinitionAtPosition(event.target.position);
 		});
 		isReady = true;
+		if (startLimitTimer) {
+			window.clearTimeout(startLimitTimer);
+			startLimitTimer = 0;
+		}
 		applyAppearance();
 		applyPreview();
 		runIntelligenceCommand();
+	}
+
+	onMount(() => {
+		const mountHost = host;
+		if (mountHost) void startEditor(mountHost);
 	});
 
 	$effect(() => {
@@ -2782,6 +2872,10 @@
 
 	onDestroy(() => {
 		componentDestroyed = true;
+		if (startLimitTimer) {
+			window.clearTimeout(startLimitTimer);
+			startLimitTimer = 0;
+		}
 		// A torn-down editor must stop being repainted, or the theme service keeps
 		// a dead Monaco in its set for the life of the page.
 		disposeThemeApplier();
@@ -2866,7 +2960,14 @@
 >
 	<div bind:this={host} class="monaco-host"></div>
 
-	{#if loading || !isReady}
+	<!-- The bars mean "any moment now". They are shown only while that is still
+	     true: once starting has been given up on, the reason takes their place. -->
+	{#if startError}
+		<div class="start-error" role="alert">
+			<p>{startError}</p>
+			<button type="button" class="start-retry" onclick={retryStartingEditor}>Try again</button>
+		</div>
+	{:else if loading || !isReady}
 		<div class="skeleton-code" aria-label="Loading source preview">
 			{#each Array.from({ length: 13 }) as _, index}
 				<span style={`--line-width: ${index % 4 === 0 ? 48 : index % 3 === 0 ? 66 : 86}%`}></span>
@@ -2921,6 +3022,43 @@
 		text-overflow: ellipsis;
 		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 		pointer-events: none;
+	}
+
+	.start-error {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 10px;
+		padding: 0 24px;
+		background: var(--source-editor-background, #17191e);
+		color: #f2999b;
+		font-size: 13px;
+		line-height: 1.5;
+		text-align: center;
+	}
+
+	.start-error p {
+		margin: 0;
+		max-width: 52ch;
+	}
+
+	.start-retry {
+		border: 1px solid #343841;
+		border-radius: 5px;
+		background: #23262d;
+		color: #cfd3dc;
+		cursor: pointer;
+		font-family: ui-monospace, Menlo, monospace;
+		font-size: 12px;
+		padding: 3px 10px;
+	}
+
+	.start-retry:hover {
+		background: #2b2f37;
+		color: #ffffff;
 	}
 
 	.skeleton-code {
