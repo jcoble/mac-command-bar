@@ -7,12 +7,8 @@ import {
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
 
 const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
-const thread = readFileSync(
-  new URL('../src/lib/shell/newSession/NewSessionThread.svelte', import.meta.url),
-  'utf8'
-);
-const host = readFileSync(
-  new URL('../src/lib/shell/newSession/ThreadStartHost.svelte', import.meta.url),
+const surface = readFileSync(
+  new URL('../src/lib/shell/newSession/DraftSessionSurface.svelte', import.meta.url),
   'utf8'
 );
 const backend = readFileSync(
@@ -21,14 +17,6 @@ const backend = readFileSync(
 );
 const nativeSource = readFileSync(
   new URL('../src-tauri/src/main.rs', import.meta.url),
-  'utf8'
-);
-const flip = readFileSync(
-  new URL('../src/lib/shell/newSession/composerFlip.ts', import.meta.url),
-  'utf8'
-);
-const overlays = readFileSync(
-  new URL('../src/lib/shell/components/ShellOverlays.svelte', import.meta.url),
   'utf8'
 );
 const conversationService = readFileSync(
@@ -49,50 +37,26 @@ const startNewSession = functionSource(
   'async function onStartStack('
 );
 
-assert.match(thread, /What should we build in/);
-assert.match(thread, /class="thread-start-project-trigger"/);
-assert.match(thread, /data-testid="new-session-thread-input"/);
-assert.match(thread, /data-testid="new-session-thread-model"/);
-assert.match(thread, /data-testid="new-session-thread-effort"/);
-assert.match(thread, /data-testid="new-session-thread-access"/);
-assert.match(thread, /data-testid="new-session-thread-project"/);
-assert.match(thread, /data-testid="new-session-thread-branch"/);
-assert.match(thread, /data-testid="new-session-thread-new-worktree"/);
-assert.match(thread, /data-testid="new-session-thread-new-project"/);
-assert.match(thread, /data-testid="new-session-thread-ref-search"/);
-assert.match(thread, /Showing \{filteredRefs\.visible\.length\} of \{filteredRefs\.total\} refs/);
-assert.match(thread, /needs a worktree/);
-assert.match(thread, /disabled=\{!canSelectThreadStartGitRef\(ref, canCreateWorktree\)\}/);
+// The draft surface is a session, not a form: the ordinary composer, with the
+// pickers riding on it.
+assert.match(surface, /data-testid="draft-session-surface"/);
+assert.match(surface, /<ConversationComposer/);
+assert.match(surface, /data-testid="draft-session-project"/);
+assert.match(surface, /data-testid="draft-session-branch"/);
+assert.match(surface, /data-testid="draft-session-provider"/);
+assert.match(surface, /data-testid="draft-session-new-project"/);
+assert.match(surface, /data-testid="draft-session-ref-search"/);
+assert.match(surface, /Showing \{filteredRefs\.visible\.length\} of \{filteredRefs\.total\} branches/);
+assert.match(surface, /disabled=\{!canSelectThreadStartGitRef\(ref, canCreateWorktree\)\}/);
+assert.match(surface, /groupProviderModels\(providerConfigs\)/);
+assert.match(surface, /Nothing is created until you send\./);
 // A project with no repository behind it answers with nothing, so the reply is
 // read as a list only when it really is one — see newSessionGitRefs.test.ts.
 assert.match(backend, /invoke<ProjectGitRef\[] \| null>\('list_project_git_refs'/);
 assert.match(backend, /Array\.isArray\(refs\) \? refs : \[]/);
 assert.match(nativeSource, /async fn list_project_git_refs\(/);
 assert.match(nativeSource, /list_project_git_refs,/);
-assert.match(thread, /groupProviderModels\(providerConfigs\)/);
-assert.match(thread, /onSelect=\{\(\) => chooseModel\(group\.provider, model\.id\)\}/);
-assert.match(thread, /disabled=\{!model\.available\}/);
-assert.match(thread, /class="thread-start-menu-provider">\{group\.label\}/);
-assert.match(thread, /await dockComposer\(\);[\s\S]*?await onSend\(request\)/);
-assert.doesNotMatch(thread, /The session could not be started\. Check the rail for details\./);
-assert.match(thread, /data-composer-state=\{docked \? 'docked' : 'hero'\}/);
-assert.match(thread, /Nothing is created while this pane is a draft/);
-assert.match(flip, /node\.animate\(/);
-assert.match(flip, /duration: FLIP_DURATION_MS, easing: FLIP_EASING/);
-assert.match(flip, /prefers-reduced-motion: reduce/);
-assert.match(flip, /Math\.abs\(deltaX\) < 0\.5 && Math\.abs\(deltaY\) < 0\.5/);
 
-assert.match(host, /import\('\.\/NewSessionThread\.svelte'\)/);
-assert.match(host, /sessionProviderConfigs = \(input\.providerConfigs \?\? \[\]\)\.map/);
-assert.match(host, /presetProjectPath = input\.projectPath\?\.trim\(\) \|\| null/);
-assert.match(host, /\{presetProjectPath\}/);
-assert.match(host, /providerConfigs=\{sessionProviderConfigs\}/);
-assert.match(host, /onSend={submit}/);
-assert.match(overlays, /<ThreadStartHost/);
-assert.match(overlays, /providerConfigs: newSessionProviderConfigs\(\)/);
-assert.match(overlays, /projectPath/);
-assert.doesNotMatch(overlays, /<ThreadStartHost[^>]*providerConfigs/);
-assert.doesNotMatch(overlays, /NewSessionHost|NewSessionDialog/);
 assert.match(page, /function providerConfigsForNewSession\(\): ThreadStartProviderConfig\[\]/);
 assert.match(page, /function openNewSessionForProject\(projectPath\?: string\): void/);
 assert.match(page, /mostRecentProjectPath\(\)/);

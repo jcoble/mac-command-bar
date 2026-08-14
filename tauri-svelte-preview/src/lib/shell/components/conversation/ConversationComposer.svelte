@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import Paperclip from '@lucide/svelte/icons/paperclip';
   import Square from '@lucide/svelte/icons/square';
@@ -31,6 +32,10 @@
     pendingApprovalCount?: number;
     pendingInputs?: readonly AgentUserInputRequest[];
     respondingRequestIds?: readonly string[];
+    /** Extra controls for the left of the footer, ahead of Attach. The draft
+     * session puts its project and branch pickers here, so a session being set
+     * up reads as the same composer as one already running. */
+    leadingControls?: Snippet;
     onDraftChange?(value: string): void;
     onDraftBlur?(): void | Promise<void>;
     onSend?(): void | Promise<void>;
@@ -62,6 +67,7 @@
     pendingApprovalCount = 1,
     pendingInputs = [],
     respondingRequestIds = [],
+    leadingControls,
     onDraftChange,
     onDraftBlur,
     onSend,
@@ -277,6 +283,7 @@
       {#if !composerLocked}
         <div class="composer-footer" data-testid="conversation-composer-footer">
           <div class="footer-left">
+            {#if leadingControls}<div class="leading-controls" data-testid="composer-leading-controls">{@render leadingControls()}</div>{/if}
             <input bind:this={fileInput} class="file-input" type="file" accept="image/*" multiple onchange={chooseFiles} />
             <button class="attach-control" type="button" aria-label="Attach images" onclick={() => fileInput?.click()}><Paperclip size={15} /><span>Attach</span></button>
             <div class="wide-controls"><ComposerConfigMenu {provider} state={configState} pending={pendingConfig} error={configError} onChange={onConfigChange} /></div>
@@ -318,6 +325,7 @@
   .attach-control { display: inline-flex; align-items: center; gap: 5px; flex: none; min-height: 28px; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--color-text-2); font: 13px/1.2 inherit; cursor: pointer; }
   .attach-control:hover { background: var(--color-hover); color: var(--color-text); }
   .attach-control:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 1px; }
+  .leading-controls { display: flex; min-width: 0; flex: none; align-items: center; gap: 2px; }
   .wide-controls { min-width: 0; overflow: hidden; }
   .compact-controls { display: none; }
   .send { display: inline-grid; place-items: center; flex: none; width: 32px; height: 32px; border: 0; border-radius: 999px; background: var(--color-accent); color: var(--color-on-accent); cursor: pointer; box-shadow: var(--shadow-sm); }
