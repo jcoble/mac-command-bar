@@ -216,6 +216,37 @@ pub async fn set_agent_conversation_config(
     manager.set_conversation_config(request).await
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAgentConversationConfigOptionRequest {
+    owned_id: String,
+    generation: u64,
+    option_id: String,
+    value: providers::AgentConfigValue,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAgentConversationConfigOptionResponse {
+    config_options: Vec<protocol::AgentConfigOption>,
+}
+
+#[tauri::command]
+pub async fn set_agent_conversation_config_option(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    request: SetAgentConversationConfigOptionRequest,
+) -> Result<SetAgentConversationConfigOptionResponse, String> {
+    manager
+        .set_config(
+            &request.owned_id,
+            request.generation,
+            &request.option_id,
+            request.value,
+        )
+        .await
+        .map(|config_options| SetAgentConversationConfigOptionResponse { config_options })
+}
+
 #[tauri::command]
 pub fn read_agent_conversation_config(
     manager: tauri::State<'_, AgentRuntimeManager>,
@@ -306,6 +337,14 @@ pub async fn save_agent_conversation_attachment(
     bytes: Vec<u8>,
 ) -> Result<attachments::SavedConversationAttachment, String> {
     attachments::save(&app, &owned_id, &mime_type, &bytes)
+}
+
+#[tauri::command]
+pub fn read_agent_conversation_attachments(
+    app: tauri::AppHandle,
+    owned_id: String,
+) -> Result<Vec<attachments::SavedConversationAttachment>, String> {
+    attachments::read(&app, &owned_id)
 }
 
 #[tauri::command]

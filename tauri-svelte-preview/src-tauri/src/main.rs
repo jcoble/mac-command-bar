@@ -5801,6 +5801,7 @@ fn main() {
             agent_conversation::respond_agent_conversation_input,
             agent_conversation::stop_agent_conversation_turn,
             agent_conversation::set_agent_conversation_config,
+            agent_conversation::set_agent_conversation_config_option,
             agent_conversation::read_agent_conversation_config,
             agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
@@ -5812,6 +5813,7 @@ fn main() {
             agent_conversation::start_agent_conversation_terminal_projection,
             agent_conversation::stop_agent_conversation_terminal_projection,
             agent_conversation::save_agent_conversation_attachment,
+            agent_conversation::read_agent_conversation_attachments,
             agent_conversation::delete_agent_conversation_attachment,
             agent_conversation::agent_conversation_add_session_annotation,
             agent_conversation::agent_conversation_list_session_annotations,
@@ -8705,7 +8707,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_conversation_response_command_names_match_frontend_invokes_and_registration() {
+    fn agent_conversation_commands_match_frontend_invokes_and_registration() {
         let conversation_frontend = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../src/lib/shell/conversation/conversationService.ts"
@@ -8715,20 +8717,68 @@ mod tests {
             "/../src/lib/tauriSource.ts"
         ));
         let native = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
-        for command in [
-            "agent_conversation_set_session_draft",
-            "agent_conversation_get_session_draft",
-            "agent_conversation_clear_session_draft",
-            "respond_agent_conversation_approval",
-            "respond_agent_conversation_permission",
-            "respond_agent_conversation_input",
-        ] {
+        let handler = native
+            .split_once(".invoke_handler(tauri::generate_handler![")
+            .expect("main must register a Tauri invoke handler")
+            .1
+            .split_once("])")
+            .expect("Tauri invoke handler must have a closing delimiter")
+            .0;
+        let mut commands = Vec::new();
+        let mut remaining = conversation_frontend;
+        while let Some(index) = remaining.find("invoke") {
+            remaining = &remaining[index + "invoke".len()..];
+            let arguments = if let Some(arguments) = remaining.strip_prefix('(') {
+                arguments
+            } else if let Some(generic) = remaining.strip_prefix('<') {
+                let mut depth = 1;
+                let mut generic_end = None;
+                for (index, ch) in generic.char_indices() {
+                    match ch {
+                        '<' => depth += 1,
+                        '>' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                generic_end = Some(index + ch.len_utf8());
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(generic_end) = generic_end else {
+                    continue;
+                };
+                let Some(arguments) = generic[generic_end..].trim_start().strip_prefix('(') else {
+                    continue;
+                };
+                arguments
+            } else {
+                continue;
+            };
+            let arguments = arguments.trim_start();
+            let Some(quote) = arguments
+                .chars()
+                .next()
+                .filter(|ch| matches!(ch, '\'' | '"'))
+            else {
+                continue;
+            };
+            let command = arguments[quote.len_utf8()..]
+                .split_once(quote)
+                .map(|(command, _)| command)
+                .expect("literal invoke command must have a closing quote");
+            commands.push(command);
+        }
+        commands.sort_unstable();
+        commands.dedup();
+        assert!(
+            !commands.is_empty(),
+            "frontend must invoke conversation commands"
+        );
+        for command in commands {
             assert!(
-                conversation_frontend.contains(&format!("invoke('{command}'")),
-                "frontend invoke must pin {command}"
-            );
-            assert!(
-                native.contains(&format!("agent_conversation::{command}")),
+                handler.contains(&format!("::{command},")),
                 "generate_handler must register {command}"
             );
         }
