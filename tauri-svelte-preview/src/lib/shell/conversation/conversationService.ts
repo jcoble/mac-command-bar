@@ -583,6 +583,12 @@ export async function sendStructuredMessage(
         nativeSessionId: state.nativeSessionId ?? owned.nativeSessionId
       });
     }
+    // Recorded before the request because the backend records and dispatches
+    // its own copy of the user message while the request is still running.
+    // Recorded afterwards, the screenshots would arrive too late to be claimed.
+    // The preview URLs stay alive: the transcript now shows what went out, and
+    // no provider echoes the image back for it to render from.
+    recordSentConversationAttachments(ownedId, [...state.attachments]);
     await invoke('send_agent_conversation_message', {
       request: {
         ownedId,
@@ -593,12 +599,12 @@ export async function sendStructuredMessage(
         approvalPolicy: startConfig?.approvalPolicy ?? null
       }
     });
-    // The preview URLs stay alive: the transcript now shows what went out, and
-    // no provider echoes the image back for it to render from.
-    recordSentConversationAttachments(ownedId, [...state.attachments]);
     setConversationAttachments(ownedId, []);
     if (!liveConversationEvents) await resyncConversation(ownedId);
   } catch (error) {
+    // A send that never went out leaves its screenshots in the composer, so
+    // nothing is left waiting to be hung on a later message.
+    recordSentConversationAttachments(ownedId, []);
     setConversationSending(ownedId, false);
     throw error;
   }

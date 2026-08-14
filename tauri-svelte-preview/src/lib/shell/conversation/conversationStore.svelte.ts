@@ -835,14 +835,15 @@ export function setConversationAttachments(ownedId: string, attachments: Convers
   }
 }
 
-/** Hold the screenshots a send just delivered until the user message they
- * produced arrives, so the transcript can show them beside the typed text. */
+/** Hold the screenshots a send is delivering until the user message they
+ * produce arrives, so the transcript can show them beside the typed text.
+ * An empty list clears the hold when a send fails. */
 export function recordSentConversationAttachments(
   ownedId: string,
   attachments: ConversationAttachment[]
 ): void {
   const current = conversationSessions[ownedId];
-  if (current && attachments.length) current.unclaimedSentAttachments = attachments;
+  if (current) current.unclaimedSentAttachments = attachments;
 }
 
 export function setConversationCapabilities(ownedId: string, capabilities: AgentCapabilities): void {

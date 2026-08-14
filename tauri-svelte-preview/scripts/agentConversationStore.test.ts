@@ -462,6 +462,26 @@ assert.equal(
   undefined,
   'a later message without attachments claims nothing'
 );
+// A send that fails releases its hold, so the screenshots left in the composer
+// cannot reappear on some unrelated message later in the transcript.
+store.recordSentConversationAttachments('owned-sent', [{
+  id: 'image-failed', name: 'failed.png', mimeType: 'image/png',
+  path: '/managed/failed.png', previewUrl: 'blob:failed'
+}]);
+store.recordSentConversationAttachments('owned-sent', []);
+store.applyAgentConversationEvent({
+  ownedId: 'owned-sent',
+  provider: 'claude',
+  generation: 1,
+  sequence: 3,
+  timestampMs: 520,
+  payload: { kind: 'userMessage', itemId: 'user-turn-after-failure', text: 'Retry', completed: true }
+});
+assert.equal(
+  store.getConversationSession('owned-sent').sentAttachments['user-turn-after-failure'],
+  undefined,
+  'a released hold cannot be claimed by a later message'
+);
 
 store.removeConversationSession('owned-a');
 assert.equal(store.getConversationSession('owned-a'), null);

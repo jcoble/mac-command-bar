@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -377,6 +377,7 @@ tests.push([
     assert.equal(first.agentInfo.version, "9.8.7");
     assert.deepEqual(second, first);
     assert.equal(first.agentCapabilities.plans, true);
+    assert.equal(first.agentCapabilities.promptCapabilities.image, true);
     const session = await peer.newSession();
     const closed = await peer.close(session.sessionId);
     assert.equal(closed.exited.code, 0, peer.stderr);
@@ -808,6 +809,51 @@ tests.push([
         {},
       );
       assert.equal((await prompt).stopReason, "end_turn");
+    });
+  },
+]);
+
+tests.push([
+  "an image block reaches the app-server as a file that is deleted when the turn settles",
+  async () => {
+    await withSession("image", async (peer, session) => {
+      const pixel = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+      const result = await peer.request("session/prompt", {
+        sessionId: session.sessionId,
+        prompt: [
+          { type: "text", text: "look" },
+          { type: "image", mimeType: "image/png", data: pixel.toString("base64") },
+        ],
+      });
+      assert.equal(result.stopReason, "end_turn");
+      const seen = JSON.parse(
+        updatesOf(peer, "agent_message_chunk").map((update) => update.content.text).join(""),
+      );
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].byteLength, pixel.length, "the app-server could read the written image");
+      assert.equal(path.extname(seen[0].path), ".png");
+      assert.equal(existsSync(seen[0].path), false, "the image file is deleted when the turn settles");
+    });
+  },
+]);
+
+tests.push([
+  "an image-only prompt is accepted and a prompt with no usable block is refused",
+  async () => {
+    await withSession("image", async (peer, session) => {
+      const result = await peer.request("session/prompt", {
+        sessionId: session.sessionId,
+        prompt: [{ type: "image", mimeType: "image/png", data: Buffer.from("shot").toString("base64") }],
+      });
+      assert.equal(result.stopReason, "end_turn");
+      assert.equal(JSON.parse(updatesOf(peer, "agent_message_chunk")[0].content.text).length, 1);
+      await assert.rejects(
+        peer.request("session/prompt", {
+          sessionId: session.sessionId,
+          prompt: [{ type: "resource_link", uri: "file:///nope" }],
+        }),
+        (error) => error.code === -32602,
+      );
     });
   },
 ]);

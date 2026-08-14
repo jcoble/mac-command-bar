@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { statSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
 
@@ -32,6 +33,7 @@ let nextThread = 1;
 let nextTurn = 1;
 let initializeCount = 0;
 let activeTurn;
+let lastInput = [];
 const approvalRequests = new Map();
 const background = new Set();
 
@@ -336,6 +338,23 @@ async function startScenario(threadId, turnId, text) {
     await richScenario(threadId, turnId);
     return;
   }
+  if (scenario === "image") {
+    await notification("item/agentMessage/delta", {
+      threadId,
+      turnId,
+      itemId: "item-image",
+      delta: JSON.stringify(
+        lastInput
+          .filter((item) => item?.type === "localImage")
+          .map((item) => ({
+            path: item.path,
+            byteLength: statSync(item.path, { throwIfNoEntry: false })?.size ?? -1,
+          })),
+      ),
+    });
+    await complete(threadId, turnId);
+    return;
+  }
 
   const approvalMethod = approvalMethodFor(text);
   if (approvalMethod) {
@@ -444,6 +463,7 @@ async function handleMessage(message) {
     case "turn/start": {
       const turnId = `mock-turn-${nextTurn++}`;
       activeTurn = { threadId: message.params.threadId, turnId };
+      lastInput = message.params?.input ?? [];
       await response(message.id, {
         turn: { id: turnId, status: "inProgress", error: null, items: [] },
       });

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 
@@ -239,12 +242,52 @@ function validateConfigChoice(value, available, label) {
   }
 }
 
-function promptInput(blocks) {
+// The app-server takes images as files on disk, while ACP carries them as
+// base64. Each prompt writes its images into a directory this process owns and
+// deletes them again when the turn settles.
+const IMAGE_EXTENSIONS = Object.freeze({
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff",
+});
+let imageRoot;
+let nextImageName = 1;
+
+function imageDirectory() {
+  if (!imageRoot) imageRoot = mkdtempSync(path.join(tmpdir(), "codex-acp-bridge-images-"));
+  return imageRoot;
+}
+
+function writePromptImage(block) {
+  if (typeof block.data !== "string" || block.data.length === 0) {
+    throw new RpcFailure(INVALID_PARAMS, "image block has no data");
+  }
+  const extension = IMAGE_EXTENSIONS[block.mimeType] ?? ".png";
+  const file = path.join(imageDirectory(), `prompt-${nextImageName++}${extension}`);
+  writeFileSync(file, Buffer.from(block.data, "base64"));
+  return file;
+}
+
+function removePromptImages(imageFiles) {
+  for (const file of imageFiles.splice(0)) rmSync(file, { force: true });
+}
+
+function promptInput(blocks, imageFiles) {
   if (!Array.isArray(blocks)) throw new RpcFailure(INVALID_PARAMS, "prompt must be an array");
-  const input = blocks
-    .filter((block) => block?.type === "text" && typeof block.text === "string")
-    .map((block) => ({ type: "text", text: block.text, text_elements: [] }));
-  if (input.length === 0) throw new RpcFailure(INVALID_PARAMS, "prompt must contain text");
+  const input = [];
+  for (const block of blocks) {
+    if (block?.type === "text" && typeof block.text === "string") {
+      input.push({ type: "text", text: block.text, text_elements: [] });
+    } else if (block?.type === "image") {
+      const file = writePromptImage(block);
+      imageFiles.push(file);
+      input.push({ type: "localImage", path: file });
+    }
+  }
+  if (input.length === 0) throw new RpcFailure(INVALID_PARAMS, "prompt must contain text or an image");
   return input;
 }
 
@@ -271,6 +314,7 @@ function settlePrompt(prompt, outcome) {
   if (prompt.settled) return false;
   prompt.settled = true;
   clearPromptTurnState(prompt);
+  removePromptImages(prompt.imageFiles);
   if (activePrompts.get(prompt.threadId) === prompt) activePrompts.delete(prompt.threadId);
   if (outcome.error) prompt.reject(outcome.error);
   else prompt.resolve(outcome.result);
@@ -1015,6 +1059,7 @@ async function startPrompt(params) {
     settled: false,
     itemStates: new Map(),
     diffTool: undefined,
+    imageFiles: [],
     resolve: resolvePrompt,
     reject: rejectPrompt,
   };
@@ -1023,7 +1068,7 @@ async function startPrompt(params) {
   try {
     const started = await appRequest("turn/start", {
       threadId,
-      input: promptInput(params?.prompt),
+      input: promptInput(params?.prompt, prompt.imageFiles),
       ...(session.model ? { model: session.model } : {}),
       ...(session.reasoningEffort ? { effort: session.reasoningEffort } : {}),
       ...(session.approvalPolicy ? { approvalPolicy: session.approvalPolicy } : {}),
@@ -1078,10 +1123,12 @@ async function steerSession(params) {
   const threadId = sessionIdFrom(params);
   const prompt = activePrompts.get(threadId);
   if (!prompt?.turnId || prompt.settled) return {};
+  // Steering images belong to the turn already running, so they are deleted
+  // with the rest of that turn's images when it settles.
   await appRequest("turn/steer", {
     threadId,
     expectedTurnId: prompt.turnId,
-    input: promptInput(params?.prompt),
+    input: promptInput(params?.prompt, prompt.imageFiles),
   });
   return {};
 }
@@ -1098,7 +1145,7 @@ async function dispatchAcpMethod(method, params) {
         agentInfo: { name: "codex-app-server-bridge", version: appServerVersion(initialized) },
         agentCapabilities: {
           loadSession: true,
-          promptCapabilities: { image: false },
+          promptCapabilities: { image: true },
           sessionCapabilities: {
             list: false,
             resume: true,

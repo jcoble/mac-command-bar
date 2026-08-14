@@ -108,5 +108,22 @@ assert.match(
   /nativeSessionMode,[\s\S]*?reasoningEffort: startConfig\?\.reasoningEffort \?\? state\.agentConfig\.reasoningEffort/,
   'revival must retain the session-start effort when it creates a new adapter process'
 );
+// The backend records and dispatches its own user message copy while the send
+// request is still running, so screenshots recorded after it are never claimed.
+assert.match(
+  serviceSource,
+  /recordSentConversationAttachments\(ownedId, \[\.\.\.state\.attachments\]\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
+  'sent screenshots are recorded before the send request, not after it'
+);
+assert.doesNotMatch(
+  serviceSource,
+  /await invoke\('send_agent_conversation_message'[\s\S]*?recordSentConversationAttachments\(ownedId, \[\.\.\.state\.attachments\]\)/,
+  'no later recording can race the user message the send produces'
+);
+assert.match(
+  serviceSource,
+  /catch \(error\) \{\s*(\/\/[^\n]*\n\s*)*recordSentConversationAttachments\(ownedId, \[\]\);/,
+  'a failed send releases the screenshots it was holding'
+);
 
 console.log('conversationSendRecovery.test.ts passed');
