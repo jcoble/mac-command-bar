@@ -441,6 +441,80 @@ store.applyAgentConversationSnapshot({
 assert.equal(store.getConversationSession('owned-a').generation, 3);
 assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnecting');
 
+// A same-generation snapshot cannot erase a newer live event.
+{
+  const ownedId = 'owned-stale-snapshot';
+  const staleSnapshot = {
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 40,
+    events: [{
+      ownedId, provider: 'codex', generation: 1, sequence: 40, timestampMs: 400,
+      payload: { kind: 'assistantMessage', itemId: 'snapshot-40', text: 'Older answer', completed: true }
+    }]
+  };
+  store.applyAgentConversationSnapshot(staleSnapshot);
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 41, timestampMs: 410,
+    payload: { kind: 'assistantMessage', itemId: 'live-41', text: 'Newest live answer', completed: true }
+  });
+  store.applyAgentConversationSnapshot(staleSnapshot);
+  const current = store.getConversationSession(ownedId);
+  assert.equal(current.lastSequence, 41);
+  assert.equal(current.timeline.some((item) => item.itemId === 'live-41'), true);
+}
+
+// A stale connection response cannot move an existing session backwards.
+{
+  const ownedId = 'owned-stale-connection';
+  store.setConversationConnection({ ownedId, provider: 'codex', generation: 2, state: 'connected' });
+  store.setConversationConnection({ ownedId, provider: 'codex', generation: 1, state: 'connecting' });
+  const current = store.getConversationSession(ownedId);
+  assert.equal(current.generation, 2);
+  assert.equal(current.connectionState, 'connected');
+}
+
+// An event from another provider cannot replace the owned session workspace.
+{
+  const ownedId = 'owned-wrong-provider';
+  store.ensureConversationSession(ownedId, 'codex');
+  store.setConversationDraft(ownedId, 'Keep this draft');
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 500,
+    payload: { kind: 'assistantMessage', itemId: 'wrong-provider', text: 'Wrong provider', completed: true }
+  });
+  const current = store.getConversationSession(ownedId);
+  assert.equal(current.provider, 'codex');
+  assert.equal(current.draft, 'Keep this draft');
+  assert.equal(current.timeline.length, 0);
+}
+
+// Capabilities belong only to the generation that requested them.
+{
+  const ownedId = 'owned-capability-generation';
+  const capabilities = {
+    revision: 1,
+    provider: 'codex',
+    implementation: { name: 'fixture', version: '1' },
+    session: { list: true, load: true, resume: true, close: true, steering: true },
+    prompt: { text: true, image: false, embeddedContext: true, resourceLinks: true },
+    interaction: {
+      permissions: true, structuredUserInput: true, toolTerminals: true,
+      plans: true, tasks: true, subagents: true
+    },
+    configOptions: [],
+    commands: []
+  };
+  store.setConversationConnection({ ownedId, provider: 'codex', generation: 1, state: 'connected' });
+  store.setConversationCapabilities(ownedId, 1, capabilities);
+  assert.equal(store.getConversationSession(ownedId).capabilitiesGeneration, 1);
+  store.setConversationConnection({ ownedId, provider: 'codex', generation: 2, state: 'connected' });
+  assert.equal(store.getConversationSession(ownedId).capabilities, null);
+  assert.equal(store.getConversationSession(ownedId).capabilitiesGeneration, 0);
+  store.setConversationCapabilities(ownedId, 1, capabilities);
+  assert.equal(store.getConversationSession(ownedId).capabilities, null);
+  assert.equal(store.getConversationSession(ownedId).capabilitiesGeneration, 0);
+}
+
 // Canonical turn events drive the same active-turn authority as legacy events.
 store.applyAgentConversationEvent({
   type: 'session.started', ownedId: 'owned-canonical', provider: 'codex',
