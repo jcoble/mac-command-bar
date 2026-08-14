@@ -1596,7 +1596,19 @@
      instead of a column. -->
 {#snippet diffArea()}<GitDiffView />{/snippet}
 
-<main class="next-shell">
+<!-- The webview's own right-click menu runs a native tracking loop that stalls
+     the whole window for seconds, which reads as a freeze. Surfaces with a menu
+     of their own already prevent the default; this catches everywhere else.
+     Text fields keep the native menu — that one is the editing menu people
+     expect, and it does not stall. -->
+<main
+  class="next-shell"
+  oncontextmenu={(event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+    event.preventDefault();
+  }}
+>
   <!-- The strip along the top. It holds the project's language-server
        controls, and nothing else: everything that used to be up here has a
        panel of its own now. They are about the project rather than the open
