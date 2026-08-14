@@ -44,9 +44,7 @@ function retune(): void {
   if (wanted === interval) return;
   if (timer !== null) clearInterval(timer);
   interval = wanted;
-  // TIMER-TEST: periodic refresh disabled while chasing UI freezes.
-  // timer = wanted === null ? null : setInterval(tick, wanted);
-  timer = null;
+  timer = wanted === null ? null : setInterval(tick, wanted);
 }
 
 /**

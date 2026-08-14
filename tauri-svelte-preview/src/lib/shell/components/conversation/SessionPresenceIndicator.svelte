@@ -59,11 +59,10 @@
   $effect(() => {
     if (baseline.state !== 'working') return;
     nowMs = Date.now();
-    // TIMER-TEST: periodic refresh disabled while chasing UI freezes.
-    // const timer = window.setInterval(() => {
-    //   nowMs = Date.now();
-    // }, 1_000);
-    // return () => window.clearInterval(timer);
+    const timer = window.setInterval(() => {
+      nowMs = Date.now();
+    }, 1_000);
+    return () => window.clearInterval(timer);
   });
   const presence = $derived(
     baseline.state === 'working'
