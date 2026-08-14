@@ -97,6 +97,7 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   telemetry: Record<string, AgentConfigValue>;
   /** The provider's authoritative capability snapshot for this owned session. */
   capabilities: AgentCapabilities | null;
+  capabilitiesGeneration: number;
   capabilityError: string | null;
   /** Typed ACP items are kept beside the legacy reducer projection. */
   agentItems: AgentItem[];
@@ -153,6 +154,7 @@ function freshState(
     agentConfigError: null,
     telemetry: {},
     capabilities: null,
+    capabilitiesGeneration: 0,
     capabilityError: null,
     agentItems: [],
     planSteps: [],
@@ -182,6 +184,8 @@ export function ensureConversationSession(
 }
 
 export function applyAgentConversationEvent(event: AgentConversationEvent | AgentEvent): boolean {
+  const existing = conversationSessions[event.ownedId];
+  if (existing && event.provider !== existing.provider) return false;
   const current = ensureConversationSession(event.ownedId, event.provider);
   appendRecentEvent(current, event);
   if ('type' in event) {
@@ -551,6 +555,10 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   for (const event of events) {
     rebuilt = applyConversationEvent(rebuilt, event);
   }
+  if (
+    snapshot.connection.generation === current.generation
+    && rebuilt.lastSequence < current.lastSequence
+  ) return;
   // Build the complete snapshot off the reactive graph. Publishing this object
   // before replay made every event traverse Svelte's deep proxy machinery and
   // invalidated subscribers 2,000 times during a read-only load.
@@ -585,7 +593,10 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     unclaimedSentAttachments: current.unclaimedSentAttachments,
     config: current.config,
     telemetry: current.telemetry,
-    capabilities: current.capabilities,
+    capabilities: current.capabilitiesGeneration === generation ? current.capabilities : null,
+    capabilitiesGeneration: current.capabilitiesGeneration === generation
+      ? current.capabilitiesGeneration
+      : 0,
     capabilityError: current.capabilityError,
     agentItems: [],
     planSteps: [],
@@ -678,6 +689,7 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
   const capabilities = isRecord(payload.capabilities) ? payload.capabilities as unknown as AgentCapabilities : null;
   if (capabilities && Array.isArray(capabilities.configOptions) && Array.isArray(capabilities.commands)) {
     current.capabilities = capabilities;
+    current.capabilitiesGeneration = current.generation;
     current.availableCommands = capabilities.commands;
     current.capabilityError = null;
   }
@@ -860,10 +872,19 @@ export function recordSentConversationAttachments(
   if (current) current.unclaimedSentAttachments = attachments;
 }
 
-export function setConversationCapabilities(ownedId: string, capabilities: AgentCapabilities): void {
+export function setConversationCapabilities(
+  ownedId: string,
+  generation: number,
+  capabilities: AgentCapabilities
+): void {
   const current = conversationSessions[ownedId];
-  if (!current || capabilities.provider !== current.provider) return;
+  if (
+    !current
+    || generation !== current.generation
+    || capabilities.provider !== current.provider
+  ) return;
   current.capabilities = capabilities;
+  current.capabilitiesGeneration = generation;
   current.availableCommands = capabilities.commands;
   current.capabilityError = null;
 }
@@ -979,7 +1000,10 @@ export function confirmConversationConfigChange(
   current.config[optionId] = value;
   delete current.pendingConfig[optionId];
   delete current.configErrors[optionId];
-  if (capabilities && capabilities.provider === current.provider) current.capabilities = capabilities;
+  if (capabilities && capabilities.provider === current.provider) {
+    current.capabilities = capabilities;
+    current.capabilitiesGeneration = current.generation;
+  }
   return true;
 }
 
@@ -1099,7 +1123,13 @@ export function setConversationSending(ownedId: string, sending: boolean): void 
 }
 
 export function setConversationConnection(connection: AgentConversationConnection): void {
+  const existing = conversationSessions[connection.ownedId];
+  if (existing && connection.generation < existing.generation) return;
   const current = ensureConversationSession(connection.ownedId, connection.provider);
+  if (connection.generation > current.generation) {
+    current.capabilities = null;
+    current.capabilitiesGeneration = 0;
+  }
   current.generation = connection.generation;
   current.writerLease.generation = connection.generation;
   current.connectionState = connection.state;

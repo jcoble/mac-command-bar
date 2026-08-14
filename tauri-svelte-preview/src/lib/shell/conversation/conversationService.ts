@@ -244,11 +244,12 @@ export async function loadConversationCapabilities(
   provider: AgentConversationProvider
 ): Promise<AgentCapabilities | null> {
   if (!isTauri()) return null;
+  const generation = getConversationSession(ownedId)?.generation ?? 0;
   try {
     const capabilities = await readAgentConversationCapabilitiesFromTauri(ownedId);
     if (!capabilities) return null;
     if (capabilities.provider !== provider) throw new Error('Capability provider does not match this session');
-    setConversationCapabilities(ownedId, capabilities);
+    setConversationCapabilities(ownedId, generation, capabilities);
     return capabilities;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
