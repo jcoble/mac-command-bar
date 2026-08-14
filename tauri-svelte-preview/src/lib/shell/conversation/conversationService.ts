@@ -61,6 +61,8 @@ import {
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 
 let unlisten: UnlistenFn | null = null;
+let conversationEventsSetup: Promise<void> | null = null;
+let conversationEventsDisposed = false;
 const resyncing = new Map<string, Promise<void>>();
 const ensuring = new Map<string, { signature: string; work: Promise<AgentConversationConnection | null> }>();
 const terminalProjections = new Map<string, string>();
@@ -403,29 +405,44 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
 
 export async function startConversationEvents(): Promise<void> {
   if (!isTauri() || unlisten) return;
-  unlisten = await listen<AgentConversationEvent | AgentEvent>('agent-conversation-event', ({ payload }) => {
-    applyAgentConversationEvent(payload);
-    if (
-      'payload' in payload
-      && payload.payload.kind === 'userMessage'
-      && typeof payload.payload.text === 'string'
-    ) {
-      const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
-      if (owned && !owned.title.trim()) {
-        const title = sessionTitleFromPrompt(payload.payload.text);
-        if (title) updateOwnedSession(payload.ownedId, { title });
+  conversationEventsDisposed = false;
+  if (conversationEventsSetup) return conversationEventsSetup;
+  conversationEventsSetup = (async () => {
+    const stop = await listen<AgentConversationEvent | AgentEvent>('agent-conversation-event', ({ payload }) => {
+      applyAgentConversationEvent(payload);
+      if (
+        'payload' in payload
+        && payload.payload.kind === 'userMessage'
+        && typeof payload.payload.text === 'string'
+      ) {
+        const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
+        if (owned && !owned.title.trim()) {
+          const title = sessionTitleFromPrompt(payload.payload.text);
+          if (title) updateOwnedSession(payload.ownedId, { title });
+        }
       }
+      if (getConversationSession(payload.ownedId)?.desynchronized) {
+        void resyncConversation(payload.ownedId);
+      }
+      if (shouldClearConversationSending(payload)) {
+        setConversationSending(payload.ownedId, false);
+      }
+    });
+    if (conversationEventsDisposed) {
+      stop();
+      return;
     }
-    if (getConversationSession(payload.ownedId)?.desynchronized) {
-      void resyncConversation(payload.ownedId);
-    }
-    if (shouldClearConversationSending(payload)) {
-      setConversationSending(payload.ownedId, false);
-    }
-  });
+    unlisten = stop;
+  })();
+  try {
+    await conversationEventsSetup;
+  } finally {
+    conversationEventsSetup = null;
+  }
 }
 
 export function stopConversationEvents(): void {
+  conversationEventsDisposed = true;
   unlisten?.();
   unlisten = null;
   for (const ownedId of [...terminalProjections.keys()]) stopConversationTerminalProjection(ownedId);

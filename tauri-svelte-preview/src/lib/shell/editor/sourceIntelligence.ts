@@ -254,6 +254,8 @@ export interface SourceIntelligenceCallbacks {
 
 /** The service the editor panel drives. */
 export interface SourceIntelligence {
+  /** Stop event subscriptions owned by this service. */
+  dispose(): void;
   /** Project the open files belong to; language-server lookups need it. */
   setProjectRoot(projectRoot: string | null): void;
   /** The file on screen (its contents are what lookups are resolved against). */
@@ -795,13 +797,16 @@ export function createSourceIntelligence(): SourceIntelligence {
 
   /** Set up once we first need it; answers whether the app can tell us. */
   let statusWatch: Promise<boolean> | null = null;
+  let stopStatusWatch: (() => void) | null = null;
+  let statusWatchGeneration = 0;
 
   function watchLanguageServerStatus(): Promise<boolean> {
+    const generation = statusWatchGeneration;
     statusWatch ??= (async () => {
       if (!(await hasBackendCapability('lspStatusEvents'))) return false;
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        await listen<{ state?: string; root: string; language: string }>(
+        const stop = await listen<{ state?: string; root: string; language: string }>(
           'source-lsp-status-changed',
           (event) => {
             // Whatever we last worked out about the server is now out of date.
@@ -818,6 +823,11 @@ export function createSourceIntelligence(): SourceIntelligence {
             }
           }
         );
+        if (generation !== statusWatchGeneration) {
+          stop();
+          return false;
+        }
+        stopStatusWatch = stop;
         return true;
       } catch {
         return false;
@@ -1185,6 +1195,12 @@ export function createSourceIntelligence(): SourceIntelligence {
   };
 
   return {
+    dispose(): void {
+      statusWatchGeneration += 1;
+      stopStatusWatch?.();
+      stopStatusWatch = null;
+      statusWatch = null;
+    },
     setProjectRoot(nextProjectRoot: string | null): void {
       const normalized =
         nextProjectRoot && nextProjectRoot.trim().length > 0 ? nextProjectRoot : null;

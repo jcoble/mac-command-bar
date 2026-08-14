@@ -76,7 +76,10 @@
     restoreEditorFiles,
     type OpenEditorFile
   } from '$lib/shell/editor/editorStore.svelte';
-  import { setCsharpLanguageServerEnabled } from '$lib/shell/editor/sourceIntelligence';
+  import {
+    setCsharpLanguageServerEnabled,
+    sourceIntelligence
+  } from '$lib/shell/editor/sourceIntelligence';
   import {
     configureExtensionApiProbeRuntime,
     disposeExtensionApiProbeRuntime,
@@ -150,6 +153,7 @@
   import {
     noteSessionRemoved,
     noteTerminalExit,
+    clearStackHandlers,
     registerStackHandlers,
     type StackStartRequest
   } from '$lib/shell/stacks/stackService';
@@ -443,7 +447,7 @@
 
   /** Palette actions for the panels. Pure bookkeeping — nothing runs until the
    * user picks one — so it belongs here at component init, not in an effect. */
-  registerShellCommands({
+  const releaseShellCommands = registerShellCommands({
     showPanel: (id) => showSurface(id),
     expandSourceControl: () => selectRightTab('source-control'),
     // Opening a panel is what lets that panel read anything, so nothing else
@@ -464,7 +468,7 @@
    * this page is the only place that can do both — the center tabs belong to
    * the frame and the views to the tool column. Bookkeeping like the palette
    * actions above; nothing runs until a row button is clicked. */
-  registerSessionRowJumpTarget({
+  const releaseSessionRowJumpTarget = registerSessionRowJumpTarget({
     selectSession: async (ownedId) => {
       if (rail.activeOwnedId === ownedId) return;
       await selectOwned(ownedId);
@@ -551,7 +555,10 @@
 
   /** The History panel's actions are the page's, because only the page owns the
    * rail and the terminal service. Registered once, read by the panel. */
-  registerSessionLibraryHost({ service: sessionLibraryService, rescan: () => scanRail() });
+  const releaseSessionLibraryHost = registerSessionLibraryHost({
+    service: sessionLibraryService,
+    rescan: () => scanRail()
+  });
 
   /**
    * Is the sessions column folded up to a strip? The PAGE owns this rather
@@ -1363,6 +1370,15 @@
   }
 
   onMount(() => {
+    const disposers: Array<() => void> = [
+      releaseShellCommands,
+      releaseSessionRowJumpTarget,
+      clearWorkbenchNavigation,
+      clearStackHandlers,
+      releaseSessionLibraryHost,
+      () => sourceIntelligence.dispose(),
+      stopConversationEvents
+    ];
     // First, and synchronous: it only touches the DOM, and every panel below
     // paints in the theme it sets.
     document.documentElement.classList.add('next-shell-document');
@@ -1376,9 +1392,14 @@
     };
     window.addEventListener('dragover', swallowStrayDrop);
     window.addEventListener('drop', swallowStrayDrop);
+    disposers.push(() => {
+      window.removeEventListener('dragover', swallowStrayDrop);
+      window.removeEventListener('drop', swallowStrayDrop);
+    });
     const stopExtensionApiProbeObservations = onExtensionApiProbeObservation((observation) => {
       extensionApiProbeObservation = observation;
     });
+    disposers.push(stopExtensionApiProbeObservations);
     void startConversationEvents();
     // Honour where the reader last put the Problems list. The frame and the
     // tool column both mount before this runs, so both have handed over their
@@ -1527,17 +1548,14 @@
       if (rail.activeOwnedId !== null) snapshotWorkspace(rail.activeOwnedId);
     };
     window.addEventListener('pagehide', saveOnLeaving);
+    disposers.push(() => window.removeEventListener('pagehide', saveOnLeaving));
 
     return () => {
-      stopExtensionApiProbeObservations();
-      window.removeEventListener('dragover', swallowStrayDrop);
-      window.removeEventListener('drop', swallowStrayDrop);
-      window.removeEventListener('pagehide', saveOnLeaving);
       // Navigating away inside the app ends here instead, and it is the same
       // last chance to remember what the session on screen had open.
       if (!disposed && rail.activeOwnedId !== null) snapshotWorkspace(rail.activeOwnedId);
       disposed = true;
-      stopConversationEvents();
+      for (const dispose of disposers.splice(0)) dispose();
       // Probe teardown closes only its disposable PTY first. The product
       // service then drops views + its listener while every user PTY survives.
       const serviceToDispose = service;
