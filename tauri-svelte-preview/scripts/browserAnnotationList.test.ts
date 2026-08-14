@@ -18,6 +18,10 @@ import {
   removeAnnotation,
   type BrowserAnnotation
 } from '../src/lib/shell/panels/browser/annotationList.ts';
+import {
+  readBrowserSessionSnapshot,
+  writeBrowserSessionSnapshot
+} from '../src/lib/shell/browser/browserSessionSnapshots.ts';
 
 function element(id: string, tag: string, label = ''): BrowserAnnotation {
   return {
@@ -105,5 +109,39 @@ assert.deepEqual(composeMarks(empty, []), []);
 assert.equal(annotationCountLabel(0), '0 annotations');
 assert.equal(annotationCountLabel(1), '1 annotation');
 assert.equal(annotationCountLabel(4), '4 annotations');
+
+// Browser drafts follow their owning rail session, including the bounded DOM
+// metadata that makes a restored annotation useful to the receiving session.
+writeBrowserSessionSnapshot('session-a', {
+  browser: { url: 'https://example.com/a', inputUrl: 'example.com/a', activated: true },
+  panel: {
+    annotations: [element('saved', 'button', 'make this clearer')],
+    strokes: [],
+    description: 'Please update this page',
+    listOpen: true,
+    tool: 'region',
+    capture: null,
+    editingId: 'saved',
+    expanded: false
+  }
+});
+writeBrowserSessionSnapshot('session-b', {
+  browser: { url: 'https://example.com/b', inputUrl: 'example.com/b', activated: true }
+});
+
+const restoredA = readBrowserSessionSnapshot('session-a');
+assert.equal(restoredA.browser.url, 'https://example.com/a');
+assert.equal(restoredA.panel.description, 'Please update this page');
+assert.equal(restoredA.panel.listOpen, true);
+assert.equal(restoredA.panel.annotations[0].selector, 'main > button.target');
+assert.equal(restoredA.panel.annotations[0].accessibleName, 'Target element');
+assert.equal(restoredA.panel.annotations[0].textSnippet, 'Nearby words');
+assert.deepEqual(restoredA.panel.annotations[0].classes, ['target']);
+assert.equal(readBrowserSessionSnapshot('session-b').panel.annotations.length, 0);
+
+// Reads are copies: restoring and then editing one session cannot mutate the
+// snapshot waiting for the next switch back.
+restoredA.panel.annotations[0].classes.push('changed-after-restore');
+assert.deepEqual(readBrowserSessionSnapshot('session-a').panel.annotations[0].classes, ['target']);
 
 console.log('browserAnnotationList: all checks passed');

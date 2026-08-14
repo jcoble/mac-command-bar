@@ -82,6 +82,17 @@ export interface BrowserTabState {
   error: string | null;
 }
 
+/** The native view reports its final location after links and history moves. */
+export interface BrowserTabNavigationEvent {
+  workspaceId: string;
+  tabId: string;
+  generation: number;
+  url: string;
+  title: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
+
 export interface BrowserElementSelection {
   workspaceId: string;
   tabId: string;

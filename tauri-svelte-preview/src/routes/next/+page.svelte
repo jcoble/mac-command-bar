@@ -36,7 +36,15 @@
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import DraftSessionSurface from '$lib/shell/newSession/DraftSessionSurface.svelte';
   import LanguageIntelligenceControls from '$lib/shell/components/LanguageIntelligenceControls.svelte';
-  import { openBrowserUrl } from '$lib/shell/browser/browserStore.svelte.ts';
+  import {
+    captureBrowserState,
+    openBrowserUrl,
+    restoreBrowserState
+  } from '$lib/shell/browser/browserStore.svelte.ts';
+  import {
+    readBrowserSessionSnapshot,
+    writeBrowserSessionSnapshot
+  } from '$lib/shell/browser/browserSessionSnapshots.ts';
   import type { UtilityId } from '$lib/shell/components/utilityStrip';
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
@@ -754,6 +762,7 @@
     // moment, same session, but this half stays in memory. A session leaving an
     // empty editor holds nothing, so its place goes to one that has files.
     retainedTabs = retainTabs(retainedTabs, ownedId, editorState.openFiles);
+    writeBrowserSessionSnapshot(ownedId, { browser: captureBrowserState() });
     workspaces = {
       ...workspaces,
       [ownedId]: captureWorkspace({
@@ -791,6 +800,7 @@
     // a click. Replaying files then would read files before launch is over; the
     // end of start-up calls this itself once the gate is open.
     if (!shellPanels.loadsAllowed()) return;
+    restoreBrowserState(readBrowserSessionSnapshot(ownedId).browser);
     // The Diff tab is one tab for the whole shell — it is always mounted, and
     // source control only re-points itself while it is the view in front. So
     // what the tab shows must be decided here, on every switch: the diff THIS

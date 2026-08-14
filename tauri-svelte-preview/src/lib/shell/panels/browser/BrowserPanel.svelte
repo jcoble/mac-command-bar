@@ -43,8 +43,10 @@
     browser,
     browserModelContext,
     reloadBrowserFrame,
-    setBrowserUrl
+    setBrowserUrl,
+    syncBrowserNavigation
   } from '$lib/shell/browser/browserStore.svelte.ts';
+  import { listenToBrowserNavigation } from '$lib/shell/browser/browserBackend.ts';
   import {
     acceptBrowserElementSelection,
     beginBrowserElementPicker,
@@ -60,6 +62,11 @@
     BrowserTabState
   } from '$lib/shell/browser/browserTypes.ts';
   import { normalizeBrowserUrl } from '$lib/shell/browser/normalizeBrowserUrl.ts';
+  import {
+    readBrowserSessionSnapshot,
+    writeBrowserSessionSnapshot,
+    type BrowserPanelSessionSnapshot
+  } from '$lib/shell/browser/browserSessionSnapshots.ts';
 
   import AnnotationBadges from './AnnotationBadges.svelte';
   import AnnotationCanvas from './AnnotationCanvas.svelte';
@@ -120,6 +127,7 @@
   /** Bumped whenever the host rectangle could have moved. */
   let layoutTick = $state(0);
   let nextMarkId = 0;
+  let snapshotOwnedId: string | null = null;
 
   /**
    * Erasing takes a mark out of the list it came from rather than hiding it
@@ -333,6 +341,39 @@
     backdrop = URL.createObjectURL(
       new Blob([Uint8Array.from(shot.bytes)], { type: shot.mimeType || 'image/png' })
     );
+  }
+
+  function panelSnapshot(): BrowserPanelSessionSnapshot {
+    return {
+      annotations,
+      strokes,
+      description,
+      listOpen,
+      tool: tool === 'picking' ? 'browse' : tool,
+      capture,
+      editingId,
+      expanded
+    };
+  }
+
+  function restorePanelSnapshot(snapshot: BrowserPanelSessionSnapshot): void {
+    if (backdrop) URL.revokeObjectURL(backdrop);
+    annotations = snapshot.annotations;
+    strokes = snapshot.strokes;
+    description = snapshot.description;
+    listOpen = snapshot.listOpen;
+    tool = snapshot.tool;
+    capture = snapshot.capture;
+    backdrop = capture
+      ? URL.createObjectURL(new Blob([Uint8Array.from(capture.bytes)], { type: capture.mimeType || 'image/png' }))
+      : null;
+    editingId = snapshot.editingId;
+    expanded = snapshot.expanded;
+    address = '';
+    addressEdited = false;
+    failure = '';
+    pickedTag = null;
+    layoutTick += 1;
   }
 
   function dropStill(): void {
@@ -603,22 +644,50 @@
   $effect(() => () => untrack(() => sendPlacement(HIDDEN_PLACEMENT)));
 
   $effect(() => {
-    let stop: (() => void) | null = null;
+    const nextOwnedId = ownedId;
+    untrack(() => {
+      if (snapshotOwnedId && snapshotOwnedId !== nextOwnedId) {
+        writeBrowserSessionSnapshot(snapshotOwnedId, { panel: panelSnapshot() });
+      }
+      if (snapshotOwnedId !== nextOwnedId) {
+        restorePanelSnapshot(
+          nextOwnedId
+            ? readBrowserSessionSnapshot(nextOwnedId).panel
+            : readBrowserSessionSnapshot('').panel
+        );
+        snapshotOwnedId = nextOwnedId;
+      }
+    });
+  });
+
+  $effect(() => {
+    let stopElements: (() => void) | null = null;
+    let stopNavigation: (() => void) | null = null;
     let dropped = false;
     void listenToBrowserElementSelected(receiveElement)
       .then((unsubscribe) => {
         if (dropped) unsubscribe();
-        else stop = unsubscribe;
+        else stopElements = unsubscribe;
+      })
+      .catch(() => undefined);
+    void listenToBrowserNavigation(syncBrowserNavigation)
+      .then((unsubscribe) => {
+        if (dropped) unsubscribe();
+        else stopNavigation = unsubscribe;
       })
       .catch(() => undefined);
     return () => {
       dropped = true;
-      stop?.();
+      stopElements?.();
+      stopNavigation?.();
     };
   });
 
   $effect(() => {
     return () => {
+      if (snapshotOwnedId) {
+        writeBrowserSessionSnapshot(snapshotOwnedId, { panel: panelSnapshot() });
+      }
       if (backdrop) URL.revokeObjectURL(backdrop);
     };
   });

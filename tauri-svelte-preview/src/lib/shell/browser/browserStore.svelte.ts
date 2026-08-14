@@ -42,6 +42,7 @@ import {
   type BrowserFeedbackPreview,
   type BrowserModelContext,
   type BrowserPresentationMode,
+  type BrowserTabNavigationEvent,
   type BrowserViewportPreset,
   type BrowserWorkspaceState
 } from './browserTypes.ts';
@@ -150,6 +151,10 @@ export function captureBrowserState(): SessionBrowserWorkspace {
 
 export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | undefined): void {
   const nextUrl = normalizeBrowserUrl(snapshot?.url ?? '');
+  // The compatibility key represents only the browser currently owning the
+  // native view. Clear it with an empty session so activation cannot reopen
+  // the session we just left.
+  persist(nextUrl);
   browser.workspace.activated = snapshot?.activated === true && nextUrl.length > 0;
   browser.workspace.error = null;
   const current = browser.workspace.activeTabId
@@ -160,7 +165,6 @@ export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | u
       // Creating a native tab here would surface its webview over the shell
       // before the browser panel is open; persist the url instead and let
       // activateBrowser() create the tab when the panel is actually shown.
-      persist(nextUrl);
       browser.workspace.activated = false;
     } else if (nextUrl && current && current.url !== nextUrl) {
       navigateActiveBrowserTab(modelContext(), nextUrl);
@@ -303,4 +307,21 @@ export function syncBrowserTab(tabId: string): void {
   } catch (error) {
     browser.workspace.error = error instanceof Error ? error.message : String(error);
   }
+}
+
+export function syncBrowserNavigation(event: BrowserTabNavigationEvent): void {
+  const tab = browser.workspace.tabs[event.tabId];
+  if (
+    !tab
+    || event.workspaceId !== browser.workspace.workspaceId
+    || event.generation !== tab.generation
+  ) return;
+  tab.url = event.url;
+  tab.inputUrl = event.url;
+  tab.title = event.title;
+  tab.canGoBack = event.canGoBack;
+  tab.canGoForward = event.canGoForward;
+  tab.loadState = 'loaded';
+  syncLegacy();
+  persist(browser.url);
 }

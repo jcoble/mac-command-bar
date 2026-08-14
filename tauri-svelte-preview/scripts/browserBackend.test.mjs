@@ -5,7 +5,7 @@ import { createFakeBrowserBackend } from '../src/lib/shell/browser/browserBacken
 function testTauriBackendWrapsEveryCommandInInputKey() {
   const source = readFileSync(new URL('../src/lib/shell/browser/browserBackend.ts', import.meta.url), 'utf8');
   const commands = [...source.matchAll(/invokeBrowserCommandFromTauri<[^>]*>\('([a-z_]+)'/g)].map((m) => m[1]);
-  assert.equal(commands.length, 15, `expected 15 tauri browser commands, saw ${commands.length}`);
+  assert.equal(commands.length, 16, `expected 16 tauri browser commands, saw ${commands.length}`);
   const unwrapped = [...source.matchAll(/invokeBrowserCommandFromTauri<[^>]*>\('([a-z_]+)',\s*(?!\{ input \})[^\s)]/g)].map((m) => m[1]);
   assert.deepEqual(unwrapped, [], `these commands pass their payload unwrapped: ${unwrapped.join(', ')}`);
 }

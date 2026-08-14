@@ -3,6 +3,7 @@ import type {
   BrowserFloatingBounds,
   BrowserMarkupCapture,
   BrowserRect,
+  BrowserTabNavigationEvent,
   BrowserViewport
 } from './browserTypes.ts';
 import { invokeBrowserCommandFromTauri, isTauriRuntime } from '../../tauriSource.ts';
@@ -75,6 +76,17 @@ export interface BrowserBackend {
 export interface BrowserBackendCall {
   command: string;
   input: unknown;
+}
+
+export async function listenToBrowserNavigation(
+  handler: (event: BrowserTabNavigationEvent) => void
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => undefined;
+  const { listen } = await import('@tauri-apps/api/event');
+  const stop = await listen<BrowserTabNavigationEvent>('browser-tab-navigation', (event) => {
+    handler(event.payload);
+  });
+  return () => stop();
 }
 
 interface FakeTabRecord extends BrowserBackendTarget {
