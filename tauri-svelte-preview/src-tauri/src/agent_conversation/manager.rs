@@ -2227,9 +2227,8 @@ fn recover_sessions_from_store(
             stored.rail_meta.project.clone_from(&row.project);
         }
         let persisted_state: AgentRuntimeState = enum_from_storage(&row.state)?;
-        let recoverable = row.native_session_id.is_some()
-            && stored.capabilities.session.resume
-            && persisted_state != AgentRuntimeState::Closed;
+        let recoverable =
+            row.native_session_id.is_some() && persisted_state != AgentRuntimeState::Closed;
         let state = if recoverable {
             AgentRuntimeState::Suspended
         } else {

@@ -86,7 +86,7 @@ CLAUDE_WRAPPER="$HOME/.mac-command-bar/claude-acp-wrapper.sh"
 {
   printf '#!/bin/sh\n'
   printf 'unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SSE_PORT CLAUDE_CODE_PLUGIN_ROOT CLAUDE_PLUGIN_DATA\n'
-  printf 'exec "%s" "$@"\n' "$CLAUDE_ACP_BIN"
+  printf 'exec "%s" "%s" "$@"\n' "$NODE_BIN" "$CLAUDE_ACP_BIN"
 } > "$CLAUDE_WRAPPER"
 chmod +x "$CLAUDE_WRAPPER"
 MCB_CLAUDE_AGENT_ACP_PATH="$CLAUDE_WRAPPER"

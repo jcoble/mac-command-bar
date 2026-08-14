@@ -517,31 +517,31 @@ impl AcpClient {
                     .to_string(),
             },
             session: AgentSessionCapabilities {
-                multi_session: bool_at(
+                multi_session: capability_at(
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "multiSession"],
                 ),
-                list: bool_at(
+                list: capability_at(
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "list"],
                 ),
                 load: bool_at(&result, &["agentCapabilities", "loadSession"]),
-                resume: bool_at(
+                resume: capability_at(
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "resume"],
                 ),
-                close: bool_at(
+                close: capability_at(
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "close"],
                 ),
-                steering: bool_at(
+                steering: capability_at(
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "steering"],
                 ),
-                fork: bool_at(
+                fork: capability_at(
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "fork"],
-                ) || bool_at(&result, &["agentCapabilities", "fork"]),
+                ) || capability_at(&result, &["agentCapabilities", "fork"]),
             },
             prompt: AgentPromptCapabilities {
                 text: true,
@@ -1180,6 +1180,17 @@ fn bool_at(value: &Value, path: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+fn capability_at(value: &Value, path: &[&str]) -> bool {
+    match path
+        .iter()
+        .try_fold(value, |current, part| current.get(*part))
+    {
+        Some(Value::Bool(enabled)) => *enabled,
+        Some(Value::Object(_)) => true,
+        _ => false,
+    }
+}
+
 fn parse_config_options(value: Option<&Value>) -> Vec<AgentConfigOption> {
     value
         .and_then(|value| serde_json::from_value(value.clone()).ok())
@@ -1346,7 +1357,7 @@ while IFS= read -r line; do
 	    if [ "$fixture" = "multiplex" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true,"close":true,"multiSession":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    elif [ "${{fixture#suspend_}}" != "$fixture" ] && [ "$fixture" != "suspend_no_resume" ]; then
-	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":{{}}}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    else
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    fi ;;
