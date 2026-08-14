@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
+	import { PRODUCT_NAME } from "$lib/productIdentity";
 	import "@codingame/monaco-vscode-api/vscode/vs/editor/contrib/gotoSymbol/browser/goToCommands";
 	// Deep imports for the lazy target-model resolver (Task A2, design-monaco.md §4.2,
 	// Route 1). The standalone `ITextModelService` is a global eager singleton
@@ -1260,7 +1261,7 @@
 		inlayHintsProviderDisposable = monaco.languages.registerInlayHintsProvider(
 			customProviderLanguageIDs(),
 			{
-				displayName: "MacCommandBar LSP",
+				displayName: `${PRODUCT_NAME} LSP`,
 				provideInlayHints: async (_model, range) => {
 					const hints = await onInlayHintLookup?.({
 						startLine: range.startLineNumber,

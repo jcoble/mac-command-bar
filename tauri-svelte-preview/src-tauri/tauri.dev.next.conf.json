@@ -9,7 +9,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "MacCommandBar",
+        "title": "Assembly",
         "focus": false,
         "width": 1600,
         "height": 1000,

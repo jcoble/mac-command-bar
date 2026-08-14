@@ -1,7 +1,7 @@
 [package]
 name = "mac-command-bar-webview-preview"
 version = "0.1.0"
-description = "Tauri shell for the MacCommandBar Svelte source preview experiment"
+description = "Tauri shell for Assembly"
 authors = ["blackcolours"]
 edition = "2021"
 

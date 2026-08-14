@@ -1,5 +1,7 @@
+import { PRODUCT_NAME } from '$lib/productIdentity';
+
 /**
- * Extensions Mac Command Bar intentionally bundles.
+ * Extensions Assembly intentionally bundles.
  *
  * This is an allowlist, not a marketplace client. Each entry records which
  * part of an extension we use and why it is safe in the browser-style local
@@ -44,7 +46,7 @@ export const CURATED_EXTENSIONS: readonly CuratedExtension[] = [
   },
   {
     id: 'mac-command-bar.extension-api-probe',
-    label: 'Mac Command Bar extension API probe',
+    label: `${PRODUCT_NAME} extension API probe`,
     version: '0.1.0',
     kind: 'web',
     license: 'Internal',
@@ -55,7 +57,7 @@ export const CURATED_EXTENSIONS: readonly CuratedExtension[] = [
   },
   {
     id: 'mcb.rust-git-scm',
-    label: 'Mac Command Bar Git provider',
+    label: `${PRODUCT_NAME} Git provider`,
     version: '0.1.0',
     kind: 'native-bridge',
     license: 'Internal',

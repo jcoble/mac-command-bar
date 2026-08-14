@@ -9,6 +9,8 @@
  * Node and makes a second runtime/backend impossible by construction.
  */
 
+import { PRODUCT_NAME } from '../../../productIdentity';
+
 export const MCB_EXTENSION_API_PROBE_ID = 'mcb.internal.extension-api-probe' as const;
 export const MCB_EXTENSION_API_PROBE_VERSION = '0.1.0' as const;
 export const MCB_EXTENSION_API_PROBE_COMMAND = `${MCB_EXTENSION_API_PROBE_ID}.ping` as const;
@@ -44,11 +46,11 @@ export const MCB_EXTENSION_API_PROBE_MANIFEST = Object.freeze({
     commands: [
       {
         command: MCB_EXTENSION_API_PROBE_COMMAND,
-        title: 'Mac Command Bar: Extension API probe'
+        title: `${PRODUCT_NAME}: Extension API probe`
       },
       {
         command: MCB_EXTENSION_API_PROBE_ADAPTERS_COMMAND,
-        title: 'Mac Command Bar: Run bounded extension adapters'
+        title: `${PRODUCT_NAME}: Run bounded extension adapters`
       }
     ]
   }

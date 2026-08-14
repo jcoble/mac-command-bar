@@ -1,5 +1,6 @@
 <script lang="ts">
 	import SettingsPanel from "$lib/SettingsPanel.svelte";
+	import { PRODUCT_DOCUMENT_TITLE, PRODUCT_NAME } from "$lib/productIdentity";
 	import SourceDockviewShell from "$lib/SourceDockviewShell.svelte";
 	import SourceWorkbench from "$lib/SourceWorkbench.svelte";
 	import WorkbenchContextPanel from "$lib/WorkbenchContextPanel.svelte";
@@ -5906,7 +5907,7 @@
 			"env -u NO_COLOR",
 			"TERM=xterm-256color",
 			"COLORTERM=truecolor",
-			"TERM_PROGRAM=MacCommandBar",
+			`TERM_PROGRAM=${PRODUCT_NAME}`,
 			"CLICOLOR=1",
 			"CLICOLOR_FORCE=1",
 			"FORCE_COLOR=3",
@@ -6260,7 +6261,7 @@
 			recreateCommand,
 			"",
 			"After repair:",
-			"- Re-scan worktrees in MacCommandBar.",
+			`- Re-scan worktrees in ${PRODUCT_NAME}.`,
 			"- Restore this workspace snapshot again.",
 		]
 			.filter(Boolean)
@@ -14840,7 +14841,7 @@
 </script>
 
 <svelte:head>
-	<title>MacCommandBar Webview Preview</title>
+	<title>{PRODUCT_DOCUMENT_TITLE}</title>
 </svelte:head>
 
 <svelte:window onkeydown={handleWindowKeydown} />
@@ -15015,7 +15016,7 @@
 								<Braces size={22} strokeWidth={1.8} />
 							</div>
 							<div>
-								<p class="eyebrow">MacCommandBar</p>
+								<p class="eyebrow">{PRODUCT_NAME}</p>
 								<h1>Source Browser</h1>
 							</div>
 						</div>

@@ -72,7 +72,7 @@ async function currentContext() {
 
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
-    throw new Error('Mac Command Bar extension probe has no active canonical root.');
+    throw new Error('Assembly extension probe has no active canonical root.');
   }
   const root = normalizePath(folder.uri.fsPath);
   lastContext = {

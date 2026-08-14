@@ -7,7 +7,8 @@ use std::sync::{Mutex, OnceLock};
 use crate::RuntimeContextProject;
 
 const ORCHESTRATION_SCHEMA_VERSION: u16 = 1;
-const ORCHESTRATION_EVENT_STORE_ENV: &str = "MAC_COMMAND_BAR_ORCHESTRATION_EVENTS";
+const ASSEMBLY_ORCHESTRATION_EVENTS_ENV: &str = "ASSEMBLY_ORCHESTRATION_EVENTS";
+const LEGACY_ORCHESTRATION_EVENTS_ENV: &str = "MAC_COMMAND_BAR_ORCHESTRATION_EVENTS";
 const ORCHESTRATION_EVENT_STORE_FILE: &str = "orchestration-events.jsonl";
 /// Set this to 1 to see the made-up sample runs on a machine that has never recorded one.
 const DEMO_ORCHESTRATION_RUNS_ENV: &str = "MCB_DEMO_RUNS";
@@ -379,11 +380,8 @@ fn normalize_orchestration_event(event: &mut OrchestrationEvent) -> Result<(), S
 }
 
 fn orchestration_event_store_path() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var(ORCHESTRATION_EVENT_STORE_ENV) {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
+    if let Some(path) = orchestration_event_store_override() {
+        return Ok(path);
     }
 
     let home = std::env::var_os("HOME")
@@ -394,6 +392,18 @@ fn orchestration_event_store_path() -> Result<PathBuf, String> {
         .join("Application Support")
         .join("MacCommandBar")
         .join(ORCHESTRATION_EVENT_STORE_FILE))
+}
+
+fn orchestration_event_store_override() -> Option<PathBuf> {
+    [
+        ASSEMBLY_ORCHESTRATION_EVENTS_ENV,
+        LEGACY_ORCHESTRATION_EVENTS_ENV,
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .map(|path| path.trim().to_string())
+    .find(|path| !path.is_empty())
+    .map(PathBuf::from)
 }
 
 fn read_orchestration_events() -> Result<Vec<OrchestrationEvent>, String> {
@@ -1208,6 +1218,67 @@ fn unix_epoch_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    fn identity_env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn restore_env(name: &str, value: Option<OsString>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+
+    #[test]
+    fn product_identity_orchestration_prefers_assembly_env() {
+        let _lock = identity_env_test_lock();
+        let assembly = std::env::var_os(ASSEMBLY_ORCHESTRATION_EVENTS_ENV);
+        let legacy = std::env::var_os(LEGACY_ORCHESTRATION_EVENTS_ENV);
+        std::env::set_var(ASSEMBLY_ORCHESTRATION_EVENTS_ENV, "/tmp/assembly-events");
+        std::env::set_var(LEGACY_ORCHESTRATION_EVENTS_ENV, "/tmp/legacy-events");
+
+        assert_eq!(
+            orchestration_event_store_override(),
+            Some(PathBuf::from("/tmp/assembly-events"))
+        );
+
+        restore_env(ASSEMBLY_ORCHESTRATION_EVENTS_ENV, assembly);
+        restore_env(LEGACY_ORCHESTRATION_EVENTS_ENV, legacy);
+    }
+
+    #[test]
+    fn product_identity_orchestration_falls_back_to_legacy_env() {
+        let _lock = identity_env_test_lock();
+        let assembly = std::env::var_os(ASSEMBLY_ORCHESTRATION_EVENTS_ENV);
+        let legacy = std::env::var_os(LEGACY_ORCHESTRATION_EVENTS_ENV);
+        std::env::set_var(ASSEMBLY_ORCHESTRATION_EVENTS_ENV, " ");
+        std::env::set_var(LEGACY_ORCHESTRATION_EVENTS_ENV, "/tmp/legacy-events");
+
+        assert_eq!(
+            orchestration_event_store_override(),
+            Some(PathBuf::from("/tmp/legacy-events"))
+        );
+
+        restore_env(ASSEMBLY_ORCHESTRATION_EVENTS_ENV, assembly);
+        restore_env(LEGACY_ORCHESTRATION_EVENTS_ENV, legacy);
+    }
+
+    #[test]
+    fn product_identity_orchestration_preserves_legacy_support_path() {
+        let home = PathBuf::from("/Users/example");
+        assert_eq!(
+            home.join("Library")
+                .join("Application Support")
+                .join("MacCommandBar")
+                .join(ORCHESTRATION_EVENT_STORE_FILE),
+            PathBuf::from(
+                "/Users/example/Library/Application Support/MacCommandBar/orchestration-events.jsonl"
+            )
+        );
+    }
 
     fn demo_projects() -> Vec<RuntimeContextProject> {
         vec![RuntimeContextProject {

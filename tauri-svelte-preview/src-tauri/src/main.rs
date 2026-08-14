@@ -30,6 +30,7 @@ mod git_pr;
 mod git_workspace;
 mod lsp;
 mod orchestration;
+mod product_identity;
 mod resources;
 mod resources_disk;
 mod terminal;
@@ -5848,7 +5849,7 @@ fn main() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("failed to run MacCommandBar webview preview");
+        .expect(product_identity::STARTUP_FAILURE_CONTEXT);
 }
 
 #[cfg(test)]

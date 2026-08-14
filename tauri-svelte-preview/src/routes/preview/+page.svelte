@@ -5,6 +5,7 @@
   } from '@lucide/svelte';
 
   import Button from '$lib/components/Button.svelte';
+  import { PRODUCT_UI_LIBRARY_TITLE } from '$lib/productIdentity';
   import IconButton from '$lib/components/IconButton.svelte';
   import Chip from '$lib/components/Chip.svelte';
   import Badge from '$lib/components/Badge.svelte';
@@ -70,7 +71,7 @@
 <div class="gallery">
   <header class="gallery-header">
     <h1>Component Gallery</h1>
-    <p class="subtitle">MacCommandBar UI Library — visual verification</p>
+    <p class="subtitle">{PRODUCT_UI_LIBRARY_TITLE} — visual verification</p>
   </header>
 
   <!-- ═══ Button ═══════════════════════════════════════════════════ -->

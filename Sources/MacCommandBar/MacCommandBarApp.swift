@@ -6,7 +6,7 @@ struct MacCommandBarApp: App {
     @StateObject private var state = AppState.bootstrap()
 
     var body: some Scene {
-        MenuBarExtra("MacCommandBar", systemImage: "command") {
+        MenuBarExtra("Assembly", systemImage: "command") {
             CommandCenterView()
                 .environmentObject(state)
         }
@@ -18,4 +18,3 @@ struct MacCommandBarApp: App {
         }
     }
 }
-

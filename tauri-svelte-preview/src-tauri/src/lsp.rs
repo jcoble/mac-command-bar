@@ -949,7 +949,7 @@ impl LspRouter {
 ///
 /// Roslyn names its CodeLens settings under `csharp|code_lens`. Reference rows
 /// stay enabled because Monaco renders those answers in the editor. Roslyn's
-/// test lenses stay off because Mac Command Bar supplies Build and Test rows
+/// test lenses stay off because Assembly supplies Build and Test rows
 /// that start real, workspace-owned terminal sessions instead of editor-only
 /// commands the LSP bridge cannot represent.
 fn workspace_configuration_result(params: Option<&Value>) -> Value {
@@ -1063,7 +1063,7 @@ impl LspConnection {
             json!({
                 "processId": std::process::id(),
                 "clientInfo": {
-                    "name": "Mac Command Bar",
+                    "name": crate::product_identity::LSP_CLIENT_NAME,
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "rootPath": router.identity.root,
@@ -4744,6 +4744,11 @@ fn percent_decode_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn product_identity_lsp_client_name_is_assembly() {
+        assert_eq!(crate::product_identity::LSP_CLIENT_NAME, "Assembly");
+    }
 
     /// Read mode is the default, and it is per workspace. A workspace nobody
     /// has switched on must never look like one that has been.

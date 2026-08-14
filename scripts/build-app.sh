@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR="$ROOT/dist/MacCommandBar.app"
+APP_DIR="$ROOT/dist/Assembly.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -27,9 +27,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key>
   <string>dev.blackcolours.MacCommandBar</string>
   <key>CFBundleName</key>
-  <string>MacCommandBar</string>
+  <string>Assembly</string>
   <key>CFBundleDisplayName</key>
-  <string>MacCommandBar</string>
+  <string>Assembly</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -50,4 +50,3 @@ chmod +x "$MACOS_DIR/MacCommandBar" "$RESOURCES_DIR/mcb-core"
 codesign --force --deep --sign - "$APP_DIR" >/dev/null
 
 echo "Built $APP_DIR"
-

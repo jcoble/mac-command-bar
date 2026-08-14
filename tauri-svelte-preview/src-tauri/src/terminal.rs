@@ -126,7 +126,7 @@ fn start_terminal_session_typed<R: Runtime>(
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
-    command.env("TERM_PROGRAM", "MacCommandBar");
+    command.env("TERM_PROGRAM", crate::product_identity::TERM_PROGRAM);
     command.env("CLICOLOR", "1");
     command.env("CLICOLOR_FORCE", "1");
     command.env("FORCE_COLOR", "3");
@@ -560,6 +560,11 @@ fn timestamp_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn product_identity_terminal_uses_assembly() {
+        assert_eq!(crate::product_identity::TERM_PROGRAM, "Assembly");
+    }
     use std::thread;
     use std::time::{Duration, Instant};
 

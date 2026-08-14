@@ -12,6 +12,7 @@
    */
   import { onMount, tick } from 'svelte';
 
+  import { PRODUCT_DOCUMENT_TITLE } from '$lib/productIdentity';
 
   import '$lib/shell/styles/nextTokens.css';
   /* Tailwind + the shadcn component variables. Imported HERE and nowhere else:
@@ -1575,7 +1576,7 @@
 </script>
 
 <svelte:head>
-  <title>CommandBar · next</title>
+  <title>{PRODUCT_DOCUMENT_TITLE}</title>
 </svelte:head>
 
 <!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would

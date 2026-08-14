@@ -1,5 +1,5 @@
 /* ============================================================
- * Design tokens — MacCommandBar UI
+ * Design tokens — Assembly UI
  * Seeds current dark-palette values so nothing visually changes.
  * Later tasks will consume these names; aesthetic shifts happen
  * by updating values here, not by hunting across components.
