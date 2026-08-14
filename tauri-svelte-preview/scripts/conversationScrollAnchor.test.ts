@@ -89,4 +89,43 @@ assert.ok(
   'the follow target subtracts the trailing spacer so the last line lands just above the prompt box'
 );
 
+// Opening a session shows the newest turn, not the beginning of the transcript. The
+// stored messages arrive in batches, so the transcript keeps re-aiming at the newest
+// writing until the reader takes over or sends something.
+result = decideConversationScroll(initialConversationScrollAnchorState, { type: 'opened' });
+assert.equal(result.state.openingToLatest, true, 'opening a session aims at the newest turn');
+assert.equal(result.action.type, 'none', 'opening decides nothing until the messages have rendered');
+assert.equal(result.state.pinnedToBottom, false, 'opening does not turn on the explicit bottom pin');
+
+const openedState = result.state;
+assert.equal(
+  decideConversationScroll(openedState, { type: 'user-input' }).state.openingToLatest,
+  false,
+  'a reader who scrolls while the transcript loads keeps their position'
+);
+assert.equal(
+  decideConversationScroll(openedState, {
+    type: 'send',
+    previousUserItemId: 'user-1',
+    reducedMotion: false
+  }).state.openingToLatest,
+  false,
+  'sending hands the transcript back to the send anchor'
+);
+assert.equal(
+  decideConversationScroll(openedState, { type: 'user-items-changed', userItemIds: ['user-1'] })
+    .action.type,
+  'none',
+  'opening a session never fires the send anchor'
+);
+
+assert.ok(
+  /openingToLatest/.test(timelineSource),
+  'the transcript acts on the opening state'
+);
+assert.ok(
+  /openingToLatest[\s\S]{0,400}latestWritingScrollTop\(\)/.test(timelineSource),
+  'an opening transcript lands on the newest writing, level with the prompt box'
+);
+
 console.log('conversationScrollAnchor.test.ts passed');

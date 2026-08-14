@@ -119,6 +119,25 @@
     anchoredUserItemId = null;
     foldConversationId = renderWindowId;
     expandedTurns = new Map();
+    // A session opens on its newest turn rather than at the beginning of the
+    // transcript. This only records the intent; the scrolling waits until there
+    // are messages on screen to scroll to.
+    scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
+  });
+
+  $effect(() => {
+    // Land on the newest writing once the messages are actually on screen. Stored
+    // messages arrive in batches, so this runs again on each batch and keeps the
+    // view at the end until the reader scrolls, types or sends, any of which drops
+    // the opening state and hands the view back to them. The move is immediate
+    // rather than animated: nobody asked to watch a transcript they have not read
+    // scroll past.
+    if (renderedItems.length === 0 || !scrollState.openingToLatest) return;
+    void tick().then(() => {
+      if (!host || !scrollState.openingToLatest) return;
+      host.scrollTop = latestWritingScrollTop();
+      follow = true;
+    });
   });
 
   $effect(() => {

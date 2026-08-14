@@ -16,9 +16,14 @@ export interface ConversationScrollAnchorState {
   pendingAnchor: PendingAnchor | null;
   programmaticMotion: 'idle' | 'smooth';
   pinnedToBottom: boolean;
+  /** A session has just been opened and is still settling on its newest turn. The
+   * stored messages arrive in batches, so the transcript keeps aiming at the end
+   * of the writing until the reader takes over or sends something. */
+  openingToLatest: boolean;
 }
 
 export type ConversationScrollAnchorEvent =
+  | { type: 'opened' }
   | { type: 'send'; previousUserItemId: string | null; reducedMotion: boolean }
   | { type: 'user-items-changed'; userItemIds: readonly string[] }
   | { type: 'stream-growth' }
@@ -40,7 +45,8 @@ export interface ConversationScrollDecision {
 export const initialConversationScrollAnchorState: ConversationScrollAnchorState = {
   pendingAnchor: null,
   programmaticMotion: 'idle',
-  pinnedToBottom: false
+  pinnedToBottom: false,
+  openingToLatest: false
 };
 
 function motionFor(reducedMotion: boolean): ConversationScrollMotion {
@@ -62,6 +68,18 @@ export function decideConversationScroll(
   state: ConversationScrollAnchorState,
   event: ConversationScrollAnchorEvent
 ): ConversationScrollDecision {
+  if (event.type === 'opened') {
+    return {
+      state: {
+        pendingAnchor: null,
+        programmaticMotion: 'idle',
+        pinnedToBottom: false,
+        openingToLatest: true
+      },
+      action: { type: 'none' }
+    };
+  }
+
   if (event.type === 'send') {
     return {
       state: {
@@ -70,7 +88,8 @@ export function decideConversationScroll(
           motion: motionFor(event.reducedMotion)
         },
         programmaticMotion: 'idle',
-        pinnedToBottom: false
+        pinnedToBottom: false,
+        openingToLatest: false
       },
       action: { type: 'none' }
     };
@@ -84,7 +103,8 @@ export function decideConversationScroll(
       state: {
         pendingAnchor: null,
         programmaticMotion: motion === 'smooth' ? 'smooth' : 'idle',
-        pinnedToBottom: false
+        pinnedToBottom: false,
+        openingToLatest: false
       },
       action: { type: 'anchor-user', itemId, motion, offsetPx: USER_SEND_ANCHOR_OFFSET_PX }
     };
@@ -92,7 +112,13 @@ export function decideConversationScroll(
 
   if (event.type === 'user-input') {
     return {
-      state: { ...state, pendingAnchor: null, programmaticMotion: 'idle', pinnedToBottom: false },
+      state: {
+        ...state,
+        pendingAnchor: null,
+        programmaticMotion: 'idle',
+        pinnedToBottom: false,
+        openingToLatest: false
+      },
       action: state.programmaticMotion === 'smooth'
         ? { type: 'cancel-programmatic-scroll' }
         : { type: 'none' }
@@ -105,7 +131,8 @@ export function decideConversationScroll(
       state: {
         pendingAnchor: null,
         programmaticMotion: motion === 'smooth' ? 'smooth' : 'idle',
-        pinnedToBottom: true
+        pinnedToBottom: true,
+        openingToLatest: false
       },
       action: { type: 'scroll-to-latest', motion }
     };
