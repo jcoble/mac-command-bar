@@ -78,8 +78,10 @@
     // on here rather than joining the three-second poll below.
     activatePlaywright();
     void refreshResourceSample();
-    const pollTimer = window.setInterval(() => void refreshResourceSample(), 3_000);
-    return () => window.clearInterval(pollTimer);
+    // TIMER-TEST: the three-second resource poll (a per-tick process scan) is
+    // disabled while chasing UI freezes. Open the panel again to resample.
+    // const pollTimer = window.setInterval(() => void refreshResourceSample(), 3_000);
+    // return () => window.clearInterval(pollTimer);
   });
 </script>
 

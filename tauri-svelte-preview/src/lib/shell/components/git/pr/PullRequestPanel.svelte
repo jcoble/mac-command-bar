@@ -159,7 +159,8 @@
       if (!statusResult) throw new Error(READ_ONLY_IN_BROWSER_MESSAGE);
       model = setPullRequestChecks(model, statusResult);
       if (statusResult.checks === 'pending' && !disposed) {
-        pollTimer = setTimeout(() => void pollStatus(), 2500);
+        // TIMER-TEST: periodic refresh disabled while chasing UI freezes.
+        // pollTimer = setTimeout(() => void pollStatus(), 2500);
       }
     } catch (error) {
       // A created PR remains useful even while checks are temporarily

@@ -92,8 +92,9 @@
   $effect(() => {
     if (!visible) return;
     now = new Date();
-    const timer = setInterval(() => (now = new Date()), 60_000);
-    return () => clearInterval(timer);
+    // TIMER-TEST: periodic refresh disabled while chasing UI freezes.
+    // const timer = setInterval(() => (now = new Date()), 60_000);
+    // return () => clearInterval(timer);
   });
 
   function toggleGroup(level: 'project' | 'worktree', key: string): void {
