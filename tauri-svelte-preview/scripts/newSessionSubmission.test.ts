@@ -63,7 +63,10 @@ assert.match(thread, /data-testid="new-session-thread-ref-search"/);
 assert.match(thread, /Showing \{filteredRefs\.visible\.length\} of \{filteredRefs\.total\} refs/);
 assert.match(thread, /needs a worktree/);
 assert.match(thread, /disabled=\{!canSelectThreadStartGitRef\(ref, canCreateWorktree\)\}/);
-assert.match(backend, /invoke<ProjectGitRef\[]>\('list_project_git_refs'/);
+// A project with no repository behind it answers with nothing, so the reply is
+// read as a list only when it really is one — see newSessionGitRefs.test.ts.
+assert.match(backend, /invoke<ProjectGitRef\[] \| null>\('list_project_git_refs'/);
+assert.match(backend, /Array\.isArray\(refs\) \? refs : \[]/);
 assert.match(nativeSource, /async fn list_project_git_refs\(/);
 assert.match(nativeSource, /list_project_git_refs,/);
 assert.match(thread, /groupProviderModels\(providerConfigs\)/);

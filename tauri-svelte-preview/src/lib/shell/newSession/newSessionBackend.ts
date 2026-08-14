@@ -151,10 +151,12 @@ export async function listGitRefs(root: string): Promise<BackendAnswer<ProjectGi
   try {
     countInvoke('list_project_git_refs');
     const { invoke } = await import('@tauri-apps/api/core');
-    return {
-      status: 'ok',
-      value: await invoke<ProjectGitRef[]>('list_project_git_refs', { root: trimmed })
-    };
+    const refs = await invoke<ProjectGitRef[] | null>('list_project_git_refs', { root: trimmed });
+    // A folder with no git repository behind it answers with nothing rather
+    // than an empty list. That is "no branches", not a list, and handing the
+    // non-list straight to the branch picker throws while the picker is opening
+    // — which leaves the picker stuck open with no content to dismiss.
+    return { status: 'ok', value: Array.isArray(refs) ? refs : [] };
   } catch (error) {
     return {
       status: 'failed',
