@@ -143,6 +143,32 @@ assert.match(
   /When this thread spawns subagents or runs a workflow, they show up here with live status, activity, and token usage\./,
   'the empty state uses the agreed body copy'
 );
+assert.match(
+  panelSource,
+  /let \{ visible, ownedId \}: Props = \$props\(\)/,
+  'the panel consumes the visibility signal passed by the right panel'
+);
+assert.match(
+  panelSource,
+  /if \(!visible \|\| !ownedId \|\| !conversation \|\| !selectedChildId\) return;/,
+  'transcript polling requires a visible panel and a selected child'
+);
+assert.match(
+  panelSource,
+  /child\.childId === selectedChildId && agentStatus\(child\.state\) === 'working'/,
+  'the polling state uses the same running-state mapping as the roster row'
+);
+assert.match(
+  panelSource,
+  /if \(!selectedChildRunning\) return;/,
+  'transcript polling requires the selected child to still be running'
+);
+assert.match(panelSource, /window\.setInterval\([\s\S]*10_000\)/, 'the running transcript is refreshed every ten seconds');
+assert.match(
+  panelSource,
+  /return \(\) => window\.clearInterval\(timer\);/,
+  'the polling effect clears its interval when any prerequisite changes or the panel unmounts'
+);
 const rowSource = readFileSync(path.join(root, 'src/lib/shell/panels/agents/AgentRow.svelte'), 'utf8');
 assert.match(rowSource, /This agent's log is not available yet\./, 'the log link explains why it cannot be pressed');
 

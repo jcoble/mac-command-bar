@@ -7,9 +7,8 @@
   provider gives us for a subagent carries a label, a state, and a time, and
   nothing more.
 
-  The list refreshes when a conversation snapshot lands rather than
-  continuously, because that snapshot is the only thing that fills the store's
-  child list today.
+  The selected running child's transcript refreshes while this panel is visible.
+  The child list itself still comes from conversation snapshots.
 
   Starting or editing workflows is not part of this panel.
 -->
@@ -29,7 +28,7 @@
   import { showCenterTab } from '$lib/shell/workbenchNavigation.ts';
 
   import AgentRow from './AgentRow.svelte';
-  import { agentActivityRows } from './agentActivityModel.ts';
+  import { agentActivityRows, agentStatus } from './agentActivityModel.ts';
 
   interface Props {
     /** True while this panel's tab is the selected one. */
@@ -39,7 +38,7 @@
     /** The active session's ownedId, or null. */
     ownedId: string | null;
   }
-  let { ownedId }: Props = $props();
+  let { visible, ownedId }: Props = $props();
 
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
@@ -53,6 +52,28 @@
   );
 
   const rows = $derived(agentActivityRows(conversation?.children ?? [], timelineByChild));
+  const selectedChildRunning = $derived(
+    conversation?.children.some(
+      (child) => child.childId === selectedChildId && agentStatus(child.state) === 'working'
+    ) ?? false
+  );
+
+  $effect(() => {
+    if (!visible || !ownedId || !conversation || !selectedChildId) return;
+    if (!selectedChildRunning) return;
+    const nativeSessionId = rail.owned.find((session) => session.ownedId === ownedId)?.nativeSessionId;
+    if (!nativeSessionId) return;
+
+    const timer = window.setInterval(() => {
+      void readChildConversationTranscript({
+        ownedId,
+        provider: conversation.provider,
+        nativeSessionId,
+        childSessionId: selectedChildId
+      }).catch(() => undefined);
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  });
 
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation) return;
