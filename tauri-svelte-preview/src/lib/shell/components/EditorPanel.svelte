@@ -14,15 +14,18 @@
    *    lookup. Switching files swaps the file INSIDE this one editor.
    *  - **Nothing loads at start-up.** The panel subscribes to open-file
    *    requests when it mounts (free, no backend), and Monaco itself is only
-   *    downloaded once a file is actually opened. The language server is
-   *    warmed on the first file opened per project, never before.
+   *    downloaded once a file is on screen in front of the reader — not merely
+   *    in the strip, because putting a session's files back fills the strip out
+   *    of sight. The language server is warmed on the first file opened per
+   *    project, never before.
    *  - **Read mode is the default.** Opening a file colours it and stops
    *    there. A language server starts only for a project whose switch in the
    *    top strip has been turned on, and turning it off stops that server. The
    *    choice belongs to the project — one server serves every session and
    *    every view on it — and is remembered between launches.
-   *  - **No `$effect` calls the backend.** Every read is started by a user
-   *    action: a file-open request, or a click in the strip.
+   *  - **No `$effect` reads a file.** Every read is started by a user action: a
+   *    file-open request, or a click in the strip. The one effect that starts
+   *    anything starts the editor, and only for a file already on screen.
    */
   import { onMount } from 'svelte';
   import X from '@lucide/svelte/icons/x';
@@ -114,12 +117,16 @@
      * bring this panel's tab to the front. The panel itself stays unaware of the
      * tab area — it just says a file arrived. */
     onFileOpened?: () => void;
+    /** Whether this panel is the center tab in front. Putting a session's files
+     * back opens them out of sight, and the code editor is far too expensive to
+     * start for a file nobody is looking at. */
+    showing?: boolean;
     /** Start a fixed workspace command as an ordinary owned terminal session. */
     onStartWorkspaceCommand?: (
       request: WorkspaceCommandSessionRequest
     ) => Promise<string | null>;
   }
-  let { onFileOpened, onStartWorkspaceCommand }: Props = $props();
+  let { onFileOpened, showing = false, onStartWorkspaceCommand }: Props = $props();
 
   type CodeEditorComponent = typeof MonacoSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
@@ -739,7 +746,6 @@
     rememberMarkdownDefault(record.path, entry.fileName, origin);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
     syncIntelligenceWithActiveFile();
-    void ensureCodeEditor();
     if (needsRead(entry)) void readFileIntoEditor(record);
     return true;
   }
@@ -758,7 +764,6 @@
     // A file restored into the strip never went through `openPath`, so this is
     // where it gets its first view. Picking a tab is editing, not reading.
     if (entry) rememberMarkdownDefault(path, entry.fileName, 'strip');
-    if (entry?.language === 'csharp') void ensureCodeEditor();
     if (entry && needsRead(entry)) {
       void readFileIntoEditor(recordForPath(path));
     }
@@ -819,12 +824,26 @@
   }
 
   /**
+   * Fetch and start the code editor for the file on screen.
+   *
+   * This is the only route to `ensureCodeEditor` other than the language switch,
+   * and it is deliberately tied to the panel being in front rather than to a
+   * file arriving in the strip. Starting the editor means starting Monaco and
+   * the VS Code service container with it, which is seconds of work in the
+   * desktop app's webview — putting a session's files back used to pay all of it
+   * at launch, out of sight, with every click dead while it ran.
+   */
+  $effect(() => {
+    if (showing && editorState.activePath) void ensureCodeEditor();
+  });
+
+  /**
    * Keep the top strip's copy of the language-server controls in step.
    *
-   * This is the one `$effect` in the panel, and it calls nothing: it copies
-   * state the panel already holds into the shared module the top strip reads,
-   * so the chip and the switch can sit beside the run button while this panel
-   * stays their only owner. The status pipeline is not run twice.
+   * It calls nothing: it copies state the panel already holds into the shared
+   * module the top strip reads, so the chip and the switch can sit beside the
+   * run button while this panel stays their only owner. The status pipeline is
+   * not run twice.
    */
   $effect(() => {
     publishLanguageIntelligenceBar({
