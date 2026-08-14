@@ -141,6 +141,7 @@ pub async fn handoff_agent_conversation(
     terminal_registry: tauri::State<'_, crate::terminal::TerminalRegistry>,
     request: AgentConversationHandoffRequest,
 ) -> Result<AgentConversationHandoffReceipt, String> {
+    let _lifecycle = manager.lifecycle_guard(&request.owned_id).await?;
     match request.phase {
         AgentConversationHandoffPhase::Prepare => {
             manager.validate_handoff_identity(&request)?;
@@ -177,7 +178,7 @@ pub async fn handoff_agent_conversation(
                 validate_tui_release(&request.process_tree)?;
                 manager.validate_handoff_history(&request)?;
                 manager
-                    .activate(&request.owned_id, request.generation)
+                    .activate_locked(&request.owned_id, request.generation)
                     .await?;
             }
             let receipt = manager.handoff_commit(&request).await?;

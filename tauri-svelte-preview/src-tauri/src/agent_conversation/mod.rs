@@ -267,8 +267,9 @@ pub fn read_agent_conversation_capabilities(
 pub async fn close_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
+    generation: u64,
 ) -> Result<bool, String> {
-    manager.close(&owned_id).await
+    manager.close(&owned_id, generation).await
 }
 
 #[tauri::command]

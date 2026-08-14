@@ -440,7 +440,9 @@ export function stopConversationEvents(): void {
 
 export async function closeStructuredConversation(ownedId: string): Promise<void> {
   if (!isTauri()) return;
-  await invoke<boolean>('close_agent_conversation', { ownedId });
+  const generation = getConversationSession(ownedId)?.generation;
+  if (generation === undefined) return;
+  await invoke<boolean>('close_agent_conversation', { ownedId, generation });
 }
 
 export async function ensureStructuredConversation(input: {

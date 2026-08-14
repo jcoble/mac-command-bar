@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use mcb_core::session_store::{AnnotationRow, EventRow, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use super::handoff::{
     AgentConversationHandoffDirection, AgentConversationHandoffMode, AgentConversationHandoffPhase,
@@ -134,6 +134,30 @@ pub struct ManagedAgentSession {
     background_work: HashSet<String>,
     rail_meta: AgentConversationSessionMeta,
     suspending: bool,
+}
+
+impl ManagedAgentSession {
+    fn transition_lifecycle(
+        &mut self,
+        state: AgentRuntimeState,
+        connection_state: ConversationConnectionState,
+        owner: AgentExecutionOwner,
+        writer_owner: AgentWriterLeaseOwner,
+    ) -> Result<(), String> {
+        let terminal = self.state == AgentRuntimeState::Closed
+            || self.connection.state == ConversationConnectionState::Closed;
+        if terminal
+            && (state != AgentRuntimeState::Closed
+                || connection_state != ConversationConnectionState::Closed)
+        {
+            return Err("Closed conversation sessions cannot be revived".to_string());
+        }
+        self.state = state;
+        self.connection.state = connection_state;
+        self.owner = owner;
+        self.writer_lease.owner = writer_owner;
+        Ok(())
+    }
 }
 
 pub(crate) struct HandoffContext {
@@ -490,8 +514,15 @@ impl AgentRuntimeManager {
         owned_id: &str,
         generation: u64,
     ) -> Result<AgentConversationConnection, String> {
-        let activation_lock = self.activation_lock(owned_id)?;
-        let _activation = activation_lock.lock().await;
+        let _lifecycle = self.lifecycle_guard(owned_id).await?;
+        self.activate_locked(owned_id, generation).await
+    }
+
+    pub(crate) async fn activate_locked(
+        &self,
+        owned_id: &str,
+        generation: u64,
+    ) -> Result<AgentConversationConnection, String> {
         let (
             provider,
             cwd,
@@ -504,7 +535,7 @@ impl AgentRuntimeManager {
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
             session.last_activity_ms = timestamp_millis();
             if session.runtime.is_some() {
                 if session.connection.state == ConversationConnectionState::Connected
@@ -516,6 +547,12 @@ impl AgentRuntimeManager {
                     "The structured session must be ensured again before it can reactivate"
                         .to_string(),
                 );
+            }
+            if !matches!(
+                session.state,
+                AgentRuntimeState::Starting | AgentRuntimeState::Suspended
+            ) {
+                return Err("Conversation is not ready to activate".to_string());
             }
             (
                 session.provider,
@@ -663,8 +700,13 @@ impl AgentRuntimeManager {
                     .sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let session = current_session_mut(&mut sessions, owned_id, generation)?;
-                session.state = AgentRuntimeState::Suspended;
+                let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
+                session.transition_lifecycle(
+                    AgentRuntimeState::Suspended,
+                    ConversationConnectionState::Disconnected,
+                    AgentExecutionOwner::Stopped,
+                    AgentWriterLeaseOwner::None,
+                )?;
                 record_payload_for_session_and_dispatch(
                     session,
                     &self.emitter,
@@ -723,14 +765,24 @@ impl AgentRuntimeManager {
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = current_session_mut(&mut sessions, owned_id, generation)?;
+        let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
+        if session.state
+            != if was_suspended {
+                AgentRuntimeState::Suspended
+            } else {
+                AgentRuntimeState::Starting
+            }
+        {
+            return Err(
+                "Conversation lifecycle changed while activation was in progress".to_string(),
+            );
+        }
         session.capabilities = capabilities;
         if !started.commands.is_empty() {
             session.capabilities.commands = started.commands.clone();
         }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
-        session.connection.state = ConversationConnectionState::Connected;
         session.config = started.config;
         session.connection.config = session.config.clone();
         let restoring_terminal_transition = session.owner
@@ -740,11 +792,20 @@ impl AgentRuntimeManager {
                 .as_ref()
                 .map(|transition| transition.to == AgentWriterLeaseOwner::Structured)
                 .unwrap_or(false);
-        if !restoring_terminal_transition {
-            session.owner = AgentExecutionOwner::Structured;
-            session.writer_lease.owner = AgentWriterLeaseOwner::Structured;
-        }
-        session.state = AgentRuntimeState::Ready;
+        let (owner, writer_owner) = if restoring_terminal_transition {
+            (session.owner, session.writer_lease.owner)
+        } else {
+            (
+                AgentExecutionOwner::Structured,
+                AgentWriterLeaseOwner::Structured,
+            )
+        };
+        session.transition_lifecycle(
+            AgentRuntimeState::Ready,
+            ConversationConnectionState::Connected,
+            owner,
+            writer_owner,
+        )?;
         session.runtime = Some(runtime);
         session.pool_key = Some(pool_key);
         session.transport = Some(Arc::clone(&transport));
@@ -1196,7 +1257,7 @@ impl AgentRuntimeManager {
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+        let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
         session.config = config.clone();
         session.connection.config = config.clone();
         persist_session(session)?;
@@ -1391,12 +1452,13 @@ impl AgentRuntimeManager {
         owned_id: &str,
         generation: u64,
     ) -> Result<bool, String> {
+        let _lifecycle = self.lifecycle_guard(owned_id).await?;
         let (runtime, transport, ordered_events, pool_key, native_session_id) = {
             let mut sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
             if !session_can_suspend(session) {
                 return Ok(false);
             }
@@ -1429,7 +1491,7 @@ impl AgentRuntimeManager {
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
+            if let Ok(session) = lifecycle_session_mut(&mut sessions, owned_id, generation) {
                 session.suspending = false;
                 session.runtime = Some(runtime);
                 session.transport = transport;
@@ -1443,10 +1505,20 @@ impl AgentRuntimeManager {
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = current_session_mut(&mut sessions, owned_id, generation)?;
+        let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
+        if !session.suspending || session.state != AgentRuntimeState::Ready {
+            return Err(
+                "Conversation lifecycle changed while suspension was in progress".to_string(),
+            );
+        }
         session.suspending = false;
-        session.state = AgentRuntimeState::Suspended;
         session.native_session_mode = AgentNativeSessionMode::Resume;
+        session.transition_lifecycle(
+            AgentRuntimeState::Suspended,
+            ConversationConnectionState::Disconnected,
+            AgentExecutionOwner::Stopped,
+            AgentWriterLeaseOwner::None,
+        )?;
         record_payload_for_session_and_dispatch(
             session,
             &self.emitter,
@@ -1458,7 +1530,8 @@ impl AgentRuntimeManager {
         Ok(true)
     }
 
-    pub async fn close(&self, owned_id: &str) -> Result<bool, String> {
+    pub async fn close(&self, owned_id: &str, generation: u64) -> Result<bool, String> {
+        let _lifecycle = self.lifecycle_guard(owned_id).await?;
         let (runtime, transport, pool_key, native_session_id, pending_permissions, pending_inputs) = {
             let mut sessions = self
                 .sessions
@@ -1467,9 +1540,17 @@ impl AgentRuntimeManager {
             let Some(session) = sessions.get_mut(owned_id) else {
                 return Ok(false);
             };
-            session.state = AgentRuntimeState::Closed;
-            session.owner = AgentExecutionOwner::Stopped;
-            session.writer_lease.owner = AgentWriterLeaseOwner::None;
+            if session.generation != generation {
+                return Err(
+                    "Conversation connection changed; retry on the current session".to_string(),
+                );
+            }
+            session.transition_lifecycle(
+                AgentRuntimeState::Closed,
+                ConversationConnectionState::Closed,
+                AgentExecutionOwner::Stopped,
+                AgentWriterLeaseOwner::None,
+            )?;
             let transport = session.transport.take();
             session.ordered_events = None;
             let pending_permission_rows = session.permission_requests.drain().collect::<Vec<_>>();
@@ -1545,6 +1626,16 @@ impl AgentRuntimeManager {
                 .await
                 .map_err(|error| error.to_string())?;
         }
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = current_session(&sessions, owned_id, generation)?;
+        if session.state != AgentRuntimeState::Closed
+            || session.connection.state != ConversationConnectionState::Closed
+        {
+            return Err("Conversation lifecycle changed while close was in progress".to_string());
+        }
         Ok(true)
     }
 
@@ -1597,7 +1688,7 @@ impl AgentRuntimeManager {
             }
         };
         let previous_owner = session.writer_lease.owner;
-        session.owner = match request.direction {
+        let owner = match request.direction {
             AgentConversationHandoffDirection::StructuredToTerminal => {
                 AgentExecutionOwner::TransitioningToTerminal
             }
@@ -1605,6 +1696,12 @@ impl AgentRuntimeManager {
                 AgentExecutionOwner::TransitioningToStructured
             }
         };
+        session.transition_lifecycle(
+            session.state,
+            session.connection.state,
+            owner,
+            session.writer_lease.owner,
+        )?;
         session.writer_lease_transition = Some(AgentWriterLeaseTransition {
             owned_id: request.owned_id.clone(),
             generation: request.generation,
@@ -1630,7 +1727,7 @@ impl AgentRuntimeManager {
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
             if session.owner != AgentExecutionOwner::TransitioningToTerminal {
                 return Err("Structured runtime is not in a terminal handoff".to_string());
             }
@@ -1645,10 +1742,18 @@ impl AgentRuntimeManager {
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
+            if let Ok(session) = lifecycle_session_mut(&mut sessions, owned_id, generation) {
                 session.runtime = Some(runtime);
             }
             return Err(error.to_string());
+        }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
+        if session.owner != AgentExecutionOwner::TransitioningToTerminal {
+            return Err("Conversation lifecycle changed while handoff was in progress".to_string());
         }
         Ok(())
     }
@@ -1714,7 +1819,7 @@ impl AgentRuntimeManager {
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+        let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
         let transition = session
             .writer_lease_transition
             .clone()
@@ -1737,12 +1842,17 @@ impl AgentRuntimeManager {
             expected_to
         };
         session.writer_lease_transition = None;
-        session.writer_lease.owner = owner;
-        session.owner = match owner {
+        let execution_owner = match owner {
             AgentWriterLeaseOwner::Structured => AgentExecutionOwner::Structured,
             AgentWriterLeaseOwner::Terminal => AgentExecutionOwner::Terminal,
             AgentWriterLeaseOwner::None => AgentExecutionOwner::Stopped,
         };
+        session.transition_lifecycle(
+            session.state,
+            session.connection.state,
+            execution_owner,
+            owner,
+        )?;
         Ok(AgentConversationHandoffReceipt {
             owned_id: request
                 .target_owned_id
@@ -1775,17 +1885,22 @@ impl AgentRuntimeManager {
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = current_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+        let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
         let transition = session
             .writer_lease_transition
             .take()
             .ok_or_else(|| "Handoff rollback has no prepared transition".to_string())?;
-        session.writer_lease.owner = transition.from;
-        session.owner = match transition.from {
+        let owner = match transition.from {
             AgentWriterLeaseOwner::Structured => AgentExecutionOwner::Structured,
             AgentWriterLeaseOwner::Terminal => AgentExecutionOwner::Terminal,
             AgentWriterLeaseOwner::None => AgentExecutionOwner::Stopped,
         };
+        session.transition_lifecycle(
+            session.state,
+            session.connection.state,
+            owner,
+            transition.from,
+        )?;
         Ok(AgentConversationHandoffReceipt {
             owned_id: request.owned_id.clone(),
             generation: request.generation,
@@ -1804,6 +1919,13 @@ impl AgentRuntimeManager {
             rollback_available: false,
             message: "Handoff rolled back; existing terminal scrollback was preserved".to_string(),
         })
+    }
+
+    pub(crate) async fn lifecycle_guard(
+        &self,
+        owned_id: &str,
+    ) -> Result<OwnedMutexGuard<()>, String> {
+        Ok(self.activation_lock(owned_id)?.lock_owned().await)
     }
 
     fn activation_lock(&self, owned_id: &str) -> Result<Arc<AsyncMutex<()>>, String> {
@@ -2116,6 +2238,20 @@ fn current_session_mut<'a>(
         .ok_or_else(|| "Conversation session was not found".to_string())?;
     if session.generation != generation {
         return Err("Conversation connection changed; retry on the current session".to_string());
+    }
+    Ok(session)
+}
+
+fn lifecycle_session_mut<'a>(
+    sessions: &'a mut HashMap<String, ManagedAgentSession>,
+    owned_id: &str,
+    generation: u64,
+) -> Result<&'a mut ManagedAgentSession, String> {
+    let session = current_session_mut(sessions, owned_id, generation)?;
+    if session.state == AgentRuntimeState::Closed
+        || session.connection.state == ConversationConnectionState::Closed
+    {
+        return Err("Closed conversation sessions cannot be changed".to_string());
     }
     Ok(session)
 }
@@ -4045,7 +4181,7 @@ mod tests {
         )));
         fixture
             .manager
-            .close(&fixture.owned_id)
+            .close(&fixture.owned_id, fixture.generation)
             .await
             .expect("close");
         fs::remove_dir_all(fixture.root).unwrap();
@@ -4120,7 +4256,11 @@ mod tests {
             );
         }
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4218,7 +4358,11 @@ mod tests {
             Some("Chosen title")
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4283,7 +4427,11 @@ mod tests {
             "one pump must emit one update"
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4354,7 +4502,10 @@ mod tests {
                 .state,
             "ready"
         );
-        manager.close(&connection.owned_id).await.unwrap();
+        manager
+            .close(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
         assert_eq!(
             manager
                 .store
@@ -4364,6 +4515,163 @@ mod tests {
                 .state,
             "closed"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_transition_updates_all_fields_and_rejects_terminal_revival() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-lifecycle-transition",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        let mut sessions = manager.sessions.lock().unwrap();
+        let session = sessions.get_mut(&connection.owned_id).unwrap();
+
+        session
+            .transition_lifecycle(
+                AgentRuntimeState::Ready,
+                ConversationConnectionState::Connected,
+                AgentExecutionOwner::Structured,
+                AgentWriterLeaseOwner::Structured,
+            )
+            .unwrap();
+        assert_eq!(session.state, AgentRuntimeState::Ready);
+        assert_eq!(
+            session.connection.state,
+            ConversationConnectionState::Connected
+        );
+        assert_eq!(session.owner, AgentExecutionOwner::Structured);
+        assert_eq!(
+            session.writer_lease.owner,
+            AgentWriterLeaseOwner::Structured
+        );
+
+        session
+            .transition_lifecycle(
+                AgentRuntimeState::Closed,
+                ConversationConnectionState::Closed,
+                AgentExecutionOwner::Stopped,
+                AgentWriterLeaseOwner::None,
+            )
+            .unwrap();
+        let error = session
+            .transition_lifecycle(
+                AgentRuntimeState::Ready,
+                ConversationConnectionState::Connected,
+                AgentExecutionOwner::Structured,
+                AgentWriterLeaseOwner::Structured,
+            )
+            .unwrap_err();
+        assert_eq!(error, "Closed conversation sessions cannot be revived");
+        assert_eq!(session.state, AgentRuntimeState::Closed);
+        assert_eq!(
+            session.connection.state,
+            ConversationConnectionState::Closed
+        );
+        assert_eq!(session.owner, AgentExecutionOwner::Stopped);
+        assert_eq!(session.writer_lease.owner, AgentWriterLeaseOwner::None);
+        drop(sessions);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_generation_close_is_refused_without_changing_current_session() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-stale-close",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+
+        let error = manager
+            .close(&connection.owned_id, connection.generation + 1)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "Conversation connection changed; retry on the current session"
+        );
+        {
+            let sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get(&connection.owned_id).unwrap();
+            assert_eq!(session.generation, connection.generation);
+            assert_eq!(session.state, AgentRuntimeState::Starting);
+            assert_eq!(
+                session.connection.state,
+                ConversationConnectionState::Connecting
+            );
+            assert_eq!(session.owner, AgentExecutionOwner::Stopped);
+            assert_eq!(session.writer_lease.owner, AgentWriterLeaseOwner::None);
+        }
+
+        manager
+            .close(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn close_during_activation_cannot_resurrect_the_session() {
+        let root = temp_root();
+        let log = root.join("blocked-activation.jsonl");
+        let mut manifest =
+            super::super::providers::acp_client::tests::fixture_manifest_named(&log, "default");
+        let script = manifest.args.get_mut(1).expect("fixture script");
+        *script = script.replace(
+            "*'\"method\":\"session/new\"'*)",
+            "*'\"method\":\"session/new\"'*)\n      sleep 0.15",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-blocked-activation",
+                AgentConversationProvider::Codex,
+            ))
+            .expect("ensure")
+            .0;
+
+        let activating_manager = manager.clone();
+        let activating_owned_id = connection.owned_id.clone();
+        let activation = tokio::spawn(async move {
+            activating_manager
+                .activate(&activating_owned_id, connection.generation)
+                .await
+        });
+        wait_until(|| {
+            fs::read_to_string(&log)
+                .is_ok_and(|requests| requests.contains(r#""method":"session/new""#))
+        })
+        .await;
+
+        manager
+            .close("owned-blocked-activation", connection.generation)
+            .await
+            .unwrap();
+        activation.await.unwrap().unwrap();
+
+        let sessions = manager.sessions.lock().unwrap();
+        let session = sessions.get("owned-blocked-activation").unwrap();
+        assert_eq!(session.state, AgentRuntimeState::Closed);
+        assert_eq!(
+            session.connection.state,
+            ConversationConnectionState::Closed
+        );
+        assert!(session.runtime.is_none());
+        drop(sessions);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -4458,7 +4766,10 @@ mod tests {
                 .unwrap()
                 .suspended
         );
-        recovered.close(&connection.owned_id).await.unwrap();
+        recovered
+            .close(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -4670,7 +4981,11 @@ mod tests {
             .await
             .unwrap());
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4691,7 +5006,11 @@ mod tests {
             .unwrap());
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4722,7 +5041,11 @@ mod tests {
             .unwrap());
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4746,7 +5069,11 @@ mod tests {
             .unwrap());
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4780,14 +5107,23 @@ mod tests {
             snapshot.connection.native_session_id.as_deref(),
             Some(native_session_id.as_str())
         );
+        assert_eq!(
+            snapshot.connection.state,
+            ConversationConnectionState::Disconnected
+        );
         {
             let sessions = fixture.manager.sessions.lock().unwrap();
             let session = sessions.get(&fixture.owned_id).unwrap();
             assert_eq!(session.state, AgentRuntimeState::Suspended);
-            assert_eq!(session.owner, AgentExecutionOwner::Structured);
+            assert_eq!(session.owner, AgentExecutionOwner::Stopped);
+            assert_eq!(session.writer_lease.owner, AgentWriterLeaseOwner::None);
         }
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4834,7 +5170,11 @@ mod tests {
         );
         assert!(stored_capabilities(&fixture).prompt.image);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -4936,7 +5276,11 @@ mod tests {
         assert_eq!(log.matches(r#""method":"session/resume""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/prompt""#).count(), 1);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5000,7 +5344,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(item_ids, ["live-message"]);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5023,7 +5371,11 @@ mod tests {
             .unwrap());
         assert_eq!(fixture.manager.resource_roots().len(), 1);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5063,7 +5415,11 @@ mod tests {
             .unwrap());
         assert!(fixture.manager.resource_roots().is_empty());
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5112,7 +5468,10 @@ mod tests {
             1
         );
 
-        manager.close(&first.owned_id).await.unwrap();
+        manager
+            .close(&first.owned_id, first.generation)
+            .await
+            .unwrap();
         assert!(process_is_alive(roots[0].pid));
         manager
             .prompt(
@@ -5122,7 +5481,10 @@ mod tests {
             )
             .await
             .unwrap();
-        manager.close(&second.owned_id).await.unwrap();
+        manager
+            .close(&second.owned_id, second.generation)
+            .await
+            .unwrap();
         wait_until(|| !process_is_alive(roots[0].pid)).await;
         fs::remove_dir_all(root).unwrap();
     }
@@ -5133,7 +5495,11 @@ mod tests {
             fixture_manager_with_provider("multiplex", AgentConversationProvider::Codex, None)
                 .await;
         let pid = fixture.manager.resource_roots()[0].pid;
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         wait_until(|| !process_is_alive(pid)).await;
         fs::remove_dir_all(fixture.root).unwrap();
     }
@@ -5174,7 +5540,10 @@ mod tests {
         let requests = fs::read_to_string(&log).unwrap();
         assert!(requests.contains(r#""method":"session/resume""#));
         assert!(requests.contains(r#""method":"session/new""#));
-        manager.close(&connection.owned_id).await.unwrap();
+        manager
+            .close(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -5241,7 +5610,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn late_approval_gets_stale_result() {
         let fixture = fixture_manager_with_acp_session("late_approval").await;
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         let error = fixture
             .manager
             .respond_permission(PermissionResponse {
@@ -5352,7 +5725,10 @@ mod tests {
             "the canonical journal feed and frontend snapshot must contain one copy per item"
         );
 
-        manager.close(owned_id).await.unwrap();
+        manager
+            .close(owned_id, connection.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -5381,7 +5757,11 @@ mod tests {
             "a late update for the completed one-shot turn must be dropped"
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5411,7 +5791,11 @@ mod tests {
             "an in-flight one-shot update must not reach the conversation emitter"
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5471,7 +5855,11 @@ mod tests {
             .active_turn_id
             .is_none());
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5515,7 +5903,11 @@ mod tests {
             "terminal writer must be the only live event source"
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5530,7 +5922,11 @@ mod tests {
         let pid = fixture.manager.resource_roots()[0].pid;
         assert!(process_is_alive(pid));
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         wait_until(|| !process_is_alive(pid)).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         let events = seen.lock().unwrap();
@@ -5625,7 +6021,11 @@ mod tests {
             "permission response must select a valid allow option: {fixture_log}"
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5650,7 +6050,11 @@ mod tests {
         })
         .await;
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5673,7 +6077,11 @@ mod tests {
         assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
         assert_eq!(config.available_efforts, ["low", "medium", "high", "max"]);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5712,7 +6120,11 @@ mod tests {
             "Effort is set when the session starts. Start a new session to change it."
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5739,7 +6151,11 @@ mod tests {
             Some("xhigh")
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5785,7 +6201,10 @@ mod tests {
         assert!(requests.contains(r#""method":"session/resume""#));
         assert_eq!(requests.matches("session/set_config_option").count(), 2);
 
-        recovered.close(&connection.owned_id).await.unwrap();
+        recovered
+            .close(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -5816,7 +6235,11 @@ mod tests {
             .expect("fixture request log");
         assert!(requests.contains(r#""method":"session/set_config_option""#));
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5848,7 +6271,11 @@ mod tests {
             .unwrap();
         assert!(!snapshot.suspended);
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5908,7 +6335,11 @@ mod tests {
         assert!(fixture_log.contains(r#""reasoningEffort":"xhigh""#));
         assert!(fixture_log.contains(r#""approvalPolicy":"never""#));
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -5963,7 +6394,11 @@ mod tests {
             .windows(2)
             .all(|events| events[1].sequence == events[0].sequence + 1));
         drop(seen);
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -6026,7 +6461,11 @@ mod tests {
             fixture_log.contains(r#""outcome":{"outcome":"cancelled"}"#),
             "cancellation must answer the wire permission request: {fixture_log}"
         );
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -6091,7 +6530,11 @@ mod tests {
             AgentRuntimeState::Failed
         );
 
-        fixture.manager.close(&fixture.owned_id).await.unwrap();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -6185,7 +6628,10 @@ mod tests {
         );
         drop(seen);
 
-        let _ = fixture.manager.close(&fixture.owned_id).await;
+        let _ = fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await;
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
