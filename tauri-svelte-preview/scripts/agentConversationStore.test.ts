@@ -16,6 +16,10 @@ const outputPath = fileURLToPath(
 );
 
 const source = readFileSync(storePath, 'utf8');
+const surfaceSource = readFileSync(
+  new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
+  'utf8'
+);
 const javascript = stripTypeScriptTypes(source, { mode: 'strip' });
 const compiled = compileModule(javascript, {
   generate: 'client',
@@ -33,6 +37,13 @@ try {
 const a = store.ensureConversationSession('owned-a', 'codex');
 const b = store.ensureConversationSession('owned-b', 'claude');
 assert.notEqual(a, b);
+
+// The first config read can finish before a fresh session connects. Its
+// connection transition must trigger another read without a row re-selection.
+assert.match(
+  surfaceSource,
+  /const key = `\$\{ownedId\}:\$\{generation\}:\$\{conversation\.connectionState\}`;/
+);
 
 store.setConversationDraft('owned-a', 'Message A');
 store.setConversationDraft('owned-b', 'Message B');

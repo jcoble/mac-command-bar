@@ -182,7 +182,7 @@
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex')) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
-    const key = `${ownedId}:${generation}`;
+    const key = `${ownedId}:${generation}:${conversation.connectionState}`;
     if (configRequest === key) return;
     configRequest = key;
     void readAgentConversationConfig(ownedId).then((state) => {

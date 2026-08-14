@@ -106,16 +106,18 @@ const scanRecord = {
     assert.equal(adoptAgentSession({ ...scanRecord, messageCount: junk }, mint).messageCount, null);
   }
 }
-{ // a session started here has nothing scanned about it yet
+{ // a session started here counts creation as its first activity
+  const before = Date.now();
   const fresh = createFreshSession({ cwd: '/tmp/deep/proj' }, mint);
+  const after = Date.now();
   assert.equal(fresh.branch, null);
   assert.equal(fresh.taskId, null);
   assert.equal(fresh.pullRequest, null);
   assert.equal(fresh.messageCount, null);
   assert.equal(fresh.latestTurnPreview, null);
-  // Including when it was last busy: that is the scanner's reading of a
-  // conversation on disk, and a shell started here has not had one yet.
-  assert.equal(fresh.lastActivity, null);
+  const createdAt = Date.parse(fresh.lastActivity ?? '');
+  assert.equal(Number.isFinite(createdAt), true);
+  assert.equal(createdAt >= before && createdAt <= after, true);
 }
 { // createFreshSession defaults
   const fresh = createFreshSession({ cwd: '/tmp/deep/proj' }, mint);

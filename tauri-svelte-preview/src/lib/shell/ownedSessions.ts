@@ -266,10 +266,7 @@ export function createFreshSession(
     pullRequest: null,
     messageCount: null,
     latestTurnPreview: null,
-    // Deliberately not "now": this field is what the scanner read out of a
-    // conversation on disk, and a shell started here has no conversation yet.
-    // Its row simply shows no stamp, like every other scanner field above.
-    lastActivity: null,
+    lastActivity: new Date().toISOString(),
   };
 }
 
