@@ -4302,14 +4302,18 @@ mod tests {
     #[test]
     fn child_rollout_scan_emits_once_until_metadata_changes() {
         let root = temp_root();
-        let parent = root.join("rollout-parent.jsonl");
+        let parent_directory = root.join("2026/08/13");
+        let today_directory = root.join(chrono::Local::now().format("%Y/%m/%d").to_string());
+        fs::create_dir_all(&parent_directory).unwrap();
+        fs::create_dir_all(&today_directory).unwrap();
+        let parent = parent_directory.join("rollout-parent.jsonl");
         fs::write(
             &parent,
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"parent\"}}\n",
         )
         .unwrap();
         fs::write(
-            root.join("rollout-child.jsonl"),
+            today_directory.join("rollout-child.jsonl"),
             concat!(
                 "{\"type\":\"session_meta\",\"payload\":{",
                 "\"id\":\"child-1\",\"parent_thread_id\":\"parent\",",
@@ -4320,7 +4324,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let active_after = SystemTime::now() - Duration::from_secs(20);
+        let active_after = UNIX_EPOCH;
         let children =
             transcript::scan_codex_child_rollouts(&parent, "parent", active_after).unwrap();
         let mut known = HashMap::new();

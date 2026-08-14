@@ -1,3 +1,4 @@
+use chrono::{DateTime, Datelike, Local};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -28,17 +29,39 @@ pub(super) fn scan_child_rollouts(
     parent_id: &str,
     active_after: SystemTime,
 ) -> Result<Vec<CodexChildRollout>, String> {
-    let directory = parent_path
+    let parent_directory = parent_path
         .parent()
         .ok_or_else(|| "The parent transcript has no dated directory".to_string())?;
-    let entries = fs::read_dir(directory)
-        .map_err(|error| format!("Could not scan child transcripts: {error}"))?;
-    let mut children = entries
-        .flatten()
-        .filter_map(|entry| child_rollout_from_first_line(&entry.path(), parent_id, active_after))
-        .collect::<Vec<_>>();
-    children.sort_by(|left, right| left.child_id.cmp(&right.child_id));
-    Ok(children)
+    let sessions_root = parent_directory
+        .ancestors()
+        .nth(3)
+        .ok_or_else(|| "The parent transcript has no sessions directory".to_string())?;
+    let today: DateTime<Local> = SystemTime::now().into();
+    let today_directory = sessions_root
+        .join(format!("{:04}", today.year()))
+        .join(format!("{:02}", today.month()))
+        .join(format!("{:02}", today.day()));
+
+    // A parent may live in an older date directory while children spawned now
+    // are written under today's date, so scan both when those directories differ.
+    let mut directories = vec![parent_directory.to_path_buf()];
+    if today_directory != parent_directory {
+        directories.push(today_directory);
+    }
+    let mut children = BTreeMap::new();
+    for directory in directories {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("Could not scan child transcripts: {error}")),
+        };
+        for child in entries.flatten().filter_map(|entry| {
+            child_rollout_from_first_line(&entry.path(), parent_id, active_after)
+        }) {
+            children.insert(child.child_id.clone(), child);
+        }
+    }
+    Ok(children.into_values().collect())
 }
 
 fn child_rollout_from_first_line(
