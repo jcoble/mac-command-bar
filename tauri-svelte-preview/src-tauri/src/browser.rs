@@ -14,6 +14,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::debug_log::stderr_log;
 use serde::{Deserialize, Serialize};
 use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, Manager, WebviewBuilder, WebviewUrl};
@@ -506,6 +507,14 @@ impl BrowserRegistry {
             .factory
             .create(app, &input, &profile, callbacks)?;
         if let Some(bounds) = bounds {
+            stderr_log!(
+                "browser: view created tab={} x={} y={} w={} h={}",
+                input.tab_id,
+                bounds.x.round(),
+                bounds.y.round(),
+                bounds.width.round(),
+                bounds.height.round()
+            );
             view.set_bounds(bounds)?;
         }
         view.show()?;
@@ -593,6 +602,15 @@ impl BrowserRegistry {
         let bounds = clamp_browser_bounds(bounds)?;
         let workspaces = self.validate_target(&target)?;
         let tab = Self::require_tab(&workspaces, &target)?;
+        // Geometry only — never the page's address or its contents.
+        stderr_log!(
+            "browser: bounds set tab={} x={} y={} w={} h={}",
+            target.tab_id,
+            bounds.x.round(),
+            bounds.y.round(),
+            bounds.width.round(),
+            bounds.height.round()
+        );
         tab.view.set_bounds(bounds)
     }
 
@@ -622,6 +640,7 @@ impl BrowserRegistry {
                 other.view.hide()?;
             }
         }
+        stderr_log!("browser: view shown tab={}", target.tab_id);
         tab.view.show()
     }
 
@@ -638,6 +657,7 @@ impl BrowserRegistry {
                 "That browser workspace is no longer available",
             )
         })?;
+        stderr_log!("browser: workspace hidden tabs={}", workspace.tabs.len());
         for tab in workspace.tabs.values_mut() {
             let _ = tab.view.eval("window.__mcbBrowserInspector?.cancel?.();");
             tab.picker = None;

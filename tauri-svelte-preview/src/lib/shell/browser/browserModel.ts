@@ -1,5 +1,6 @@
 import { normalizeBrowserUrl } from './normalizeBrowserUrl.ts';
 import {
+  browserBoundsEqual,
   clampBrowserFloatingBounds,
   resolveBrowserViewport,
   type BrowserWindowSize
@@ -64,6 +65,12 @@ export interface ActivateBrowserWorkspaceInput {
 export interface BrowserPresentationOptions {
   bounds?: Partial<BrowserFloatingBounds>;
   window?: BrowserWindowSize;
+  /**
+   * The smallest the view may be. A browser floating over the shell has a
+   * usable-size floor; one filling a panel has none, because a view wider than
+   * the panel it fills is drawn over whatever is beside it.
+   */
+  minSize?: { minWidth?: number; minHeight?: number };
 }
 
 export interface BrowserCaptureOptions {
@@ -456,13 +463,20 @@ export function setBrowserPresentationMode(
   }
   const options = third ?? {};
   if (options.bounds || options.window) {
-    context.workspace.floatingBounds = clampBrowserFloatingBounds(
+    const next = clampBrowserFloatingBounds(
       { ...context.workspace.floatingBounds, ...(options.bounds ?? {}) },
       options.window ?? {
         width: Math.max(1, context.workspace.floatingBounds.x + context.workspace.floatingBounds.width),
         height: Math.max(1, context.workspace.floatingBounds.y + context.workspace.floatingBounds.height)
-      }
+      },
+      options.minSize
     );
+    // Only write when the rectangle actually moved. The workspace is reactive
+    // state, and a caller that re-measures on every layout change would other-
+    // wise invalidate itself with an equal-but-new object on every pass.
+    if (!browserBoundsEqual(context.workspace.floatingBounds, next)) {
+      context.workspace.floatingBounds = next;
+    }
   }
   const transition = transitionBrowserPresentation(
     context.workspace.presentation,
