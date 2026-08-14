@@ -1,3 +1,5 @@
+//! Resource commands that scan or mutate system state are async so they do not block Tauri's UI thread.
+
 use mcb_core::scanners::disk::{
     disk_protection_allows_cleanup, scan_disk_roots, stable_entry_id, DiskProtection,
     DiskScanOptions, DiskScanReport, DiskScanRoot, WorkspaceDiskKind,
@@ -321,7 +323,7 @@ pub fn next_generation(registry: &ResourceRegistry) -> u64 {
 }
 
 #[tauri::command]
-pub fn read_resource_snapshot(
+pub async fn read_resource_snapshot(
     registry: State<'_, ResourceRegistry>,
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
@@ -899,7 +901,7 @@ fn heuristic_resource_path_labels(path: &Path) -> ResourceIdentity {
 }
 
 #[tauri::command]
-pub fn read_resource_disk_scan(
+pub async fn read_resource_disk_scan(
     roots: Vec<ResourceDiskRootRequest>,
     max_depth: Option<usize>,
     max_entries: Option<usize>,
@@ -928,7 +930,7 @@ pub fn read_resource_disk_scan(
 }
 
 #[tauri::command]
-pub fn cleanup_workspace_disk_entry(
+pub async fn cleanup_workspace_disk_entry(
     request: ResourceCleanupRequest,
 ) -> Result<ResourceCleanupReceipt, String> {
     if !disk_protection_allows_cleanup(request.protection) {
@@ -1018,7 +1020,7 @@ fn derive_repository_root(worktree: &PathBuf) -> Option<PathBuf> {
 }
 
 #[tauri::command]
-pub fn stop_owned_resource(
+pub async fn stop_owned_resource(
     request: ResourceStopRequest,
     registry: State<'_, ResourceRegistry>,
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
@@ -1331,7 +1333,7 @@ pub fn restart_language_server_root(
 }
 
 #[tauri::command]
-pub fn set_active_source_root(
+pub async fn set_active_source_root(
     request: ResourceRootRequest,
     registry: State<'_, ResourceRegistry>,
 ) -> Result<String, String> {

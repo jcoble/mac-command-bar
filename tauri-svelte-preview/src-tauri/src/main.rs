@@ -1,3 +1,5 @@
+//! Heavy Tauri commands are async because synchronous command bodies run on the UI thread.
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1593,7 +1595,7 @@ async fn record_orchestration_event(event: OrchestrationEvent) -> Result<Orchest
 }
 
 #[tauri::command]
-fn list_workflow_runs(
+async fn list_workflow_runs(
     engine: tauri::State<'_, WorkflowEngine>,
 ) -> Result<Vec<WorkflowRunRecord>, String> {
     engine.list_runs().map_err(|error| error.to_string())
@@ -1604,7 +1606,7 @@ fn emit_workflow_run_updated(app: &tauri::AppHandle, run: &WorkflowRunRecord) {
 }
 
 #[tauri::command]
-fn create_workflow_run(
+async fn create_workflow_run(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     definition: WorkflowDefinitionV1,
@@ -1634,7 +1636,7 @@ async fn start_workflow_run(
 }
 
 #[tauri::command]
-fn pause_workflow_run(
+async fn pause_workflow_run(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
@@ -1678,7 +1680,7 @@ async fn cancel_workflow_run(
 }
 
 #[tauri::command]
-fn retry_workflow_node(
+async fn retry_workflow_node(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
@@ -1693,7 +1695,7 @@ fn retry_workflow_node(
 }
 
 #[tauri::command]
-fn skip_workflow_node(
+async fn skip_workflow_node(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,
@@ -1708,7 +1710,7 @@ fn skip_workflow_node(
 }
 
 #[tauri::command]
-fn approve_workflow_gate(
+async fn approve_workflow_gate(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
     run_id: String,

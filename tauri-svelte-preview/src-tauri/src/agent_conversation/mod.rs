@@ -1,3 +1,5 @@
+//! Synchronous Tauri commands run on the UI thread, so storage-backed commands are async to keep the interface responsive.
+
 mod attachments;
 pub mod capabilities;
 pub mod handoff;
@@ -48,7 +50,7 @@ impl From<AnnotationRow> for AgentConversationSessionAnnotation {
 
 #[tauri::command]
 /// Adds one annotation and converts storage failures at the native boundary.
-pub fn agent_conversation_add_session_annotation(
+pub async fn agent_conversation_add_session_annotation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     url: String,
@@ -64,7 +66,7 @@ pub fn agent_conversation_add_session_annotation(
 
 #[tauri::command]
 /// Lists annotations for one conversation with the shared command error shape.
-pub fn agent_conversation_list_session_annotations(
+pub async fn agent_conversation_list_session_annotations(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
 ) -> CommandResult<Vec<AgentConversationSessionAnnotation>> {
@@ -77,7 +79,7 @@ pub fn agent_conversation_list_session_annotations(
 
 #[tauri::command]
 /// Deletes one annotation and converts storage failures at the native boundary.
-pub fn agent_conversation_delete_session_annotation(
+pub async fn agent_conversation_delete_session_annotation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     id: i64,
 ) -> CommandResult<()> {
@@ -131,7 +133,7 @@ pub async fn send_agent_conversation_message(
 
 #[tauri::command]
 /// Persists one draft and converts storage failures at the native boundary.
-pub fn agent_conversation_set_session_draft(
+pub async fn agent_conversation_set_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     text: String,
@@ -141,7 +143,7 @@ pub fn agent_conversation_set_session_draft(
 
 #[tauri::command]
 /// Reads one persisted draft with the shared command error shape.
-pub fn agent_conversation_get_session_draft(
+pub async fn agent_conversation_get_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
 ) -> CommandResult<Option<String>> {
@@ -150,7 +152,7 @@ pub fn agent_conversation_get_session_draft(
 
 #[tauri::command]
 /// Clears one persisted draft and converts storage failures at the native boundary.
-pub fn agent_conversation_clear_session_draft(
+pub async fn agent_conversation_clear_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
 ) -> CommandResult<()> {
@@ -314,7 +316,7 @@ pub async fn read_agent_conversation_snapshot(
 
 #[tauri::command]
 /// Lists durable conversation sessions with typed storage failures.
-pub fn list_agent_conversation_sessions(
+pub async fn list_agent_conversation_sessions(
     manager: tauri::State<'_, AgentRuntimeManager>,
 ) -> CommandResult<Vec<AgentConversationSessionRecord>> {
     command_result(manager.list_sessions())
@@ -322,7 +324,7 @@ pub fn list_agent_conversation_sessions(
 
 #[tauri::command]
 /// Lists durable events after the requested sequence for one conversation.
-pub fn list_agent_conversation_events(
+pub async fn list_agent_conversation_events(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     from_sequence: Option<u64>,
@@ -332,7 +334,7 @@ pub fn list_agent_conversation_events(
 
 #[tauri::command]
 /// Updates owner-scoped conversation metadata and returns the stored record.
-pub fn update_agent_conversation_session_meta(
+pub async fn update_agent_conversation_session_meta(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: UpdateAgentConversationSessionMetaRequest,
 ) -> CommandResult<AgentConversationSessionRecord> {
@@ -385,7 +387,7 @@ pub async fn save_agent_conversation_attachment(
 
 #[tauri::command]
 /// Lists validated images stored for one conversation owner.
-pub fn read_agent_conversation_attachments(
+pub async fn read_agent_conversation_attachments(
     app: tauri::AppHandle,
     owned_id: String,
 ) -> CommandResult<Vec<attachments::SavedConversationAttachment>> {
@@ -394,7 +396,7 @@ pub fn read_agent_conversation_attachments(
 
 #[tauri::command]
 /// Deletes one validated image from the conversation attachment vault.
-pub fn delete_agent_conversation_attachment(
+pub async fn delete_agent_conversation_attachment(
     app: tauri::AppHandle,
     request: attachments::DeleteConversationAttachmentRequest,
 ) -> CommandResult<()> {

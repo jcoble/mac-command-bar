@@ -5,6 +5,7 @@
 //! that view alive while it is measured, hidden, moved, or shown again.
 //! Remote pages receive only the bounded inspector initialization script; no
 //! generic page-evaluation command or cookie/storage bridge is exposed.
+//! Native browser commands are async because synchronous Tauri commands run on the UI thread.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -1266,7 +1267,7 @@ impl BrowserRegistryInner {
 }
 
 #[tauri::command]
-pub fn create_browser_tab(
+pub async fn create_browser_tab(
     app: tauri::AppHandle,
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTabInput,
@@ -1279,7 +1280,7 @@ pub fn create_browser_tab(
 }
 
 #[tauri::command]
-pub fn set_browser_tab_bounds(
+pub async fn set_browser_tab_bounds(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserBoundsInput,
 ) -> Result<(), BrowserCommandError> {
@@ -1294,7 +1295,7 @@ pub fn set_browser_tab_bounds(
 }
 
 #[tauri::command]
-pub fn set_browser_tab_viewport(
+pub async fn set_browser_tab_viewport(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserViewportInput,
 ) -> Result<(), BrowserCommandError> {
@@ -1302,7 +1303,7 @@ pub fn set_browser_tab_viewport(
 }
 
 #[tauri::command]
-pub fn show_browser_tab(
+pub async fn show_browser_tab(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1310,7 +1311,7 @@ pub fn show_browser_tab(
 }
 
 #[tauri::command]
-pub fn hide_browser_workspace(
+pub async fn hide_browser_workspace(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserWorkspaceTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1318,7 +1319,7 @@ pub fn hide_browser_workspace(
 }
 
 #[tauri::command]
-pub fn navigate_browser_tab(
+pub async fn navigate_browser_tab(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserNavigationInput,
 ) -> Result<(), BrowserCommandError> {
@@ -1326,7 +1327,7 @@ pub fn navigate_browser_tab(
 }
 
 #[tauri::command]
-pub fn reload_browser_tab(
+pub async fn reload_browser_tab(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1334,7 +1335,7 @@ pub fn reload_browser_tab(
 }
 
 #[tauri::command]
-pub fn go_back_browser_tab(
+pub async fn go_back_browser_tab(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1342,7 +1343,7 @@ pub fn go_back_browser_tab(
 }
 
 #[tauri::command]
-pub fn go_forward_browser_tab(
+pub async fn go_forward_browser_tab(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1350,7 +1351,7 @@ pub fn go_forward_browser_tab(
 }
 
 #[tauri::command]
-pub fn close_browser_tab(
+pub async fn close_browser_tab(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1358,7 +1359,7 @@ pub fn close_browser_tab(
 }
 
 #[tauri::command]
-pub fn clear_browser_workspace_data(
+pub async fn clear_browser_workspace_data(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserWorkspaceTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1366,7 +1367,7 @@ pub fn clear_browser_workspace_data(
 }
 
 #[tauri::command]
-pub fn arm_browser_element_picker(
+pub async fn arm_browser_element_picker(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserPickerInput,
 ) -> Result<(), BrowserCommandError> {
@@ -1374,7 +1375,7 @@ pub fn arm_browser_element_picker(
 }
 
 #[tauri::command]
-pub fn cancel_browser_element_picker(
+pub async fn cancel_browser_element_picker(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1390,7 +1391,7 @@ pub async fn capture_browser_viewport(
 }
 
 #[tauri::command]
-pub fn open_browser_tab_devtools(
+pub async fn open_browser_tab_devtools(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
@@ -1398,7 +1399,7 @@ pub fn open_browser_tab_devtools(
 }
 
 #[tauri::command]
-pub fn open_browser_tab_external(
+pub async fn open_browser_tab_external(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
