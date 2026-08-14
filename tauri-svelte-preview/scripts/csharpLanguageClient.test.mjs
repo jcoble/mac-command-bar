@@ -56,7 +56,9 @@ assert.match(
 );
 assert.match(editor, /if \(reconciledNativeCsharpMode === nativeMode\) return;/);
 const reconcileStart = editor.indexOf('function reconcileLanguageProviderOwnership');
-const reconcileEnd = editor.indexOf('\n\n\tonMount', reconcileStart + 1);
+// The slice must cover only the reconcile function itself: everything up to the
+// next top-level function declaration, whatever that function happens to be.
+const reconcileEnd = editor.indexOf('\n\tfunction ', reconcileStart + 1);
 const reconcileBody = editor.slice(reconcileStart, reconcileEnd);
 assert.ok(reconcileStart >= 0 && reconcileEnd > reconcileStart);
 assert.match(
