@@ -366,7 +366,7 @@ async function ensureApi(root: string): Promise<void> {
     registerNativeCsharpFileSystem(workspaceContext.activeRoot);
   }
   if (!apiReady) {
-    apiReady = (async () => {
+    const started = (apiReady = (async () => {
       registerCuratedExtensions();
       const workspaceUri = vscode.Uri.file(root);
       const config: MonacoVscodeApiConfig = {
@@ -400,7 +400,15 @@ async function ensureApi(root: string): Promise<void> {
       registerVscodeThemeApplier();
       registerDocumentActions();
       registerExtensionApiProbeBridgeCommands();
-    })();
+    })());
+    // A failed start must not be remembered as the answer. The editor cannot be
+    // built at all without these services, so keeping a rejected promise here
+    // meant one bad start left every file for the rest of the session opening
+    // onto an editor that never appeared, with no retry able to help. Only this
+    // attempt is forgotten; a retry that has already begun keeps its own.
+    started.catch(() => {
+      if (apiReady === started) apiReady = null;
+    });
   }
   await apiReady;
 }
