@@ -24,7 +24,11 @@ function element(id: string, tag: string, label = ''): BrowserAnnotation {
     id,
     box: { kind: 'element', x: 10, y: 20, width: 100, height: 40, tag },
     label,
-    tag
+    tag,
+    selector: `main > ${tag}.target`,
+    accessibleName: 'Target element',
+    textSnippet: 'Nearby words',
+    classes: ['target']
   };
 }
 
@@ -33,7 +37,11 @@ function region(id: string, label = ''): BrowserAnnotation {
     id,
     box: { kind: 'region', x: 5, y: 5, width: 50, height: 50 },
     label,
-    tag: 'region'
+    tag: 'region',
+    selector: null,
+    accessibleName: null,
+    textSnippet: null,
+    classes: []
   };
 }
 
@@ -83,6 +91,8 @@ const ink = [
 const marks = composeMarks(three, ink);
 assert.deepEqual(marks.map((item) => item.id), ['a', 'b', 'c', 'ink-1']);
 assert.deepEqual(marks.map((item) => item.shape.kind), ['element', 'region', 'element', 'stroke']);
+assert.equal(numberAnnotations(three)[0].selector, 'main > h1.target');
+assert.deepEqual(numberAnnotations(three)[0].classes, ['target']);
 
 // Each mark keeps its annotation's id, so an erase click on a box knows which
 // annotation to take out of the list.

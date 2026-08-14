@@ -30,6 +30,11 @@ export interface BrowserAnnotation {
   label: string;
   /** The element's tag when the picker found one, otherwise `region`. */
   tag: string;
+  /** Bounded DOM context from the native page inspector, when one was found. */
+  selector: string | null;
+  accessibleName: string | null;
+  textSnippet: string | null;
+  classes: string[];
 }
 
 /** An annotation with the number shown on its badge. */

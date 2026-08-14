@@ -51,6 +51,16 @@ export interface BrowserRect {
   height: number;
 }
 
+/** Bounded page metadata returned by the native inspector. */
+export interface BrowserElementMetadata {
+  selector: string | null;
+  accessibleName: string | null;
+  textSnippet: string | null;
+  rect: BrowserRect | null;
+  classes: string[];
+  classCount: number;
+}
+
 /** An opaque profile label.  Page-owned data never belongs in this shape. */
 export interface BrowserProfileSummary {
   id: string;

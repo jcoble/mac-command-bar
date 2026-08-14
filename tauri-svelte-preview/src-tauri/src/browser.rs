@@ -132,6 +132,15 @@ pub struct BrowserPickerInput {
     pub mode: BrowserPickerMode,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserRectInspectionInput {
+    pub workspace_id: String,
+    pub tab_id: String,
+    pub generation: u64,
+    pub rect: BrowserRect,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BrowserPickerMode {
@@ -210,6 +219,17 @@ pub struct BrowserElementSelectedEvent {
     pub classes: Vec<String>,
     pub class_count: usize,
     pub source_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserElementMetadata {
+    pub selector: Option<String>,
+    pub accessible_name: Option<String>,
+    pub text_snippet: Option<String>,
+    pub rect: Option<BrowserRect>,
+    pub classes: Vec<String>,
+    pub class_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -889,6 +909,92 @@ impl BrowserRegistry {
         Ok(())
     }
 
+    async fn inspect_rect(
+        &self,
+        input: BrowserRectInspectionInput,
+    ) -> Result<Option<BrowserElementMetadata>, BrowserCommandError> {
+        let rect = validate_inspection_rect(input.rect)?;
+        let target = BrowserTarget {
+            workspace_id: input.workspace_id,
+            tab_id: input.tab_id,
+            generation: input.generation,
+        };
+        let view = {
+            let workspaces = self.validate_target(&target)?;
+            Self::require_tab(&workspaces, &target)?.view.clone()
+        };
+        let coordinates = serde_json::to_string(&[rect.x, rect.y, rect.width, rect.height])
+            .expect("finite browser rectangle failed to serialize");
+        let script = format!(
+            "JSON.stringify(window.__mcbBrowserInspector?.inspectRect?.(...{coordinates}) ?? null)"
+        );
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        view.eval_with_callback(
+            &script,
+            Box::new(move |value| {
+                let _ = sender.try_send(value);
+            }),
+        )?;
+        let raw = tokio::time::timeout(BROWSER_INSPECTOR_POLL_TIMEOUT, receiver.recv())
+            .await
+            .map_err(|_| {
+                BrowserCommandError::new(
+                    BrowserErrorCode::Native,
+                    "Timed out waiting for page metadata",
+                )
+            })?
+            .ok_or_else(|| {
+                BrowserCommandError::new(
+                    BrowserErrorCode::Native,
+                    "The page metadata query ended without an answer",
+                )
+            })?;
+        if raw.len() > MAX_INSPECTOR_PAYLOAD_BYTES {
+            return Err(BrowserCommandError::new(
+                BrowserErrorCode::InvalidPickerPayload,
+                "Browser inspector payload is too large",
+            ));
+        }
+        let payload = parse_picker_payload(&raw)?;
+        if payload.status == BrowserPickerStatus::Unavailable {
+            return Ok(None);
+        }
+        let page_url = payload
+            .url
+            .as_deref()
+            .and_then(|url| normalize_browser_url(url, false).ok().flatten());
+        let current_url = {
+            let workspaces = self.validate_target(&target)?;
+            Self::require_tab(&workspaces, &target)?.url.clone()
+        };
+        if page_url.as_deref() != Some(current_url.as_str()) {
+            return Err(BrowserCommandError::new(
+                BrowserErrorCode::InvalidPickerPayload,
+                "The inspected page changed before metadata was returned",
+            ));
+        }
+        let classes: Vec<String> = payload
+            .classes
+            .into_iter()
+            .take(MAX_CLASSES)
+            .filter_map(|class_name| bounded_utf8_bytes(Some(&class_name), MAX_CLASS_NAME_BYTES))
+            .collect();
+        Ok(Some(BrowserElementMetadata {
+            selector: bounded_utf8_bytes(payload.selector.as_deref(), MAX_SELECTOR_BYTES),
+            accessible_name: bounded_chars(
+                payload.accessible_name.as_deref().unwrap_or_default(),
+                MAX_ACCESSIBLE_NAME_CHARS,
+            ),
+            text_snippet: bounded_chars(
+                payload.text_snippet.as_deref().unwrap_or_default(),
+                MAX_TEXT_CHARS,
+            ),
+            rect: sanitize_rect(payload.rect),
+            class_count: payload.class_count.min(MAX_CLASSES).max(classes.len()),
+            classes,
+        }))
+    }
+
     fn start_picker_poll(
         &self,
         view: Arc<dyn BrowserView>,
@@ -1380,6 +1486,14 @@ pub async fn cancel_browser_element_picker(
     input: BrowserTarget,
 ) -> Result<(), BrowserCommandError> {
     registry.cancel_picker(input)
+}
+
+#[tauri::command]
+pub async fn inspect_browser_rect(
+    registry: tauri::State<'_, BrowserRegistry>,
+    input: BrowserRectInspectionInput,
+) -> Result<Option<BrowserElementMetadata>, BrowserCommandError> {
+    registry.inspect_rect(input).await
 }
 
 #[tauri::command]
@@ -1990,6 +2104,28 @@ fn sanitize_rect(rect: Option<BrowserRect>) -> Option<BrowserRect> {
         .then_some(rect)
 }
 
+fn validate_inspection_rect(rect: BrowserRect) -> Result<BrowserRect, BrowserCommandError> {
+    if !rect.x.is_finite()
+        || !rect.y.is_finite()
+        || !rect.width.is_finite()
+        || !rect.height.is_finite()
+        || rect.x < 0.0
+        || rect.y < 0.0
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+        || rect.x > MAX_BROWSER_COORDINATE
+        || rect.y > MAX_BROWSER_COORDINATE
+        || rect.width > MAX_BROWSER_SIZE
+        || rect.height > MAX_BROWSER_SIZE
+    {
+        return Err(BrowserCommandError::new(
+            BrowserErrorCode::InvalidBounds,
+            "Browser inspection rectangle is outside the allowed range",
+        ));
+    }
+    Ok(rect)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BrowserPickerPayloadWire {
@@ -2298,6 +2434,54 @@ mod tests {
         assert_eq!(error.code, BrowserErrorCode::Native);
         assert_eq!(error.message, "Timed out waiting for the page snapshot");
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inspect_rect_rejects_invalid_request_rectangles_before_page_eval() {
+        let factory = Arc::new(FakeFactory::default());
+        let registry = BrowserRegistry::with_factory(factory.clone());
+        registry
+            .create_tab(
+                None,
+                input("workspace", "tab", 1, "https://example.test/"),
+                Arc::new(FakeSink::default()),
+            )
+            .unwrap();
+
+        for rect in [
+            BrowserRect {
+                x: -1.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            BrowserRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 10.0,
+            },
+            BrowserRect {
+                x: 0.0,
+                y: 0.0,
+                width: f64::NAN,
+                height: 10.0,
+            },
+        ] {
+            let error = registry
+                .inspect_rect(BrowserRectInspectionInput {
+                    workspace_id: "workspace".to_string(),
+                    tab_id: "tab".to_string(),
+                    generation: 1,
+                    rect,
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, BrowserErrorCode::InvalidBounds);
+        }
+
+        let views = factory.views.lock().unwrap();
+        assert!(views[0].evals.lock().unwrap().is_empty());
     }
 
     #[test]

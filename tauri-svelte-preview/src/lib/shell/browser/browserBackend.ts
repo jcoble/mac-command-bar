@@ -1,6 +1,8 @@
 import type {
+  BrowserElementMetadata,
   BrowserFloatingBounds,
   BrowserMarkupCapture,
+  BrowserRect,
   BrowserViewport
 } from './browserTypes.ts';
 import { invokeBrowserCommandFromTauri, isTauriRuntime } from '../../tauriSource.ts';
@@ -47,6 +49,10 @@ export interface BrowserBackendPickerInput extends BrowserBackendTarget {
   mode: 'grab' | 'annotation';
 }
 
+export interface BrowserBackendRectInput extends BrowserBackendTarget {
+  rect: BrowserRect;
+}
+
 export interface BrowserBackend {
   create_browser_tab(input: BrowserBackendTabInput): BrowserBackendResult<BrowserBackendTabResult>;
   set_browser_tab_bounds(input: BrowserBackendBoundsInput): BrowserBackendResult<void>;
@@ -60,6 +66,7 @@ export interface BrowserBackend {
   close_browser_tab(input: BrowserBackendTarget): BrowserBackendResult<void>;
   arm_browser_element_picker(input: BrowserBackendPickerInput): BrowserBackendResult<void>;
   cancel_browser_element_picker(input: BrowserBackendTarget): BrowserBackendResult<void>;
+  inspect_browser_rect(input: BrowserBackendRectInput): BrowserBackendResult<BrowserElementMetadata | null>;
   capture_browser_viewport(input: BrowserBackendTarget): BrowserBackendResult<BrowserMarkupCapture>;
   open_browser_tab_devtools?(input: BrowserBackendTarget): BrowserBackendResult<void>;
   open_browser_tab_external?(input: BrowserBackendTarget): BrowserBackendResult<void>;
@@ -187,6 +194,11 @@ export class InMemoryBrowserBackend implements BrowserBackend {
     this.record('cancel_browser_element_picker', input);
   }
 
+  inspect_browser_rect(input: BrowserBackendRectInput): BrowserElementMetadata | null {
+    this.record('inspect_browser_rect', input);
+    return null;
+  }
+
   capture_browser_viewport(input: BrowserBackendTarget): BrowserMarkupCapture {
     this.record('capture_browser_viewport', input);
     const existing = this.captures.get(input.tabId);
@@ -264,6 +276,10 @@ export class TauriBrowserBackend implements BrowserBackend {
 
   cancel_browser_element_picker(input: BrowserBackendTarget): Promise<void> {
     return invokeBrowserCommandFromTauri<void>('cancel_browser_element_picker', { input });
+  }
+
+  inspect_browser_rect(input: BrowserBackendRectInput): Promise<BrowserElementMetadata | null> {
+    return invokeBrowserCommandFromTauri<BrowserElementMetadata | null>('inspect_browser_rect', { input });
   }
 
   capture_browser_viewport(input: BrowserBackendTarget): Promise<BrowserMarkupCapture> {

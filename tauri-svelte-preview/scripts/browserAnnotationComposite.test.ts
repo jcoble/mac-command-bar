@@ -95,13 +95,25 @@ const request = formatAnnotationRequest({
   url: 'https://example.com/pricing',
   description: 'Tighten these up.',
   annotations: [
-    { number: 1, tag: 'h1', label: 'two lines on mobile' },
+    {
+      number: 1,
+      tag: 'h1',
+      label: 'two lines on mobile',
+      selector: 'main > h1.hero',
+      accessibleName: 'Plans and pricing',
+      textSnippet: 'Choose the plan that works for you',
+      classes: ['hero', 'wide']
+    },
     { number: 2, tag: 'region', label: '' }
   ]
 });
 assert.equal(request.split('\n')[0], 'Tighten these up.');
 assert.equal(request.includes('https://example.com/pricing'), true);
 assert.equal(request.includes('1. h1 — two lines on mobile'), true);
+assert.equal(request.includes('  Selector: main > h1.hero'), true);
+assert.equal(request.includes('  Accessible name: Plans and pricing'), true);
+assert.equal(request.includes('  Text: Choose the plan that works for you'), true);
+assert.equal(request.includes('  Classes: hero, wide'), true);
 
 // A place with nothing typed about it still gets its line: the circle is on the
 // picture either way.

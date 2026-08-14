@@ -5841,6 +5841,7 @@ fn main() {
             browser::clear_browser_workspace_data,
             browser::arm_browser_element_picker,
             browser::cancel_browser_element_picker,
+            browser::inspect_browser_rect,
             browser::capture_browser_viewport,
             browser::open_browser_tab_devtools,
             browser::open_browser_tab_external

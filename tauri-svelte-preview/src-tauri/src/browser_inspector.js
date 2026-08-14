@@ -138,6 +138,32 @@
     };
   }
 
+  function inspectRect(x, y, width, height) {
+    // This reads only the same bounded DOM and accessibility metadata as the
+    // picker. It cannot read storage, cookies, form values, or page HTML.
+    const right = x + width;
+    const bottom = y + height;
+    const points = [
+      [x + width / 2, y + height / 2],
+      [x, y],
+      [right, y],
+      [x, bottom],
+      [right, bottom]
+    ];
+    const seen = new Set();
+    const candidates = [];
+    for (const [pointX, pointY] of points) {
+      for (const element of document.elementsFromPoint(pointX, pointY).slice(0, 8)) {
+        if (seen.has(element)) continue;
+        seen.add(element);
+        const rect = element.getBoundingClientRect();
+        const intersects = rect.right >= x && rect.left <= right && rect.bottom >= y && rect.top <= bottom;
+        if (intersects) candidates.push(element);
+      }
+    }
+    return metadataFor(candidates[0] ?? null);
+  }
+
   function clearHover() {
     if (!state.hovered) return;
     if (state.previousOutline === null) state.hovered.style.outline = '';
@@ -181,6 +207,7 @@
 
   const api = Object.freeze({
     arm,
+    inspectRect,
     cancel: () => disarm(true),
     take: () => {
       const result = state.picked;

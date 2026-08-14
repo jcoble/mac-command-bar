@@ -30,6 +30,10 @@ export interface AnnotationNote {
   number: number;
   tag: string;
   label: string;
+  selector?: string | null;
+  accessibleName?: string | null;
+  textSnippet?: string | null;
+  classes?: readonly string[];
 }
 
 /**
@@ -59,6 +63,14 @@ export function formatAnnotationRequest(input: {
       const label = clean(note.label);
       const tag = clean(note.tag) || 'region';
       lines.push(label ? `${note.number}. ${tag} — ${label}` : `${note.number}. ${tag}`);
+      const selector = clean(note.selector).replace(/\s+/g, ' ');
+      const accessibleName = clean(note.accessibleName).replace(/\s+/g, ' ');
+      const textSnippet = clean(note.textSnippet).replace(/\s+/g, ' ');
+      const classes = (note.classes ?? []).map((value) => clean(value)).filter(Boolean);
+      if (selector) lines.push(`  Selector: ${selector}`);
+      if (accessibleName) lines.push(`  Accessible name: ${accessibleName}`);
+      if (textSnippet) lines.push(`  Text: ${textSnippet}`);
+      if (classes.length > 0) lines.push(`  Classes: ${classes.join(', ')}`);
     }
   }
 

@@ -54,6 +54,7 @@
     setBrowserPresentationMode
   } from '$lib/shell/browser/browserModel.ts';
   import type {
+    BrowserElementMetadata,
     BrowserInteractionMode,
     BrowserMarkupCapture,
     BrowserTabState
@@ -407,17 +408,34 @@
    * in one paragraph about everything. Freehand ink is not a place and does not
    * ask.
    */
-  function addShape(shape: AnnotationShape): void {
+  async function addShape(shape: AnnotationShape, supplied?: BrowserElementMetadata | null): Promise<void> {
     if (shape.kind === 'stroke') {
       strokes = [...strokes, { id: markId(), shape }];
       return;
+    }
+    let metadata = supplied ?? null;
+    if (shape.kind === 'region' && shape.width > 0 && shape.height > 0 && activeTab) {
+      try {
+        metadata = await browser.backend.inspect_browser_rect({
+          workspaceId: activeTab.workspaceId,
+          tabId: activeTab.id,
+          generation: activeTab.generation,
+          rect: { x: shape.x, y: shape.y, width: shape.width, height: shape.height }
+        });
+      } catch (error) {
+        say(error);
+      }
     }
     const id = markId();
     annotations = addAnnotation(annotations, {
       id,
       box: shape as AnnotationBox,
       label: '',
-      tag: shape.kind === 'element' ? shape.tag : 'region'
+      tag: shape.kind === 'element' ? shape.tag : elementTagFromSelector(metadata?.selector) ?? 'region',
+      selector: metadata?.selector ?? null,
+      accessibleName: metadata?.accessibleName ?? null,
+      textSnippet: metadata?.textSnippet ?? null,
+      classes: metadata?.classes ?? []
     });
     editingId = id;
   }
@@ -465,6 +483,8 @@
     }
     pickedTag = elementTagFromSelector(event.selector);
     const rect = event.rect;
+    const metadata = browser.workspace.pendingSelection;
+    const tag = pickedTag ?? 'element';
     tool = 'browse';
     if (!rect) return;
     // The picker works on the live page, so the picture the circle goes on has
@@ -476,14 +496,14 @@
         say(error);
         return;
       }
-      addShape({
+      void addShape({
         kind: 'element',
         x: rect.x,
         y: rect.y,
         width: rect.width,
         height: rect.height,
-        tag: pickedTag ?? 'element'
-      });
+        tag
+      }, metadata);
     })();
   }
 
@@ -522,7 +542,11 @@
           annotations: numbered.map((item) => ({
             number: item.number,
             tag: item.tag,
-            label: item.label
+            label: item.label,
+            selector: item.selector,
+            accessibleName: item.accessibleName,
+            textSnippet: item.textSnippet,
+            classes: item.classes
           }))
         }),
         attachments: [saved]
