@@ -58,6 +58,7 @@
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
+  let tail = $state<HTMLDivElement | null>(null);
   let follow = $state(true);
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
   let animationFrame: number | null = null;
@@ -91,7 +92,13 @@
       && anchoredUserIndex >= 0
       && renderedItems.slice(anchoredUserIndex + 1).every((item) => !conversationItemHasVisibleContent(item))
   );
-  const showActiveTurnTail = $derived(localTurnActive && anchoredUserIndex >= 0);
+  // Empty space under the newest user message, one screen tall, so that message can
+  // sit at the top of the screen after a send. It stays there once the reply is
+  // finished: taking it away would make the page shorter than the reader's current
+  // position, and the browser would answer by yanking the view down to the new
+  // bottom. The space is dropped only when another conversation is opened, which
+  // also clears the anchored message.
+  const showActiveTurnTail = $derived(anchoredUserIndex >= 0);
 
   $effect(() => {
     if (!host) return;
@@ -218,11 +225,28 @@
     }
   }
 
+  /** Where to stop when following the newest writing. The empty space under the
+   * newest user message is not writing, so it is left out of the sum: following
+   * the reply means stopping where the reply stops, not sailing on into blank
+   * screen. What is left below the last line is the scroll box's bottom padding,
+   * which is exactly the height of the prompt box, so the last line comes to rest
+   * just above the prompt instead of hiding behind it. */
+  function latestWritingScrollTop(): number {
+    if (!host) return 0;
+    return host.scrollHeight - (tail?.offsetHeight ?? 0) - host.clientHeight;
+  }
+
+  /** How far the reader is above the end of the writing. Zero means they are
+   * level with the prompt box and reading the newest line. */
+  function distanceBelowReader(): number {
+    return host ? latestWritingScrollTop() - host.scrollTop : 0;
+  }
+
   function perform(action: ConversationScrollAction): void {
     if (!host || action.type === 'none') return;
     if (action.type === 'cancel-programmatic-scroll') return cancelProgrammaticScroll();
     if (action.type === 'scroll-to-latest') {
-      animateTo(host.scrollHeight - host.clientHeight, action.motion);
+      animateTo(latestWritingScrollTop(), action.motion);
       return;
     }
     anchoredUserItemId = action.itemId;
@@ -232,7 +256,7 @@
 
   function handleScroll(): void {
     if (!host) return;
-    follow = host.scrollHeight - (host.scrollTop + host.clientHeight) <= 80;
+    follow = distanceBelowReader() <= 80;
     onScroll?.(host.scrollTop);
   }
 
@@ -274,7 +298,7 @@
     scrollState = decision.state;
     void tick().then(() => {
       perform(decision.action);
-      if (host) follow = host.scrollHeight - (host.scrollTop + host.clientHeight) <= 80;
+      if (host) follow = distanceBelowReader() <= 80;
     });
   });
 
@@ -283,7 +307,7 @@
     lastComposerHeight = composerHeight;
     if (!scrollState.pinnedToBottom) return;
     void tick().then(() => {
-      if (host) animateTo(host.scrollHeight - host.clientHeight, 'instant');
+      if (host) animateTo(latestWritingScrollTop(), 'instant');
     });
   });
 
@@ -380,7 +404,7 @@
           {/if}
         {/each}
       {/each}
-      {#if showActiveTurnTail}<div class="active-turn-tail" style={`height:${viewportHeight}px`} aria-hidden="true"></div>{/if}
+      {#if showActiveTurnTail}<div class="active-turn-tail" bind:this={tail} style={`height:${viewportHeight}px`} aria-hidden="true"></div>{/if}
     </div>
   </div>
   {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" onclick={jumpToLatest}>Jump to latest</button>{/if}

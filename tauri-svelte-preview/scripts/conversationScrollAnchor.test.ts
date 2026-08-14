@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   decideConversationScroll,
   initialConversationScrollAnchorState,
@@ -52,5 +53,40 @@ assert.deepEqual(result.action, {
   offsetPx: USER_SEND_ANCHOR_OFFSET_PX
 });
 assert.equal(result.state.programmaticMotion, 'idle', 'reduced motion does not start an animation');
+
+// The transcript keeps a screen-tall spacer under the newest user message so that
+// message can sit at the top of the screen. If the spacer went away when the turn
+// finished, the page would get shorter under the reader and the browser would drag
+// the view down to the new bottom. The spacer therefore has to depend on the
+// anchored message, not on whether a turn is still running.
+const timelineSource = readFileSync(
+  new URL('../src/lib/shell/components/conversation/ConversationTimeline.svelte', import.meta.url),
+  'utf8'
+);
+const tailLine = timelineSource
+  .split('\n')
+  .find((line) => line.includes('const showActiveTurnTail'));
+assert.ok(tailLine, 'the transcript still declares the trailing spacer');
+assert.ok(
+  !tailLine.includes('localTurnActive'),
+  'the trailing spacer must outlive the turn so the end of a turn cannot shorten the page and drag the view to the bottom'
+);
+assert.ok(
+  tailLine.includes('anchoredUserIndex'),
+  'the trailing spacer belongs to the anchored user message'
+);
+
+// Following the newest writing has to stop where the writing stops. The scroll box
+// is one screen taller than its writing because of that spacer, so aiming at the
+// very bottom of the box would sail past the last line into blank screen and leave
+// the reader chasing text that has scrolled off above the prompt.
+assert.ok(
+  !/scrollHeight - host\.clientHeight/.test(timelineSource),
+  'following the newest writing must not aim at the bottom of the scroll box, which includes the trailing spacer'
+);
+assert.ok(
+  /scrollHeight - \(tail\?\.offsetHeight \?\? 0\) - host\.clientHeight/.test(timelineSource),
+  'the follow target subtracts the trailing spacer so the last line lands just above the prompt box'
+);
 
 console.log('conversationScrollAnchor.test.ts passed');
