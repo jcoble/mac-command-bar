@@ -480,7 +480,12 @@
       openBrowserUrl(request.url);
     },
     focusComposer: async (handoff) => {
-      if (handoff.attachments) setConversationAttachments(handoff.ownedId, handoff.attachments);
+      if (handoff.attachments) {
+        // Add to what the composer is already holding. Replacing dropped a
+        // screenshot the reader had just pasted, with nothing said about it.
+        const existing = getConversationSession(handoff.ownedId)?.attachments ?? [];
+        setConversationAttachments(handoff.ownedId, [...existing, ...handoff.attachments]);
+      }
       if (handoff.appendText) {
         const draft = getConversationSession(handoff.ownedId)?.draft ?? '';
         setConversationDraft(
@@ -1320,6 +1325,14 @@
     document.documentElement.classList.add('next-shell-document');
     applyStoredTheme();
     disposed = false;
+    // A file dropped anywhere but a drop zone would otherwise navigate the
+    // window to that file and take the whole shell with it. Anything a zone
+    // has already claimed arrives here with its default prevented.
+    const swallowStrayDrop = (event: DragEvent): void => {
+      if (!event.defaultPrevented) event.preventDefault();
+    };
+    window.addEventListener('dragover', swallowStrayDrop);
+    window.addEventListener('drop', swallowStrayDrop);
     const stopExtensionApiProbeObservations = onExtensionApiProbeObservation((observation) => {
       extensionApiProbeObservation = observation;
     });
@@ -1474,6 +1487,8 @@
 
     return () => {
       stopExtensionApiProbeObservations();
+      window.removeEventListener('dragover', swallowStrayDrop);
+      window.removeEventListener('drop', swallowStrayDrop);
       window.removeEventListener('pagehide', saveOnLeaving);
       // Navigating away inside the app ends here instead, and it is the same
       // last chance to remember what the session on screen had open.

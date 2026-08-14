@@ -18,7 +18,8 @@
         "height": 1000,
         "minWidth": 900,
         "minHeight": 600,
-        "url": "/next"
+        "url": "/next",
+        "dragDropEnabled": false
       }
     ],
     "security": {

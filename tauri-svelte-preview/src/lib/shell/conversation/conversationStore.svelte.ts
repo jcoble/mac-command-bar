@@ -80,6 +80,12 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   writerLease: AgentWriterLease;
   writerLeaseTransition: AgentWriterLeaseTransition | null;
   attachmentIds: string[];
+  /** Screenshots that went out with a send, keyed by the user message they
+   * produced. No provider echoes an image back, so this local copy is the only
+   * way the transcript can show what the reader actually sent. */
+  sentAttachments: Record<string, ConversationAttachment[]>;
+  /** Sent but not yet claimed by a user message event. */
+  unclaimedSentAttachments: ConversationAttachment[];
   config: Record<string, AgentConfigValue>;
   agentConfig: AgentConversationConfigState;
   pendingAgentConfig: Partial<Record<AgentConversationConfigField, string>>;
@@ -134,6 +140,8 @@ function freshState(
     writerLease: { ownedId, generation: 0, owner: 'none' },
     writerLeaseTransition: null,
     attachmentIds: [],
+    sentAttachments: {},
+    unclaimedSentAttachments: [],
     config: {},
     agentConfig: emptyAgentConversationConfigState(),
     pendingAgentConfig: {},
@@ -242,6 +250,10 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
           kind: 'user', itemId: payload.itemId, text: payload.text,
           completed: payload.completed, timestampMs: event.timestampMs
         });
+        if (current.unclaimedSentAttachments.length) {
+          current.sentAttachments[payload.itemId] = current.unclaimedSentAttachments;
+          current.unclaimedSentAttachments = [];
+        }
         displayChanged = true;
       }
       break;
@@ -555,6 +567,8 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     writerLease: { ...current.writerLease, generation: rebuilt.generation },
     writerLeaseTransition: current.writerLeaseTransition,
     attachmentIds: current.attachmentIds,
+    sentAttachments: current.sentAttachments,
+    unclaimedSentAttachments: current.unclaimedSentAttachments,
     config: current.config,
     telemetry: current.telemetry,
     capabilities: current.capabilities,
@@ -819,6 +833,16 @@ export function setConversationAttachments(ownedId: string, attachments: Convers
     current.attachments = attachments;
     current.attachmentIds = attachments.map((attachment) => attachment.id);
   }
+}
+
+/** Hold the screenshots a send just delivered until the user message they
+ * produced arrives, so the transcript can show them beside the typed text. */
+export function recordSentConversationAttachments(
+  ownedId: string,
+  attachments: ConversationAttachment[]
+): void {
+  const current = conversationSessions[ownedId];
+  if (current && attachments.length) current.unclaimedSentAttachments = attachments;
 }
 
 export function setConversationCapabilities(ownedId: string, capabilities: AgentCapabilities): void {

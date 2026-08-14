@@ -95,7 +95,13 @@
       previousVisibleTimeline = typedConversationTimeline([], legacyTimeline, {}, previousVisibleTimeline);
       return previousVisibleTimeline;
     }
-    const items = typedConversationTimeline(conversation.agentItems, legacyTimeline, {}, previousVisibleTimeline);
+    const items = typedConversationTimeline(
+      conversation.agentItems,
+      legacyTimeline,
+      {},
+      previousVisibleTimeline,
+      conversation.sentAttachments
+    );
     const now = items.reduce((latest, item) => Math.max(latest, item.timestampMs), 0) + 1;
     const typedKinds = new Set(items.map((item) => item.kind));
     if (conversation.planSteps.length && !typedKinds.has('plan')) {
@@ -120,6 +126,7 @@
   );
 
   let attachmentError = $state('');
+  let sendError = $state('');
   let capabilityRequest = $state('');
   let configRequest = $state('');
   let inspectorOpen = $state(false);
@@ -213,12 +220,16 @@
     localTurnActive = true;
     localTurnStarted = false;
     setConversationDraft(activeOwnedId, '');
+    sendError = '';
     try {
       await clearConversationSessionDraft(activeOwnedId);
       await sendStructuredMessage(activeOwnedId, text, active?.ptySessionId);
-    } catch {
+    } catch (error) {
       // Restore the draft. The service intentionally leaves attachments in the
-      // store on every failure, so the user can retry without data loss.
+      // store on every failure, so the user can retry without data loss. The
+      // reason has to be said out loud: a swallowed failure here reads as a
+      // composer that silently refuses every Enter.
+      sendError = error instanceof Error ? error.message : String(error);
       setConversationDraft(activeOwnedId, text);
       persistConversationSessionDraft(activeOwnedId, text);
       await flushConversationSessionDraft(activeOwnedId).catch(() => undefined);
@@ -417,6 +428,7 @@
           pendingApprovalCount={pendingApprovals.length}
           pendingInputs={pendingInputs}
           {attachmentError}
+          {sendError}
           onDraftChange={(value) => {
             setConversationDraft(active.ownedId, value);
             persistConversationSessionDraft(active.ownedId, value);
