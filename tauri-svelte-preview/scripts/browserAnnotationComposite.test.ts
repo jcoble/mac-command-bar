@@ -18,7 +18,7 @@ import {
   shapeAtPoint,
   type AnnotationShape
 } from '../src/lib/shell/panels/browser/annotationComposite.ts';
-import { formatAttachmentNote } from '../src/lib/shell/panels/browser/browserAttachmentNote.ts';
+import { formatAnnotationRequest } from '../src/lib/shell/panels/browser/browserAttachmentNote.ts';
 
 // ── liveShapes ───────────────────────────────────────────────────────────────
 
@@ -86,39 +86,47 @@ assert.deepEqual(
   [{ kind: 'element', x: 40, y: 30, width: 200, height: 60, tag: 'svg' }]
 );
 
-// ── formatAttachmentNote ─────────────────────────────────────────────────────
+// ── formatAnnotationRequest ──────────────────────────────────────────────────
 
-const full = formatAttachmentNote({
+// The picture that goes with this carries numbered circles. The words have to
+// say what each number was about, or the numbers mean nothing to whoever reads
+// the turn.
+const request = formatAnnotationRequest({
   url: 'https://example.com/pricing',
-  selector: 'main > section:nth-child(2) h1',
-  tag: 'h1',
-  description: 'Make this heading two lines on mobile.'
+  description: 'Tighten these up.',
+  annotations: [
+    { number: 1, tag: 'h1', label: 'two lines on mobile' },
+    { number: 2, tag: 'region', label: '' }
+  ]
 });
-assert.equal(full.includes('https://example.com/pricing'), true);
-assert.equal(full.includes('Make this heading two lines on mobile.'), true);
-assert.equal(full.includes('main > section:nth-child(2) h1'), true);
-assert.equal(full.includes('h1'), true);
+assert.equal(request.split('\n')[0], 'Tighten these up.');
+assert.equal(request.includes('https://example.com/pricing'), true);
+assert.equal(request.includes('1. h1 — two lines on mobile'), true);
 
-const sparse = formatAttachmentNote({
-  url: 'https://example.com/pricing',
-  selector: null,
-  tag: null,
-  description: 'The spacing under the header is too tight.'
-});
-assert.equal(sparse.includes('Element'), false, 'no element line without an element');
-assert.equal(sparse.includes('Selector'), false);
-assert.equal(sparse.includes('https://example.com/pricing'), true);
+// A place with nothing typed about it still gets its line: the circle is on the
+// picture either way.
+assert.equal(request.includes('2. region'), true);
+assert.equal(request.includes('2. region —'), false);
 
-// No line may be a label with nothing after it, in any combination.
-for (const note of [
-  full,
-  sparse,
-  formatAttachmentNote({ url: '', selector: null, tag: null, description: '' }),
-  formatAttachmentNote({ url: 'https://example.com', selector: '  ', tag: '', description: '   ' })
-]) {
-  for (const line of note.split('\n')) {
-    assert.equal(/:\s*$/.test(line), false, `empty labeled line: ${JSON.stringify(line)}`);
-  }
+// A tag that never arrived still reads as something.
+assert.equal(
+  formatAnnotationRequest({
+    url: '',
+    description: '',
+    annotations: [{ number: 1, tag: '   ', label: 'this bit' }]
+  }).includes('1. region — this bit'),
+  true
+);
+
+// Nothing marked and nothing typed is nothing said, not a heading on its own.
+assert.equal(formatAnnotationRequest({ url: '', description: '', annotations: [] }), '');
+assert.equal(
+  formatAnnotationRequest({ url: '', description: '  ', annotations: [] }).includes('Marked'),
+  false
+);
+
+for (const line of request.split('\n')) {
+  assert.equal(/—\s*$/.test(line), false, `dangling label: ${JSON.stringify(line)}`);
 }
 
 console.log('browserAnnotationComposite: all checks passed');

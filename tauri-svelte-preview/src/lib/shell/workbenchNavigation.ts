@@ -61,6 +61,13 @@ export interface ComposerHandoff {
   appendText?: string;
 }
 
+export interface SendToSessionRequest {
+  ownedId: string;
+  /** The turn's words. May be empty when the picture says it all. */
+  text: string;
+  attachments?: ConversationAttachment[];
+}
+
 export interface StartSessionRequest {
   prompt: string;
   cwd: string;
@@ -75,6 +82,7 @@ export interface WorkbenchNavigationHandlers {
   openDiff(request: OpenDiffRequest): void | Promise<void>;
   openUrl(request: OpenUrlRequest): void | Promise<void>;
   focusComposer(handoff: ComposerHandoff): void | Promise<void>;
+  sendToSession(request: SendToSessionRequest): Promise<void>;
   startSession(request: StartSessionRequest): Promise<string | null>;
 }
 
@@ -123,6 +131,20 @@ export async function openUrlInBrowser(request: OpenUrlRequest): Promise<void> {
  * forward so the reader can see what they were given. */
 export async function focusComposerWith(handoff: ComposerHandoff): Promise<void> {
   await handlers.focusComposer?.(handoff);
+  showCenterTab('session');
+}
+
+/**
+ * Send one turn to a session that already exists, and bring it forward so the
+ * reader watches it go. Unlike `focusComposerWith` this does not stop at the
+ * draft: the panel that calls it has already asked for the send, and a message
+ * left staged in a box the reader is not looking at reads as a send that did
+ * nothing. Throws whatever the send throws, so the panel can say so.
+ */
+export async function sendToSession(request: SendToSessionRequest): Promise<void> {
+  const send = handlers.sendToSession;
+  if (!send) return;
+  await send(request);
   showCenterTab('session');
 }
 

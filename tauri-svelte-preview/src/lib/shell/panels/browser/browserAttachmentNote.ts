@@ -2,24 +2,13 @@
  * browserAttachmentNote.ts — the words that go with the picture.
  *
  * A marked-up screenshot on its own leaves the reader guessing which page it
- * came from and which element was pointed at. This is the short block that goes
- * into the composer draft beside it: the address, what was picked when Select
- * was used, and what the person typed. Nothing else — the image carries the
- * rest, and a label with nothing after it is noise, so an absent field simply
- * has no line.
+ * came from and which of the circles on it is which. These are the lines that
+ * go beside it: the address, and one line per numbered place. Nothing else —
+ * the image carries the rest, and a label with nothing after it is noise, so an
+ * absent field simply has no line.
  *
  * PURE: no DOM, no backend call.
  */
-export interface BrowserAttachmentNote {
-  url: string;
-  /** The picked element's selector, when Select was used. */
-  selector: string | null;
-  /** The picked element's tag, for example "svg". */
-  tag: string | null;
-  /** What the person typed in the mini composer. */
-  description: string;
-}
-
 function clean(value: string | null | undefined): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -36,18 +25,42 @@ export function elementTagFromSelector(selector: string | null | undefined): str
   return /^[a-z][a-z0-9-]*$/.test(tag) ? tag : null;
 }
 
-/** The plain-English block appended to the composer draft alongside the image. */
-export function formatAttachmentNote(note: BrowserAttachmentNote): string {
-  const lines: string[] = [];
-  const url = clean(note.url);
-  const tag = clean(note.tag);
-  const selector = clean(note.selector);
-  const description = clean(note.description);
+/** One numbered place on the page, as the request needs to name it. */
+export interface AnnotationNote {
+  number: number;
+  tag: string;
+  label: string;
+}
 
-  if (url) lines.push(`Page: ${url}`);
-  if (tag) lines.push(`Element: ${tag}`);
-  if (selector) lines.push(`Selector: ${selector}`);
+/**
+ * The words for a turn that carries a numbered, marked-up page.
+ *
+ * The picture shows numbered circles; this is the key to them. Without it the
+ * reader of the message can see that three things were pointed at and has no
+ * idea what was asked about any of them — the labels live beside the circles
+ * in the panel and nowhere in what gets sent. A place with nothing typed about
+ * it still gets its line, naming what it is, because the circle on the picture
+ * is there either way and an unexplained number is worse than a bare one.
+ */
+export function formatAnnotationRequest(input: {
+  url: string;
+  description: string;
+  annotations: readonly AnnotationNote[];
+}): string {
+  const lines: string[] = [];
+  const description = clean(input.description);
+  const url = clean(input.url);
+
   if (description) lines.push(description);
+  if (url) lines.push(`Page: ${url}`);
+  if (input.annotations.length > 0) {
+    lines.push('Marked on the page:');
+    for (const note of input.annotations) {
+      const label = clean(note.label);
+      const tag = clean(note.tag) || 'region';
+      lines.push(label ? `${note.number}. ${tag} — ${label}` : `${note.number}. ${tag}`);
+    }
+  }
 
   return lines.join('\n');
 }
