@@ -4,6 +4,29 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Carries one predictable error object across the conversation command boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandError {
+    pub code: &'static str,
+    pub message: String,
+    pub recoverable: bool,
+}
+
+impl From<String> for CommandError {
+    /// Preserves the backend message while giving every command rejection one stable shape.
+    fn from(message: String) -> Self {
+        Self {
+            code: "agent-conversation-command-failed",
+            message,
+            recoverable: false,
+        }
+    }
+}
+
+/// Keeps conversation command signatures concise while enforcing the typed error boundary.
+pub type CommandResult<T> = Result<T, CommandError>;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentExecutionOwner {

@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
+import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   applyAgentConversationEvent,
@@ -58,6 +58,7 @@ import {
   shouldReviveBeforeSend
 } from './conversationActivation.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
+import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 
 let unlisten: UnlistenFn | null = null;
 let conversationEventsSetup: Promise<void> | null = null;
@@ -69,7 +70,7 @@ const ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY = 'acpLiveConversationEvents';
 const sessionDraftPersistence = new ConversationDraftPersistence(
   {
     set: (ownedId, text) => invoke('agent_conversation_set_session_draft', { ownedId, text }),
-    get: (ownedId) => invoke('agent_conversation_get_session_draft', { ownedId }) as Promise<string | null>,
+    get: (ownedId) => invoke<string | null>('agent_conversation_get_session_draft', { ownedId }),
     clear: (ownedId) => invoke('agent_conversation_clear_session_draft', { ownedId })
   },
   setConversationDraft
@@ -91,6 +92,7 @@ export async function clearConversationSessionDraft(ownedId: string): Promise<vo
   if (isTauri()) await sessionDraftPersistence.clear(ownedId);
 }
 
+/** Loads one child transcript through the typed conversation command boundary. */
 export async function readChildConversationTranscript(input: {
   ownedId: string;
   provider: AgentConversationProvider;
@@ -145,6 +147,7 @@ export function buildConversationPrompt(
   return { text, content };
 }
 
+/** Saves one clipboard image through the owner-scoped native attachment vault. */
 export async function saveConversationClipboardImage(
   ownedId: string,
   file: File
@@ -202,7 +205,8 @@ export async function restoreConversationAttachments(
     const restored = Array.isArray(records) ? records.map(restoreConversationAttachmentPreview) : [];
     setConversationAttachments(ownedId, restored);
     return restored;
-  } catch {
+  } catch (_error) {
+    // The invoke seam logged the sanitized failure before this fallback runs.
     // Older controller builds have no listing command. The draft and saved ids
     // remain intact so a later controller can hydrate them without data loss.
     return [];
@@ -254,6 +258,7 @@ export async function loadConversationCapabilities(
   }
 }
 
+/** Applies one advertised config choice and rejects stale provider responses. */
 export async function setConversationConfigOption(
   ownedId: string,
   optionId: string,
@@ -290,6 +295,7 @@ export async function setConversationConfigOption(
   }
 }
 
+/** Starts best-effort terminal transcript projection for one conversation owner. */
 export function startConversationTerminalProjection(input: {
   ownedId: string;
   provider: AgentConversationProvider;
@@ -301,13 +307,15 @@ export function startConversationTerminalProjection(input: {
   terminalProjections.set(input.ownedId, signature);
   void invoke<Record<string, never>>('start_agent_conversation_terminal_projection', {
     request: input
-  }).catch(() => {
+  }).catch((_error) => {
+    // The invoke seam logged the sanitized failure before this retry state resets.
     // The transcript may not exist until the agent accepts its first prompt.
     // Dropping the signature lets the next activation register again.
     if (terminalProjections.get(input.ownedId) === signature) terminalProjections.delete(input.ownedId);
   });
 }
 
+/** Stops terminal transcript projection when this surface no longer needs it. */
 export function stopConversationTerminalProjection(ownedId: string): void {
   if (!terminalProjections.delete(ownedId) || !isTauri()) return;
   void invoke<boolean>('stop_agent_conversation_terminal_projection', { ownedId });
@@ -337,6 +345,7 @@ function applyHandoffReceiptToStore(receipt: AgentConversationHandoffReceipt): v
   Object.assign(state, next);
 }
 
+/** Invokes one handoff phase and keeps its writer-lease transition consistent. */
 async function invokeHandoff(
   input: HandoffInput,
   phase: AgentConversationHandoffPhase
@@ -438,6 +447,7 @@ export function stopConversationEvents(): void {
   for (const ownedId of [...terminalProjections.keys()]) stopConversationTerminalProjection(ownedId);
 }
 
+/** Closes the exact structured generation currently held by the frontend. */
 export async function closeStructuredConversation(ownedId: string): Promise<void> {
   if (!isTauri()) return;
   const generation = getConversationSession(ownedId)?.generation;
@@ -445,6 +455,7 @@ export async function closeStructuredConversation(ownedId: string): Promise<void
   await invoke<boolean>('close_agent_conversation', { ownedId, generation });
 }
 
+/** Ensures one structured runtime and applies only its returned connection. */
 export async function ensureStructuredConversation(input: {
   ownedId: string;
   provider: AgentConversationProvider;
@@ -476,6 +487,7 @@ export async function ensureStructuredConversation(input: {
   return work;
 }
 
+/** Sends one message through the current writer while preserving attachment recovery. */
 export async function sendStructuredMessage(
   ownedId: string,
   text: string,
@@ -618,6 +630,7 @@ export async function sendStructuredMessage(
   }
 }
 
+/** Stops the active turn for the conversation's current generation. */
 export async function stopStructuredTurn(ownedId: string): Promise<void> {
   const state = getConversationSession(ownedId);
   if (!state || state.generation < 1) return;
@@ -626,6 +639,7 @@ export async function stopStructuredTurn(ownedId: string): Promise<void> {
   });
 }
 
+/** Answers one legacy approval request through the typed native boundary. */
 export async function respondToStructuredApproval(
   ownedId: string,
   requestId: string,
@@ -638,6 +652,7 @@ export async function respondToStructuredApproval(
   });
 }
 
+/** Answers a provider permission request while retaining the existing legacy fallback. */
 export async function sendPermissionResponse(
   ownedId: string,
   requestId: string,
@@ -657,6 +672,7 @@ export async function sendPermissionResponse(
   }
 }
 
+/** Answers one structured input request for the current conversation generation. */
 export async function respondToStructuredInput(
   ownedId: string,
   response: Omit<AgentUserInputResponse, 'ownedId' | 'generation'>

@@ -1,5 +1,11 @@
 export type AgentConversationProvider = 'codex' | 'claude';
 
+export interface ConversationCommandError {
+  code: string;
+  message: string;
+  recoverable: boolean;
+}
+
 export type AgentConfigValue = string | number | boolean | null | AgentConfigValue[] | {
   [key: string]: AgentConfigValue;
 };

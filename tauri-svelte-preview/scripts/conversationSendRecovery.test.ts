@@ -7,7 +7,29 @@ import {
   sendTargetGeneration,
   shouldReviveBeforeSend
 } from '../src/lib/shell/conversation/conversationActivation.ts';
+import { invokeConversationCommand } from '../src/lib/shell/conversation/conversationInvoke.ts';
 import { readFileSync } from 'node:fs';
+
+{
+  const logged: Array<{ command: string; code: string; message: string }> = [];
+  const fallback = await invokeConversationCommand<string[]>(
+    'read_agent_conversation_attachments',
+    { ownedId: 'owned-a' },
+    async () => Promise.reject({
+      code: 'attachment-read-failed',
+      message: 'Attachment metadata is unavailable',
+      recoverable: true
+    }),
+    (command, error) => logged.push({ command, code: error.code, message: error.message })
+  ).catch(() => []);
+
+  assert.deepEqual(fallback, [], 'a logged attachment restore failure keeps the empty-list fallback');
+  assert.deepEqual(logged, [{
+    command: 'read_agent_conversation_attachments',
+    code: 'attachment-read-failed',
+    message: 'Attachment metadata is unavailable'
+  }], 'the conversation invoke seam logs the sanitized command error');
+}
 
 const connected = {
   sessionState: 'live',

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::manager::AgentRuntimeManager;
-use super::protocol::AgentWriterLeaseOwner;
+use super::protocol::{AgentWriterLeaseOwner, CommandResult};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -136,11 +136,12 @@ fn validate_tui_release(assertion: &AgentConversationProcessTreeAssertion) -> Re
 }
 
 #[tauri::command]
+/// Moves the writer lease through one validated handoff phase and returns typed failures.
 pub async fn handoff_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     terminal_registry: tauri::State<'_, crate::terminal::TerminalRegistry>,
     request: AgentConversationHandoffRequest,
-) -> Result<AgentConversationHandoffReceipt, String> {
+) -> CommandResult<AgentConversationHandoffReceipt> {
     let _lifecycle = manager.lifecycle_guard(&request.owned_id).await?;
     match request.phase {
         AgentConversationHandoffPhase::Prepare => {
@@ -167,7 +168,7 @@ pub async fn handoff_agent_conversation(
                     .find(|session| session.session_id == pty_id)
                     .ok_or_else(|| "The requested user pty is not registered".to_string())?;
                 if session.kind != crate::terminal::TerminalKind::UserPty || session.exited {
-                    return Err("The requested user pty is not live".to_string());
+                    return Err("The requested user pty is not live".to_string().into());
                 }
                 if request.mode == AgentConversationHandoffMode::SameSession {
                     manager

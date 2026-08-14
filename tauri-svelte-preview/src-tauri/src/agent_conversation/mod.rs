@@ -16,7 +16,7 @@ use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
     AgentConversationEvent, AgentConversationSessionRecord, AgentConversationSnapshot,
-    EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
+    CommandResult, EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
     RespondAgentConversationInputRequest, RespondAgentConversationPermissionRequest,
     SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
     StopAgentConversationTurnRequest, UpdateAgentConversationSessionMetaRequest,
@@ -47,41 +47,49 @@ impl From<AnnotationRow> for AgentConversationSessionAnnotation {
 }
 
 #[tauri::command]
+/// Adds one annotation and converts storage failures at the native boundary.
 pub fn agent_conversation_add_session_annotation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     url: String,
     rect_json: String,
     note: String,
-) -> Result<AgentConversationSessionAnnotation, String> {
-    manager
-        .add_session_annotation(&owned_id, &url, &rect_json, &note)
-        .map(Into::into)
+) -> CommandResult<AgentConversationSessionAnnotation> {
+    command_result(
+        manager
+            .add_session_annotation(&owned_id, &url, &rect_json, &note)
+            .map(Into::into),
+    )
 }
 
 #[tauri::command]
+/// Lists annotations for one conversation with the shared command error shape.
 pub fn agent_conversation_list_session_annotations(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
-) -> Result<Vec<AgentConversationSessionAnnotation>, String> {
-    manager
-        .list_session_annotations(&owned_id)
-        .map(|annotations| annotations.into_iter().map(Into::into).collect())
+) -> CommandResult<Vec<AgentConversationSessionAnnotation>> {
+    command_result(
+        manager
+            .list_session_annotations(&owned_id)
+            .map(|annotations| annotations.into_iter().map(Into::into).collect()),
+    )
 }
 
 #[tauri::command]
+/// Deletes one annotation and converts storage failures at the native boundary.
 pub fn agent_conversation_delete_session_annotation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     id: i64,
-) -> Result<(), String> {
-    manager.delete_session_annotation(id)
+) -> CommandResult<()> {
+    command_result(manager.delete_session_annotation(id))
 }
 
 #[tauri::command]
+/// Ensures a conversation runtime and returns typed failures to the frontend.
 pub async fn ensure_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: EnsureAgentConversationRequest,
-) -> Result<AgentConversationConnection, String> {
+) -> CommandResult<AgentConversationConnection> {
     let owned_id = request.owned_id.clone();
     log_command_error(
         "ensure_agent_conversation",
@@ -91,10 +99,11 @@ pub async fn ensure_agent_conversation(
 }
 
 #[tauri::command]
+/// Sends one structured message and returns typed failures without logging its content.
 pub async fn send_agent_conversation_message(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: SendAgentConversationMessageRequest,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let owned_id = request.owned_id.clone();
     let result = async {
         let prompt = prompt_from_blocks(request.text.trim(), request.content)?;
@@ -121,99 +130,115 @@ pub async fn send_agent_conversation_message(
 }
 
 #[tauri::command]
+/// Persists one draft and converts storage failures at the native boundary.
 pub fn agent_conversation_set_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     text: String,
-) -> Result<(), String> {
-    manager.set_session_draft(&owned_id, &text)
+) -> CommandResult<()> {
+    command_result(manager.set_session_draft(&owned_id, &text))
 }
 
 #[tauri::command]
+/// Reads one persisted draft with the shared command error shape.
 pub fn agent_conversation_get_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
-) -> Result<Option<String>, String> {
-    manager.get_session_draft(&owned_id)
+) -> CommandResult<Option<String>> {
+    command_result(manager.get_session_draft(&owned_id))
 }
 
 #[tauri::command]
+/// Clears one persisted draft and converts storage failures at the native boundary.
 pub fn agent_conversation_clear_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
-) -> Result<(), String> {
-    manager.clear_session_draft(&owned_id)
+) -> CommandResult<()> {
+    command_result(manager.clear_session_draft(&owned_id))
 }
 
 #[tauri::command]
+/// Records a legacy approval decision after validating its request identity.
 pub async fn respond_agent_conversation_approval(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: RespondAgentConversationApprovalRequest,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let request_id = required_id(&request.request_id, "Approval request id")?;
-    manager
-        .respond_legacy_approval(
-            &request.owned_id,
-            request.generation,
-            request_id,
-            request.decision,
-        )
-        .await
+    command_result(
+        manager
+            .respond_legacy_approval(
+                &request.owned_id,
+                request.generation,
+                request_id,
+                request.decision,
+            )
+            .await,
+    )
 }
 
 #[tauri::command]
+/// Records a provider permission choice after validating its request identity.
 pub async fn respond_agent_conversation_permission(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: RespondAgentConversationPermissionRequest,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let request_id = required_id(&request.request_id, "Permission request id")?;
-    manager
-        .respond_permission_option(
-            &request.owned_id,
-            request.generation,
-            request_id,
-            request.option_id,
-        )
-        .await
+    command_result(
+        manager
+            .respond_permission_option(
+                &request.owned_id,
+                request.generation,
+                request_id,
+                request.option_id,
+            )
+            .await,
+    )
 }
 
 #[tauri::command]
+/// Records structured user input after validating its request identity.
 pub async fn respond_agent_conversation_input(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: RespondAgentConversationInputRequest,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let request_id = required_id(&request.request_id, "User input request id")?;
-    manager
-        .respond_user_input(protocol::AgentUserInputResponse {
-            identity: protocol::AgentRequestIdentity {
-                owned_id: request.owned_id,
-                generation: request.generation,
-                request_id,
-                turn_id: None,
-                item_id: None,
-            },
-            values: request.values,
-            cancelled: request.cancelled,
-        })
-        .await
+    command_result(
+        manager
+            .respond_user_input(protocol::AgentUserInputResponse {
+                identity: protocol::AgentRequestIdentity {
+                    owned_id: request.owned_id,
+                    generation: request.generation,
+                    request_id,
+                    turn_id: None,
+                    item_id: None,
+                },
+                values: request.values,
+                cancelled: request.cancelled,
+            })
+            .await,
+    )
 }
 
 #[tauri::command]
+/// Stops the active turn for the requested conversation generation.
 pub async fn stop_agent_conversation_turn(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: StopAgentConversationTurnRequest,
-) -> Result<(), String> {
-    manager
-        .cancel_turn(&request.owned_id, request.generation)
-        .await
+) -> CommandResult<()> {
+    command_result(
+        manager
+            .cancel_turn(&request.owned_id, request.generation)
+            .await,
+    )
 }
 
 #[tauri::command]
+/// Applies the supported conversation configuration fields for one generation.
 pub async fn set_agent_conversation_config(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: SetAgentConversationConfigRequest,
-) -> Result<AgentConversationConfigState, String> {
-    manager.set_conversation_config(request).await
+) -> CommandResult<AgentConversationConfigState> {
+    command_result(manager.set_conversation_config(request).await)
 }
 
 #[derive(serde::Deserialize)]
@@ -232,130 +257,151 @@ pub struct SetAgentConversationConfigOptionResponse {
 }
 
 #[tauri::command]
+/// Applies one advertised provider option and returns the refreshed choices.
 pub async fn set_agent_conversation_config_option(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: SetAgentConversationConfigOptionRequest,
-) -> Result<SetAgentConversationConfigOptionResponse, String> {
-    manager
-        .set_config(
-            &request.owned_id,
-            request.generation,
-            &request.option_id,
-            request.value,
-        )
-        .await
-        .map(|config_options| SetAgentConversationConfigOptionResponse { config_options })
+) -> CommandResult<SetAgentConversationConfigOptionResponse> {
+    command_result(
+        manager
+            .set_config(
+                &request.owned_id,
+                request.generation,
+                &request.option_id,
+                request.value,
+            )
+            .await
+            .map(|config_options| SetAgentConversationConfigOptionResponse { config_options }),
+    )
 }
 
 #[tauri::command]
+/// Reads the current provider configuration for one conversation.
 pub fn read_agent_conversation_config(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
-) -> Result<AgentConversationConfigState, String> {
-    manager.conversation_config(&owned_id)
+) -> CommandResult<AgentConversationConfigState> {
+    command_result(manager.conversation_config(&owned_id))
 }
 
 #[tauri::command]
+/// Reads the current provider capabilities for one conversation.
 pub fn read_agent_conversation_capabilities(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
-) -> Result<AgentCapabilities, String> {
-    manager.capabilities_for_owned_id(&owned_id)
+) -> CommandResult<AgentCapabilities> {
+    command_result(manager.capabilities_for_owned_id(&owned_id))
 }
 
 #[tauri::command]
+/// Closes one exact conversation generation so stale views cannot close a replacement.
 pub async fn close_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     generation: u64,
-) -> Result<bool, String> {
-    manager.close(&owned_id, generation).await
+) -> CommandResult<bool> {
+    command_result(manager.close(&owned_id, generation).await)
 }
 
 #[tauri::command]
+/// Reads the durable snapshot for one conversation.
 pub async fn read_agent_conversation_snapshot(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
-) -> Result<Option<AgentConversationSnapshot>, String> {
-    manager.snapshot(&owned_id)
+) -> CommandResult<Option<AgentConversationSnapshot>> {
+    command_result(manager.snapshot(&owned_id))
 }
 
 #[tauri::command]
+/// Lists durable conversation sessions with typed storage failures.
 pub fn list_agent_conversation_sessions(
     manager: tauri::State<'_, AgentRuntimeManager>,
-) -> Result<Vec<AgentConversationSessionRecord>, String> {
-    manager.list_sessions()
+) -> CommandResult<Vec<AgentConversationSessionRecord>> {
+    command_result(manager.list_sessions())
 }
 
 #[tauri::command]
+/// Lists durable events after the requested sequence for one conversation.
 pub fn list_agent_conversation_events(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     from_sequence: Option<u64>,
-) -> Result<Vec<AgentConversationEvent>, String> {
-    manager.list_events(&owned_id, from_sequence.unwrap_or(0))
+) -> CommandResult<Vec<AgentConversationEvent>> {
+    command_result(manager.list_events(&owned_id, from_sequence.unwrap_or(0)))
 }
 
 #[tauri::command]
+/// Updates owner-scoped conversation metadata and returns the stored record.
 pub fn update_agent_conversation_session_meta(
     manager: tauri::State<'_, AgentRuntimeManager>,
     request: UpdateAgentConversationSessionMetaRequest,
-) -> Result<AgentConversationSessionRecord, String> {
-    manager.update_session_meta(request)
+) -> CommandResult<AgentConversationSessionRecord> {
+    command_result(manager.update_session_meta(request))
 }
 
 #[tauri::command]
+/// Reads a provider transcript while keeping transcript failures in the shared shape.
 pub async fn read_agent_conversation_transcript(
     provider: String,
     native_session_id: String,
     child_session_id: Option<String>,
-) -> Result<transcript::TranscriptSnapshot, String> {
-    transcript::read(&provider, &native_session_id, child_session_id.as_deref())
+) -> CommandResult<transcript::TranscriptSnapshot> {
+    command_result(transcript::read(
+        &provider,
+        &native_session_id,
+        child_session_id.as_deref(),
+    ))
 }
 
 #[tauri::command]
+/// Starts transcript projection for one native conversation session.
 pub async fn start_agent_conversation_terminal_projection(
     manager: tauri::State<'_, AgentRuntimeManager>,
     registry: tauri::State<'_, terminal_projection::TerminalProjectionRegistry>,
     request: terminal_projection::StartTerminalProjectionRequest,
-) -> Result<terminal_projection::TerminalProjectionRegistration, String> {
-    registry.start(manager.inner().clone(), request)
+) -> CommandResult<terminal_projection::TerminalProjectionRegistration> {
+    command_result(registry.start(manager.inner().clone(), request))
 }
 
 #[tauri::command]
+/// Stops transcript projection for one owner-scoped conversation.
 pub async fn stop_agent_conversation_terminal_projection(
     registry: tauri::State<'_, terminal_projection::TerminalProjectionRegistry>,
     owned_id: String,
-) -> Result<bool, String> {
-    registry.stop(&owned_id)
+) -> CommandResult<bool> {
+    command_result(registry.stop(&owned_id))
 }
 
 #[tauri::command]
+/// Saves one validated image in the conversation attachment vault.
 pub async fn save_agent_conversation_attachment(
     app: tauri::AppHandle,
     owned_id: String,
     mime_type: String,
     bytes: Vec<u8>,
-) -> Result<attachments::SavedConversationAttachment, String> {
-    attachments::save(&app, &owned_id, &mime_type, &bytes)
+) -> CommandResult<attachments::SavedConversationAttachment> {
+    command_result(attachments::save(&app, &owned_id, &mime_type, &bytes))
 }
 
 #[tauri::command]
+/// Lists validated images stored for one conversation owner.
 pub fn read_agent_conversation_attachments(
     app: tauri::AppHandle,
     owned_id: String,
-) -> Result<Vec<attachments::SavedConversationAttachment>, String> {
-    attachments::read(&app, &owned_id)
+) -> CommandResult<Vec<attachments::SavedConversationAttachment>> {
+    command_result(attachments::read(&app, &owned_id))
 }
 
 #[tauri::command]
+/// Deletes one validated image from the conversation attachment vault.
 pub fn delete_agent_conversation_attachment(
     app: tauri::AppHandle,
     request: attachments::DeleteConversationAttachmentRequest,
-) -> Result<(), String> {
-    attachments::delete(&app, request)
+) -> CommandResult<()> {
+    command_result(attachments::delete(&app, request))
 }
 
+/// Rejects blank request identifiers before manager work begins.
 fn required_id(value: &str, label: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
@@ -365,13 +411,39 @@ fn required_id(value: &str, label: &str) -> Result<String, String> {
     }
 }
 
+/// Converts an internal string failure only when it crosses the native command boundary.
+fn command_result<T>(result: Result<T, String>) -> CommandResult<T> {
+    result.map_err(Into::into)
+}
+
+/// Logs a sanitized command failure and returns it in the shared boundary shape.
 fn log_command_error<T>(
     command: &str,
     owned_id: &str,
     result: Result<T, String>,
-) -> Result<T, String> {
+) -> CommandResult<T> {
     if let Err(error) = &result {
         crate::debug_log::stderr_log!("{command} [{owned_id}]: {error}");
     }
-    result
+    command_result(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_rejection_serializes_as_a_typed_error() {
+        let rejection = command_result(required_id("", "Request id"));
+        let serialized = serde_json::to_value(rejection.unwrap_err()).unwrap();
+
+        assert_eq!(
+            serialized,
+            serde_json::json!({
+                "code": "agent-conversation-command-failed",
+                "message": "Request id is required",
+                "recoverable": false
+            })
+        );
+    }
 }
