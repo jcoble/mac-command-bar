@@ -273,6 +273,9 @@
             bind:this={promptHost}
             data-testid="conversation-composer-input"
             aria-label="Message"
+            spellcheck="false"
+            autocorrect="off"
+            autocapitalize="off"
             placeholder={pendingApproval ? 'Resolve the approval above to continue' : pendingInputs.length ? 'Complete the requested input above' : `Message ${provider}`}
             value={inputDraft}
             disabled={composerLocked}
