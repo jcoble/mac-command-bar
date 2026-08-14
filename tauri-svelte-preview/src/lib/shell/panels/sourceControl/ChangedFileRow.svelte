@@ -5,13 +5,23 @@
    * The row is the kit's `ListRow`: a status letter, the file's name, the folder
    * it sits in, and what changed about it. Clicking it shows the file's changes
    * in the middle of the shell; right-clicking offers the same thing plus the
-   * four ways of getting at the file outside this panel.
+   * three ways of changing this one file and the four ways of getting at it
+   * outside this panel.
    *
-   * Every action this row can run is read-only. Staging is a single press at the
-   * top of the panel, and nothing here throws work away.
+   * The two actions worth a press without opening a menu — stage or unstage,
+   * and discard — also sit in the row's hover cluster, because putting a commit
+   * together is per file work: a working copy usually holds two or three
+   * unrelated changes and "Stage All" can only make one commit out of them.
+   *
+   * NOTHING IS THROWN AWAY FROM HERE. Discard hands the request up to the panel,
+   * which asks first; this row never reaches the service for it.
    */
+  import { HoverActionButton } from '$lib/components/ui/hover-actions/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+  import Minus from '@lucide/svelte/icons/minus';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Undo2 from '@lucide/svelte/icons/undo-2';
   import { absolutePathWithin } from '$lib/shell/git/gitService';
   import { describeGitFileChange, gitFileTitle } from '$lib/shell/git/gitPanelStore.svelte';
   import { openDiffForFile, openFileInEditor } from '$lib/shell/workbenchNavigation';
@@ -29,12 +39,55 @@
     /** The repository folder the panel is pointed at. '' before there is one. */
     root: string;
     selected?: boolean;
+    /** Can this page change the repository at all? */
+    canWrite: boolean;
+    /** Why not, when it cannot. */
+    readOnlyReason: string;
+    /** True while another source-control action is still running. */
+    busy: boolean;
+    onStage(file: ProjectGitFileStatus): void;
+    onUnstage(file: ProjectGitFileStatus): void;
+    /** Ask for this file's changes to be thrown away. The panel asks the person. */
+    onRequestDiscard(file: ProjectGitFileStatus): void;
   }
-  let { file, root, selected = false }: Props = $props();
+  let {
+    file,
+    root,
+    selected = false,
+    canWrite,
+    readOnlyReason,
+    busy,
+    onStage,
+    onUnstage,
+    onRequestDiscard
+  }: Props = $props();
 
   const parts = $derived(splitRepositoryPath(file.relativePath));
-  const actions = $derived(sourceControlFileActions(file, root));
+  const actions = $derived(
+    sourceControlFileActions(file, root, { canWrite, readOnlyReason, busy })
+  );
   const absolutePath = $derived(root === '' ? '' : absolutePathWithin(root, file.relativePath));
+
+  /** One action by id, for the two the hover cluster draws as buttons. */
+  function actionById(id: SourceControlFileActionId) {
+    return actions.find((entry) => entry.id === id);
+  }
+
+  const stageAction = $derived(actionById('stage'));
+  const unstageAction = $derived(actionById('unstage'));
+  const discardAction = $derived(actionById('discard'));
+
+  /**
+   * The hover cluster shows the one staging direction this file has left to go.
+   * A file with both staged and unstaged work can go either way, and then the
+   * unstaged half is the one a press is usually meant for.
+   */
+  const stageDirection = $derived(stageAction?.enabled ? 'stage' : 'unstage');
+
+  /** What a hover button says: what it will do, or why it will not. */
+  function hint(action: { label: string; enabled: boolean; disabledReason: string | null }): string {
+    return action.enabled ? `${action.label} — ${parts.name}` : (action.disabledReason ?? action.label);
+  }
 
   /** The letter's color sorts the list by eye before anyone reads a path. */
   const badgeTone = $derived.by(() => {
@@ -56,6 +109,9 @@
 
   function run(id: SourceControlFileActionId): void {
     if (id === 'view') showChanges();
+    else if (id === 'stage') onStage(file);
+    else if (id === 'unstage') onUnstage(file);
+    else if (id === 'discard') onRequestDiscard(file);
     else if (id === 'copy-path') copy(absolutePath);
     else if (id === 'copy-relative-path') copy(file.relativePath);
     else if (id === 'open-in-editor') openFileInEditor({ path: absolutePath, projectRoot: root });
@@ -70,6 +126,7 @@
         <ListRow
           {selected}
           onclick={showChanges}
+          actionsLabel="File actions"
           data-testid={`source-control-file-${file.relativePath}`}
           class="min-w-0"
         >
@@ -86,6 +143,35 @@
           <span class="shrink-0 text-sm text-muted-foreground">
             {describeGitFileChange(file)}
           </span>
+
+          {#snippet actions()}
+            {#if stageDirection === 'stage' && stageAction}
+              <HoverActionButton
+                label={hint(stageAction)}
+                disabled={!stageAction.enabled}
+                onclick={() => run('stage')}
+              >
+                <Plus aria-hidden="true" />
+              </HoverActionButton>
+            {:else if unstageAction}
+              <HoverActionButton
+                label={hint(unstageAction)}
+                disabled={!unstageAction.enabled}
+                onclick={() => run('unstage')}
+              >
+                <Minus aria-hidden="true" />
+              </HoverActionButton>
+            {/if}
+            {#if discardAction}
+              <HoverActionButton
+                label={hint(discardAction)}
+                disabled={!discardAction.enabled}
+                onclick={() => run('discard')}
+              >
+                <Undo2 aria-hidden="true" />
+              </HoverActionButton>
+            {/if}
+          {/snippet}
         </ListRow>
       </div>
     {/snippet}

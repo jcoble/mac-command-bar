@@ -105,25 +105,31 @@ assert.deepEqual(
   'every file in the status counts as changed; the untracked ones are counted again on their own'
 );
 
-// ── per-file menu ───────────────────────────────────────────────────────────
+// ── per-file actions ────────────────────────────────────────────────────────
 
-const actions = sourceControlFileActions(file('src/zebra.ts'), '/repo');
+const READ_ONLY = 'This page can read the repository, not change it.';
+const writable = { canWrite: true, readOnlyReason: READ_ONLY, busy: false };
+
+const actions = sourceControlFileActions(file('src/zebra.ts'), '/repo', writable);
 assert.deepEqual(
   actions.map((action) => action.id),
-  ['view', 'copy-path', 'copy-relative-path', 'open-in-editor', 'reveal-in-finder'],
-  'the menu offers exactly the five read-side actions, in the order the panel draws them'
+  [
+    'view',
+    'stage',
+    'unstage',
+    'discard',
+    'copy-path',
+    'copy-relative-path',
+    'open-in-editor',
+    'reveal-in-finder'
+  ],
+  'the actions come in the order the panel draws them, the three write ones next to the diff'
 );
 
 assert.deepEqual(
-  actions.map((action) => action.enabled),
-  [true, true, true, true, true],
-  'against a normal file in a known repository every action is available'
-);
-
-assert.deepEqual(
-  actions.filter((action) => action.disabledReason !== null),
-  [],
-  'an available action carries no reason for being off'
+  actions.filter((action) => action.enabled).map((action) => action.id),
+  ['view', 'stage', 'discard', 'copy-path', 'copy-relative-path', 'open-in-editor', 'reveal-in-finder'],
+  'a file changed only in the working copy can be staged and discarded, but there is nothing to unstage'
 );
 
 assert.equal(
@@ -132,7 +138,54 @@ assert.equal(
   'no action id appears twice'
 );
 
-const withoutRoot = sourceControlFileActions(file('src/zebra.ts'), '');
+const stagedOnly = sourceControlFileActions(
+  file('README.md', { indexStatus: 'M', worktreeStatus: '', status: 'staged' }),
+  '/repo',
+  writable
+);
+assert.deepEqual(
+  stagedOnly.filter((action) => action.enabled).map((action) => action.id),
+  ['view', 'unstage', 'discard', 'copy-path', 'copy-relative-path', 'open-in-editor', 'reveal-in-finder'],
+  'a file whose whole change is staged can be unstaged, and staging it again would do nothing'
+);
+
+const bothHalves = sourceControlFileActions(
+  file('src/both.ts', { indexStatus: 'M', worktreeStatus: 'modified' }),
+  '/repo',
+  writable
+);
+assert.deepEqual(
+  bothHalves.filter((action) => ['stage', 'unstage'].includes(action.id)).map((a) => a.enabled),
+  [true, true],
+  'a file with work on both sides of the index can go either way'
+);
+
+const readOnly = sourceControlFileActions(file('src/zebra.ts'), '/repo', {
+  canWrite: false,
+  readOnlyReason: READ_ONLY,
+  busy: false
+});
+assert.deepEqual(
+  readOnly.filter((action) => !action.enabled).map((action) => [action.id, action.disabledReason]),
+  [
+    ['stage', READ_ONLY],
+    ['unstage', READ_ONLY],
+    ['discard', READ_ONLY]
+  ],
+  'a page that cannot change the repository still reads it, and the three write actions say why they are off'
+);
+
+const midAction = sourceControlFileActions(file('src/zebra.ts'), '/repo', {
+  ...writable,
+  busy: true
+});
+assert.deepEqual(
+  midAction.filter((action) => !action.enabled).map((action) => action.id),
+  ['stage', 'unstage', 'discard'],
+  'while a source-control action is running nothing else changes the repository'
+);
+
+const withoutRoot = sourceControlFileActions(file('src/zebra.ts'), '', writable);
 assert.deepEqual(
   withoutRoot.filter((action) => action.enabled).map((action) => action.id),
   ['copy-relative-path'],
@@ -147,12 +200,17 @@ assert.ok(
 
 const deleted = sourceControlFileActions(
   file('src/gone.ts', { badge: 'D', worktreeStatus: 'deleted', status: 'deleted' }),
-  '/repo'
+  '/repo',
+  writable
 );
 assert.deepEqual(
   deleted.filter((action) => !action.enabled).map((action) => action.id),
-  ['view', 'open-in-editor', 'reveal-in-finder'],
-  'a deleted file has nothing on disk to show, open, or reveal'
+  ['view', 'unstage', 'open-in-editor', 'reveal-in-finder'],
+  'a deleted file has nothing on disk to show, open, or reveal, and nothing staged to take back'
+);
+assert.ok(
+  deleted.find((action) => action.id === 'discard')?.enabled,
+  'a deleted file can still be brought back by discarding the deletion'
 );
 
 console.log('sourceControlPanel.test.ts: ok');

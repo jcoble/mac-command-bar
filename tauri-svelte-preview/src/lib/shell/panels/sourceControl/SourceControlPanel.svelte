@@ -2,10 +2,15 @@
   /**
    * SourceControlPanel.svelte — the Source control tab of the right column.
    *
-   * What the working copy looks like, and the two changes this version can make
-   * to it: stage everything, and commit what is staged. Pushing, pulling,
-   * rebasing and pull requests are deliberately absent — the header keeps a slot
-   * for them and says so rather than pretending they are one press away.
+   * What the working copy looks like, and the changes this version can make to
+   * it: stage or unstage one file or all of them, throw one file's changes away,
+   * and commit what is staged. Pushing, pulling, rebasing and pull requests are
+   * deliberately absent — the header keeps a slot for them and says so rather
+   * than pretending they are one press away.
+   *
+   * THIS PANEL IS THE ONLY PLACE A DISCARD IS ASKED ABOUT. A row can request
+   * one; nothing reaches `gitService.discardPaths` until the dialog is answered,
+   * because git keeps no copy of a discarded change.
    *
    * The diff is NOT drawn here. Picking a file asks the workbench to show that
    * file's changes, which land in the Diff tab in the middle of the shell, so
@@ -45,9 +50,16 @@
     describeGitBranch,
     describeGitBranchTitle,
     hasStagedChanges,
+    isGitFileUntracked,
     isNotARepositoryError
   } from '$lib/shell/git/gitPanelStore.svelte';
   import { gitService as defaultService, type GitService } from '$lib/shell/git/gitService';
+  import DiscardConfirmDialog from '$lib/shell/components/git/DiscardConfirmDialog.svelte';
+  import {
+    describeDiscardQuestion,
+    type DiscardTarget
+  } from '$lib/shell/components/git/discardConfirm';
+  import type { ProjectGitFileStatus } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
 
   import ChangedFileRow from './ChangedFileRow.svelte';
@@ -139,6 +151,35 @@
 
   function toggleSection(id: string): void {
     collapsed = { ...collapsed, [id]: !collapsed[id] };
+  }
+
+  function stageOne(file: ProjectGitFileStatus): void {
+    if (!canWrite || busy) return;
+    void service.stagePaths([file.relativePath]);
+  }
+
+  function unstageOne(file: ProjectGitFileStatus): void {
+    if (!canWrite || busy) return;
+    void service.unstagePaths([file.relativePath]);
+  }
+
+  /** The file whose changes are being asked about, or null while nothing is. */
+  let discarding = $state<DiscardTarget | null>(null);
+  const discardQuestion = $derived(
+    discarding === null ? null : describeDiscardQuestion({ scope: 'file', targets: [discarding] })
+  );
+
+  function askToDiscard(file: ProjectGitFileStatus): void {
+    if (!canWrite || busy) return;
+    discarding = { relativePath: file.relativePath, untracked: isGitFileUntracked(file) };
+  }
+
+  /** The one route to a discard in this panel, and only from the dialog. */
+  function confirmDiscard(): void {
+    const target = discarding;
+    discarding = null;
+    if (!target || !canWrite) return;
+    void service.discardPaths([target.relativePath]);
   }
 </script>
 
@@ -277,6 +318,12 @@
                     {file}
                     root={folder}
                     selected={panel.selectedPath === file.relativePath}
+                    {canWrite}
+                    readOnlyReason={READ_ONLY_IN_BROWSER_MESSAGE}
+                    {busy}
+                    onStage={stageOne}
+                    onUnstage={unstageOne}
+                    onRequestDiscard={askToDiscard}
                   />
                 {/each}
               {/if}
@@ -289,6 +336,15 @@
     </ScrollArea>
   {/if}
 </div>
+
+<DiscardConfirmDialog
+  question={discardQuestion}
+  open={discarding !== null}
+  onOpenChange={(next) => {
+    if (!next) discarding = null;
+  }}
+  onConfirm={confirmDiscard}
+/>
 
 <style>
   /* The chevron turns to point down while its section is open, and stops there. */
