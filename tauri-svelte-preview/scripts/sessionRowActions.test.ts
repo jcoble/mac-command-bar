@@ -216,20 +216,49 @@ assert.match(
 assert.match(row, /class="action-reserve"/, 'line one always reserves the action cluster width');
 assert.match(
   row,
-  /\.action-reserve\s*\{[\s\S]*?width:\s*0;[\s\S]*?flex:\s*0 0 0px;[\s\S]*?\.row:hover \.action-reserve[\s\S]*?width:\s*92px;/,
-  'action space is collapsed at rest and opens to 92px on hover'
+  /\.action-reserve\s*\{[\s\S]*?width:\s*0;[\s\S]*?flex:\s*0 0 0px;[\s\S]*?\.row:hover \.action-reserve[\s\S]*?width:\s*119px;/,
+  'action space is collapsed at rest and opens to 119px on hover'
 );
 assert.match(
   row,
-  /class="absolute top-\[2px\] right-\[93px\] z-\[2\]"/,
-  'the actions occupy line one immediately left of the fixed status slot'
+  /class="absolute top-\[2px\] z-\[2\]"/,
+  'the actions occupy line one without a hard-coded right offset'
+);
+assert.match(
+  row,
+  /\[data-slot='hover-actions'\]\)\s*\{\s*right:\s*calc\(11px \+ var\(--rail-status-room\)\);/,
+  'the cluster hugs the rail edge, offset only by what the row state still needs'
+);
+assert.match(
+  row,
+  /\.row\[data-presence='working'\] \{ --rail-status-room: 19px; \}/,
+  'a working row keeps just the spinner to the right of the cluster'
+);
+assert.match(
+  row,
+  /\.row:hover \.age-text,[\s\S]*?\.row:focus-within \.age-text \{ display: none; \}/,
+  'hovering trades the elapsed time for the actions'
 );
 assert.match(
   row,
   /\[data-slot='hover-actions'\] svg\)[\s\S]*?width:\s*18px;\s*height:\s*18px;/,
   'row action glyphs are 18px'
 );
-assert.equal((row.match(/size="sm"/g) ?? []).length, 4, 'all three jumps and Resume use 28px kit buttons');
+assert.equal(
+  (row.match(/size="sm"/g) ?? []).length,
+  6,
+  'the three jumps, Settle, Revert and Resume all use 28px kit buttons'
+);
+assert.match(
+  row,
+  /data-testid="worktree-agent-settle"[\s\S]*?label="Settle"[\s\S]*?onSettle\?\.\(\)/,
+  'the hover cluster settles a session where its age sits at rest'
+);
+assert.match(
+  row,
+  /\{#if shelf === 'settled'\}[\s\S]*?data-testid="worktree-agent-unsettle"[\s\S]*?onUnsettle\?\.\(\)/,
+  'a settled row offers the way back instead'
+);
 assert.doesNotMatch(
   row,
   /linear-gradient\(to right, transparent, var\(--color-hover\)\)/,

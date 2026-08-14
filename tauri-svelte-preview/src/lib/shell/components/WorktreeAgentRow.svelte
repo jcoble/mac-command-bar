@@ -12,6 +12,8 @@
    */
   import { onDestroy } from 'svelte';
 
+  import Archive from '@lucide/svelte/icons/archive';
+  import ArchiveRestore from '@lucide/svelte/icons/archive-restore';
   import CornerDownLeft from '@lucide/svelte/icons/corner-down-left';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import Folder from '@lucide/svelte/icons/folder';
@@ -403,6 +405,7 @@
   class:dragging
   class:drop-before={dropPosition === 'before'}
   class:drop-after={dropPosition === 'after'}
+  class:needs-you-row={needsYou}
   class="row group"
   draggable="true"
   ondragstart={onDragStart}
@@ -464,7 +467,7 @@
                   {#if isWorking}
                     <span class="spinner" class:spinning aria-hidden="true"></span>
                   {/if}
-                  {ageText ?? ''}
+                  <span class="age-text">{ageText ?? ''}</span>
                 </span>
               {/if}
             </span>
@@ -508,11 +511,13 @@
   </ContextMenu.Root>
 
   <!-- The kit cluster is always in the page. Its matching spacer above puts it
-       on line one, left of the fixed status slot, without covering the title. -->
+       on line one without covering the title. On hover it sits flush with the
+       row's right edge, leaving only the room the row's own state still needs
+       — the working spinner, a "Needs you" badge, or the resume control. -->
   <HoverActions
     data-testid="worktree-agent-overlay"
     label="Session actions"
-    class="absolute top-[2px] right-[93px] z-[2]"
+    class="absolute top-[2px] z-[2]"
   >
     <span data-testid="worktree-agent-jump" class="contents">
       <span data-testid="worktree-agent-jump-session" class="contents">
@@ -546,6 +551,28 @@
         </HoverActionButton>
       </span>
     </span>
+
+    <!-- Where the age sits at rest: the lifecycle move this session can make
+         next, which is settling it, or putting a settled one back on Done. -->
+    {#if shelf === 'settled'}
+      <HoverActionButton
+        data-testid="worktree-agent-unsettle"
+        label="Revert to Done"
+        size="sm"
+        onclick={(event) => { event.stopPropagation(); onUnsettle?.(); }}
+      >
+        <ArchiveRestore aria-hidden="true" />
+      </HoverActionButton>
+    {:else}
+      <HoverActionButton
+        data-testid="worktree-agent-settle"
+        label="Settle"
+        size="sm"
+        onclick={(event) => { event.stopPropagation(); onSettle?.(); }}
+      >
+        <Archive aria-hidden="true" />
+      </HoverActionButton>
+    {/if}
   </HoverActions>
 
   {#if presenceIsRestart}
@@ -573,6 +600,10 @@
 
 <style>
   .row {
+    /* How much room right of the hover cluster this row's own state still
+       needs. Everything else the status slot holds at rest gives way, so the
+       buttons end up against the rail's right edge. */
+    --rail-status-room: 0px;
     position: relative;
     display: block;
     box-sizing: border-box;
@@ -660,8 +691,8 @@
 
   .row:hover .action-reserve,
   .row:focus-within .action-reserve {
-    width: 92px;
-    flex: 0 0 92px;
+    width: 119px;
+    flex: 0 0 119px;
   }
 
   .status-slot {
@@ -670,6 +701,26 @@
     display: flex;
     justify-content: flex-end;
   }
+
+  .row[data-presence='working'] { --rail-status-room: 19px; }
+  .row[data-presence='stopped'] { --rail-status-room: 34px; }
+  .row.needs-you-row { --rail-status-room: 82px; }
+
+  /* Four 28px buttons and three 4px gaps, set against the row's right padding
+     plus whatever the state above still claims. */
+  .row :global([data-slot='hover-actions']) {
+    right: calc(11px + var(--rail-status-room));
+  }
+
+  /* Hovering trades the elapsed time for the actions; the spinner stays. */
+  .row:hover .status-slot,
+  .row:focus-within .status-slot {
+    width: var(--rail-status-room);
+    min-width: var(--rail-status-room);
+  }
+
+  .row:hover .age-text,
+  .row:focus-within .age-text { display: none; }
 
   .status {
     display: inline-flex;
@@ -773,7 +824,7 @@
     top: 2px;
     right: 11px;
     z-index: 2;
-    width: 76px;
+    width: 28px;
     display: flex;
     justify-content: flex-end;
     opacity: 0;
