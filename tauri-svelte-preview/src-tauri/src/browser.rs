@@ -7,7 +7,9 @@
 //! generic page-evaluation command or cookie/storage bridge is exposed.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
+use std::pin::Pin;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -25,6 +27,10 @@ const BROWSER_INSPECTOR_POLL_SCRIPT: &str =
     "JSON.stringify(window.__mcbBrowserInspector?.take?.() ?? null)";
 const BROWSER_INSPECTOR_POLL_INTERVAL: Duration = Duration::from_millis(80);
 const BROWSER_INSPECTOR_POLL_TIMEOUT: Duration = Duration::from_millis(250);
+const BROWSER_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
+
+type SnapshotResult = Result<(Vec<u8>, u32, u32), BrowserCommandError>;
+type SnapshotFuture = Pin<Box<dyn Future<Output = SnapshotResult> + Send + 'static>>;
 
 pub const BROWSER_TAB_NAVIGATION_EVENT: &str = "browser-tab-navigation";
 pub const BROWSER_TAB_LOAD_EVENT: &str = "browser-tab-load";
@@ -304,13 +310,14 @@ pub(crate) trait BrowserView: Send + Sync {
     fn set_viewport(&self, _viewport: &BrowserViewport) -> Result<(), BrowserCommandError> {
         Ok(())
     }
-    /// A rendered still of the page as PNG bytes with its pixel size. Views
-    /// that cannot draw one refuse rather than guess.
-    fn snapshot(&self) -> Result<(Vec<u8>, u32, u32), BrowserCommandError> {
-        Err(BrowserCommandError::new(
+    /// Returns a future for a rendered PNG still and its pixel size. The future
+    /// is important: WebKit answers snapshots on the main thread, so callers
+    /// must await the answer instead of blocking the thread that services it.
+    fn snapshot(&self) -> SnapshotFuture {
+        Box::pin(std::future::ready(Err(BrowserCommandError::new(
             BrowserErrorCode::Unsupported,
             "This view cannot render a snapshot",
-        ))
+        ))))
     }
     fn eval(&self, script: &str) -> Result<(), BrowserCommandError>;
     fn eval_with_callback(
@@ -951,7 +958,22 @@ impl BrowserRegistry {
         open_external_url(&url)
     }
 
-    fn capture(&self, target: BrowserTarget) -> Result<BrowserMarkupCapture, BrowserCommandError> {
+    async fn capture(
+        &self,
+        target: BrowserTarget,
+    ) -> Result<BrowserMarkupCapture, BrowserCommandError> {
+        self.capture_with_timeout(target, BROWSER_SNAPSHOT_TIMEOUT)
+            .await
+    }
+
+    /// Waits without occupying the async worker or the main thread. Keeping
+    /// the timeout here also covers test views and any future native backend
+    /// that starts a snapshot but never answers.
+    async fn capture_with_timeout(
+        &self,
+        target: BrowserTarget,
+        timeout: Duration,
+    ) -> Result<BrowserMarkupCapture, BrowserCommandError> {
         let view = {
             let workspaces = self.validate_target(&target)?;
             Self::require_tab(&workspaces, &target)?.view.clone()
@@ -959,7 +981,14 @@ impl BrowserRegistry {
         // The registry lock is released before the snapshot: the view waits on
         // the page rendering a still, and holding the lock for that long would
         // stall every other browser command.
-        let (bytes, width, height) = view.snapshot()?;
+        let (bytes, width, height) = tokio::time::timeout(timeout, view.snapshot())
+            .await
+            .map_err(|_| {
+                BrowserCommandError::new(
+                    BrowserErrorCode::Native,
+                    "Timed out waiting for the page snapshot",
+                )
+            })??;
         Ok(BrowserMarkupCapture {
             mime_type: "image/png".to_string(),
             bytes,
@@ -1353,11 +1382,11 @@ pub fn cancel_browser_element_picker(
 }
 
 #[tauri::command]
-pub fn capture_browser_viewport(
+pub async fn capture_browser_viewport(
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTarget,
 ) -> Result<BrowserMarkupCapture, BrowserCommandError> {
-    registry.capture(input)
+    registry.capture(input).await
 }
 
 #[tauri::command]
@@ -1453,7 +1482,7 @@ fn content_inset(_window: &tauri::Window) -> (f64, f64) {
 #[cfg(target_os = "macos")]
 unsafe fn take_wk_snapshot(
     wk: *mut objc2::runtime::AnyObject,
-    tx: mpsc::Sender<Result<(Vec<u8>, u32, u32), String>>,
+    tx: tokio::sync::mpsc::Sender<Result<(Vec<u8>, u32, u32), String>>,
 ) -> Result<(), String> {
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
@@ -1467,7 +1496,7 @@ unsafe fn take_wk_snapshot(
     unsafe {
         let config: Retained<AnyObject> = msg_send![class!(WKSnapshotConfiguration), new];
         let block = block2::RcBlock::new(move |image: *mut AnyObject, error: *mut AnyObject| {
-            let _ = tx.send(encode_snapshot_png(image, error));
+            let _ = tx.try_send(encode_snapshot_png(image, error));
         });
         let () =
             msg_send![&*wk, takeSnapshotWithConfiguration: &*config, completionHandler: &*block];
@@ -1638,29 +1667,35 @@ impl BrowserView for TauriBrowserView {
     }
 
     #[cfg(target_os = "macos")]
-    fn snapshot(&self) -> Result<(Vec<u8>, u32, u32), BrowserCommandError> {
-        let (tx, rx) = mpsc::channel();
-        self.webview
-            .with_webview(move |platform| {
-                // Main thread: ask the page's native view for a rendered still.
-                // The completion handler encodes it as PNG and answers the
-                // channel, so the caller's wait below ends either way.
-                let failure = tx.clone();
-                // SAFETY: `inner` is this view's live WKWebView, and the call
-                // is made on the thread that owns it.
-                if let Err(message) = unsafe { take_wk_snapshot(platform.inner().cast(), tx) } {
-                    let _ = failure.send(Err(message));
-                }
-            })
-            .map_err(native_error)?;
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(result)) => Ok(result),
-            Ok(Err(message)) => Err(BrowserCommandError::new(BrowserErrorCode::Native, message)),
-            Err(_) => Err(BrowserCommandError::new(
-                BrowserErrorCode::Native,
-                "Timed out waiting for the page snapshot",
-            )),
+    fn snapshot(&self) -> SnapshotFuture {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let scheduled = self.webview.with_webview(move |platform| {
+            // Main thread: start WebKit's snapshot. Its completion handler also
+            // runs here, but sending the answer never blocks this thread.
+            let failure = tx.clone();
+            // SAFETY: `inner` is this view's live WKWebView, and the call is
+            // made on the thread that owns it.
+            if let Err(message) = unsafe { take_wk_snapshot(platform.inner().cast(), tx) } {
+                let _ = failure.try_send(Err(message));
+            }
+        });
+        if let Err(error) = scheduled {
+            return Box::pin(std::future::ready(Err(native_error(error))));
         }
+        // Async runtime worker: awaiting yields the worker until WebKit's main-
+        // thread callback sends an answer. Never replace this with recv().
+        Box::pin(async move {
+            match rx.recv().await {
+                Some(Ok(result)) => Ok(result),
+                Some(Err(message)) => {
+                    Err(BrowserCommandError::new(BrowserErrorCode::Native, message))
+                }
+                None => Err(BrowserCommandError::new(
+                    BrowserErrorCode::Native,
+                    "The page snapshot ended without an answer",
+                )),
+            }
+        })
     }
 
     fn eval(&self, script: &str) -> Result<(), BrowserCommandError> {
@@ -2063,6 +2098,7 @@ mod tests {
         close_calls: AtomicUsize,
         set_bounds_calls: AtomicUsize,
         evals: Mutex<Vec<String>>,
+        snapshot_never_answers: bool,
     }
 
     impl BrowserView for FakeView {
@@ -2100,8 +2136,11 @@ mod tests {
             Ok(())
         }
 
-        fn snapshot(&self) -> Result<(Vec<u8>, u32, u32), BrowserCommandError> {
-            Ok((vec![1, 2, 3], 4, 5))
+        fn snapshot(&self) -> SnapshotFuture {
+            if self.snapshot_never_answers {
+                return Box::pin(std::future::pending());
+            }
+            Box::pin(std::future::ready(Ok((vec![1, 2, 3], 4, 5))))
         }
 
         fn eval(&self, script: &str) -> Result<(), BrowserCommandError> {
@@ -2123,6 +2162,23 @@ mod tests {
 
         fn open_devtools(&self) -> Result<(), BrowserCommandError> {
             Ok(())
+        }
+    }
+
+    struct NeverSnapshotFactory;
+
+    impl BrowserViewFactory for NeverSnapshotFactory {
+        fn create(
+            &self,
+            _app: Option<&tauri::AppHandle>,
+            _input: &BrowserTabInput,
+            _profile: &BrowserProfile,
+            _callbacks: BrowserViewCallbacks,
+        ) -> Result<Arc<dyn BrowserView>, BrowserCommandError> {
+            Ok(Arc::new(FakeView {
+                snapshot_never_answers: true,
+                ..FakeView::default()
+            }))
         }
     }
 
@@ -2199,8 +2255,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn capture_maps_a_view_snapshot_into_png_markup_capture() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn capture_maps_a_view_snapshot_into_png_markup_capture() {
         let registry = BrowserRegistry::with_factory(Arc::new(FakeFactory::default()));
         registry
             .create_tab(
@@ -2210,12 +2266,37 @@ mod tests {
             )
             .unwrap();
 
-        let capture = registry.capture(target("workspace", "tab", 1)).unwrap();
+        let capture = registry
+            .capture(target("workspace", "tab", 1))
+            .await
+            .unwrap();
 
         assert_eq!(capture.mime_type, "image/png");
         assert_eq!(capture.bytes, vec![1, 2, 3]);
         assert_eq!(capture.width, 4);
         assert_eq!(capture.height, 5);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn capture_times_out_when_a_view_never_answers() {
+        let registry = BrowserRegistry::with_factory(Arc::new(NeverSnapshotFactory));
+        registry
+            .create_tab(
+                None,
+                input("workspace", "tab", 1, "https://example.test/"),
+                Arc::new(FakeSink::default()),
+            )
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let error = registry
+            .capture_with_timeout(target("workspace", "tab", 1), Duration::from_millis(20))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, BrowserErrorCode::Native);
+        assert_eq!(error.message, "Timed out waiting for the page snapshot");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
