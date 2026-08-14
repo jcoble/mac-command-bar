@@ -387,6 +387,16 @@ assert.match(
 );
 assert.match(
   shellPage,
+  /const disposers: Array<\(\) => void> = \[[\s\S]*?releaseShellCommands[\s\S]*?releaseSessionRowJumpTarget[\s\S]*?clearWorkbenchNavigation[\s\S]*?clearStackHandlers[\s\S]*?releaseSessionLibraryHost[\s\S]*?sourceIntelligence\.dispose\(\)[\s\S]*?stopConversationEvents[\s\S]*?\]/,
+  'the page collects every module registration release in one mount-owned array'
+);
+assert.match(
+  shellPage,
+  /return \(\) => \{[\s\S]*?for \(const dispose of disposers\.splice\(0\)\) dispose\(\)/,
+  'page teardown invokes each collected disposer once'
+);
+assert.match(
+  shellPage,
   /selectSession: async \(ownedId\) => \{[\s\S]*?rail\.activeOwnedId === ownedId[\s\S]*?await selectOwned\(ownedId\)/,
   'the page skips activation when the jumped-to session is already active'
 );

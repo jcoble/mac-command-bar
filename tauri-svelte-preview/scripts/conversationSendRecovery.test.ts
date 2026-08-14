@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { stripTypeScriptTypes } from 'node:module';
 
 import {
   generationForSend,
@@ -94,6 +95,82 @@ const serviceSource = readFileSync(
   new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
   'utf8'
 );
+
+{
+  const lifecycleSource = serviceSource.match(
+    /export async function startConversationEvents\(\): Promise<void> \{[\s\S]*?\n\}\n\nexport function stopConversationEvents\(\): void \{[\s\S]*?\n\}/
+  );
+  assert.ok(lifecycleSource, 'the conversation event lifecycle remains explicit');
+
+  const releaseListens: Array<() => void> = [];
+  let listener: ((event: { payload: unknown }) => void) | null = null;
+  let listening = false;
+  let unlistens = 0;
+  let dispatches = 0;
+  const listen = async (_event: string, handler: (event: { payload: unknown }) => void) => {
+    listener = handler;
+    await new Promise<void>((resolve) => {
+      releaseListens.push(resolve);
+    });
+    listening = true;
+    return () => {
+      listening = false;
+      unlistens += 1;
+    };
+  };
+  const emit = (payload: unknown): void => {
+    if (listening) listener?.({ payload });
+  };
+  const javascript = stripTypeScriptTypes(
+    lifecycleSource[0].replaceAll('export ', ''),
+    { mode: 'strip' }
+  );
+  const lifecycle = Function(
+    'isTauri',
+    'listen',
+    'applyAgentConversationEvent',
+    'rail',
+    'sessionTitleFromPrompt',
+    'updateOwnedSession',
+    'getConversationSession',
+    'resyncConversation',
+    'shouldClearConversationSending',
+    'setConversationSending',
+    'terminalProjections',
+    'stopConversationTerminalProjection',
+    `let unlisten = null;\nlet conversationEventsSetup = null;\nlet conversationEventsDisposed = false;\n${javascript}\nreturn { startConversationEvents, stopConversationEvents };`
+  )(
+    () => true,
+    listen,
+    () => {
+      dispatches += 1;
+    },
+    { owned: [] },
+    () => '',
+    () => undefined,
+    () => null,
+    async () => undefined,
+    () => false,
+    () => undefined,
+    new Map(),
+    () => undefined
+  ) as {
+    startConversationEvents(): Promise<void>;
+    stopConversationEvents(): void;
+  };
+
+  const firstStart = lifecycle.startConversationEvents();
+  const secondStart = lifecycle.startConversationEvents();
+  assert.equal(releaseListens.length, 1, 'concurrent starts share one listener setup');
+  lifecycle.stopConversationEvents();
+  for (const release of releaseListens) release();
+  await Promise.all([firstStart, secondStart]);
+  emit({ ownedId: 'late' });
+
+  assert.equal(unlistens, 1, 'a listener resolving after stop is immediately disposed');
+  assert.equal(dispatches, 0, 'a stopped late listener cannot dispatch conversation events');
+}
+
 assert.match(
   serviceSource,
   /const activated = await ensureStructuredConversation\([\s\S]*?await invoke\('send_agent_conversation_message'/,

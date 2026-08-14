@@ -146,8 +146,11 @@ export interface SessionLibraryHost {
 
 let registeredHost: SessionLibraryHost = { service: inertSessionLibraryService };
 
-export function registerSessionLibraryHost(host: SessionLibraryHost): void {
+export function registerSessionLibraryHost(host: SessionLibraryHost): () => void {
   registeredHost = host;
+  return () => {
+    if (registeredHost === host) registeredHost = { service: inertSessionLibraryService };
+  };
 }
 
 export function sessionLibraryHost(): SessionLibraryHost {
