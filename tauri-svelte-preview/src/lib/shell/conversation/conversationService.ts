@@ -491,7 +491,6 @@ export async function ensureStructuredConversation(input: {
 export async function sendStructuredMessage(
   ownedId: string,
   text: string,
-  ptySessionId?: string | null,
   startConfig?: {
     reasoningEffort?: string | null;
     model?: string | null;
@@ -503,8 +502,8 @@ export async function sendStructuredMessage(
   if (!text.trim() && state.attachments.length === 0) return;
   setConversationSending(ownedId, true);
   try {
-    let terminalSessionId = ptySessionId;
     const owned = rail.owned.find((session) => session.ownedId === ownedId) ?? null;
+    let terminalSessionId = owned?.ptySessionId;
     const terminalStillOwnsSession = Boolean(
       terminalSessionId
       && owned
@@ -660,13 +659,21 @@ export async function sendPermissionResponse(
 ): Promise<void> {
   const state = getConversationSession(ownedId);
   if (!state) return;
+  const pendingOption = state.pendingApprovals[requestId]?.options.find(
+    (option) => option.optionId === optionId
+  );
+  if (pendingOption?.synthetic) {
+    const decision = /reject|deny|decline|cancel/i.test(optionId) ? 'decline' : 'accept';
+    await respondToStructuredApproval(ownedId, requestId, decision);
+    return;
+  }
   try {
     await invoke('respond_agent_conversation_permission', {
       request: { ownedId, generation: state.generation, requestId, optionId }
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!/not found|unknown command/i.test(message)) throw error;
+    if (!/not found|unknown command|not part of the pending request/i.test(message)) throw error;
     const decision = /reject|deny|decline|cancel/i.test(optionId) ? 'decline' : 'accept';
     await respondToStructuredApproval(ownedId, requestId, decision);
   }

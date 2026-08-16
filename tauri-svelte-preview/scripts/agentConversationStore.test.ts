@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
+import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
@@ -686,6 +687,129 @@ assert.equal(
   undefined,
   'a released hold cannot be claimed by a later message'
 );
+
+await test('sendStructuredMessage resolves the terminal from the owned session, not a passed argument', async () => {
+  const ownedId = 'owned-terminal-route';
+  const terminalId = 'terminal-from-owned-session';
+  const serviceSource = readFileSync(
+    new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
+    'utf8'
+  ).match(
+    /export async function sendStructuredMessage\([\s\S]*?\n\}\n\n\/\*\* Stops the active turn/
+  );
+  assert.ok(serviceSource);
+  const serviceJavaScript = stripTypeScriptTypes(
+    serviceSource[0]
+      .replace(/\n\n\/\*\* Stops the active turn$/, '')
+      .replace('export async function', 'async function'),
+    { mode: 'strip' }
+  );
+  const state = {
+    attachments: [],
+    generation: 0,
+    writerLease: { ownedId, generation: 0, owner: 'terminal' }
+  };
+  const terminalWrites: Array<{ terminalId: string; text: string }> = [];
+  const sendStructuredMessage = Function(
+    'getConversationSession',
+    'setConversationSending',
+    'rail',
+    'shouldReviveBeforeSend',
+    'writeTerminalSessionFromTauri',
+    'cleanupConversationAttachmentPreview',
+    'setConversationAttachments',
+    'recordSentConversationAttachments',
+    `${serviceJavaScript}\nreturn sendStructuredMessage;`
+  )(
+    () => state,
+    () => undefined,
+    {
+      owned: [{
+        ownedId,
+        ptySessionId: terminalId,
+        origin: 'external',
+        state: 'live',
+        executionOwner: 'terminal'
+      }]
+    },
+    () => false,
+    async (usedTerminalId: string, text: string) => {
+      terminalWrites.push({ terminalId: usedTerminalId, text });
+      return true;
+    },
+    () => undefined,
+    () => undefined,
+    () => undefined
+  ) as (messageOwnedId: string, text: string) => Promise<void>;
+
+  await sendStructuredMessage(ownedId, 'Route this message');
+  assert.deepEqual(terminalWrites.map((write) => write.terminalId), [terminalId, terminalId]);
+});
+
+// A permission request without provider options must answer through the
+// decision command, not send the fabricated option id back to the provider.
+{
+  const ownedId = 'owned-empty-permission';
+  const requestId = 'request-empty-permission';
+  const permissionEvent = (type: 'approval.requested' | 'approval.resolved', sequence: number) => ({
+    type,
+    ownedId,
+    provider: 'codex' as const,
+    providerInstanceId: 'fixture',
+    generation: 1,
+    sequence,
+    timestampMs: 900 + sequence,
+    payload: { requestId }
+  });
+  store.ensureConversationSession(ownedId, 'codex');
+  store.applyAgentConversationEvent({
+    ...permissionEvent('approval.requested', 1),
+    payload: { requestId, title: 'Approval needed', toolTitle: 'Read File' }
+  });
+  const pending = store.getConversationSession(ownedId).pendingApprovals[requestId];
+  assert.ok(pending);
+  assert.equal(pending.options[0].optionId, 'accept');
+  assert.equal(pending.options[0].kind, 'allow_once');
+
+  const responseSource = readFileSync(
+    new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
+    'utf8'
+  ).match(
+    /export async function sendPermissionResponse\([\s\S]*?\n\}\n\n\/\*\* Answers one structured input/
+  );
+  assert.ok(responseSource);
+  const responseJavaScript = stripTypeScriptTypes(
+    responseSource[0]
+      .replace(/\n\n\/\*\* Answers one structured input$/, '')
+      .replace('export async function', 'async function'),
+    { mode: 'strip' }
+  );
+  const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+  const invoke = async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
+    calls.push({ command, args });
+    if (command === 'respond_agent_conversation_permission') throw new Error('ACP permission option is not part of the pending request');
+    return undefined;
+  };
+  const respondToStructuredApproval = async (responseOwnedId: string, responseRequestId: string, decision: 'accept' | 'decline' | 'cancel'): Promise<void> => {
+    calls.push({ command: 'respond_agent_conversation_approval', args: { request: { ownedId: responseOwnedId, requestId: responseRequestId, decision } } });
+    store.applyAgentConversationEvent(permissionEvent('approval.resolved', 2));
+  };
+  const sendPermissionResponse = Function(
+    'getConversationSession',
+    'invoke',
+    'respondToStructuredApproval',
+    `${responseJavaScript}\nreturn sendPermissionResponse;`
+  )(
+    store.getConversationSession,
+    invoke,
+    respondToStructuredApproval
+  ) as (responseOwnedId: string, responseRequestId: string, optionId: string) => Promise<void>;
+
+  await assert.doesNotReject(() => sendPermissionResponse(ownedId, requestId, pending.options[0].optionId));
+  assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_approval']);
+  assert.equal(store.getConversationSession(ownedId).pendingApprovals[requestId], undefined);
+  assert.equal((pending.options[0] as { synthetic?: boolean }).synthetic, true);
+}
 
 store.removeConversationSession('owned-a');
 assert.equal(store.getConversationSession('owned-a'), null);

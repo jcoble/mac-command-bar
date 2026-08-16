@@ -100,10 +100,14 @@
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { gitService } from '$lib/shell/git/gitService';
   import {
+    CENTER_MIN_WIDTH,
     SESSIONS_MAX_WIDTH,
     SESSIONS_MIN_WIDTH,
     SESSIONS_STRIP_WIDTH,
     SESSIONS_WIDTH,
+    TOOLS_MAX_WIDTH,
+    TOOLS_MIN_WIDTH,
+    TOOLS_WIDTH,
     type RegionHeightLimits,
     type RegionWidthLimits,
     type ShellRegionId
@@ -286,7 +290,7 @@
    * fresh pane consumes these snapshots without starting a hidden session just
    * to populate its menus. */
   function providerConfigsForNewSession(): ThreadStartProviderConfig[] {
-    return (['codex', 'claude'] as const).map((provider) => {
+    return (['codex', 'claude', 'antigravity'] as const).map((provider) => {
       const existing = Object.values(conversationSessions).find((session) => session.provider === provider);
       const config = existing?.agentConfig;
       return {
@@ -535,8 +539,7 @@
         const existing = getConversationSession(request.ownedId)?.attachments ?? [];
         setConversationAttachments(request.ownedId, [...existing, ...request.attachments]);
       }
-      const owned = rail.owned.find((session) => session.ownedId === request.ownedId) ?? null;
-      await sendStructuredMessage(request.ownedId, request.text, owned?.ptySessionId);
+      await sendStructuredMessage(request.ownedId, request.text);
     },
     startSession: async (request) => {
       const provider = request.provider ?? 'codex';
@@ -591,6 +594,32 @@
         ? { minimumWidth: SESSIONS_STRIP_WIDTH, maximumWidth: SESSIONS_STRIP_WIDTH }
         : { minimumWidth: SESSIONS_MIN_WIDTH, maximumWidth: SESSIONS_MAX_WIDTH }
     );
+  }
+
+  /**
+   * How wide the tool column was before the browser asked to be widened. There
+   * is one width, and it is the grid's — the browser page has none of its own —
+   * so widening the page is this and nothing else, and narrowing it again puts
+   * the seam back where the user had dragged it rather than at a default.
+   */
+  let toolsWidthBeforeWide: number | null = null;
+
+  /** The Browser panel asking for a wide column, or for the width it had. */
+  function widenTools(wide: boolean): void {
+    if (!frameControls) return;
+    if (wide) {
+      if (toolsWidthBeforeWide === null) {
+        toolsWidthBeforeWide = frameControls.regionWidth('tools') ?? TOOLS_WIDTH;
+      }
+      frameControls.setRegionWidth('tools', TOOLS_MAX_WIDTH);
+      return;
+    }
+    // Nothing was widened, so there is nothing to put back — and a width the
+    // user dragged must not be replaced by a default just because the panel
+    // said it is not wide.
+    if (toolsWidthBeforeWide === null) return;
+    frameControls.setRegionWidth('tools', toolsWidthBeforeWide);
+    toolsWidthBeforeWide = null;
   }
 
   /** Fold the sessions column up, or open it out. Remembered under its own
@@ -751,7 +780,7 @@
 
   function conversationProviderFor(ownedId: string): AgentConversationProvider | null {
     const agent = rail.owned.find((session) => session.ownedId === ownedId)?.agent;
-    return agent === 'codex' || agent === 'claude' ? agent : null;
+    return agent === 'codex' || agent === 'claude' || agent === 'antigravity' ? agent : null;
   }
 
   /** Remember the editor tabs and file tree this session is leaving behind.
@@ -855,6 +884,7 @@
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
     const selected = rail.owned.find((session) => session.ownedId === ownedId);
+    setActiveOwned(ownedId);
     // Save the session being left BEFORE anything points the panels elsewhere.
     // Gated the same way as the restore below: during start-up the panels are
     // still empty, and saving that emptiness would overwrite the tabs the
@@ -869,7 +899,6 @@
       const root = selected.cwd.trim() || (selected.projectPath ?? '').trim();
       if (root) await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root });
     }
-    setActiveOwned(ownedId);
     service?.show(ownedId);
     // Point the file tree, the context cards and any tab the user has already
     // opened at this session's project. Ignored while start-up is still
@@ -1087,7 +1116,7 @@
       // active, and a new session opens on its own transcript and its own files.
       selectCenterTab('session');
       selectRightTab('files');
-      await sendStructuredMessage(owned.ownedId, request.prompt, null, {
+      await sendStructuredMessage(owned.ownedId, request.prompt, {
         reasoningEffort: request.reasoningEffort,
         model: request.model,
         approvalPolicy: request.approvalPolicy
@@ -1620,6 +1649,7 @@
     ownedId={rail.activeOwnedId}
     {openUtility}
     onOpenUtility={(id, anchor) => overlays?.openUtility(id, anchor)}
+    onWidenBrowser={widenTools}
   />
 {/snippet}
 {#snippet centerTabsArea()}
@@ -1720,6 +1750,16 @@
     onCenterPanelShown={handleCenterPanelShown}
     onReady={(controls) => {
       frameControls = controls;
+      // Say how far the tool column's seam may travel, every launch. A stored
+      // layout carries the limits it was saved with, so a shell that ran while
+      // the ceiling was lower comes back unable to be dragged — or widened —
+      // past it. The center's floor is said in the same breath: it is what
+      // stops the seam before the conversation is squeezed out.
+      controls.setRegionLimits('tools', {
+        minimumWidth: TOOLS_MIN_WIDTH,
+        maximumWidth: TOOLS_MAX_WIDTH
+      });
+      controls.setRegionLimits('center', { minimumWidth: CENTER_MIN_WIDTH });
       // Say what the sessions column is, once, here, where the frame first
       // exists — in BOTH cases, not only the folded one.
       //

@@ -78,7 +78,7 @@
   const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
   const appOwned = $derived(origin === 'app');
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
-  const structured = $derived(!!active && (active.agent === 'codex' || active.agent === 'claude') && (appOwned || conversation?.mode !== 'raw'));
+  const structured = $derived(!!active && (active.agent === 'codex' || active.agent === 'claude' || active.agent === 'antigravity') && (appOwned || conversation?.mode !== 'raw'));
   const selectedChild = $derived(conversation && conversation.selectedChildId
     ? conversation.children.find((child) => child.childId === conversation.selectedChildId) ?? null
     : null);
@@ -179,7 +179,7 @@
   });
 
   $effect(() => {
-    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex')) return;
+    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     const key = `${ownedId}:${generation}:${conversation.connectionState}`;
@@ -197,7 +197,7 @@
   });
 
   $effect(() => {
-    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex')) return;
+    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
     const key = `${active.ownedId}:${conversation.generation}:${conversation.provider}:${conversation.connectionState}`;
     if (capabilityRequest === key) return;
     // A connection re-reads the snapshot: the stored one can predate a provider
@@ -215,31 +215,32 @@
   });
 
   async function send(): Promise<void> {
-    if (!activeOwnedId || !conversation || conversation.sending || conversation.selectedChildId) return;
+    const ownedId = activeOwnedId;
+    if (!ownedId || !conversation || conversation.sending || conversation.selectedChildId) return;
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
     const text = conversation.draft;
     const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
     sendAnchorRequest = {
       requestId: ++sendAnchorRequestId,
-      conversationId: activeOwnedId,
+      conversationId: ownedId,
       previousUserItemId
     };
     localTurnActive = true;
     localTurnStarted = false;
-    setConversationDraft(activeOwnedId, '');
-    setConversationSendError(activeOwnedId, '');
+    setConversationDraft(ownedId, '');
+    setConversationSendError(ownedId, '');
     try {
-      await clearConversationSessionDraft(activeOwnedId);
-      await sendStructuredMessage(activeOwnedId, text, active?.ptySessionId);
+      await clearConversationSessionDraft(ownedId);
+      await sendStructuredMessage(ownedId, text);
     } catch (error) {
       // Restore the draft. The service intentionally leaves attachments in the
       // store on every failure, so the user can retry without data loss. The
       // reason has to be said out loud: a swallowed failure here reads as a
       // composer that silently refuses every Enter.
-      setConversationSendError(activeOwnedId, error instanceof Error ? error.message : String(error));
-      setConversationDraft(activeOwnedId, text);
-      persistConversationSessionDraft(activeOwnedId, text);
-      await flushConversationSessionDraft(activeOwnedId).catch(() => undefined);
+      setConversationSendError(ownedId, error instanceof Error ? error.message : String(error));
+      setConversationDraft(ownedId, text);
+      persistConversationSessionDraft(ownedId, text);
+      await flushConversationSessionDraft(ownedId).catch(() => undefined);
       localTurnActive = false;
       localTurnStarted = false;
       sendAnchorRequest = null;
@@ -453,10 +454,10 @@
           onConfigChange={(optionId, value) => void changeConfig(optionId, value)}
           onHeightChange={(height) => (composerHeight = height)}
         />
-      {:else}<div class="read-only-note" data-testid="conversation-read-only-note">Read-only sub-agent transcript</div>{/if}
+      {/if}
       {#if appOwned && inspectorOpen}<ConversationInspector ownedId={active.ownedId} />{/if}
     </section>
-  {:else if active && (active.agent === 'codex' || active.agent === 'claude') && conversation?.mode === 'raw'}
+  {:else if active && (active.agent === 'codex' || active.agent === 'claude' || active.agent === 'antigravity') && conversation?.mode === 'raw'}
     <div class="raw-actions" aria-label="Conversation handoff actions">
       <button class="structured-toggle" data-testid="conversation-structured-toggle" type="button" onclick={() => void onReturnToStructured?.(active.ownedId)}>
         Return to structured
@@ -465,4 +466,4 @@
   {/if}
 </div>
 
-<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions,.inspector-actions{position:absolute;right:12px;top:12px;z-index:2}.read-only-note{padding:10px;text-align:center;border-top:1px solid var(--color-border);color:var(--color-text-2);font-size:12px}</style>
+<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:transparent;color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions,.inspector-actions{position:absolute;right:12px;top:12px;z-index:2}</style>
