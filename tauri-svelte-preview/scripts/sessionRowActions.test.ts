@@ -1,6 +1,6 @@
 /**
  * Pins the left-rail row quick-jump: the pure surface mapping, the thin
- * dispatch that runs it, and the wiring that makes the three buttons real.
+ * dispatch that runs it, and the wiring that makes the buttons real.
  *
  * Run: node --experimental-strip-types scripts/sessionRowActions.test.ts
  */
@@ -77,7 +77,7 @@ function recordingTarget(): RecordingTarget {
 assert.deepEqual(
   [...SESSION_ROW_SURFACES],
   ['session', 'editor', 'source-control'],
-  'the row offers exactly three jump surfaces'
+  'a row can send you to exactly three surfaces'
 );
 
 assert.deepEqual(planSessionRowJump('s1', 'session'), {
@@ -221,12 +221,24 @@ assert.ok(
   row.includes('sessionRowJump(session.ownedId, surface)'),
   'the row dispatches its jumps through the shared mapping'
 );
-for (const surface of SESSION_ROW_SURFACES) {
+// Two buttons, not three: every button costs the title width while the pointer
+// is on the row, so source control moved to the right-click menu. The jump
+// itself is unchanged — the row still runs it through the same mapping.
+for (const surface of ['session', 'editor'] as const) {
   assert.ok(
     row.includes(`jump(event, '${surface}')`),
-    `the row must offer a ${surface} jump`
+    `the row must offer a ${surface} button`
   );
 }
+assert.ok(
+  !row.includes(`jump(event, 'source-control')`),
+  'source control is no longer one of the buttons in the cluster'
+);
+assert.match(
+  row,
+  /action === 'open-source-control'\)\s*\{[\s\S]*?sessionRowJump\(session\.ownedId, 'source-control'\)/,
+  'the row still reaches source control, now from the menu item that replaced the button'
+);
 
 assert.match(
   row,
@@ -238,9 +250,13 @@ assert.doesNotMatch(
   /import \{ IconButton \}/,
   'the row no longer styles icon buttons itself'
 );
-for (const label of ['Open session', 'Open editor', 'Open source control']) {
+for (const label of ['Open session', 'Open editor']) {
   assert.ok(row.includes(label), `the row must label its jump button "${label}"`);
 }
+assert.ok(
+  !row.includes('Open source control'),
+  'and it names source control nowhere, because that reads from the menu instead'
+);
 
 assert.match(row, /SessionHoverCard/, 'hover details use the dedicated rail card');
 assert.match(
@@ -248,31 +264,88 @@ assert.match(
   /\.session-title\s*\{[\s\S]*?min-width:\s*0;[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/,
   'long row titles keep one fixed-width ellipsis line'
 );
-assert.match(row, /class="action-reserve"/, 'line one always reserves the action cluster width');
-assert.match(
+// Line one's right corner holds exactly one thing at a time: the elapsed time
+// at rest, the buttons under the pointer. Nothing is held empty in between —
+// at rest the title runs the full width, and the room the buttons need is
+// borrowed from it only while they are on screen.
+assert.doesNotMatch(
   row,
-  /\.action-reserve\s*\{[\s\S]*?width:\s*0;[\s\S]*?flex:\s*0 0 0px;[\s\S]*?\.row:hover \.action-reserve[\s\S]*?width:\s*119px;/,
-  'action space is collapsed at rest and opens to 119px on hover'
+  /class="action-reserve"/,
+  'nothing stands in line one holding action space open'
+);
+assert.doesNotMatch(
+  row,
+  /padding-right:[^;]*var\(--rail-action-gutter\)/,
+  'and the row keeps no permanent right padding for the cluster either'
 );
 assert.match(
   row,
-  /class="absolute top-\[2px\] z-\[2\]"/,
-  'the actions occupy line one without a hard-coded right offset'
+  /--rail-action-gutter: 53px;/,
+  'the gutter is worth two buttons and the gap between them'
 );
 assert.match(
   row,
-  /\[data-slot='hover-actions'\]\)\s*\{\s*right:\s*calc\(11px \+ var\(--rail-status-room\)\);/,
-  'the cluster hugs the rail edge, offset only by what the row state still needs'
+  /\.row\[data-presence='stopped'\] \{ --rail-action-gutter: 81px; \}/,
+  'a stopped row carries Resume as well and asks for one button more'
 );
 assert.match(
   row,
-  /\.row\[data-presence='working'\] \{ --rail-status-room: 19px; \}/,
-  'a working row keeps just the spinner to the right of the cluster'
+  /\.row:hover \.age,\s*\.row:focus-within \.age \{ min-width: calc\(var\(--rail-action-gutter\) \+ 8px\); \}/,
+  'the gutter is claimed on hover and on keyboard focus, and given back after'
 );
 assert.match(
   row,
-  /\.row:hover \.age-text,[\s\S]*?\.row:focus-within \.age-text \{ display: none; \}/,
-  'hovering trades the elapsed time for the actions'
+  /class="absolute top-0 right-\[17px\] z-\[2\]"/,
+  'the cluster sits level with line one, in the corner the time was using'
+);
+assert.doesNotMatch(
+  row,
+  /--rail-status-room/,
+  'the cluster no longer steps around a status word to reach the rail edge'
+);
+assert.match(
+  row,
+  /\.row\[data-presence='working'\] \.age \{ color: var\(--color-text-2\); \}/,
+  'a working row brightens its elapsed time rather than moving the cluster'
+);
+assert.match(
+  row,
+  /\.age \{[\s\S]*?justify-content: flex-end;/,
+  'the slot holds its contents against its right edge, which therefore never moves'
+);
+assert.match(
+  row,
+  /\.row:hover \.age-text,\s*\.row:focus-within \.age-text \{ opacity: 0; \}/,
+  'the time fades out exactly where it stood and the buttons fade in over the same spot'
+);
+assert.match(
+  row,
+  /@media \(prefers-reduced-motion: no-preference\) \{\s*\.age-text,[\s\S]*?transition: opacity \d+ms/,
+  'and the trade is a fade, not a blink'
+);
+
+// Four row states on one neutral scale, each step brighter than the last.
+// Accent in this rail means "this session is working"; a row that happens to be
+// the one on screen has not earned that signal, so selection is fill alone.
+assert.match(
+  row,
+  /\.row:hover \.session-row \{ background: var\(--color-hover\); \}/,
+  'hover answers the pointer'
+);
+assert.match(
+  row,
+  /\.active \.session-row \{[\s\S]*?background: color-mix\(in srgb, var\(--color-elevated\) 88%, var\(--color-text\)\);/,
+  'selected sits above hover because it persists'
+);
+assert.match(
+  row,
+  /\.row\.active:hover \.session-row \{[\s\S]*?background: color-mix\(in srgb, var\(--color-elevated\) 84%, var\(--color-text\)\);/,
+  'and a selected row under the pointer lifts once more, so hovering it still says something'
+);
+assert.doesNotMatch(
+  row,
+  /--color-selected|--color-accent-soft/,
+  'none of those four steps is an accent tint'
 );
 assert.match(
   row,
@@ -281,18 +354,23 @@ assert.match(
 );
 assert.equal(
   (row.match(/size="sm"/g) ?? []).length,
-  6,
-  'the three jumps, Settle, Revert and Resume all use 28px kit buttons'
+  3,
+  'the two jumps and Resume are the whole cluster, and all three are 28px kit buttons'
+);
+assert.doesNotMatch(
+  row,
+  /data-testid="worktree-agent-settle"|data-testid="worktree-agent-unsettle"/,
+  'settling and the way back from it are menu items, not buttons taking title width'
 );
 assert.match(
   row,
-  /data-testid="worktree-agent-settle"[\s\S]*?label="Settle"[\s\S]*?onSettle\?\.\(\)/,
-  'the hover cluster settles a session where its age sits at rest'
+  /action === 'archive'\) onSettle\?\.\(\)/,
+  'the row still settles a session when the menu asks it to'
 );
 assert.match(
   row,
-  /\{#if shelf === 'settled'\}[\s\S]*?data-testid="worktree-agent-unsettle"[\s\S]*?onUnsettle\?\.\(\)/,
-  'a settled row offers the way back instead'
+  /action === 'unsettle'\) onUnsettle\?\.\(\)/,
+  'and still brings a settled one back'
 );
 assert.doesNotMatch(
   row,
@@ -337,10 +415,15 @@ assert.match(
   /const presenceIsRestart = \$derived\(presence === 'stopped'\)/,
   'only genuinely stopped rows offer Resume, so suspended idle rows do not'
 );
+assert.doesNotMatch(
+  row,
+  /resume-slot/,
+  'Resume has no slot of its own any more'
+);
 assert.match(
   row,
-  /\.row\[data-presence='stopped'\]:hover \.status,[\s\S]*?\.row\[data-presence='stopped'\]:hover \.resume-slot/,
-  'elapsed time and Resume trade opacity inside the same stopped-row slot'
+  /\{#if presenceIsRestart\}\s*<span data-testid="worktree-agent-resume"[\s\S]*?label="Resume session"/,
+  'it joins the head of the cluster, so the two standing buttons keep their places'
 );
 assert.match(
   row,
@@ -430,10 +513,17 @@ assert.deepEqual(
     'copy-worktree-path',
     'continue-in-new-session',
     'open-in-editor',
+    'open-source-control',
     'reveal-in-finder',
     'delete'
   ],
-  'a working row offers the approved menu plus the move it can actually make'
+  'a working row offers the approved menu, the move it can actually make, and the jump that left the cluster'
+);
+
+assert.deepEqual(
+  workingMenu.filter((item) => item.id === 'open-source-control'),
+  [{ id: 'open-source-control', label: 'Open source control', enabled: true }],
+  'source control reads by name in the menu and is switched on there'
 );
 
 assert.deepEqual(
@@ -592,10 +682,10 @@ assert.match(
   /\.session-row \{ transition: background-color \d+ms/,
   'the row fill answers the pointer'
 );
-assert.match(
+assert.doesNotMatch(
   row,
-  /\.session-row::before \{ transition: transform \d+ms/,
-  'the selection bar sweeps in rather than appearing'
+  /\.session-row::before/,
+  'there is no bar down the row edge left to sweep in: the fill carries selection alone'
 );
 assert.match(row, /@keyframes card-in/, 'the hover card fades in on open');
 assert.match(
