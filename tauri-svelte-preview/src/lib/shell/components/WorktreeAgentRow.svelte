@@ -287,6 +287,10 @@
 
   function showOverlay(event: { currentTarget: EventTarget | null }): void {
     if (POPOUT_DIAG_DISABLED) return;
+    // The right-click menu is the thing being read while it is open. The card
+    // would sit over it, and the pointer is inside the row the whole time it
+    // is up, so this guard is what keeps it from coming straight back.
+    if (menuOpen) return;
     const row = event.currentTarget;
     if (!(row instanceof HTMLElement)) return;
     clearCardTimer();
@@ -296,10 +300,40 @@
     }, 160);
   }
 
+  /** Whether this row's right-click menu is up. */
+  let menuOpen = $state(false);
+
+  /**
+   * Opening the menu takes the card down and keeps it down. Both surfaces
+   * answer the same row, and two of them at once is one too many — the menu is
+   * the one that was asked for, so it wins. Closing takes it down as well: the
+   * menu gives focus back to the row on the way out, and without this the card
+   * would arrive as an answer to that, with the pointer somewhere else
+   * entirely.
+   */
+  function menuOpenChanged(open: boolean): void {
+    menuOpen = open;
+    hideOverlay();
+  }
+
   function hideOverlay(): void {
     clearCardTimer();
     cardPlacement = null;
     cardView = null;
+  }
+
+  /**
+   * The card on keyboard focus, and only keyboard focus.
+   *
+   * `:focus-visible` is the browser's own answer to "did a person Tab here, or
+   * did something hand focus back?" — and handing focus back is exactly what a
+   * closing menu does. Asking the platform is what keeps that from looking
+   * like someone arriving at the row.
+   */
+  function showOverlayFromFocus(event: FocusEvent): void {
+    const focused = event.target;
+    if (!(focused instanceof HTMLElement) || !focused.matches(':focus-visible')) return;
+    showOverlay(event);
   }
 
   function handleFocusOut(event: FocusEvent): void {
@@ -398,10 +432,10 @@
   ondragend={onDragEnd}
   onmouseenter={showOverlay}
   onmouseleave={hideOverlay}
-  onfocusin={showOverlay}
+  onfocusin={showOverlayFromFocus}
   onfocusout={handleFocusOut}
 >
-  <ContextMenu.Root>
+  <ContextMenu.Root onOpenChange={menuOpenChanged}>
     <ContextMenu.Trigger>
       {#snippet child({ props })}
         <button
@@ -434,7 +468,7 @@
                  simply clips a little earlier to make room for them. -->
             <span class="line line-title">
               <span data-testid="worktree-agent-title" class="session-title">{label}</span>
-              <span data-testid="worktree-agent-age" class="age" title={presenceDetail}>
+              <span data-testid="worktree-agent-age" class="age">
                 {#if isWorking}
                   <span class="spinner" class:spinning aria-hidden="true"></span>
                 {/if}
@@ -461,10 +495,9 @@
                 <span
                   data-testid="worktree-agent-status"
                   class="failed"
-                  title={presentedError?.detail ?? presentedError?.summary}
                 >{presentedError?.summary ?? presenceLabel}</span>
               {:else if suspended}
-                <span data-testid="worktree-agent-status" class="idle-label" title={presenceDetail}>
+                <span data-testid="worktree-agent-status" class="idle-label">
                   {suspended ? 'Suspended' : presenceLabel}
                 </span>
               {/if}
@@ -487,7 +520,7 @@
           data-testid={`session-row-menu-${item.id}`}
           disabled={!item.enabled}
           variant={item.destructive ? 'destructive' : 'default'}
-          title={item.enabled ? item.label : item.disabledReason}
+          title={item.enabled ? undefined : item.disabledReason}
           onSelect={() => runMenuAction(item.id)}
         >{item.label}</ContextMenu.Item>
       {/each}

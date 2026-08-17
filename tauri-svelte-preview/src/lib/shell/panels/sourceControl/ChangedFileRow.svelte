@@ -182,7 +182,7 @@
       <ContextMenu.Item
         data-testid={`source-control-file-menu-${item.id}`}
         disabled={!item.enabled}
-        title={item.enabled ? item.label : item.disabledReason}
+        title={item.enabled ? undefined : item.disabledReason}
         onSelect={() => run(item.id)}>{item.label}</ContextMenu.Item
       >
     {/each}
