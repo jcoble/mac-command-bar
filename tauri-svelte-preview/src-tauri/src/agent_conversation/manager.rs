@@ -566,8 +566,22 @@ impl AgentRuntimeManager {
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A session that has never run is not answered by its own record.
+        //
+        // Generation zero belongs to one thing only: a conversation imported
+        // from a transcript, which has a stored row and an entry here so it can
+        // be listed, but has never started an adapter and so has never been
+        // told what models it offers, what effort levels it takes, or anything
+        // else that arrives with the handshake. Handing that record back leaves
+        // a session nothing can be chosen for. It falls through instead and is
+        // started once, the same as any first run.
+        //
+        // A suspended session is different and keeps the behaviour it had: it
+        // ran before, its capabilities are on disk, and its adapter is started
+        // again only when a turn actually needs one.
         if let Some(current) = sessions.get(&owned_id) {
-            if current.provider == request.provider
+            if current.generation > 0
+                && current.provider == request.provider
                 && current.cwd == cwd
                 && native_session_id
                     .as_ref()

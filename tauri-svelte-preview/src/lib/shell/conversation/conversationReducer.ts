@@ -33,6 +33,54 @@ export function createConversationState(
   };
 }
 
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * The message a projected record is carrying, or null when it is not carrying
+ * one.
+ *
+ * A projection is the raw shape an adapter reported, kept as it arrived. The
+ * ones worth a row in the transcript hold a completed item: who spoke, and what
+ * they said across one or more content blocks. Everything else a transcript
+ * holds — configuration, token counts, the adapter's own bookkeeping — has no
+ * message in it and returns null rather than an empty row.
+ */
+function projectedTimelineEntry(
+  payload: { itemId: string | null; payload: Record<string, unknown>; timestampMs: number | null },
+  eventTimestampMs: number
+): ConversationTimelineEntry | null {
+  const item = recordOf(payload.payload.item);
+  if (!item) return null;
+  const itemId = typeof item.id === 'string' && item.id ? item.id : payload.itemId;
+  if (!itemId) return null;
+  const kind = item.type === 'user-message'
+    ? 'user'
+    : item.type === 'assistant-message'
+      ? 'assistant'
+      : null;
+  if (!kind) return null;
+  const text = Array.isArray(item.content)
+    ? item.content
+      .map((block) => {
+        const row = recordOf(block);
+        return row && typeof row.text === 'string' ? row.text : '';
+      })
+      .join('')
+    : '';
+  if (!text.trim()) return null;
+  return {
+    kind,
+    itemId,
+    text,
+    completed: true,
+    timestampMs: payload.timestampMs ?? eventTimestampMs
+  };
+}
+
 function replaceOrAppend(
   timeline: ConversationTimelineEntry[],
   itemId: string,
@@ -197,7 +245,18 @@ export function applyConversationEvent(
         }
       };
 
-    case 'terminalProjection':
+    case 'terminalProjection': {
+      // History replayed from the database arrives this way, so it cannot be
+      // dropped here. A conversation imported from a past transcript is written
+      // entirely as projections, and this case returning untouched is what left
+      // a resumed session showing an empty transcript: the events were read,
+      // counted, and then thrown away before anything could be drawn from them.
+      const entry = projectedTimelineEntry(payload, event.timestampMs);
+      return entry
+        ? { ...next, timeline: replaceOrAppend(next.timeline, entry.itemId, () => entry) }
+        : next;
+    }
+
     case 'childUpdate':
       return next;
 
