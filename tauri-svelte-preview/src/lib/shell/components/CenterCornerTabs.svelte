@@ -83,8 +83,14 @@
 </script>
 
 <nav class="center-pills" class:held={heldAfterSwitch} aria-label="Center surfaces">
-  <!-- The project's language server, at the head of the group. -->
-  <LanguageIntelligenceControls />
+  <!-- The project's language server, at the head of the group, and only while
+       the Editor is the surface on screen: it describes the file being edited,
+       so on a transcript it has nothing to say. It leads the group rather than
+       trailing it precisely because it comes and goes — arriving at the left
+       lengthens the group leftwards and the three pills do not move. -->
+  {#if activeId === 'editor'}
+    <LanguageIntelligenceControls />
+  {/if}
 
   {#each TABS as tab (tab.id)}
     {@const Icon = tab.icon}
