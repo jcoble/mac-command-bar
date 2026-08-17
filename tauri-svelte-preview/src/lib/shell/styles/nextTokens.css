@@ -160,10 +160,10 @@
   --switch-track-running: var(--color-good);
   --switch-knob: var(--color-text);
 
-  /* The height of the editor's row of file tabs. The centre pane's pill group
-     is placed directly beneath it, so both read this one value rather than
-     each carrying its own guess. */
+  /* The height of the editor's row of file tabs. Read by the row itself so it
+     cannot drift from what anything else assumes about it. */
   --editor-tab-row-height: 35px;
+
 
   /* Scrollbars — one thin style for every scrolling surface in the shell.
      Native scrolling, styled: the transcript's virtualiser measures real

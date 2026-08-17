@@ -1,13 +1,14 @@
 <script lang="ts">
   /**
    * LanguageIntelligenceControls.svelte — the project's language-server switch,
-   * riding along with the centre pane's pill tabs.
+   * at the head of the centre pane's pill group.
    *
-   * It sits with those pills because it is about the PROJECT, not about the file
-   * on screen: one language server serves every session and every view on it. In
-   * the editor's own header it crowded the file tabs and read as a property of
-   * whichever file was showing; in a strip of its own along the top of the shell
-   * it cost a row of window height to say one word.
+   * It has been elsewhere, and each move was a lesson. In a strip of its own
+   * along the top of the shell it cost a row of window height to say one word.
+   * Among the file tabs it read as a property of whichever file was showing. It
+   * belongs with the pills: they are the controls for the middle of the window,
+   * and this is one of them. The pills carry icons rather than words now, so the
+   * whole group fits a narrow centre pane with the file tabs left whole.
    *
    * TWO INDEPENDENT THINGS, and the whole design rests on keeping them apart:
    *
@@ -21,7 +22,8 @@
    *
    * It owns nothing. Everything shown here is published by `EditorPanel.svelte`,
    * which asks the desktop app for the status, listens for pushed updates and
-   * starts or stops the server. With no project open nothing renders at all.
+   * starts or stops the server. Before a project resolves it still renders, as
+   * an inert switch that says so.
    */
   import Zap from '@lucide/svelte/icons/zap';
   import ZapOff from '@lucide/svelte/icons/zap-off';
@@ -67,9 +69,9 @@
   );
 </script>
 
-<!-- Always rendered. The switch is part of the pill group now, and a group that
-     is three pills wide sometimes and four at others reads as a bug; with no
-     project it states that situation instead of vanishing. -->
+<!-- Always rendered. A group that is three capsules wide sometimes and four at
+     others reads as a bug, and the pills draw long before a project resolves;
+     with nothing to act on it states that instead of vanishing. -->
 <div
   class="language-switch"
   class:no-project={!languageIntelligenceBar.hasProject}
@@ -100,17 +102,16 @@
 </div>
 
 <style>
-  /* One capsule, the same height and shape as the surface pills it travels
-   * with, so the row reads as a single group rather than a control bolted to
-   * the end of one. */
+  /* One capsule, the same height and shape as the icon pills it leads, so the
+   * row reads as a single group rather than a control parked beside one. */
   .language-switch {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     flex: 0 0 auto;
     min-width: max-content;
-    height: 26px;
-    padding: 0 8px;
+    height: 30px;
+    padding: 0 10px;
     border-radius: var(--radius-pill);
     background: var(--pill-surface);
     box-shadow: var(--shadow-sm);
@@ -124,15 +125,15 @@
     letter-spacing: 0.02em;
     line-height: 1;
     white-space: nowrap;
-    /* Room for the widest three-character badge, so the capsule keeps its width
-       as the open file changes and the pill row stops twitching. */
+    /* Room for the widest three-character badge, so the group keeps its width
+       as the open file changes and the row stops twitching. */
     min-width: 24px;
     text-align: center;
   }
 
   /* Nothing to switch on yet. This is NOT a fourth state: the colour is the same
    * neutral Off wears, because off is what is true. What changes is only that
-   * the capsule refuses the pointer, and the title says why. */
+   * the control refuses the pointer, and the title says why. */
   .language-switch.no-project {
     cursor: not-allowed;
   }

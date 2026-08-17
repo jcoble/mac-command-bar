@@ -4,9 +4,11 @@
    * pills that floats over the pane instead of occupying a bar above it.
    *
    * Session is what you talk to, Editor is the code you have open, Diff is the
-   * changes to one file. The project's language switch travels at the end of the
-   * same row, because it is the other thing you change about the middle of the
-   * window.
+   * changes to one file. Three pills and nothing else: the language switch used
+   * to ride along here, and on a 630px centre pane the four capsules took most
+   * of the width the editor's file tabs needed. It lives in the editor's own
+   * status band now, which is where the readout about the current file already
+   * is.
    *
    * WHY IT FLOATS. A permanent bar charged every surface the same strip of
    * height to answer a question that is only asked now and then, and on the
@@ -30,7 +32,7 @@
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
 
   import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
-  import { Button } from '$lib/components/ui/button/index.js';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import type { CenterTabId } from '$lib/shell/workbenchNavigation';
 
   interface Props {
@@ -57,8 +59,16 @@
     holdTimer = null;
   }
 
-  function choose(id: CenterTabId): void {
+  function choose(id: CenterTabId, event: MouseEvent): void {
     onSelect(id);
+    // A pointer click leaves focus sitting on the button it hit, and focus is
+    // what keeps the group on screen — so a mouse user would never see it fade
+    // again, however far away the pointer went. Hand focus back and let hover
+    // plus the hold below do the work. `detail` is 0 when a click came from the
+    // keyboard, so Tab-and-Enter keeps both its focus and its reveal.
+    if (event.detail > 0 && event.currentTarget instanceof HTMLElement) {
+      event.currentTarget.blur();
+    }
     releaseHold();
     heldAfterSwitch = true;
     holdTimer = setTimeout(() => {
@@ -73,41 +83,42 @@
 </script>
 
 <nav class="center-pills" class:held={heldAfterSwitch} aria-label="Center surfaces">
+  <!-- The project's language server, at the head of the group. -->
+  <LanguageIntelligenceControls />
+
   {#each TABS as tab (tab.id)}
     {@const Icon = tab.icon}
-    <!-- `text-sm` is 12px in this shell and overrides the xs recipe's 11px,
-         which is below the floor for anything a person reads. Rest, hover and
-         selected are painted below, off `aria-current`, so the one attribute
-         that tells a screen reader which tab this is also tells the eye. -->
-    <Button
-      size="sm"
-      variant="ghost"
-      aria-current={tab.id === activeId ? 'page' : undefined}
-      class="text-sm"
-      data-testid={`center-tab-${tab.id}`}
-      onclick={() => choose(tab.id)}
-    >
-      <Icon class="size-4" strokeWidth={1.6} aria-hidden="true" />
-      {tab.label}
-    </Button>
+    <!-- Icon only. The word lives on `label`, which `IconButton` makes both the
+         accessible name and the tooltip, so nothing is lost to a screen reader
+         or to anyone who pauses on one. `aria-current` sits on the wrapper
+         because the kit button does not take it — the same arrangement the
+         right panel's tab strip uses — and it is what the fill is painted from,
+         so the one attribute that names the current surface also shows it. -->
+    <span class="tab" aria-current={tab.id === activeId ? 'page' : undefined}>
+      <IconButton
+        label={tab.label}
+        size="sm"
+        side="bottom"
+        variant="ghost"
+        data-testid={`center-tab-${tab.id}`}
+        onclick={(event) => choose(tab.id, event)}
+      >
+        <Icon class="size-4" strokeWidth={1.6} aria-hidden="true" />
+      </IconButton>
+    </span>
   {/each}
-
-  <!-- The project's language server, on the same row. Nothing renders here
-       until a project is open. -->
-  <LanguageIntelligenceControls />
 </nav>
 
 <style>
   /* The group is laid over the pane, so it is only ever as wide as its pills and
      it lets every click through except its own.
 
-     The top offset is the same on every surface: the line just under where the
-     editor keeps its file tabs. Making it conditional on the surface was the
-     obvious thing and the wrong one — the row jumped as you moved between
-     Session, Editor and Diff. Held at one height it never moves, and it can
-     never sit over the editor's tabs, because it is always below them. On
-     Session and Diff that leaves empty space above it, which costs nothing: the
-     row floats and takes no layout height on any surface. */
+     ONE offset, on every surface: clear of the line the editor keeps its file
+     tabs on. Nothing here reads which surface is showing — an offset that
+     changed with the surface made the row jump as you moved between Session,
+     Editor and Diff. On Session and Diff that leaves empty space above the
+     group, which costs nothing, because the row floats and takes no layout
+     height anywhere. */
   .center-pills {
     display: flex;
     flex: 0 0 auto;
@@ -129,32 +140,47 @@
     pointer-events: auto;
   }
 
-  /* Capsules: 26px tall with real side padding, opaque so they stay readable
-     over code and transcript alike, and lifted off the surface underneath.
-     The child combinator matters — the language switch is a button too, one
-     nested inside its own capsule, and shaping it like a tab flattened it. */
-  .center-pills > :global(button) {
-    min-height: 26px;
-    gap: 6px;
-    padding: 4px 12px;
+  /* The group's OWN keyboard focus, and only its own. The pane used to answer
+     for this, which meant typing in the composer or the editor held the group
+     open the whole time. Scoped here it does what it should: reach the pills by
+     Tab and they appear; focus anything else and they do not. */
+  .center-pills:focus-within {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .tab {
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+  }
+
+  /* Round capsules, opaque so they stay readable over code and transcript
+     alike, and lifted off the surface underneath. Scoped through `.tab` so the
+     language switch — which is a button too, inside its own capsule — is not
+     shaped like a surface tab. */
+  .tab :global(button) {
+    width: 30px;
+    height: 30px;
     border-radius: var(--radius-pill);
     background: var(--pill-surface);
     box-shadow: var(--shadow-sm);
     color: var(--color-text-2);
   }
 
-  .center-pills > :global(button:hover) {
+  .tab :global(button:hover) {
     background: var(--pill-surface-hover);
     color: var(--color-text);
   }
 
-  /* The one that is filled is the one you are on. */
-  .center-pills > :global(button[aria-current='page']) {
+  /* The one that is filled is the one you are on. With the words gone this fill
+     is the only thing saying so, which is why it is the accent and not a tint. */
+  .tab[aria-current='page'] :global(button) {
     background: var(--pill-surface-active);
     color: var(--pill-text-active);
   }
 
-  .center-pills > :global(button[aria-current='page']:hover) {
+  .tab[aria-current='page'] :global(button:hover) {
     background: var(--pill-surface-active);
     color: var(--pill-text-active);
   }

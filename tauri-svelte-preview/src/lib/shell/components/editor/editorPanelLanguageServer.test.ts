@@ -65,14 +65,38 @@ test('the switch says which language it is about', () => {
   );
 });
 
-test('the centre pane\'s pill group mounts the controls', () => {
+test('the editor\'s status band mounts the switch', () => {
+  // It rode with the surface pills until those four capsules left the file-tab
+  // row too narrow to be useful. The band it sits in now is already the readout
+  // about the open file, which is what the switch is about.
   assert.match(
-    pillsSource,
+    panelSource,
     /import LanguageIntelligenceControls from '\.\/LanguageIntelligenceControls\.svelte'/
   );
-  const group = pillsSource.slice(pillsSource.indexOf('<nav'), pillsSource.indexOf('</nav>'));
-  assert.ok(group.length > 0, 'the pill group must still exist');
-  assert.match(group, /<LanguageIntelligenceControls \/>/);
+  const band = panelSource.slice(
+    panelSource.indexOf('<div class="editor-status">'),
+    panelSource.indexOf('</div>', panelSource.indexOf('<div class="editor-status">'))
+  );
+  assert.ok(band.length > 0, 'the status band must still exist');
+  assert.match(band, /<LanguageIntelligenceControls \/>/);
+});
+
+test('the surface pills are three, and never move', () => {
+  assert.ok(
+    !pillsSource.includes('LanguageIntelligenceControls'),
+    'the switch has left the pill group; four capsules did not fit the centre pane'
+  );
+  assert.ok(
+    !pillsSource.includes('below-editor-tabs'),
+    'nothing about the row\'s position may depend on which surface is showing'
+  );
+  // One offset, stated once. The editor's tab row keeps room for it instead.
+  assert.match(pillsSource, /\.center-pills \{[\s\S]*?margin:\s*6px 8px;/);
+  assert.match(
+    panelSource,
+    /padding:\s*3px calc\(var\(--center-pill-group-width\) \+ 8px\) 3px 4px;/,
+    'the file-tab row must reserve the pills\' width whether or not they show'
+  );
 });
 
 test('the shell has no strip along its top any more', () => {

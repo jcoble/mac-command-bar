@@ -236,12 +236,12 @@
     --center-pills-events: none;
   }
 
-  /* The pointer anywhere in the centre pane, or the keyboard focus inside it,
-     asks for the group. Focus is included so the surface you are on is still
-     legible when the pointer is somewhere else entirely, and so the tabs can be
-     reached without a mouse. */
-  .center-region:hover,
-  .center-region:focus-within {
+  /* The pointer anywhere in the centre pane asks for the group. HOVER ONLY.
+     Keyboard focus used to be included here as well, and it was wrong: focus
+     inside the pane means the composer or the editor, so the group stayed lit
+     for as long as you were typing. The group answers for its own focus — see
+     `.center-pills:focus-within` in `CenterCornerTabs`. */
+  .center-region:hover {
     --center-pills-reveal: 1;
     --center-pills-events: auto;
   }
