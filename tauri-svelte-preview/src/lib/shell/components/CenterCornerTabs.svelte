@@ -72,12 +72,7 @@
   onDestroy(releaseHold);
 </script>
 
-<nav
-  class="center-pills"
-  class:held={heldAfterSwitch}
-  class:below-editor-tabs={activeId === 'editor'}
-  aria-label="Center surfaces"
->
+<nav class="center-pills" class:held={heldAfterSwitch} aria-label="Center surfaces">
   {#each TABS as tab (tab.id)}
     {@const Icon = tab.icon}
     <!-- `text-sm` is 12px in this shell and overrides the xs recipe's 11px,
@@ -104,13 +99,21 @@
 
 <style>
   /* The group is laid over the pane, so it is only ever as wide as its pills and
-     it lets every click through except its own. */
+     it lets every click through except its own.
+
+     The top offset is the same on every surface: the line just under where the
+     editor keeps its file tabs. Making it conditional on the surface was the
+     obvious thing and the wrong one — the row jumped as you moved between
+     Session, Editor and Diff. Held at one height it never moves, and it can
+     never sit over the editor's tabs, because it is always below them. On
+     Session and Diff that leaves empty space above it, which costs nothing: the
+     row floats and takes no layout height on any surface. */
   .center-pills {
     display: flex;
     flex: 0 0 auto;
     align-items: center;
     gap: 6px;
-    margin: 6px 8px;
+    margin: calc(var(--editor-tab-row-height) + 6px) 8px 6px;
     user-select: none;
     opacity: var(--center-pills-reveal, 0);
     pointer-events: var(--center-pills-events, none);
@@ -124,13 +127,6 @@
   .center-pills.held {
     opacity: 1;
     pointer-events: auto;
-  }
-
-  /* On the Editor the pane already has a bar of its own — the row of file tabs
-     — and the pills belong under it, not across it. Every other surface starts
-     at the top of the pane, so nothing to clear. */
-  .center-pills.below-editor-tabs {
-    margin-top: calc(var(--editor-tab-row-height) + 6px);
   }
 
   /* Capsules: 26px tall with real side padding, opaque so they stay readable
