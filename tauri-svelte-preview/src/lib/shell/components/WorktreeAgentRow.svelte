@@ -12,11 +12,8 @@
    */
   import { onDestroy } from 'svelte';
 
-  import Archive from '@lucide/svelte/icons/archive';
-  import ArchiveRestore from '@lucide/svelte/icons/archive-restore';
   import CornerDownLeft from '@lucide/svelte/icons/corner-down-left';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
-  import GitBranch from '@lucide/svelte/icons/git-branch';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
 
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
@@ -369,6 +366,8 @@
     else if (action === 'copy-worktree-path') copyText(worktree || null);
     else if (action === 'open-in-editor') {
       if (!sessionRowJump(session.ownedId, 'editor')) onSelect?.();
+    } else if (action === 'open-source-control') {
+      if (!sessionRowJump(session.ownedId, 'source-control')) onSelect?.();
     } else if (action === 'delete') onAskRemove?.();
   }
 
@@ -524,7 +523,7 @@
     class="absolute top-[9px] right-[17px] z-[2]"
   >
     <!-- A stopped session's one extra move, at the head of the cluster so the
-         four standing actions keep their places against the right edge. -->
+         two standing actions keep their places against the right edge. -->
     {#if presenceIsRestart}
       <span data-testid="worktree-agent-resume" class="contents">
         <HoverActionButton label="Resume session" tone="primary" size="sm" onclick={startSession}>
@@ -533,6 +532,9 @@
       </span>
     {/if}
 
+    <!-- Two, not four. Source control and settling both live on the row's
+         right-click menu, and every button here costs the title the same width
+         on every row whether or not anyone hovers it. -->
     <span data-testid="worktree-agent-jump" class="contents">
       <span data-testid="worktree-agent-jump-session" class="contents">
         <HoverActionButton
@@ -554,41 +556,7 @@
           <FileCode2 aria-hidden="true" />
         </HoverActionButton>
       </span>
-      <span data-testid="worktree-agent-jump-source-control" class="contents">
-        <HoverActionButton
-          label="Open source control"
-          tone="success"
-          size="sm"
-          onclick={(event) => jump(event, 'source-control')}
-        >
-          <GitBranch aria-hidden="true" />
-        </HoverActionButton>
-      </span>
     </span>
-
-    <!-- Where the age sits at rest: the lifecycle move this session can make
-         next, which is settling it, or putting a settled one back on Done. -->
-    {#if shelf === 'settled'}
-      <HoverActionButton
-        data-testid="worktree-agent-unsettle"
-        label="Revert to Done"
-        tone="attention"
-        size="sm"
-        onclick={(event) => { event.stopPropagation(); onUnsettle?.(); }}
-      >
-        <ArchiveRestore aria-hidden="true" />
-      </HoverActionButton>
-    {:else}
-      <HoverActionButton
-        data-testid="worktree-agent-settle"
-        label="Settle"
-        tone="attention"
-        size="sm"
-        onclick={(event) => { event.stopPropagation(); onSettle?.(); }}
-      >
-        <Archive aria-hidden="true" />
-      </HoverActionButton>
-    {/if}
   </HoverActions>
 
   <!-- Nothing here reads a store: the card renders the snapshot taken when it
@@ -609,12 +577,12 @@
 <style>
   .row {
     /* The empty column every row keeps on its right for the action cluster:
-       four 25px buttons and the 4px gaps between them. It is reserved whether
-       or not the row is hovered, which is the whole point — the title and the
-       two lines under it truncate to the same width at rest as they do with
-       the buttons showing, so nothing shifts as the pointer runs down the
-       list. A stopped row reserves one button more, and reserves it always. */
-    --rail-action-gutter: 112px;
+       two 25px buttons and the 4px gap between them. It is reserved whether or
+       not the row is hovered, which is the whole point — the title and the two
+       lines under it truncate to the same width at rest as they do with the
+       buttons showing, so nothing shifts as the pointer runs down the list. A
+       stopped row reserves one button more, and reserves it always. */
+    --rail-action-gutter: 56px;
     position: relative;
     display: block;
     box-sizing: border-box;
@@ -630,7 +598,7 @@
     contain-intrinsic-size: auto 70px;
   }
 
-  .row[data-presence='stopped'] { --rail-action-gutter: 141px; }
+  .row[data-presence='stopped'] { --rail-action-gutter: 85px; }
 
   /* The mark, then the three lines, then the reserved gutter — which is the
      row's own right padding, so every line inside stops short of it. */
@@ -653,7 +621,7 @@
     font: inherit;
     text-align: left;
     cursor: pointer;
-    /* Keeps the selected accent bar inside the rounded corner. */
+    /* Nothing inside may paint past the rounded corner. */
     overflow: hidden;
     outline: none;
   }
@@ -690,25 +658,23 @@
     gap: 2px;
   }
 
+  /* Four states, one neutral scale, each step brighter than the last: rest is
+     the card showing through, hover answers the pointer, selected sits above
+     both because it persists, and a selected row under the pointer lifts once
+     more so hovering it still says something. No stripe down the rail's edge
+     and no accent tint — accent means "this session is working", and a row
+     that happens to be the one on screen has not earned that signal. */
   .row:hover .session-row { background: var(--color-hover); }
-  .session-row:focus-visible { box-shadow: inset 0 0 0 2px var(--color-focus); }
 
-  .active .session-row { background: var(--color-selected); }
-
-  /* The accent bar is always there and sweeps up from the row's top edge when
-     the row becomes the selected one. Transform only — the row's box never
-     changes, so nothing around it reflows. */
-  .session-row::before {
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 2px;
-    background: var(--color-selected-border);
-    content: '';
-    transform: scaleY(0);
-    transform-origin: top;
+  .active .session-row {
+    background: color-mix(in srgb, var(--color-elevated) 88%, var(--color-text));
   }
 
-  .active .session-row::before { transform: scaleY(1); }
+  .row.active:hover .session-row {
+    background: color-mix(in srgb, var(--color-elevated) 84%, var(--color-text));
+  }
+
+  .session-row:focus-visible { box-shadow: inset 0 0 0 2px var(--color-focus); }
 
   .line {
     position: relative;
@@ -891,7 +857,6 @@
     .thumb { transition: opacity 120ms ease; }
 
     .session-row { transition: background-color 140ms ease; }
-    .session-row::before { transition: transform 180ms cubic-bezier(0.2, 0, 0, 1); }
     .hover-popover { animation: card-in 160ms ease-out; }
   }
 

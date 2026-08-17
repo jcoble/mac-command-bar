@@ -51,8 +51,11 @@ function storedRegionsUsable(ids: Iterable<string>): boolean {
 const COMPONENT = 'shell-region';
 const PERSIST_DEBOUNCE_MS = 250;
 
-/** What the two side columns open at, in px, before anyone drags a divider. */
-export const SESSIONS_WIDTH = 300;
+/** What the two side columns open at, in px, before anyone drags a divider.
+ * The sessions column opens wider than the tool column because its rows carry
+ * a provider mark, three lines of text and a reserved column for their hover
+ * actions; at 300 the title had 68px to live in and truncated to a word. */
+export const SESSIONS_WIDTH = 360;
 export const TOOLS_WIDTH = 320;
 
 /**

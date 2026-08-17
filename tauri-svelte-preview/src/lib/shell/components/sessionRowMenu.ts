@@ -20,6 +20,7 @@ export type SessionRowMenuAction =
   | 'copy-worktree-path'
   | 'continue-in-new-session'
   | 'open-in-editor'
+  | 'open-source-control'
   | 'reveal-in-finder'
   | 'delete';
 
@@ -90,6 +91,9 @@ export function sessionRowMenuItems(input: SessionRowMenuInput): SessionRowMenuI
       disabledReason: NO_BACKEND
     },
     { id: 'open-in-editor', label: 'Open in editor', enabled: true, startsGroup: true },
+    // The row used to carry this as a hover button. It moved here when the row's
+    // gutter came down to two, and the jump itself is unchanged.
+    { id: 'open-source-control', label: 'Open source control', enabled: true },
     // follow-up: no command opens a path in Finder yet.
     {
       id: 'reveal-in-finder',

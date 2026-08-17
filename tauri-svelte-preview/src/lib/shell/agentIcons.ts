@@ -6,21 +6,37 @@
  * The name is the provider id read back as words, so adding a provider needs
  * no new string here.
  */
-import Bot from '@lucide/svelte/icons/bot';
+import type { Component } from 'svelte';
+
 import Gem from '@lucide/svelte/icons/gem';
-import SquareCode from '@lucide/svelte/icons/square-code';
 import SquareTerminal from '@lucide/svelte/icons/square-terminal';
 import Terminal from '@lucide/svelte/icons/terminal';
 
+import AntigravityMark from './icons/AntigravityMark.svelte';
+import ClaudeMark from './icons/ClaudeMark.svelte';
+import CodexMark from './icons/CodexMark.svelte';
 import type { AgentKind } from './ownedSessions.ts';
 
-export const AGENT_ICONS: Record<AgentKind, typeof Bot> = {
-  claude: Bot,
-  codex: SquareCode,
-  antigravity: Bot,
-  gemini: Gem,
-  opencode: SquareTerminal,
-  other: Terminal
+/** What every glyph here accepts, Lucide's and the brand marks' alike. */
+type AgentIcon = Component<{
+  class?: string;
+  'aria-hidden'?: boolean | 'true' | 'false';
+  'aria-label'?: string;
+}>;
+
+/**
+ * The three providers a person actually runs wear their own marks, taken from
+ * each vendor's published asset — see the note at the top of each component
+ * for where it came from. The rest keep a Lucide glyph: no official mark was
+ * needed for them, and a stand-in is honest where a real one is not available.
+ */
+export const AGENT_ICONS: Record<AgentKind, AgentIcon> = {
+  claude: ClaudeMark as AgentIcon,
+  codex: CodexMark as AgentIcon,
+  antigravity: AntigravityMark as AgentIcon,
+  gemini: Gem as AgentIcon,
+  opencode: SquareTerminal as AgentIcon,
+  other: Terminal as AgentIcon
 };
 
 /** What to call this kind of session in a tooltip or a detail line. */
