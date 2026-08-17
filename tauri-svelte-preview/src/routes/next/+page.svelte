@@ -101,6 +101,7 @@
   import { gitService } from '$lib/shell/git/gitService';
   import {
     CENTER_MIN_WIDTH,
+    DOCK_HEIGHT,
     SESSIONS_MAX_WIDTH,
     SESSIONS_MIN_WIDTH,
     SESSIONS_STRIP_WIDTH,
@@ -231,6 +232,7 @@
     restoreCenterLayout(snapshot: CenterDockSnapshot | null | undefined): void;
     setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
     setRegionHeight(id: ShellRegionId, height: number, limits?: RegionHeightLimits): void;
+    setDockPresent(present: boolean): void;
     setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
     regionWidth(id: ShellRegionId): number | null;
   } | null = null;
@@ -641,18 +643,16 @@
    */
   function applyProblemsLocation(location: ProblemsLocation): void {
     const atBottom = location === 'bottom';
-    frameControls?.setRegionHeight(
-      'dock',
-      atBottom ? 180 : 0,
-      atBottom
-        ? // The maximum has to be said again, not just the minimum: closing the
-          // strip pins BOTH ends at zero, and a limit left off is a limit left
-          // alone — so a strip reopened without this comes back pinned shut and
-          // settles at its minimum instead of the height it is meant to have.
-          // MAX_SAFE_INTEGER is dockview's own word for "no maximum".
-          { minimumHeight: 96, maximumHeight: Number.MAX_SAFE_INTEGER }
-        : { minimumHeight: 0, maximumHeight: 0 }
-    );
+    // Shut means gone from the grid, not zero pixels tall. A region sized to
+    // zero keeps its divider and the room the grid leaves around it, which is
+    // the band that sat above the status bar with the strip closed.
+    frameControls?.setDockPresent(atBottom);
+    if (atBottom) {
+      frameControls?.setRegionHeight('dock', DOCK_HEIGHT, {
+        minimumHeight: 96,
+        maximumHeight: Number.MAX_SAFE_INTEGER
+      });
+    }
   }
 
   /** "Reset layout" means ALL of it: the grid regions (so both side columns go
@@ -1898,7 +1898,9 @@
   .status-bar {
     flex: 0 0 auto;
     background: var(--color-bg);
-    border-top: 1px solid var(--color-border);
+    /* No rule along the top. The panels already stop short of the window edge,
+       so the backdrop runs behind this bar and the two read as one floor; a
+       border drew a line across that gap and made it look like a second bar. */
   }
 
   .extension-api-probe-terminal-host {

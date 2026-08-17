@@ -51,6 +51,11 @@
        * Problems list has been moved elsewhere or hidden. See
        * `setRegionHeight` in `frame.ts`. */
       setRegionHeight: (id: ShellRegionId, height: number, limits?: RegionHeightLimits) => void;
+      /** Put the bottom dock in the grid or take it out. A shut strip is
+       * removed rather than shortened, because a region of zero height still
+       * keeps its divider and the room around it. See `setDockPresent` in
+       * `frame.ts`. */
+      setDockPresent: (present: boolean) => void;
       /** Say what a region may be dragged to without moving it. See
        * `setRegionLimits` in `frame.ts`. */
       setRegionLimits: (id: ShellRegionId, limits: RegionWidthLimits) => void;
@@ -141,6 +146,7 @@
         restoreCenterLayout: (snapshot) => centerDock?.restoreLayout(snapshot),
         setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
         setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
+        setDockPresent: (present) => frame?.setDockPresent(present),
         setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
         regionWidth: (id) => frame?.regionWidth(id) ?? null
       });
@@ -181,6 +187,10 @@
     height: 100%;
     width: 100%;
     overflow: hidden;
+    /* Matches the gutter each panel already keeps, so the cards sit inside the
+       window rather than running off its edges. */
+    padding: 3px;
+    background: var(--color-bg);
     visibility: hidden; /* anti-flash: revealed when ready */
   }
   .shell-frame.ready {
@@ -214,7 +224,9 @@
   .center-region {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
-    background: var(--color-bg);
+    /* Transparent on purpose: the card behind it paints the surface and its
+       gradient, and an opaque fill here would cover both. */
+    background: transparent;
   }
 
   .center-tabs {
@@ -227,7 +239,9 @@
   .tools-region {
     min-width: 0;
     min-height: 0;
-    background: var(--background);
+    /* Same reason as `.center-region`. This also drops a stray `--background`,
+       which is a different token from the `--color-*` set the shell uses. */
+    background: transparent;
   }
 
   .center-dock-host {
@@ -243,8 +257,12 @@
   .shell-frame :global(.shell-grid),
   .shell-frame :global(.shell-center-dock) {
     /* token map: translate dockview vars onto the /next palette */
-    --dv-group-view-background-color: var(--color-surface);
-    --dv-tabs-and-actions-container-background-color: var(--color-surface);
+    --dv-border-radius: 8px;
+    /* Transparent, not the surface colour: the card underneath already paints
+       the surface and the gradient down its top edge, and an opaque group here
+       covered both from the tab strip down. */
+    --dv-group-view-background-color: transparent;
+    --dv-tabs-and-actions-container-background-color: transparent;
     --dv-activegroup-visiblepanel-tab-background-color: var(--color-surface);
     --dv-activegroup-hiddenpanel-tab-background-color: var(--color-bg);
     --dv-inactivegroup-visiblepanel-tab-background-color: var(--color-tab-unfocused-surface);
@@ -265,8 +283,46 @@
        sash line itself, never the panel content. Delay 0 so it appears the
        moment you grab it, not half a second in. */
     --dv-active-sash-color: var(--color-accent);
+    /* Panels read as cards laid on the backdrop rather than as regions cut out
+       of one sheet: each section is pulled in a few pixels so the background
+       shows through as a gutter, and the separator rules are dropped since the
+       gap already does that work. */
+    --dv-separator-border: transparent;
     --dv-active-sash-transition-delay: 0.1s;
     --dv-active-sash-transition-duration: 0.05s;
+  }
+
+  /* The gutter itself. The group is a plain flex column inside the splitview's
+     absolutely placed box, so pulling it in on every side and taking the same
+     amount off its height leaves the backdrop showing between sections. */
+  /* ─── The cards ──────────────────────────────────────────────────────────
+     THE one rule that shapes the shell's panels. `.shell-region-host` is the
+     box each region's content is mounted into — sessions, centre, dock, tools
+     — so rounding and insetting it here is what makes all four read as cards
+     laid on the backdrop. Nothing else needs a radius: this clips its content.
+
+     Not the dockview classes. `.dv-groupview` exists only inside the centre's
+     own nested dock, so styling it shaped one panel out of four. */
+  .shell-frame :global(.shell-region-host) {
+    width: calc(100% - 6px);
+    height: calc(100% - 6px);
+    margin: 3px;
+    border-radius: 8px;
+    overflow: hidden;
+    /* A card is a lit surface, not a flat fill: each one carries a little more
+       light along its top edge, falling off within the first couple of hundred
+       pixels. Without it the panels read as holes cut in the backdrop. */
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.016), rgba(255, 255, 255, 0) 140px),
+      var(--color-surface);
+  }
+
+  /* The middle is where the eye lands, so it gets the stronger lift and the
+     side columns stay quieter. */
+  .shell-frame :global(.shell-region-host-center) {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0) 200px),
+      var(--color-surface);
   }
 
   /* seam flattening */

@@ -21,7 +21,6 @@ import {
   GRID_LAYOUT_KEY,
   gridPanelIds,
   loadLayout,
-  panelSetMatches,
   saveLayout,
   type LayoutStorage
 } from './layoutStorage';
@@ -29,18 +28,56 @@ import {
 export type ShellRegionId = 'sessions' | 'center' | 'tools' | 'dock';
 
 const REGION_IDS: readonly ShellRegionId[] = ['sessions', 'center', 'tools', 'dock'];
+
+/**
+ * The regions a stored layout must carry to be worth restoring.
+ *
+ * The dock is absent from this list because it is absent from the grid
+ * whenever the Problems list is not at the bottom — a layout saved in that
+ * state has three regions, and demanding four would throw it away and rebuild
+ * the default arrangement on every launch, losing both column widths.
+ */
+const REQUIRED_REGION_IDS: readonly ShellRegionId[] = ['sessions', 'center', 'tools'];
+
+/** Every required region is there, and nothing this frame does not own is. */
+function storedRegionsUsable(ids: Iterable<string>): boolean {
+  const present = new Set(ids);
+  const known: readonly string[] = REGION_IDS;
+  return (
+    REQUIRED_REGION_IDS.every((id) => present.has(id)) &&
+    [...present].every((id) => known.includes(id))
+  );
+}
 const COMPONENT = 'shell-region';
 const PERSIST_DEBOUNCE_MS = 250;
 
 /** What the two side columns open at, in px, before anyone drags a divider. */
 export const SESSIONS_WIDTH = 300;
-const TOOLS_WIDTH = 320;
+export const TOOLS_WIDTH = 320;
+
+/**
+ * How narrow and how wide the tool column may be dragged. The maximum is what
+ * "widen the browser" means: the browser page is this column's content, so the
+ * seam beside it is the only thing that sets the page's width, and the button
+ * that widens the page drags that seam to this number. It stops here rather
+ * than at the window's edge because the center pane keeps `CENTER_MIN_WIDTH`
+ * whatever else happens — a page that swallowed the session it is being marked
+ * up for would be worse than a narrow page.
+ */
+export const TOOLS_MIN_WIDTH = 240;
+export const TOOLS_MAX_WIDTH = 960;
+
+/** What the middle keeps. A conversation narrower than this is unreadable. */
+export const CENTER_MIN_WIDTH = 420;
 
 /** How narrow and how wide the sessions column may be dragged while it is
  * open. Exported because the page puts these back when the column is unfolded
  * — folding it replaces them with a fixed width. */
 export const SESSIONS_MIN_WIDTH = 220;
 export const SESSIONS_MAX_WIDTH = 560;
+
+/** What the bottom strip opens at. */
+export const DOCK_HEIGHT = 180;
 
 /** The width of the sessions column folded up: one icon-sized cell per
  * session and nothing else. Fixed the same way the surface rail is, so the
@@ -88,6 +125,20 @@ export interface ShellFrame {
    * are applied first here for the same reason they are there.
    */
   setRegionHeight(id: ShellRegionId, height: number, limits?: RegionHeightLimits): void;
+  /**
+   * Put the bottom dock in the grid, or take it out.
+   *
+   * Closing the dock is not the same as making it short. A region of zero
+   * height is still a region: the grid keeps its divider, and the middle
+   * column keeps the room the divider and the empty view sit in — measured at
+   * 16px above the status bar with the strip shut. Removing the region is what
+   * gives that room back, and adding it again is what a reopened strip means.
+   *
+   * The dock's content is Svelte-owned and only borrowed by the grid, so it
+   * survives the round trip: removal detaches it, and the next add moves it
+   * back into the new host.
+   */
+  setDockPresent(present: boolean): void;
   /**
    * Say what a region may be dragged to, without touching the width it has.
    *
@@ -199,9 +250,26 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     }
   };
 
+  /**
+   * Below CENTER only: the dock spans the middle column, not the side columns.
+   *
+   * No minimum height, on purpose. The Problems list can be moved to the tool
+   * column or hidden altogether, and both answers close this strip completely —
+   * a minimum of 96px would clamp that back to a 96px strip of nothing.
+   */
+  const addDock = (): void => {
+    api.addPanel({
+      id: 'dock',
+      component: COMPONENT,
+      position: { direction: 'below', referencePanel: 'center' },
+      size: DOCK_HEIGHT,
+      minimumHeight: 0
+    });
+  };
+
   /** The default arrangement; also the fallback whenever restore is unusable. */
   const buildDefault = (): void => {
-    api.addPanel({ id: 'center', component: COMPONENT });
+    api.addPanel({ id: 'center', component: COMPONENT, minimumWidth: CENTER_MIN_WIDTH });
     // The left side belongs to the sessions list and nothing else.
     api.addPanel({
       id: 'sessions',
@@ -219,21 +287,10 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       component: COMPONENT,
       position: { direction: 'right', referencePanel: 'center' },
       size: TOOLS_WIDTH,
-      minimumWidth: 240,
-      maximumWidth: 640
+      minimumWidth: TOOLS_MIN_WIDTH,
+      maximumWidth: TOOLS_MAX_WIDTH
     });
-    // Below CENTER only: the dock spans the middle column, not the side columns.
-    //
-    // No minimum height, on purpose. The Problems list can be moved to the tool
-    // column or hidden altogether, and both answers close this strip completely
-    // — a minimum of 96px would clamp that back to a 96px strip of nothing.
-    api.addPanel({
-      id: 'dock',
-      component: COMPONENT,
-      position: { direction: 'below', referencePanel: 'center' },
-      size: 180,
-      minimumHeight: 0
-    });
+    addDock();
     // Say the two side widths again, now that every region exists.
     //
     // The dock above is what makes this necessary: putting it under the middle
@@ -296,7 +353,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
 
   runSynchronized(() => {
     const stored = loadLayout<object>(options.storage, GRID_LAYOUT_KEY);
-    if (stored && panelSetMatches(gridPanelIds(stored), REGION_IDS)) {
+    if (stored && storedRegionsUsable(gridPanelIds(stored))) {
       try {
         api.fromJSON(stored as never);
         return;
@@ -334,10 +391,35 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
 
   const changeListener = api.onDidLayoutChange(persistSoon);
 
+  const setDockPresent = (present: boolean): void => {
+    try {
+      const panel = api.getPanel('dock');
+      if (present === Boolean(panel)) return;
+      // Both side widths are read before the change and asked for again after,
+      // for the reason `buildDefault` gives: adding the dock lifts the middle
+      // out of the row and puts it back as a column, and the width it gives up
+      // comes back unevenly. Removing it does the same in reverse.
+      const sessions = regionWidth('sessions');
+      const tools = regionWidth('tools');
+      runSynchronized(() => {
+        if (present) addDock();
+        else if (panel) api.removePanel(panel);
+        if (sessions !== null) setRegionWidth('sessions', sessions);
+        if (tools !== null) setRegionWidth('tools', tools);
+      });
+      // Same ordering as `resetLayout`: the guard releases on a timer, so the
+      // persist is asked for on the timer scheduled after it.
+      setTimeout(persistSoon, 0);
+    } catch {
+      // nothing to do — the arrangement is still usable
+    }
+  };
+
   return {
     api,
     setRegionWidth,
     setRegionHeight,
+    setDockPresent,
     setRegionLimits,
     regionWidth,
     resetLayout(): void {
