@@ -51,6 +51,7 @@ const shellPageSource = readFileSync(
   'utf8'
 );
 const pillsSource = readFileSync(path.join(here, '..', 'CenterCornerTabs.svelte'), 'utf8');
+const frameSource = readFileSync(path.join(here, '..', 'ShellFrame.svelte'), 'utf8');
 
 test('the switch says which language it is about', () => {
   assert.match(controlsSource, /languageShortLabel/);
@@ -65,38 +66,72 @@ test('the switch says which language it is about', () => {
   );
 });
 
-test('the editor\'s status band mounts the switch', () => {
-  // It rode with the surface pills until those four capsules left the file-tab
-  // row too narrow to be useful. The band it sits in now is already the readout
-  // about the open file, which is what the switch is about.
+test('the pill group leads with the switch and carries icons after it', () => {
   assert.match(
-    panelSource,
+    pillsSource,
     /import LanguageIntelligenceControls from '\.\/LanguageIntelligenceControls\.svelte'/
   );
-  const band = panelSource.slice(
-    panelSource.indexOf('<div class="editor-status">'),
-    panelSource.indexOf('</div>', panelSource.indexOf('<div class="editor-status">'))
+  const group = pillsSource.slice(pillsSource.indexOf('<nav'), pillsSource.indexOf('</nav>'));
+  assert.ok(group.length > 0, 'the pill group must still exist');
+  assert.ok(
+    group.indexOf('<LanguageIntelligenceControls />') < group.indexOf('{#each TABS'),
+    'the switch leads the group; the surface icons follow it'
   );
-  assert.ok(band.length > 0, 'the status band must still exist');
-  assert.match(band, /<LanguageIntelligenceControls \/>/);
+  // Icons, not words: the label survives as the accessible name and the
+  // tooltip, which is the only place the word is now written.
+  assert.match(pillsSource, /<IconButton\b[\s\S]*?label=\{tab\.label\}/);
+  const capsule = pillsSource.slice(
+    pillsSource.indexOf('>', pillsSource.indexOf('<IconButton')),
+    pillsSource.indexOf('</IconButton>')
+  );
+  assert.match(capsule, /<Icon\b/, 'the capsule carries the glyph');
+  assert.ok(
+    !capsule.includes('tab.label'),
+    'the word must not be printed inside the capsule; it lives on the label'
+  );
 });
 
-test('the surface pills are three, and never move', () => {
-  assert.ok(
-    !pillsSource.includes('LanguageIntelligenceControls'),
-    'the switch has left the pill group; four capsules did not fit the centre pane'
-  );
+test('the pill row sits at one offset, clear of the editor tab row', () => {
   assert.ok(
     !pillsSource.includes('below-editor-tabs'),
     'nothing about the row\'s position may depend on which surface is showing'
   );
-  // One offset, stated once. The editor's tab row keeps room for it instead.
-  assert.match(pillsSource, /\.center-pills \{[\s\S]*?margin:\s*6px 8px;/);
+  assert.match(
+    pillsSource,
+    /\.center-pills \{[\s\S]*?margin:\s*calc\(var\(--editor-tab-row-height\) \+ 6px\) 8px 6px;/,
+    'one unconditional offset, below the line the editor keeps its tabs on'
+  );
+  // The offset is only honest if that row cannot grow past the stated height.
+  // `min-height` let an overflowing tab strip's scrollbar push it taller on a
+  // Mac showing scrollbars always, and the pills landed inside the row.
   assert.match(
     panelSource,
-    /padding:\s*3px calc\(var\(--center-pill-group-width\) \+ 8px\) 3px 4px;/,
-    'the file-tab row must reserve the pills\' width whether or not they show'
+    /\.editor-header \{[\s\S]*?height:\s*var\(--editor-tab-row-height\);/,
+    'the tab row is pinned to the height everything else is placed against'
   );
+  assert.match(
+    panelSource,
+    /\.file-strip \{[\s\S]*?scrollbar-width:\s*none;/,
+    'a scrollbar that claims height would grow the row it is measured from'
+  );
+  assert.ok(
+    !panelSource.includes('--center-pill-group-width'),
+    'the reserved gutter is gone; the group is below the row, not beside it'
+  );
+});
+
+test('the group answers for its own focus, not the whole pane', () => {
+  // `:focus-within` on the region meant typing in the composer or the editor
+  // held the pills open the entire time.
+  assert.match(pillsSource, /\.center-pills:focus-within \{/);
+  assert.ok(
+    !frameSource.includes('.center-region:focus-within'),
+    'the pane reveals on hover only; focus is the group\'s own business'
+  );
+  // A pointer click leaves focus on the button, which would pin the group open
+  // for good. `detail` is 0 for a keyboard-driven click, so Tab-and-Enter keeps
+  // its focus and its reveal.
+  assert.match(pillsSource, /event\.detail > 0[\s\S]*?\.blur\(\)/);
 });
 
 test('the shell has no strip along its top any more', () => {

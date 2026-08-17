@@ -92,7 +92,7 @@ assert.match(
 // They used to hold a row of their own above the dock. That row charged every
 // surface the same strip of height to answer a question only asked now and
 // then, so the group is laid over the pane instead and is invisible until the
-// pointer or the keyboard focus is inside it.
+// pointer is inside the pane, or the group itself takes keyboard focus.
 
 assert.match(
   shellFrame,
@@ -109,10 +109,17 @@ assert.match(
   /\.center-region \{[\s\S]*?--center-pills-reveal:\s*0;[\s\S]*?--center-pills-events:\s*none;/,
   'the region is what decides whether the group is wanted'
 );
+// HOVER ONLY. Keyboard focus lived here too until it turned out to mean the
+// composer and the editor, which held the group open for as long as you typed.
+// The group answers for its own focus instead — `.center-pills:focus-within`.
 assert.match(
   shellFrame,
-  /\.center-region:hover,\s*\n\s*\.center-region:focus-within \{[\s\S]*?--center-pills-reveal:\s*1;[\s\S]*?--center-pills-events:\s*auto;/,
-  'the pointer in the pane, or the keyboard focus inside it, reveals the group'
+  /\.center-region:hover \{[\s\S]*?--center-pills-reveal:\s*1;[\s\S]*?--center-pills-events:\s*auto;/,
+  'the pointer anywhere in the pane reveals the group'
+);
+assert.ok(
+  !shellFrame.includes('.center-region:focus-within'),
+  'focus inside the pane must not reveal the group; only focus on the group does'
 );
 assert.match(
   shellFrame,
@@ -152,12 +159,14 @@ assert.match(
 );
 assert.match(
   centerCornerTabs,
-  /\.center-pills > :global\(button\) \{[\s\S]*?border-radius:\s*var\(--radius-pill\);[\s\S]*?background:\s*var\(--pill-surface\);/,
+  /\.tab :global\(button\) \{[\s\S]*?border-radius:\s*var\(--radius-pill\);[\s\S]*?background:\s*var\(--pill-surface\);/,
   'the tabs are capsules painted from the shared pill tokens'
 );
+// With the words gone the fill is the ONLY thing saying which surface you are
+// on, which is why it is the accent rather than a tint.
 assert.match(
   centerCornerTabs,
-  /\.center-pills > :global\(button\[aria-current='page'\]\) \{[\s\S]*?background:\s*var\(--pill-surface-active\);/,
+  /\.tab\[aria-current='page'\] :global\(button\) \{[\s\S]*?background:\s*var\(--pill-surface-active\);/,
   'the selected capsule is the filled one'
 );
 assert.doesNotMatch(

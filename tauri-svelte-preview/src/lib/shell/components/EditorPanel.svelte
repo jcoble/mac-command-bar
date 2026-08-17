@@ -1073,7 +1073,7 @@
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
-    min-height: var(--editor-tab-row-height);
+    height: var(--editor-tab-row-height);
     overflow: hidden;
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
@@ -1088,7 +1088,17 @@
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    scrollbar-width: thin;
+    /* No visible bar, the same as the right panel's tab strip. A `thin` bar is
+       still a bar that CLAIMS HEIGHT on a Mac set to show scrollbars always:
+       once the tabs overflowed, the row grew by those pixels and everything
+       positioned against its stated height landed inside it instead of below.
+       Chrome's overlay bars hide that, which is why it survived a browser
+       check. Scrolling by wheel and drag is unaffected. */
+    scrollbar-width: none;
+  }
+
+  .file-strip::-webkit-scrollbar {
+    display: none;
   }
 
   .file-chip {
