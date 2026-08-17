@@ -358,4 +358,16 @@
     min-width: 0;
     min-height: 0;
   }
+
+  /* A grid cell never scrolls; the panel inside it does.
+   *
+   * dockview leaves `.dv-view` scrollable, and on a Mac set to show scroll bars
+   * always, each one drew a horizontal bar along its bottom edge. Three cells
+   * side by side read as one band above the status bar, and because the bar is
+   * part of the cell, the panel inside — sized at `height: 100%` — stopped
+   * seventeen pixels short of the status bar and took its own scrollbar with it.
+   * Nothing in a grid cell is meant to be reached by scrolling the cell. */
+  .shell-frame :global(.dv-view) {
+    overflow: hidden;
+  }
 </style>
