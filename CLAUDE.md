@@ -1,5 +1,25 @@
 # mac-command-bar
 
+## ⛔ Never write a CSS `:has()` selector (purged 2026-08-13, commit `ccd3cc1`)
+
+Not a style preference. Profiling the live app's startup freeze found the WebContent main
+thread spending SECONDS inside `:has()` invalidation while the transcript inserted its DOM.
+Once any `:has` rule is registered anywhere, WebKit re-checks it on every DOM mutation in the
+whole document — so one careless selector taxes every keystroke and every streamed token in
+the app, not just the component that declared it.
+
+Every relational selector was replaced with a state class set where the state originates:
+`.menu-open` set by whatever owns the open state, `.next-shell-document` toggled by the route
+lifecycle, explicit props (`iconPosition`, `hasFooter`, `hasMedia`, `hasKbd`) instead of
+descendant inspection. Third-party CSS was not exempt: a vite transform rewrites dockview's
+and Monaco's selectors and patches the paired class toggles, keyed to exact source markers so
+a dependency upgrade FAILS THE BUILD rather than quietly restoring the cost.
+
+Write the state instead: a class on the element that owns it, a custom property inherited
+down, or a pseudo-class scoped to the element that actually has it (`.group:focus-within`,
+never `.region:has(:focus)`). Tailwind's `has-[...]` variants compile to `:has()` and are
+banned by the same rule. `src` currently greps zero `:has(` — keep it that way.
+
 ## ⛔ No UI regression tests until the owner says otherwise (2026-08-17, owner)
 
 Do not write, restore, or re-add any test that asserts on component structure, layout, panels,
