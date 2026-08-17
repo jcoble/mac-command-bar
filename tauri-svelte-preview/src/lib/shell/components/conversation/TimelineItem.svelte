@@ -48,9 +48,19 @@
 {/if}
 
 <style>
-  /* The list sets 16px between items, which is the space a finished turn earns
-     after it. Work rows — tools, thinking, plans, child agents — are part of
-     the same turn, so they give 8px of that back and read as one run. */
+  /* One spacing scale runs the whole transcript: 8px between rows of a run,
+     12px between blocks inside a message, 16px between the steps of a turn,
+     28px between turns. The list supplies the 16px; the two rules below are
+     the other two ends of it.
+
+     A work row — a tool, thinking, a plan, a child agent — belongs to the row
+     above it, so it pulls itself up to 8px and the run reads as one block. The
+     pull is on the top, not the bottom, so the reply that follows the work
+     still gets its full 16px and is not glued to the tools that produced it.
+
+     A user message is the opposite: it starts a new turn, so it pushes down to
+     28px. That gap is the widest thing in the transcript, which is what makes
+     a turn boundary visible without a rule or a heading. */
   .timeline-item{display:block;min-width:0}
   .timeline-item[data-kind='tool'],
   .timeline-item[data-kind='reasoning'],
@@ -58,7 +68,8 @@
   .timeline-item[data-kind='command'],
   .timeline-item[data-kind='file'],
   .timeline-item[data-kind='plan'],
-  .timeline-item[data-kind='tasks']{margin-bottom:-8px}
-  .timeline-item:last-child{margin-bottom:0}
+  .timeline-item[data-kind='tasks']{margin-top:-8px}
+  .timeline-item[data-kind='user']{margin-top:12px}
+  .timeline-item:first-child{margin-top:0}
   .unknown-item{padding:12px;border-left:2px solid var(--color-border);color:var(--color-text-2);white-space:pre-wrap;font-size:13px}
 </style>

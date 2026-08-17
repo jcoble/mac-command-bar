@@ -17,7 +17,24 @@
     onFileLink?(path: string): void;
   } = $props();
 
+  /**
+   * How much output a row shows before it folds. A result over 20 lines is
+   * past the point where reading it in place is the plan, so the row keeps the
+   * first 12 — enough to see what kind of answer came back — and says how many
+   * it is holding. Below 20 there is nothing worth hiding: a control that folds
+   * six lines away costs more than the six lines.
+   */
+  const OUTPUT_FOLD_OVER_LINES = 20;
+  const OUTPUT_LINES_KEPT = 12;
+
   const output = $derived(item.output && item.output !== item.diff ? item.output.trimEnd() : '');
+  const outputLines = $derived(output ? output.split('\n') : []);
+  const foldable = $derived(outputLines.length > OUTPUT_FOLD_OVER_LINES);
+  let outputOpen = $state(false);
+  const shownOutput = $derived(
+    foldable && !outputOpen ? outputLines.slice(0, OUTPUT_LINES_KEPT).join('\n') : output
+  );
+  const hiddenLines = $derived(outputLines.length - OUTPUT_LINES_KEPT);
   /* The summary is already the row's preview line, so only real payload —
      output or a diff — earns a body worth opening. */
   const expandable = $derived(!!(output || item.diff));
@@ -76,7 +93,17 @@
     <div class="tool-body" data-testid="timeline-tool-body">
       {#if item.diff}<FileChangeItem item={fileDisplayItem(item)} {onFileLink} />{/if}
       {#if output}
-        <pre data-testid="timeline-tool-output"><code>{output}</code></pre>
+        <pre data-testid="timeline-tool-output"><code>{shownOutput}</code></pre>
+        {#if foldable}
+          <button
+            class="fold-more"
+            data-testid="timeline-tool-output-fold"
+            type="button"
+            aria-expanded={outputOpen}
+            onclick={() => (outputOpen = !outputOpen)}
+          ><span class="fold-chevron" class:open={outputOpen} aria-hidden="true"><ChevronRight size={13} strokeWidth={1.8} /></span
+            >{outputOpen ? 'Show less' : `Show ${hiddenLines.toLocaleString()} more lines`}</button>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -107,13 +134,26 @@
   .running .status-mark,.running .tool-icon{color:var(--color-accent)}
 
   .tool-body{display:grid;gap:8px;padding:0 12px 12px 38px}
-  /* Everything the call produced in one bounded region. It scrolls on its own;
-     there is no second "show more" inside it. */
-  pre{max-height:16rem;overflow:auto;margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-surface) 30%,var(--color-bg));white-space:pre-wrap;overflow-wrap:anywhere}
-  code{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* The output box used to be a fixed 16rem window on however much there was,
+     which told a reader nothing about the size of what they were scrolling and
+     put a second scroll region in the middle of the page. It now shows a
+     bounded number of lines and says how many it is holding, so the height on
+     screen is the height of what is being shown. Long lines run sideways
+     inside the box rather than wrapping mid-word; the pane never widens. */
+  pre{overflow-x:auto;margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-surface) 30%,var(--color-bg));white-space:pre;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
+  code{font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* The same chevron the row header uses, so the control reads as one more
+     thing that opens rather than as a caption under the box. */
+  .fold-more{display:inline-flex;align-items:center;gap:5px;justify-self:start;min-height:24px;padding:2px 8px;margin-left:-8px;border:0;border-radius:6px;background:transparent;color:var(--color-text-2);font-size:12px;text-align:left;cursor:pointer}
+  .fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
+  .fold-chevron.open{transform:rotate(90deg)}
+  .fold-more:hover{background:color-mix(in srgb,var(--color-hover) 55%,transparent);color:var(--color-text)}
+  .fold-more:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:1px}
 
   @media (prefers-reduced-motion:no-preference){
     .chevron{transition:transform .14s ease}
     summary{transition:background .14s ease}
+    .fold-more{transition:background .14s ease,color .14s ease}
+    .fold-chevron{transition:transform .14s ease}
   }
 </style>

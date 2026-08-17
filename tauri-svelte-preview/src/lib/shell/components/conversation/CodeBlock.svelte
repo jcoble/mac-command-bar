@@ -96,15 +96,25 @@
 </div>
 
 <style>
-  .code-wrap{margin:12px 0}
+  /* One panel, one border, one radius. The header and the code used to carry a
+     border each and meet at a seam; now the box owns the edge and clips both,
+     so a fence reads as a single object sitting on the page. */
+  .code-wrap{overflow:hidden;margin:12px 0;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:10px;background:color-mix(in srgb,var(--color-surface) 34%,var(--color-bg))}
+  .code-wrap:first-child{margin-top:0}
+  .code-wrap:last-child{margin-bottom:0}
   /* The header names the block and carries its two utilities; the name takes
-     the room, the actions sit at the end. */
-  .code-meta{display:flex;align-items:center;gap:4px;min-height:28px;padding:2px 6px 2px 10px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-bottom:0;border-radius:10px 10px 0 0;background:color-mix(in srgb,var(--color-surface) 62%,var(--color-bg));color:var(--color-text-3);font-size:12px}
+     the room, the actions sit at the end. It is barely lighter than the code
+     below it, so the code stays the thing being read and the strip reads as a
+     caption rather than a second slab. */
+  .code-meta{display:flex;align-items:center;gap:4px;min-height:30px;padding:3px 8px 3px 12px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 45%,transparent);background:color-mix(in srgb,var(--color-surface) 22%,transparent);color:var(--color-text-3);font-size:12px}
   .code-language{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.03em}
   .meta-action{display:inline-flex;align-items:center;gap:4px;min-height:24px;border:0;border-radius:6px;background:transparent;color:inherit;padding:2px 8px;font:inherit;cursor:pointer}
   .meta-action:hover{background:color-mix(in srgb,var(--color-hover) 70%,transparent);color:var(--color-text)}
   .meta-action:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:1px}
-  pre{overflow:auto;margin:0;padding:12px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:0 0 10px 10px;background:color-mix(in srgb,var(--color-surface) 34%,var(--color-bg));font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* A line too long for the measure scrolls here and nowhere else. The pane
+     around it never moves sideways. The bar is the thin one the transcript
+     uses, so it does not read as a second scrollbar for the page. */
+  pre{overflow:auto;margin:0;padding:12px;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
   pre.wrapped{white-space:pre-wrap;overflow-wrap:anywhere}
   code{user-select:text;-webkit-user-select:text}
   .keyword{color:var(--color-accent)}

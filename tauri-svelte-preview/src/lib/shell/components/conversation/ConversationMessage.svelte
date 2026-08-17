@@ -57,26 +57,38 @@
   article{max-width:768px;user-select:text;-webkit-user-select:text}
   .turn-body{font-size:14px;line-height:1.62}
 
-  /* Paragraphs and headings: one rhythm, 12px between blocks, and a heading
-     that has more room above it than below so it reads as owning what follows. */
+  /* The transcript's scale, inside a message: 12px between blocks, 8px between
+     the rows of a list, and 16px above a heading so it reads as owning the
+     section under it rather than floating between two. The last block gives up
+     its trailing margin so the gap to the next turn is the one the list sets,
+     not that gap plus this one. */
   .turn-body p{margin:0 0 12px;white-space:pre-wrap}
-  .turn-body p:last-child{margin-bottom:0}
-  .heading{margin:20px 0 8px;font-weight:640;line-height:1.35;letter-spacing:-.01em}
+  .turn-body p:last-child,
+  .turn-body ul:last-child,
+  .turn-body ol:last-child,
+  .turn-body blockquote:last-child,
+  .turn-body .table-scroll:last-child{margin-bottom:0}
+  .heading{margin:16px 0 8px;font-weight:640;line-height:1.35;letter-spacing:-.01em}
   .heading:first-child{margin-top:0}
   .heading.level-1{font-size:18px}
   .heading.level-2{font-size:16px}
   .heading.level-3{font-size:15px}
   .heading.level-4{font-size:14px;color:var(--color-text-2)}
 
-  .turn-body blockquote{margin:0 0 12px;padding:6px 14px;border-left:2px solid color-mix(in srgb,var(--color-accent) 45%,var(--color-border));border-radius:0 6px 6px 0;background:color-mix(in srgb,var(--color-surface) 40%,transparent);color:var(--color-text-2)}
+  /* A quote is marked by the rule down its side and the quieter text, and by
+     nothing else. It carried a fill and rounded corners as well, which made
+     every quoted line look like a warning box. */
+  .turn-body blockquote{margin:0 0 12px;padding:2px 0 2px 14px;border-left:2px solid color-mix(in srgb,var(--color-accent) 42%,var(--color-border));color:var(--color-text-2)}
   .turn-body ul,.turn-body ol{margin:0 0 12px;padding-left:22px}
-  .turn-body li{margin-bottom:5px;padding-left:3px}
+  .turn-body li{margin-bottom:8px;padding-left:3px}
   .turn-body li:last-child{margin-bottom:0}
   .turn-body li::marker{color:var(--color-text-3)}
   .turn-body li.task-row{list-style:none;margin-left:-18px;padding-left:0}
   .turn-body a{color:var(--color-accent);text-decoration:underline;text-underline-offset:2px}
   .file-link{border:0;background:transparent;color:var(--color-accent);padding:0;text-decoration:underline;text-underline-offset:2px;font:inherit;cursor:pointer}
-  .inline-code{padding:1.5px 5px;border-radius:6px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);background:color-mix(in srgb,var(--color-surface) 55%,var(--color-bg));font:13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* Tinted, not outlined. The border made a two-word span read as a button,
+     which was loudest exactly where inline code is most common: table cells. */
+  .inline-code{padding:1.5px 5px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}
 
   .user{width:fit-content;max-width:80%;margin-left:auto;padding:10px 14px;border-radius:16px;background:var(--color-elevated)}
 

@@ -34,6 +34,10 @@
   .step-state{flex:none;width:8px;height:8px;margin-top:6px;border:1px solid var(--color-text-3);border-radius:50%}
   li.completed .step-state{background:var(--color-accent);border-color:var(--color-accent)}
   li.active .step-state{box-shadow:0 0 0 3px color-mix(in srgb,var(--color-accent) 18%,transparent)}
+  /* The title, any detail, and the state each take their own line. The title
+     was inline, so a step with no detail printed as "Collapse long tool
+     outputpending" with the state word run straight onto the end of it. */
+  li div strong{display:block}
   p{margin:4px 0 0;color:var(--color-text-2);font-size:12px}
-  small{color:var(--color-text-3);font-size:12px}
+  small{display:block;margin-top:2px;color:var(--color-text-3);font-size:12px}
 </style>
