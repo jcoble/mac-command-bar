@@ -91,6 +91,24 @@ test('turning the switch on asks for the open file language server', () => {
   );
 });
 
+test('turning the switch on lifts the Settings veto on C#', () => {
+  const on = panelSource.slice(
+    panelSource.indexOf('async function switchLanguageIntelligence'),
+    panelSource.indexOf('/** Keep the lookup service pointed')
+  );
+  assert.ok(
+    on.indexOf('setCsharpLanguageServerEnabled(true)') > -1 &&
+      on.indexOf('setCsharpLanguageServerEnabled(true)') <
+        on.indexOf('setWorkspaceLanguageIntelligenceFromTauri'),
+    'the veto is lifted before anything is asked to start, or the start is refused'
+  );
+  assert.match(
+    on,
+    /settings\.intelligence\.csharpLanguageServer = true/,
+    'the setting is written back, so the launch restore stops pushing the same off again'
+  );
+});
+
 test('a language server that will not start reaches the switch tooltip', () => {
   const warm = panelSource.slice(
     panelSource.indexOf('async function warmLanguageServer'),

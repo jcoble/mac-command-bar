@@ -81,9 +81,11 @@
   } from '$lib/shell/editor/editorStore.svelte';
   import { needsRead } from '$lib/shell/editor/editorStoreOps';
   import {
+    setCsharpLanguageServerEnabled,
     sourceIntelligence,
     type SourceInlayHintRequest
   } from '$lib/shell/editor/sourceIntelligence';
+  import { settings } from '$lib/settingsStore.svelte';
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
   import {
     isNativeTauriRuntime,
@@ -615,6 +617,16 @@
       if (!enabled) {
         warmedProjectRoots.delete(root);
         diagnosticsByPath = {};
+      }
+
+      // Settings is where C# is switched off for good — it is not a veto over a
+      // switch the reader has just flipped on in front of the project. Lifting it
+      // here, and writing the setting back, is also what stops the launch restore
+      // in `next/+page.svelte` from pushing the same "off" again next launch.
+      if (enabled && !settings.intelligence.csharpLanguageServer) {
+        const lifted = await setCsharpLanguageServerEnabled(true);
+        if (destroyed) return;
+        if (lifted.supported) settings.intelligence.csharpLanguageServer = true;
       }
 
       countInvoke('set_workspace_language_intelligence');
