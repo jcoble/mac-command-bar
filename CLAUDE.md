@@ -1,5 +1,18 @@
 # mac-command-bar
 
+## ⛔ No UI regression tests until the owner says otherwise (2026-08-17, owner)
+
+Do not write, restore, or re-add any test that asserts on component structure, layout, panels,
+menus, styling, colour tokens or contrast. The UI is being reshaped daily and those tests only go
+red and get "fixed" to match whatever the UI happens to be, which proves nothing and wastes the
+owner's time. Thirty-eight of them were deleted on 2026-08-17 for exactly that reason.
+
+This applies to every lane and sub-agent — paste it into every dispatch. If a change seems to need
+one, say so and move on without writing it; the owner will lift this when the UI settles.
+
+Still expected: tests for logic and data — parsing, reducers, view models, stores, protocol
+contracts, Rust backend behaviour. A test that would survive a total restyle is fine.
+
 ## ⛔ Performance is the reason this app exists
 
 This app is being built because existing tools are slow and heavy. Low CPU, low RAM, low GPU, and a
