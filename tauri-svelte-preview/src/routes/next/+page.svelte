@@ -33,7 +33,6 @@
   import UtilityStrip from '$lib/shell/components/UtilityStrip.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import RightPanel from '$lib/shell/components/RightPanel.svelte';
-  import SettingsGearButton from '$lib/shell/components/SettingsGearButton.svelte';
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import DraftSessionSurface from '$lib/shell/newSession/DraftSessionSurface.svelte';
   import LanguageIntelligenceControls from '$lib/shell/components/LanguageIntelligenceControls.svelte';
@@ -1622,9 +1621,9 @@
 <!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
      shadow the imported `rail` store and break every `rail.owned` read. -->
 {#snippet sessionsArea()}
-  <!-- The session list, with the settings gear under it in the bottom-left
-       corner of the app. The gear is not a session and not a panel, so it sits
-       below the list rather than in either tab strip. -->
+  <!-- The session list. Settings used to sit in a strip of its own under it;
+       it now lives at the left end of the status bar, where a single row along
+       the bottom of the window carries all three. -->
   <div class="sessions-region">
     <div class="sessions-list">
       <SessionsColumn
@@ -1639,7 +1638,6 @@
         onNewSession={openNewSession}
       />
     </div>
-    <SettingsGearButton onOpenSettings={() => overlays?.openSettings()} />
   </div>
 {/snippet}
 {#snippet toolsArea()}
@@ -1805,6 +1803,7 @@
        above it float with all four corners rounded. -->
   <div class="status-bar">
     <UtilityStrip
+      onOpenSettings={() => overlays?.openSettings()}
       {openUtility}
       onOpenUtility={(id, anchor) => overlays?.openUtility(id, anchor)}
     />

@@ -20,6 +20,7 @@
   import { onMount } from 'svelte';
   import ChartNoAxesCombined from '@lucide/svelte/icons/chart-no-axes-combined';
   import Cpu from '@lucide/svelte/icons/cpu';
+  import Settings from '@lucide/svelte/icons/settings';
 
   import { activate as activatePlaywright } from '$lib/shell/processes/playwrightService';
   import {
@@ -39,8 +40,10 @@
     openUtility?: UtilityId | null;
     /** Open one of the two surfaces, anchored to the button that was pressed. */
     onOpenUtility(id: UtilityId, anchor: ReturnType<typeof utilityAnchorFor>): void;
+    /** Open the settings dialog. The gear sits at the left end of this bar. */
+    onOpenSettings(): void;
   }
-  let { openUtility = null, onOpenUtility }: Props = $props();
+  let { openUtility = null, onOpenUtility, onOpenSettings }: Props = $props();
 
   function open(id: UtilityId, event: MouseEvent): void {
     if (!(event.currentTarget instanceof HTMLElement)) return;
@@ -83,7 +86,16 @@
   });
 </script>
 
-<footer class="utility-strip" aria-label="Resources and usage">
+<footer class="utility-strip" aria-label="Settings, resources and usage">
+  <button
+    type="button"
+    class="utility settings"
+    data-testid="settings-gear"
+    aria-label="Settings"
+    onclick={() => onOpenSettings()}
+  >
+    <Settings class="glyph" strokeWidth={1.6} aria-hidden="true" />
+  </button>
   <button
     type="button"
     class="utility resources"
@@ -141,6 +153,11 @@
     font-size: 12px;
     line-height: 1;
     cursor: pointer;
+  }
+
+  /* No label, so it needs no room for one. */
+  .settings {
+    flex: 0 0 auto;
   }
 
   /* Hugs its own text rather than filling the bar. This strip used to sit in
