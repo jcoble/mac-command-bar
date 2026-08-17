@@ -905,6 +905,21 @@ export function recordSentConversationAttachments(
   if (current) current.unclaimedSentAttachments = attachments;
 }
 
+/** Restore the screenshots of messages replayed from the journal. The live
+ * hold above only covers sends this window made, so a restarted app has to
+ * hang the saved files back on the user messages that named them. A message
+ * that already carries its screenshots keeps them. */
+export function restoreSentConversationAttachments(
+  ownedId: string,
+  byItemId: Record<string, ConversationAttachment[]>
+): void {
+  const current = conversationSessions[ownedId];
+  if (!current) return;
+  for (const [itemId, attachments] of Object.entries(byItemId)) {
+    if (!current.sentAttachments[itemId]?.length) current.sentAttachments[itemId] = attachments;
+  }
+}
+
 export function setConversationCapabilities(
   ownedId: string,
   generation: number,

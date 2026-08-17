@@ -1669,6 +1669,7 @@ done"#,
                 AgentPrompt {
                     text: "write".into(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 },
             )
             .await
@@ -1696,6 +1697,7 @@ done"#,
                 AgentPrompt {
                     text: "write".into(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 },
             )
             .await
@@ -1739,6 +1741,7 @@ done"#,
                 super::super::AgentPrompt {
                     text: "write a commit subject".into(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 },
             )
             .await
@@ -1959,6 +1962,7 @@ done"#,
                 AgentPrompt {
                     text: "ALPHA".into(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 }
             ),
             client.prompt_on(
@@ -1966,6 +1970,7 @@ done"#,
                 AgentPrompt {
                     text: "BRAVO".into(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 }
             )
         );
@@ -1998,6 +2003,7 @@ done"#,
                 AgentPrompt {
                     text: "primary".into(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 },
             )
             .await
@@ -2030,6 +2036,7 @@ done"#,
                 AgentPrompt {
                     text: "commands".into(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 },
             )
             .await
@@ -2065,6 +2072,7 @@ done"#,
                 AgentPrompt {
                     text: "still alive".into(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 },
             )
             .await

@@ -1054,6 +1054,7 @@ impl AgentRuntimeManager {
                     item_id: format!("user-{turn_id}"),
                     text: input.text.clone(),
                     completed: true,
+                    attachment_ids: input.attachment_ids.clone(),
                 },
             )?;
             (native_session_id, ordered_events)
@@ -4031,6 +4032,7 @@ fn payload_from_session_update_for_turn(
                 .and_then(text_from_value)
                 .unwrap_or_default(),
             completed: replay,
+            attachment_ids: Vec::new(),
         }),
         "agent_thought_chunk" => {
             crate::debug_log::stderr_log!("Ignoring ACP agent thought update");
@@ -4572,6 +4574,7 @@ mod tests {
         AgentPrompt {
             text: text.to_string(),
             images: Vec::new(),
+            attachment_ids: Vec::new(),
         }
     }
 
@@ -4734,6 +4737,7 @@ mod tests {
                 item_id: "user-turn-2".into(),
                 text: "Question".into(),
                 completed: false,
+                attachment_ids: Vec::new(),
             })
         );
         let replayed_user = json!({ "update": {
@@ -4749,6 +4753,7 @@ mod tests {
                 item_id: "user-replay".into(),
                 text: "Restored question".into(),
                 completed: true,
+                attachment_ids: Vec::new(),
             })
         );
 
@@ -5669,6 +5674,7 @@ mod tests {
                     item_id: "first-user".into(),
                     text: "  Recovered title  \nignored second line".into(),
                     completed: true,
+                    attachment_ids: Vec::new(),
                 },
             )
             .unwrap();
@@ -5678,6 +5684,7 @@ mod tests {
                     item_id: "second-user".into(),
                     text: "Later title".into(),
                     completed: true,
+                    attachment_ids: Vec::new(),
                 },
             )
             .unwrap();
@@ -5762,6 +5769,7 @@ mod tests {
                     item_id: "message-read-only".into(),
                     text: "stored".into(),
                     completed: true,
+                    attachment_ids: Vec::new(),
                 },
             )
             .unwrap();
@@ -6508,6 +6516,7 @@ mod tests {
                     item_id: "stored-user-message".into(),
                     text: "Earlier message".into(),
                     completed: true,
+                    attachment_ids: Vec::new(),
                 },
             )
             .unwrap();

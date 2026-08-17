@@ -81,6 +81,7 @@ pub async fn generate_commit_message(
             AgentPrompt {
                 text: prompt,
                 images: Vec::new(),
+                attachment_ids: Vec::new(),
             },
         )
         .await?;
@@ -124,6 +125,7 @@ pub async fn generate_pull_request_details(
             AgentPrompt {
                 text: prompt,
                 images: Vec::new(),
+                attachment_ids: Vec::new(),
             },
         )
         .await?;

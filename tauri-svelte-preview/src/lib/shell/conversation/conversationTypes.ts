@@ -419,7 +419,9 @@ export type AgentConversationPayload =
       state: ConversationConnectionState;
       nativeSessionId?: string;
     }
-  | { kind: 'userMessage'; itemId: string; text: string; completed: boolean }
+  /** `attachmentIds` names the saved screenshots the message went out with.
+   * Journal records written before the field existed carry none. */
+  | { kind: 'userMessage'; itemId: string; text: string; completed: boolean; attachmentIds?: string[] }
   | { kind: 'assistantDelta'; itemId: string; delta: string }
   | { kind: 'assistantMessage'; itemId: string; text: string; completed: true }
   | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string }

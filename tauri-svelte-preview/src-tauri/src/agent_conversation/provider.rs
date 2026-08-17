@@ -303,6 +303,7 @@ async fn run_claude(
                         item_id: user_item_id,
                         text: text.clone(),
                         completed: true,
+                        attachment_ids: Vec::new(),
                     });
                     write_json(&mut process,json!({"type":"user","message":{"role":"user","content":text}})).await?
                 },

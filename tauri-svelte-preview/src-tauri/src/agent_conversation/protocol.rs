@@ -449,6 +449,10 @@ pub enum AgentConversationPayload {
         item_id: String,
         text: String,
         completed: bool,
+        /// Ids of the saved screenshots this message went out with. Journal
+        /// records written before this field existed simply carry none.
+        #[serde(default)]
+        attachment_ids: Vec<String>,
     },
     AssistantDelta {
         item_id: String,
@@ -552,6 +556,10 @@ pub struct SendAgentConversationMessageRequest {
     /// Ordered prompt blocks from the composer, including pasted images.
     #[serde(default)]
     pub content: Vec<super::prompt_content::AgentPromptContentBlock>,
+    /// Ids of the saved screenshots this send is delivering, so the recorded
+    /// user message can find them again after a restart.
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]

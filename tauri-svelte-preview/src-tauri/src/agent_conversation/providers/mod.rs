@@ -48,6 +48,8 @@ pub struct AgentPromptImage {
 pub struct AgentPrompt {
     pub text: String,
     pub images: Vec<AgentPromptImage>,
+    /// Ids of the saved screenshots the composer sent with this prompt.
+    pub attachment_ids: Vec<String>,
 }
 
 pub type AgentConfigValue = Value;

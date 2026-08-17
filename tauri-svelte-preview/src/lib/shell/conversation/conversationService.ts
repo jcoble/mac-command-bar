@@ -10,6 +10,7 @@ import {
   setConversationConnection,
   setConversationAttachments,
   recordSentConversationAttachments,
+  restoreSentConversationAttachments,
   setConversationSending,
   beginConversationConfigChange,
   confirmConversationConfigChange,
@@ -381,6 +382,55 @@ export function rollbackConversationHandoff(input: HandoffInput): Promise<AgentC
   return invokeHandoff(input, 'rollback');
 }
 
+/** Hang the saved screenshots back on the replayed user messages that named
+ * them. The in-memory hold a send uses is gone after a restart, so the ids the
+ * journal carries are the only way the transcript can find the files again.
+ *
+ * Never awaited by the caller: the transcript is already on screen by then, and
+ * a message whose screenshot has not landed yet is a message with an empty
+ * thumbnail box, not a message that waits. One read covers the whole session,
+ * and messages already carrying their screenshots are skipped, so a repeat
+ * replay does no disk work at all. */
+async function hydrateSentConversationAttachments(
+  ownedId: string,
+  events: readonly AgentConversationEvent[]
+): Promise<void> {
+  const alreadyShown = getConversationSession(ownedId)?.sentAttachments ?? {};
+  const wanted = new Map<string, string[]>();
+  for (const event of events) {
+    const payload = event.payload;
+    if (
+      payload.kind === 'userMessage'
+      && payload.attachmentIds?.length
+      && !alreadyShown[payload.itemId]?.length
+    ) {
+      wanted.set(payload.itemId, payload.attachmentIds);
+    }
+  }
+  if (wanted.size === 0 || !isTauri()) return;
+  let records: (Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[];
+  try {
+    records = await invoke<(Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[]>(
+      'read_agent_conversation_attachments',
+      { ownedId }
+    );
+  } catch (_error) {
+    // The invoke seam logged the sanitized failure. A message that cannot find
+    // its screenshot still shows its text, so there is nothing to repair here.
+    return;
+  }
+  if (!Array.isArray(records)) return;
+  const byId = new Map(records.map((record) => [record.id, restoreConversationAttachmentPreview(record)]));
+  const resolved: Record<string, ConversationAttachment[]> = {};
+  for (const [itemId, ids] of wanted) {
+    const attachments = ids
+      .map((id) => byId.get(id))
+      .filter((attachment): attachment is ConversationAttachment => !!attachment);
+    if (attachments.length) resolved[itemId] = attachments;
+  }
+  if (Object.keys(resolved).length) restoreSentConversationAttachments(ownedId, resolved);
+}
+
 async function resyncConversation(ownedId: string): Promise<void> {
   const existing = resyncing.get(ownedId);
   if (existing) return existing;
@@ -390,6 +440,7 @@ async function resyncConversation(ownedId: string): Promise<void> {
       if (!snapshot) return;
       const sequenceBeforeApply = getConversationSession(ownedId)?.lastSequence ?? 0;
       applyAgentConversationSnapshot(snapshot);
+      void hydrateSentConversationAttachments(ownedId, snapshot.events);
       if (sequenceBeforeApply <= snapshot.lastSequence) return;
     }
   })().finally(() => resyncing.delete(ownedId));
@@ -401,6 +452,7 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
   const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
   if (!snapshot) return;
   applyAgentConversationSnapshot(snapshot);
+  void hydrateSentConversationAttachments(ownedId, snapshot.events);
 }
 
 export async function startConversationEvents(): Promise<void> {
@@ -614,6 +666,9 @@ export async function sendStructuredMessage(
         generation: validatedGeneration,
         text: prompt.text,
         content: prompt.content,
+        // Named on the recorded user message so a restart can find the saved
+        // files again; the in-memory hold above does not survive one.
+        attachmentIds: state.attachments.map((attachment) => attachment.id),
         model: startConfig?.model ?? null,
         approvalPolicy: startConfig?.approvalPolicy ?? null
       }

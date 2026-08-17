@@ -59,6 +59,7 @@ pub fn prompt_from_blocks(
     Ok(AgentPrompt {
         text: text.to_string(),
         images,
+        attachment_ids: Vec::new(),
     })
 }
 

@@ -109,7 +109,10 @@ pub async fn send_agent_conversation_message(
 ) -> CommandResult<()> {
     let owned_id = request.owned_id.clone();
     let result = async {
-        let prompt = prompt_from_blocks(request.text.trim(), request.content)?;
+        let mut prompt = prompt_from_blocks(request.text.trim(), request.content)?;
+        // The ids come from the composer, not from the image bytes, so they are
+        // attached here rather than inside the content block conversion.
+        prompt.attachment_ids = request.attachment_ids;
         manager
             .activate(&request.owned_id, request.generation)
             .await?;

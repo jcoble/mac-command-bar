@@ -590,6 +590,7 @@ impl AgentRuntimePort for AgentRuntimeManager {
                 AgentPrompt {
                     text: envelope.to_string(),
                     images: Vec::new(),
+                    attachment_ids: Vec::new(),
                 },
             )
             .await
