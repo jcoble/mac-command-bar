@@ -2,7 +2,6 @@
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import TerminalSurface from './TerminalSurface.svelte';
-  import ConversationInspector from './conversation/ConversationInspector.svelte';
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
   import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
@@ -133,7 +132,6 @@
   const sendError = $derived(conversation?.sendError ?? '');
   let capabilityRequest = $state('');
   let configRequest = $state('');
-  let inspectorOpen = $state(false);
   let sendAnchorRequest = $state<ConversationSendAnchorRequest | null>(null);
   let sendAnchorRequestId = 0;
   let localTurnActive = $state(false);
@@ -172,7 +170,6 @@
   });
 
   $effect(() => {
-    if (!appOwned) inspectorOpen = false;
     if (appOwned && activeOwnedId && conversation?.mode === 'raw') {
       setConversationMode(activeOwnedId, 'structured');
     }
@@ -390,14 +387,6 @@
             Open raw terminal
           </button>
         </div>
-      {:else}
-        <!-- The inspector toggle floats in the corner rather than sitting in a
-             bar of its own, so the transcript keeps the full height. -->
-        <div class="inspector-actions">
-          <button class="structured-toggle" data-testid="conversation-inspector-toggle" type="button" onclick={() => (inspectorOpen = !inspectorOpen)}>
-            Inspector
-          </button>
-        </div>
       {/if}
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
@@ -455,7 +444,6 @@
           onHeightChange={(height) => (composerHeight = height)}
         />
       {/if}
-      {#if appOwned && inspectorOpen}<ConversationInspector ownedId={active.ownedId} />{/if}
     </section>
   {:else if active && (active.agent === 'codex' || active.agent === 'claude' || active.agent === 'antigravity') && conversation?.mode === 'raw'}
     <div class="raw-actions" aria-label="Conversation handoff actions">
@@ -466,4 +454,4 @@
   {/if}
 </div>
 
-<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:transparent;color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions,.inspector-actions{position:absolute;right:12px;top:12px;z-index:2}</style>
+<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:transparent;color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions{position:absolute;right:12px;top:12px;z-index:2}</style>
