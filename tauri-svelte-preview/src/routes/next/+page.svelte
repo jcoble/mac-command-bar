@@ -35,7 +35,6 @@
   import RightPanel from '$lib/shell/components/RightPanel.svelte';
   import ConversationSurface from '$lib/shell/components/ConversationSurface.svelte';
   import DraftSessionSurface from '$lib/shell/newSession/DraftSessionSurface.svelte';
-  import LanguageIntelligenceControls from '$lib/shell/components/LanguageIntelligenceControls.svelte';
   import {
     captureBrowserState,
     openBrowserUrl,
@@ -1727,14 +1726,10 @@
     event.preventDefault();
   }}
 >
-  <!-- The strip along the top. It holds the project's language-server
-       controls, and nothing else: everything that used to be up here has a
-       panel of its own now. They are about the project rather than the open
-       file, which is why they are not among the editor's file tabs. -->
-  <div class="top-bar">
-    <LanguageIntelligenceControls />
-  </div>
-
+  <!-- No strip along the top any more. The last thing left up there was the
+       project's language-server switch, and it cost a row of window height on
+       every screen to say one word; it now travels with the centre pane's pill
+       tabs, which appear only when they are wanted. -->
   <div class="frame-area">
     <ShellFrame
     sessions={sessionsArea} tools={toolsArea} centerTabs={centerTabsArea} dock={dockArea}
@@ -1875,19 +1870,9 @@
     overflow: hidden;
   }
 
-  .top-bar {
-    display: flex;
-    flex: 0 0 auto;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    background: var(--color-bg);
-    border-bottom: 1px solid var(--color-border);
-  }
-
   /* ShellFrame's own root is `height: 100%`, so it needs a parent whose height
-     is already settled. A flex child with `min-height: 0` has one; the shell
-     itself no longer does, now that there is a bar above the frame. */
+     is already settled. A flex child with `min-height: 0` has one, and the
+     status bar below it is the other child of the same column. */
   .frame-area {
     flex: 1 1 auto;
     min-height: 0;

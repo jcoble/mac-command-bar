@@ -14,7 +14,8 @@
  *     switch — warming, and attaching the C# document.
  *  2. Turning the switch off closes the language client before asking the
  *     desktop app to stop the process, so the server gets its goodbye.
- *  3. The switch is the kit's `Switch`, not a hand-rolled control.
+ *  3. The switch is the kit's `Switch`, not a hand-rolled control, and it lives
+ *     with the centre pane's pill tabs.
  *  4. A diff hunk opens the real file at that line.
  */
 import assert from 'node:assert/strict';
@@ -86,7 +87,7 @@ test('only one project is restored at launch', () => {
   );
 });
 
-test('the switch is the kit component, in the top-strip controls', () => {
+test('the switch is the kit component, riding with the centre pane pills', () => {
   assert.match(
     controlsSource,
     /import \{ Switch \} from '\$lib\/components\/ui\/switch\/index\.js'/

@@ -136,6 +136,35 @@
   --radius-md: 12px;
   --radius-lg: 16px;
 
+  /* ------------------------------------------------------------------
+   * Pill tabs — the capsule row that names the centre pane's surface.
+   * The group floats over whatever surface it names, so a rest pill is
+   * mixed INTO the surface rather than laid over it as a wash: over code
+   * or a transcript a translucent fill let the content read through and
+   * the labels came apart. The selected pill takes the accent, which is
+   * what makes "which surface am I on" answerable at a glance.
+   * Everything derives from the palette, so a theme repaints it too.
+   * ------------------------------------------------------------------ */
+  --pill-surface: color-mix(in srgb, var(--color-text) 10%, var(--color-surface));
+  --pill-surface-hover: color-mix(in srgb, var(--color-text) 18%, var(--color-surface));
+  --pill-surface-active: var(--color-accent);
+  --pill-text-active: var(--color-on-accent);
+
+  /* ------------------------------------------------------------------
+   * The language switch that travels with those pills. Its knob POSITION
+   * says what was asked for; its track COLOUR says what is actually true,
+   * so the two are separate values and never collapse into one.
+   * ------------------------------------------------------------------ */
+  --switch-track-off: color-mix(in srgb, var(--color-idle) 36%, var(--color-surface));
+  --switch-track-waiting: var(--color-attention);
+  --switch-track-running: var(--color-good);
+  --switch-knob: var(--color-text);
+
+  /* The height of the editor's row of file tabs. The centre pane's pill group
+     is placed directly beneath it, so both read this one value rather than
+     each carrying its own guess. */
+  --editor-tab-row-height: 35px;
+
   /* Scrollbars — one thin style for every scrolling surface in the shell.
      Native scrolling, styled: the transcript's virtualiser measures real
      scroll offsets, so a synthetic scrollbar would fight it. */

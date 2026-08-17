@@ -101,6 +101,40 @@ export function languageDisplayName(language: string): string {
 }
 
 /**
+ * The same names cut down to the two or three characters that fit inside a
+ * control. The switch beside the centre pane's tabs has room for a badge and
+ * nothing more, and a badge is enough: it only has to say WHICH language the
+ * switch is currently about, not spell it out.
+ */
+const SHORT_LANGUAGE_LABELS: Record<string, string> = {
+  csharp: 'C#',
+  typescript: 'TS',
+  typescriptreact: 'TS',
+  javascript: 'JS',
+  javascriptreact: 'JS',
+  rust: 'RS',
+  svelte: 'SV',
+  python: 'PY',
+  go: 'GO',
+  json: 'JSN',
+  sql: 'SQL',
+  html: 'HT',
+  css: 'CSS',
+  yaml: 'YML',
+  markdown: 'MD'
+};
+
+/** No file open means no language, and a dash says that without guessing. */
+export const NO_LANGUAGE_LABEL = '—';
+
+/** This language in two or three characters, for a badge inside a control. */
+export function languageShortLabel(language: string | null): string {
+  const key = language?.trim().toLowerCase() ?? '';
+  if (!key) return NO_LANGUAGE_LABEL;
+  return SHORT_LANGUAGE_LABELS[key] ?? key.slice(0, 2).toUpperCase();
+}
+
+/**
  * The chip for one language's server, or null when there is nothing truthful to
  * say — no desktop app, or a desktop build that does not report its state.
  */

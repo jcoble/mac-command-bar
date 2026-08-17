@@ -29,9 +29,17 @@ for (const tag of ['<RunButton', '<SessionBrowserButton', '<ActivityBar']) {
     `the page must not mount ${tag}> — the Run panel, the History panel and the right tab strip replaced them`
   );
 }
+// The last thing left in the strip along the top was the language-intelligence
+// switch, and a whole row of window height to say one word is not a trade worth
+// making. It rides with the centre pane's pill tabs now, so the page mounts
+// neither the strip nor the switch.
 assert.ok(
-  page.includes('<LanguageIntelligenceControls />'),
-  'the top bar keeps the language intelligence controls'
+  !page.includes('<div class="top-bar">'),
+  'the page must not keep a strip along the top of the window'
+);
+assert.ok(
+  !page.includes('LanguageIntelligenceControls'),
+  'the language-intelligence switch belongs to the centre pane pill group now'
 );
 
 // ── Files that are gone for good ────────────────────────────────────────────

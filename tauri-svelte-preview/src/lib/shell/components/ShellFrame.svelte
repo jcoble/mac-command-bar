@@ -218,22 +218,48 @@
     overflow: hidden;
   }
 
-  /* The corner tabs sit in a row of their own above the dock, pushed to the
-     right edge. A row rather than an overlay: the tabs must never cover the
-     surface they name. */
+  /* The pill tabs are laid OVER the pane, not in a row above it. A row charged
+     every surface the same strip of height whether or not anyone was looking at
+     it, and on the Editor it sat above a bar the editor already has. Floating
+     costs nothing while the group is hidden, which is most of the time. */
   .center-region {
+    position: relative;
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     /* Transparent on purpose: the card behind it paints the surface and its
        gradient, and an opaque fill here would cover both. */
     background: transparent;
+    /* What the pill group reads to know whether it is wanted. Both are plain
+       inherited values, which is how a rule here reaches a class inside a
+       component this file cannot name. */
+    --center-pills-reveal: 0;
+    --center-pills-events: none;
+  }
+
+  /* The pointer anywhere in the centre pane, or the keyboard focus inside it,
+     asks for the group. Focus is included so the surface you are on is still
+     legible when the pointer is somewhere else entirely, and so the tabs can be
+     reached without a mouse. */
+  .center-region:hover,
+  .center-region:focus-within {
+    --center-pills-reveal: 1;
+    --center-pills-events: auto;
   }
 
   .center-tabs {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    /* Above the dock's own content, below anything a dialog puts on screen. */
+    z-index: 12;
     display: flex;
     min-width: 0;
     justify-content: flex-end;
-    overflow: hidden;
+    /* The strip spans the pane only so the group can hang off its right edge;
+       it must not swallow clicks meant for the surface underneath. The pills
+       themselves take the pointer back when they are on screen. */
+    pointer-events: none;
   }
 
   .tools-region {

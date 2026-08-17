@@ -87,22 +87,53 @@ assert.match(
   'a stored center layout is only restored when its surfaces are in one group'
 );
 
-// ── The corner tabs sit above the dock, in a row of their own ──────────────
+// ── The pill tabs float over the dock and cost it no height ────────────────
+//
+// They used to hold a row of their own above the dock. That row charged every
+// surface the same strip of height to answer a question only asked now and
+// then, so the group is laid over the pane instead and is invisible until the
+// pointer or the keyboard focus is inside it.
 
 assert.match(
   shellFrame,
   /<div class="slot center-region"[\s\S]*?<div class="center-tabs">\{@render centerTabs\(\)\}<\/div>[\s\S]*?<div class="center-dock-host"/,
-  'ShellFrame must mount the corner tabs above the center dock, never over it'
+  'ShellFrame must still mount the tabs inside the center region'
 );
 assert.match(
   shellFrame,
-  /\.center-region \{[\s\S]*?grid-template-rows:\s*auto minmax\(0, 1fr\);/,
-  'the center region gives the tabs their own row and the dock the rest'
+  /\.center-region \{[\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\);/,
+  'the dock gets the whole region; the tabs are laid over it'
 );
 assert.match(
   shellFrame,
-  /\.center-tabs \{[\s\S]*?justify-content:\s*flex-end;/,
-  'the corner tabs sit in the pane’s upper-right corner'
+  /\.center-region \{[\s\S]*?--center-pills-reveal:\s*0;[\s\S]*?--center-pills-events:\s*none;/,
+  'the region is what decides whether the group is wanted'
+);
+assert.match(
+  shellFrame,
+  /\.center-region:hover,\s*\n\s*\.center-region:focus-within \{[\s\S]*?--center-pills-reveal:\s*1;[\s\S]*?--center-pills-events:\s*auto;/,
+  'the pointer in the pane, or the keyboard focus inside it, reveals the group'
+);
+assert.match(
+  shellFrame,
+  /\.center-tabs \{[\s\S]*?position:\s*absolute;[\s\S]*?justify-content:\s*flex-end;[\s\S]*?pointer-events:\s*none;/,
+  'the strip hangs the group off the pane’s upper-right corner and lets every ' +
+    'click through to the surface underneath'
+);
+assert.match(
+  centerCornerTabs,
+  /opacity:\s*var\(--center-pills-reveal, 0\);[\s\S]*?pointer-events:\s*var\(--center-pills-events, none\);[\s\S]*?transition:\s*opacity \d+ms/,
+  'the group reads the region’s two values and fades — one transition, one ending'
+);
+assert.match(
+  centerCornerTabs,
+  /setTimeout\([\s\S]*?HOLD_AFTER_SWITCH_MS\)/,
+  'a switch holds the group on screen afterwards, on one timer'
+);
+assert.match(
+  centerCornerTabs,
+  /onDestroy\(releaseHold\)/,
+  'that timer is cancelled when the shell goes away; nothing is left running'
 );
 for (const id of ['session', 'editor', 'diff']) {
   assert.match(
@@ -111,10 +142,23 @@ for (const id of ['session', 'editor', 'diff']) {
     `the corner tabs must keep the ${id} surface reachable`
   );
 }
+// Capsules, and the one you are on is the filled one. `aria-current` carries
+// that in the markup, so the same attribute a screen reader reads is the one
+// the fill is painted from.
 assert.match(
   centerCornerTabs,
-  /size="xs"[\s\S]*?variant=\{tab\.id === activeId \? 'secondary' : 'ghost'\}/,
-  'the selected corner tab is filled, and every tab is the kit’s 24px small button'
+  /aria-current=\{tab\.id === activeId \? 'page' : undefined\}/,
+  'which surface you are on is stated once, on the tab itself'
+);
+assert.match(
+  centerCornerTabs,
+  /\.center-pills > :global\(button\) \{[\s\S]*?border-radius:\s*var\(--radius-pill\);[\s\S]*?background:\s*var\(--pill-surface\);/,
+  'the tabs are capsules painted from the shared pill tokens'
+);
+assert.match(
+  centerCornerTabs,
+  /\.center-pills > :global\(button\[aria-current='page'\]\) \{[\s\S]*?background:\s*var\(--pill-surface-active\);/,
+  'the selected capsule is the filled one'
 );
 assert.doesNotMatch(
   centerCornerTabs,

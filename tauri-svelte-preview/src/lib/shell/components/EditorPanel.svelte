@@ -1051,9 +1051,15 @@
     font-size: 12px;
   }
 
-  /* The strip of open files and, pinned to the right, what the language server
-   * is doing. The strip scrolls when there are many files; the chip does not go
-   * with it, so it stays readable however many tabs are open. */
+  /* The strip of open files and, pinned to the right, the controls that belong
+   * to the open file. The strip scrolls when there are many files; those
+   * controls do not go with it, so they stay reachable however many tabs are
+   * open.
+   *
+   * The height is stated rather than left to the tallest child because the
+   * centre pane's pill tabs are placed directly beneath this row and read the
+   * same value. It is what the row already measured — a 28px close button
+   * between 3px of padding, over a hairline — so nothing moves. */
   .editor-header {
     display: flex;
     align-items: center;
@@ -1062,6 +1068,7 @@
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
+    min-height: var(--editor-tab-row-height);
     overflow: hidden;
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border);

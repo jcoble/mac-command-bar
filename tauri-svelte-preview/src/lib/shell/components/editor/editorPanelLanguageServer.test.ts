@@ -11,10 +11,10 @@
  * are the promises that would be silently broken by an ordinary-looking
  * edit:
  *
- *  0. The chip and the project's switch live in the strip along the top of the
- *     shell, and the editor's file-tab row keeps only the open file's own
- *     controls. The panel remains the single owner of the status pipeline; the
- *     top strip only reads what the panel publishes.
+ *  0. The project's switch lives with the centre pane's pill tabs, and the
+ *     editor's file-tab row keeps only the open file's own controls. The panel
+ *     remains the single owner of the status pipeline; the switch only reads
+ *     what the panel publishes.
  *  1. Nothing is asked on a timer. The panel reads the status when a file
  *     opens and otherwise waits to be told — a poll would put the desktop app
  *     back under the load this whole change exists to remove.
@@ -50,37 +50,81 @@ const shellPageSource = readFileSync(
   path.join(here, '..', '..', '..', '..', 'routes', 'next', '+page.svelte'),
   'utf8'
 );
+const pillsSource = readFileSync(path.join(here, '..', 'CenterCornerTabs.svelte'), 'utf8');
 
-test('the top-strip controls show the chip', () => {
-  assert.match(controlsSource, /import LanguageServerStatusChip from/);
-  assert.match(controlsSource, /<LanguageServerStatusChip\b/);
-});
-
-test('the strip along the top of the shell mounts the controls', () => {
-  assert.match(
-    shellPageSource,
-    /import LanguageIntelligenceControls from '\$lib\/shell\/components\/LanguageIntelligenceControls\.svelte'/
-  );
-  const topBar = shellPageSource.slice(
-    shellPageSource.indexOf('<div class="top-bar">'),
-    shellPageSource.indexOf('<div class="frame-area">')
-  );
-  assert.ok(topBar.length > 0, 'the top strip must still exist');
-  assert.match(topBar, /<LanguageIntelligenceControls \/>/);
-  // Everything else that used to be up here has a panel of its own now.
-  assert.doesNotMatch(topBar, /<RunButton|<SessionBrowserButton/);
-});
-
-test('the controls sit at the right-hand end of the strip', () => {
+test('the switch says which language it is about', () => {
+  assert.match(controlsSource, /languageShortLabel/);
   assert.match(
     controlsSource,
-    /margin-left:\s*auto/,
-    'the group is pushed to the right-hand end of the strip'
+    /\{shortLanguage\}/,
+    'the badge inside the control is what names the active language'
+  );
+  assert.ok(
+    !controlsSource.includes('<LanguageServerStatusChip'),
+    'the chip said the same thing again in words; colour and the badge carry it now'
+  );
+});
+
+test('the centre pane\'s pill group mounts the controls', () => {
+  assert.match(
+    pillsSource,
+    /import LanguageIntelligenceControls from '\.\/LanguageIntelligenceControls\.svelte'/
+  );
+  const group = pillsSource.slice(pillsSource.indexOf('<nav'), pillsSource.indexOf('</nav>'));
+  assert.ok(group.length > 0, 'the pill group must still exist');
+  assert.match(group, /<LanguageIntelligenceControls \/>/);
+});
+
+test('the shell has no strip along its top any more', () => {
+  assert.ok(
+    !shellPageSource.includes('<div class="top-bar">'),
+    'the last thing in that strip was this switch, and it now travels with the pills'
+  );
+  assert.ok(
+    !shellPageSource.includes('LanguageIntelligenceControls'),
+    'the page must not mount the switch a second time'
+  );
+});
+
+test('the switch is painted from its state, not from a selector nothing writes', () => {
+  assert.match(
+    controlsSource,
+    /data-tone=\{tone\}/,
+    'one attribute carries the three states, the way the rest of the shell does it'
   );
   assert.ok(
     !controlsSource.includes(':has(') && !controlsSource.includes('has-['),
     'no `:has()` selectors'
   );
+});
+
+test('position and colour are worked out separately', () => {
+  // The knob follows what was ASKED FOR and the track follows what is TRUE, so
+  // a switch turned on while the server is down must not be able to claim green.
+  assert.match(controlsSource, /checked=\{languageIntelligenceBar\.fullMode\}/);
+  // A button carries the browser's own padding, and on a 24px track that padding
+  // parked the knob in the middle at rest — a switch that shows neither position.
+  assert.match(
+    controlsSource,
+    /\[data-slot='switch'\]\) \{\s*padding:\s*0;/,
+    'the switch must drop the browser button padding or its knob shows no position'
+  );
+  assert.match(
+    controlsSource,
+    /readLanguageServerState\(languageIntelligenceBar\.status\) === 'ready'/,
+    'only a server that reports itself ready earns the running colour'
+  );
+  for (const [tone, token] of [
+    ['running', '--switch-track-running'],
+    ['waiting', '--switch-track-waiting'],
+    ['off', '--switch-track-off']
+  ] as const) {
+    assert.match(
+      controlsSource,
+      new RegExp(`data-tone='${tone}'[\\s\\S]{0,200}${token}`),
+      `the ${tone} state must paint the track from ${token}`
+    );
+  }
 });
 
 test('only the open file\'s own controls stay in the file-tab title row', () => {
@@ -116,8 +160,25 @@ test('the status pipeline has one owner', () => {
   }
 });
 
-test('the controls disappear when no project is open', () => {
-  assert.match(controlsSource, /\{#if languageIntelligenceBar\.hasProject\}/);
+test('with no project the switch is still there, and inert', () => {
+  // It used to remove itself, which left the pill group three pills wide with a
+  // gap where the switch belongs. It is part of that group now, so it stays and
+  // states the situation: off position, the neutral colour Off already wears,
+  // and no way to flip it.
+  assert.ok(
+    !controlsSource.includes('{#if languageIntelligenceBar.hasProject}'),
+    'the switch must not remove itself from the pill group'
+  );
+  assert.match(
+    controlsSource,
+    /disabled=\{languageIntelligenceBar\.busy \|\| !languageIntelligenceBar\.hasProject\}/,
+    'with nothing to switch on, the switch cannot be flipped'
+  );
+  assert.match(
+    controlsSource,
+    /: 'No project is open, so there is no language server to switch on\.'/,
+    'a disabled control must carry its reason'
+  );
 });
 
 test('the chip is only rendered when there is something truthful to say', () => {
