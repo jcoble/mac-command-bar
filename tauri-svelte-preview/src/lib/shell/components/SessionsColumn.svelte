@@ -344,7 +344,6 @@
           options={viewOptions}
           {activeOwnedId}
           {onSelect}
-          {onRestart}
           {onComplete}
           {onReopen}
           {onSettle}

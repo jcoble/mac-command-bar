@@ -12,9 +12,10 @@
    */
   import { onDestroy } from 'svelte';
 
-  import CornerDownLeft from '@lucide/svelte/icons/corner-down-left';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { HoverActionButton, HoverActions } from '$lib/components/ui/hover-actions/index.js';
@@ -26,7 +27,6 @@
     EMPTY_SESSION_PRESENCE_HISTORY,
     sessionPresenceHistory
   } from '$lib/shell/conversation/sessionPresence.ts';
-  import { requestSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
   import { presentAgentError } from '$lib/shell/errorPresentation';
   import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import {
@@ -50,7 +50,6 @@
     dragging?: boolean;
     dropPosition?: 'before' | 'after' | null;
     onSelect?(): void;
-    onRestart?(): void;
     onComplete?(): void;
     onReopen?(): void;
     onSettle?(): void;
@@ -62,7 +61,7 @@
     onDragEnd?(event: DragEvent): void;
   }
 
-  type RowPresence = 'working' | 'attention' | 'idle' | 'stopped' | 'done' | 'failed';
+  type RowPresence = 'working' | 'attention' | 'idle' | 'done' | 'failed';
   type SessionRecordExtras = OwnedSession & { hostname?: string | null; machine?: string | null };
 
   let {
@@ -71,7 +70,6 @@
     dragging = false,
     dropPosition = null,
     onSelect,
-    onRestart,
     onComplete,
     onReopen,
     onSettle,
@@ -109,20 +107,18 @@
   const activeTurnId = $derived(session.activeTurnId ?? presenceHistory.activeTurnId);
   const suspended = $derived(session.runtimeState === 'suspended');
   const presenceSignals = $derived(
-    session.state === 'exited'
-      ? 'stopped'
-      : deriveSessionPresence(
-          {
-            terminalState: session.state,
-            suspended,
-            activeTurnId,
-            sending: conversation?.sending,
-            pendingApprovalCount,
-            runtimeState
-          },
-          presenceHistory,
-          0
-        ).state
+    deriveSessionPresence(
+      {
+        terminalState: session.state,
+        suspended,
+        activeTurnId,
+        sending: conversation?.sending,
+        pendingApprovalCount,
+        runtimeState
+      },
+      presenceHistory,
+      0
+    ).state
   );
 
   const presence = $derived<RowPresence>(
@@ -132,8 +128,6 @@
         ? 'failed'
         : suspended
           ? 'idle'
-          : session.state === 'exited' || session.executionOwner === 'stopped' || presenceSignals === 'disconnected'
-          ? 'stopped'
           : needsYou || presenceSignals === 'needs-attention'
             ? 'attention'
             : presenceSignals === 'working'
@@ -145,13 +139,11 @@
       working: 'Working',
       attention: 'Waiting on you',
       idle: 'Idle',
-      stopped: 'Stopped',
       done: 'Finished',
       failed: 'Error'
     }[presence]
   );
   const presenceDetail = $derived(suspended ? 'Idle — resumes on send' : presenceLabel);
-  const presenceIsRestart = $derived(presence === 'stopped');
   const modelValue = $derived(conversation?.metadata.model ?? session.model ?? null);
   const modelText = $derived(modelValue ? modelLabel(modelValue) : null);
   // The row marks the provider with its glyph; the name and the model belong to
@@ -327,13 +319,6 @@
     }
   }
 
-  function startSession(event: MouseEvent): void {
-    event.stopPropagation();
-    const handled = requestSessionRestart(session.ownedId, session.state === 'exited');
-    if (handled) return;
-    (session.state === 'exited' ? onRestart : onSelect)?.();
-  }
-
   function jump(event: MouseEvent, surface: 'session' | 'editor' | 'source-control'): void {
     event.stopPropagation();
     if (!sessionRowJump(session.ownedId, surface)) onSelect?.();
@@ -399,6 +384,7 @@
   bind:this={rowElement}
   data-testid="worktree-agent-row"
   data-presence={presence}
+  data-shelf={shelf}
   class:active
   class:dragging
   class:drop-before={dropPosition === 'before'}
@@ -433,13 +419,11 @@
           <span
             data-testid="worktree-agent-provider"
             class="thumb"
+            data-agent={session.agent}
             role="img"
             aria-label={providerName}
           >
             <ProviderIcon class="thumb-mark" aria-hidden="true" />
-            {#if isWorking}
-              <span class="spinner" class:spinning aria-hidden="true"></span>
-            {/if}
           </span>
 
           <span class="lines">
@@ -451,6 +435,9 @@
             <span class="line line-title">
               <span data-testid="worktree-agent-title" class="session-title">{label}</span>
               <span data-testid="worktree-agent-age" class="age" title={presenceDetail}>
+                {#if isWorking}
+                  <span class="spinner" class:spinning aria-hidden="true"></span>
+                {/if}
                 <span class="age-text">{ageText ?? ''}</span>
               </span>
             </span>
@@ -476,19 +463,11 @@
                   class="failed"
                   title={presentedError?.detail ?? presentedError?.summary}
                 >{presentedError?.summary ?? presenceLabel}</span>
-              {:else if suspended || presence === 'stopped'}
+              {:else if suspended}
                 <span data-testid="worktree-agent-status" class="idle-label" title={presenceDetail}>
                   {suspended ? 'Suspended' : presenceLabel}
                 </span>
               {/if}
-            </span>
-
-            <!-- The path is cut from the LEFT: the tail is the part that says
-                 which worktree this is. `direction: rtl` puts the ellipsis on
-                 the near edge, and the `bdi` keeps the path itself reading
-                 left to right inside it. -->
-            <span class="line line-meta">
-              <span class="worktree-path" title={worktree}><bdi>{worktree}</bdi></span>
             </span>
           </span>
         </button>
@@ -497,7 +476,7 @@
 
     <ContextMenu.Content
       data-testid="worktree-agent-context-menu"
-      class="w-[216px] bg-popover text-foreground"
+      class="w-[216px]"
       aria-label="Session actions"
     >
       {#each menuItems as item (item.id)}
@@ -522,21 +501,11 @@
   <HoverActions
     data-testid="worktree-agent-overlay"
     label="Session actions"
-    class="absolute top-0 right-[17px] z-[2]"
+    class="absolute top-[5px] right-[17px] z-[2]"
   >
-    <!-- A stopped session's one extra move, at the head of the cluster so the
-         two standing actions keep their places against the right edge. -->
-    {#if presenceIsRestart}
-      <span data-testid="worktree-agent-resume" class="contents">
-        <HoverActionButton label="Resume session" tone="primary" size="sm" onclick={startSession}>
-          <CornerDownLeft aria-hidden="true" />
-        </HoverActionButton>
-      </span>
-    {/if}
-
-    <!-- Two, not four. Source control and settling both live on the row's
-         right-click menu, and every button here costs the title width while the
-         pointer is on the row, so the cluster stays short. -->
+    <!-- Three, not four. The three surfaces a session is worked in; settling
+         stays on the row's right-click menu, because every button here costs
+         the title width while the pointer is on the row. -->
     <span data-testid="worktree-agent-jump" class="contents">
       <span data-testid="worktree-agent-jump-session" class="contents">
         <HoverActionButton
@@ -558,7 +527,56 @@
           <FileCode2 aria-hidden="true" />
         </HoverActionButton>
       </span>
+      <span data-testid="worktree-agent-jump-source-control" class="contents">
+        <HoverActionButton
+          label="Open source control"
+          tone="success"
+          size="sm"
+          onclick={(event) => jump(event, 'source-control')}
+        >
+          <GitBranch aria-hidden="true" />
+        </HoverActionButton>
+      </span>
     </span>
+
+    <!-- A hole the width of the spinner, so the buttons stop to its left and a
+         running session keeps saying so while the pointer is on the row. -->
+    {#if isWorking}
+      <span class="spinner-gap" aria-hidden="true"></span>
+    {/if}
+
+    <!-- The step back, last in the cluster and therefore over the time itself:
+         the corner the time was using is the corner this move lands in. Done
+         goes back to Settled, Settled goes back to Working — one rung a click,
+         which is why a settled row clears both stamps rather than one. -->
+    {#if shelf === 'done'}
+      <span data-testid="worktree-agent-unsettle" class="contents">
+        <HoverActionButton
+          label="Move back to Settled"
+          size="sm"
+          onclick={(event) => {
+            event.stopPropagation();
+            onSettle?.();
+          }}
+        >
+          <RotateCcw aria-hidden="true" />
+        </HoverActionButton>
+      </span>
+    {:else if shelf === 'settled'}
+      <span data-testid="worktree-agent-reopen" class="contents">
+        <HoverActionButton
+          label="Move back to Working"
+          size="sm"
+          onclick={(event) => {
+            event.stopPropagation();
+            onUnsettle?.();
+            onReopen?.();
+          }}
+        >
+          <RotateCcw aria-hidden="true" />
+        </HoverActionButton>
+      </span>
+    {/if}
   </HoverActions>
 
   <!-- Nothing here reads a store: the card renders the snapshot taken when it
@@ -578,14 +596,14 @@
 
 <style>
   .row {
-    /* How much room the action cluster needs: two buttons and the 4px gap
-       between them, measured at 53px. It is claimed only while the pointer is
+    /* How much room the action cluster needs: three buttons and the 4px gaps
+       between them, measured at 81px. It is claimed only while the pointer is
        on the row, out of line one's right corner, which the time occupies the
        rest of the time. Nothing is held empty at rest — the title runs all the
        way to the time — and nothing moves when the buttons arrive, because the
-       corner they land in is the one the time just left. A stopped row carries
-       a third button and reserves 28px more for it. */
-    --rail-action-gutter: 53px;
+       corner they land in is the one the time just left. A row that can step
+       back carries a fourth button and reserves 28px more for it. */
+    --rail-action-gutter: 81px;
     position: relative;
     display: block;
     box-sizing: border-box;
@@ -598,12 +616,20 @@
     font-size: 13px;
     line-height: 1.4;
     content-visibility: auto;
-    contain-intrinsic-size: auto 56px;
+    contain-intrinsic-size: auto 58px;
   }
 
-  .row[data-presence='stopped'] { --rail-action-gutter: 81px; }
+  /* What else line one's corner is holding. A row that can step back carries a
+     fourth button; a working row keeps an 18px hole so its spinner is never
+     covered. A done row is never also working, so those two never both apply —
+     except on a settled row, which can still be running. */
+  .row[data-shelf='done'],
+  .row[data-shelf='settled'] { --rail-action-gutter: 109px; }
 
-  /* The mark, then the three lines. The row is 56px so a rail this narrow still
+  .row[data-presence='working'] { --rail-action-gutter: 99px; }
+  .row[data-presence='working'][data-shelf='settled'] { --rail-action-gutter: 127px; }
+
+  /* The mark, then the three lines. The row is 58px so a rail this narrow still
      shows a useful stack of sessions; the mark matches the height of the three
      lines beside it, which is the proportion the reference keeps. */
   .session-row {
@@ -613,7 +639,7 @@
     column-gap: 10px;
     align-items: center;
     width: 100%;
-    min-height: 56px;
+    min-height: 58px;
     padding: var(--rail-row-content-inset);
     border: 0;
     /* No rule between rows: the gap and the rounded highlight carry the
@@ -650,11 +676,18 @@
     flex: 0 0 auto;
   }
 
-  .row[data-presence='stopped'] .thumb { opacity: 0.6; }
+  /* The two marks their vendors publish in a colour wear it here. The rest
+     stay the theme's own, because inventing a brand colour for them would be
+     a worse lie than a neutral glyph. */
+  .thumb[data-agent='claude'] { color: var(--agent-mark-claude); }
+  .thumb[data-agent='codex'] { color: var(--agent-mark-codex); }
+
   .row:hover .thumb { opacity: 1; }
 
-  /* Three fixed line boxes, no gaps: 20 + 15 + 15 inside a 6px inset is the
-     56px row. The heights are declared rather than left to the font so the row
+  /* TWO fixed line boxes, not three. A third line meant every line had to be
+     small enough to fit, which is the whole reason the rail read badly; the
+     branch and the worktree path say what they have to say on the hover card
+     instead. The heights are declared rather than left to the font so the row
      is the same height on every machine and the mark can be sized against it. */
   .lines {
     display: flex;
@@ -691,13 +724,13 @@
   }
 
   .line-title {
-    height: 20px;
-    line-height: 20px;
+    height: 21px;
+    line-height: 21px;
   }
 
   .line-meta {
-    height: 15px;
-    line-height: 15px;
+    height: 17px;
+    line-height: 17px;
   }
 
   .project {
@@ -705,38 +738,35 @@
     flex: 0 1 auto;
     overflow: hidden;
     color: var(--color-text-2);
-    font-size: 11.5px;
+    font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
+  /* The branch, at the project's size but a step dimmer. Not monospaced: this
+     line is read, not compared character by character, and a mono face at this
+     size is both wider and harder to read in a rail this narrow. The project
+     gives way first, because it repeats down the whole list and the branch is
+     what tells one row from the next. */
   .sep {
     flex: 0 0 auto;
     color: var(--color-text-3);
-    font-size: 11.5px;
+    font-size: 12px;
+  }
+
+  .branch {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    color: var(--color-text-3);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .idle-label,
   .failed,
   .needs-you { margin-left: auto; }
-
-  /* The path, cut from the left. Everything about this is on the box rather
-     than the string: `direction: rtl` moves the overflow — and so the ellipsis
-     — to the near edge, `text-align: left` keeps a path that DOES fit sitting
-     where the eye expects it, and the `bdi` in the markup stops the trailing
-     slash of a directory being reordered to the wrong end. */
-  .worktree-path {
-    min-width: 0;
-    flex: 1 1 auto;
-    overflow: hidden;
-    direction: rtl;
-    color: var(--color-text-3);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12px;
-    text-align: left;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 
   /* Last activity, dim, in line one's right corner — the corner the buttons
      take over while the pointer is on the row. The slot holds its contents
@@ -762,22 +792,28 @@
   .row:hover .age,
   .row:focus-within .age { min-width: calc(var(--rail-action-gutter) + 8px); }
 
+  /* One button wide, always: the spinner beside it must sit the same distance
+     from the row's right edge whether the time reads "now" or "12m", because
+     the cluster's gap for it is measured from that edge. */
+  .age-text {
+    min-width: 28px;
+    text-align: right;
+  }
+
   .row:hover .age-text,
   .row:focus-within .age-text { opacity: 0; }
 
   .row[data-presence='working'] .age { color: var(--color-text-2); }
 
-  /* The working indicator: a small badge on the corner of the mark, which is
-     the only place a session's own state is drawn. A disc rather than a ring
-     around the whole square — a rotating rounded square reads as a wobble,
-     while a circle is what a turning thing is supposed to look like. */
+  /* The working indicator, immediately left of the time it belongs to. The
+     buttons step around it rather than over it — see the gutter above — so a
+     session that is running says so whether or not the pointer is on the row. */
   .spinner {
-    position: absolute;
-    right: -3px;
-    bottom: -3px;
+    flex: 0 0 auto;
     box-sizing: border-box;
-    width: 13px;
-    height: 13px;
+    margin-right: 6px;
+    width: 12px;
+    height: 12px;
     border: 2px solid color-mix(in srgb, var(--color-live) 30%, var(--color-surface));
     border-top-color: var(--color-live);
     border-radius: 50%;
@@ -787,6 +823,13 @@
   /* The only looping motion in the rail, and it runs only while this row is
      working and on screen. */
   .spinner.spinning { animation: spin 900ms linear infinite; }
+
+  /* Exactly the spinner's footprint: 12px and the 6px that separates it from
+     the time. It paints nothing — it only stops the buttons here. */
+  .spinner-gap {
+    flex: 0 0 auto;
+    width: 18px;
+  }
 
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner.spinning { animation: none; } }
@@ -832,19 +875,8 @@
     flex: 1 1 auto;
     overflow: hidden;
     color: var(--color-text);
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
-    letter-spacing: -0.01em;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .branch {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--color-text-3);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -853,8 +885,6 @@
      the margin around the icon in order to read as a disc. */
   .row :global([data-slot='hover-actions'] svg) { width: 16px; height: 16px; }
 
-  .row[data-presence='stopped'] .project { opacity: 0.72; }
-  .row[data-presence='stopped']:hover .project { opacity: 1; }
 
   .row.dragging { opacity: 0.48; }
   .row.drop-before::after,

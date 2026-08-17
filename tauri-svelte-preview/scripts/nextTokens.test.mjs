@@ -46,13 +46,51 @@ const CONSUMER_PATHS = [
 
 const nextTokensSource = read(NEXT_TOKENS_PATH);
 const sharedTokensSource = read(SHARED_TOKENS_PATH);
+/**
+ * Names the /next palette owns outright, which the old shell has never had.
+ *
+ * The list is closed on purpose. Its job is not to keep the number small — it
+ * is to make every addition deliberate: a token that appears in the palette
+ * without appearing here fails this file, so nobody invents a colour name in
+ * passing and nobody quietly shadows a shared one. Adding a name is a one-line
+ * change, made on purpose, with the reason visible in the diff.
+ */
 const NEXT_ONLY_SEMANTIC_TOKENS = new Set([
+  // The six semantic states the /next plan named.
   '--color-selected',
   '--color-selected-border',
   '--color-hover',
   '--color-focus-solid',
   '--color-disabled-text',
-  '--color-status-idle'
+  '--color-status-idle',
+  '--row-selected',
+  '--secondary-label',
+
+  // Each provider's own published mark colour.
+  '--agent-mark-claude',
+  '--agent-mark-codex',
+
+  // Surfaces the /next shell paints that the old one has no equivalent for.
+  '--popout-surface',
+  '--menu-surface',
+  '--pill-surface',
+  '--pill-surface-hover',
+  '--pill-surface-active',
+  '--pill-text-active',
+  '--switch-track-off',
+  '--switch-track-waiting',
+  '--switch-track-running',
+  '--switch-knob',
+
+  // Measurements shared between components so they cannot drift apart.
+  '--rail-content-inset',
+  '--rail-row-content-inset',
+  '--floating-content-inset',
+  '--floating-row-gap',
+  '--editor-tab-row-height',
+  '--scrollbar-size',
+  '--scrollbar-thumb',
+  '--scrollbar-thumb-hover'
 ]);
 
 // ── Tiny CSS reader ────────────────────────────────────────────────────────
@@ -137,18 +175,23 @@ for (const rule of sharedRules) {
   );
 }
 
-// ── The palette the plan asked for ────────────────────────────────────────
+// ── The palette, pinned ───────────────────────────────────────────────────
+// These are the values the shell is actually painted in, not a wish list: the
+// point of pinning them is that a change to any of them is deliberate and
+// shows up in a diff rather than drifting one commit at a time. The four dark
+// values below moved together when the shell went to a black ground and a
+// quieter border; the text and accent values have not moved since the plan.
 {
   const expected = {
-    '--color-bg': '#161719',
-    '--color-surface': '#1d1f22',
-    '--color-border': 'rgba(241, 243, 245, 0.12)',
+    '--color-bg': '#000000',
+    '--color-surface': '#121212',
+    '--color-border': 'rgba(241, 243, 245, 0.07)',
     '--color-text': '#f1f3f5',
     '--color-text-2': '#b3b7bf',
     '--color-text-3': '#8b919b',
     '--color-selected': '#263734',
     '--color-selected-border': '#5cb29b',
-    '--color-hover': '#292c31',
+    '--color-hover': '#232323',
     '--color-focus-solid': '#6ed8be',
     '--color-disabled-text': '#7f858e',
     '--color-status-idle': '#969ca6'
@@ -158,15 +201,15 @@ for (const rule of sharedRules) {
   }
 }
 
-// ── Only the six planned semantic names are /next-only ────────────────────
-// Everything else remains a shared token; broadening this list is an explicit
-// product-level theme-contract decision.
+// ── Only the listed names are /next-only ──────────────────────────────────
+// Everything else remains a shared token; broadening the list above is an
+// explicit theme-contract decision, which is why it lives in one place.
 {
   const nextOnly = new Set([...nextTokens.keys()].filter((name) => !sharedTokens.has(name)));
   assert.deepEqual(
     [...nextOnly].sort(),
     [...NEXT_ONLY_SEMANTIC_TOKENS].sort(),
-    'the /next palette may add only the six approved semantic theme tokens'
+    'the /next palette may add only the names listed in NEXT_ONLY_SEMANTIC_TOKENS'
   );
   for (const name of nextTokens.keys()) {
     assert.ok(

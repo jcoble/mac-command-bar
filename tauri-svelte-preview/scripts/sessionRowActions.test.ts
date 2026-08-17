@@ -221,23 +221,19 @@ assert.ok(
   row.includes('sessionRowJump(session.ownedId, surface)'),
   'the row dispatches its jumps through the shared mapping'
 );
-// Two buttons, not three: every button costs the title width while the pointer
-// is on the row, so source control moved to the right-click menu. The jump
-// itself is unchanged — the row still runs it through the same mapping.
-for (const surface of ['session', 'editor'] as const) {
+// The three surfaces a session is worked in, each with its own button. The
+// right-click menu reaches source control as well, for the keyboard and for
+// anyone who opened the menu first.
+for (const surface of ['session', 'editor', 'source-control'] as const) {
   assert.ok(
     row.includes(`jump(event, '${surface}')`),
     `the row must offer a ${surface} button`
   );
 }
-assert.ok(
-  !row.includes(`jump(event, 'source-control')`),
-  'source control is no longer one of the buttons in the cluster'
-);
 assert.match(
   row,
   /action === 'open-source-control'\)\s*\{[\s\S]*?sessionRowJump\(session\.ownedId, 'source-control'\)/,
-  'the row still reaches source control, now from the menu item that replaced the button'
+  'the row reaches source control from its menu item too, not only from the button'
 );
 
 assert.match(
@@ -250,13 +246,9 @@ assert.doesNotMatch(
   /import \{ IconButton \}/,
   'the row no longer styles icon buttons itself'
 );
-for (const label of ['Open session', 'Open editor']) {
+for (const label of ['Open session', 'Open editor', 'Open source control']) {
   assert.ok(row.includes(label), `the row must label its jump button "${label}"`);
 }
-assert.ok(
-  !row.includes('Open source control'),
-  'and it names source control nowhere, because that reads from the menu instead'
-);
 
 assert.match(row, /SessionHoverCard/, 'hover details use the dedicated rail card');
 assert.match(
@@ -280,12 +272,12 @@ assert.doesNotMatch(
 );
 assert.match(
   row,
-  /--rail-action-gutter: 53px;/,
-  'the gutter is worth two buttons and the gap between them'
+  /--rail-action-gutter: 81px;/,
+  'the gutter is worth three buttons and the gaps between them'
 );
 assert.match(
   row,
-  /\.row\[data-presence='stopped'\] \{ --rail-action-gutter: 81px; \}/,
+  /\.row\[data-presence='stopped'\] \{ --rail-action-gutter: 109px; \}/,
   'a stopped row carries Resume as well and asks for one button more'
 );
 assert.match(
@@ -295,8 +287,8 @@ assert.match(
 );
 assert.match(
   row,
-  /class="absolute top-0 right-\[17px\] z-\[2\]"/,
-  'the cluster sits level with line one, in the corner the time was using'
+  /class="absolute top-\[5px\] right-\[17px\] z-\[2\]"/,
+  'the cluster sits in line one\'s corner, dropped clear of the row\'s top edge'
 );
 assert.doesNotMatch(
   row,
@@ -349,18 +341,50 @@ assert.doesNotMatch(
 );
 assert.match(
   row,
-  /\[data-slot='hover-actions'\] svg\)[\s\S]*?width:\s*18px;\s*height:\s*18px;/,
-  'row action glyphs are 18px'
+  /\[data-slot='hover-actions'\] svg\)[\s\S]*?width:\s*16px;\s*height:\s*16px;/,
+  'row action glyphs are 16px, sized for the shorter row'
 );
 assert.equal(
   (row.match(/size="sm"/g) ?? []).length,
-  3,
-  'the two jumps and Resume are the whole cluster, and all three are 28px kit buttons'
+  6,
+  'the three jumps, the step back in either form, and Resume are 28px kit buttons'
+);
+// The step back a row can take, in the corner the time was using: Done goes
+// back to Settled, Settled goes back to Working, one rung per click.
+assert.match(
+  row,
+  /shelf === 'done'\}[\s\S]*?label="Move back to Settled"[\s\S]*?onSettle\?\.\(\)/,
+  'a done row steps back to Settled'
+);
+assert.match(
+  row,
+  /shelf === 'settled'\}[\s\S]*?label="Move back to Working"[\s\S]*?onUnsettle\?\.\(\);\s*onReopen\?\.\(\)/,
+  'a settled row clears both stamps, because either one alone leaves it short of Working'
+);
+// The step back is the LAST thing in the cluster, so it lands over the time
+// rather than beside it, and the three jumps stand to its left.
+assert.match(
+  row,
+  /worktree-agent-jump-source-control[\s\S]*?shelf === 'done'\}/,
+  'the jumps come first and the step back is last, which puts it over the time'
+);
+// A working row keeps a hole the width of its spinner, so the buttons stop
+// short of it instead of covering the one thing that says the session is live.
+assert.match(row, /\{#if isWorking\}\s*<span class="spinner-gap"/, 'the cluster leaves the spinner a hole');
+assert.match(
+  row,
+  /\.row\[data-presence='working'\] \{ --rail-action-gutter: 99px; \}/,
+  'and asks the title for the 18px that hole costs'
 );
 assert.doesNotMatch(
   row,
-  /data-testid="worktree-agent-settle"|data-testid="worktree-agent-unsettle"/,
-  'settling and the way back from it are menu items, not buttons taking title width'
+  /shelf === 'working'[\s\S]*?HoverActionButton/,
+  'a working row has nothing to step back to, so it carries no such button'
+);
+assert.doesNotMatch(
+  row,
+  /data-testid="worktree-agent-settle"/,
+  'settling forward stays a menu item, not a button taking title width'
 );
 assert.match(
   row,

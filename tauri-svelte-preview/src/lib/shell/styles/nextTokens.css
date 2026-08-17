@@ -67,7 +67,7 @@
 
   /* Shared shell insets keep dense rows and floating detail surfaces aligned. */
   --rail-content-inset: 12px;
-  --rail-row-content-inset: 3px 11px 3px 13px;
+  --rail-row-content-inset: 4px 11px 4px 13px;
   --floating-content-inset: 14px 15px 13px;
   --floating-row-gap: 9px;
 
@@ -164,6 +164,26 @@
      cannot drift from what anything else assumes about it. */
   --editor-tab-row-height: 35px;
 
+
+  /* ------------------------------------------------------------------
+   * Provider marks. Each is the colour the vendor publishes its own mark
+   * in, read off the vendor's own file rather than matched by eye:
+   * Anthropic's clay orange fills claude.ai/favicon.svg, and the blue is
+   * the disc behind the blossom in developers.openai.com/favicon.svg.
+   * Providers with no official mark keep the theme's own text colour.
+   * ------------------------------------------------------------------ */
+  --agent-mark-claude: #d97757;
+  --agent-mark-codex: #0080f7;
+
+  /* A floating card reads as floating by being DARKER than the rail it
+     covers, not lighter: the rail is already a raised surface, so another
+     step up flattens the two together. */
+  --popout-surface: color-mix(in srgb, var(--color-bg) 85%, var(--color-surface));
+
+  /* A right-click menu goes the other way, and on purpose: it is LIGHTER than
+     everything under it, so it reads as a sheet laid on top rather than a hole
+     cut into the surface. The two are meant to differ. */
+  --menu-surface: #282828;
 
   /* Scrollbars — one thin style for every scrolling surface in the shell.
      Native scrolling, styled: the transcript's virtualiser measures real

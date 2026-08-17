@@ -58,20 +58,17 @@
     "Helvetica Neue",
     Arial,
     sans-serif;
-  /* Figtree's default spacing is loose at interface sizes; pulling it in
-     slightly keeps rows tight without making the letterforms feel cramped. */
-  letter-spacing: -0.01em;
   font-size: var(--text-md);
   line-height: 1.5;
 
   background: var(--color-bg);
   color: var(--color-text);
 
-  /* Crisp rendering on retina / hi-dpi displays. */
+  /* Grayscale smoothing was thinning every glyph against the dark background,
+     which is most of why small interface text read badly. The default keeps the
+     stems the weight the typeface actually draws them. */
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 
   /* Hidden scrollbars (Firefox / standards side of the rule above). */
   scrollbar-width: none;

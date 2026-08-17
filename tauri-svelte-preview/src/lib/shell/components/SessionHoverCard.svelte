@@ -118,7 +118,7 @@
     border-radius: var(--radius-sm);
     padding: var(--floating-content-inset);
     color: var(--color-text);
-    background: var(--color-elevated);
+    background: var(--popout-surface);
     box-shadow: var(--shadow-md);
     pointer-events: none;
   }

@@ -18,7 +18,6 @@
     options: MyWorkViewOptions;
     activeOwnedId?: string | null;
     onSelect?(ownedId: string): void;
-    onRestart?(ownedId: string): void;
     onComplete?(ownedId: string): void;
     onReopen?(ownedId: string): void;
     onSettle?(ownedId: string): void;
@@ -31,7 +30,6 @@
     options,
     activeOwnedId = null,
     onSelect,
-    onRestart,
     onComplete,
     onReopen,
     onSettle,
@@ -228,7 +226,6 @@
                 ? dropTarget.position
                 : null}
               onSelect={() => onSelect?.(session.ownedId)}
-              onRestart={() => onRestart?.(session.ownedId)}
               onComplete={() => onComplete?.(session.ownedId)}
               onReopen={() => onReopen?.(session.ownedId)}
               onSettle={() => onSettle?.(session.ownedId)}
