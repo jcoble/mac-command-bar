@@ -50,9 +50,9 @@
    * The values are intentionally close, opaque grays: depth comes from
    * layering and spacing, not a grid of bright outlines.
    * ------------------------------------------------------------------ */
-  --color-bg: #161719;
-  --color-surface: #1d1f22;
-  --color-elevated: #25282d;
+  --color-bg: #000000;
+  --color-surface: #121212;
+  --color-elevated: #1c1c1c;
 
   /* ------------------------------------------------------------------
    * Text hierarchy — primary carries body copy; the secondary and tertiary
@@ -78,14 +78,14 @@
    * states carry the stronger mint signal.
    * ------------------------------------------------------------------ */
   --color-accent: #6ed8be;
-  --color-border: rgba(241, 243, 245, 0.12);
+  --color-border: rgba(241, 243, 245, 0.07);
   --color-focus: rgba(110, 216, 190, 0.42);
   --color-focus-solid: #6ed8be;
 
   /* Interaction surfaces are opaque so text contrast is deterministic. */
   --color-selected: #263734;
   --color-selected-border: #5cb29b;
-  --color-hover: #292c31;
+  --color-hover: #232323;
   --row-selected: color-mix(in srgb, var(--color-accent) 7%, transparent);
 
   /* ------------------------------------------------------------------
@@ -135,4 +135,38 @@
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
+
+  /* Scrollbars — one thin style for every scrolling surface in the shell.
+     Native scrolling, styled: the transcript's virtualiser measures real
+     scroll offsets, so a synthetic scrollbar would fight it. */
+  --scrollbar-size: 8px;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.24);
+}
+
+/* Applies to the shell and to anything portalled out of it. */
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  /* Keeps the thumb off the very edge of its track without a track colour. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar-corner {
+  background: transparent;
 }

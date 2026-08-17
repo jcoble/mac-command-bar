@@ -2,8 +2,9 @@
   /**
    * RightPanel.svelte — the right column of the workbench.
    *
-   * Three rows: the icon tab strip along the top, one panel body filling the
-   * middle, and the Resources/Usage strip along the bottom. Exactly one panel
+   * Two rows: the icon tab strip along the top and one panel body filling the
+   * rest. The Resources/Usage strip now runs the full width of the window as
+   * the shell's status bar, so it no longer lives here. Exactly one panel
    * is on screen at a time, but every one of the eight stays MOUNTED for the
    * whole session — switching tabs only changes which is displayed. Nothing is
    * torn down, so a scroll position, a typed filter or a half-expanded tree
@@ -25,8 +26,6 @@
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
 
   import RightPanelTabs from './RightPanelTabs.svelte';
-  import UtilityStrip from './UtilityStrip.svelte';
-  import { utilityAnchorFor, type UtilityId } from './utilityStrip';
 
   interface Props {
     /** The tab on screen. */
@@ -36,11 +35,20 @@
     root: string;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
-    /** Which bottom-strip surface is open, so its button reads as on. */
-    openUtility?: UtilityId | null;
-    onOpenUtility(id: UtilityId, anchor: ReturnType<typeof utilityAnchorFor>): void;
+    /**
+     * The Browser panel asking for a wide column, or for the width it had
+     * before. It travels through here because this column's width belongs to
+     * the page's grid, not to a panel inside it.
+     */
+    onWidenBrowser(wide: boolean): void;
   }
-  let { activeId, onSelect, root, ownedId, openUtility = null, onOpenUtility }: Props = $props();
+  let {
+    activeId,
+    onSelect,
+    root,
+    ownedId,
+    onWidenBrowser
+  }: Props = $props();
 </script>
 
 <div class="right-panel">
@@ -66,14 +74,12 @@
       <AgentsPanel visible={activeId === 'agents'} {root} {ownedId} />
     </div>
     <div class="panel-body" class:showing={activeId === 'browser'}>
-      <BrowserPanel visible={activeId === 'browser'} {root} {ownedId} />
+      <BrowserPanel visible={activeId === 'browser'} {root} {ownedId} onWiden={onWidenBrowser} />
     </div>
     <div class="panel-body" class:showing={activeId === 'history'}>
       <HistoryPanel visible={activeId === 'history'} {root} {ownedId} />
     </div>
   </div>
-
-  <UtilityStrip {openUtility} {onOpenUtility} />
 </div>
 
 <style>
@@ -83,9 +89,10 @@
     width: 100%;
     min-width: 0;
     min-height: 0;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
-    background: var(--color-surface);
+    /* The card behind this paints the surface and its gradient. */
+    background: transparent;
   }
 
   /* Every panel stacks in the same space; only the open one is displayed.

@@ -30,6 +30,7 @@
   import GitDiffView from '$lib/shell/components/GitDiffView.svelte';
   import SessionsColumn from '$lib/shell/components/SessionsColumn.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
+  import UtilityStrip from '$lib/shell/components/UtilityStrip.svelte';
   import ShellOverlays from '$lib/shell/components/ShellOverlays.svelte';
   import RightPanel from '$lib/shell/components/RightPanel.svelte';
   import SettingsGearButton from '$lib/shell/components/SettingsGearButton.svelte';
@@ -1647,8 +1648,6 @@
     onSelect={selectRightTab}
     root={readSelection().root}
     ownedId={rail.activeOwnedId}
-    {openUtility}
-    onOpenUtility={(id, anchor) => overlays?.openUtility(id, anchor)}
     onWidenBrowser={widenTools}
   />
 {/snippet}
@@ -1798,6 +1797,19 @@
     />
   </div>
 
+  <!-- One bar across the whole window, below every panel. The Resources and
+       Usage readouts used to sit inside the right column; they are about the
+       machine and the account rather than that column, and a single bar the
+       width of the window is the honest shape for them. It is also the only
+       element that reaches the window edges, which is what lets every panel
+       above it float with all four corners rounded. -->
+  <div class="status-bar">
+    <UtilityStrip
+      {openUtility}
+      onOpenUtility={(id, anchor) => overlays?.openUtility(id, anchor)}
+    />
+  </div>
+
   <ShellOverlays
     bind:this={overlays}
     onResetLayout={resetLayout}
@@ -1880,6 +1892,14 @@
   .frame-area {
     flex: 1 1 auto;
     min-height: 0;
+  }
+
+  /* The shell's one full-bleed element. Every panel above it is inset and
+     rounded; this reaches both window edges so the layout has a floor. */
+  .status-bar {
+    flex: 0 0 auto;
+    background: var(--color-bg);
+    border-top: 1px solid var(--color-border);
   }
 
   .extension-api-probe-terminal-host {
