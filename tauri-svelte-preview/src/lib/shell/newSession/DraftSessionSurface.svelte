@@ -41,6 +41,7 @@
     buildThreadStartRequest,
     canSelectThreadStartGitRef,
     defaultThreadStartState,
+    displayProvider,
     effortChoicesFor,
     filterThreadStartGitRefs,
     groupProviderModels,
@@ -69,7 +70,7 @@
 
   let { sessionRoots, presetProjectPath, providerConfigs, onSend, onClose }: Props = $props();
 
-  const PROVIDERS: readonly ThreadStartProvider[] = ['codex', 'claude'];
+  const PROVIDERS: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
   /** This build has no create-worktree command, so only existing checkouts. */
   const canCreateWorktree = false;
 
@@ -218,7 +219,7 @@
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
         <Button {...props} data-testid="draft-session-provider" variant="ghost" size="xs" class="draft-control">
-          {draft.provider}
+          {displayProvider(draft.provider)}
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
         </Button>
       {/snippet}
@@ -233,7 +234,7 @@
           <span class="draft-check">
             {#if draft.provider === provider}<Check aria-hidden="true" class="size-3.5" />{/if}
           </span>
-          {provider}
+          {provider === 'antigravity' ? 'Antigravity' : provider}
         </DropdownMenu.Item>
       {/each}
     </DropdownMenu.Content>

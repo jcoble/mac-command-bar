@@ -17,6 +17,7 @@ import type { AgentKind } from './ownedSessions.ts';
 export const AGENT_ICONS: Record<AgentKind, typeof Bot> = {
   claude: Bot,
   codex: SquareCode,
+  antigravity: Bot,
   gemini: Gem,
   opencode: SquareTerminal,
   other: Terminal

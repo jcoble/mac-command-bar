@@ -19,6 +19,7 @@ CODEX_BIN="$(resolve codex)"
 NODE_BIN="$(resolve node)"
 CODEX_ACP_FALLBACK_BIN="$(resolve codex-acp)"
 CLAUDE_ACP_BIN="$(resolve claude-code-acp)"
+AGY_CLI_BIN="$(resolve agy)"
 
 if [ -z "$CLAUDE_ACP_BIN" ]; then
   echo "dev-next: missing ACP adapter (claude-code-acp: 'not found')." >&2
@@ -91,9 +92,39 @@ CLAUDE_WRAPPER="$HOME/.mac-command-bar/claude-acp-wrapper.sh"
 chmod +x "$CLAUDE_WRAPPER"
 MCB_CLAUDE_AGENT_ACP_PATH="$CLAUDE_WRAPPER"
 MCB_CLAUDE_AGENT_ACP_SHA256="$(sha "$CLAUDE_WRAPPER")"
+
+AGY_ACP_BIN="$SCRIPT_DIR/../artifacts/recon/probe-agy/agy-acp/target/release/agy-acp"
+AGY_ADAPTER_CONFIGURED=0
+if [ -x "$AGY_ACP_BIN" ] && [ -n "$AGY_CLI_BIN" ]; then
+  AGY_WRAPPER="$APP_HOME/agy-acp-wrapper.sh"
+  cat > "$AGY_WRAPPER" <<EOF
+#!/bin/sh
+export AGY_EXTRA_ARGS="--dangerously-skip-permissions"
+exec "$AGY_ACP_BIN" "\$@"
+EOF
+  chmod +x "$AGY_WRAPPER"
+  MCB_AGY_ACP_PATH="$AGY_WRAPPER"
+  MCB_AGY_ACP_SHA256="$(sha "$AGY_WRAPPER")"
+  AGY_ADAPTER_CONFIGURED=1
+else
+  unset MCB_AGY_ACP_PATH MCB_AGY_ACP_SHA256
+  echo "dev-next: Antigravity adapter unavailable; skipping (missing agy-acp or agy CLI)."
+fi
+
 export MCB_CODEX_ACP_PATH MCB_CODEX_ACP_SHA256 MCB_CLAUDE_AGENT_ACP_PATH MCB_CLAUDE_AGENT_ACP_SHA256
+if [ "$AGY_ADAPTER_CONFIGURED" -eq 1 ]; then
+  export MCB_AGY_ACP_PATH MCB_AGY_ACP_SHA256
+fi
+
+# Read the Claude login already on this Mac instead of asking for credentials the
+# user has entered once. The quota client keeps this behind a flag; nothing set
+# it, so the keychain path was dead and the panel fell back to manual entry.
+export MCB_ALLOW_KEYCHAIN_CREDENTIALS=1
 
 echo "dev-next: codex adapter  $MCB_CODEX_ACP_PATH ($CODEX_ADAPTER_DETAIL)"
 echo "dev-next: claude adapter $MCB_CLAUDE_AGENT_ACP_PATH"
+if [ "$AGY_ADAPTER_CONFIGURED" -eq 1 ]; then
+  echo "dev-next: antigravity adapter $MCB_AGY_ACP_PATH"
+fi
 
 exec pnpm exec tauri dev --config src-tauri/tauri.dev.next.conf.json "$@"

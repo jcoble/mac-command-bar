@@ -507,6 +507,7 @@ impl AgentRuntimePort for AgentRuntimeManager {
             let provider = match request.provider.to_ascii_lowercase().as_str() {
                 "codex" => AgentConversationProvider::Codex,
                 "claude" => AgentConversationProvider::Claude,
+                "antigravity" => AgentConversationProvider::Antigravity,
                 other => {
                     return Err(WorkflowError::PolicyDenied(format!(
                         "Unsupported provider {other}"

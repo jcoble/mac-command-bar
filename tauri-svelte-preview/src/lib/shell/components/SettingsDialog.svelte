@@ -34,7 +34,7 @@
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
-  import * as Select from '$lib/components/ui/select/index.js';
+  import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import {
@@ -528,16 +528,12 @@
 {#snippet themeControl()}
   <!-- Not `bind:value`: applying a theme writes the setting itself, and a
        binding would fight it. -->
-  <Select.Root type="single" value={shownThemeId} onValueChange={(value) => applyTheme(value)}>
-    <Select.Trigger class="w-full" aria-label="Theme">
-      {labelFor(themeItems, shownThemeId)}
-    </Select.Trigger>
-    <Select.Content>
-      {#each themeItems as item (item.value)}
-        <Select.Item value={item.value} label={item.label} />
-      {/each}
-    </Select.Content>
-  </Select.Root>
+  <SettingsSelect
+    items={themeItems}
+    value={shownThemeId}
+    ariaLabel="Theme"
+    onChange={(value) => applyTheme(value)}
+  />
 {/snippet}
 
 {#snippet appFontSizeControl()}
@@ -555,16 +551,12 @@
 {/snippet}
 
 {#snippet editorFontFamilyControl()}
-  <Select.Root type="single" bind:value={settings.editor.fontFamily}>
-    <Select.Trigger class="w-full" aria-label="Editor font family">
-      {labelFor(fontFamilyItems, settings.editor.fontFamily)}
-    </Select.Trigger>
-    <Select.Content>
-      {#each fontFamilyItems as item (item.value)}
-        <Select.Item value={item.value} label={item.label} />
-      {/each}
-    </Select.Content>
-  </Select.Root>
+  <SettingsSelect
+    items={fontFamilyItems}
+    value={settings.editor.fontFamily}
+    ariaLabel="Editor font family"
+    onChange={(value) => (settings.editor.fontFamily = value)}
+  />
 {/snippet}
 
 {#snippet editorFontSizeControl()}
@@ -600,16 +592,12 @@
 {/snippet}
 
 {#snippet terminalFontFamilyControl()}
-  <Select.Root type="single" bind:value={settings.terminal.fontFamily}>
-    <Select.Trigger class="w-full" aria-label="Terminal font family">
-      {labelFor(fontFamilyItems, settings.terminal.fontFamily)}
-    </Select.Trigger>
-    <Select.Content>
-      {#each fontFamilyItems as item (item.value)}
-        <Select.Item value={item.value} label={item.label} />
-      {/each}
-    </Select.Content>
-  </Select.Root>
+  <SettingsSelect
+    items={fontFamilyItems}
+    value={settings.terminal.fontFamily}
+    ariaLabel="Terminal font family"
+    onChange={(value) => (settings.terminal.fontFamily = value)}
+  />
 {/snippet}
 
 {#snippet terminalFontSizeControl()}
@@ -641,16 +629,12 @@
 {/snippet}
 
 {#snippet terminalThemeControl()}
-  <Select.Root type="single" bind:value={settings.terminal.theme}>
-    <Select.Trigger class="w-full" aria-label="Terminal color theme">
-      {labelFor(terminalThemeItems, settings.terminal.theme)}
-    </Select.Trigger>
-    <Select.Content>
-      {#each terminalThemeItems as item (item.value)}
-        <Select.Item value={item.value} label={item.label} />
-      {/each}
-    </Select.Content>
-  </Select.Root>
+  <SettingsSelect
+    items={terminalThemeItems}
+    value={settings.terminal.theme}
+    ariaLabel="Terminal color theme"
+    onChange={(value) => (settings.terminal.theme = value)}
+  />
 {/snippet}
 
 {#snippet terminalCursorBlinkControl()}
@@ -658,16 +642,12 @@
 {/snippet}
 
 {#snippet terminalAppControl()}
-  <Select.Root type="single" bind:value={settings.general.terminalApp}>
-    <Select.Trigger class="w-full" aria-label="External terminal app">
-      {labelFor(terminalAppItems, settings.general.terminalApp)}
-    </Select.Trigger>
-    <Select.Content>
-      {#each terminalAppItems as item (item.value)}
-        <Select.Item value={item.value} label={item.label} />
-      {/each}
-    </Select.Content>
-  </Select.Root>
+  <SettingsSelect
+    items={terminalAppItems}
+    value={settings.general.terminalApp}
+    ariaLabel="External terminal app"
+    onChange={(value) => (settings.general.terminalApp = value)}
+  />
 {/snippet}
 
 {#snippet problemsLocationControl()}
@@ -676,20 +656,12 @@
        stays a dropdown. Not `bind:value`: the shell has to be told as well as
        the store, so the strip along the bottom opens or closes now rather than
        at the next launch. -->
-  <Select.Root
-    type="single"
+  <SettingsSelect
+    items={problemsLocationItems}
     value={settings.panels.problemsLocation}
-    onValueChange={(value) => moveProblems(value as ProblemsLocation)}
-  >
-    <Select.Trigger class="w-full" aria-label="Where the problems list sits">
-      {labelFor(problemsLocationItems, settings.panels.problemsLocation)}
-    </Select.Trigger>
-    <Select.Content>
-      {#each problemsLocationItems as item (item.value)}
-        <Select.Item value={item.value} label={item.label} />
-      {/each}
-    </Select.Content>
-  </Select.Root>
+    ariaLabel="Where the problems list sits"
+    onChange={(value) => moveProblems(value as ProblemsLocation)}
+  />
 {/snippet}
 
 {#snippet csharpLanguageServerControl()}

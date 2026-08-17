@@ -80,10 +80,21 @@
   ] as const;
 
   const CHIP =
-    'inline-flex shrink-0 items-center rounded-[4px] px-1 py-px text-[12px] leading-[16px]';
+    'inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[12px] ' +
+    'leading-[16px] font-medium tabular-nums';
+
+  /** The same card the Stats & Usage screen uses, so the strip reads as one system. */
+  const CARD =
+    'rounded-[var(--radius-md)] border ' +
+    'border-[color-mix(in_srgb,var(--color-border)_36%,transparent)] ' +
+    'bg-[color-mix(in_srgb,var(--color-elevated)_38%,var(--color-surface))]';
+  const SECONDARY_ACTION =
+    'bg-[color-mix(in_srgb,var(--color-elevated)_72%,transparent)] text-[var(--color-text-2)] ' +
+    'hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] ' +
+    'disabled:cursor-not-allowed disabled:opacity-[0.52]';
 </script>
 
-<header class="shrink-0 border-b border-[var(--color-border)] px-2 py-1.5">
+<header class={cn('shrink-0 px-2.5 py-2', CARD)}>
   <div class="flex items-center gap-1.5">
     <FolderGit2 class="size-3.5 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
     <h2
@@ -96,7 +107,7 @@
       label="Read the changed files and the history again"
       size="sm"
       side="bottom"
-      class="shrink-0 text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+      class="shrink-0 text-[var(--color-text-2)] hover:text-[var(--color-text)]"
       disabled={!panel.activated || panel.statusLoading}
       onclick={() => void service.refresh()}
     >
@@ -117,13 +128,14 @@
   >
     <BranchMenu {panel} {service} {canWrite} {readOnlyReason} />
     {#if !hasUpstream}
-      <span class="{CHIP} text-[var(--color-text-3)]">no remote branch</span>
+      <span class="{CHIP} border-transparent text-[var(--color-text-3)]">no remote branch</span>
     {:else if ahead === 0 && behind === 0}
-      <span class="{CHIP} text-[var(--color-text-3)]">up to date</span>
+      <span class="{CHIP} border-transparent text-[var(--color-text-3)]">up to date</span>
     {:else}
       {#if ahead > 0}
         <span
-          class="{CHIP} bg-[var(--color-live-bg)] text-[var(--color-live)]"
+          class="{CHIP} border-[color-mix(in_srgb,var(--color-live)_32%,transparent)]
+                 bg-[var(--color-live-bg)] text-[var(--color-live)]"
           title="{ahead} commit{ahead === 1 ? '' : 's'} of yours the remote does not have"
         >
           ↑{ahead}
@@ -131,7 +143,8 @@
       {/if}
       {#if behind > 0}
         <span
-          class="{CHIP} bg-[var(--color-attention-bg)] text-[var(--color-attention)]"
+          class="{CHIP} border-[color-mix(in_srgb,var(--color-attention)_32%,transparent)]
+                 bg-[var(--color-attention-bg)] text-[var(--color-attention)]"
           title="{behind} commit{behind === 1 ? '' : 's'} on the remote you do not have"
         >
           ↓{behind}
@@ -140,14 +153,15 @@
     {/if}
   </div>
 
-  <div class="mt-1.5 flex items-center gap-1">
+  <div class="mt-2 flex items-center gap-1.5">
     {#each remoteActions as action (action.id)}
       {@const Icon = action.icon}
       <button
         type="button"
         class={cn(
           buttonVariants({ variant: 'secondary', size: 'xs' }),
-          'flex-1 gap-1 px-1.5 text-[12px] font-normal'
+          'flex-1 gap-1 px-1.5 text-[12px] font-normal',
+          SECONDARY_ACTION
         )}
         disabled={!canWrite || busy || !panel.activated}
         title={canWrite ? action.tip : readOnlyReason}
@@ -163,7 +177,9 @@
     type="button"
     class={cn(
       buttonVariants({ variant: 'ghost', size: 'xs' }),
-      'mt-1.5 w-full justify-start gap-1.5 px-1.5 text-[12px] text-[var(--color-text-2)]'
+      'mt-1.5 w-full justify-start gap-1.5 px-1.5 text-[12px] text-[var(--color-text-2)]',
+      'hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]',
+      'disabled:cursor-not-allowed disabled:opacity-[0.52]'
     )}
     disabled={!panel.activated || !canWrite}
     title={canWrite ? 'Generate the pull request title and description, then push and create it' : readOnlyReason}

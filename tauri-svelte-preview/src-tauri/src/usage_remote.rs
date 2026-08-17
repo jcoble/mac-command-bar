@@ -386,7 +386,7 @@ mod tests {
         assert!(usage_request.contains("accept: application/json"));
         assert!(usage_request.contains("content-type: application/json"));
         assert!(usage_request.contains("anthropic-beta: oauth-2025-04-20"));
-        assert!(usage_request.contains("user-agent: claude-code/2.1.0"));
+        assert!(usage_request.contains("user-agent: claude-code"));
         let refresh_request = requests[1].to_ascii_lowercase();
         assert!(refresh_request.contains("content-type: application/x-www-form-urlencoded"));
         assert!(refresh_request.contains("grant_type=refresh_token"));

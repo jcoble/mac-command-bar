@@ -7,7 +7,7 @@
  * request sent on the first message.
  */
 
-export type ThreadStartProvider = 'codex' | 'claude';
+export type ThreadStartProvider = 'codex' | 'claude' | 'antigravity';
 
 export type ThreadStartProviderConfig = {
   provider: string;
@@ -73,16 +73,18 @@ export type ThreadStartProject = {
   name: string;
 };
 
-const PROVIDER_ORDER: readonly ThreadStartProvider[] = ['codex', 'claude'];
+const PROVIDER_ORDER: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
 
 const PROVIDER_LABELS: Record<ThreadStartProvider, string> = {
   codex: 'OpenAI',
-  claude: 'Anthropic'
+  claude: 'Anthropic',
+  antigravity: 'Antigravity'
 };
 
 const FALLBACK_MODELS: Record<ThreadStartProvider, readonly string[]> = {
   codex: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
-  claude: ['claude-sonnet', 'claude-opus', 'claude-haiku']
+  claude: ['claude-sonnet', 'claude-opus', 'claude-haiku'],
+  antigravity: []
 };
 
 const MODEL_HINTS: Record<string, string> = {
@@ -96,12 +98,14 @@ const MODEL_HINTS: Record<string, string> = {
 
 const FALLBACK_EFFORTS: Record<ThreadStartProvider, string> = {
   codex: 'max',
-  claude: 'medium'
+  claude: 'medium',
+  antigravity: ''
 };
 
 const FALLBACK_ACCESS: Record<ThreadStartProvider, string> = {
   codex: 'on-request',
-  claude: 'acceptedits'
+  claude: 'acceptedits',
+  antigravity: ''
 };
 
 function providerFor(value: string): value is ThreadStartProvider {
@@ -226,7 +230,8 @@ function firstConfiguredModel(
   return (current && (!available.length || available.includes(current)) ? current : '')
     || available[0]
     || current
-    || FALLBACK_MODELS[provider][0];
+    || FALLBACK_MODELS[provider][0]
+    || '';
 }
 
 /** The values painted when the pane first opens. No session is created here. */
@@ -262,9 +267,8 @@ export function effortChoicesFor(
   configs: readonly ThreadStartProviderConfig[]
 ): string[] {
   const config = configForProvider(provider, configs);
-  return unique(config?.availableEfforts ?? []).length
-    ? unique(config?.availableEfforts ?? [])
-    : [FALLBACK_EFFORTS[provider]];
+  const available = unique(config?.availableEfforts ?? []);
+  return available.length ? available : FALLBACK_EFFORTS[provider] ? [FALLBACK_EFFORTS[provider]] : [];
 }
 
 export function accessChoicesFor(
@@ -272,9 +276,8 @@ export function accessChoicesFor(
   configs: readonly ThreadStartProviderConfig[]
 ): string[] {
   const config = configForProvider(provider, configs);
-  return unique(config?.availableApprovalPolicies ?? []).length
-    ? unique(config?.availableApprovalPolicies ?? [])
-    : [FALLBACK_ACCESS[provider]];
+  const available = unique(config?.availableApprovalPolicies ?? []);
+  return available.length ? available : FALLBACK_ACCESS[provider] ? [FALLBACK_ACCESS[provider]] : [];
 }
 
 /** The first line becomes the rail title, trimmed to the row's readable width. */

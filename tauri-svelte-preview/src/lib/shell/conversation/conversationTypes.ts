@@ -1,4 +1,4 @@
-export type AgentConversationProvider = 'codex' | 'claude';
+export type AgentConversationProvider = 'codex' | 'claude' | 'antigravity';
 
 export interface ConversationCommandError {
   code: string;
@@ -329,6 +329,13 @@ export interface AgentPermissionOption {
   optionId: string;
   name: string;
   kind?: string;
+  /**
+   * True for the Allow/Deny pair the client invents when a permission request
+   * arrives carrying no options of its own. Their ids are ours, not the
+   * agent's, so the backend will refuse them by id — these are answered by
+   * decision instead.
+   */
+  synthetic?: boolean;
 }
 
 export interface AgentApprovalRequest extends AgentRequestIdentity {

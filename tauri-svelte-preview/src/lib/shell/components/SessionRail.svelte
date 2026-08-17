@@ -285,7 +285,6 @@
     gap: 7px;
     padding: 7px 12px;
     border: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--color-text) 5.5%, transparent);
     background: var(--color-surface);
     color: var(--color-text-2);
     font-size: 13px;

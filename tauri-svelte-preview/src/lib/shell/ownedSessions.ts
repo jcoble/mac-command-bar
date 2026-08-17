@@ -12,7 +12,7 @@ import type {
   TerminalSessionInfo
 } from '../tauriSource';
 
-export type AgentKind = 'codex' | 'claude' | 'gemini' | 'opencode' | 'other';
+export type AgentKind = 'codex' | 'claude' | 'antigravity' | 'gemini' | 'opencode' | 'other';
 export type OwnedSessionState = 'live' | 'background' | 'exited';
 
 export type AgentExecutionOwner =
@@ -130,7 +130,7 @@ export interface OwnedSessionProject {
   label: string;
 }
 
-const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'gemini', 'opencode'];
+const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'antigravity', 'gemini', 'opencode'];
 const KNOWN_STATES: OwnedSessionState[] = ['live', 'background', 'exited'];
 const KNOWN_EXECUTION_OWNERS: AgentExecutionOwner[] = [
   'structured',

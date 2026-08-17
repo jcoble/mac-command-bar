@@ -97,6 +97,9 @@ pub fn read(
         AgentConversationProvider::Claude => {
             claude::read_snapshot(&native_session_id, child_session_id.as_deref())
         }
+        AgentConversationProvider::Antigravity => {
+            Err("Antigravity does not expose a local transcript".to_string())
+        }
     }
 }
 
@@ -104,6 +107,7 @@ pub fn parse_provider(value: &str) -> Result<AgentConversationProvider, String> 
     match value.trim().to_ascii_lowercase().as_str() {
         "codex" => Ok(AgentConversationProvider::Codex),
         "claude" => Ok(AgentConversationProvider::Claude),
+        "antigravity" => Ok(AgentConversationProvider::Antigravity),
         _ => Err("Transcript provider is unsupported".to_string()),
     }
 }
@@ -116,6 +120,7 @@ pub fn discover(
     let path = match provider {
         AgentConversationProvider::Codex => codex::discover_path(&id),
         AgentConversationProvider::Claude => claude::discover_path(&id)?,
+        AgentConversationProvider::Antigravity => None,
     };
     path.map(location).transpose()
 }
@@ -146,6 +151,7 @@ pub fn parse_durable_line(
     match provider {
         AgentConversationProvider::Codex => codex::project(&value, line),
         AgentConversationProvider::Claude => claude::project(&value, line, native_session_id),
+        AgentConversationProvider::Antigravity => Vec::new(),
     }
 }
 

@@ -56,6 +56,7 @@ pub enum AgentRuntimeState {
 pub enum AgentConversationProvider {
     Codex,
     Claude,
+    Antigravity,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

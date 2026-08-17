@@ -21,6 +21,7 @@ const USER_PROFILE_SCOPE: &str = "user:profile";
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25_300;
 const ALLOW_KEYCHAIN_CREDENTIALS_ENV: &str = "MCB_ALLOW_KEYCHAIN_CREDENTIALS";
+const CLAUDE_USER_AGENT: &str = "claude-code";
 
 pub struct ClaudeCredentials {
     owner: CredentialOwner,
@@ -336,6 +337,7 @@ impl ClaudeQuotaClient {
         &self,
         credentials: &ClaudeCredentials,
     ) -> Result<ClaudeQuotaSnapshot, ClaudeRequestError> {
+        let user_agent = claude_code_user_agent();
         let response = self
             .client
             .get(&self.usage_url)
@@ -346,7 +348,7 @@ impl ClaudeQuotaClient {
             .header(ACCEPT, "application/json")
             .header(CONTENT_TYPE, "application/json")
             .header("anthropic-beta", USAGE_SOURCE_VERSION)
-            .header(USER_AGENT, "claude-code/2.1.0")
+            .header(USER_AGENT, user_agent)
             .send()
             .await
             .map_err(|_| ClaudeRequestError::Transport)?;
@@ -404,6 +406,33 @@ impl ClaudeQuotaClient {
             .map_err(|_| ClaudeRequestError::Decode)?;
         credentials.persist_refresh(refreshed)
     }
+}
+
+fn claude_code_user_agent() -> String {
+    let version = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .and_then(|home| latest_installed_claude_version(&home.join(".local/share/claude/versions")));
+    version
+        .map(|version| format!("{CLAUDE_USER_AGENT}/{version}"))
+        .unwrap_or_else(|| CLAUDE_USER_AGENT.to_string())
+}
+
+fn latest_installed_claude_version(versions_dir: &Path) -> Option<String> {
+    fs::read_dir(versions_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let version = entry.file_name().into_string().ok()?;
+            let mut parts = version.split('.');
+            let parsed = (
+                parts.next()?.parse::<u64>().ok()?,
+                parts.next()?.parse::<u64>().ok()?,
+                parts.next()?.parse::<u64>().ok()?,
+            );
+            parts.next().is_none().then_some((parsed, version))
+        })
+        .max_by_key(|(parsed, _)| *parsed)
+        .map(|(_, version)| version)
 }
 
 pub fn read_credentials() -> Result<ClaudeCredentials, ClaudeCredentialError> {
@@ -843,6 +872,25 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[ignore = "requires the logged-in Claude Keychain credential and network access"]
+    fn live_corrected_version_header_returns_status() {
+        let credentials = select_credentials(vec![Arc::new(KeychainStore::default())])
+            .expect("Claude Keychain credential should be readable");
+        let client = ClaudeQuotaClient::new().expect("Claude usage client should build");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+        match runtime.block_on(client.fetch_usage(&credentials)) {
+            Ok(_) => println!("Observed Claude usage HTTP status: 200"),
+            Err(ClaudeRequestError::Http { status, .. }) => {
+                panic!("Observed Claude usage HTTP status: {status}")
+            }
+            Err(error) => panic!("Claude usage request failed before an HTTP status: {error:?}"),
+        }
+    }
 
     struct FakeStore {
         label: &'static str,

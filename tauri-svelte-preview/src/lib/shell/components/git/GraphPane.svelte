@@ -212,19 +212,41 @@
   /** A branch or tag name. Capped so a long branch name cannot push the commit
    * subject — the thing you are actually reading — off the end of the row. */
   const PILL =
-    'inline-flex max-w-[45%] shrink-0 items-center truncate rounded-[4px] px-1 text-[12px] leading-[16px]';
+    'inline-flex max-w-[45%] shrink-0 items-center truncate rounded-full border px-1.5 ' +
+    'text-[12px] leading-[16px] font-medium';
+
+  /** The same card, eyebrow and count pill the Stats & Usage screen is built from. */
+  const CARD =
+    'rounded-[var(--radius-md)] border ' +
+    'border-[color-mix(in_srgb,var(--color-border)_36%,transparent)] ' +
+    'bg-[color-mix(in_srgb,var(--color-elevated)_38%,var(--color-surface))]';
+  const TILE =
+    'rounded-[var(--radius-sm)] ' +
+    'bg-[color-mix(in_srgb,var(--color-elevated)_56%,var(--color-surface))]';
+  const EYEBROW =
+    'text-[12px] leading-[16px] [font-weight:680] tracking-[0.085em] uppercase ' +
+    'text-[var(--color-text-3)]';
+  const COUNT_PILL =
+    'inline-flex items-center justify-center rounded-full px-1.5 py-px text-[12px] ' +
+    'leading-[16px] font-medium tabular-nums text-[var(--color-text-2)] ' +
+    'bg-[color-mix(in_srgb,var(--color-elevated)_82%,transparent)]';
+  const SECONDARY_ACTION =
+    'bg-[color-mix(in_srgb,var(--color-elevated)_72%,transparent)] text-[var(--color-text-2)] ' +
+    'hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] ' +
+    'disabled:cursor-not-allowed disabled:opacity-[0.52]';
 </script>
 
 <section
-  class={cn('flex min-h-0 flex-col border-t border-[var(--color-border)]', open ? 'flex-1' : 'shrink-0')}
+  class={cn('flex min-h-0 flex-col overflow-hidden', CARD, open ? 'flex-1' : 'shrink-0')}
 >
-  <div class="flex shrink-0 items-center gap-1 px-2 py-1">
+  <div class="flex shrink-0 items-center gap-1.5 px-2.5 py-2">
     <button
       type="button"
-      class="flex min-w-0 flex-1 items-center gap-1 text-left text-[12px] tracking-[0.06em]
-             text-[var(--color-text-2)] uppercase transition-colors
-             hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50
-             outline-none"
+      class={cn(
+        'flex min-w-0 flex-1 items-center gap-1.5 text-left transition-colors',
+        'hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50 outline-none',
+        EYEBROW
+      )}
       aria-expanded={open}
       onclick={() => (open = !open)}
     >
@@ -234,15 +256,17 @@
         <ChevronRight class="size-3 shrink-0" aria-hidden="true" />
       {/if}
       <span>Commits</span>
-      <span class="ml-auto normal-case text-[var(--color-text-3)]" title={historyFooter}>
-        {historyCount}
-      </span>
+      {#if historyCount}
+        <span class={cn('ml-auto normal-case tracking-normal', COUNT_PILL)} title={historyFooter}>
+          {historyCount}
+        </span>
+      {/if}
     </button>
     <IconButton
       label="Read the commit history again"
       size="sm"
       side="bottom"
-      class="shrink-0 text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+      class="shrink-0 text-[var(--color-text-2)] hover:text-[var(--color-text)]"
       disabled={!panel.activated || panel.historyLoading}
       onclick={() => void service.refreshHistory()}
     >
@@ -253,17 +277,30 @@
   {#if open}
     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-2">
       {#if panel.historyError && commits.length === 0}
-        <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-bad)]">
-          {panel.historyError}
-        </p>
+        <div class={cn('mx-2.5 flex flex-col gap-1 px-2.5 py-4 text-center', TILE)}>
+          <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-bad)]">
+            The history could not be read
+          </strong>
+          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">{panel.historyError}</p>
+        </div>
       {:else if panel.historyLoading && commits.length === 0}
-        <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-          Reading the commit history…
-        </p>
+        <div class={cn('mx-2.5 flex flex-col gap-1 px-2.5 py-4 text-center', TILE)}>
+          <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-text)]">
+            Reading the commit history…
+          </strong>
+          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+            Asking git for the newest commits on this branch.
+          </p>
+        </div>
       {:else if commits.length === 0}
-        <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-          No commits yet.
-        </p>
+        <div class={cn('mx-2.5 flex flex-col gap-1 px-2.5 py-4 text-center', TILE)}>
+          <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-text)]">
+            No commits yet.
+          </strong>
+          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+            The first commit you make will appear here.
+          </p>
+        </div>
       {:else}
         {#each commits as commit, index (commit.sha)}
           {@const row = layout.rows[index]}
@@ -277,10 +314,11 @@
           >
                 <Collapsible.Trigger
                   class={cn(
-                    'flex w-full items-stretch gap-1.5 pr-2 text-left transition-colors',
-                    'hover:bg-[var(--color-elevated)] focus-visible:ring-3 focus-visible:ring-ring/50',
+                    'flex w-full items-stretch gap-1.5 pr-2.5 text-left transition-colors',
+                    'hover:bg-[var(--color-hover)] focus-visible:ring-3 focus-visible:ring-ring/50',
                     'outline-none',
-                    expanded && 'bg-[var(--color-elevated)]'
+                    expanded &&
+                      'bg-[color-mix(in_srgb,var(--color-accent)_12%,var(--color-elevated))]'
                   )}
                   title={commit.detailLabel}
                   oncontextmenu={(event) => row && openCommitContextMenu(row, expanded, event)}
@@ -316,26 +354,41 @@
 
                   <span class="flex min-w-0 flex-1 flex-col justify-center py-[3px]">
                     <span class="flex min-w-0 items-center gap-1">
+                      <!-- The branch you are on is mint; every other ref is blue,
+                           and tags keep amber, so the checked-out branch is the
+                           one chip the eye finds first. -->
                       {#each commit.refs.headLabels as label (label)}
-                        <span class="{PILL} bg-[var(--color-live-bg)] text-[var(--color-live)]">
+                        <span
+                          class="{PILL} border-[color-mix(in_srgb,var(--color-accent)_38%,transparent)]
+                                 bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)]
+                                 text-[var(--color-accent)]"
+                        >
                           {label}
                         </span>
                       {/each}
                       {#each branchPills(commit.refs) as label (label)}
-                        <span class="{PILL} bg-[var(--color-elevated)] text-[var(--color-text-2)]">
+                        <span
+                          class="{PILL} border-[color-mix(in_srgb,var(--color-live)_32%,transparent)]
+                                 bg-[var(--color-live-bg)] text-[var(--color-live)]"
+                        >
                           {label}
                         </span>
                       {/each}
                       {#each commit.refs.tagLabels as label (label)}
-                        <span class="{PILL} bg-[var(--color-attention-bg)] text-[var(--color-attention)]">
+                        <span
+                          class="{PILL} border-[color-mix(in_srgb,var(--color-attention)_32%,transparent)]
+                                 bg-[var(--color-attention-bg)] text-[var(--color-attention)]"
+                        >
                           {label}
                         </span>
                       {/each}
-                      <span class="min-w-0 truncate text-[13px] leading-[17px]">
+                      <span class="min-w-0 truncate text-[13px] leading-[17px] text-[var(--color-text)]">
                         {commit.subject || '(no message)'}
                       </span>
                     </span>
-                    <span class="truncate text-[12px] leading-[15px] text-[var(--color-text-3)]">
+                    <span
+                      class="truncate text-[12px] leading-[16px] tabular-nums text-[var(--color-text-2)]"
+                    >
                       {commit.shortSha} · {commit.author} · {whenCommitted(commit.committedAt)}
                       {#if row?.isMerge}· merge{/if}
                     </span>
@@ -377,10 +430,10 @@
                       <button
                         type="button"
                         class={cn(
-                          'flex w-full items-center gap-1.5 rounded-[4px] py-[3px] pr-1.5 pl-1',
-                          'text-left transition-colors hover:bg-[var(--color-elevated)]',
+                          'flex w-full items-center gap-1.5 rounded-[var(--radius-sm)] py-[3px] pr-1.5 pl-1',
+                          'text-left transition-colors hover:bg-[var(--color-hover)]',
                           'focus-visible:ring-3 focus-visible:ring-ring/50 outline-none',
-                          chosen && 'bg-[var(--color-elevated)]',
+                          chosen && 'bg-[color-mix(in_srgb,var(--color-accent)_14%,var(--color-elevated))]',
                           unreadable && 'opacity-70'
                         )}
                         title={unreadable
@@ -418,13 +471,13 @@
         <!-- How much of the history is on screen, and how to get more of it.
              Inside the scrolling list on purpose: it belongs to the end of the
              list, the way the bottom of a page belongs to the page. -->
-        <div class="flex shrink-0 flex-col gap-1 px-2 pt-1.5">
+        <div class="flex shrink-0 flex-col gap-1.5 px-2.5 pt-2 pb-0.5">
           {#if panel.historyError}
             <p class="text-[12px] leading-[16px] text-[var(--color-bad)]">
               {panel.historyError}
             </p>
           {/if}
-          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+          <p class="text-[12px] leading-[16px] tabular-nums text-[var(--color-text-3)]">
             {historyFooter}
           </p>
           {#if canLoadMore || panel.historyLoadingMore}
@@ -432,7 +485,8 @@
               type="button"
               class={cn(
                 buttonVariants({ variant: 'secondary', size: 'xs' }),
-                'w-full text-[12px] font-normal'
+                'w-full text-[12px] font-normal',
+                SECONDARY_ACTION
               )}
               disabled={!canLoadMore}
               title="Read another {COMMIT_HISTORY_PAGE} commits further back in this branch's history"

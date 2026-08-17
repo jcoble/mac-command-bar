@@ -781,8 +781,8 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
         toolTitle,
         description: asString(payload.description) ?? asString(payload.summary) ?? undefined,
         options: options.length ? options : [
-          { optionId: 'accept', name: 'Allow', kind: 'allow_once' },
-          { optionId: 'decline', name: 'Deny', kind: 'reject_once' }
+          { optionId: 'accept', name: 'Allow', kind: 'allow_once', synthetic: true },
+          { optionId: 'decline', name: 'Deny', kind: 'reject_once', synthetic: true }
         ],
         state: 'requested'
       };

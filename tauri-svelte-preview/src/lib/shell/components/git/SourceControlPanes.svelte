@@ -157,10 +157,19 @@
     if (!result) throw new Error(READ_ONLY_IN_BROWSER_MESSAGE);
     return result;
   }
+
+  /** The card the Stats & Usage screen uses for "there is nothing to show". */
+  const EMPTY_CARD =
+    'flex shrink-0 flex-col gap-1 rounded-[var(--radius-md)] border px-3 py-4 text-center ' +
+    'border-[color-mix(in_srgb,var(--color-border)_36%,transparent)] ' +
+    'bg-[color-mix(in_srgb,var(--color-elevated)_38%,var(--color-surface))]';
 </script>
 
+<!-- One padded column of cards, with real space between them, so the strip, the
+     changes and the history read as separate things rather than one flat list. -->
 <div
-  class="flex h-full min-h-0 w-full flex-col bg-[var(--color-bg)] text-[var(--color-text)]"
+  class="flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden bg-[var(--color-bg)] p-2
+         text-[var(--color-text)]"
   aria-label="Source control"
 >
   <RepoPane
@@ -182,18 +191,32 @@
   {/if}
 
   {#if !panel.activated}
-    <p class="px-2 py-2 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-      No project selected yet. Pick a session and this panel will show that folder's source
-      control.
-    </p>
+    <div class={EMPTY_CARD}>
+      <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-text)]">
+        No project selected yet
+      </strong>
+      <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+        Pick a session and this panel will show that folder's source control.
+      </p>
+    </div>
   {:else if panel.desktopOnly}
-    <p class="px-2 py-2 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-      Source control runs in the desktop app only. Nothing is loaded here.
-    </p>
+    <div class={EMPTY_CARD}>
+      <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-text)]">
+        Source control runs in the desktop app
+      </strong>
+      <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+        Nothing is loaded here.
+      </p>
+    </div>
   {:else if notARepository}
-    <p class="px-2 py-2 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-      This folder is not a git repository.
-    </p>
+    <div class={EMPTY_CARD}>
+      <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-text)]">
+        This folder is not a git repository
+      </strong>
+      <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+        Open a folder that has a .git directory in it, or one inside a repository.
+      </p>
+    </div>
   {:else}
     <PullRequestList root={panel.root} />
     <ChangesPane

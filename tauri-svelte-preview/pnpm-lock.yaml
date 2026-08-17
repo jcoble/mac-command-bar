@@ -182,6 +182,9 @@ importers:
       svelte-language-server:
         specifier: 0.18.3
         version: 0.18.3(picomatch@4.0.4)(typescript@6.0.3)
+      svelte-select:
+        specifier: ^6.0.0
+        version: 6.0.0(svelte@5.56.3)
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
@@ -1270,12 +1273,20 @@ packages:
       svelte: ^4.0.0 || ^5.0.0-next.0
       typescript: ^5.0.0 || ^6.0.0
 
+  svelte-floating-ui@1.5.8:
+    resolution: {integrity: sha512-dVvJhZ2bT+kQDHlE4Lep8t+sgEc0XD96fXLzAi2DDI2bsaegBbClxXVNMma0C2WsG+n9GJSYx292dTvA8CYRtw==}
+
   svelte-language-server@0.18.3:
     resolution: {integrity: sha512-60hbZVquRLjP/VIU3BS82IXQDT4JsDIJ15NvcnlMimy6tQfAkAv+og3SXGP3IT7TlaPdCrqmFe/kjOQOKtWTfw==}
     engines: {node: '>= 18.0.0'}
     hasBin: true
     peerDependencies:
       typescript: ^5.9.2 || ^6.0.2
+
+  svelte-select@6.0.0:
+    resolution: {integrity: sha512-WJ1UDw0a1Z3I7oVFgaCS7G9D2rCSmYAPpufNEj/DNuk5Oyb2a5dju6F36o0urBVw9bTE3WkM9cZkI0x+Sfo8Bg==}
+    peerDependencies:
+      svelte: '>=5'
 
   svelte-toolbelt@0.10.6:
     resolution: {integrity: sha512-YWuX+RE+CnWYx09yseAe4ZVMM7e7GRFZM6OYWpBKOb++s+SQ8RBIMMe+Bs/CznBMc0QPLjr+vDBxTAkozXsFXQ==}
@@ -2492,6 +2503,11 @@ snapshots:
     transitivePeerDependencies:
       - picomatch
 
+  svelte-floating-ui@1.5.8:
+    dependencies:
+      '@floating-ui/core': 1.7.5
+      '@floating-ui/dom': 1.7.6
+
   svelte-language-server@0.18.3(picomatch@4.0.4)(typescript@6.0.3):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
@@ -2516,6 +2532,11 @@ snapshots:
       vscode-uri: 3.1.0
     transitivePeerDependencies:
       - picomatch
+
+  svelte-select@6.0.0(svelte@5.56.3):
+    dependencies:
+      svelte: 5.56.3
+      svelte-floating-ui: 1.5.8
 
   svelte-toolbelt@0.10.6(@sveltejs/kit@2.64.0(@sveltejs/vite-plugin-svelte@7.1.2(svelte@5.56.3)(vite@8.0.16(@types/node@25.9.2)(jiti@2.7.0)))(svelte@5.56.3)(typescript@6.0.3)(vite@8.0.16(@types/node@25.9.2)(jiti@2.7.0)))(svelte@5.56.3):
     dependencies:

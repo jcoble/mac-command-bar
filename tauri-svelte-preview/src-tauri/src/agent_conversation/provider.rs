@@ -24,6 +24,9 @@ pub(crate) async fn run_provider(
         AgentConversationProvider::Claude => {
             run_claude(&registry, &app, &connection, &cwd, commands).await
         }
+        AgentConversationProvider::Antigravity => {
+            Err("Antigravity is handled by the ACP runtime".to_string())
+        }
     };
     if let Err(message) = result {
         emit(

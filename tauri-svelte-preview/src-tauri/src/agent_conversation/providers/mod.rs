@@ -11,7 +11,9 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::capabilities::{validate_manifest, CLAUDE_AGENT_ACP_VERSION, CODEX_ACP_VERSION};
+use super::capabilities::{
+    validate_manifest, AGY_ACP_VERSION, CLAUDE_AGENT_ACP_VERSION, CODEX_ACP_VERSION,
+};
 use super::protocol::{
     AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor, AgentConfigOption,
     AgentConversationConfigState, AgentConversationProvider, AgentProviderManifest, ProviderSource,
@@ -129,25 +131,32 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn bundled_from_environment() -> Result<Self, String> {
-        let codex_path = std::env::var_os("MCB_CODEX_ACP_PATH");
-        let codex_hash = std::env::var("MCB_CODEX_ACP_SHA256").ok();
-        let claude_path = std::env::var_os("MCB_CLAUDE_AGENT_ACP_PATH");
-        let claude_hash = std::env::var("MCB_CLAUDE_AGENT_ACP_SHA256").ok();
-        match (codex_path, codex_hash, claude_path, claude_hash) {
-            (None, None, None, None) => Ok(Self::default()),
-            (Some(codex_path), Some(codex_hash), Some(claude_path), Some(claude_hash)) => {
-                Self::initial_manifests(
-                    codex_path.into(),
-                    codex_hash,
-                    claude_path.into(),
-                    claude_hash,
-                )
+        let configured_pair = |path_name: &str, hash_name: &str| {
+            match (
+                std::env::var_os(path_name),
+                std::env::var(hash_name).ok(),
+            ) {
+                (None, None) => Ok(None),
+                (Some(path), Some(hash)) => Ok(Some((path.into(), hash))),
+                _ => Err(
+                    "Packaged ACP adapter paths and SHA-256 values must be configured together"
+                        .to_string(),
+                ),
             }
-            _ => Err(
+        };
+        let codex = configured_pair("MCB_CODEX_ACP_PATH", "MCB_CODEX_ACP_SHA256")?;
+        let claude = configured_pair(
+            "MCB_CLAUDE_AGENT_ACP_PATH",
+            "MCB_CLAUDE_AGENT_ACP_SHA256",
+        )?;
+        let antigravity = configured_pair("MCB_AGY_ACP_PATH", "MCB_AGY_ACP_SHA256")?;
+        if codex.is_some() != claude.is_some() {
+            return Err(
                 "Packaged ACP adapter paths and SHA-256 values must be configured together"
                     .to_string(),
-            ),
+            );
         }
+        Self::initial_manifests(codex, claude, antigravity)
     }
 
     pub fn new(
@@ -167,13 +176,13 @@ impl ProviderRegistry {
     }
 
     pub fn initial_manifests(
-        codex_executable: PathBuf,
-        codex_hash: String,
-        claude_executable: PathBuf,
-        claude_hash: String,
+        codex: Option<(PathBuf, String)>,
+        claude: Option<(PathBuf, String)>,
+        antigravity: Option<(PathBuf, String)>,
     ) -> Result<Self, String> {
-        Self::new([
-            (
+        let mut manifests = Vec::new();
+        if let Some((codex_executable, codex_hash)) = codex {
+            manifests.push((
                 AgentConversationProvider::Codex,
                 AgentProviderManifest {
                     id: "codex-acp".into(),
@@ -185,8 +194,10 @@ impl ProviderRegistry {
                     content_hash: codex_hash,
                     trusted_source: ProviderSource::Bundled,
                 },
-            ),
-            (
+            ));
+        }
+        if let Some((claude_executable, claude_hash)) = claude {
+            manifests.push((
                 AgentConversationProvider::Claude,
                 AgentProviderManifest {
                     id: "claude-agent-acp".into(),
@@ -198,8 +209,24 @@ impl ProviderRegistry {
                     content_hash: claude_hash,
                     trusted_source: ProviderSource::Bundled,
                 },
-            ),
-        ])
+            ));
+        }
+        if let Some((agy_executable, agy_hash)) = antigravity {
+            manifests.push((
+                AgentConversationProvider::Antigravity,
+                AgentProviderManifest {
+                    id: "agy-acp".into(),
+                    display_name: "Antigravity".into(),
+                    transport: ProviderTransport::AcpStdio,
+                    executable: agy_executable,
+                    args: Vec::new(),
+                    version: AGY_ACP_VERSION.into(),
+                    content_hash: agy_hash,
+                    trusted_source: ProviderSource::Bundled,
+                },
+            ));
+        }
+        Self::new(manifests)
     }
 
     pub fn manifest(
@@ -222,10 +249,9 @@ mod tests {
     fn initial_provider_manifests_pin_both_official_adapters() {
         let hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
         let registry = ProviderRegistry::initial_manifests(
-            PathBuf::from("/bin/sh"),
-            hash.clone(),
-            PathBuf::from("/bin/sh"),
-            hash,
+            Some((PathBuf::from("/bin/sh"), hash.clone())),
+            Some((PathBuf::from("/bin/sh"), hash)),
+            None,
         )
         .unwrap();
         let codex = registry.manifest(AgentConversationProvider::Codex).unwrap();

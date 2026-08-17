@@ -558,6 +558,7 @@
       <HoverActionButton
         data-testid="worktree-agent-unsettle"
         label="Revert to Done"
+        tone="attention"
         size="sm"
         onclick={(event) => { event.stopPropagation(); onUnsettle?.(); }}
       >
@@ -567,6 +568,7 @@
       <HoverActionButton
         data-testid="worktree-agent-settle"
         label="Settle"
+        tone="attention"
         size="sm"
         onclick={(event) => { event.stopPropagation(); onSettle?.(); }}
       >
@@ -613,17 +615,19 @@
     font-size: 13px;
     line-height: 1.4;
     content-visibility: auto;
-    contain-intrinsic-size: auto 75px;
+    contain-intrinsic-size: auto 66px;
   }
 
   .session-row {
     position: relative;
     display: block;
     width: 100%;
-    min-height: 75px;
+    min-height: 66px;
     padding: var(--rail-row-content-inset);
     border: 0;
-    border-bottom: 1px solid color-mix(in srgb, var(--color-text) 5.5%, transparent);
+    /* No rule between rows: the gap and the rounded hover card carry the
+       separation, which reads calmer than a stack of hairlines. */
+    border-radius: 6px;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -660,14 +664,14 @@
     gap: 6px;
   }
 
-  .line + .line { margin-top: 4px; }
+  .line + .line { margin-top: 2px; }
 
   .project {
     min-width: 0;
     flex: 1 1 auto;
     overflow: hidden;
     color: var(--color-text-3);
-    font-size: 13px;
+    font-size: 11.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -695,9 +699,13 @@
     flex: 0 0 119px;
   }
 
+  /* Sized by what it is actually holding, with a floor so the elapsed clock
+     ticking from "59s" to "1m" does not move the line. It used to be a flat
+     76px, which took that much off the end of the project name on every row
+     whether or not there was anything to put there. */
   .status-slot {
-    width: 76px;
-    min-width: 76px;
+    width: auto;
+    min-width: 44px;
     display: flex;
     justify-content: flex-end;
   }
@@ -793,9 +801,9 @@
     flex: 1 1 auto;
     overflow: hidden;
     color: var(--color-text);
-    font-size: 13px;
-    font-weight: 570;
-    letter-spacing: -0.005em;
+    font-size: 13.5px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -813,7 +821,7 @@
     overflow: hidden;
     color: var(--color-text-3);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 13px;
+    font-size: 11.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -839,8 +847,10 @@
     pointer-events: auto;
   }
 
+  /* A 16px glyph inside a 28px button: the disc that appears on hover needs
+     the margin around the icon in order to read as a disc. */
   .row :global([data-slot='hover-actions'] svg),
-  .row :global(.resume-slot [data-slot='icon-button'] svg) { width: 18px; height: 18px; }
+  .row :global(.resume-slot [data-slot='icon-button'] svg) { width: 16px; height: 16px; }
 
   .row[data-presence='stopped'] .project { opacity: 0.72; }
   .row[data-presence='stopped']:hover .project { opacity: 1; }

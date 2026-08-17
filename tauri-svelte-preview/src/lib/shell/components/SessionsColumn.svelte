@@ -388,8 +388,6 @@
 
   .sessions-column {
     box-sizing: border-box;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
     overflow: hidden;
     font-size: 13px;
     line-height: 19.5px;
@@ -401,7 +399,6 @@
     align-items: center;
     gap: 5px;
     padding: 0 9px 0 13px;
-    border-bottom: 1px solid var(--color-border);
     font-size: 13px;
     line-height: 19.5px;
   }
@@ -427,7 +424,6 @@
   .filter-strip {
     flex: 0 0 auto;
     padding: 7px 9px 7px 13px;
-    border-bottom: 1px solid var(--color-border);
   }
 
   .sessions-header :global(button svg) {

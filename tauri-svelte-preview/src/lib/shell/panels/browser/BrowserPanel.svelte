@@ -6,9 +6,16 @@
    * on screen by window-space bounds, which is why this panel spends most of
    * its effort measuring: it hands over the rectangle it wants filled every
    * time that rectangle could have moved — mounting, the panel being resized,
-   * the window being resized, the tab being switched away from and back, and
-   * expanding. When the tab is not the one in front the view is taken off
-   * screen entirely, or it would sit over whichever panel replaced it.
+   * the window being resized, and the tab being switched away from and back.
+   * When the tab is not the one in front the view is taken off screen entirely,
+   * or it would sit over whichever panel replaced it.
+   *
+   * The page has no width of its own. It is the right column's content, so the
+   * column's width IS the page's width: dragging the seam between the center
+   * and this column resizes the page, and Widen asks the shell for a wider
+   * column rather than stretching a rectangle out over the middle of the app.
+   * One width, one seam, and a column that cannot be dragged past the point
+   * where the center pane would be squeezed out.
    *
    * Marking up works on a still of the page rather than the live view, for the
    * same reason: nothing in the document can be drawn over a native view. The
@@ -83,7 +90,6 @@
   import { elementTagFromSelector, formatAnnotationRequest } from './browserAttachmentNote.ts';
   import {
     boundsForHost,
-    expandedBoundsForHost,
     samePlacement,
     usableHostRect,
     HIDDEN_PLACEMENT,
@@ -96,8 +102,14 @@
     root: string;
     /** The session whose browser this is. */
     ownedId: string | null;
+    /**
+     * Ask the shell for a wide right column, or for the width it had before.
+     * The column's width is the grid's business, not this panel's, so Widen
+     * says what it wants and the shell decides how far the seam may travel.
+     */
+    onWiden(wide: boolean): void;
   }
-  let { visible, ownedId }: Props = $props();
+  let { visible, ownedId, onWiden }: Props = $props();
 
   let pageHost = $state<HTMLDivElement | null>(null);
   /** The panel's own rows above the page — measured, never assumed. */
@@ -161,7 +173,7 @@
   const showsStill = $derived(backdrop !== null);
   const markupBounds = $derived.by(() => {
     layoutTick;
-    const placement = wantedPlacement(true, expanded);
+    const placement = wantedPlacement(true);
     if (placement.kind !== 'bounds' || typeof window === 'undefined') {
       return { x: 0, y: 0, right: 0, bottom: 0 };
     }
@@ -204,42 +216,17 @@
     return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
   }
 
-  /** Expanded reaches left to here — the session rail's right edge. */
-  function railRightEdge(): number {
-    if (typeof document === 'undefined') return 0;
-    const rail = document.querySelector('[data-testid="session-rail"]');
-    return rail ? rail.getBoundingClientRect().right : 0;
-  }
-
-  /**
-   * Where the panel's own rows end. Measured from the rows themselves and not
-   * from the page host, on purpose: the two agree whenever both are current,
-   * and it is exactly when they disagree — a rectangle measured a layout ago,
-   * before the tool row was there — that the expanded view was handed a top
-   * edge above the controls that shrink it again, and painted over them.
-   */
-  function chromeBottom(): number {
-    if (!chromeHost) return 0;
-    const rect = chromeHost.getBoundingClientRect();
-    return rect.height >= 1 ? rect.bottom : 0;
-  }
-
   function windowSize(): { width: number; height: number } {
     return { width: window.innerWidth, height: window.innerHeight };
   }
 
-  /** Where the view belongs right now, measured fresh. */
-  function wantedPlacement(onScreen: boolean, stretched: boolean): HostPlacement {
+  /** Where the view belongs right now, measured fresh. Always the page host and
+   * nothing else — however wide the column has been made. */
+  function wantedPlacement(onScreen: boolean): HostPlacement {
     if (!onScreen || typeof window === 'undefined') return HIDDEN_PLACEMENT;
     const rect = hostRect();
     if (!usableHostRect(rect)) return HIDDEN_PLACEMENT;
-    const size = windowSize();
-    return {
-      kind: 'bounds',
-      bounds: stretched
-        ? expandedBoundsForHost(rect, railRightEdge(), size, chromeBottom())
-        : boundsForHost(rect, size)
-    };
+    return { kind: 'bounds', bounds: boundsForHost(rect, windowSize()) };
   }
 
   /**
@@ -267,6 +254,16 @@
           bounds: next.bounds,
           minSize: HOST_MIN_SIZE
         });
+        // A rectangle is only delivered to the native view when a tab is open
+        // to receive it — the model moves nothing otherwise. Remembering one
+        // that was never delivered is what made Widen dead every other press:
+        // the panel believed the view was already there, so the next placement
+        // equal to it was skipped and the view never moved. Forget instead, and
+        // the following measurement is sent for real.
+        if (!browser.workspace.activeTabId) {
+          placed = null;
+          return;
+        }
       }
       placed = next;
     } catch (error) {
@@ -281,7 +278,7 @@
    * the shell.
    */
   function placeBeforeOpening(): void {
-    const wanted = wantedPlacement(true, expanded);
+    const wanted = wantedPlacement(true);
     if (wanted.kind !== 'bounds') return;
     try {
       setBrowserPresentationMode(browserModelContext(), 'floating', {
@@ -666,7 +663,6 @@
   $effect(() => {
     // Every input that can move the view, read so the effect re-runs.
     const onScreen = visible && !showsStill && Boolean(browser.url);
-    const stretched = expanded;
     layoutTick;
     browser.workspace.activeTabId;
     // Placing the view writes to the same shell state this effect reads from,
@@ -674,7 +670,18 @@
     // the effect would invalidate itself on its own writes and be torn down as
     // a runaway loop — which is what left the view stranded over the shell with
     // nothing able to move or hide it again short of restarting.
-    untrack(() => sendPlacement(wantedPlacement(onScreen, stretched)));
+    untrack(() => sendPlacement(wantedPlacement(onScreen)));
+  });
+
+  /**
+   * The one place the column's width is asked for. Widen is a wish, not an act:
+   * this says what the wish is now — including when the wish was restored with
+   * a session, and when the reader looked at another panel, which must not be
+   * left holding a column widened for a page it is not showing.
+   */
+  $effect(() => {
+    const wide = visible && expanded;
+    untrack(() => onWiden(wide));
   });
 
   /**
@@ -741,7 +748,7 @@
   });
 </script>
 
-<div class="browser-panel" class:expanded data-testid="browser-panel">
+<div class="browser-panel" data-testid="browser-panel">
   <div class="chrome" bind:this={chromeHost} data-testid="browser-panel-chrome">
     <BrowserToolbar
       address={addressValue}
@@ -758,10 +765,7 @@
       onForward={() => step('forward')}
       onReload={reloadBrowserFrame}
       onToolChange={(next) => void chooseTool(next)}
-      onToggleExpand={() => {
-        expanded = !expanded;
-        layoutTick += 1;
-      }}
+      onToggleExpand={() => (expanded = !expanded)}
     />
   </div>
 
@@ -886,8 +890,8 @@
     width: 100%;
   }
 
-  /* Expanding and collapsing move the native view, which the shell repositions
-     in one step. Nothing in this document animates, so both end at rest. */
+  /* Widening moves the seam, which resizes this panel and the native view with
+     it. Nothing in this document animates, so both end at rest. */
 
   .failure {
     margin: 0;

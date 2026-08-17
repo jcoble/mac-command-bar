@@ -2,13 +2,15 @@
   hover-action-button.svelte — one button inside a hover-action cluster.
 
   It is an IconButton, so it still owes its label as tooltip and accessible
-  name. What it adds is the shared look for row actions: quiet at rest, and on
-  hover it lights up on its own rather than as part of a block — each button
-  answers for itself.
+  name, and it lights up the same way every other icon button in the shell
+  does: quiet at rest, and on hover an opaque tinted disc behind the glyph, on
+  its own rather than as part of a block — each button answers for itself. The
+  disc is what makes it safe for the cluster to sit over the end of a row.
 
   `tone` says which kind of destination the action leads to, not which color to
   use: `primary` for the session itself, `info` for a file or editor surface,
-  `success` for source control. Anything else stays `default`.
+  `success` for source control, `attention` for putting something away.
+  Anything else stays `default`.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
@@ -16,7 +18,7 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { cn } from '$lib/utils.js';
 
-  type HoverActionTone = 'default' | 'primary' | 'info' | 'success';
+  type HoverActionTone = 'default' | 'primary' | 'info' | 'success' | 'attention';
 
   interface Props {
     label: string;
@@ -42,15 +44,16 @@
   }: Props = $props();
 
   /**
-   * `info` and `success` reach past the shadcn slots on purpose: the registry
-   * has no name for "a live surface" or "source control", and those two tones
-   * are the shell's status colors, the same ones the rows use.
+   * A destination maps to one of the shell's three signal colors. The button
+   * itself owns no color: the shared icon button paints the disc, so a row
+   * action and a chrome button hover identically.
    */
-  const TONES: Record<HoverActionTone, string> = {
-    default: 'hover:bg-accent/60 hover:text-foreground',
-    primary: 'hover:bg-primary/15 hover:text-primary',
-    info: 'hover:bg-[var(--color-live-bg)] hover:text-[var(--color-live)]',
-    success: 'hover:bg-[var(--color-good-bg)] hover:text-[var(--color-good)]'
+  const TONES: Record<HoverActionTone, 'accent' | 'live' | 'attention'> = {
+    default: 'accent',
+    primary: 'accent',
+    info: 'live',
+    success: 'accent',
+    attention: 'attention'
   };
 </script>
 
@@ -59,13 +62,10 @@
   {size}
   {disabled}
   {onclick}
+  tone={TONES[tone]}
   side="bottom"
   data-testid={dataTestId}
-  class={cn(
-    'text-[var(--color-text)] rounded-md bg-transparent shadow-none',
-    TONES[tone],
-    className
-  )}
+  class={cn('rounded-md bg-transparent', className)}
 >
   {@render children()}
 </IconButton>

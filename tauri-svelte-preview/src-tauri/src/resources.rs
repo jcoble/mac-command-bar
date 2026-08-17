@@ -822,6 +822,9 @@ fn resource_provider_label(
     match provider {
         crate::agent_conversation::protocol::AgentConversationProvider::Codex => "Codex",
         crate::agent_conversation::protocol::AgentConversationProvider::Claude => "Provider",
+        crate::agent_conversation::protocol::AgentConversationProvider::Antigravity => {
+            "Antigravity"
+        }
     }
 }
 

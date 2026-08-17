@@ -12,7 +12,6 @@ import assert from 'node:assert/strict';
 
 import {
   boundsForHost,
-  expandedBoundsForHost,
   samePlacement,
   usableHostRect
 } from '../src/lib/shell/panels/browser/browserPanelBounds.ts';
@@ -38,40 +37,11 @@ const overflowing = boundsForHost({ x: 1500, y: 120, width: 500, height: 700 }, 
 assert.equal(overflowing.x + overflowing.width <= window.width, true);
 assert.equal(overflowing.x, window.width - overflowing.width);
 
-// Expanding stretches the view leftward to the session rail's right edge. The
-// width grows by exactly what the origin moved; the vertical stays put.
+// The panel is the only rectangle there is. Widening the page widens the right
+// column, so a wider panel simply measures wider and the view fills that.
 const rect = { x: 1100, y: 120, width: 560, height: 700 };
-const expanded = expandedBoundsForHost(rect, 320, window);
-assert.deepEqual(expanded, { x: 320, y: 120, width: 560 + (1100 - 320), height: 700 });
-
-// A left edge that is already to the right of the rect cannot pull it anywhere:
-// the rect comes back unchanged rather than as a negative width.
-assert.deepEqual(expandedBoundsForHost(rect, 1300, window), rect);
-assert.deepEqual(expandedBoundsForHost(rect, 1100, window), rect);
-
-// Expanding reserves the panel's own address and tool rows. The stretched view
-// runs across the whole shell, so a top edge above those rows paints over the
-// controls that shrink it again. The top drops to where the rows end and the
-// height gives back exactly that much, so the bottom edge does not move.
-const reserved = expandedBoundsForHost(rect, 320, window, 176);
-assert.deepEqual(reserved, { x: 320, y: 176, width: 560 + (1100 - 320), height: 700 - 56 });
-assert.equal(reserved.y + reserved.height, rect.y + rect.height);
-
-// A rect that already starts below the rows is left where it is, and so is one
-// measured before the rows exist.
-assert.deepEqual(expandedBoundsForHost(rect, 320, window, 120), expanded);
-assert.deepEqual(expandedBoundsForHost(rect, 320, window, 0), expanded);
-assert.deepEqual(expandedBoundsForHost(rect, 320, window, Number.NaN), expanded);
-
-// Chrome deeper than the panel is not allowed to leave a view with no height:
-// a box that cannot survive the reservation keeps the one it had.
-assert.deepEqual(expandedBoundsForHost(rect, 320, window, 900), expanded);
-
-// The reservation applies whether or not there was room to stretch into.
-assert.deepEqual(
-  expandedBoundsForHost(rect, 1300, window, 176),
-  { x: 1100, y: 176, width: 560, height: 700 - 56 }
-);
+const widened = boundsForHost({ ...rect, x: 700, width: 960 }, window);
+assert.deepEqual(widened, { x: 700, y: 120, width: 960, height: 700 });
 
 // A panel that is off screen, mid-layout or collapsed measures as an empty box.
 // Those measurements are refused, so the view is hidden rather than left where

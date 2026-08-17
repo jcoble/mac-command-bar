@@ -73,7 +73,7 @@ export interface StartSessionRequest {
   cwd: string;
   projectPath: string;
   title: string;
-  provider?: 'codex' | 'claude';
+  provider?: 'codex' | 'claude' | 'antigravity';
 }
 
 export interface WorkbenchNavigationHandlers {

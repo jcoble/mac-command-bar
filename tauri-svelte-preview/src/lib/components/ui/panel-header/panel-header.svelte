@@ -45,7 +45,7 @@
 <header
   data-slot="panel-header"
   data-testid={dataTestId}
-  class={cn('flex flex-col gap-1 border-b px-3 py-2', className)}
+  class={cn('flex flex-col gap-1 px-3 py-2', className)}
 >
   <div class="flex min-h-7 min-w-0 items-center gap-2">
     <h2 class="min-w-0 flex-1 truncate text-[13px] leading-tight font-medium text-foreground">

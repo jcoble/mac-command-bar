@@ -177,7 +177,7 @@
     {/snippet}
   </PanelHeader>
 
-  <div class="border-b px-3 py-2">
+  <div class="px-3 py-2">
     <Input
       class="h-7"
       placeholder="Search sessions"
@@ -217,7 +217,7 @@
           <h2 class="sticky top-0 z-10 bg-card">
             <button
               type="button"
-              class="flex min-h-7 w-full items-center gap-2 border-b px-3 py-1.5 text-left
+              class="flex min-h-7 w-full items-center gap-2 px-3 py-1.5 text-left
                      text-[13px] leading-tight font-medium text-foreground outline-none
                      transition-colors hover:bg-accent/60 focus-visible:ring-3
                      focus-visible:ring-ring/50"

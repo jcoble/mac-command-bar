@@ -55,7 +55,7 @@
         data-testid={`right-tab-${tab.id}`}
         onclick={() => onSelect(tab.id)}
       >
-        <Icon class="size-[18px]" strokeWidth={1.6} aria-hidden="true" />
+        <Icon class="size-[20px]" strokeWidth={1.6} aria-hidden="true" />
       </IconButton>
     </span>
   {/each}
@@ -66,14 +66,15 @@
     display: flex;
     width: 100%;
     min-width: 0;
-    height: 36px;
+    height: 44px;
     align-items: center;
     gap: 4px;
     padding: 4px 6px;
     overflow-x: auto;
     overflow-y: hidden;
-    border-bottom: 1px solid var(--border);
-    background: var(--background);
+    /* Transparent, and no rule beneath it: the card's gradient runs behind the
+       tabs, and a hairline here cut the strip off as its own band again. */
+    background: transparent;
     scrollbar-width: none;
     user-select: none;
   }
@@ -86,5 +87,17 @@
     display: grid;
     flex: 0 0 auto;
     place-items: center;
+  }
+
+  /* Round, and bigger than the small icon button's default: these are the
+     panel's primary navigation, and at 28px they were hard to aim at. */
+  .tab :global(button) {
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+  }
+
+  .tab[aria-current='page'] :global(button) {
+    background: var(--color-elevated);
   }
 </style>

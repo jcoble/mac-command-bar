@@ -2094,6 +2094,8 @@ function agentDisplayLabel(agent: string) {
       return 'Codex';
     case 'claude':
       return 'Claude';
+    case 'antigravity':
+      return 'Antigravity';
     case 'gemini':
       return 'Gemini';
     case 'opencode':

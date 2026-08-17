@@ -4262,6 +4262,7 @@ fn provider_id(provider: AgentConversationProvider) -> &'static str {
     match provider {
         AgentConversationProvider::Codex => "codex",
         AgentConversationProvider::Claude => "claude",
+        AgentConversationProvider::Antigravity => "antigravity",
     }
 }
 fn timestamp_millis() -> u128 {

@@ -279,11 +279,41 @@
   }
 
   const ROW_ACTION =
-    'text-[var(--color-text-2)] ' +
+    'shrink-0 text-[var(--color-text-2)] ' +
     'opacity-0 transition-colors group-hover:opacity-100 focus-visible:opacity-100 ' +
-    'hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]';
+    'hover:text-[var(--color-text)]';
   const DISCARD_ROW_ACTION =
     ROW_ACTION + ' hover:bg-[var(--color-bad-bg)] hover:text-[var(--color-bad)]';
+
+  /**
+   * The surfaces the Stats & Usage screen is built from, so source control reads
+   * as the same system: a bordered card, a lighter tile inside it, an uppercase
+   * eyebrow for a section name and a small pill for its count.
+   */
+  const CARD =
+    'rounded-[var(--radius-md)] border ' +
+    'border-[color-mix(in_srgb,var(--color-border)_36%,transparent)] ' +
+    'bg-[color-mix(in_srgb,var(--color-elevated)_38%,var(--color-surface))]';
+  const TILE =
+    'rounded-[var(--radius-sm)] ' +
+    'bg-[color-mix(in_srgb,var(--color-elevated)_56%,var(--color-surface))]';
+  const EYEBROW =
+    'text-[12px] leading-[16px] [font-weight:680] tracking-[0.085em] uppercase ' +
+    'text-[var(--color-text-3)]';
+  const COUNT_PILL =
+    'inline-flex items-center justify-center rounded-full px-1.5 py-px text-[12px] ' +
+    'leading-[16px] font-medium tabular-nums text-[var(--color-text-2)] ' +
+    'bg-[color-mix(in_srgb,var(--color-elevated)_82%,transparent)]';
+  /** The Commit button: the one mint action, with text dark enough to read on it. */
+  const PRIMARY_ACTION =
+    'bg-[var(--color-accent)] text-[var(--color-on-accent)] font-medium ' +
+    'hover:bg-[color-mix(in_srgb,var(--color-accent)_86%,#ffffff)] ' +
+    'disabled:cursor-not-allowed disabled:opacity-[0.52]';
+  /** Everything beside it, in the quiet filled style the Usage screen's Refresh uses. */
+  const SECONDARY_ACTION =
+    'bg-[color-mix(in_srgb,var(--color-elevated)_72%,transparent)] text-[var(--color-text-2)] ' +
+    'hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] ' +
+    'disabled:cursor-not-allowed disabled:opacity-[0.52]';
 
   function rowActionHint(label: string): string {
     if (!canWrite) return readOnlyReason;
@@ -295,14 +325,15 @@
 <!-- Open, this section is as tall as what is in it and no taller, capped at
      three-fifths of the panel. Taking a fixed half of the panel left a band of
      empty space above the commit history whenever there was little to show. -->
-<section class={cn('flex min-h-0 shrink-0 flex-col', open && 'max-h-[60%]')}>
-  <div class="flex w-full shrink-0 items-center gap-1 pr-1.5 pl-2">
+<section class={cn('flex min-h-0 shrink-0 flex-col', CARD, open && 'max-h-[60%]')}>
+  <div class={cn('flex w-full shrink-0 items-center gap-1 pr-1.5 pl-2.5', open ? 'pt-2 pb-1' : 'py-2')}>
     <button
       type="button"
-      class="flex min-w-0 flex-1 items-center gap-1 py-1 text-left
-             text-[12px] tracking-[0.06em] text-[var(--color-text-2)] uppercase
-             transition-colors hover:text-[var(--color-text)]
-             focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
+      class={cn(
+        'flex min-w-0 flex-1 items-center gap-1.5 py-0.5 text-left transition-colors',
+        'hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50 outline-none',
+        EYEBROW
+      )}
       aria-expanded={open}
       onclick={() => (open = !open)}
     >
@@ -312,7 +343,9 @@
         <ChevronRight class="size-3 shrink-0" aria-hidden="true" />
       {/if}
       <span>Changes</span>
-      <span class="ml-auto normal-case text-[var(--color-text-3)]">{summary}</span>
+      <span class="ml-auto normal-case tracking-normal tabular-nums text-[var(--color-text-3)]">
+        {summary}
+      </span>
     </button>
 
     <!-- Help with the commit message lives here, as two small buttons on the
@@ -323,7 +356,7 @@
           label={`Suggest a commit message. ${suggestionHint}`}
           size="sm"
           side="bottom"
-          class="text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+          class="text-[var(--color-text-2)] hover:text-[var(--color-text)]"
           disabled={!canWrite || suggestion === ''}
           onclick={useSuggestion}
         >
@@ -335,7 +368,7 @@
           label="Ask the active agent to write the commit message"
           size="sm"
           side="bottom"
-          class="text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+          class="text-[var(--color-text-2)] hover:text-[var(--color-text)]"
           disabled={!canWrite || !agentAvailable || generatingCommitMessage}
           onclick={() => void generateCommitMessage()}
         >
@@ -350,11 +383,15 @@
   </div>
 
   {#if open}
-    <div class="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-2 pt-0.5 pb-2">
-      <div class="flex shrink-0 flex-col gap-1">
+    <div class="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-2.5 pt-0.5 pb-2.5">
+      <!-- The commit box, its amend switch and its two buttons are one tile:
+           everything that turns changes into a commit, kept together. -->
+      <div class={cn('flex shrink-0 flex-col gap-2 p-2.5', TILE)}>
         <textarea
-          class="w-full resize-y rounded-[6px] border border-[var(--color-border)]
-                 bg-[var(--color-surface)] px-2 py-1.5 text-[13px] leading-[18px]
+          class="w-full resize-y rounded-[var(--radius-sm)]
+                 border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)]
+                 bg-[color-mix(in_srgb,var(--color-bg)_62%,var(--color-surface))]
+                 px-2 py-1.5 text-[13px] leading-[18px]
                  text-[var(--color-text)] placeholder:text-[var(--color-text-3)]
                  focus-visible:border-[var(--color-accent)] focus-visible:ring-3
                  focus-visible:ring-ring/50 outline-none disabled:opacity-60"
@@ -374,87 +411,104 @@
         {#if generationError}
           <p class="text-[12px] leading-[16px] text-[var(--color-bad)]" role="alert">{generationError}</p>
         {/if}
-      </div>
 
-      <label
-        class="flex shrink-0 items-center gap-1.5 text-[12px] leading-[16px] text-[var(--color-text-2)]"
-        title="Rewrite the last commit instead of adding one. Never do this to a commit that is already pushed and shared."
-      >
-        <Switch size="sm" disabled={!canWrite} bind:checked={amend} data-testid="amend-toggle" />
-        Amend the last commit
-      </label>
-
-      <button
-        type="button"
-        class={cn(buttonVariants({ variant: 'default', size: 'xs' }), 'w-full shrink-0 text-[12px]')}
-        disabled={amend ? !canAmend : !canCommit}
-        title={commitHint}
-        onclick={runCommit}
-        data-testid="commit-button"
-      >
-        {#if amend}
-          {panel.actionBusy === 'amend' ? 'Amending…' : 'Amend last commit'}
-        {:else}
-          {panel.actionBusy === 'commit' ? 'Committing…' : 'Commit'}
-        {/if}
-      </button>
-
-      <div class="flex shrink-0 items-center gap-1">
-        <button
-          type="button"
-          class={cn(buttonVariants({ variant: 'secondary', size: 'xs' }), 'flex-1 gap-1 text-[12px] font-normal')}
-          disabled={!canStageAll}
-          title={canWrite
-            ? unstagedPaths.length > 0
-              ? `Stage all ${unstagedPaths.length} changed and new files`
-              : 'Everything is already staged'
-            : readOnlyReason}
-          onclick={stageAll}
-          data-testid="stage-all"
+        <label
+          class="flex shrink-0 items-center gap-1.5 text-[12px] leading-[16px] text-[var(--color-text-2)]"
+          title="Rewrite the last commit instead of adding one. Never do this to a commit that is already pushed and shared."
         >
-          <Plus class="size-3" aria-hidden="true" />
-          Stage all
-        </button>
+          <Switch size="sm" disabled={!canWrite} bind:checked={amend} data-testid="amend-toggle" />
+          Amend the last commit
+        </label>
+
         <button
           type="button"
           class={cn(
-            buttonVariants({ variant: 'ghost', size: 'xs' }),
-            'flex-1 gap-1 text-[12px] font-normal text-[var(--color-bad)] hover:text-[var(--color-bad)]'
+            buttonVariants({ variant: 'default', size: 'sm' }),
+            'w-full shrink-0 text-[12px]',
+            PRIMARY_ACTION
           )}
-          disabled={!canDiscardAll}
-          title={canWrite
-            ? 'Throw away every change in this working copy. You will be asked first.'
-            : readOnlyReason}
-          onclick={() => onRequestDiscardAll?.()}
-          data-testid="discard-all"
+          disabled={amend ? !canAmend : !canCommit}
+          title={commitHint}
+          onclick={runCommit}
+          data-testid="commit-button"
         >
-          <Trash2 class="size-3" aria-hidden="true" />
-          Discard all
+          {#if amend}
+            {panel.actionBusy === 'amend' ? 'Amending…' : 'Amend last commit'}
+          {:else}
+            {panel.actionBusy === 'commit' ? 'Committing…' : 'Commit'}
+          {/if}
         </button>
+
+        <div class="flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            class={cn(
+              buttonVariants({ variant: 'secondary', size: 'xs' }),
+              'flex-1 gap-1 text-[12px] font-normal',
+              SECONDARY_ACTION
+            )}
+            disabled={!canStageAll}
+            title={canWrite
+              ? unstagedPaths.length > 0
+                ? `Stage all ${unstagedPaths.length} changed and new files`
+                : 'Everything is already staged'
+              : readOnlyReason}
+            onclick={stageAll}
+            data-testid="stage-all"
+          >
+            <Plus class="size-3" aria-hidden="true" />
+            Stage all
+          </button>
+          <button
+            type="button"
+            class={cn(
+              buttonVariants({ variant: 'ghost', size: 'xs' }),
+              'flex-1 gap-1 text-[12px] font-normal text-[var(--color-bad)]',
+              'hover:bg-[var(--color-bad-bg)] hover:text-[var(--color-bad)]',
+              'disabled:cursor-not-allowed disabled:opacity-[0.52]'
+            )}
+            disabled={!canDiscardAll}
+            title={canWrite
+              ? 'Throw away every change in this working copy. You will be asked first.'
+              : readOnlyReason}
+            onclick={() => onRequestDiscardAll?.()}
+            data-testid="discard-all"
+          >
+            <Trash2 class="size-3" aria-hidden="true" />
+            Discard all
+          </button>
+        </div>
       </div>
 
       {#if groups.length === 0}
-        <p class="px-1 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-          {panel.statusLoading ? 'Reading the repository…' : 'Nothing has changed yet.'}
-        </p>
+        <div class={cn('flex shrink-0 flex-col gap-1 px-2.5 py-4 text-center', TILE)}>
+          <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-text)]">
+            {panel.statusLoading ? 'Reading the repository…' : 'Nothing has changed yet.'}
+          </strong>
+          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+            {panel.statusLoading
+              ? 'Asking git what is different on disk.'
+              : 'Edited, new and deleted files will show up here.'}
+          </p>
+        </div>
       {/if}
 
       {#each groups as group (group.id)}
-        <div class="flex flex-col">
-          <div class="flex items-center gap-1 px-1 pt-1 pb-0.5">
-            <span class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
+        <div class={cn('flex flex-col gap-0.5 p-1.5', TILE)}>
+          <div class="flex items-center gap-1.5 px-1 pt-0.5 pb-1">
+            <span class={EYEBROW}>
               {group.label}
             </span>
-            <span class="text-[12px] leading-[16px] text-[var(--color-text-3)]">
+            <span class={COUNT_PILL}>
               {group.files.length}
             </span>
             <button
               type="button"
-              class="ml-auto rounded-[4px] px-1 py-px text-[12px] leading-[16px]
+              class="ml-auto rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[12px] leading-[16px]
                      text-[var(--color-text-2)] transition-colors
-                     hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]
+                     hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]
                      focus-visible:ring-3 focus-visible:ring-ring/50 outline-none
-                     disabled:opacity-40"
+                     disabled:cursor-not-allowed disabled:opacity-[0.52]"
               disabled={!canWrite || busy}
               title={canWrite ? '' : readOnlyReason}
               onclick={() => runGroupAction(group)}
@@ -463,11 +517,11 @@
             </button>
             <button
               type="button"
-              class="rounded-[4px] px-1 py-px text-[12px] leading-[16px]
+              class="rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[12px] leading-[16px]
                      text-[var(--color-text-3)] transition-colors
-                     hover:bg-[var(--color-elevated)] hover:text-[var(--color-bad)]
+                     hover:bg-[var(--color-bad-bg)] hover:text-[var(--color-bad)]
                      focus-visible:ring-3 focus-visible:ring-ring/50 outline-none
-                     disabled:opacity-40"
+                     disabled:cursor-not-allowed disabled:opacity-[0.52]"
               disabled={!canWrite || busy}
               title={canWrite
                 ? `Throw away the changes in these ${group.files.length} files. You will be asked first.`
@@ -483,9 +537,10 @@
                 <div
                   role="group"
                   class={cn(
-                    'group flex items-center gap-1 rounded-[4px] pr-1 transition-colors',
-                    'hover:bg-[var(--color-elevated)]',
-                    panel.selectedPath === file.relativePath && 'bg-[var(--color-elevated)]'
+                    'group flex items-center gap-0.5 rounded-[var(--radius-sm)] pr-1 transition-colors',
+                    'hover:bg-[var(--color-hover)]',
+                    panel.selectedPath === file.relativePath &&
+                      'bg-[color-mix(in_srgb,var(--color-accent)_14%,var(--color-elevated))]'
                   )}
                   oncontextmenu={(event) => openFileContextMenu(group, file, event)}
                 >

@@ -80,7 +80,7 @@ export function sessionHistoryIdentity(record: SessionLibraryRecord): string {
  */
 export function sessionHistoryStartRequest(record: SessionLibraryRecord): StartSessionRequest {
   const folder = record.canonicalCwd?.trim() || record.projectPath?.trim() || '';
-  const provider = record.provider === 'claude' || record.provider === 'codex'
+  const provider = record.provider === 'claude' || record.provider === 'codex' || record.provider === 'antigravity'
     ? record.provider
     : undefined;
   return {
