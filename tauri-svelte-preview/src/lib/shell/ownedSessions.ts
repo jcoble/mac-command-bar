@@ -302,7 +302,10 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     lastRuntimeError: null,
     completedAt: record.completedAt,
     settledAt: record.settledAt,
-    branch: record.branch,
+    // The rail prints the branch straight into the row, so anything that is not
+    // a name has to stop here rather than reach the row as "[object Object]".
+    // The two constructors below already read it this way.
+    branch: isNonEmptyString(record.branch) ? record.branch : null,
     taskId: record.taskId,
     pullRequest: record.pullRequest,
     messageCount: record.messageCount,

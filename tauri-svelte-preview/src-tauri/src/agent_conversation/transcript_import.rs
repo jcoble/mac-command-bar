@@ -8,7 +8,8 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::protocol::{
-    AgentConversationProvider, AgentRawFrameReference, TerminalProjectionPayload,
+    AgentConversationEvent, AgentConversationPayload, AgentConversationProvider,
+    AgentRawFrameReference, TerminalProjectionPayload,
 };
 use super::transcript::{complete_lines, parse_durable_line, read_range, ProjectedRecord};
 
@@ -68,7 +69,8 @@ pub fn import_session(
         cutoff_offset: tail.cutoff_offset,
         reached_start: tail.reached_start,
     };
-    let extra_json = merge_import_cursor("{}", &cursor)?;
+    let extra_json =
+        merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;
     let session = SessionRow {
         owned_id: owned_id.clone(),
         native_session_id: Some(native_session_id.to_string()),
@@ -93,6 +95,7 @@ pub fn import_session(
         append_imported_record(
             store,
             &owned_id,
+            provider,
             native_session_id,
             i64::try_from(sequence)
                 .map_err(|_| "Imported event sequence exceeded the store limit".to_string())?,
@@ -152,6 +155,7 @@ pub fn extend_session(
         append_imported_record(
             store,
             owned_id,
+            enum_from_storage(&session.provider)?,
             native_session_id,
             sequence,
             record,
@@ -173,6 +177,7 @@ pub fn extend_session(
 fn append_imported_record(
     store: &SessionStore,
     owned_id: &str,
+    provider: AgentConversationProvider,
     native_session_id: &str,
     sequence: i64,
     record: ProjectedRecord,
@@ -180,8 +185,29 @@ fn append_imported_record(
 ) -> Result<(), String> {
     let created_at_ms = record_timestamp(&record).unwrap_or(fallback_timestamp);
     let kind = enum_storage_value(record.event_type)?;
-    let payload = projection_payload(native_session_id, record);
-    let payload_json = serde_json::to_string(&payload)
+    // A stored event is read back as a whole conversation event, so that is what
+    // an import has to write. Storing only the projection inside it left rows
+    // that could be written and never read: the transcript came back as a decode
+    // failure, and the session it belonged to could not be opened at all.
+    //
+    // The row's own sequence is what orders the transcript, and reading older
+    // pages walks it backwards past zero — an event's `sequence` cannot go
+    // there, so pages read before the first import all carry zero. That costs
+    // nothing today: the transcript of an imported session is read as a whole
+    // from the store, in row order, and the one place a sequence is compared
+    // against the last one seen is live streaming, which an import is not.
+    let event = AgentConversationEvent {
+        owned_id: owned_id.to_string(),
+        provider,
+        generation: 0,
+        sequence: u64::try_from(sequence).unwrap_or(0),
+        timestamp_ms: u128::try_from(created_at_ms.max(0)).unwrap_or_default(),
+        payload: AgentConversationPayload::TerminalProjection(projection_payload(
+            native_session_id,
+            record,
+        )),
+    };
+    let payload_json = serde_json::to_string(&event)
         .map_err(|error| format!("Could not encode imported transcript event: {error}"))?;
     store
         .append_event(&EventRow {
@@ -244,6 +270,11 @@ fn merge_import_cursor(extra_json: &str, cursor: &ImportCursor) -> Result<String
     );
     serde_json::to_string(&extra)
         .map_err(|error| format!("Could not encode stored session metadata: {error}"))
+}
+
+fn enum_from_storage<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T, String> {
+    serde_json::from_value(Value::String(value.to_string()))
+        .map_err(|error| format!("Could not decode stored enum value: {error}"))
 }
 
 fn enum_storage_value<T: Serialize>(value: T) -> Result<String, String> {
@@ -351,9 +382,12 @@ mod tests {
             .expect("events should be listed")
             .into_iter()
             .map(|event| {
+                // A stored row holds a whole conversation event, and the
+                // projection an import writes sits inside its payload.
                 serde_json::from_str::<Value>(&event.payload_json)
                     .expect("event payload should be JSON")
-                    .get("itemId")
+                    .get("payload")
+                    .and_then(|payload| payload.get("itemId"))
                     .and_then(Value::as_str)
                     .expect("event should have an item id")
                     .to_string()
@@ -404,6 +438,42 @@ mod tests {
         let cursor = stored_cursor(&store, &owned_id);
         assert!(cursor.cutoff_offset > 0);
         assert!(!cursor.reached_start);
+    }
+
+    #[test]
+    fn imported_events_read_back_as_conversation_events() {
+        // What an import writes has to survive being read the way every other
+        // stored event is read. It did not: the rows held only the projection,
+        // so listing a resumed session's transcript failed to decode and the
+        // session could not be opened at all.
+        let fixture = TranscriptFixture::new(3);
+        let store = SessionStore::open_in_memory().expect("store should open");
+
+        let owned_id = import_session(
+            &store,
+            fixture_provider(),
+            "session-1",
+            &fixture.path,
+            "/tmp/project",
+            u64::MAX,
+            usize::MAX,
+        )
+        .expect("session should import");
+
+        let rows = store
+            .list_events(&owned_id, i64::MIN, 100)
+            .expect("events should be listed");
+        assert_eq!(rows.len(), 3);
+        for row in rows {
+            let event: AgentConversationEvent = serde_json::from_str(&row.payload_json)
+                .expect("stored event should decode as a conversation event");
+            assert_eq!(event.owned_id, owned_id);
+            assert_eq!(event.provider, fixture_provider());
+            assert!(matches!(
+                event.payload,
+                AgentConversationPayload::TerminalProjection(_)
+            ));
+        }
     }
 
     #[test]

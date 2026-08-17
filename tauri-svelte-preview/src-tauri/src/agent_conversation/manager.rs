@@ -308,6 +308,12 @@ impl AgentRuntimeManager {
         })
     }
 
+    /// The durable store, for records that live beside a session but are written
+    /// by the module that owns them, such as the conversation attachment index.
+    pub(crate) fn store(&self) -> &SessionStore {
+        &self.store
+    }
+
     pub fn set_session_draft(&self, owned_id: &str, text: &str) -> Result<(), String> {
         self.store
             .set_draft(owned_id, text)
@@ -335,7 +341,7 @@ impl AgentRuntimeManager {
         max_bytes: u64,
         max_records: usize,
     ) -> Result<String, String> {
-        super::transcript_import::import_session(
+        let owned_id = super::transcript_import::import_session(
             &self.store,
             provider,
             native_session_id,
@@ -343,7 +349,22 @@ impl AgentRuntimeManager {
             cwd,
             max_bytes,
             max_records,
-        )
+        )?;
+        // The import wrote a session row, and every stored row needs its live
+        // overlay before anything lists the sessions again — which is the very
+        // next thing the caller does, to find the row this returned. Without
+        // one, listing fails on the session that was just imported.
+        let row = self
+            .store
+            .get_session(&owned_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "The imported session was not stored".to_string())?;
+        let session = recovered_session_from_row(&self.store, row)?;
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owned_id.clone(), session);
+        Ok(owned_id)
     }
 
     pub fn extend_imported_session(
@@ -2252,6 +2273,28 @@ struct StoredSessionExtra {
     rail_meta: AgentConversationSessionMeta,
 }
 
+/// The stored metadata an imported conversation starts life with.
+///
+/// An import writes a session row without starting an adapter, so it has no
+/// generation, no capabilities and no configuration of its own to record. It
+/// cannot leave them out: every stored row is decoded together at launch, and
+/// one row missing any of these fields fails that decode and takes the whole
+/// launch with it. So an import writes what a session holds before its first
+/// run — nothing is live, and the fields are all present.
+pub(super) fn imported_session_extra(
+    provider: AgentConversationProvider,
+) -> Result<String, String> {
+    serde_json::to_string(&StoredSessionExtra {
+        generation: 0,
+        native_session_mode: AgentNativeSessionMode::Resume,
+        owner: AgentExecutionOwner::Stopped,
+        config: AgentConversationConfigState::default(),
+        capabilities: empty_capabilities(provider),
+        rail_meta: AgentConversationSessionMeta::default(),
+    })
+    .map_err(|error| format!("Could not encode imported session metadata: {error}"))
+}
+
 /// Builds the durable row from the current live session for metadata-only writes.
 fn persisted_session_row(session: &ManagedAgentSession) -> Result<SessionRow, String> {
     let candidate = SessionEventCandidate::from_session(session);
@@ -2313,112 +2356,127 @@ fn recover_sessions_from_store(
 ) -> Result<HashMap<String, ManagedAgentSession>, String> {
     let mut sessions = HashMap::new();
     for row in store.list_sessions().map_err(|error| error.to_string())? {
-        let provider: AgentConversationProvider = enum_from_storage(&row.provider)?;
-        let mut stored: StoredSessionExtra = serde_json::from_str(&row.extra_json)
-            .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
-        if stored.rail_meta.worktree.is_none() {
-            stored.rail_meta.worktree.clone_from(&row.worktree);
-        }
-        if stored.rail_meta.branch.is_none() {
-            stored.rail_meta.branch.clone_from(&row.branch);
-        }
-        if session_title_is_empty(stored.rail_meta.title.as_deref())
-            && !session_title_is_empty(row.title.as_deref())
-        {
-            stored.rail_meta.title.clone_from(&row.title);
-        }
-        if session_title_is_empty(stored.rail_meta.title.as_deref()) {
-            stored.rail_meta.title = store
-                .first_user_message_payload(&row.owned_id)
-                .map_err(|error| error.to_string())?
-                .map(|payload| {
-                    serde_json::from_str::<AgentConversationEvent>(&payload).map_err(|error| {
-                        format!("Could not decode stored first user message: {error}")
-                    })
-                })
-                .transpose()?
-                .and_then(|event| match event.payload {
-                    AgentConversationPayload::UserMessage { text, .. } => prompt_title(&text),
-                    _ => None,
-                });
-        }
-        if stored.rail_meta.project.is_none() {
-            stored.rail_meta.project.clone_from(&row.project);
-        }
-        let persisted_state: AgentRuntimeState = enum_from_storage(&row.state)?;
-        let recoverable =
-            row.native_session_id.is_some() && persisted_state != AgentRuntimeState::Closed;
-        let state = if recoverable {
-            AgentRuntimeState::Suspended
-        } else {
-            persisted_state
-        };
-        let connection_state = match state {
-            AgentRuntimeState::Suspended | AgentRuntimeState::Closed => {
-                ConversationConnectionState::Disconnected
-            }
-            AgentRuntimeState::Failed => ConversationConnectionState::Failed,
-            _ => ConversationConnectionState::Disconnected,
-        };
-        let next_sequence = store
-            .latest_seq(&row.owned_id)
-            .map_err(|error| error.to_string())?
-            .saturating_add(1) as u64;
-        let connection = AgentConversationConnection {
-            owned_id: row.owned_id.clone(),
-            provider,
-            generation: stored.generation,
-            native_session_id: row.native_session_id.clone(),
-            state: connection_state,
-            config: stored.config.clone(),
-        };
-        let session = ManagedAgentSession {
-            owned_id: row.owned_id.clone(),
-            provider,
-            provider_instance_id: format!("{}-{}", provider_id(provider), stored.generation),
-            native_session_id: row.native_session_id,
-            native_session_mode: AgentNativeSessionMode::Resume,
-            generation: stored.generation,
-            owner: stored.owner,
-            state,
-            capabilities: stored.capabilities,
-            next_sequence,
-            active_turn_id: None,
-            prompt_once_active: false,
-            runtime: None,
-            pool_key: None,
-            transport: None,
-            recent_events: VecDeque::new(),
-            writer_lease: AgentWriterLease {
-                owned_id: row.owned_id.clone(),
-                generation: stored.generation,
-                owner: AgentWriterLeaseOwner::Structured,
-            },
-            writer_lease_transition: None,
-            permission_requests: HashMap::new(),
-            next_permission_id: 0,
-            user_input_requests: HashMap::new(),
-            next_user_input_id: 0,
-            ordered_events: None,
-            cwd: row.cwd,
-            spawn_reasoning_effort: row.effort,
-            config: stored.config,
-            connection,
-            store: Arc::clone(store),
-            created_at_ms: row.created_at_ms.max(0) as u128,
-            last_activity_ms: row.last_activity_at_ms.max(0) as u128,
-            live_tool_calls: HashSet::new(),
-            background_work: HashSet::new(),
-            child_rollout_scan: None,
-            child_rollout_parent_path: None,
-            codex_children: HashMap::new(),
-            rail_meta: stored.rail_meta,
-            suspending: false,
-        };
+        let owned_id = row.owned_id.clone();
+        let session = recovered_session_from_row(store, row)?;
         persist_session(&session)?;
-        sessions.insert(row.owned_id, session);
+        sessions.insert(owned_id, session);
     }
     Ok(sessions)
+}
+
+/// Rebuilds what a stored session needs in memory, without starting anything.
+///
+/// `list_sessions` reads the stored rows and the live overlay together, and a
+/// row with no overlay fails the whole list rather than only itself. Recovery
+/// builds one of these for every row at launch; anything that writes a row
+/// while the app is running has to build one too, or the next listing breaks
+/// on the row it just created.
+fn recovered_session_from_row(
+    store: &Arc<SessionStore>,
+    row: SessionRow,
+) -> Result<ManagedAgentSession, String> {
+    let provider: AgentConversationProvider = enum_from_storage(&row.provider)?;
+    let mut stored: StoredSessionExtra = serde_json::from_str(&row.extra_json)
+        .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
+    if stored.rail_meta.worktree.is_none() {
+        stored.rail_meta.worktree.clone_from(&row.worktree);
+    }
+    if stored.rail_meta.branch.is_none() {
+        stored.rail_meta.branch.clone_from(&row.branch);
+    }
+    if session_title_is_empty(stored.rail_meta.title.as_deref())
+        && !session_title_is_empty(row.title.as_deref())
+    {
+        stored.rail_meta.title.clone_from(&row.title);
+    }
+    if session_title_is_empty(stored.rail_meta.title.as_deref()) {
+        stored.rail_meta.title = store
+            .first_user_message_payload(&row.owned_id)
+            .map_err(|error| error.to_string())?
+            .map(|payload| {
+                serde_json::from_str::<AgentConversationEvent>(&payload)
+                    .map_err(|error| format!("Could not decode stored first user message: {error}"))
+            })
+            .transpose()?
+            .and_then(|event| match event.payload {
+                AgentConversationPayload::UserMessage { text, .. } => prompt_title(&text),
+                _ => None,
+            });
+    }
+    if stored.rail_meta.project.is_none() {
+        stored.rail_meta.project.clone_from(&row.project);
+    }
+    let persisted_state: AgentRuntimeState = enum_from_storage(&row.state)?;
+    let recoverable =
+        row.native_session_id.is_some() && persisted_state != AgentRuntimeState::Closed;
+    let state = if recoverable {
+        AgentRuntimeState::Suspended
+    } else {
+        persisted_state
+    };
+    let connection_state = match state {
+        AgentRuntimeState::Suspended | AgentRuntimeState::Closed => {
+            ConversationConnectionState::Disconnected
+        }
+        AgentRuntimeState::Failed => ConversationConnectionState::Failed,
+        _ => ConversationConnectionState::Disconnected,
+    };
+    let next_sequence = store
+        .latest_seq(&row.owned_id)
+        .map_err(|error| error.to_string())?
+        .saturating_add(1) as u64;
+    let connection = AgentConversationConnection {
+        owned_id: row.owned_id.clone(),
+        provider,
+        generation: stored.generation,
+        native_session_id: row.native_session_id.clone(),
+        state: connection_state,
+        config: stored.config.clone(),
+    };
+    let session = ManagedAgentSession {
+        owned_id: row.owned_id.clone(),
+        provider,
+        provider_instance_id: format!("{}-{}", provider_id(provider), stored.generation),
+        native_session_id: row.native_session_id,
+        native_session_mode: AgentNativeSessionMode::Resume,
+        generation: stored.generation,
+        owner: stored.owner,
+        state,
+        capabilities: stored.capabilities,
+        next_sequence,
+        active_turn_id: None,
+        prompt_once_active: false,
+        runtime: None,
+        pool_key: None,
+        transport: None,
+        recent_events: VecDeque::new(),
+        writer_lease: AgentWriterLease {
+            owned_id: row.owned_id.clone(),
+            generation: stored.generation,
+            owner: AgentWriterLeaseOwner::Structured,
+        },
+        writer_lease_transition: None,
+        permission_requests: HashMap::new(),
+        next_permission_id: 0,
+        user_input_requests: HashMap::new(),
+        next_user_input_id: 0,
+        ordered_events: None,
+        cwd: row.cwd,
+        spawn_reasoning_effort: row.effort,
+        config: stored.config,
+        connection,
+        store: Arc::clone(store),
+        created_at_ms: row.created_at_ms.max(0) as u128,
+        last_activity_ms: row.last_activity_at_ms.max(0) as u128,
+        live_tool_calls: HashSet::new(),
+        background_work: HashSet::new(),
+        child_rollout_scan: None,
+        child_rollout_parent_path: None,
+        codex_children: HashMap::new(),
+        rail_meta: stored.rail_meta,
+        suspending: false,
+    };
+    Ok(session)
 }
 
 fn enum_storage_value<T: Serialize>(value: T) -> Result<String, String> {
