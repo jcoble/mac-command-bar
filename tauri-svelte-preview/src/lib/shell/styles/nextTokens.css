@@ -140,8 +140,8 @@
      Native scrolling, styled: the transcript's virtualiser measures real
      scroll offsets, so a synthetic scrollbar would fight it. */
   --scrollbar-size: 8px;
-  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
-  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.24);
+  --scrollbar-thumb: color-mix(in srgb, var(--color-text) 18%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--color-text) 30%, transparent);
 }
 
 /* Applies to the shell and to anything portalled out of it. */

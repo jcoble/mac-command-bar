@@ -437,7 +437,11 @@
 
 <style>
   .timeline-wrap{position:relative;flex:1;min-height:0}
-  .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;overflow-anchor:none;padding:30px 24px calc(var(--composer-height) + 16px);scrollbar-gutter:stable;overscroll-behavior:contain}
+  /* scrollbar-width/-color are set here rather than on the shell root: they are
+     inherited, and declaring them globally turns every overlay scrollbar in the
+     app into a permanent one, including horizontal bars nobody asked for. Code
+     blocks and tables carry their own overflow, so this pane never scrolls sideways. */
+  .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;overflow-x:hidden;overflow-anchor:none;padding:30px 24px calc(var(--composer-height) + 16px);scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;scrollbar-gutter:stable;overscroll-behavior:contain}
   .timeline-list{display:flex;flex-direction:column;gap:16px;width:min(820px,100%);min-height:1px;margin:0 auto}
   .earlier-row{display:flex;justify-content:center;min-height:28px}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
