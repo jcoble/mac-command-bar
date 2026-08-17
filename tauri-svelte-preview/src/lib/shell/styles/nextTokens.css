@@ -67,7 +67,7 @@
 
   /* Shared shell insets keep dense rows and floating detail surfaces aligned. */
   --rail-content-inset: 12px;
-  --rail-row-content-inset: 5px 11px 5px 13px;
+  --rail-row-content-inset: 3px 11px 3px 13px;
   --floating-content-inset: 14px 15px 13px;
   --floating-row-gap: 9px;
 

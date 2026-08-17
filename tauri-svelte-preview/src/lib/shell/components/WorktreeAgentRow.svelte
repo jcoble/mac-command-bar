@@ -443,14 +443,19 @@
           </span>
 
           <span class="lines">
-            <!-- Line one is the title and only the title. The actions live in
-                 the gutter to its right, which is reserved on every row whether
-                 or not it is hovered, so this never shortens under the pointer. -->
-            <span class="line">
+            <!-- Line one is the title and a corner that always holds exactly one
+                 thing: the last activity time at rest, the quick-jump buttons
+                 while the pointer is on the row. The corner is in the same place
+                 either way, so the buttons never land on the title — the title
+                 simply clips a little earlier to make room for them. -->
+            <span class="line line-title">
               <span data-testid="worktree-agent-title" class="session-title">{label}</span>
+              <span data-testid="worktree-agent-age" class="age" title={presenceDetail}>
+                <span class="age-text">{ageText ?? ''}</span>
+              </span>
             </span>
 
-            <span class="line">
+            <span class="line line-meta">
               <span data-testid="worktree-agent-meta" class="project">{project}</span>
               {#if session.branch}
                 <span class="sep" aria-hidden="true">•</span>
@@ -482,11 +487,8 @@
                  which worktree this is. `direction: rtl` puts the ellipsis on
                  the near edge, and the `bdi` keeps the path itself reading
                  left to right inside it. -->
-            <span class="line">
+            <span class="line line-meta">
               <span class="worktree-path" title={worktree}><bdi>{worktree}</bdi></span>
-              <span data-testid="worktree-agent-age" class="age" title={presenceDetail}>
-                <span class="age-text">{ageText ?? ''}</span>
-              </span>
             </span>
           </span>
         </button>
@@ -513,14 +515,14 @@
     </ContextMenu.Content>
   </ContextMenu.Root>
 
-  <!-- The kit cluster is always in the page and only fades. It sits in the
-       gutter every row reserves for it, level with the title, so revealing it
-       covers no text and moves nothing: the row reads the same width whether
-       the pointer is on it or three rows further down. -->
+  <!-- The kit cluster is always in the page and only fades. It sits in line
+       one's right corner, over the space the time vacates as the pointer
+       arrives, so it lands on no text and nothing in the row moves: the lines
+       keep their places and only the title's clip width changes. -->
   <HoverActions
     data-testid="worktree-agent-overlay"
     label="Session actions"
-    class="absolute top-[9px] right-[17px] z-[2]"
+    class="absolute top-0 right-[17px] z-[2]"
   >
     <!-- A stopped session's one extra move, at the head of the cluster so the
          two standing actions keep their places against the right edge. -->
@@ -533,8 +535,8 @@
     {/if}
 
     <!-- Two, not four. Source control and settling both live on the row's
-         right-click menu, and every button here costs the title the same width
-         on every row whether or not anyone hovers it. -->
+         right-click menu, and every button here costs the title width while the
+         pointer is on the row, so the cluster stays short. -->
     <span data-testid="worktree-agent-jump" class="contents">
       <span data-testid="worktree-agent-jump-session" class="contents">
         <HoverActionButton
@@ -576,13 +578,14 @@
 
 <style>
   .row {
-    /* The empty column every row keeps on its right for the action cluster:
-       two 25px buttons and the 4px gap between them. It is reserved whether or
-       not the row is hovered, which is the whole point — the title and the two
-       lines under it truncate to the same width at rest as they do with the
-       buttons showing, so nothing shifts as the pointer runs down the list. A
-       stopped row reserves one button more, and reserves it always. */
-    --rail-action-gutter: 56px;
+    /* How much room the action cluster needs: two buttons and the 4px gap
+       between them, measured at 53px. It is claimed only while the pointer is
+       on the row, out of line one's right corner, which the time occupies the
+       rest of the time. Nothing is held empty at rest — the title runs all the
+       way to the time — and nothing moves when the buttons arrive, because the
+       corner they land in is the one the time just left. A stopped row carries
+       a third button and reserves 28px more for it. */
+    --rail-action-gutter: 53px;
     position: relative;
     display: block;
     box-sizing: border-box;
@@ -595,23 +598,23 @@
     font-size: 13px;
     line-height: 1.4;
     content-visibility: auto;
-    contain-intrinsic-size: auto 70px;
+    contain-intrinsic-size: auto 56px;
   }
 
-  .row[data-presence='stopped'] { --rail-action-gutter: 85px; }
+  .row[data-presence='stopped'] { --rail-action-gutter: 81px; }
 
-  /* The mark, then the three lines, then the reserved gutter — which is the
-     row's own right padding, so every line inside stops short of it. */
+  /* The mark, then the three lines. The row is 56px so a rail this narrow still
+     shows a useful stack of sessions; the mark matches the height of the three
+     lines beside it, which is the proportion the reference keeps. */
   .session-row {
     position: relative;
     display: grid;
-    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-columns: 44px minmax(0, 1fr);
     column-gap: 10px;
     align-items: center;
     width: 100%;
-    min-height: 70px;
+    min-height: 56px;
     padding: var(--rail-row-content-inset);
-    padding-right: calc(var(--rail-action-gutter) + 11px);
     border: 0;
     /* No rule between rows: the gap and the rounded highlight carry the
        separation, which reads calmer than a stack of hairlines. */
@@ -632,8 +635,8 @@
   .thumb {
     position: relative;
     display: flex;
-    width: 56px;
-    height: 56px;
+    width: 44px;
+    height: 44px;
     align-items: center;
     justify-content: center;
     border-radius: var(--radius-sm);
@@ -642,20 +645,23 @@
   }
 
   :global(.thumb-mark) {
-    width: 26px;
-    height: 26px;
+    width: 22px;
+    height: 22px;
     flex: 0 0 auto;
   }
 
   .row[data-presence='stopped'] .thumb { opacity: 0.6; }
   .row:hover .thumb { opacity: 1; }
 
+  /* Three fixed line boxes, no gaps: 20 + 15 + 15 inside a 6px inset is the
+     56px row. The heights are declared rather than left to the font so the row
+     is the same height on every machine and the mark can be sized against it. */
   .lines {
     display: flex;
     min-width: 0;
     flex-direction: column;
     justify-content: center;
-    gap: 2px;
+    gap: 0;
   }
 
   /* Four states, one neutral scale, each step brighter than the last: rest is
@@ -682,6 +688,16 @@
     min-width: 0;
     align-items: center;
     gap: 5px;
+  }
+
+  .line-title {
+    height: 20px;
+    line-height: 20px;
+  }
+
+  .line-meta {
+    height: 15px;
+    line-height: 15px;
   }
 
   .project {
@@ -722,19 +738,32 @@
     white-space: nowrap;
   }
 
-  /* Last activity, dim, at the end of the same line. It is a fixed corner of
-     the row now rather than a slot that hover empties. */
+  /* Last activity, dim, in line one's right corner — the corner the buttons
+     take over while the pointer is on the row. The slot holds its contents
+     against its right edge, so the time fades out exactly where it stood and
+     the buttons fade in over the same spot; only the space to its left grows,
+     which is space the title was using and gives back. */
   .age {
     display: inline-flex;
     flex: 0 0 auto;
     align-items: center;
-    padding-left: 6px;
+    justify-content: flex-end;
+    padding-left: 8px;
     color: var(--color-text-3);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 12px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
+
+  /* The cluster's width plus the gap that keeps the title clear of it. The
+     row's own :hover and :focus-within are what the action cluster answers to,
+     so the slot and the buttons open and close together. */
+  .row:hover .age,
+  .row:focus-within .age { min-width: calc(var(--rail-action-gutter) + 8px); }
+
+  .row:hover .age-text,
+  .row:focus-within .age-text { opacity: 0; }
 
   .row[data-presence='working'] .age { color: var(--color-text-2); }
 
@@ -744,11 +773,11 @@
      while a circle is what a turning thing is supposed to look like. */
   .spinner {
     position: absolute;
-    right: -4px;
-    bottom: -4px;
+    right: -3px;
+    bottom: -3px;
     box-sizing: border-box;
-    width: 15px;
-    height: 15px;
+    width: 13px;
+    height: 13px;
     border: 2px solid color-mix(in srgb, var(--color-live) 30%, var(--color-surface));
     border-top-color: var(--color-live);
     border-radius: 50%;
@@ -803,7 +832,7 @@
     flex: 1 1 auto;
     overflow: hidden;
     color: var(--color-text);
-    font-size: 13.5px;
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: -0.01em;
     text-overflow: ellipsis;
@@ -849,10 +878,11 @@
     pointer-events: none;
   }
 
-  /* Interaction motion: every one of these ends. The row's fill and its accent
-     bar answer a pointer or a selection and then stop; only the working spinner
-     loops, and only while a real turn is running on screen. */
+  /* Interaction motion: every one of these ends. The row's fill and the time in
+     its corner answer a pointer or a selection and then stop; only the working
+     spinner loops, and only while a real turn is running on screen. */
   @media (prefers-reduced-motion: no-preference) {
+    .age-text,
     .idle-label,
     .thumb { transition: opacity 120ms ease; }
 
