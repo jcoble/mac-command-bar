@@ -131,24 +131,19 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn bundled_from_environment() -> Result<Self, String> {
-        let configured_pair = |path_name: &str, hash_name: &str| {
-            match (
-                std::env::var_os(path_name),
-                std::env::var(hash_name).ok(),
-            ) {
-                (None, None) => Ok(None),
-                (Some(path), Some(hash)) => Ok(Some((path.into(), hash))),
-                _ => Err(
-                    "Packaged ACP adapter paths and SHA-256 values must be configured together"
-                        .to_string(),
-                ),
-            }
+        let configured_pair = |path_name: &str, hash_name: &str| match (
+            std::env::var_os(path_name),
+            std::env::var(hash_name).ok(),
+        ) {
+            (None, None) => Ok(None),
+            (Some(path), Some(hash)) => Ok(Some((path.into(), hash))),
+            _ => Err(
+                "Packaged ACP adapter paths and SHA-256 values must be configured together"
+                    .to_string(),
+            ),
         };
         let codex = configured_pair("MCB_CODEX_ACP_PATH", "MCB_CODEX_ACP_SHA256")?;
-        let claude = configured_pair(
-            "MCB_CLAUDE_AGENT_ACP_PATH",
-            "MCB_CLAUDE_AGENT_ACP_SHA256",
-        )?;
+        let claude = configured_pair("MCB_CLAUDE_AGENT_ACP_PATH", "MCB_CLAUDE_AGENT_ACP_SHA256")?;
         let antigravity = configured_pair("MCB_AGY_ACP_PATH", "MCB_AGY_ACP_SHA256")?;
         if codex.is_some() != claude.is_some() {
             return Err(

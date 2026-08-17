@@ -411,7 +411,9 @@ impl ClaudeQuotaClient {
 fn claude_code_user_agent() -> String {
     let version = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .and_then(|home| latest_installed_claude_version(&home.join(".local/share/claude/versions")));
+        .and_then(|home| {
+            latest_installed_claude_version(&home.join(".local/share/claude/versions"))
+        });
     version
         .map(|version| format!("{CLAUDE_USER_AGENT}/{version}"))
         .unwrap_or_else(|| CLAUDE_USER_AGENT.to_string())
