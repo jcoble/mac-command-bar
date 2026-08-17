@@ -11,6 +11,7 @@ pub mod providers;
 pub mod reaper;
 pub mod terminal_projection;
 mod transcript;
+pub mod transcript_import;
 
 use manager::AgentRuntimeManager;
 use mcb_core::session_store::AnnotationRow;
