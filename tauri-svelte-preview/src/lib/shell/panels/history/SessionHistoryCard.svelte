@@ -17,6 +17,7 @@
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import MessageSquare from '@lucide/svelte/icons/message-square';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import Play from '@lucide/svelte/icons/play';
   import SquarePlus from '@lucide/svelte/icons/square-plus';
   import TextCursorInput from '@lucide/svelte/icons/text-cursor-input';
@@ -191,6 +192,16 @@
         >
           <SquarePlus aria-hidden="true" />
           Continue in New Session
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={!action('open-transcript').enabled}
+          title={action('open-transcript').disabledReason ?? undefined}
+          onclick={() => run('open-transcript')}
+        >
+          <MessagesSquare aria-hidden="true" />
+          Open Transcript
         </Button>
         <Button
           size="sm"

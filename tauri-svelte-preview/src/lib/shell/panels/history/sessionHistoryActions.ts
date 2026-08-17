@@ -10,12 +10,15 @@
  * The rule the whole panel follows: an action is either backed by something
  * real or it is off with a plain-English reason. Nothing pretends.
  */
+import { normalizeProvider } from '../../ownedSessions.ts';
+import type { AgentConversationTranscriptImport } from '../../../tauriSource.ts';
 import type { SessionLibraryRecord } from '../../sessionLibrary/sessionLibraryModel.ts';
 import type { StartSessionRequest } from '../../workbenchNavigation.ts';
 
 export type SessionHistoryActionId =
   | 'resume-worktree'
   | 'continue-new-session'
+  | 'open-transcript'
   | 'view-log'
   | 'copy-resume-command'
   | 'open-log'
@@ -38,6 +41,7 @@ export interface SessionHistoryAction {
 export const SESSION_HISTORY_ACTION_IDS: readonly SessionHistoryActionId[] = [
   'resume-worktree',
   'continue-new-session',
+  'open-transcript',
   'view-log',
   'copy-resume-command',
   'open-log',
@@ -60,6 +64,8 @@ const NO_FOLDER = 'This session has no folder recorded.';
 const NO_RESUME_COMMAND = 'This session has no resume command to copy.';
 const NOT_RESUMABLE = 'There is nothing left to resume for this session.';
 const NOT_OURS = 'Only sessions started in this app can be deleted.';
+const NO_SESSION_ID = 'This session has no provider session id to read a transcript for.';
+const UNREADABLE_AGENT = 'This app cannot read transcripts written by this agent.';
 
 /** The one resume command a card offers to copy, when the scan found one. */
 export function sessionResumeCommand(record: SessionLibraryRecord): string | null {
@@ -92,6 +98,27 @@ export function sessionHistoryStartRequest(record: SessionLibraryRecord): StartS
   };
 }
 
+/**
+ * What Open Transcript asks the backend for: which agent wrote the transcript,
+ * the id that agent knew the session by, the file it wrote, and the folder it
+ * ran in. Null when the row is missing any of the first three, which is the
+ * same answer that switches the action off.
+ */
+export function sessionTranscriptImport(
+  record: SessionLibraryRecord
+): AgentConversationTranscriptImport | null {
+  // A session run through cmux still writes its agent's own transcript, so the
+  // row's provider is read the way the rest of the shell reads it rather than
+  // being matched literally — `cmux-codex` is a codex transcript.
+  const { agent } = normalizeProvider(record.provider);
+  const provider =
+    agent === 'claude' || agent === 'codex' || agent === 'antigravity' ? agent : null;
+  const nativeSessionId = record.nativeSessionId?.trim() ?? '';
+  const transcriptPath = record.logPath?.trim() ?? '';
+  if (!provider || !nativeSessionId || !transcriptPath) return null;
+  return { provider, nativeSessionId, transcriptPath, cwd: record.canonicalCwd };
+}
+
 function action(
   id: SessionHistoryActionId,
   label: string,
@@ -108,10 +135,20 @@ function action(
   };
 }
 
-/** The ten actions a session card offers, in the order a person sees them. */
+/** The eleven actions a session card offers, in the order a person sees them. */
 export function sessionHistoryActions(record: SessionLibraryRecord): SessionHistoryAction[] {
   const hasLog = Boolean(record.logPath?.trim());
   const hasFolder = Boolean(record.canonicalCwd?.trim());
+  // Reading a past transcript needs all three of the agent, the id it knew the
+  // session by, and the file it wrote. Say which one is missing, most specific
+  // first — a row with no id at all is a different problem from a row whose
+  // agent this app cannot read.
+  const canOpenTranscript = sessionTranscriptImport(record) !== null;
+  const transcriptReason = !record.nativeSessionId?.trim()
+    ? NO_SESSION_ID
+    : !hasLog
+      ? NO_TRANSCRIPT
+      : UNREADABLE_AGENT;
   // A scanned session is resumed by starting an agent in its folder, so a row
   // whose scan never found one has nothing to resume into. Sessions this app
   // already owns keep their folder in the database and do not need the scan.
@@ -121,6 +158,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
   return [
     action('resume-worktree', 'Resume in Worktree', canResume, resumeReason),
     action('continue-new-session', 'Continue in New Session', hasFolder, NO_FOLDER),
+    action('open-transcript', 'Open Transcript', canOpenTranscript, transcriptReason),
     action('view-log', 'View Log', hasLog, NO_TRANSCRIPT),
     action(
       'copy-resume-command',

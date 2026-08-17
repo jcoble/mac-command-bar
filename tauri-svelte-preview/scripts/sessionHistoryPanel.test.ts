@@ -65,6 +65,7 @@ const LOG_ACTIONS: SessionHistoryActionId[] = [
     [
       'resume-worktree',
       'continue-new-session',
+      'open-transcript',
       'view-log',
       'copy-resume-command',
       'open-log',

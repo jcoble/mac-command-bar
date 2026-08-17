@@ -1298,6 +1298,37 @@ export async function updateAgentConversationSessionMetaFromTauri(input: {
   });
 }
 
+/** Everything the backend needs to read a past session's transcript file in. */
+export interface AgentConversationTranscriptImport {
+  provider: import('./shell/conversation/conversationTypes.ts').AgentConversationProvider;
+  nativeSessionId: string;
+  transcriptPath: string;
+  cwd: string;
+}
+
+/**
+ * Read the end of a provider's own transcript file into a new app-owned
+ * conversation and hand back its id. The backend reads a bounded window of the
+ * file, so a long session arrives with its most recent part first.
+ */
+export async function importAgentConversationTranscriptFromTauri(
+  request: AgentConversationTranscriptImport
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('import_agent_conversation_transcript', { ...request });
+}
+
+/** Read one more window of an imported transcript, older than what it already
+ * holds, and report how many events that added. */
+export async function extendAgentConversationImportFromTauri(
+  ownedId: string
+): Promise<number | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<number>('extend_agent_conversation_import', { ownedId });
+}
+
 export async function listAgentSessionsFromLocalBridge(): Promise<AgentSession[] | null> {
   return postLocalSourceBridge<AgentSession[]>('agent-sessions', {});
 }

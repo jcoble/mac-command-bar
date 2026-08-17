@@ -40,10 +40,17 @@
     type SessionLibraryRecord
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
   import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
-  import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
-  import { openPathFromTauri, revealPathFromTauri } from '$lib/tauriSource.ts';
+  import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
+  import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import {
+    importAgentConversationTranscriptFromTauri,
+    listAgentConversationSessionsFromTauri,
+    openPathFromTauri,
+    revealPathFromTauri
+  } from '$lib/tauriSource.ts';
   import {
     openFileInEditor,
+    showCenterTab,
     startWorkbenchSession
   } from '$lib/shell/workbenchNavigation.ts';
 
@@ -53,6 +60,7 @@
     sessionHistoryIdentity,
     sessionHistoryStartRequest,
     sessionResumeCommand,
+    sessionTranscriptImport,
     type SessionHistoryActionId
   } from './sessionHistoryActions.ts';
 
@@ -109,6 +117,43 @@
     await navigator.clipboard.writeText(value);
   }
 
+  function describeError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /**
+   * Read a past session's own transcript into the app and put it on screen.
+   *
+   * The backend writes the transcript in as a new app-owned conversation and
+   * hands back its id, so the rail has to be told about that row before
+   * anything can open it — opening a session reads the rail for the agent it
+   * belongs to. Once the row is there this is the same open every other card
+   * goes through, and the same failure channel the rail already shows.
+   */
+  async function openTranscript(record: SessionLibraryRecord): Promise<void> {
+    const request = sessionTranscriptImport(record);
+    if (!request) return;
+    try {
+      const ownedId = await importAgentConversationTranscriptFromTauri(request);
+      if (!ownedId) return;
+      const stored = (await listAgentConversationSessionsFromTauri()) ?? [];
+      const imported = stored.find((session) => session.ownedId === ownedId);
+      if (!imported) {
+        rail.error = `the imported transcript for "${record.title}" was not stored`;
+        return;
+      }
+      // The import knows nothing about what the session was called, so the row
+      // takes the title this card is already showing rather than arriving blank.
+      addOwnedSession({ ...ownedSessionFromBackend(imported), title: record.title });
+      await host.service.open({ ...record, ownedId });
+      // A transcript you asked to see is one you want to look at, so bring the
+      // session forward the same way adopting a scanned session does.
+      showCenterTab('session');
+    } catch (error) {
+      rail.error = `could not open the transcript for "${record.title}": ${describeError(error)}`;
+    }
+  }
+
   /**
    * Run one of a card's actions. Nothing here re-checks whether the action is
    * allowed beyond the roster's own answer, and nothing here fails quietly: an
@@ -124,6 +169,9 @@
         return;
       case 'continue-new-session':
         await startWorkbenchSession(sessionHistoryStartRequest(record));
+        return;
+      case 'open-transcript':
+        await openTranscript(record);
         return;
       case 'view-log':
         if (record.logPath) openFileInEditor({ path: record.logPath });
