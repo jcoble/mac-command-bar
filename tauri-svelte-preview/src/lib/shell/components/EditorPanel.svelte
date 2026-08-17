@@ -1025,7 +1025,12 @@
     width: 100%;
     min-width: 0;
     overflow: hidden;
-    background: var(--color-bg);
+    /* No fill of its own. This is a panel body in normal flow covering nothing,
+       and filling it with the backdrop colour painted a black rectangle over
+       the card underneath — which carries the surface colour and the light
+       gradient down its top edge. Most visible with no file open, where the
+       body IS the whole panel. The header and status rows still state their own
+       surface, because those are bands rather than the body. */
     color: var(--color-text);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
   }
