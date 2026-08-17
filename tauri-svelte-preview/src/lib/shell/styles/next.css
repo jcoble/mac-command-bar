@@ -262,3 +262,38 @@
     border-color: var(--border);
   }
 }
+
+/* ------------------------------------------------------------------
+ * Scrollbars.
+ *
+ * These are rules, not tokens, so they live here rather than in
+ * `nextTokens.css` — that file is checked to contain nothing but
+ * custom properties, and a `width` in it fails the check. The names
+ * they read are still declared there with the rest of the palette.
+ * ------------------------------------------------------------------ */
+/* Applies to the shell and to anything portalled out of it. */
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  /* Keeps the thumb off the very edge of its track without a track colour. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+:is(:root.next-shell-document, .next-shell) ::-webkit-scrollbar-corner {
+  background: transparent;
+}
