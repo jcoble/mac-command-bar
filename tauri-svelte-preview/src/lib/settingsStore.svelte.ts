@@ -121,7 +121,10 @@ export function defaultSettings(): Settings {
 			terminalApp: 'Warp'
 		},
 		panels: {
-			problemsLocation: 'bottom'
+			// Hidden by default: the strip reserved 180px under the conversation
+			// whether or not there was anything in it, which read as dead space
+			// above the status bar. Settings turns it back on.
+			problemsLocation: 'hidden'
 		},
 		intelligence: {
 			csharpLanguageServer: true
@@ -165,7 +168,7 @@ function mergeWithDefaults(raw: unknown): Settings {
 	// back. Anything unrecognised goes back to showing the list where it has
 	// always been.
 	if (!PROBLEMS_LOCATIONS.includes(base.panels.problemsLocation)) {
-		base.panels.problemsLocation = 'bottom';
+		base.panels.problemsLocation = 'hidden';
 	}
 
 	return base;

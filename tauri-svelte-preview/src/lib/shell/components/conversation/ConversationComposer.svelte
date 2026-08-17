@@ -313,7 +313,7 @@
 </div>
 
 <style>
-  .composer-area { position: absolute; left: 50%; bottom: 0; z-index: 2; width: min(100%, 900px); transform: translateX(-50%); padding: 12px 0 17px; container-type: inline-size; container-name: composer; background: linear-gradient(transparent, var(--color-bg) 22%, var(--color-bg)); }
+  .composer-area { position: absolute; left: 50%; bottom: 0; z-index: 2; width: min(100%, 900px); transform: translateX(-50%); padding: 12px 0 6px; container-type: inline-size; container-name: composer; background: linear-gradient(transparent, var(--color-bg) 22%, var(--color-bg)); }
   .composer-form { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
   .composer-box { position: relative; display: flex; flex-direction: column; overflow: visible; border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent); border-radius: 22px; background: color-mix(in srgb, var(--color-surface) 88%, var(--color-bg)); box-shadow: var(--shadow-md); }
   .composer-box:focus-within { border-color: color-mix(in srgb, var(--color-text) 28%, var(--color-border)); box-shadow: var(--shadow-lg); }
@@ -352,7 +352,7 @@
   .attachments figcaption small { color: var(--color-text-2); font-size: 12px; }
   .attachment-annotate { grid-column: 2; justify-self: start; border: 0; background: transparent; color: var(--color-accent); padding: 1px 0; font-size: 12px; cursor: pointer; }
   .drop-hint { margin: 0; padding: 0 16px 10px; color: var(--color-accent); font-size: 13px; }
-  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 5px auto 0; color: var(--color-text-3); font-size: 12px; }
+  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 4px auto 0; color: var(--color-text-3); font-size: 12px; }
   /* The settings row is a fixed 211px — approval on the left, the model pill on
      the right — and Attach beside it needs about 80px more. Measured in the
      browser, the pair still sits unclipped in a 438px composer, so collapsing

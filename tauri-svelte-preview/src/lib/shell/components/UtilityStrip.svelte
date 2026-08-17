@@ -119,9 +119,9 @@
     height: 28px;
     align-items: stretch;
     gap: 4px;
-    padding: 0 4px;
-    border-top: 1px solid var(--border);
-    background: var(--background);
+    padding: 0 8px;
+    /* The status bar that hosts this strip paints its own surface and top
+       edge; drawing them again here doubled the rule. */
     color: var(--muted-foreground);
     container-type: inline-size;
     user-select: none;
@@ -143,8 +143,13 @@
     cursor: pointer;
   }
 
+  /* Hugs its own text rather than filling the bar. This strip used to sit in
+     the narrow tools column, where stretching was right; across the whole
+     window it made one button the width of the screen. The auto margin is what
+     keeps Usage against the right edge. */
   .resources {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
+    margin-right: auto;
     overflow: hidden;
   }
 
