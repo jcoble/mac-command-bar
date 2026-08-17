@@ -1,5 +1,31 @@
 # mac-command-bar
 
+## ⛔ Every UI dispatch carries the Notion task and the screenshot paths (2026-08-17, owner)
+
+A sub-agent starts cold. It cannot see the conversation, the owner's messages, or any image the
+owner pasted — images live in the controller's context, not on the agent's disk. Whatever the
+controller retypes from memory is the entire world the agent gets, and a paraphrase silently drops
+requirements. That is exactly how a composer restyle shipped with no `+` button, a send button on an
+empty field, and unstyled menus, when all three were written down.
+
+Do not paraphrase the owner's decisions. Hand over the two artifacts that already hold them:
+
+1. **The Notion task id**, with instructions to `notion-fetch` it and read the relevant sections
+   verbatim. The Command Center task is where the owner's decisions accumulate, in their words,
+   including later corrections the controller has forgotten.
+2. **Absolute paths to the reference screenshots**, with instructions to `Read` each one before
+   touching a file. Screenshots attached to a Notion task are also saved under
+   `~/dev/work/reports/tsk-ui-base/screenshots/` — check there first. Recent pastes live in
+   `~/.claude/image-cache/<session-id>/`, but that cache is evicted, so a task's images must be
+   copied somewhere durable and the path recorded in the task body.
+
+The dispatch then requires the agent to reply with a requirement-by-requirement checklist —
+`already done` / `will fix` / `blocked` — BEFORE it edits anything, so a misread surfaces in one
+message instead of in a diff the owner has to review by eye.
+
+Corrections go to the SAME agent via `SendMessage` when the fix depends on what it already built.
+A fresh agent re-reads everything and repeats the mistakes it cannot see.
+
 ## ⛔ Never write a CSS `:has()` selector (purged 2026-08-13, commit `ccd3cc1`)
 
 Not a style preference. Profiling the live app's startup freeze found the WebContent main
