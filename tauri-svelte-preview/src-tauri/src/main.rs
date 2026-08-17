@@ -5813,6 +5813,8 @@ fn main() {
             agent_conversation::list_agent_conversation_events,
             agent_conversation::update_agent_conversation_session_meta,
             agent_conversation::read_agent_conversation_transcript,
+            agent_conversation::import_agent_conversation_transcript,
+            agent_conversation::extend_agent_conversation_import,
             agent_conversation::start_agent_conversation_terminal_projection,
             agent_conversation::stop_agent_conversation_terminal_projection,
             agent_conversation::save_agent_conversation_attachment,

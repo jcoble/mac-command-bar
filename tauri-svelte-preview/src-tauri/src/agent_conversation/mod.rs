@@ -356,6 +356,39 @@ pub async fn read_agent_conversation_transcript(
     ))
 }
 
+/// One import page reads at most this many transcript bytes.
+const IMPORT_MAX_BYTES: u64 = 1024 * 1024;
+/// One import page keeps at most this many transcript events.
+const IMPORT_MAX_RECORDS: usize = 2_000;
+
+#[tauri::command]
+/// Imports the tail of a past provider transcript as an owned conversation and returns its owned id.
+pub async fn import_agent_conversation_transcript(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    provider: protocol::AgentConversationProvider,
+    native_session_id: String,
+    transcript_path: String,
+    cwd: String,
+) -> CommandResult<String> {
+    command_result(manager.import_transcript_session(
+        provider,
+        &native_session_id,
+        std::path::Path::new(&transcript_path),
+        &cwd,
+        IMPORT_MAX_BYTES,
+        IMPORT_MAX_RECORDS,
+    ))
+}
+
+#[tauri::command]
+/// Adds one older page to an imported conversation and returns how many events it gained.
+pub async fn extend_agent_conversation_import(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> CommandResult<usize> {
+    command_result(manager.extend_imported_session(&owned_id, IMPORT_MAX_BYTES, IMPORT_MAX_RECORDS))
+}
+
 #[tauri::command]
 /// Starts transcript projection for one native conversation session.
 pub async fn start_agent_conversation_terminal_projection(

@@ -326,6 +326,35 @@ impl AgentRuntimeManager {
             .map_err(|error| error.to_string())
     }
 
+    pub fn import_transcript_session(
+        &self,
+        provider: AgentConversationProvider,
+        native_session_id: &str,
+        path: &Path,
+        cwd: &str,
+        max_bytes: u64,
+        max_records: usize,
+    ) -> Result<String, String> {
+        super::transcript_import::import_session(
+            &self.store,
+            provider,
+            native_session_id,
+            path,
+            cwd,
+            max_bytes,
+            max_records,
+        )
+    }
+
+    pub fn extend_imported_session(
+        &self,
+        owned_id: &str,
+        max_bytes: u64,
+        max_records: usize,
+    ) -> Result<usize, String> {
+        super::transcript_import::extend_session(&self.store, owned_id, max_bytes, max_records)
+    }
+
     async fn release_pool_scope(
         &self,
         pool_key: &AdapterPoolKey,

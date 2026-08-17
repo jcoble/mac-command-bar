@@ -1,7 +1,3 @@
-// Nothing outside the tests calls these yet: the command that imports a past session lands with the
-// resume interface. Remove this allowance in that change.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
