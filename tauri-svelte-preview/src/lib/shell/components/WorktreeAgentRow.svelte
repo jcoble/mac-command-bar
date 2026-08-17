@@ -16,7 +16,6 @@
   import ArchiveRestore from '@lucide/svelte/icons/archive-restore';
   import CornerDownLeft from '@lucide/svelte/icons/corner-down-left';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
-  import Folder from '@lucide/svelte/icons/folder';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
 
@@ -429,62 +428,67 @@
           aria-label={`Open session: ${label}`}
           onclick={selectRow}
         >
-          <span class="line meta-line">
-            <Folder class="glyph" aria-hidden="true" />
-            <span data-testid="worktree-agent-meta" class="project">{project}</span>
-
-            {#if presence === 'failed'}
-              <span
-                data-testid="worktree-agent-status"
-                class="failed"
-                title={presentedError?.detail ?? presentedError?.summary}
-              >{presentedError?.summary ?? presenceLabel}</span>
-            {:else if suspended || presence === 'stopped'}
-              <span data-testid="worktree-agent-status" class="idle-label" title={presenceDetail}>
-                {suspended ? 'Suspended' : presenceLabel}
-              </span>
+          <!-- The mark, at the height of the three lines beside it. It carries
+               the provider and whether this session is working, and nothing
+               else: no action is ever drawn on top of it. -->
+          <span
+            data-testid="worktree-agent-provider"
+            class="thumb"
+            role="img"
+            aria-label={providerName}
+          >
+            <ProviderIcon class="thumb-mark" aria-hidden="true" />
+            {#if isWorking}
+              <span class="spinner" class:spinning aria-hidden="true"></span>
             {/if}
+          </span>
 
-            <!-- This empty box permanently reserves the exact 3-button width.
-                 The project truncates here instead of moving when actions appear. -->
-            <span class="action-reserve" aria-hidden="true"></span>
+          <span class="lines">
+            <!-- Line one is the title and only the title. The actions live in
+                 the gutter to its right, which is reserved on every row whether
+                 or not it is hovered, so this never shortens under the pointer. -->
+            <span class="line">
+              <span data-testid="worktree-agent-title" class="session-title">{label}</span>
+            </span>
 
-            <!-- Human attention and elapsed time share one fixed box. Resume
-                 overlays this same box for stopped rows, so hover cannot reflow. -->
-            <span class="status-slot">
+            <span class="line">
+              <span data-testid="worktree-agent-meta" class="project">{project}</span>
+              {#if session.branch}
+                <span class="sep" aria-hidden="true">•</span>
+                <span class="branch">{session.branch}</span>
+              {/if}
+
+              <!-- What the row still needs to say in words. The working state is
+                   the mark's job, so only the states a colour cannot carry are
+                   spelled out here. -->
               {#if needsYou}
                 <span data-testid="worktree-agent-needs-you" class="needs-you">
                   <span class="attention-dot" aria-hidden="true"></span>
                   Needs you
                 </span>
-              {:else}
+              {:else if presence === 'failed'}
                 <span
-                  data-testid="worktree-agent-age"
-                  class="status"
-                  class:working={isWorking}
-                  title={presenceDetail}
-                >
-                  {#if isWorking}
-                    <span class="spinner" class:spinning aria-hidden="true"></span>
-                  {/if}
-                  <span class="age-text">{ageText ?? ''}</span>
+                  data-testid="worktree-agent-status"
+                  class="failed"
+                  title={presentedError?.detail ?? presentedError?.summary}
+                >{presentedError?.summary ?? presenceLabel}</span>
+              {:else if suspended || presence === 'stopped'}
+                <span data-testid="worktree-agent-status" class="idle-label" title={presenceDetail}>
+                  {suspended ? 'Suspended' : presenceLabel}
                 </span>
               {/if}
             </span>
-          </span>
 
-          <span class="line">
-            <span data-testid="worktree-agent-title" class="session-title">{label}</span>
-            <ProviderIcon
-              data-testid="worktree-agent-provider"
-              class="provider-icon"
-              aria-label={providerName}
-            />
-          </span>
-
-          <span class="line">
-            <GitBranch class="glyph" aria-hidden="true" />
-            <span class="branch">{session.branch ?? worktree}</span>
+            <!-- The path is cut from the LEFT: the tail is the part that says
+                 which worktree this is. `direction: rtl` puts the ellipsis on
+                 the near edge, and the `bdi` keeps the path itself reading
+                 left to right inside it. -->
+            <span class="line">
+              <span class="worktree-path" title={worktree}><bdi>{worktree}</bdi></span>
+              <span data-testid="worktree-agent-age" class="age" title={presenceDetail}>
+                <span class="age-text">{ageText ?? ''}</span>
+              </span>
+            </span>
           </span>
         </button>
       {/snippet}
@@ -510,15 +514,25 @@
     </ContextMenu.Content>
   </ContextMenu.Root>
 
-  <!-- The kit cluster is always in the page. Its matching spacer above puts it
-       on line one without covering the title. On hover it sits flush with the
-       row's right edge, leaving only the room the row's own state still needs
-       — the working spinner, a "Needs you" badge, or the resume control. -->
+  <!-- The kit cluster is always in the page and only fades. It sits in the
+       gutter every row reserves for it, level with the title, so revealing it
+       covers no text and moves nothing: the row reads the same width whether
+       the pointer is on it or three rows further down. -->
   <HoverActions
     data-testid="worktree-agent-overlay"
     label="Session actions"
-    class="absolute top-[2px] z-[2]"
+    class="absolute top-[9px] right-[17px] z-[2]"
   >
+    <!-- A stopped session's one extra move, at the head of the cluster so the
+         four standing actions keep their places against the right edge. -->
+    {#if presenceIsRestart}
+      <span data-testid="worktree-agent-resume" class="contents">
+        <HoverActionButton label="Resume session" tone="primary" size="sm" onclick={startSession}>
+          <CornerDownLeft aria-hidden="true" />
+        </HoverActionButton>
+      </span>
+    {/if}
+
     <span data-testid="worktree-agent-jump" class="contents">
       <span data-testid="worktree-agent-jump-session" class="contents">
         <HoverActionButton
@@ -577,14 +591,6 @@
     {/if}
   </HoverActions>
 
-  {#if presenceIsRestart}
-    <span data-testid="worktree-agent-resume" class="resume-slot">
-      <HoverActionButton label="Resume session" tone="primary" size="sm" onclick={startSession}>
-        <CornerDownLeft aria-hidden="true" />
-      </HoverActionButton>
-    </span>
-  {/if}
-
   <!-- Nothing here reads a store: the card renders the snapshot taken when it
        opened, so a transcript event cannot repaint an open floating surface. -->
   {#if cardPlacement && cardView}
@@ -602,38 +608,86 @@
 
 <style>
   .row {
-    /* How much room right of the hover cluster this row's own state still
-       needs. Everything else the status slot holds at rest gives way, so the
-       buttons end up against the rail's right edge. */
-    --rail-status-room: 0px;
+    /* The empty column every row keeps on its right for the action cluster:
+       four 25px buttons and the 4px gaps between them. It is reserved whether
+       or not the row is hovered, which is the whole point — the title and the
+       two lines under it truncate to the same width at rest as they do with
+       the buttons showing, so nothing shifts as the pointer runs down the
+       list. A stopped row reserves one button more, and reserves it always. */
+    --rail-action-gutter: 112px;
     position: relative;
     display: block;
     box-sizing: border-box;
     min-width: 0;
+    /* The highlight block is inset from the rail's edges rather than bled to
+       them, so a hovered row reads as a card in the list. */
+    padding: 0 6px;
     list-style: none;
     color: var(--color-text);
     font-size: 13px;
     line-height: 1.4;
     content-visibility: auto;
-    contain-intrinsic-size: auto 66px;
+    contain-intrinsic-size: auto 70px;
   }
 
+  .row[data-presence='stopped'] { --rail-action-gutter: 141px; }
+
+  /* The mark, then the three lines, then the reserved gutter — which is the
+     row's own right padding, so every line inside stops short of it. */
   .session-row {
     position: relative;
-    display: block;
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    column-gap: 10px;
+    align-items: center;
     width: 100%;
-    min-height: 66px;
+    min-height: 70px;
     padding: var(--rail-row-content-inset);
+    padding-right: calc(var(--rail-action-gutter) + 11px);
     border: 0;
-    /* No rule between rows: the gap and the rounded hover card carry the
+    /* No rule between rows: the gap and the rounded highlight carry the
        separation, which reads calmer than a stack of hairlines. */
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: inherit;
     font: inherit;
     text-align: left;
     cursor: pointer;
+    /* Keeps the selected accent bar inside the rounded corner. */
+    overflow: hidden;
     outline: none;
+  }
+
+  /* The provider mark, at the height of the text beside it. Nothing is ever
+     drawn over this square: it says who is running the session and whether the
+     session is working, and those are the only two things it says. */
+  .thumb {
+    position: relative;
+    display: flex;
+    width: 56px;
+    height: 56px;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--color-elevated) 68%, var(--color-surface));
+    color: var(--color-text-2);
+  }
+
+  :global(.thumb-mark) {
+    width: 26px;
+    height: 26px;
+    flex: 0 0 auto;
+  }
+
+  .row[data-presence='stopped'] .thumb { opacity: 0.6; }
+  .row:hover .thumb { opacity: 1; }
+
+  .lines {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
   }
 
   .row:hover .session-row { background: var(--color-hover); }
@@ -661,96 +715,78 @@
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
   }
-
-  .line + .line { margin-top: 2px; }
 
   .project {
     min-width: 0;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     overflow: hidden;
-    color: var(--color-text-3);
+    color: var(--color-text-2);
     font-size: 11.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  :global(.glyph) {
-    width: 14px;
-    height: 14px;
+  .sep {
     flex: 0 0 auto;
     color: var(--color-text-3);
+    font-size: 11.5px;
   }
 
   .idle-label,
-  .failed { flex: 0 1 auto; }
+  .failed,
+  .needs-you { margin-left: auto; }
 
-  /* Collapsed at rest so the project name keeps the whole line; the space
-     opens only while the pointer is on the row and the buttons are visible. */
-  .action-reserve {
-    width: 0;
-    flex: 0 0 0px;
+  /* The path, cut from the left. Everything about this is on the box rather
+     than the string: `direction: rtl` moves the overflow — and so the ellipsis
+     — to the near edge, `text-align: left` keeps a path that DOES fit sitting
+     where the eye expects it, and the `bdi` in the markup stops the trailing
+     slash of a directory being reordered to the wrong end. */
+  .worktree-path {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    direction: rtl;
+    color: var(--color-text-3);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .row:hover .action-reserve,
-  .row:focus-within .action-reserve {
-    width: 119px;
-    flex: 0 0 119px;
-  }
-
-  /* Sized by what it is actually holding, with a floor so the elapsed clock
-     ticking from "59s" to "1m" does not move the line. It used to be a flat
-     76px, which took that much off the end of the project name on every row
-     whether or not there was anything to put there. */
-  .status-slot {
-    width: auto;
-    min-width: 44px;
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .row[data-presence='working'] { --rail-status-room: 19px; }
-  .row[data-presence='stopped'] { --rail-status-room: 34px; }
-  .row.needs-you-row { --rail-status-room: 82px; }
-
-  /* Four 28px buttons and three 4px gaps, set against the row's right padding
-     plus whatever the state above still claims. */
-  .row :global([data-slot='hover-actions']) {
-    right: calc(11px + var(--rail-status-room));
-  }
-
-  /* Hovering trades the elapsed time for the actions; the spinner stays. */
-  .row:hover .status-slot,
-  .row:focus-within .status-slot {
-    width: var(--rail-status-room);
-    min-width: var(--rail-status-room);
-  }
-
-  .row:hover .age-text,
-  .row:focus-within .age-text { display: none; }
-
-  .status {
+  /* Last activity, dim, at the end of the same line. It is a fixed corner of
+     the row now rather than a slot that hover empties. */
+  .age {
     display: inline-flex;
     flex: 0 0 auto;
     align-items: center;
-    gap: 5px;
+    padding-left: 6px;
     color: var(--color-text-3);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 13px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 
-  /* Working brings the age forward a tier; it never changes place. */
-  .status.working { color: var(--color-text-2); }
+  .row[data-presence='working'] .age { color: var(--color-text-2); }
 
+  /* The working indicator: a small badge on the corner of the mark, which is
+     the only place a session's own state is drawn. A disc rather than a ring
+     around the whole square — a rotating rounded square reads as a wobble,
+     while a circle is what a turning thing is supposed to look like. */
   .spinner {
-    width: 11px;
-    height: 11px;
-    border: 1.5px solid color-mix(in srgb, var(--color-live) 32%, transparent);
+    position: absolute;
+    right: -4px;
+    bottom: -4px;
+    box-sizing: border-box;
+    width: 15px;
+    height: 15px;
+    border: 2px solid color-mix(in srgb, var(--color-live) 30%, var(--color-surface));
     border-top-color: var(--color-live);
     border-radius: 50%;
+    background: var(--color-surface);
   }
 
   /* The only looping motion in the rail, and it runs only while this row is
@@ -766,7 +802,7 @@
     align-items: center;
     gap: 5px;
     color: var(--color-attention);
-    font-size: 12px;
+    font-size: 11.5px;
     font-weight: 600;
     white-space: nowrap;
   }
@@ -784,7 +820,7 @@
     flex: 0 1 auto;
     overflow: hidden;
     color: var(--color-bad);
-    font-size: 13px;
+    font-size: 11.5px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -792,7 +828,7 @@
   .idle-label {
     flex: 0 0 auto;
     color: var(--color-idle);
-    font-size: 13px;
+    font-size: 11.5px;
     white-space: nowrap;
   }
 
@@ -808,14 +844,6 @@
     white-space: nowrap;
   }
 
-  :global(.provider-icon) {
-    width: 14px;
-    height: 14px;
-    flex: 0 0 auto;
-    margin-left: auto;
-    color: var(--color-text-3);
-  }
-
   .branch {
     min-width: 0;
     overflow: hidden;
@@ -826,31 +854,9 @@
     white-space: nowrap;
   }
 
-  /* A stopped row trades elapsed time for one resume control in the same box. */
-  .resume-slot {
-    position: absolute;
-    top: 2px;
-    right: 11px;
-    z-index: 2;
-    width: 28px;
-    display: flex;
-    justify-content: flex-end;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .row[data-presence='stopped']:hover .status,
-  .row[data-presence='stopped']:focus-within .status { opacity: 0; }
-  .row[data-presence='stopped']:hover .resume-slot,
-  .row[data-presence='stopped']:focus-within .resume-slot {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  /* A 16px glyph inside a 28px button: the disc that appears on hover needs
+  /* A 16px glyph inside a 25px button: the disc that appears on hover needs
      the margin around the icon in order to read as a disc. */
-  .row :global([data-slot='hover-actions'] svg),
-  .row :global(.resume-slot [data-slot='icon-button'] svg) { width: 16px; height: 16px; }
+  .row :global([data-slot='hover-actions'] svg) { width: 16px; height: 16px; }
 
   .row[data-presence='stopped'] .project { opacity: 0.72; }
   .row[data-presence='stopped']:hover .project { opacity: 1; }
@@ -881,9 +887,8 @@
      bar answer a pointer or a selection and then stop; only the working spinner
      loops, and only while a real turn is running on screen. */
   @media (prefers-reduced-motion: no-preference) {
-    .status,
     .idle-label,
-    .resume-slot { transition: opacity 120ms ease; }
+    .thumb { transition: opacity 120ms ease; }
 
     .session-row { transition: background-color 140ms ease; }
     .session-row::before { transition: transform 180ms cubic-bezier(0.2, 0, 0, 1); }
