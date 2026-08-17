@@ -1,11 +1,11 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { Button } from '$lib/components/ui/button/index.js';
+  import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import { createVirtualizer } from '@tanstack/svelte-virtual';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
-    conversationRenderWindow,
     conversationTurnGroups,
-    discloseEarlierConversationItems,
     formatWorkedFor,
     type ConversationTurnGroup,
     type ConversationDisplayItem
@@ -60,6 +60,7 @@
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
+  let list = $state<HTMLDivElement | null>(null);
   let tail = $state<HTMLDivElement | null>(null);
   let follow = $state(true);
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
@@ -71,21 +72,84 @@
   let lastComposerHeight = -1;
   let lastItemCount = -1;
   let userItemIds = $state<string[]>([]);
-  let windowConversationId = $state('');
-  let disclosedItems = $state(0);
-  let disclosureAnchorItemId = $state<string | null>(null);
+  let openedConversationId = $state('');
   let foldConversationId = $state('');
   let expandedTurns = $state<Map<string, boolean>>(new Map());
-  const renderWindow = $derived(conversationRenderWindow(items, renderWindowId, {
-    conversationId: windowConversationId,
-    disclosedItems,
-    disclosureAnchorItemId
-  }));
-  const renderedItems = $derived(renderWindow.items);
+  /** Every item the conversation holds. A stored row is drawn, never offered. */
+  const renderedItems = $derived(items);
   const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
   const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId));
+
+  /*
+   * One turn is one virtual row. Turns are the unit the transcript already
+   * groups by, so a row is a whole exchange rather than a fragment of one, and
+   * a turn is never split across the boundary of what is mounted.
+   *
+   * Heights are measured, not declared: a turn holding one line and a turn
+   * holding a diff are nothing alike, and an estimate that guessed would make
+   * the scrollbar lie. The estimate below is only what an unmeasured row is
+   * assumed to be until it has been on screen once.
+   */
+  /*
+   * A row is estimated from how many characters it holds, not from a fixed
+   * guess. Text length is the only thing known before a row has ever been on
+   * screen that actually tracks its height: a row is as tall as its writing
+   * wraps. A flat number is wrong in both directions at once — it inflates the
+   * scroll height for the rows that draw nothing (a stored transcript is mostly
+   * usage and config records, which render no text at all) and understates the
+   * ones carrying a long reply or a tool dump.
+   *
+   * These are only estimates for rows not yet measured; `measureElement`
+   * replaces each with its real height the first time it paints.
+   */
+  const ROW_CHARS_PER_LINE = 90;
+  const ROW_LINE_HEIGHT = 20;
+  const ROW_CHROME = 12;
+  const ROW_MIN_HEIGHT = 4;
+
+  function rowHeightEstimate(group: ConversationTurnGroup): number {
+    let characters = 0;
+    for (const item of group.items) {
+      const record = item as { text?: string; title?: string; output?: string };
+      characters += (record.text?.length ?? 0)
+        + (record.title?.length ?? 0)
+        + (record.output?.length ?? 0);
+    }
+    if (characters === 0) return ROW_MIN_HEIGHT;
+    return Math.ceil(characters / ROW_CHARS_PER_LINE) * ROW_LINE_HEIGHT + ROW_CHROME;
+  }
+
+  let rowEstimates: number[] = [];
+  $effect(() => {
+    rowEstimates = renderedGroups.map(rowHeightEstimate);
+  });
+
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: 0,
+    getScrollElement: () => host,
+    estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
+    overscan: 6
+  });
+
+  let appliedRowCount = -1;
+  let appliedHost: HTMLDivElement | null = null;
+  $effect(() => {
+    // Guarded because setOptions publishes the store, and this effect reads it:
+    // without the guard the two would drive each other in a loop.
+    const count = renderedGroups.length;
+    const element = host;
+    if (count === appliedRowCount && element === appliedHost) return;
+    appliedRowCount = count;
+    appliedHost = element;
+    $virtualizer.setOptions({
+      count,
+      getScrollElement: () => element,
+      estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
+      overscan: 6
+    });
+  });
   const anchoredUserIndex = $derived(anchoredUserItemId
     ? renderedItems.findIndex((item) => item.itemId === anchoredUserItemId)
     : -1);
@@ -114,10 +178,8 @@
   });
 
   $effect(() => {
-    if (windowConversationId === renderWindowId) return;
-    windowConversationId = renderWindowId;
-    disclosedItems = 0;
-    disclosureAnchorItemId = null;
+    if (openedConversationId === renderWindowId) return;
+    openedConversationId = renderWindowId;
     anchoredUserItemId = null;
     foldConversationId = renderWindowId;
     expandedTurns = new Map();
@@ -140,6 +202,23 @@
       host.scrollTop = latestWritingScrollTop();
       follow = true;
     });
+  });
+
+  $effect(() => {
+    // The scroll above happens one tick after the items exist, and one tick is
+    // too early: a restored transcript publishes every item in a single update,
+    // then keeps growing as markdown, code blocks and images lay themselves out.
+    // Landing on the end and stopping there left the reader stranded near the
+    // top of a page that got taller underneath them. So the end is held, not
+    // aimed at once — until the reader takes the view back, which is what drops
+    // `openingToLatest`.
+    if (!list || !host) return;
+    const observer = new ResizeObserver(() => {
+      if (!host || !scrollState.openingToLatest) return;
+      host.scrollTop = latestWritingScrollTop();
+    });
+    observer.observe(list);
+    return () => observer.disconnect();
   });
 
   $effect(() => {
@@ -219,31 +298,15 @@
     const item = [...host.querySelectorAll<HTMLElement>('[data-item-id]')]
       .find((candidate) => candidate.dataset.itemId === itemId);
     if (!item) return null;
-    const hostTop = host.getBoundingClientRect().top;
+    // Measured from where the transcript BEGINS, not from the box's outer edge.
+    // The centre pane's controls are laid over the top of this box, and the top
+    // inset below is what keeps the reading clear of them; measuring from the
+    // outer edge parked a just-sent message underneath those controls, which
+    // reads as a message that scrolled away.
+    const hostTop = host.getBoundingClientRect().top + host.clientTop
+      + Number.parseFloat(getComputedStyle(host).paddingTop);
     const itemTop = item.getBoundingClientRect().top;
     return host.scrollTop + itemTop - hostTop - offsetPx;
-  }
-
-  function itemViewportTop(itemId: string): number | null {
-    if (!host) return null;
-    const item = [...host.querySelectorAll<HTMLElement>('[data-item-id]')]
-      .find((candidate) => candidate.dataset.itemId === itemId);
-    return item?.getBoundingClientRect().top ?? null;
-  }
-
-  async function showEarlier(): Promise<void> {
-    if (!host || renderWindow.hiddenCount === 0 || renderedItems.length === 0) return;
-    const firstItemId = renderedItems[0].itemId;
-    const previousViewportTop = itemViewportTop(firstItemId);
-    const next = discloseEarlierConversationItems(items, renderWindowId, renderWindow.state);
-    windowConversationId = next.state.conversationId;
-    disclosedItems = next.state.disclosedItems;
-    disclosureAnchorItemId = next.state.disclosureAnchorItemId;
-    await tick();
-    const nextViewportTop = itemViewportTop(firstItemId);
-    if (previousViewportTop !== null && nextViewportTop !== null) {
-      host.scrollTop += nextViewportTop - previousViewportTop;
-    }
   }
 
   /** Where to stop when following the newest writing. The empty space under the
@@ -366,6 +429,15 @@
     }
   }
 
+  /** Hands each mounted turn to the virtualizer, which reads its real height
+   * from `data-index` and re-lays the rows below it. A turn that grows while it
+   * is on screen — a reply streaming in, a fold opening — is re-measured by the
+   * observer the virtualizer keeps on the element. */
+  function measureRow(node: HTMLDivElement): { destroy(): void } {
+    $virtualizer.measureElement(node);
+    return { destroy(): void {} };
+  }
+
   function userInputInterrupts(node: HTMLElement): { destroy(): void } {
     node.addEventListener('wheel', handleUserInput, { passive: true });
     node.addEventListener('touchstart', handleUserInput, { passive: true });
@@ -390,49 +462,65 @@
     use:userInputInterrupts
   >
     {#if renderedItems.length === 0}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
-    <div class="timeline-list" data-testid="conversation-timeline-list">
-      {#if renderWindow.hiddenCount > 0}
-        <div class="earlier-row" data-testid="conversation-show-earlier-row">
-          <Button
-            variant="ghost"
-            size="sm"
-            data-testid="conversation-show-earlier"
-            onclick={() => void showEarlier()}
-          >Show earlier — {renderWindow.hiddenCount.toLocaleString()} more</Button>
-        </div>
-      {/if}
-      {#each renderedGroups as group (group.turnId ?? group.items[0]?.itemId)}
-        {@const expanded = turnExpanded(group)}
-        {@const firstWorkItemId = group.workItemIds[0]}
-        {#each group.items as item (item.itemId)}
-          {@const workItem = group.workItemIds.includes(item.itemId)}
-          {#if group.turnId !== null && item.itemId === firstWorkItemId && group.completed}
-            <button
-              class="turn-fold"
-              data-testid="conversation-turn-fold"
-              type="button"
-              aria-expanded={expanded}
-              onclick={() => toggleTurn(group)}
-            >
-              <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
-              <span class="turn-fold-chevron" aria-hidden="true">{expanded ? '⌄' : '>'}</span>
-            </button>
-          {/if}
-          {#if !workItem || expanded}
-            <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} />
-            {#if showWorking && item.itemId === anchoredUserItemId}
-              <div class="working-row" data-testid="conversation-working-indicator" role="status">
-                <span class="working-dot" use:animateWhenVisible aria-hidden="true"></span>
-                <span>Working…</span>
-              </div>
-            {/if}
-          {/if}
-        {/each}
+    <div
+      class="timeline-list"
+      data-testid="conversation-timeline-list"
+      bind:this={list}
+      style={`height:${$virtualizer.getTotalSize() + (showActiveTurnTail ? viewportHeight : 0)}px`}
+    >
+      {#each $virtualizer.getVirtualItems() as row (row.key)}
+        {@const group = renderedGroups[row.index]}
+        {#if group}
+          {@const expanded = turnExpanded(group)}
+          {@const firstWorkItemId = group.workItemIds[0]}
+          <div
+            class="turn-row"
+            data-index={row.index}
+            use:measureRow
+            style={`transform:translateY(${row.start}px)`}
+          >
+            {#each group.items as item (item.itemId)}
+              {@const workItem = group.workItemIds.includes(item.itemId)}
+              {#if group.turnId !== null && item.itemId === firstWorkItemId && group.completed}
+                <button
+                  class="turn-fold"
+                  data-testid="conversation-turn-fold"
+                  type="button"
+                  aria-expanded={expanded}
+                  onclick={() => toggleTurn(group)}
+                >
+                  <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
+                  <span class="turn-fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
+                </button>
+              {/if}
+              {#if !workItem || expanded}
+                <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} />
+                {#if showWorking && item.itemId === anchoredUserItemId}
+                  <div class="working-row" data-testid="conversation-working-indicator" role="status">
+                    <span class="working-dot" use:animateWhenVisible aria-hidden="true"></span>
+                    <span>Working…</span>
+                  </div>
+                {/if}
+              {/if}
+            {/each}
+          </div>
+        {/if}
       {/each}
-      {#if showActiveTurnTail}<div class="active-turn-tail" bind:this={tail} style={`height:${viewportHeight}px`} aria-hidden="true"></div>{/if}
+      {#if showActiveTurnTail}
+        <!-- Inside the list and directly after the last row, which is where it
+             sat before the transcript was virtualized. Outside it, this became a
+             screen-tall blank between the newest message and the prompt, because
+             it stacked with the scroll box's own bottom padding. -->
+        <div
+          class="active-turn-tail"
+          bind:this={tail}
+          style={`transform:translateY(${$virtualizer.getTotalSize()}px);height:${viewportHeight}px`}
+          aria-hidden="true"
+        ></div>
+      {/if}
     </div>
   </div>
-  {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" onclick={jumpToLatest}>Jump to latest</button>{/if}
+  {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" aria-label="Jump to latest" onclick={jumpToLatest}><ArrowDown size={16} strokeWidth={2} aria-hidden="true" /></button>{/if}
 </div>
 
 <style>
@@ -441,23 +529,41 @@
      inherited, and declaring them globally turns every overlay scrollbar in the
      app into a permanent one, including horizontal bars nobody asked for. Code
      blocks and tables carry their own overflow, so this pane never scrolls sideways. */
-  .timeline-scroll{box-sizing:border-box;height:100%;overflow:auto;overflow-x:hidden;overflow-anchor:none;padding:30px 24px calc(var(--composer-height) + 16px);scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;scrollbar-gutter:stable;overscroll-behavior:contain}
-  .timeline-list{display:flex;flex-direction:column;gap:16px;width:min(820px,100%);min-height:1px;margin:0 auto}
-  .earlier-row{display:flex;justify-content:center;min-height:28px}
+  /* The top inset is the centre pane's head, because that is what is laid over
+     the top of this box. Whatever comes to rest at the top — the first message
+     of a short conversation, or the one just sent — lands below the controls
+     rather than behind them. It is an inset, not a gap: the reading still
+     scrolls up through it. */
+  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;height:100%;overflow:auto;overflow-x:hidden;overflow-anchor:none;padding:var(--center-head-height) 24px calc(var(--composer-height) + 16px);scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;scrollbar-gutter:stable;overscroll-behavior:contain}
+  /* The list is now a measured column of absolutely placed turns, so its own
+     height is what the virtualizer reports rather than what its children add up
+     to. The 16px that used to be `gap` lives on each row instead: absolute
+     children are not flex items and gap would not reach them. */
+  /* Top-aligned on purpose. A conversation starts at the top of the pane and
+     grows downward; when it reaches the prompt the scroll box takes over and the
+     newest writing stays at the bottom. Bottom-anchoring this (margin-top:auto)
+     leaves a short conversation stranded against the prompt with the empty pane
+     above it, which is not how a conversation reads. */
+  .timeline-list{position:relative;flex:none;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:16px;width:100%;padding-bottom:16px}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
   .turn-fold:hover{color:var(--color-text)}
   .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
-  .turn-fold-chevron{display:inline-block;line-height:1;transform:translateY(-1px);transition:transform .14s ease}
-  .empty{display:grid;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
+  .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
+  .turn-fold-chevron.open{transform:rotate(90deg)}
+  .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{display:flex;align-items:center;gap:8px;min-height:20px;color:var(--color-text-3);font-size:13px}
   .working-dot{width:6px;height:6px;border-radius:999px;background:currentColor}
-  .active-turn-tail{flex:none;margin-top:-16px;pointer-events:none}
-  .jump-latest{position:absolute;right:24px;bottom:calc(var(--composer-height) + 16px);min-height:28px;padding:6px 12px;border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);font-size:13px;box-shadow:var(--shadow-sm);cursor:pointer}
+  .active-turn-tail{position:absolute;top:0;left:0;width:100%;pointer-events:none}
+  /* A disc under the middle of the transcript, holding one arrow. It sits over
+     the column it scrolls rather than off in the corner, and it says what it
+     does by pointing, so it stays out of the reading it is offering to move. */
+  .jump-latest{position:absolute;left:50%;bottom:calc(var(--composer-height) + 16px);display:grid;place-items:center;width:32px;height:32px;padding:0;transform:translateX(-50%);border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);box-shadow:var(--shadow-sm);cursor:pointer}
   .jump-latest:hover{background:var(--color-hover)}
   .jump-latest:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
   /* The working dot pulses only while a reader can see it. A transcript scrolled
      back to an older turn would otherwise keep animating a dot nobody is
      looking at, and an off-screen animation costs the same as an on-screen one. */
   @keyframes working-pulse{0%,100%{opacity:.38;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
-  @media (prefers-reduced-motion:no-preference){.jump-latest{transition:background .14s ease,box-shadow .14s ease}.working-dot{animation:working-pulse 1.1s ease-in-out infinite;animation-play-state:var(--motion-state,running)}}
+  @media (prefers-reduced-motion:no-preference){.turn-fold-chevron{transition:transform .14s ease}.jump-latest{transition:background .14s ease,box-shadow .14s ease}.working-dot{animation:working-pulse 1.1s ease-in-out infinite;animation-play-state:var(--motion-state,running)}}
 </style>

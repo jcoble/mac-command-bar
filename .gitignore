@@ -21,3 +21,10 @@ docs/superpowers/plans/*.code-workspace
 
 # playwright-cli verification artifacts (regenerable)
 .playwright-cli/
+
+# Screenshots and run output from verification lanes. Regenerable, and large:
+# 327 files / 32 MB had collected here by 2026-08-17. Authored notes under
+# docs/ are kept; only the generated output is ignored.
+output/
+tauri-svelte-preview/output/
+tauri-svelte-preview/*.png

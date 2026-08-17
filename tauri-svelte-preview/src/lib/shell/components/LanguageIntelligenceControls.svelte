@@ -102,21 +102,35 @@
 </div>
 
 <style>
-  /* One capsule, the same height and shape as the icon pills it leads, so the
-   * row reads as a single group rather than a control parked beside one. */
+  /* A SECTION of the pill capsule, not a capsule of its own. It carried its own
+   * fill and its own shadow once, which put a second edge inside the group and
+   * left the head reading as two things side by side. The capsule owns the
+   * surface now; this owns only its contents and the hairline that ends it. */
   .language-switch {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     flex: 0 0 auto;
     min-width: max-content;
-    height: 30px;
-    padding: 0 10px;
-    border-radius: var(--radius-pill);
-    background: var(--pill-surface);
-    box-shadow: var(--shadow-sm);
+    height: 28px;
+    /* Nothing on the right: the icon that follows the hairline carries its own
+       room inside its 28px square, and adding to it here left the line sitting
+       closer to the switch than to the icon it divides it from. */
+    padding: 0 0 0 8px;
     color: var(--color-text-2);
     user-select: none;
+  }
+
+  /* The one line inside the capsule. A switch and a set of surface tabs are
+   * different kinds of control, and this says so without another edge or
+   * another shadow. Short of the capsule's full height on purpose: a line that
+   * ran the whole way would read as a seam between two capsules again. */
+  .language-switch::after {
+    content: '';
+    width: 1px;
+    height: 16px;
+    margin-left: 2px;
+    background: color-mix(in srgb, var(--color-text) 16%, transparent);
   }
 
   .language-badge {

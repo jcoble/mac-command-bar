@@ -131,10 +131,77 @@
   --color-scrim: rgba(8, 10, 12, 0.58);
 
   /* Shape — one consistent 8 / 12 / 16 rhythm for controls, panels and
-     overlays. The pill remains inherited from the shared scale. */
+     overlays, plus the capsule every round control and chip is cut to. */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* ------------------------------------------------------------------
+   * Menu sheets — one look for every menu the shell opens from a control:
+   * the composer's add menu, its approvals chip, its model chip and that
+   * chip's submenus, and the narrow-width overflow menu. The shared
+   * dropdown primitive is painted from these names, so all of them move
+   * together and none of them states a colour of its own.
+   *
+   * The sheet is mixed out of the theme's own text and surface colours
+   * rather than named as a grey, which is what lets a theme repaint it.
+   * ------------------------------------------------------------------ */
+  --menu-sheet-surface: color-mix(in srgb, var(--color-text) 7%, var(--color-surface));
+  --menu-sheet-radius: var(--radius-lg);
+  --menu-sheet-inset: 6px;
+  --menu-sheet-min-width: 240px;
+  --menu-label-inset: 6px 10px 3px;
+  --menu-row-radius: var(--radius-md);
+  --menu-row-inset: 7px 10px;
+  --menu-row-gap: 10px;
+  --menu-row-hover: color-mix(in srgb, var(--color-text) 9%, transparent);
+  --menu-row-active: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  --menu-row-description-gap: 2px;
+  --menu-separator-inset: 5px;
+
+  /* ------------------------------------------------------------------
+   * The message composer — the capsule at the foot of a conversation, and
+   * the row of controls along its bottom edge.
+   *
+   * Empty, it is a single capsule line. With something in it, the box
+   * relaxes to a rounded rectangle and the message takes a line of its
+   * own above the controls, so the two radii are separate values: the
+   * box eases between them as the message grows.
+   * ------------------------------------------------------------------ */
+  /* The capsule sits LIGHTER than the page it floats on, which is what makes
+     it read as a raised control rather than a well cut into the backdrop. */
+  --composer-surface: var(--color-elevated);
+  --composer-surface-drop: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface));
+  --composer-border: color-mix(in srgb, var(--color-border) 82%, transparent);
+  --composer-border-locked: color-mix(in srgb, var(--color-attention) 30%, var(--color-border));
+  --composer-border-focus: color-mix(in srgb, var(--color-text) 28%, var(--color-border));
+  --composer-radius-capsule: var(--radius-pill);
+  --composer-radius-relaxed: 24px;
+  --composer-inset: 9px;
+  --composer-prompt-inset: 4px 8px 2px;
+  --composer-prompt-inset-capsule: 0 6px;
+  --composer-row-gap: 6px;
+  --composer-control-size: 34px;
+  --composer-meter-inset: 4px 8px;
+  --composer-attachment-inset: 6px;
+  --composer-attachment-surface: color-mix(in srgb, var(--color-bg) 62%, var(--color-surface));
+  --composer-attachment-border: color-mix(in srgb, var(--color-border) 76%, transparent);
+  --composer-attachment-scrim: color-mix(in srgb, var(--color-bg) 88%, transparent);
+
+  /* A control on the composer's row — the add button, the mic, and the
+     approvals and model chips — is one pill in three states.
+     Rest carries NO fill: the controls read as marks on the composer's own
+     surface. The fill is what says "this control's menu is the one on
+     screen", so giving it away at rest would leave the open state with
+     nothing to say. */
+  --composer-pill-surface: transparent;
+  --composer-pill-surface-hover: color-mix(in srgb, var(--color-text) 9%, transparent);
+  --composer-pill-surface-open: color-mix(in srgb, var(--color-text) 16%, transparent);
+  --composer-pill-text: var(--color-text-2);
+  --composer-pill-text-open: var(--color-text);
+  --composer-pill-inset: 7px 12px;
+  --composer-pill-gap: 5px;
 
   /* ------------------------------------------------------------------
    * Pill tabs — the capsule row that names the centre pane's surface.
@@ -163,6 +230,20 @@
   /* The height of the editor's row of file tabs. Read by the row itself so it
      cannot drift from what anything else assumes about it. */
   --editor-tab-row-height: 35px;
+
+  /* The centre pane's head — the capsule of controls laid OVER the top of the
+     pane rather than given a row of its own. The first name is how tall that
+     capsule is; the second is how far down the pane it reaches once the offset
+     it sits at (clear of the editor's tab row, with 6px of air above and
+     below) is added.
+     The second name is the one anything underneath reads. The transcript did
+     not read anything at all, and its top inset and the resting place of a
+     just-sent message were both shorter than the head — so a message the reader
+     had only just sent came to rest underneath the controls and looked gone. */
+  --center-head-row-height: 32px;
+  --center-head-height: calc(
+    var(--editor-tab-row-height) + 6px + var(--center-head-row-height) + 6px
+  );
 
 
   /* ------------------------------------------------------------------

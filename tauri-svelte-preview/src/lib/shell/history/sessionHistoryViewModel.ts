@@ -1,9 +1,23 @@
+import type { RepositoryCheckout } from '../../tauriSource.ts';
 import type { SessionLibraryRecord } from '../sessionLibrary/sessionLibraryModel.ts';
 
 export interface SessionHistoryFilterOptions {
   query?: string;
   provider?: string;
   windowState?: SessionHistoryWindowState;
+  /**
+   * The checkouts each repository still has on disk, keyed by repository root,
+   * as git reported them.
+   *
+   * When a repository is in here, this is the authority on which checkouts it
+   * shows: every live one appears even if nothing was ever run in it, and a
+   * folder that has since been deleted does not, along with the sessions that
+   * ran there. A repository absent from the map keeps the old behaviour of
+   * showing whichever checkouts its sessions name, which is what happens for a
+   * folder git cannot be asked about — a temporary directory, or a project whose
+   * root was never resolved.
+   */
+  checkouts?: Readonly<Record<string, readonly RepositoryCheckout[]>>;
 }
 
 export const SESSION_HISTORY_ROW_WINDOW = 25;
@@ -133,10 +147,16 @@ function pathName(path: string, fallback: string): string {
  * asking the data source for fields it does not expose yet.
  */
 function projectRootFor(path: string): string {
-  const shared = path.match(/^(.*)\/worktrees\/([^/]+)\/[^/]+(?:\/.*)?$/);
+  // The checkout folder under the repository's name is optional. A session run
+  // from the container itself — `…/worktrees/mac-command-bar`, no checkout after
+  // it — used to match nothing and become a SECOND project of its own, with the
+  // same name as the real one. The repository's own sessions and its worktrees
+  // then sat in one group while a decoy holding two rows and no worktrees sat in
+  // another, which is what "it's not showing the worktrees for it" was.
+  const shared = path.match(/^(.*)\/worktrees\/([^/]+)(?:\/.*)?$/);
   if (shared) return canonicalPath(`${shared[1]}/${shared[2]}`);
 
-  const local = path.match(/^(.*)\/\.worktrees\/[^/]+(?:\/.*)?$/);
+  const local = path.match(/^(.*)\/\.worktrees(?:\/.*)?$/);
   if (local) return canonicalPath(local[1]);
 
   return path;
@@ -145,7 +165,14 @@ function projectRootFor(path: string): string {
 function identifyPaths(record: SessionLibraryRecord): PathIdentity {
   const worktreePath = canonicalPath(record.canonicalCwd || record.projectPath) || 'Unknown checkout';
   const recordedProjectPath = canonicalPath(record.projectPath);
-  const projectPath = projectRootFor(recordedProjectPath || worktreePath) || projectRootFor(worktreePath);
+  // Git's answer first. It knows which repository a folder belongs to even when
+  // the folder's name says nothing — a worktree's `.git` file names the main
+  // checkout outright — and it is right for every layout at once, which no
+  // reading of the path is. `projectRootFor` below is the fallback for folders
+  // git can no longer be asked about: a worktree that has since been deleted.
+  const projectPath = canonicalPath(record.projectRoot)
+    || projectRootFor(recordedProjectPath || worktreePath)
+    || projectRootFor(worktreePath);
   return {
     projectPath,
     projectName: pathName(projectPath, 'Other sessions'),
@@ -272,8 +299,38 @@ export function buildSessionHistoryViewModel(
     worktrees: Map<string, { name: string; path: string; rows: SessionHistoryRow[] }>;
   }>();
 
+  // Seed each repository with the checkouts git says it still has, before any
+  // session is filed. This is what puts a worktree on screen when the only
+  // thing ever run inside it was a dispatched lane, and it fixes the order:
+  // the repository's own folder first, then its worktrees.
+  const known = options.checkouts ?? {};
+  for (const [root, list] of Object.entries(known)) {
+    const projectKey = `project:${canonicalPath(root)}`;
+    const project = projects.get(projectKey) ?? {
+      name: pathName(canonicalPath(root), 'Other sessions'),
+      path: canonicalPath(root),
+      worktrees: new Map()
+    };
+    projects.set(projectKey, project);
+    for (const checkout of list) {
+      const path = canonicalPath(checkout.path);
+      const key = `worktree:${path}`;
+      if (!project.worktrees.has(key)) {
+        project.worktrees.set(key, { name: pathName(path, 'Unknown checkout'), path, rows: [] });
+      }
+    }
+  }
+
   for (const row of filtered) {
     const projectKey = `project:${row.projectPath}`;
+    const live = known[row.projectPath];
+    // A session whose folder is gone is not shown. Git listed this repository's
+    // checkouts and this one is not among them, so there is nothing left to
+    // open, resume, or run in.
+    if (live && !live.some((checkout) => canonicalPath(checkout.path) === row.worktreePath)) {
+      continue;
+    }
+
     let project = projects.get(projectKey);
     if (!project) {
       project = { name: row.projectName, path: row.projectPath, worktrees: new Map() };
@@ -321,7 +378,11 @@ export function buildSessionHistoryViewModel(
     };
   }).toSorted(compareGroups);
 
-  return { totalCount: filtered.length, providers, projects: projectGroups };
+  // Counted from what was placed, not from what passed the filters: a session
+  // whose checkout has been deleted is left out above, and a header claiming it
+  // was still there would be wrong by exactly that many.
+  const totalCount = projectGroups.reduce((total, project) => total + project.count, 0);
+  return { totalCount, providers, projects: projectGroups };
 }
 
 export function createSessionHistoryCollapseState(): SessionHistoryCollapseState {

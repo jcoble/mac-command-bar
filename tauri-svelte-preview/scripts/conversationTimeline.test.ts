@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import {
-  conversationRenderWindow,
   conversationTurnGroups,
   displayItemFromAgentItem,
   displayItemsFromConversationEvents,
@@ -109,7 +108,7 @@ const textItem = (
 
 const toolItem = (
   itemId: string,
-  turnId: string,
+  turnId: string | null,
   timestampMs: number,
   state: 'running' | 'completed' = 'completed'
 ): ConversationDisplayItem => ({
@@ -171,28 +170,38 @@ const running = conversationTurnGroups([
 ]);
 assert.equal(running[0].completed, false, 'a turn remains incomplete while any item runs');
 
-const ungrouped = conversationTurnGroups([
-  textItem('user', 'ungrouped-user', null, 1),
-  textItem('assistant', 'ungrouped-assistant', null, 2)
+// A transcript read back out of the store carries no turn ids, because the
+// provider's own file never wrote any. Its turns are read off the prompts: one
+// prompt opens a turn and holds everything until the next one. Grouping the
+// whole conversation as a single turn — which is what a null id used to do —
+// left a resumed session with one fold over a flat column of prose.
+const stored = conversationTurnGroups([
+  textItem('user', 'stored-user-a', null, 1),
+  toolItem('stored-tool', null, 2),
+  textItem('assistant', 'stored-answer-a', null, 3),
+  textItem('user', 'stored-user-b', null, 4),
+  textItem('assistant', 'stored-answer-b', null, 5)
 ]);
-assert.equal(ungrouped[0].turnId, null);
-assert.deepEqual(ungrouped[0].items.map((item) => item.itemId), ['ungrouped-user', 'ungrouped-assistant']);
+assert.equal(stored.length, 2, 'each prompt in a stored transcript opens its own turn');
+assert.deepEqual(
+  stored.map((group) => group.items.map((item) => item.itemId)),
+  [['stored-user-a', 'stored-tool', 'stored-answer-a'], ['stored-user-b', 'stored-answer-b']]
+);
+assert.equal(stored[0].turnId, 'stored-turn:stored-user-a', 'a derived turn is named after the prompt that opened it');
+assert.deepEqual(stored[0].workItemIds, ['stored-tool'], 'a derived turn folds its work like any other');
+
+// Every row of an older import carries the moment the import ran, so the turn
+// spans no time at all. That is not something to report as a duration.
+const instant = conversationTurnGroups([
+  textItem('user', 'instant-user', 'instant-turn', 7),
+  textItem('assistant', 'instant-answer', 'instant-turn', 7)
+]);
+assert.equal(instant[0].elapsedMs, null, 'a turn that spans no time reports no elapsed time');
 
 assert.equal(formatWorkedFor(800), '0.8s');
 assert.equal(formatWorkedFor(5_540), '5.5s');
 assert.equal(formatWorkedFor(42_100), '42s');
 assert.equal(formatWorkedFor(1_150_000), '19m 10s');
-
-const boundaryTurn = Array.from({ length: 4 }, (_, index) =>
-  textItem(index === 0 ? 'user' : 'reasoning', `boundary-${index}`, 'boundary-turn', index)
-);
-const windowItems = [
-  ...boundaryTurn,
-  ...Array.from({ length: 118 }, (_, index) => textItem('assistant', `later-${index}`, null, index + 4))
-];
-const wholeTurnWindow = conversationRenderWindow(windowItems, 'window-boundary');
-assert.equal(wholeTurnWindow.hiddenCount, 0, 'a render window expands backward instead of splitting a turn');
-assert.equal(wholeTurnWindow.items[0].itemId, 'boundary-0');
 
 // An error arrives once and must be shown once, with what it said. The typed
 // item used to be built by the generic path, which reads `text` and never

@@ -94,11 +94,27 @@ pub async fn ensure_agent_conversation(
     request: EnsureAgentConversationRequest,
 ) -> CommandResult<AgentConversationConnection> {
     let owned_id = request.owned_id.clone();
-    log_command_error(
+    let ensured = log_command_error(
         "ensure_agent_conversation",
         &owned_id,
         manager.ensure_async(request).await,
-    )
+    )?;
+
+    // Ensuring does not start an adapter, which is why a resumed conversation
+    // opens on "Agent settings unavailable": the model list, the effort levels
+    // and the command roster all come from a handshake, and the adapter is
+    // otherwise started by a turn.
+    //
+    // Starting one here was tried and taken out again. Suspending afterwards
+    // does not stop the process — the pool detaches the session and keeps the
+    // adapter warm for the next turn — and the config it fetched did not
+    // survive into the next ensure, so the "have we got models yet" test stayed
+    // false and every open started another one. Several adapters were left
+    // running, hundreds of megabytes each.
+    //
+    // Whatever replaces it has to keep the config it fetched, and has to stop
+    // the process rather than suspend it.
+    Ok(ensured)
 }
 
 #[tauri::command]
@@ -282,6 +298,24 @@ pub async fn set_agent_conversation_config_option(
 }
 
 #[tauri::command]
+/// Asks a conversation's adapter what it offers, once, and stops it again.
+///
+/// For a conversation resumed from a past transcript, which has never run and so
+/// has never been told what it offers. What comes back is stored, and every
+/// later read goes to the database the same way an existing session's does.
+pub async fn warm_agent_conversation_config(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    generation: u64,
+) -> CommandResult<AgentConversationConfigState> {
+    command_result(
+        manager
+            .warm_conversation_config(&owned_id, generation)
+            .await,
+    )
+}
+
+#[tauri::command]
 /// Reads the current provider configuration for one conversation.
 pub fn read_agent_conversation_config(
     manager: tauri::State<'_, AgentRuntimeManager>,
@@ -315,7 +349,29 @@ pub async fn read_agent_conversation_snapshot(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
 ) -> CommandResult<Option<AgentConversationSnapshot>> {
-    command_result(manager.snapshot(&owned_id))
+    let result = manager.snapshot(&owned_id);
+    // TEMPORARY: tracking down a resumed transcript that is stored but not shown.
+    let short = &owned_id[..8.min(owned_id.len())];
+    match &result {
+        Ok(Some(snapshot)) => eprintln!(
+            "[snapshot] {short} SOME conn_gen={} suspended={} last_seq={} events={} [{}]",
+            snapshot.connection.generation,
+            snapshot.suspended,
+            snapshot.last_sequence,
+            snapshot.events.len(),
+            snapshot
+                .events
+                .iter()
+                .map(|event| format!("{}g{}", event.sequence, event.generation))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Ok(None) => {
+            eprintln!("[snapshot] {short} NONE - no live overlay for this session")
+        }
+        Err(error) => eprintln!("[snapshot] {short} ERR {error}"),
+    }
+    command_result(result)
 }
 
 #[tauri::command]
@@ -360,24 +416,40 @@ pub async fn read_agent_conversation_transcript(
 }
 
 /// One import page reads at most this many transcript bytes.
-const IMPORT_MAX_BYTES: u64 = 1024 * 1024;
+/// How much of a past transcript one read pulls in — the initial import and
+/// each Load More alike. Bytes bound this rather than records because a single
+/// turn carrying a large tool dump can outweigh many ordinary ones.
+const IMPORT_MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// One import page keeps at most this many transcript events.
 const IMPORT_MAX_RECORDS: usize = 2_000;
 
 #[tauri::command]
-/// Imports the tail of a past provider transcript as an owned conversation and returns its owned id.
-pub async fn import_agent_conversation_transcript(
+/// Names a past provider transcript as an owned conversation and returns its owned id, reading no records.
+pub async fn begin_agent_conversation_import(
     manager: tauri::State<'_, AgentRuntimeManager>,
     provider: protocol::AgentConversationProvider,
     native_session_id: String,
     transcript_path: String,
     cwd: String,
+    title: Option<String>,
 ) -> CommandResult<String> {
-    command_result(manager.import_transcript_session(
+    command_result(manager.begin_import_transcript_session(
         provider,
         &native_session_id,
         std::path::Path::new(&transcript_path),
         &cwd,
+        title,
+    ))
+}
+
+#[tauri::command]
+/// Reads the newest page of a named import and returns how many events it gained.
+pub async fn finish_agent_conversation_import(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> CommandResult<usize> {
+    command_result(manager.finish_import_transcript_session(
+        &owned_id,
         IMPORT_MAX_BYTES,
         IMPORT_MAX_RECORDS,
     ))
@@ -415,29 +487,38 @@ pub async fn stop_agent_conversation_terminal_projection(
 /// Saves one validated image in the conversation attachment vault.
 pub async fn save_agent_conversation_attachment(
     app: tauri::AppHandle,
+    manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     mime_type: String,
     bytes: Vec<u8>,
 ) -> CommandResult<attachments::SavedConversationAttachment> {
-    command_result(attachments::save(&app, &owned_id, &mime_type, &bytes))
+    command_result(attachments::save(
+        &app,
+        manager.store(),
+        &owned_id,
+        &mime_type,
+        &bytes,
+    ))
 }
 
 #[tauri::command]
 /// Lists validated images stored for one conversation owner.
 pub async fn read_agent_conversation_attachments(
     app: tauri::AppHandle,
+    manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
 ) -> CommandResult<Vec<attachments::SavedConversationAttachment>> {
-    command_result(attachments::read(&app, &owned_id))
+    command_result(attachments::read(&app, manager.store(), &owned_id))
 }
 
 #[tauri::command]
 /// Deletes one validated image from the conversation attachment vault.
 pub async fn delete_agent_conversation_attachment(
     app: tauri::AppHandle,
+    manager: tauri::State<'_, AgentRuntimeManager>,
     request: attachments::DeleteConversationAttachmentRequest,
 ) -> CommandResult<()> {
-    command_result(attachments::delete(&app, request))
+    command_result(attachments::delete(&app, manager.store(), request))
 }
 
 /// Rejects blank request identifiers before manager work begins.

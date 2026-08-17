@@ -12,7 +12,7 @@ use super::{
     ChildAgentDescriptor, CodexChildRollout, ConversationMetadata, ProjectedRecord,
     TranscriptMessage, TranscriptSnapshot,
 };
-use crate::agent_conversation::protocol::AgentEventType;
+use crate::agent_conversation::protocol::{AgentConversationPayload, AgentEventType};
 
 pub(super) fn discover_path(id: &str) -> Option<PathBuf> {
     let home = home_dir().ok()?;
@@ -140,6 +140,43 @@ fn find(root: &Path, id: &str) -> Option<PathBuf> {
     None
 }
 
+/// The context Codex hands the model at the top of a thread, removed.
+///
+/// Codex opens a session by injecting what the person never typed — the
+/// repository's AGENTS.md, the list of plugins it could install, the working
+/// folder and date, and its own goal notes — and each one arrives wearing the
+/// `user` role. Measured on this machine, the AGENTS.md message ran 29,444
+/// characters and the plugin list 32,969, so an imported conversation opened
+/// with tens of kilobytes of machinery ahead of the first real sentence.
+///
+/// A message that is nothing but injected context becomes empty and is dropped
+/// by the caller. `<environment_context>` is cut rather than dropped whole
+/// because Codex appends it to messages that also carry other text.
+fn strip_injected(text: &str) -> String {
+    const INJECTED_OPENINGS: &[&str] = &[
+        "# AGENTS.md instructions",
+        "<recommended_plugins>",
+        "<codex_internal_context",
+    ];
+    if INJECTED_OPENINGS
+        .iter()
+        .any(|opening| text.starts_with(opening))
+    {
+        return String::new();
+    }
+
+    const OPEN: &str = "<environment_context>";
+    const CLOSE: &str = "</environment_context>";
+    let mut cleaned = text.to_string();
+    while let Some(start) = cleaned.find(OPEN) {
+        let Some(end) = cleaned[start..].find(CLOSE).map(|at| start + at + CLOSE.len()) else {
+            break;
+        };
+        cleaned.replace_range(start..end, "");
+    }
+    cleaned.trim().to_string()
+}
+
 pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
     let mut records = Vec::new();
     match (
@@ -170,6 +207,11 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                 .filter(|text| !text.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n");
+            let text = if role == "user" {
+                strip_injected(&text)
+            } else {
+                text
+            };
             if text.is_empty() {
                 return records;
             }
@@ -195,6 +237,23 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                     json!({"historical": true, "transcriptRole": role}),
                 ),
             ]);
+            // The same message, said the way the app says it. This is what gets
+            // stored; the item above is the older wrapped form, kept for the one
+            // reader that still asks for it.
+            let native = if role == "user" {
+                AgentConversationPayload::UserMessage {
+                    item_id: item_id.clone(),
+                    text: text.clone(),
+                    completed: true,
+                    attachment_ids: Vec::new(),
+                }
+            } else {
+                AgentConversationPayload::AssistantMessage {
+                    item_id: item_id.clone(),
+                    text: text.clone(),
+                    completed: true,
+                }
+            };
             records.push(ProjectedRecord {
                 key: format!("item:{item_id}"),
                 event_type: AgentEventType::ItemCompleted,
@@ -204,7 +263,36 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                     ("historical".into(), json!(true)),
                     ("item".into(), item),
                 ]),
+                native: Some(native),
             });
+        }
+        (Some("response_item"), Some("function_call" | "custom_tool_call")) => {
+            // The call, not its result. Both lines carry the same `call_id`, but
+            // only this one names the tool, and the app's tool event has one
+            // field for what a call was — so a row is written from the call and
+            // the result line is read past.
+            let Some(call_id) = value.pointer("/payload/call_id").and_then(Value::as_str) else {
+                return records;
+            };
+            let name = value
+                .pointer("/payload/name")
+                .and_then(Value::as_str)
+                .unwrap_or("Tool");
+            // Codex writes a call's arguments as a string: JSON for a plain
+            // function call, a short script for a custom one. Decoded when it is
+            // JSON so the row can show the command rather than the envelope.
+            let arguments = value
+                .pointer("/payload/arguments")
+                .or_else(|| value.pointer("/payload/input"))
+                .and_then(Value::as_str)
+                .map(|raw| serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!(raw)))
+                .unwrap_or(Value::Null);
+            records.push(super::tool_record(
+                call_id,
+                name,
+                super::tool_summary(&arguments),
+                timestamp(value),
+            ));
         }
         (Some("turn_context"), _) => {
             let config = json!({
@@ -221,14 +309,29 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                     ("historical".into(), json!(true)),
                     ("config".into(), config),
                 ]),
+                // The app has no event of its own for a past session's settings,
+                // so this one stays wrapped. Only the newest is kept anyway.
+                native: None,
             });
         }
         (Some("event_msg"), Some("token_count")) => {
+            let used_tokens = value
+                .pointer("/payload/info/total_token_usage/total_tokens")
+                .and_then(Value::as_u64);
+            let context_window = value
+                .pointer("/payload/info/model_context_window")
+                .and_then(Value::as_u64);
             records.push(ProjectedRecord {
                 key: stable_key("codex-usage", line),
                 event_type: AgentEventType::UsageUpdated,
                 timestamp_ms: timestamp(value),
                 item_id: None,
+                native: Some(AgentConversationPayload::Usage {
+                    input_tokens: None,
+                    output_tokens: None,
+                    used_tokens,
+                    context_window,
+                }),
                 payload: BTreeMap::from([
                     ("historical".into(), json!(true)),
                     (
@@ -276,6 +379,11 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                     ("historical".into(), json!(true)),
                     ("children".into(), json!([child])),
                 ]),
+                // A live child update names the tool call that started it, and a
+                // transcript does not record that, so there is nothing faithful
+                // to convert this into. It stays wrapped rather than inventing
+                // an id that points at nothing.
+                native: None,
             });
         }
         _ => {}

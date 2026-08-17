@@ -47,9 +47,12 @@
 :root {
   color-scheme: dark;
 
-  /* Clean, native UI font stack for chrome/interface text. */
+  /* Clean, native UI font stack for chrome/interface text.
+     The system face leads deliberately. Interface text here sits at 13-14px on
+     a near-black ground, and macOS hints its own UI face for exactly that; a
+     geometric webfont draws the same sizes with rounder bowls and flatter stems
+     and reads soft next to it. */
   font-family:
-    'Figtree',
     ui-sans-serif,
     system-ui,
     -apple-system,

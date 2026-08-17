@@ -140,9 +140,14 @@ function turnGroup(turnId: string | null, items: readonly ConversationDisplayIte
     .map((item) => item.itemId);
   const firstTimestamp = items[0]?.timestampMs;
   const lastTimestamp = items[items.length - 1]?.timestampMs;
-  const elapsedMs = Number.isFinite(firstTimestamp) && Number.isFinite(lastTimestamp)
+  const span = Number.isFinite(firstTimestamp) && Number.isFinite(lastTimestamp)
     ? Math.max(0, lastTimestamp - firstTimestamp)
-    : null;
+    : 0;
+  // Zero is not a length of time anyone worked for. Every row of an older
+  // import carries the moment the import ran rather than the moment the work
+  // happened, so the whole turn reads as one instant; the fold says "Worked"
+  // in that case instead of claiming "Worked for 0.0s".
+  const elapsedMs = span > 0 ? span : null;
   return {
     turnId,
     items,
@@ -153,11 +158,34 @@ function turnGroup(turnId: string | null, items: readonly ConversationDisplayIte
   };
 }
 
+/** The turn each row belongs to, filling in the ones a stored transcript lacks.
+ *
+ * A live turn is told to us: every row the agent sends carries the id of the
+ * turn that produced it. A transcript read back out of the store carries none,
+ * because the provider's own file never wrote one down. Those rows all arrived
+ * with a null id, and grouping by that id put an entire resumed conversation
+ * into a single turn — one fold covering everything, which is why a resumed
+ * conversation read as a flat column of prose.
+ *
+ * A prompt is what starts a turn, so a user message is where a stored turn
+ * begins and everything after it belongs to that turn until the next prompt.
+ * The id is the first row's own id, which keeps it stable across re-renders —
+ * the fold's open state is keyed by it. */
+function turnIdsOf(items: readonly ConversationDisplayItem[]): (string | null)[] {
+  let storedTurnId: string | null = null;
+  return items.map((item) => {
+    if (item.turnId) return item.turnId;
+    if (item.kind === 'user' || storedTurnId === null) storedTurnId = `stored-turn:${item.itemId}`;
+    return storedTurnId;
+  });
+}
+
 /** Groups adjacent display rows without changing their transcript order. */
 export function conversationTurnGroups(
   items: readonly ConversationDisplayItem[],
   activeTurnId: string | null = null
 ): readonly ConversationTurnGroup[] {
+  const turnIds = turnIdsOf(items);
   const groups: ConversationTurnGroup[] = [];
   let groupItems: ConversationDisplayItem[] = [];
   let groupTurnId: string | null = null;
@@ -166,12 +194,12 @@ export function conversationTurnGroups(
     groups.push(turnGroup(groupTurnId, groupItems, activeTurnId));
     groupItems = [];
   };
-  for (const item of items) {
-    const itemTurnId = item.turnId ?? null;
+  items.forEach((item, index) => {
+    const itemTurnId = turnIds[index];
     if (groupItems.length > 0 && itemTurnId !== groupTurnId) publish();
     groupTurnId = itemTurnId;
     groupItems.push(item);
-  }
+  });
   publish();
   return groups;
 }
@@ -184,63 +212,27 @@ export function formatWorkedFor(elapsedMs: number): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-export const CONVERSATION_RENDER_WINDOW = 120;
-
-export interface ConversationRenderWindowState {
-  conversationId: string;
-  disclosedItems: number;
-  disclosureAnchorItemId: string | null;
-}
-
-export interface ConversationRenderWindow<T> {
-  items: readonly T[];
-  hiddenCount: number;
-  state: ConversationRenderWindowState;
-}
-
-/** Returns a slice of the projection, preserving the projection's item objects. */
-export function conversationRenderWindow<T extends { readonly itemId: string; readonly turnId?: string | null }>(
-  items: readonly T[],
-  conversationId: string,
-  previous?: ConversationRenderWindowState
-): ConversationRenderWindow<T> {
-  const disclosedItems = previous?.conversationId === conversationId
-    ? Math.max(0, previous.disclosedItems)
-    : 0;
-  const disclosureAnchorItemId = previous?.conversationId === conversationId
-    ? previous.disclosureAnchorItemId
-    : null;
-  const disclosedStart = disclosureAnchorItemId
-    ? items.findIndex((item) => item.itemId === disclosureAnchorItemId)
-    : -1;
-  let hiddenCount = disclosedStart >= 0
-    ? disclosedStart
-    : Math.max(0, items.length - CONVERSATION_RENDER_WINDOW - disclosedItems);
-  const boundaryTurnId = items[hiddenCount]?.turnId ?? null;
-  if (hiddenCount > 0 && boundaryTurnId !== null) {
-    while (hiddenCount > 0 && items[hiddenCount - 1].turnId === boundaryTurnId) hiddenCount -= 1;
-  }
-  return {
-    items: items.slice(hiddenCount),
-    hiddenCount,
-    state: { conversationId, disclosedItems, disclosureAnchorItemId }
-  };
-}
-
-/** Extends the explicit render window by one bounded page. */
-export function discloseEarlierConversationItems<T extends { readonly itemId: string; readonly turnId?: string | null }>(
-  items: readonly T[],
-  conversationId: string,
-  previous?: ConversationRenderWindowState
-): ConversationRenderWindow<T> {
-  const current = conversationRenderWindow(items, conversationId, previous);
-  const nextHiddenCount = Math.max(0, current.hiddenCount - CONVERSATION_RENDER_WINDOW);
-  return conversationRenderWindow(items, conversationId, {
-    conversationId,
-    disclosedItems: current.state.disclosedItems + Math.min(CONVERSATION_RENDER_WINDOW, current.hiddenCount),
-    disclosureAnchorItemId: items[nextHiddenCount]?.itemId ?? null
-  });
-}
+/*
+ * There is no render window here any more, and adding one back is a decision,
+ * not a tidy-up.
+ *
+ * What stood here kept the last 120 items and put the rest behind a "Show
+ * earlier" button. The count was of stored events, not of messages, and a
+ * transcript carries far more of the former than the latter — usage and config
+ * updates outnumber the writing several times over. So the button hid whole
+ * conversations while the window filled with rows that draw nothing, and it
+ * hid them by default: what the reader saw first was the boundary.
+ *
+ * What the database holds, the transcript shows. If a transcript ever needs a
+ * budget, it belongs in a virtualizer that renders every item and only mounts
+ * the visible ones — never in a button that asks the reader to request their
+ * own history back.
+ *
+ * "Load more" means one thing now: fetching older turns that are NOT in the
+ * database yet, from the provider's own transcript on disk. That is
+ * `extendAgentConversationImportFromTauri`, and it is a different act from
+ * drawing a row this app already stores.
+ */
 
 type ConversationEvent = AgentEvent | AgentConversationEvent;
 type StringRecord = Record<string, unknown>;
@@ -376,6 +368,10 @@ function kindFor(item: AgentItem): ConversationDisplayItem['kind'] {
 function toolKindOf(value: unknown, title = ''): ConversationToolKind {
   const normalized = `${stringOf(value)} ${title}`.trim().toLowerCase().replaceAll('_', '-');
   if (/file|edit|patch|diff|write/.test(normalized)) return 'file-edit';
+  // The web is checked before searching in general, so a web search is drawn
+  // with a globe and a local one with a magnifier. Both are searches; only one
+  // of them left the machine.
+  if (/web/.test(normalized)) return 'fetch';
   if (/search|grep|find|query/.test(normalized)) return 'search';
   if (/fetch|read|view|open|http|mcp|web/.test(normalized)) return 'fetch';
   if (/command|execute|terminal|shell|run/.test(normalized)) return 'command';
@@ -686,11 +682,36 @@ function eventMetadata(
   return compact;
 }
 
+/** What a work row calls itself.
+ *
+ * A provider names its own functions — `apply_patch`, `web_search`, `Edit` —
+ * and that is the provider's vocabulary, not the reader's. A row says what was
+ * done instead, and the provider's own detail stays in the line beside it.
+ *
+ * Only the two kinds a transcript is mostly made of are renamed, and only when
+ * the call itself says so. A shell call still names the command it ran, and a
+ * `Grep` still says `Grep`, because that is the work and any broader guess
+ * would mislabel it. */
+function plainToolTitle(toolKind: ConversationToolKind, name: string): string {
+  if (toolKind === 'file-edit') return 'Edited a file';
+  if (/web/i.test(name)) return 'Searched the web';
+  return name;
+}
+
 function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, payloadKind: string): AgentItem {
-  const title = stringOf(payload.title, stringOf(payload.name, stringOf(payload.command, stringOf(payload.path, 'Tool'))));
-  const contentText = textFromValue(payload.content) || stringOf(payload.summary);
+  // A row that was handed its own title keeps it: the only caller that does so
+  // is the whole-turn file change, which already knows it covers several files.
+  const givenTitle = stringOf(payload.title);
+  const name = givenTitle || stringOf(payload.name, stringOf(payload.command, stringOf(payload.path, 'Tool')));
+  // A summary is the row's one-line preview, and nothing else. It used to
+  // stand in for the body as well, which printed the same sentence twice —
+  // once on the row and again inside it when it was opened — and, on a file
+  // edit with no patch attached, offered the file's path as though it were the
+  // change. Only real content is a body.
+  const contentText = textFromValue(payload.content);
   const rawKind = stringOf(payload.toolKind, stringOf(payload.category, stringOf(payload.type)));
-  const toolKind = toolKindOf(rawKind, title);
+  const toolKind = toolKindOf(rawKind, name);
+  const title = givenTitle || plainToolTitle(toolKind, name);
   const diff = stringOf(payload.diff)
     || firstNestedString(payload.content, ['diff', 'patch'])
     || (toolKind === 'file-edit' ? contentText : '');
@@ -757,7 +778,7 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
     return toolItemFromPayload(event, payload, payloadKind);
   }
   if (payloadKind === 'turnDiff') {
-    return toolItemFromPayload(event, { ...payload, title: stringOf(payload.title, 'Files changed'), toolKind: 'file-edit', status: stringOf(payload.status, 'completed') }, payloadKind);
+    return toolItemFromPayload(event, { ...payload, title: stringOf(payload.title, 'Edited files'), toolKind: 'file-edit', status: stringOf(payload.status, 'completed') }, payloadKind);
   }
   if (payloadKind === 'availableCommandsUpdate') {
     const commands = Array.isArray(payload.availableCommands) ? payload.availableCommands : [];

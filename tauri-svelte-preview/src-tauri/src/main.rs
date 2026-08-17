@@ -1,6 +1,6 @@
 //! Heavy Tauri commands are async because synchronous command bodies run on the UI thread.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +16,7 @@ use mcb_core::reference_counts::{
     MAX_REFERENCE_SCAN_BYTES,
 };
 use mcb_core::scanners::sessions::{scan_sessions, AgentSessionRecord};
+use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 use orchestration::{
     list_orchestration_runs_sync, record_orchestration_event_sync, OrchestrationEvent,
     OrchestrationRun,
@@ -831,6 +832,18 @@ async fn count_source_references(
     .map_err(|error| format!("Source reference count task failed: {error}"))?
 }
 
+/// Open the web inspector on the shell's own window.
+///
+/// The embedded browser's tabs have had this for a while; the window the app
+/// itself is drawn in did not, so looking at the shell meant reaching for the
+/// context menu. WebKit offers its own shortcut, but only where the inspector is
+/// compiled in, which before the `devtools` feature meant debug builds alone.
+#[tauri::command]
+fn open_main_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.open_devtools();
+    Ok(())
+}
+
 #[tauri::command]
 async fn read_source_lsp_status(
     root: String,
@@ -1534,6 +1547,32 @@ async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, St
     tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Worktree scan task failed: {error}"))?
+}
+
+/// The checkouts of several repositories at once, for the History panel's tree.
+///
+/// The panel sends the repository roots it already learned from the session
+/// scan and gets back, for each, the folders that still exist: the repository
+/// itself and its live worktrees. That is what makes a worktree appear even when
+/// the only thing ever run inside it was a dispatched lane.
+///
+/// One command rather than one per repository — there are dozens of them, and a
+/// round trip each would draw the panel in stages.
+#[tauri::command]
+async fn list_repository_checkouts(
+    roots: Vec<String>,
+) -> Result<BTreeMap<String, Vec<RepositoryCheckout>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        roots
+            .into_iter()
+            .map(|root| {
+                let checkouts = repository_checkouts(&root);
+                (root, checkouts)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| format!("Checkout scan task failed: {error}"))
 }
 
 #[tauri::command]
@@ -5752,6 +5791,7 @@ fn main() {
             find_source_definitions,
             find_source_references,
             count_source_references,
+            open_main_devtools,
             read_source_lsp_status,
             list_source_lsp_statuses,
             warm_source_lsp_for_root,
@@ -5806,6 +5846,7 @@ fn main() {
             git_workspace::amend_git_commit,
             git_workspace::list_open_pull_requests,
             list_project_worktrees,
+            list_repository_checkouts,
             list_project_git_refs,
             remove_project_worktree,
             archive_project_worktree,
@@ -5862,6 +5903,7 @@ fn main() {
             agent_conversation::set_agent_conversation_config,
             agent_conversation::set_agent_conversation_config_option,
             agent_conversation::read_agent_conversation_config,
+            agent_conversation::warm_agent_conversation_config,
             agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
             agent_conversation::read_agent_conversation_snapshot,
@@ -5869,7 +5911,8 @@ fn main() {
             agent_conversation::list_agent_conversation_events,
             agent_conversation::update_agent_conversation_session_meta,
             agent_conversation::read_agent_conversation_transcript,
-            agent_conversation::import_agent_conversation_transcript,
+            agent_conversation::begin_agent_conversation_import,
+            agent_conversation::finish_agent_conversation_import,
             agent_conversation::extend_agent_conversation_import,
             agent_conversation::start_agent_conversation_terminal_projection,
             agent_conversation::stop_agent_conversation_terminal_projection,

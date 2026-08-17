@@ -95,7 +95,11 @@ export function sessionTranscriptImport(
   const transcriptPath = record.logPath?.trim() ?? '';
   const cwd = record.canonicalCwd?.trim() ?? '';
   if (!provider || !nativeSessionId || !transcriptPath || !cwd) return null;
-  return { provider, nativeSessionId, transcriptPath, cwd };
+  // The name travels with the import so the DATABASE gets it. Setting it on the
+  // rail row after the fact looked right until the next reload, when the rail
+  // read the row back and found no title on it.
+  const title = record.title?.trim() || null;
+  return { provider, nativeSessionId, transcriptPath, cwd, title };
 }
 
 function action(

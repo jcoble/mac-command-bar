@@ -4,7 +4,36 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 3;
+
+/// Event kinds where only the newest row still means anything.
+///
+/// Both are running state rather than history: the conversation reads each one
+/// into a single value and the next one overwrites it, and neither is ever drawn
+/// in the transcript. Keeping every tick of them was two thirds of every row in
+/// the database — one session held two hundred and seventy-nine rows to carry a
+/// twenty-three message conversation — and dropping the older ones leaves what
+/// is read back byte for byte the same.
+///
+/// `content.delta` is deliberately not here. It looks like the same kind of
+/// noise and is not: on a live session the assistant's own words are only ever
+/// stored as deltas, so deleting them would delete half the conversation. Those
+/// are worth merging one day, which is a rewrite rather than a delete.
+const SUPERSEDED_BY_NEWER: [&str; 2] = ["usage.updated", "session.config.updated"];
+
+/// The attachment index, created by both the first-run schema and the upgrade
+/// from version one. The row names the file and the application names the root,
+/// so `relative_path` stays valid when the data folder moves to another machine.
+const ATTACHMENTS_SCHEMA: &str = "CREATE TABLE attachments (
+    id TEXT PRIMARY KEY,
+    owned_id TEXT NOT NULL REFERENCES sessions(owned_id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    byte_length INTEGER NOT NULL,
+    relative_path TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX attachments_owned_id_idx ON attachments(owned_id, file_name);";
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -73,6 +102,18 @@ pub struct EventRow {
     pub turn_id: Option<String>,
     pub kind: String,
     pub payload_json: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachmentRow {
+    pub id: String,
+    pub owned_id: String,
+    pub file_name: String,
+    pub mime_type: String,
+    pub byte_length: i64,
+    /// Where the file sits under the application's attachment folder.
+    pub relative_path: String,
     pub created_at_ms: i64,
 }
 
@@ -178,12 +219,60 @@ impl SessionStore {
                         StoreError::sqlite("could not create the session schema", error)
                     })?;
                 transaction
+                    .execute_batch(ATTACHMENTS_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the attachment table", error)
+                    })?;
+                transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
                         StoreError::sqlite("could not record the schema version", error)
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish schema creation", error)
+                })?;
+            }
+            1 => {
+                // A version one database holds real conversations, so the upgrade
+                // only adds the attachment table and its index and leaves every
+                // existing table and row exactly as it found them.
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the attachment upgrade", error)
+                    })?;
+                transaction
+                    .execute_batch(ATTACHMENTS_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the attachment table", error)
+                    })?;
+                // A version one database has the same superseded rows a version
+                // two one does, and goes straight to the current version, so it
+                // is cleared here rather than falling through to that upgrade.
+                clear_superseded_events(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the attachment upgrade", error)
+                })?;
+            }
+            2 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the event cleanup", error)
+                    })?;
+                clear_superseded_events(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the cleaned schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the event cleanup", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -317,6 +406,19 @@ impl SessionStore {
                 ],
             )
             .map_err(|error| StoreError::sqlite("could not append the event", error))?;
+        // Written in the same transaction as the row that supersedes them, so
+        // the database is never briefly missing the value they carried.
+        if SUPERSEDED_BY_NEWER.contains(&row.kind.as_str()) {
+            transaction
+                .execute(
+                    "DELETE FROM events
+                     WHERE owned_id = ? AND kind = ? AND seq < ?",
+                    params![row.owned_id, row.kind, row.seq],
+                )
+                .map_err(|error| {
+                    StoreError::sqlite("could not drop the superseded events", error)
+                })?;
+        }
         let updated = transaction
             .execute(
                 "UPDATE sessions
@@ -430,7 +532,9 @@ impl SessionStore {
                 [owned_id],
                 |row| row.get(0),
             )
-            .map_err(|error| StoreError::sqlite("could not inspect conversation display events", error))
+            .map_err(|error| {
+                StoreError::sqlite("could not inspect conversation display events", error)
+            })
     }
 
     pub fn enforce_event_cap(&self, owned_id: &str, keep: u32) -> Result<u64> {
@@ -545,6 +649,64 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Records one saved attachment file against the session that owns it.
+    ///
+    /// The insert reads the owner from `sessions`, so an attachment for a session
+    /// that is not stored fails with a plain reason instead of a foreign key error.
+    pub fn add_attachment(&self, row: &AttachmentRow) -> Result<()> {
+        let connection = self.lock()?;
+        let changed = connection
+            .execute(
+                "INSERT INTO attachments (
+                    id, owned_id, file_name, mime_type, byte_length, relative_path, created_at
+                 )
+                 SELECT ?, owned_id, ?, ?, ?, ?, ?
+                 FROM sessions
+                 WHERE owned_id = ?",
+                params![
+                    row.id,
+                    row.file_name,
+                    row.mime_type,
+                    row.byte_length,
+                    row.relative_path,
+                    row.created_at_ms,
+                    row.owned_id,
+                ],
+            )
+            .map_err(|error| StoreError::sqlite("could not save the attachment", error))?;
+        if changed != 1 {
+            return Err(StoreError::message(
+                "could not save the attachment because the session does not exist",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn list_attachments(&self, owned_id: &str) -> Result<Vec<AttachmentRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, owned_id, file_name, mime_type, byte_length, relative_path, created_at
+                 FROM attachments
+                 WHERE owned_id = ?
+                 ORDER BY file_name ASC",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare the attachment list", error))?;
+        let rows = statement
+            .query_map([owned_id], attachment_from_row)
+            .map_err(|error| StoreError::sqlite("could not list attachments", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the attachment list", error))
+    }
+
+    pub fn delete_attachment(&self, id: &str) -> Result<()> {
+        let connection = self.lock()?;
+        connection
+            .execute("DELETE FROM attachments WHERE id = ?", [id])
+            .map_err(|error| StoreError::sqlite("could not delete the attachment", error))?;
+        Ok(())
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
         self.connection
             .lock()
@@ -552,8 +714,84 @@ impl SessionStore {
     }
 }
 
+/// Keeps only the newest row of each superseded kind, per session.
+///
+/// Runs on the caller's connection or transaction, so an upgrade can do it as
+/// part of the same durable change that records the new schema version.
+fn clear_superseded_events(connection: &Connection) -> Result<()> {
+    for kind in SUPERSEDED_BY_NEWER {
+        connection
+            .execute(
+                "DELETE FROM events
+                 WHERE kind = ?
+                   AND seq < (
+                       SELECT MAX(newest.seq)
+                       FROM events AS newest
+                       WHERE newest.owned_id = events.owned_id
+                         AND newest.kind = events.kind
+                   )",
+                [kind],
+            )
+            .map_err(|error| StoreError::sqlite("could not clear the superseded events", error))?;
+    }
+    Ok(())
+}
+
 /// Writes every persisted session field on the caller's connection or transaction.
+/// Where the transcript importer records how far back through a past transcript
+/// a session has been read.
+const IMPORT_CURSOR_KEY: &str = "import";
+
+/// The session's stored metadata, with an import cursor it already had carried
+/// forward when the writer did not bring one.
+///
+/// Only the importer writes this key. Every other writer rebuilds `extra` from
+/// the fields the runtime knows about — generation, owner, config, capabilities,
+/// rail metadata — and the cursor is not among them, so an ordinary save deleted
+/// it. Resuming a past session does both at once: it reads the transcript and it
+/// starts the agent, and whichever finished second decided whether reading the
+/// transcript worked at all. When it lost, the reader got "Session has no import
+/// cursor" instead of a conversation.
+///
+/// Saving is not a decision to forget. A writer that supplies its own cursor
+/// still wins; this only refuses to drop one on the floor.
+fn extra_json_keeping_import_cursor(connection: &Connection, row: &SessionRow) -> Result<String> {
+    let Ok(serde_json::Value::Object(mut next)) =
+        serde_json::from_str::<serde_json::Value>(&row.extra_json)
+    else {
+        return Ok(row.extra_json.clone());
+    };
+    if next.contains_key(IMPORT_CURSOR_KEY) {
+        return Ok(row.extra_json.clone());
+    }
+    let stored: Option<String> = connection
+        .query_row(
+            "SELECT extra FROM sessions WHERE owned_id = ?",
+            params![row.owned_id],
+            |stored| stored.get(0),
+        )
+        .optional()
+        .map_err(|error| {
+            StoreError::sqlite("could not read the stored session metadata", error)
+        })?;
+    let Some(stored) = stored else {
+        return Ok(row.extra_json.clone());
+    };
+    let Ok(serde_json::Value::Object(previous)) =
+        serde_json::from_str::<serde_json::Value>(&stored)
+    else {
+        return Ok(row.extra_json.clone());
+    };
+    let Some(cursor) = previous.get(IMPORT_CURSOR_KEY) else {
+        return Ok(row.extra_json.clone());
+    };
+    next.insert(IMPORT_CURSOR_KEY.to_string(), cursor.clone());
+    serde_json::to_string(&serde_json::Value::Object(next))
+        .map_err(|_| StoreError::message("could not encode the session metadata"))
+}
+
 fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
+    let extra_json = extra_json_keeping_import_cursor(connection, row)?;
     connection
         .execute(
             "INSERT INTO sessions (
@@ -590,7 +828,7 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
                 row.suspended,
                 row.created_at_ms,
                 row.last_activity_at_ms,
-                row.extra_json,
+                extra_json,
             ],
         )
         .map_err(|error| StoreError::sqlite("could not save the session", error))?;
@@ -625,6 +863,18 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
         kind: row.get(3)?,
         payload_json: row.get(4)?,
         created_at_ms: row.get(5)?,
+    })
+}
+
+fn attachment_from_row(row: &Row<'_>) -> rusqlite::Result<AttachmentRow> {
+    Ok(AttachmentRow {
+        id: row.get(0)?,
+        owned_id: row.get(1)?,
+        file_name: row.get(2)?,
+        mime_type: row.get(3)?,
+        byte_length: row.get(4)?,
+        relative_path: row.get(5)?,
+        created_at_ms: row.get(6)?,
     })
 }
 
@@ -668,6 +918,64 @@ mod tests {
         }
     }
 
+    /// Resuming a past session reads its transcript and starts its agent at the
+    /// same time. The importer writes the cursor; the runtime rebuilds `extra`
+    /// from what it knows, which never includes one. Whichever finished second
+    /// used to decide whether reading the transcript worked, and when the
+    /// runtime won the reader got "Session has no import cursor".
+    #[test]
+    fn saving_a_session_does_not_drop_an_import_cursor_it_was_not_given() {
+        let (_directory, _path, store) = open_temp_store();
+        let mut imported = fixture_session("owned-import", 2_000);
+        imported.extra_json = r#"{"source":"test","import":{"transcriptPath":"/tmp/a.jsonl","cutoffOffset":42,"reachedStart":false}}"#.to_owned();
+        store.upsert_session(&imported).expect("import the session");
+
+        // What the runtime writes: no cursor, because it has never had one.
+        let runtime = fixture_session("owned-import", 3_000);
+        store.upsert_session(&runtime).expect("save from the runtime");
+
+        let stored = store
+            .get_session("owned-import")
+            .expect("read the session back")
+            .expect("the session is there");
+        let extra: serde_json::Value =
+            serde_json::from_str(&stored.extra_json).expect("stored metadata is JSON");
+        assert_eq!(
+            extra.get("import").and_then(|cursor| cursor.get("cutoffOffset")),
+            Some(&serde_json::Value::from(42)),
+            "the cursor survives a save that did not carry one"
+        );
+        assert_eq!(
+            extra.get("source"),
+            Some(&serde_json::Value::from("test")),
+            "and the writer's own metadata is what was written"
+        );
+    }
+
+    /// The importer moving its own cursor still wins.
+    #[test]
+    fn a_writer_that_brings_an_import_cursor_replaces_the_stored_one() {
+        let (_directory, _path, store) = open_temp_store();
+        let mut first = fixture_session("owned-import", 2_000);
+        first.extra_json = r#"{"import":{"transcriptPath":"/tmp/a.jsonl","cutoffOffset":42,"reachedStart":false}}"#.to_owned();
+        store.upsert_session(&first).expect("import the session");
+
+        let mut moved = fixture_session("owned-import", 3_000);
+        moved.extra_json = r#"{"import":{"transcriptPath":"/tmp/a.jsonl","cutoffOffset":7,"reachedStart":true}}"#.to_owned();
+        store.upsert_session(&moved).expect("move the cursor");
+
+        let stored = store
+            .get_session("owned-import")
+            .expect("read the session back")
+            .expect("the session is there");
+        let extra: serde_json::Value =
+            serde_json::from_str(&stored.extra_json).expect("stored metadata is JSON");
+        assert_eq!(
+            extra.get("import").and_then(|cursor| cursor.get("cutoffOffset")),
+            Some(&serde_json::Value::from(7))
+        );
+    }
+
     fn fixture_event(owned_id: &str, seq: i64) -> EventRow {
         EventRow {
             owned_id: owned_id.to_owned(),
@@ -677,6 +985,97 @@ mod tests {
             payload_json: format!(r#"{{"seq":{seq}}}"#),
             created_at_ms: 10_000 + seq,
         }
+    }
+
+    fn fixture_event_of_kind(owned_id: &str, seq: i64, kind: &str) -> EventRow {
+        EventRow {
+            kind: kind.to_owned(),
+            ..fixture_event(owned_id, seq)
+        }
+    }
+
+    #[test]
+    fn appending_a_running_state_event_drops_the_one_it_replaces() {
+        let (_directory, _path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        for seq in 1..=4 {
+            store
+                .append_event(&fixture_event_of_kind("session-a", seq, "usage.updated"))
+                .expect("append usage");
+        }
+        // The conversation is unchanged either way: only the newest usage row is
+        // ever read, so what survives is what was going to be used.
+        let usage = store
+            .list_events("session-a", i64::MIN, 100)
+            .expect("list events");
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].seq, 4);
+    }
+
+    #[test]
+    fn appending_a_conversation_event_keeps_every_one_of_them() {
+        let (_directory, _path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        // A live assistant message is only ever stored as its deltas, so these
+        // are the conversation itself and none of them may be dropped.
+        for seq in 1..=4 {
+            store
+                .append_event(&fixture_event_of_kind("session-a", seq, "content.delta"))
+                .expect("append delta");
+        }
+        assert_eq!(
+            store
+                .list_events("session-a", i64::MIN, 100)
+                .expect("list events")
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn opening_an_older_database_clears_the_rows_it_filled_up_with() {
+        let (_directory, path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        store
+            .append_event(&fixture_event_of_kind("session-a", 1, "content.delta"))
+            .expect("append delta");
+        for seq in 2..=5 {
+            store
+                .append_event(&fixture_event_of_kind("session-a", seq, "usage.updated"))
+                .expect("append usage");
+        }
+        drop(store);
+
+        // Put the database back the way one written before this rule looked:
+        // every usage row still there, and the older schema version on it.
+        let connection = Connection::open(&path).expect("open database directly");
+        for seq in 2..=4 {
+            connection
+                .execute(
+                    "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
+                     VALUES ('session-a', ?, NULL, 'usage.updated', '{}', 1)",
+                    [seq],
+                )
+                .expect("restore superseded row");
+        }
+        connection
+            .pragma_update(None, "user_version", 2)
+            .expect("set the older schema version");
+        drop(connection);
+
+        let store = SessionStore::open(&path).expect("reopen session store");
+        let events = store
+            .list_events("session-a", i64::MIN, 100)
+            .expect("list events");
+        let kinds: Vec<&str> = events.iter().map(|event| event.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["content.delta", "usage.updated"]);
+        assert_eq!(events[1].seq, 5);
     }
 
     fn open_temp_store() -> (TempDir, std::path::PathBuf, SessionStore) {
@@ -710,13 +1109,14 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read schema version");
-        assert_eq!(version, 1);
+        assert_eq!(version, super::SCHEMA_VERSION);
 
         let tables: Vec<String> = {
             let mut statement = connection
                 .prepare(
                     "SELECT name FROM sqlite_master \
-                     WHERE type = 'table' AND name IN ('sessions', 'events', 'drafts', 'annotations') \
+                     WHERE type = 'table' \
+                       AND name IN ('sessions', 'events', 'drafts', 'annotations', 'attachments') \
                      ORDER BY name",
                 )
                 .expect("prepare schema query");
@@ -726,7 +1126,10 @@ mod tests {
                 .collect::<rusqlite::Result<_>>()
                 .expect("read table names")
         };
-        assert_eq!(tables, ["annotations", "drafts", "events", "sessions"]);
+        assert_eq!(
+            tables,
+            ["annotations", "attachments", "drafts", "events", "sessions"]
+        );
         drop(connection);
 
         let reopened = SessionStore::open(&path).expect("reopen session store");

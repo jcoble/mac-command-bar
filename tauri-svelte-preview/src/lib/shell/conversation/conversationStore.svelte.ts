@@ -40,6 +40,7 @@ import {
 } from './conversationTimeline.ts';
 import {
   emptyAgentConversationConfigState,
+  hasAgentConversationConfig,
   type AgentConversationConfigField,
   type AgentConversationConfigState
 } from './conversationConfig.ts';
@@ -183,6 +184,36 @@ export function ensureConversationSession(
   return created;
 }
 
+/**
+ * A session picked up from a past transcript stores its events wrapped in a
+ * terminal projection, with the real event one level further down. Typing an
+ * item reads the inner event, so the wrapper has to come off first — a wrapper
+ * read as an event has none of the fields that give an item its type or text,
+ * and becomes an empty `unknown` row.
+ *
+ * Both the live path and snapshot restore go through here. They did not always:
+ * restore typed the wrapper, so a resumed transcript painted one empty row per
+ * stored event. An event that is not a projection is returned untouched, which
+ * is every event a session of this app's own produces.
+ */
+function displayEventFrom(event: AgentConversationEvent): AgentConversationEvent | AgentEvent {
+  if (event.payload.kind !== 'terminalProjection') return event;
+  return {
+    type: event.payload.eventType,
+    ownedId: event.ownedId,
+    provider: event.provider,
+    providerInstanceId: event.payload.providerInstanceId,
+    generation: event.generation,
+    sequence: event.sequence,
+    timestampMs: event.payload.timestampMs ?? event.timestampMs,
+    nativeSessionId: event.payload.nativeSessionId,
+    itemId: event.payload.itemId ?? undefined,
+    payload: event.payload.payload,
+    providerMetadata: event.payload.providerMetadata,
+    rawFrameReference: event.payload.rawFrameReference
+  };
+}
+
 export function applyAgentConversationEvent(event: AgentConversationEvent): boolean {
   const existing = conversationSessions[event.ownedId];
   if (existing && event.provider !== existing.provider) return false;
@@ -190,22 +221,7 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   appendRecentEvent(current, event);
   const applied = applyLegacyEventInPlace(current, event);
   if (!applied) return false;
-  const displayEvent: AgentConversationEvent | AgentEvent = event.payload.kind === 'terminalProjection'
-    ? {
-        type: event.payload.eventType,
-        ownedId: event.ownedId,
-        provider: event.provider,
-        providerInstanceId: event.payload.providerInstanceId,
-        generation: event.generation,
-        sequence: event.sequence,
-        timestampMs: event.payload.timestampMs ?? event.timestampMs,
-        nativeSessionId: event.payload.nativeSessionId,
-        itemId: event.payload.itemId ?? undefined,
-        payload: event.payload.payload,
-        providerMetadata: event.payload.providerMetadata,
-        rawFrameReference: event.payload.rawFrameReference
-      }
-    : event;
+  const displayEvent = displayEventFrom(event);
   const typedItem = agentItemFromEvent(displayEvent);
   if (typedItem) {
     if (mergeAgentItemInPlace(current, typedItem, conversationEventAppendsItemContent(displayEvent))
@@ -601,11 +617,12 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     recentEvents: []
   };
   for (const event of events) {
-    const typedItem = agentItemFromEvent(event);
+    const displayEvent = displayEventFrom(event);
+    const typedItem = agentItemFromEvent(displayEvent);
     if (typedItem) {
-      mergeAgentItemInPlace(restored, typedItem, conversationEventAppendsItemContent(event));
+      mergeAgentItemInPlace(restored, typedItem, conversationEventAppendsItemContent(displayEvent));
     }
-    applyTypedEventPayload(restored, event);
+    applyTypedEventPayload(restored, displayEvent);
   }
   restored.recentEvents = events.slice(-CONVERSATION_RECENT_EVENT_CAP).map((event) => ({
     sequence: event.sequence,
@@ -1183,7 +1200,12 @@ export function setConversationConnection(connection: AgentConversationConnectio
   current.connectionState = connection.state;
   current.suspended = false;
   if (connection.nativeSessionId) current.nativeSessionId = connection.nativeSessionId;
-  if (connection.config) {
+  // A connection always carries a config object, even when nobody has asked an
+  // adapter anything — every field null, every list empty. Applying that on its
+  // mere existence wiped the answers the composer had just read back from the
+  // database, which is what left a resumed conversation saying its agent had no
+  // settings. Only a config with something in it replaces what is on screen.
+  if (connection.config && hasAgentConversationConfig(connection.config)) {
     current.agentConfig = connection.config;
     current.agentConfigError = null;
   }

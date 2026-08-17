@@ -253,13 +253,18 @@ fn scans_enough_agent_sessions_for_all_conversations_switcher() {
     std::fs::create_dir_all(&claude_root).unwrap();
     std::fs::create_dir_all(&cmux_root).unwrap();
 
+    // Each fixture holds a turn as well as its opening record. A transcript with
+    // nothing said in it is dropped as an empty session, and this test is about
+    // how MANY sessions survive the scan's budget — fixtures that all vanish for
+    // being empty would pass or fail for the wrong reason.
     for index in 0..220 {
         let id = format!("codex-{index:03}");
         let timestamp = fixture_timestamp(index);
         std::fs::write(
             codex_root.join(format!("{id}.jsonl")),
             format!(
-                "{{\"timestamp\":\"{timestamp}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/repo/{id}\",\"model_slug\":\"gpt-5.5-codex\"}}}}\n"
+                "{{\"timestamp\":\"{timestamp}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"/repo/{id}\",\"model_slug\":\"gpt-5.5-codex\"}}}}\n\
+                 {{\"timestamp\":\"{timestamp}\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"Codex {index}\"}}]}}}}\n"
             ),
         )
         .unwrap();
@@ -271,7 +276,8 @@ fn scans_enough_agent_sessions_for_all_conversations_switcher() {
         std::fs::write(
             claude_root.join(format!("{id}.jsonl")),
             format!(
-                "{{\"sessionId\":\"{id}\",\"cwd\":\"/repo/{id}\",\"timestamp\":\"{timestamp}\",\"message\":{{\"role\":\"user\",\"model\":\"claude-opus-4-8\",\"content\":\"Claude {index}\"}}}}\n"
+                "{{\"sessionId\":\"{id}\",\"cwd\":\"/repo/{id}\",\"timestamp\":\"{timestamp}\",\"message\":{{\"role\":\"user\",\"model\":\"claude-opus-4-8\",\"content\":\"Claude {index}\"}}}}\n\
+                 {{\"type\":\"user\",\"sessionId\":\"{id}\",\"cwd\":\"/repo/{id}\",\"timestamp\":\"{timestamp}\",\"message\":{{\"role\":\"user\",\"content\":\"Claude {index}\"}}}}\n"
             ),
         )
         .unwrap();
@@ -346,6 +352,8 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             source_label: None,
             message_count: None,
             latest_turn_preview: None,
+            latest_turns: Vec::new(),
+            project_root: None,
         },
         AgentSessionRecord {
             provider: "claude".to_string(),
@@ -366,6 +374,8 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             source_label: None,
             message_count: None,
             latest_turn_preview: None,
+            latest_turns: Vec::new(),
+            project_root: None,
         },
     ]);
 

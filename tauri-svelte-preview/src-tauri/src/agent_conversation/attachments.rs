@@ -1,6 +1,8 @@
+use mcb_core::session_store::{AttachmentRow, SessionStore};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use tauri::Manager;
 
@@ -26,102 +28,80 @@ pub struct DeleteConversationAttachmentRequest {
 
 pub fn save<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    store: &SessionStore,
     owned_id: &str,
     mime_type: &str,
     bytes: &[u8],
 ) -> Result<SavedConversationAttachment, String> {
     let extension = validate_image(mime_type, bytes)?;
+    let owned_id = safe_segment(owned_id, "Owned session id")?;
     let id = uuid::Uuid::new_v4().to_string();
     let name = format!("screenshot-{id}.{extension}");
-    let root = attachment_root(app, owned_id)?;
+    let root = vault_root(app)?.join(owned_id);
     fs::create_dir_all(&root)
         .map_err(|error| format!("Could not create attachment folder: {error}"))?;
     let path = root.join(&name);
     fs::write(&path, bytes).map_err(|error| format!("Could not save screenshot: {error}"))?;
-    let canonical = path
+    // The canonical form only proves the file landed inside the managed folder.
+    // The reported path is the one the row rebuilds, so a save and a later read
+    // name the same file the same way.
+    if !path
         .canonicalize()
-        .map_err(|error| format!("Could not verify screenshot path: {error}"))?;
-    if !canonical.starts_with(canonical_root(&root)?) {
+        .map_err(|error| format!("Could not verify screenshot path: {error}"))?
+        .starts_with(canonical_root(&root)?)
+    {
         return Err("Saved screenshot escaped the managed attachment folder".to_string());
+    }
+    let byte_length =
+        i64::try_from(bytes.len()).map_err(|_| "Attachment is too large to record".to_string())?;
+    if let Err(error) = store.add_attachment(&AttachmentRow {
+        id: id.clone(),
+        owned_id: owned_id.to_string(),
+        file_name: name.clone(),
+        mime_type: mime_type.to_string(),
+        byte_length,
+        relative_path: format!("{owned_id}/{name}"),
+        created_at_ms: now_ms(),
+    }) {
+        // A file with no row is invisible to every later read, so it leaves with the failure.
+        let _ = fs::remove_file(&path);
+        return Err(error.to_string());
     }
     Ok(SavedConversationAttachment {
         id,
         name,
         mime_type: mime_type.to_string(),
-        path: canonical.display().to_string(),
+        path: path.display().to_string(),
         byte_length: bytes.len(),
     })
 }
 
 pub fn read<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    store: &SessionStore,
     owned_id: &str,
 ) -> Result<Vec<SavedConversationAttachment>, String> {
-    let root = attachment_root(app, owned_id)?;
-    let entries = match fs::read_dir(&root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("Could not read attachment folder: {error}")),
-    };
-    let root = canonical_root(&root)?;
-    let mut attachments = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("Could not read attachment entry: {error}"))?;
-        if !entry
-            .file_type()
-            .map_err(|error| format!("Could not inspect attachment entry: {error}"))?
-            .is_file()
-        {
-            continue;
-        }
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| "Attachment file name is invalid".to_string())?;
-        let Some((id, extension)) = name
-            .strip_prefix("screenshot-")
-            .and_then(|name| name.rsplit_once('.'))
-        else {
-            continue;
-        };
-        if uuid::Uuid::parse_str(id).is_err() {
-            continue;
-        }
-        let mime_type = match extension {
-            "png" => "image/png",
-            "jpg" => "image/jpeg",
-            "gif" => "image/gif",
-            "webp" => "image/webp",
-            _ => continue,
-        };
-        let path = entry
-            .path()
-            .canonicalize()
-            .map_err(|error| format!("Could not verify screenshot path: {error}"))?;
-        if !path.starts_with(&root) || path.parent() != Some(root.as_path()) {
-            return Err("Attachment path is outside the managed attachment folder".to_string());
-        }
-        let byte_length = usize::try_from(
-            entry
-                .metadata()
-                .map_err(|error| format!("Could not inspect attachment: {error}"))?
-                .len(),
-        )
-        .map_err(|_| "Attachment is too large to describe".to_string())?;
-        attachments.push(SavedConversationAttachment {
-            id: id.to_string(),
-            name,
-            mime_type: mime_type.to_string(),
-            path: path.display().to_string(),
-            byte_length,
-        });
-    }
-    attachments.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(attachments)
+    let root = vault_root(app)?;
+    store
+        .list_attachments(owned_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|row| {
+            Ok(SavedConversationAttachment {
+                path: root.join(&row.relative_path).display().to_string(),
+                id: row.id,
+                name: row.file_name,
+                mime_type: row.mime_type,
+                byte_length: usize::try_from(row.byte_length)
+                    .map_err(|_| "Attachment is too large to describe".to_string())?,
+            })
+        })
+        .collect()
 }
 
 pub fn delete<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    store: &SessionStore,
     request: DeleteConversationAttachmentRequest,
 ) -> Result<(), String> {
     let attachment_id = uuid::Uuid::parse_str(request.attachment_id.trim())
@@ -129,23 +109,22 @@ pub fn delete<R: tauri::Runtime>(
     let root = attachment_root(app, &request.owned_id)?;
     let root = canonical_root(&root)?;
     let target = validate_delete_target(&root, attachment_id, Path::new(&request.path))?;
+    store
+        .delete_attachment(&attachment_id.to_string())
+        .map_err(|error| error.to_string())?;
     fs::remove_file(&target).map_err(|error| format!("Could not delete screenshot: {error}"))
 }
 
-fn attachment_root<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    owned_id: &str,
-) -> Result<PathBuf, String> {
-    let owned_id = safe_segment(owned_id, "Owned session id")?;
+/// The folder that holds every session's attachments, and the root that stored
+/// relative paths are measured against.
+fn vault_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     #[cfg(test)]
     {
         let _ = app;
-        Ok(std::env::temp_dir()
-            .join(format!(
-                "mcb-conversation-attachments-test-{}",
-                std::process::id()
-            ))
-            .join(owned_id))
+        Ok(std::env::temp_dir().join(format!(
+            "mcb-conversation-attachments-test-{}",
+            std::process::id()
+        )))
     }
     #[cfg(not(test))]
     {
@@ -153,9 +132,16 @@ fn attachment_root<R: tauri::Runtime>(
             .path()
             .app_data_dir()
             .map_err(|error| format!("Application data directory is unavailable: {error}"))?
-            .join("conversation-attachments")
-            .join(owned_id))
+            .join("conversation-attachments"))
     }
+}
+
+fn attachment_root<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    owned_id: &str,
+) -> Result<PathBuf, String> {
+    let owned_id = safe_segment(owned_id, "Owned session id")?;
+    Ok(vault_root(app)?.join(owned_id))
 }
 
 fn validate_image<'a>(mime_type: &str, bytes: &'a [u8]) -> Result<&'static str, String> {
@@ -218,33 +204,77 @@ fn safe_segment<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
     Ok(value)
 }
 
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|since_epoch| i64::try_from(since_epoch.as_millis()).ok())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         attachment_root, delete, read, safe_segment, save, validate_delete_target, validate_image,
         DeleteConversationAttachmentRequest, MAX_ATTACHMENT_BYTES,
     };
+    use mcb_core::session_store::{SessionRow, SessionStore};
     use std::fs;
+
+    /// Attachment rows point at their session, so every test owns a stored session.
+    fn store_with_session(owned_id: &str) -> SessionStore {
+        let store = SessionStore::open_in_memory().expect("open in-memory session store");
+        store
+            .upsert_session(&SessionRow {
+                owned_id: owned_id.to_owned(),
+                native_session_id: None,
+                provider: "provider-a".to_owned(),
+                model: None,
+                effort: None,
+                cwd: "/work/project".to_owned(),
+                worktree: None,
+                branch: None,
+                title: None,
+                project: None,
+                state: "idle".to_owned(),
+                suspended: false,
+                created_at_ms: 1_000,
+                last_activity_at_ms: 2_000,
+                extra_json: "{}".to_owned(),
+            })
+            .expect("insert owning session");
+        store
+    }
 
     #[test]
     fn saved_attachments_read_back_and_reflect_deletion() {
         let app = tauri::test::mock_app();
         let owned_id = format!("owned-{}", uuid::Uuid::new_v4());
+        let store = store_with_session(&owned_id);
         let first = save(
             app.handle(),
+            &store,
             &owned_id,
             "image/png",
             b"\x89PNG\r\n\x1a\nfirst",
         )
         .unwrap();
-        let second = save(app.handle(), &owned_id, "image/gif", b"GIF89asecond").unwrap();
+        let second = save(
+            app.handle(),
+            &store,
+            &owned_id,
+            "image/gif",
+            b"GIF89asecond",
+        )
+        .unwrap();
         let mut expected = vec![first.clone(), second.clone()];
         expected.sort_by(|left, right| left.name.cmp(&right.name));
 
-        assert_eq!(read(app.handle(), &owned_id).unwrap(), expected);
+        assert_eq!(read(app.handle(), &store, &owned_id).unwrap(), expected);
 
         delete(
             app.handle(),
+            &store,
             DeleteConversationAttachmentRequest {
                 owned_id: owned_id.clone(),
                 attachment_id: first.id,
@@ -252,7 +282,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(read(app.handle(), &owned_id).unwrap(), vec![second]);
+        assert_eq!(read(app.handle(), &store, &owned_id).unwrap(), vec![second]);
 
         let root = attachment_root(app.handle(), &owned_id).unwrap();
         fs::remove_dir_all(root).unwrap();

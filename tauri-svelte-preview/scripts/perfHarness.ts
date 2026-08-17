@@ -322,8 +322,10 @@ async function main(): Promise<number> {
     await page.locator('[data-testid="conversation-timeline-item"]').last().waitFor({ state: 'attached', timeout: 30_000 });
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     const clickInteractiveMs = round((await page.evaluate(() => performance.now())) - clickStarted);
+    // Every stored row is drawn now, so this count IS the transcript size. It
+    // used to be capped by a render window, which made the number a measure of
+    // the window rather than of the work the transcript actually costs.
     const timelineDomCount = await page.locator('[data-testid="conversation-timeline-item"]').count();
-    const earlierRowCount = await page.locator('[data-testid="conversation-show-earlier-row"]').count();
     const snapshotLongTasks = await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.longTasks());
     const afterHover = await measureHover(page, 'after 2k events');
 
@@ -337,24 +339,7 @@ async function main(): Promise<number> {
     const idleLongTasks = await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.longTasks());
     const animationCount = await page.evaluate(() => document.getAnimations().length);
     const profileResult = await cdp.send('Profiler.stop') as { profile: CpuProfile };
-    if (earlierRowCount === 1) await page.screenshot({ path: SCREENSHOT_PATH, fullPage: false });
-    let disclosureReceipt: Record<string, unknown> | null = null;
-    if (earlierRowCount === 1) {
-      const firstRendered = page.locator('[data-testid="conversation-timeline-item"]').first();
-      const firstRenderedId = await firstRendered.getAttribute('data-item-id');
-      if (!firstRenderedId) throw new Error('First rendered timeline item has no data-item-id');
-      const beforeTop = await firstRendered.evaluate((element: HTMLElement) => element.getBoundingClientRect().top);
-      await page.locator('[data-testid="conversation-show-earlier"]').click();
-      await page.locator('[data-testid="conversation-timeline-item"]').nth(239).waitFor({ state: 'attached', timeout: 30_000 });
-      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-      const anchoredItem = page.locator(`[data-testid="conversation-timeline-item"][data-item-id="${firstRenderedId}"]`);
-      const afterTop = await anchoredItem.evaluate((element: HTMLElement) => element.getBoundingClientRect().top);
-      disclosureReceipt = {
-        'rows after click': await page.locator('[data-testid="conversation-timeline-item"]').count(),
-        'anchored item': firstRenderedId,
-        'offset delta px': round(afterTop - beforeTop)
-      };
-    }
+    await page.screenshot({ path: SCREENSHOT_PATH, fullPage: false });
 
     const hoverRows = [...beforeHover, ...afterHover];
     printTable('Hover latency (10 deterministic rows per phase)', hoverRows.map((row) => ({
@@ -372,9 +357,8 @@ async function main(): Promise<number> {
       };
     }));
     printTable('Click to transcript interactive', [{ events: 2_000, 'latency ms': clickInteractiveMs }]);
-    printTable('Transcript DOM count', [{ events: 2_000, rows: timelineDomCount, 'show-earlier rows': earlierRowCount }]);
+    printTable('Transcript DOM count', [{ events: 2_000, rows: timelineDomCount }]);
     printTable('Verified viewport', [{ width: verifiedViewport.width, height: verifiedViewport.height }]);
-    if (disclosureReceipt) printTable('Show-earlier scroll anchor', [disclosureReceipt]);
     printTable('Snapshot-load long tasks >50ms', snapshotLongTasks.length > 0
       ? snapshotLongTasks.map((entry) => ({ start: round(entry.startTime), duration: round(entry.duration), name: entry.name }))
       : [{ start: '-', duration: 0, name: 'none' }]);

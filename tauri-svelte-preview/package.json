@@ -146,6 +146,7 @@
     "@codingame/monaco-vscode-xml-default-extension": "25.1.2",
     "@codingame/monaco-vscode-yaml-default-extension": "25.1.2",
     "@lucide/svelte": "^1.17.0",
+    "@tanstack/svelte-virtual": "3.13.35",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-dialog": "~2.7.1",
     "@tauri-apps/plugin-notification": "^2.3.3",

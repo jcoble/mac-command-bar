@@ -58,6 +58,24 @@ export function readAgentConversationConfig(ownedId: string): Promise<AgentConve
   return invoke<AgentConversationConfigState>('read_agent_conversation_config', { ownedId });
 }
 
+/**
+ * Ask this conversation's agent what it offers, once, and stop it again.
+ *
+ * For a conversation resumed from a past transcript: it has never run, so the
+ * models, effort levels and approval policies a handshake would have reported
+ * are nowhere yet, and the composer has nothing to show. What comes back is
+ * stored, so every read after this one is an ordinary read.
+ */
+export function warmAgentConversationConfig(
+  ownedId: string,
+  generation: number
+): Promise<AgentConversationConfigState> {
+  return invoke<AgentConversationConfigState>('warm_agent_conversation_config', {
+    ownedId,
+    generation
+  });
+}
+
 export function setAgentConversationConfig(
   request: AgentConversationConfigRequest
 ): Promise<AgentConversationConfigState> {

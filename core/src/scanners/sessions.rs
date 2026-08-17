@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -16,6 +17,8 @@ const CLAUDE_SESSION_LAUNCH_PROBE_BYTES: usize = 64 * 1024;
 const CODEX_GENERIC_SESSION_TITLE: &str = "Codex session";
 const CODEX_UNTITLED_INDEX_TITLE: &str = "Untitled Codex session";
 const CODEX_SESSION_FILE_LIMIT: usize = 512;
+/// Length of the thread id Codex ends every rollout file name with.
+const CODEX_THREAD_ID_LEN: usize = 36;
 /// The first user message of a Codex session sits behind the opening metadata
 /// record, which carries the whole system prompt and can run past 40 KB. On this
 /// machine 256 KB reaches the first typed prompt in 59 of 67 top-level sessions;
@@ -31,6 +34,11 @@ const CMUX_SESSION_RESULT_HEADROOM: usize = 256;
 const AGENT_SESSION_TURN_PREVIEW_CHARS: usize = 120;
 const AGENT_SESSION_USER_TURN_PREFIX: &str = "You: ";
 const AGENT_SESSION_AGENT_TURN_PREFIX: &str = "Agent: ";
+/// How much of a kept turn is carried to the panel. The one-line preview is cut
+/// to 120 characters because it has to fit on a row; the expanded card scrolls,
+/// so it can hold a real answer. Bounded all the same — an agent's last turn can
+/// run to tens of kilobytes, and no one reads that off a session card.
+const AGENT_SESSION_TURN_TEXT_CHARS: usize = 4_000;
 const AGENT_SESSION_RESULT_LIMIT: usize =
     CODEX_SESSION_FILE_LIMIT + CLAUDE_SESSION_FILE_LIMIT + CMUX_SESSION_RESULT_HEADROOM;
 
@@ -91,6 +99,105 @@ pub struct AgentSessionRecord {
     pub message_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_turn_preview: Option<String>,
+    /// The last thing each side said, newest-last, so an expanded card can show
+    /// the end of the conversation rather than one truncated line of it.
+    ///
+    /// At most two entries: the user's most recent turn and the agent's most
+    /// recent one. Which came last varies — a session left mid-answer ends on
+    /// the agent, one left waiting ends on the user — so they are ordered by
+    /// when they were said and the card labels them rather than assuming.
+    ///
+    /// This is what tells two sessions in the same folder apart. A title and a
+    /// timestamp do not, when a person ran nine of them against the same
+    /// repository in one afternoon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub latest_turns: Vec<AgentSessionTurn>,
+    /// The repository this session's folder belongs to, as git reports it, so a
+    /// project's main checkout and its worktrees land in one group under the
+    /// project folder's name. Empty when the folder is gone from disk or was
+    /// never in a repository; the panel then groups on the folder itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
+}
+
+/// One remembered turn: who spoke, and what they said.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionTurn {
+    /// `user` or `agent`.
+    pub speaker: String,
+    pub text: String,
+}
+
+/// The two speakers, kept apart from the wire strings so a typo cannot make a
+/// turn silently vanish from the pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnSpeaker {
+    User,
+    Agent,
+}
+
+impl TurnSpeaker {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Agent => "agent",
+        }
+    }
+}
+
+/// The newest turn from each speaker, in the order they were said.
+///
+/// Every transcript is walked front to back, so a later line always replaces an
+/// earlier one from the same speaker, and the position it was seen at is what
+/// puts the pair back in order at the end.
+#[derive(Debug, Default, Clone)]
+struct LatestTurnPair {
+    user: Option<(usize, String)>,
+    agent: Option<(usize, String)>,
+}
+
+impl LatestTurnPair {
+    fn remember(&mut self, speaker: TurnSpeaker, position: usize, text: String) {
+        let slot = match speaker {
+            TurnSpeaker::User => &mut self.user,
+            TurnSpeaker::Agent => &mut self.agent,
+        };
+        *slot = Some((position, text));
+    }
+
+    fn into_turns(self) -> Vec<AgentSessionTurn> {
+        let mut kept: Vec<(usize, TurnSpeaker, String)> = Vec::new();
+        if let Some((position, text)) = self.user {
+            kept.push((position, TurnSpeaker::User, text));
+        }
+        if let Some((position, text)) = self.agent {
+            kept.push((position, TurnSpeaker::Agent, text));
+        }
+        kept.sort_by_key(|(position, _, _)| *position);
+        kept.into_iter()
+            .map(|(_, speaker, text)| AgentSessionTurn {
+                speaker: speaker.wire_name().to_string(),
+                text,
+            })
+            .collect()
+    }
+}
+
+/// A turn's text as the expanded card shows it: trimmed, and cut to a length a
+/// person will actually scroll through. Line breaks survive — they are how a
+/// list of steps or a block of code stays readable.
+fn agent_session_turn_text(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= AGENT_SESSION_TURN_TEXT_CHARS {
+        return trimmed.to_string();
+    }
+
+    let cut: String = trimmed
+        .chars()
+        .take(AGENT_SESSION_TURN_TEXT_CHARS.saturating_sub(1))
+        .collect();
+    format!("{cut}…")
 }
 
 /// One line of "who said what", the way a row shows it: `You: …` or `Agent: …`,
@@ -125,15 +232,72 @@ pub fn derive_agent_session_metadata(record: &AgentSessionRecord) -> AgentSessio
 /// Run once over the finished list rather than at each construction site: a
 /// session is described by several files, and only the merged record has the
 /// title, folder and resume command the hints are read from.
+/// The repository a folder belongs to, asked of git rather than guessed from the
+/// path.
+///
+/// Guessing was the problem. The layouts in use here disagree with each other —
+/// `dev/work/worktrees/<repo>/<checkout>`, `dev/work/<repo>/worktrees/<checkout>`
+/// and `.codex/worktrees/<hash>/<repo>` all mean "a checkout of <repo>" while
+/// putting the repository's name in a different place — so no pattern reads all
+/// three, and every one that was tried filed some of a repository's sessions
+/// under a second project with the same name.
+///
+/// Git already knows. Walking up from the folder, the first `.git` found ends
+/// the search:
+///
+/// - a `.git` DIRECTORY means this folder is the repository itself;
+/// - a `.git` FILE means this folder is a worktree, and the file says where the
+///   real repository is: `gitdir: /path/to/repo/.git/worktrees/<name>`. The part
+///   before `/.git/` is the main checkout, which is the answer.
+///
+/// `None` when the folder is gone from disk or was never in a repository, and
+/// the caller then falls back to the path it already had.
+fn git_project_root(path: &Path) -> Option<PathBuf> {
+    for ancestor in path.ancestors() {
+        let marker = ancestor.join(".git");
+
+        if marker.is_dir() {
+            return Some(ancestor.to_path_buf());
+        }
+
+        if marker.is_file() {
+            let text = fs::read_to_string(&marker).ok()?;
+            let target = text.trim().strip_prefix("gitdir:")?.trim();
+            let main = Path::new(target)
+                .ancestors()
+                .find(|candidate| candidate.file_name() == Some(OsStr::new(".git")))?
+                .parent()?;
+            return Some(main.to_path_buf());
+        }
+    }
+
+    None
+}
+
 pub fn with_derived_agent_session_metadata(
     mut records: Vec<AgentSessionRecord>,
 ) -> Vec<AgentSessionRecord> {
+    // One answer per folder. A busy repository has dozens of sessions in the
+    // same checkout, and asking git the same question dozens of times is a
+    // filesystem walk each time for a reply that cannot change mid-scan.
+    let mut roots: HashMap<String, Option<String>> = HashMap::new();
+
     for record in records.iter_mut() {
         let metadata = derive_agent_session_metadata(record);
         record.branch_hint = metadata.branch_hint;
         record.task_id = metadata.task_id;
         record.pull_request_hint = metadata.pull_request_hint;
         record.source_label = Some(metadata.source_label);
+
+        if let Some(folder) = record.project_path.clone() {
+            record.project_root = roots
+                .entry(folder.clone())
+                .or_insert_with(|| {
+                    git_project_root(Path::new(&folder))
+                        .map(|root| root.to_string_lossy().into_owned())
+                })
+                .clone();
+        }
     }
 
     records
@@ -186,6 +350,40 @@ fn rollout_file_is_indexed(file: &Path, indexed_ids: &HashSet<String>) -> bool {
     indexed_ids.iter().any(|id| name.ends_with(id.as_str()))
 }
 
+/// The thread id a rollout file is named for, read off the name rather than out
+/// of the file. `rollout-<timestamp>-<uuid>.jsonl` ends with the 36-character
+/// id, so the trailing 36 characters are it.
+fn rollout_file_thread_id(file: &Path) -> Option<String> {
+    let stem = file.file_stem().and_then(|stem| stem.to_str())?;
+    let start = stem.len().checked_sub(CODEX_THREAD_ID_LEN)?;
+    stem.get(start..).map(ToOwned::to_owned)
+}
+
+/// Index rows for threads whose rollout file is gone, dropped.
+///
+/// Codex keeps a `session_index.jsonl` row forever but prunes the rollout file
+/// underneath it, and the row itself holds only an id, a name and a timestamp.
+/// A row with no file left is unusable three times over: it carries no working
+/// folder, so the History panel can only file it under "Other"; it has no
+/// transcript, so nothing can be imported or resumed from it; and the sub-agent
+/// marker lives in the file, so a thread Codex spawned for itself cannot be told
+/// apart from one the user started. Measured on this machine, 266 of 342 rows
+/// were in that state and they were the bulk of both complaints.
+fn drop_codex_sessions_without_rollouts(
+    records: Vec<AgentSessionRecord>,
+    rollout_files: &[PathBuf],
+) -> Vec<AgentSessionRecord> {
+    let rollout_ids: HashSet<String> = rollout_files
+        .iter()
+        .filter_map(|file| rollout_file_thread_id(file))
+        .collect();
+
+    records
+        .into_iter()
+        .filter(|record| rollout_ids.contains(&record.id))
+        .collect()
+}
+
 pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -227,6 +425,7 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
         codex_records.extend(parse_codex_index_jsonl(&contents));
     }
     codex_records = drop_codex_subagent_sessions(codex_records, &codex_subagent_ids);
+    codex_records = drop_codex_sessions_without_rollouts(codex_records, &codex_files);
 
     codex_files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
     let indexed_ids: HashSet<String> = codex_records
@@ -235,11 +434,39 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
         .collect();
     let mut codex_metadata = Vec::new();
     for file in codex_rollout_files_to_read(codex_files, &indexed_ids) {
-        if let Ok(contents) =
+        let Ok(contents) =
             read_head_and_tail_utf8(&file, CODEX_SESSION_HEAD_BYTES, CODEX_SESSION_TAIL_BYTES)
-        {
-            codex_metadata.extend(with_log_path(parse_codex_rollout_jsonl(&contents), &file));
+        else {
+            continue;
+        };
+        let mut parsed = parse_codex_rollout_jsonl(&contents);
+
+        // The turns above may be the session's FIRST ones, and the card calls
+        // them its latest.
+        //
+        // The read that produced them is the head of the file joined to its
+        // tail: the head is where the session's own record and its opening
+        // prompt live, and both are needed. But a Codex transcript spends most
+        // of its length on tool calls and reasoning, so the tail often holds no
+        // spoken turn at all — 47 of the 179 sessions here — and then the only
+        // turns in hand are the ones the head brought, from the beginning of the
+        // conversation.
+        //
+        // Read the tail on its own and let what it says win. Nothing is lost
+        // when it says nothing: the head's turns stay, which is the best answer
+        // available for a session whose last quarter-megabyte is all machinery.
+        // The bytes were just read, so this second pass comes off the operating
+        // system's cache rather than the disk.
+        if let Ok(tail) = read_tail_utf8(&file, CODEX_SESSION_TAIL_BYTES) {
+            let spoken = codex_turns_in(&tail);
+            if !spoken.is_empty() {
+                for record in parsed.iter_mut() {
+                    record.latest_turns = spoken.clone();
+                }
+            }
         }
+
+        codex_metadata.extend(with_log_path(parsed, &file));
     }
     records.extend(merge_codex_session_metadata(codex_records, codex_metadata));
 
@@ -274,9 +501,27 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     }
 
     records = merge_agent_session_records(records);
+    records.retain(session_said_something);
     records.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
     records.truncate(AGENT_SESSION_RESULT_LIMIT);
     with_derived_agent_session_metadata(records)
+}
+
+/// Whether a scanned session holds a conversation at all.
+///
+/// A window that was opened and closed still leaves a transcript behind, and it
+/// reaches the panel as a row called "Codex session" or "Claude session" with no
+/// count, no preview and nothing to expand. 56 of the 283 rows here were that:
+/// 31 files one to three lines long, and 20 more holding only Claude's own
+/// bookkeeping records with no reply ever written. They cannot be told apart
+/// from each other, and resuming one opens an empty conversation.
+///
+/// Only a session whose transcript was actually read is judged. A provider whose
+/// scanner does not collect turns — the cmux hook records carry a session list
+/// and no transcript — has no `log_path`, and silence there is missing evidence
+/// rather than an empty session.
+fn session_said_something(record: &AgentSessionRecord) -> bool {
+    record.log_path.is_none() || !record.latest_turns.is_empty() || record.message_count.is_some()
 }
 
 pub fn merge_agent_session_records(records: Vec<AgentSessionRecord>) -> Vec<AgentSessionRecord> {
@@ -328,9 +573,40 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 source_label: None,
                 message_count: None,
                 latest_turn_preview: None,
+                latest_turns: Vec::new(),
+                project_root: None,
             })
         })
         .collect()
+}
+
+/// The newest turn from each speaker in a stretch of a Codex transcript.
+///
+/// Separate from the parser above because that one only starts collecting once
+/// it has seen the `session_meta` record, and that record is the first line of
+/// the file. Handed the tail on its own it would find no session to attach
+/// anything to and return nothing at all. This reads the turns and nothing else,
+/// so it works on any slice of a transcript.
+fn codex_turns_in(input: &str) -> Vec<AgentSessionTurn> {
+    let mut pair = LatestTurnPair::default();
+    for (position, value) in input
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .enumerate()
+    {
+        if value.get("type").and_then(Value::as_str) != Some("response_item") {
+            continue;
+        }
+        if let Some((speaker, said)) = codex_conversation_turn(&value) {
+            pair.remember(
+                speaker.turn_speaker(),
+                position,
+                agent_session_turn_text(&said),
+            );
+        }
+    }
+
+    pair.into_turns()
 }
 
 pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
@@ -338,20 +614,22 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
     let mut first_prompts: HashMap<String, String> = HashMap::new();
     let mut message_counts: HashMap<String, u32> = HashMap::new();
     let mut latest_turns: HashMap<String, String> = HashMap::new();
+    let mut latest_turn_pairs: HashMap<String, LatestTurnPair> = HashMap::new();
     // Who spoke last in each session, so a run of agent narration can be
     // counted as the one thing the agent said rather than as twenty.
     let mut last_speakers: HashMap<String, CodexSpeaker> = HashMap::new();
 
-    for value in input
+    for (position, value) in input
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .enumerate()
     {
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
                 let Some(payload) = value.get("payload") else {
                     continue;
                 };
-                if is_codex_subagent_meta(payload) {
+                if is_codex_background_thread(payload) {
                     return Vec::new();
                 }
                 let Some(id) = payload.get("id").and_then(Value::as_str) else {
@@ -385,6 +663,8 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                     source_label: None,
                     message_count: None,
                     latest_turn_preview: None,
+                    latest_turns: Vec::new(),
+                    project_root: None,
                 };
 
                 if let Some(existing) = records.iter_mut().find(|candidate| {
@@ -425,7 +705,13 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 }
 
                 if let Some(id) = records.last().map(|record| record.id.clone()) {
-                    if let Some((speaker, turn)) = codex_conversation_turn(&value) {
+                    if let Some((speaker, said)) = codex_conversation_turn(&value) {
+                        let turn = agent_session_turn_preview(speaker.preview_prefix(), &said);
+                        latest_turn_pairs.entry(id.clone()).or_default().remember(
+                            speaker.turn_speaker(),
+                            position,
+                            agent_session_turn_text(&said),
+                        );
                         // Codex writes a separate record for every paragraph it
                         // narrates between tool calls, so a run of them is ONE
                         // thing the agent said back, not twenty. Without this a
@@ -463,6 +749,10 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
         );
         record.message_count = message_counts.get(&record.id).copied();
         record.latest_turn_preview = latest_turns.get(&record.id).cloned();
+        record.latest_turns = latest_turn_pairs
+            .remove(&record.id)
+            .map(LatestTurnPair::into_turns)
+            .unwrap_or_default();
     }
 
     records
@@ -479,6 +769,11 @@ enum CodexSpeaker {
 /// it. The user side uses the same filter the title does, so the opening turns
 /// Codex writes for itself — the repository instructions, the environment block
 /// — are neither counted nor shown; the agent side needs actual words.
+/// Who spoke on one transcript line and what they said, as written.
+///
+/// The text comes back raw. Two things want it at different lengths — the row's
+/// one-line preview and the expanded card's scrollable block — and cutting it
+/// here would mean the longer of the two could never be built.
 fn codex_conversation_turn(value: &Value) -> Option<(CodexSpeaker, String)> {
     let payload = value.get("payload")?;
     if payload.get("type").and_then(Value::as_str) != Some("message") {
@@ -486,48 +781,87 @@ fn codex_conversation_turn(value: &Value) -> Option<(CodexSpeaker, String)> {
     }
 
     match payload.get("role").and_then(Value::as_str)? {
-        "user" => Some((
-            CodexSpeaker::User,
-            agent_session_turn_preview(
-                AGENT_SESSION_USER_TURN_PREFIX,
-                &codex_typed_user_text(value)?,
-            ),
-        )),
+        "user" => Some((CodexSpeaker::User, codex_typed_user_text(value)?)),
         "assistant" => {
             let text = payload.get("content").and_then(value_to_text)?;
             let text = text.trim();
-            (!text.is_empty()).then(|| {
-                (
-                    CodexSpeaker::Agent,
-                    agent_session_turn_preview(AGENT_SESSION_AGENT_TURN_PREFIX, text),
-                )
-            })
+            (!text.is_empty()).then(|| (CodexSpeaker::Agent, text.to_string()))
         }
         _ => None,
     }
 }
 
-/// Codex spawns its own helper threads and writes each one as a rollout file
-/// next to the user's, so nine of every ten files under `~/.codex/sessions` are
-/// threads nobody opened. The opening `session_meta` record says which it is:
-/// a helper carries `thread_source: "subagent"`, and/or a `source` object whose
-/// only key is `subagent` (a session the user started has `source` as a plain
-/// string — `cli`, `vscode`, `exec`).
+impl CodexSpeaker {
+    fn turn_speaker(self) -> TurnSpeaker {
+        match self {
+            Self::User => TurnSpeaker::User,
+            Self::Agent => TurnSpeaker::Agent,
+        }
+    }
+
+    fn preview_prefix(self) -> &'static str {
+        match self {
+            Self::User => AGENT_SESSION_USER_TURN_PREFIX,
+            Self::Agent => AGENT_SESSION_AGENT_TURN_PREFIX,
+        }
+    }
+}
+
+/// Whether a rollout file is a thread nobody sat down and opened.
 ///
-/// Verified 2026-07-28 across 687 rollout files on this machine: 619 helper
-/// threads, 68 sessions the user started, and the two markers disagreed on a
-/// single file — so both are checked and either one is enough.
+/// Two kinds qualify, and the opening `session_meta` record names both.
 ///
-/// A file with neither marker is kept. Older Codex versions predate the field
+/// The first is a helper Codex spawned for itself, which carries
+/// `thread_source: "subagent"` and/or a `source` object whose only key is
+/// `subagent`. Verified 2026-07-28 across 687 rollout files on this machine:
+/// 619 helper threads, 68 sessions the user started, and the two markers
+/// disagreed on a single file — so both are checked and either one is enough.
+///
+/// The second is a run some program made through `codex exec`, which carries
+/// `originator: "codex_exec"`. These were kept until now, on the reading that
+/// anything not marked `subagent` was the user's. They are not: sampled across
+/// 400 recent rollouts on 2026-08-17, 391 were `codex_exec` against 2 from the
+/// interactive `codex-tui` and 7 from this app, and the history list stood at
+/// 956 rows of a pipeline calling Codex in a loop. Their working directory is a
+/// scratch folder, so each arrived named after it.
+///
+/// The third is a run driven through another program rather than typed into,
+/// which `source` names outright: `"mcp"` for a thread opened over the Codex MCP
+/// server, `"exec"` for one launched by the non-interactive command. Neither
+/// carries `originator: "codex_exec"`, so both slipped through and arrived in
+/// History looking like main threads — 35 of them on this machine on
+/// 2026-08-17, every one titled "Codex Companion Task: Read and fully execute
+/// the task described in the spec file at …", which is a dispatch, not a
+/// conversation. The interactive values (`"cli"`, `"vscode"`) are untouched.
+///
+/// A file with neither marker is kept. Older Codex versions predate the fields
 /// (15 files here), and losing one of the user's sessions is worse than listing
-/// a helper thread.
-fn is_codex_subagent_meta(payload: &Value) -> bool {
+/// a thread they did not open.
+fn is_codex_background_thread(payload: &Value) -> bool {
     if payload.get("thread_source").and_then(Value::as_str) == Some("subagent") {
         return true;
     }
 
-    payload
-        .get("source")
+    if payload.get("originator").and_then(Value::as_str) == Some("codex_exec") {
+        return true;
+    }
+
+    // A Codex thread another coding agent opened to do its own work. It reaches
+    // the disk looking interactive — `source: "vscode"`, no subagent marker —
+    // and only `originator` gives it away. The 12 here were all titled "Codex
+    // Companion Task: …". The other editors that drive Codex are left alone:
+    // `t3code_desktop` and this app's own bridge are the user at a keyboard.
+    if payload.get("originator").and_then(Value::as_str) == Some("Claude Code") {
+        return true;
+    }
+
+    let source = payload.get("source");
+
+    if matches!(source.and_then(Value::as_str), Some("mcp") | Some("exec")) {
+        return true;
+    }
+
+    source
         .and_then(Value::as_object)
         .is_some_and(|source| source.contains_key("subagent"))
 }
@@ -562,7 +896,7 @@ pub fn codex_rollout_head_thread_marker(head: &str) -> Option<CodexThreadMarker>
             .get("id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        spawned_by_codex: is_codex_subagent_meta(payload),
+        spawned_by_codex: is_codex_background_thread(payload),
     })
 }
 
@@ -694,6 +1028,8 @@ fn update_latest_codex_record(
         source_label: None,
         message_count: None,
         latest_turn_preview: None,
+        latest_turns: Vec::new(),
+        project_root: None,
     };
     merge_codex_record(record, update);
 }
@@ -810,6 +1146,8 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
                 source_label: None,
                 message_count: None,
                 latest_turn_preview: None,
+                latest_turns: Vec::new(),
+                project_root: None,
             })
         })
         .collect()
@@ -821,10 +1159,12 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
     let mut first_prompts: HashMap<String, String> = HashMap::new();
     let mut message_counts: HashMap<String, u32> = HashMap::new();
     let mut latest_turns: HashMap<String, String> = HashMap::new();
+    let mut latest_turn_pairs: HashMap<String, LatestTurnPair> = HashMap::new();
 
-    for value in input
+    for (position, value) in input
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .enumerate()
     {
         // One such entry condemns the whole transcript: these files are what
         // they are end to end, so anything already collected from one is an
@@ -841,9 +1181,18 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
         if let Some((session, prompt)) = claude_user_prompt_text(&value) {
             first_prompts.entry(session).or_insert(prompt);
         }
-        if let Some((session, turn)) = claude_conversation_turn(&value) {
+        if let Some((session, speaker, said)) = claude_conversation_turn(&value) {
             *message_counts.entry(session.clone()).or_insert(0) += 1;
-            latest_turns.insert(session, turn); // a later line is the newer turn
+            latest_turn_pairs.entry(session.clone()).or_default().remember(
+                speaker,
+                position,
+                agent_session_turn_text(&said),
+            );
+            // a later line is the newer turn
+            latest_turns.insert(
+                session,
+                agent_session_turn_preview(speaker.preview_prefix(), &said),
+            );
         }
 
         let Some(id) = value
@@ -890,6 +1239,8 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
             source_label: None,
             message_count: None,
             latest_turn_preview: None,
+            latest_turns: Vec::new(),
+            project_root: None,
         };
 
         if let Some(existing) = records
@@ -911,6 +1262,10 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
         );
         record.message_count = message_counts.get(&record.id).copied();
         record.latest_turn_preview = latest_turns.get(&record.id).cloned();
+        record.latest_turns = latest_turn_pairs
+            .remove(&record.id)
+            .map(LatestTurnPair::into_turns)
+            .unwrap_or_default();
     }
 
     records
@@ -921,24 +1276,30 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
 /// records too, so both sides insist on actual words: a user turn goes through
 /// the same filter the title uses (no slash-command wrappers, no resume
 /// caveat), and an assistant turn needs at least one text block.
-fn claude_conversation_turn(value: &Value) -> Option<(String, String)> {
+/// Which session a transcript line belongs to, who spoke on it, and what they
+/// said — raw, for the same reason the Codex side keeps it raw: the row preview
+/// and the expanded card want different lengths of the same sentence.
+fn claude_conversation_turn(value: &Value) -> Option<(String, TurnSpeaker, String)> {
     match optional_string(value.get("type"))?.as_str() {
         "user" => {
             let (id, text) = claude_user_prompt_text(value)?;
-            Some((
-                id,
-                agent_session_turn_preview(AGENT_SESSION_USER_TURN_PREFIX, &text),
-            ))
+            Some((id, TurnSpeaker::User, text))
         }
         "assistant" => {
             let id = optional_string(value.get("sessionId"))?;
             let text = claude_assistant_text(value)?;
-            Some((
-                id,
-                agent_session_turn_preview(AGENT_SESSION_AGENT_TURN_PREFIX, &text),
-            ))
+            Some((id, TurnSpeaker::Agent, text))
         }
         _ => None,
+    }
+}
+
+impl TurnSpeaker {
+    fn preview_prefix(self) -> &'static str {
+        match self {
+            Self::User => AGENT_SESSION_USER_TURN_PREFIX,
+            Self::Agent => AGENT_SESSION_AGENT_TURN_PREFIX,
+        }
     }
 }
 
@@ -1193,6 +1554,10 @@ fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: Agen
         existing.latest_turn_preview = candidate.latest_turn_preview.clone();
     }
 
+    if existing.latest_turns.is_empty() {
+        existing.latest_turns = candidate.latest_turns.clone();
+    }
+
     let candidate_is_newer = candidate
         .last_activity
         .as_ref()
@@ -1214,6 +1579,9 @@ fn merge_agent_session_record(existing: &mut AgentSessionRecord, candidate: Agen
         existing.latest_turn_preview = candidate
             .latest_turn_preview
             .or(existing.latest_turn_preview.take());
+        if !candidate.latest_turns.is_empty() {
+            existing.latest_turns = candidate.latest_turns;
+        }
     }
 
     for command in candidate.resume_commands {
@@ -1776,6 +2144,8 @@ mod tests {
             source_label: None,
             message_count: None,
             latest_turn_preview: None,
+            latest_turns: Vec::new(),
+            project_root: None,
         }
     }
 

@@ -8,7 +8,7 @@ use super::{
     ChildAgentDescriptor, ConversationMetadata, ProjectedRecord, TranscriptMessage,
     TranscriptSnapshot,
 };
-use crate::agent_conversation::protocol::AgentEventType;
+use crate::agent_conversation::protocol::{AgentConversationPayload, AgentEventType};
 
 pub(super) fn discover_path(id: &str) -> Result<Option<PathBuf>, String> {
     find(&home_dir()?.join(".claude/projects"), id)
@@ -31,6 +31,40 @@ fn find(root: &Path, id: &str) -> Result<Option<PathBuf>, String> {
         }
     }
     Ok(None)
+}
+
+/// Removes the parts of a user turn that the user did not write.
+///
+/// Several kinds of machine-authored text are recorded under the person's own
+/// role: a sub-agent reporting that it finished, the reminders the harness
+/// injects, the output of a slash command, and the summary that opens a session
+/// continued after a compaction. Imported as messages they read as though the
+/// person said them. One real transcript held three typed messages and thirteen
+/// of these, and the conversation it produced looked like somebody else's work.
+///
+/// The blocks are cut out rather than the whole turn dropped, because a
+/// reminder is often appended to something the person really did type. A turn
+/// left empty afterwards was entirely machine-written and is not stored at all.
+/// The continuation summary is the exception: it is a whole synthetic turn, so
+/// it goes as one.
+fn strip_injected(text: &str) -> String {
+    if text.starts_with("This session is being continued from a previous conversation") {
+        return String::new();
+    }
+    let mut cleaned = text.to_string();
+    for (open, close) in [
+        ("<task-notification>", "</task-notification>"),
+        ("<system-reminder>", "</system-reminder>"),
+        ("<local-command-stdout>", "</local-command-stdout>"),
+    ] {
+        while let Some(start) = cleaned.find(open) {
+            let Some(end) = cleaned[start..].find(close).map(|at| start + at + close.len()) else {
+                break;
+            };
+            cleaned.replace_range(start..end, "");
+        }
+    }
+    cleaned.trim().to_string()
 }
 
 pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<ProjectedRecord> {
@@ -59,6 +93,7 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
             .join("\n\n"),
         _ => String::new(),
     };
+    let text = if role == "user" { strip_injected(&text) } else { text };
     let mut records = Vec::new();
     if !text.is_empty() {
         let item_id = value
@@ -81,13 +116,54 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
                 json!({"historical": true, "transcriptRole": role}),
             ),
         ]);
+        // The same message, said the way the app says it. This is what gets
+        // stored; the item above is the older wrapped form.
+        let native = if role == "user" {
+            AgentConversationPayload::UserMessage {
+                item_id: item_id.clone(),
+                text: text.clone(),
+                completed: true,
+                attachment_ids: Vec::new(),
+            }
+        } else {
+            AgentConversationPayload::AssistantMessage {
+                item_id: item_id.clone(),
+                text: text.clone(),
+                completed: true,
+            }
+        };
         records.push(ProjectedRecord {
             key: format!("item:{item_id}"),
             event_type: AgentEventType::ItemCompleted,
             timestamp_ms: timestamp(value),
             item_id: Some(item_id),
             payload: BTreeMap::from([("historical".into(), json!(true)), ("item".into(), item)]),
+            native: Some(native),
         });
+    }
+    // The tools the reply used, in the order it used them. They sit alongside
+    // the text in the same message, which is why they are read from the same
+    // line: a reply and the work it did are one turn, not two. The result of a
+    // call is recorded separately, under the person's role and with no tool name
+    // on it, so it is read past rather than turned into a row of its own.
+    if role == "assistant" {
+        for block in value
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        {
+            let Some(item_id) = block.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            records.push(super::tool_record(
+                item_id,
+                block.get("name").and_then(Value::as_str).unwrap_or("Tool"),
+                super::tool_summary(block.get("input").unwrap_or(&Value::Null)),
+                timestamp(value),
+            ));
+        }
     }
     let model = value.pointer("/message/model").and_then(Value::as_str);
     let effort = value.get("effort").and_then(Value::as_str);
@@ -105,6 +181,8 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
                     json!({"model": model, "effort": effort, "approvalPolicy": approval}),
                 ),
             ]),
+            // The app has no event of its own for a past session's settings.
+            native: None,
         });
     }
     if let Some(usage) = value.pointer("/message/usage") {
@@ -126,6 +204,12 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
                     ("historical".into(), json!(true)),
                     ("usedTokens".into(), json!(used)),
                 ]),
+                native: Some(AgentConversationPayload::Usage {
+                    input_tokens: None,
+                    output_tokens: None,
+                    used_tokens: Some(used),
+                    context_window: None,
+                }),
             });
         }
     }
@@ -189,7 +273,10 @@ pub(super) fn read_snapshot(
             if record.event_type != AgentEventType::ItemCompleted {
                 continue;
             }
-            let item = &record.payload["item"];
+            // A tool call is a completed item too, and it carries no message.
+            let Some(item) = record.payload.get("item") else {
+                continue;
+            };
             messages.push(TranscriptMessage {
                 item_id: record.item_id.unwrap_or(record.key),
                 role: item

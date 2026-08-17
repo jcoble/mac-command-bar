@@ -22,6 +22,9 @@ export type SafeMarkdownBlock =
 
 const SAFE_PROTOCOL = /^(?:https?:|mailto:|#)/i;
 
+/** A URL scheme at the front of a target, which a file path never has. */
+const SCHEME_PREFIX = /^[a-z][a-z0-9+.-]*:/i;
+
 /** Return a URL only when it is safe to put in an href attribute. */
 export function sanitizeConversationHref(value: string): string | null {
   const href = value.trim();
@@ -59,7 +62,13 @@ function inlineParts(value: string): SafeInlinePart[] {
       const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
       const href = link ? sanitizeConversationHref(link[2]) : null;
       if (link && href) parts.push({ kind: 'link', value: link[1], href });
-      else if (link && !link[2].includes(':') && !/[\u0000-\u001f\u007f]/.test(link[2])) {
+      // What must not reach a link is a URL scheme — `javascript:`, `data:` and
+      // their kind. Rejecting every target that held a colon did that, but it
+      // also rejected the most common link an agent writes: a file with the
+      // line it means, `src/thing.ts:71`. Those arrived as raw markdown in the
+      // middle of a sentence. A scheme can only sit at the front, so that is
+      // where one is looked for.
+      else if (link && !SCHEME_PREFIX.test(link[2]) && !/[\u0000-\u001f\u007f]/.test(link[2])) {
         parts.push({ kind: 'file-link', value: link[1], path: link[2].trim() });
       } else parts.push({ kind: 'text', value: token });
     }

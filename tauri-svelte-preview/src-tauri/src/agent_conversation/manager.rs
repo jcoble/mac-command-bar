@@ -332,39 +332,86 @@ impl AgentRuntimeManager {
             .map_err(|error| error.to_string())
     }
 
-    pub fn import_transcript_session(
+    #[allow(clippy::too_many_arguments)]
+    /// Names an imported session without reading a single record of it, so the
+    /// rail has something to show while the transcript is still being read.
+    pub fn begin_import_transcript_session(
         &self,
         provider: AgentConversationProvider,
         native_session_id: &str,
         path: &Path,
         cwd: &str,
-        max_bytes: u64,
-        max_records: usize,
+        title: Option<String>,
     ) -> Result<String, String> {
-        let owned_id = super::transcript_import::import_session(
+        let owned_id = super::transcript_import::begin_import_session(
             &self.store,
             provider,
             native_session_id,
             path,
             cwd,
+            title,
+        )?;
+        self.restore_overlay_from_store(&owned_id)?;
+        Ok(owned_id)
+    }
+
+    /// Reads the newest page of an imported transcript into a session that has
+    /// already been named, and returns how many records it gained.
+    pub fn finish_import_transcript_session(
+        &self,
+        owned_id: &str,
+        max_bytes: u64,
+        max_records: usize,
+    ) -> Result<usize, String> {
+        let count = super::transcript_import::finish_import_session(
+            &self.store,
+            owned_id,
             max_bytes,
             max_records,
         )?;
-        // The import wrote a session row, and every stored row needs its live
-        // overlay before anything lists the sessions again — which is the very
-        // next thing the caller does, to find the row this returned. Without
-        // one, listing fails on the session that was just imported.
+        // Built again now that the records exist. The overlay carries the events
+        // a snapshot is read from, and the one made when the session was named
+        // was made from an empty row — leaving it in place showed the title over
+        // an empty conversation until the next reload.
+        self.restore_overlay_from_store(owned_id)?;
+        Ok(count)
+    }
+
+    /// Rebuilds one session's live overlay from what is stored.
+    ///
+    /// Every stored row needs an overlay before anything lists the sessions or
+    /// reads one — listing fails outright on a row without one, and reading
+    /// reports an empty conversation. An import calls this because it has just
+    /// written a row nothing has an overlay for yet, and reading calls it
+    /// because the overlay is runtime state that comes and goes underneath a
+    /// conversation that is durably on disk either way.
+    /// A rebuild never moves a session's generation backwards. The stored row
+    /// carries the generation the session had when it was last written, and an
+    /// import writes zero; ensuring the same session meanwhile raises the live
+    /// one. Replacing the live session with the stored one then published a
+    /// conversation numbered below what the reader had already been told, and
+    /// the reader discards those — it is how a resumed transcript arrived
+    /// complete and was thrown away, in silence, until the next launch started
+    /// the count again from nothing.
+    fn restore_overlay_from_store(&self, owned_id: &str) -> Result<(), String> {
         let row = self
             .store
-            .get_session(&owned_id)
+            .get_session(owned_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "The imported session was not stored".to_string())?;
-        let session = recovered_session_from_row(&self.store, row)?;
-        self.sessions
+        let mut session = recovered_session_from_row(&self.store, row)?;
+        let mut sessions = self
+            .sessions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(owned_id.clone(), session);
-        Ok(owned_id)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(live) = sessions.get(owned_id) {
+            if live.generation > session.generation {
+                session.generation = live.generation;
+                session.connection.generation = live.generation;
+            }
+        }
+        sessions.insert(owned_id.to_string(), session);
+        Ok(())
     }
 
     pub fn extend_imported_session(
@@ -1568,6 +1615,31 @@ impl AgentRuntimeManager {
     }
 
     pub fn snapshot(&self, owned_id: &str) -> Result<Option<AgentConversationSnapshot>, String> {
+        // A conversation that is stored can be read, whether or not anything is
+        // running it. The live overlay is the runtime's business and it comes
+        // and goes — ensuring a session takes it out of the map before putting
+        // the replacement in, and a session whose project folder has since been
+        // deleted never gets the replacement at all. Reporting nothing there
+        // left a resumed transcript that was on disk, complete, and invisible,
+        // until the next launch rebuilt the overlay and it appeared.
+        let missing = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            !sessions.contains_key(owned_id)
+        };
+        if missing {
+            if self
+                .store
+                .get_session(owned_id)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Ok(None);
+            }
+            self.restore_overlay_from_store(owned_id)?;
+        }
         let sessions = self
             .sessions
             .lock()
@@ -1780,6 +1852,132 @@ impl AgentRuntimeManager {
             },
         )?;
         Ok(true)
+    }
+
+    /// Start this conversation's adapter, keep what its handshake answered, and
+    /// stop the process again.
+    ///
+    /// A conversation imported from a past transcript has never run, so nothing
+    /// has told it which models it offers, which effort levels it takes or which
+    /// approval policies it understands. Those answers arrive only with an
+    /// adapter's handshake, and the adapter is otherwise started by a turn —
+    /// which is why a resumed conversation opened saying its agent had no
+    /// settings. Asking once, here, is what fills the composer in.
+    ///
+    /// The process is STOPPED afterwards rather than suspended, and the
+    /// difference is the whole reason an earlier attempt at this was taken out
+    /// again: suspending detaches the session and keeps the adapter warm for the
+    /// next turn, so one was left running per resume, hundreds of megabytes
+    /// each. What activation learnt is on disk by then, so nothing is lost by
+    /// stopping. The session is left Suspended, which is the state a session
+    /// between turns is already in, and the next send resumes it the ordinary
+    /// way.
+    pub async fn warm_conversation_config(
+        &self,
+        owned_id: &str,
+        generation: u64,
+    ) -> Result<AgentConversationConfigState, String> {
+        let _lifecycle = self.lifecycle_guard(owned_id).await?;
+        self.activate_locked(owned_id, generation).await?;
+        let (runtime, transport, ordered_events, pool_key, native_session_id) = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
+            // A send can reach `prompt` while this is running — that path takes
+            // the sessions lock but not the lifecycle guard — and stopping an
+            // adapter mid-turn leaves the turn id set against a process that has
+            // been killed, which refuses every later send as "already has an
+            // active turn". Someone talking to the conversation outranks warming
+            // it: the answers are already stored, so leaving the adapter up is
+            // the harmless half of the choice. Quiescence rather than
+            // `session_can_suspend`, whose `capabilities.session.resume`
+            // requirement would skip the very providers this exists for.
+            if !session_is_quiescent(session) {
+                return Ok(session.config.clone());
+            }
+            let Some(runtime) = session.runtime.take() else {
+                // Activation started nothing, so there is nothing to stop and
+                // whatever is known is already stored.
+                return Ok(session.config.clone());
+            };
+            session.suspending = true;
+            (
+                runtime,
+                session.transport.take(),
+                session.ordered_events.take(),
+                session.pool_key.take(),
+                session.native_session_id.clone(),
+            )
+        };
+
+        // Both branches stop the process — `close` and `detach` alike end in
+        // `transport.stop()` — and they differ only in whether `session/close`
+        // is sent first. Warming asks for neither: the session has to stay
+        // resumable, so closing it would be wrong even where it works, and it
+        // does not always work. Claude's adapter answers `session/close` with
+        // "Method not found" (-32601), which turned a successful warm into a
+        // failed one. The leak this design guards against was never detach; it
+        // was `suspend_if_quiescent` bailing before any teardown at all.
+        let stop_result = if let Some(pool_key) = &pool_key {
+            self.release_pool_scope(pool_key, owned_id, native_session_id.as_deref(), false)
+                .await
+        } else {
+            runtime
+                .lock()
+                .await
+                .detach_session()
+                .await
+                .map_err(|error| error.to_string())
+        };
+        if let Err(error) = stop_result {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Ok(session) = lifecycle_session_mut(&mut sessions, owned_id, generation) {
+                session.suspending = false;
+                session.runtime = Some(runtime);
+                session.transport = transport;
+                session.ordered_events = ordered_events;
+                session.pool_key = pool_key;
+            }
+            return Err(error);
+        }
+
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
+        // The same race again, on the other side of the stop: writing Suspended
+        // over a session that has meanwhile started a turn would claim a state
+        // that is not true. The adapter is already gone by here, so this reports
+        // rather than pretends.
+        if !session.suspending || session.state != AgentRuntimeState::Ready {
+            session.suspending = false;
+            return Err(
+                "Conversation lifecycle changed while its settings were being read".to_string(),
+            );
+        }
+        session.suspending = false;
+        record_payload_for_session_and_dispatch_with_lifecycle(
+            session,
+            &self.emitter,
+            AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Disconnected,
+                native_session_id: session.native_session_id.clone(),
+            },
+            SessionLifecycleUpdate {
+                state: AgentRuntimeState::Suspended,
+                connection_state: ConversationConnectionState::Disconnected,
+                owner: AgentExecutionOwner::Stopped,
+                writer_owner: AgentWriterLeaseOwner::None,
+                native_session_mode: Some(AgentNativeSessionMode::Resume),
+            },
+        )?;
+        Ok(session.config.clone())
     }
 
     pub async fn close(&self, owned_id: &str, generation: u64) -> Result<bool, String> {
@@ -7291,6 +7489,89 @@ mod tests {
             .close(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// Both halves of the bargain, in one test: a resumed conversation learns
+    /// what its agent offers, and no adapter is left running for a turn that is
+    /// not coming. An earlier attempt at this suspended instead of stopping and
+    /// left one process per resume behind, so the second assertion is the one
+    /// that matters most.
+    #[tokio::test(flavor = "current_thread")]
+    async fn warming_a_conversation_keeps_its_answers_and_leaves_no_adapter() {
+        let fixture = fixture_manager_with_acp_session("warm_conversation_config").await;
+
+        // Activated up front so the adapter's pid can be taken while it is still
+        // running. Warming activates too; finding the session already up is the
+        // ordinary case, since a reader who has sent anything has one.
+        fixture
+            .manager
+            .activate(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("activate");
+        let (runtime, pool_key) = {
+            let sessions = fixture
+                .manager
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = sessions.get(&fixture.owned_id).expect("activated session");
+            (
+                session.runtime.clone().expect("a running adapter"),
+                session.pool_key.clone().expect("a pooled adapter"),
+            )
+        };
+        let adapter_pid = runtime
+            .lock()
+            .await
+            .process_id()
+            .expect("the adapter runs in a process of its own");
+        drop(runtime);
+
+        let warmed = fixture
+            .manager
+            .warm_conversation_config(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("warm config");
+        assert!(
+            !warmed.available_models.is_empty(),
+            "warming has to come back with what the agent offers"
+        );
+
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("stored config"),
+            warmed,
+            "what warming learnt is what an ordinary read gives back"
+        );
+
+        assert!(
+            fixture
+                .manager
+                .session_is_suspended(&fixture.owned_id, fixture.generation),
+            "the adapter is stopped, not left warm for a turn nobody asked for"
+        );
+
+        // The assertion above is bookkeeping: it is equally true of the detach
+        // that leaked. These two are the ones that mean the process is gone —
+        // its pool entry torn down rather than short-circuited, and its pid no
+        // longer answering.
+        assert!(
+            !fixture.manager.adapter_pools.lock().await.contains_key(&pool_key),
+            "the adapter pool entry was torn down"
+        );
+        let reaped = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(adapter_pid as i32, 0) } == 0 && Instant::now() < reaped {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_ne!(
+            unsafe { libc::kill(adapter_pid as i32, 0) },
+            0,
+            "the adapter process outlived the warm that was supposed to stop it"
+        );
+
         fs::remove_dir_all(fixture.root).unwrap();
     }
 

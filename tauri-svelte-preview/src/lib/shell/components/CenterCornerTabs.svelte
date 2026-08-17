@@ -1,14 +1,14 @@
 <script lang="ts">
   /**
-   * CenterCornerTabs.svelte — the centre pane's surface picker, as a row of
-   * pills that floats over the pane instead of occupying a bar above it.
+   * CenterCornerTabs.svelte — the centre pane's surface picker, as ONE capsule
+   * that floats over the pane instead of occupying a bar above it.
    *
    * Session is what you talk to, Editor is the code you have open, Diff is the
-   * changes to one file. Three pills and nothing else: the language switch used
-   * to ride along here, and on a 630px centre pane the four capsules took most
-   * of the width the editor's file tabs needed. It lives in the editor's own
-   * status band now, which is where the readout about the current file already
-   * is.
+   * changes to one file, and the project's language switch leads them while the
+   * Editor is showing. One capsule, not four: each control used to carry its own
+   * fill and its own shadow, and four separate discs at the top of the pane read
+   * as things dropped there rather than as the head of a column. Sharing a
+   * surface is what makes them one control, and the head one thing.
    *
    * WHY IT FLOATS. A permanent bar charged every surface the same strip of
    * height to answer a question that is only asked now and then, and on the
@@ -116,21 +116,31 @@
 </nav>
 
 <style>
-  /* The group is laid over the pane, so it is only ever as wide as its pills and
-     it lets every click through except its own.
+  /* The head is one capsule laid over the pane, so it is only ever as wide as
+     the controls inside it and it lets every click through except its own. The
+     surface and the single shadow belong to the capsule rather than to each
+     control, which is what makes the controls read as one group.
 
      ONE offset, on every surface: clear of the line the editor keeps its file
      tabs on. Nothing here reads which surface is showing — an offset that
      changed with the surface made the row jump as you moved between Session,
      Editor and Diff. On Session and Diff that leaves empty space above the
-     group, which costs nothing, because the row floats and takes no layout
-     height anywhere. */
+     capsule, which costs nothing, because it floats and takes no layout height
+     anywhere. What it does cost is the band it covers, and the transcript
+     underneath keeps clear of that band by reading `--center-head-height`. */
   .center-pills {
     display: flex;
     flex: 0 0 auto;
     align-items: center;
-    gap: 6px;
+    /* Tight, because the capsule's own edge is what separates the group from
+       the pane now; the controls inside it only need to stay apart. */
+    gap: 2px;
+    height: var(--center-head-row-height);
+    padding: 2px;
     margin: calc(var(--editor-tab-row-height) + 6px) 8px 6px;
+    border-radius: var(--radius-pill);
+    background: var(--pill-surface);
+    box-shadow: var(--shadow-sm);
     user-select: none;
     opacity: var(--center-pills-reveal, 0);
     pointer-events: var(--center-pills-events, none);
@@ -161,22 +171,27 @@
     place-items: center;
   }
 
-  /* Round capsules, opaque so they stay readable over code and transcript
-     alike, and lifted off the surface underneath. Scoped through `.tab` so the
-     language switch — which is a button too, inside its own capsule — is not
-     shaped like a surface tab. */
+  /* Marks on the capsule's own surface: no fill and no shadow of their own, so
+     the only filled disc in the group is the one that means something. 28px is
+     the kit's floor for an icon button — a smaller square is one a pointer
+     misses — and the capsule is built around it rather than the other way
+     round. Scoped through `.tab` so the language switch, which is a button too,
+     is not shaped like a surface tab. */
   .tab :global(button) {
-    width: 30px;
-    height: 30px;
+    width: 28px;
+    height: 28px;
     border-radius: var(--radius-pill);
-    background: var(--pill-surface);
-    box-shadow: var(--shadow-sm);
+    background: transparent;
     color: var(--color-text-2);
   }
 
   .tab :global(button:hover) {
     background: var(--pill-surface-hover);
     color: var(--color-text);
+    /* The kit draws a soft 4px ring around a hovered icon button. On a button
+       standing on its own that reads well; inside a capsule with 2px of room
+       around it, the ring lands on the capsule's edge and blurs it. */
+    box-shadow: none;
   }
 
   /* The one that is filled is the one you are on. With the words gone this fill

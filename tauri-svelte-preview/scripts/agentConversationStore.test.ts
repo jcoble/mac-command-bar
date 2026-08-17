@@ -212,6 +212,60 @@ assert.deepEqual(
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
 
+// A session picked up from a past Claude or Codex transcript stores every event
+// wrapped in a terminal projection, with the real event one level further down.
+// The live path unwraps that wrapper before it types the item; snapshot restore
+// read the wrapper itself, so each imported row arrived as an empty `unknown`
+// and a resumed session painted nothing at all.
+{
+  const importedEvent = (sequence, itemId, type, text) => ({
+    ownedId: 'owned-imported',
+    provider: 'claude',
+    generation: 0,
+    sequence,
+    timestampMs: 300 + sequence,
+    payload: {
+      kind: 'terminalProjection',
+      eventType: 'item.completed',
+      providerInstanceId: 'imported-transcript:native-imported',
+      timestampMs: null,
+      nativeSessionId: 'native-imported',
+      itemId,
+      payload: {
+        historical: true,
+        item: { id: itemId, type, content: [{ channel: 'assistant', text }] }
+      }
+    }
+  });
+
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId: 'owned-imported',
+      provider: 'claude',
+      generation: 0,
+      state: 'connected',
+      nativeSessionId: 'native-imported'
+    },
+    lastSequence: 2,
+    events: [
+      importedEvent(1, 'imported-user-1', 'user-message', 'Imported question'),
+      importedEvent(2, 'imported-assistant-1', 'assistant-message', 'Imported answer')
+    ]
+  });
+
+  const imported = store.getConversationSession('owned-imported');
+  assert.deepEqual(
+    imported.agentItems.map((item) => item.type),
+    ['user-message', 'assistant-message'],
+    'restore must type an imported transcript the way the live path does'
+  );
+  assert.deepEqual(
+    imported.agentItems.map((item) => item.content.map((part) => part.text).join('')),
+    ['Imported question', 'Imported answer'],
+    'a restored imported transcript keeps its text instead of becoming empty unknown items'
+  );
+}
+
 // A send failure belongs to the session it happened in. The conversation
 // surface is mounted once for the whole shell, so a failure held there was
 // painted under every session and outlived the send that fixed it.

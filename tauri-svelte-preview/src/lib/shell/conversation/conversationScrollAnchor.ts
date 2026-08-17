@@ -1,4 +1,8 @@
 export type ConversationScrollMotion = 'instant' | 'smooth';
+/** The air left above a message that has just been sent, measured from where
+ * the transcript begins rather than from the top of its box — the centre pane's
+ * controls are laid over that box, and the transcript's own top inset is what
+ * clears them. See `itemTop` in `ConversationTimeline.svelte`. */
 export const USER_SEND_ANCHOR_OFFSET_PX = 12;
 
 export interface ConversationSendAnchorRequest {

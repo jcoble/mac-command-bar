@@ -304,6 +304,28 @@ export type AgentSession = {
    */
   messageCount?: number | null;
   latestTurnPreview?: string | null;
+  /**
+   * The last thing each side said, oldest first — at most the user's most
+   * recent turn and the agent's most recent one.
+   *
+   * This is what an expanded card shows, and it is longer than the preview
+   * above on purpose: the preview has one line of a row to live in, while the
+   * card scrolls. Left out entirely when the scanner read no conversation.
+   */
+  latestTurns?: AgentSessionTurn[];
+  /**
+   * The repository this session's folder belongs to, as git reported it during
+   * the scan. The History panel groups on this, so a repository's main checkout
+   * and its worktrees sit together under the project folder's name. Left out
+   * when the folder is gone from disk or was never in a repository.
+   */
+  projectRoot?: string | null;
+};
+
+/** One remembered turn of a scanned session: who spoke, and what they said. */
+export type AgentSessionTurn = {
+  speaker: 'user' | 'agent';
+  text: string;
 };
 
 export type AgentConversationSessionMeta = {
@@ -1254,6 +1276,33 @@ export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | nul
   return invoke<AgentSession[]>('list_agent_sessions');
 }
 
+/** One checkout of a repository: its own folder, or one of its worktrees. */
+export type RepositoryCheckout = {
+  path: string;
+  branch: string;
+  /** True for the repository's own folder rather than one of its worktrees. */
+  isMain: boolean;
+};
+
+/**
+ * The checkouts of each repository that are still on disk, keyed by the
+ * repository root that was asked about.
+ *
+ * History draws its tree from this rather than from wherever sessions happen to
+ * have been run, so a worktree that only ever hosted dispatched lanes still
+ * appears. Deleted checkouts are left out by the backend.
+ */
+export async function listRepositoryCheckoutsFromTauri(
+  roots: string[]
+): Promise<Record<string, RepositoryCheckout[]> | null> {
+  if (!isTauriRuntime() || roots.length === 0) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<Record<string, RepositoryCheckout[]>>('list_repository_checkouts', { roots });
+}
+
 export async function readAgentConversationCapabilitiesFromTauri(
   ownedId: string
 ): Promise<AgentConversationCapabilities | null> {
@@ -1304,19 +1353,38 @@ export interface AgentConversationTranscriptImport {
   nativeSessionId: string;
   transcriptPath: string;
   cwd: string;
+  /** What the past session was already called. Stored with the row, so the rail
+   * still knows the name after it next reloads from the database. */
+  title?: string | null;
 }
 
 /**
- * Read the end of a provider's own transcript file into a new app-owned
- * conversation and hand back its id. The backend reads a bounded window of the
- * file, so a long session arrives with its most recent part first.
+ * Name a provider's past transcript as an app-owned conversation and hand back
+ * its id, without reading any of it. This is the fast half of resuming: the
+ * session exists, with its name and its agent, and can be shown at once.
+ *
+ * Reading the transcript is `finishAgentConversationImportFromTauri`, which the
+ * caller runs next — alongside starting the agent, not before it.
  */
-export async function importAgentConversationTranscriptFromTauri(
+export async function beginAgentConversationImportFromTauri(
   request: AgentConversationTranscriptImport
 ): Promise<string | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<string>('import_agent_conversation_transcript', { ...request });
+  return invoke<string>('begin_agent_conversation_import', { ...request });
+}
+
+/**
+ * Read the end of a named import's transcript file into it, and report how many
+ * events that added. The backend reads a bounded window of the file, so a long
+ * session arrives with its most recent part first.
+ */
+export async function finishAgentConversationImportFromTauri(
+  ownedId: string
+): Promise<number | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<number>('finish_agent_conversation_import', { ownedId });
 }
 
 /** Read one more window of an imported transcript, older than what it already
@@ -1533,6 +1601,17 @@ export async function readSourceLspReadinessFromTauri(
  * and a no-op in the backend when no server is running for that root's languages. Returns
  * the count of running servers that were re-pointed.
  */
+/**
+ * Open the web inspector on the shell's own window.
+ *
+ * A no-op in a browser tab, which has the browser's own inspector already.
+ */
+export async function openMainDevtoolsFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('open_main_devtools');
+}
+
 export async function warmSourceLspForRootFromTauri(root: string): Promise<number | null> {
   if (!isTauriRuntime() || !root.trim()) {
     return null;

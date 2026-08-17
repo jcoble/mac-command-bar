@@ -10,9 +10,14 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::protocol::{AgentConversationProvider, AgentEventType};
+use super::protocol::{
+    AgentConversationPayload, AgentConversationProvider, AgentEventType, ToolState,
+};
 
 pub const RECONCILIATION_BYTES: u64 = 4 * 1024 * 1024;
+
+/// How much of a tool call's arguments one transcript row shows.
+const TOOL_SUMMARY_CHARS: usize = 200;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +85,18 @@ pub struct ProjectedRecord {
     pub timestamp_ms: u128,
     pub item_id: Option<String>,
     pub payload: std::collections::BTreeMap<String, Value>,
+    /// The record as the app's own event, when it has one.
+    ///
+    /// A message read out of a past transcript is a message: the same thing a
+    /// live turn produces, and worth storing as the same thing. Records that say
+    /// this keep nothing of the file they came from, which is the point — a
+    /// resumed conversation and the turns taken after it stop being two shapes
+    /// the reader has to tell apart.
+    ///
+    /// `None` means there is no equivalent and the record is stored wrapped, the
+    /// way every imported record used to be. Only the session's configuration
+    /// falls here now, and only one of those is kept per session.
+    pub native: Option<AgentConversationPayload>,
 }
 
 pub fn read(
@@ -244,12 +261,81 @@ pub fn object(entries: impl IntoIterator<Item = (impl Into<String>, Value)>) -> 
     )
 }
 
+/// One line saying what a tool call was asked to do.
+///
+/// A call's arguments are the only thing a past transcript records about it,
+/// so they are what the row shows. The named fields are read first because a
+/// command or a path is the work itself, while the JSON around it is packaging;
+/// anything else falls back to the arguments as written. Whitespace is
+/// flattened so a row stays one row.
+pub fn tool_summary(arguments: &Value) -> Option<String> {
+    const NAMED: &[&str] = &[
+        "cmd",
+        "command",
+        "file_path",
+        "path",
+        "pattern",
+        "query",
+        "url",
+        "description",
+    ];
+    let text = NAMED
+        .iter()
+        .find_map(|key| arguments.get(*key).and_then(Value::as_str))
+        .map(str::to_string)
+        .unwrap_or_else(|| match arguments {
+            Value::String(raw) => raw.clone(),
+            Value::Null => String::new(),
+            other => other.to_string(),
+        });
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!flattened.is_empty()).then(|| flattened.chars().take(TOOL_SUMMARY_CHARS).collect())
+}
+
+/// A tool call read out of a past transcript, said the way the app says one.
+///
+/// It carries the app's own tool event rather than a description of a line in a
+/// file, which is what lets a resumed conversation draw it with the same row a
+/// live call gets instead of dropping it on the floor.
+///
+/// The state is always finished. A transcript is work that already happened,
+/// and the record that would say a call failed — the result — is written under
+/// a different id with no tool name on it, so there is nothing here to read a
+/// failure from without inventing one.
+pub fn tool_record(
+    item_id: &str,
+    name: &str,
+    summary: Option<String>,
+    timestamp_ms: u128,
+) -> ProjectedRecord {
+    ProjectedRecord {
+        key: format!("tool:{item_id}"),
+        event_type: AgentEventType::ItemCompleted,
+        timestamp_ms,
+        item_id: Some(item_id.to_string()),
+        payload: std::collections::BTreeMap::from([("historical".to_string(), Value::Bool(true))]),
+        native: Some(AgentConversationPayload::Tool {
+            item_id: item_id.to_string(),
+            name: name.to_string(),
+            state: ToolState::Completed,
+            summary,
+        }),
+    }
+}
+
 pub fn stable_key(prefix: &str, line: &[u8]) -> String {
     let mut hasher = DefaultHasher::new();
     line.hash(&mut hasher);
     format!("{prefix}:{:016x}", hasher.finish())
 }
 
+/// When a transcript line says it happened, in milliseconds since the epoch.
+///
+/// Both providers write the time as an RFC 3339 string — `2026-08-01T12:34:56.789Z`
+/// — and only a bare number was read here, so every line came back as zero. The
+/// import then stamped each record with the moment the import itself ran, which
+/// made a whole restored conversation share one timestamp. Nothing downstream
+/// could tell how long a turn took, so a turn's fold had no duration to show.
 pub fn timestamp(value: &Value) -> u128 {
     value
         .get("timestamp")
@@ -259,7 +345,7 @@ pub fn timestamp(value: &Value) -> u128 {
             value
                 .get("timestamp")
                 .and_then(Value::as_str)
-                .and_then(|value| value.parse().ok())
+                .and_then(rfc3339_millis)
         })
         .or_else(|| {
             value
@@ -268,6 +354,15 @@ pub fn timestamp(value: &Value) -> u128 {
                 .map(u128::from)
         })
         .unwrap_or(0)
+}
+
+/// Reads an RFC 3339 instant, or a bare number already in milliseconds.
+fn rfc3339_millis(text: &str) -> Option<u128> {
+    if let Ok(millis) = text.parse::<u128>() {
+        return Some(millis);
+    }
+    let parsed = chrono::DateTime::parse_from_rfc3339(text).ok()?;
+    u128::try_from(parsed.timestamp_millis()).ok()
 }
 
 pub fn modified_millis(path: &Path) -> u64 {
@@ -312,6 +407,26 @@ fn file_identity(metadata: &Metadata) -> FileIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_time_a_transcript_line_says_it_happened() {
+        // Both providers write the time as an RFC 3339 string. Only a bare
+        // number was read, so every imported record came back as zero and took
+        // the import's own clock instead — one timestamp for a whole restored
+        // conversation, and no turn with a duration to show.
+        assert_eq!(
+            timestamp(&object([(
+                "timestamp",
+                Value::String("2026-08-01T12:34:56.789Z".to_string())
+            )])),
+            1_785_587_696_789
+        );
+        assert_eq!(
+            timestamp(&object([("timestamp", Value::from(1_785_587_696_789u64))])),
+            1_785_587_696_789
+        );
+        assert_eq!(timestamp(&object([("timestamp", Value::Null)])), 0);
+    }
 
     #[test]
     fn parses_claude_parent_and_metadata_without_sidechain_messages() {
@@ -384,6 +499,49 @@ mod tests {
             .find(|record| record.event_type == AgentEventType::ChildrenUpdated)
             .unwrap();
         assert_eq!(children.payload["children"][0]["state"], "historical");
+    }
+
+    #[test]
+    fn projects_tool_calls_as_the_app_s_own_tool_events() {
+        // A resumed conversation showed messages and nothing else: the tools the
+        // agent used were never projected, so the import had nothing to store and
+        // the transcript read as a wall of prose.
+        let claude = r#"{"type":"assistant","uuid":"a1","sessionId":"s1","isSidechain":false,"message":{"content":[{"type":"text","text":"Reading it now"},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/one.rs","limit":120}}]}}"#;
+        let codex = r#"{"type":"response_item","payload":{"type":"function_call","id":"fc_1","name":"exec_command","arguments":"{\"cmd\":\"git status --short\"}","call_id":"call_1"}}"#;
+
+        let records = parse_durable_line(AgentConversationProvider::Claude, "s1", claude.as_bytes())
+            .into_iter()
+            .chain(parse_durable_line(
+                AgentConversationProvider::Codex,
+                "s1",
+                codex.as_bytes(),
+            ))
+            .filter_map(|record| match record.native {
+                Some(AgentConversationPayload::Tool {
+                    item_id,
+                    name,
+                    summary,
+                    ..
+                }) => Some((item_id, name, summary)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            records,
+            vec![
+                (
+                    "toolu_1".to_string(),
+                    "Read".to_string(),
+                    Some("/tmp/one.rs".to_string())
+                ),
+                (
+                    "call_1".to_string(),
+                    "exec_command".to_string(),
+                    Some("git status --short".to_string())
+                )
+            ]
+        );
     }
 
     #[test]

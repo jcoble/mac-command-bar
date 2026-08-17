@@ -33,6 +33,53 @@ pub fn scan_worktrees(repo_path: &str) -> Vec<WorktreeRecord> {
     scan_worktrees_with_options(repo_path, WorktreeScanOptions::default())
 }
 
+/// One checkout of a repository, as the History panel lists them.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryCheckout {
+    pub path: String,
+    pub branch: String,
+    /// True for the repository's own folder rather than one of its worktrees.
+    pub is_main: bool,
+}
+
+/// Every checkout of a repository that is still on disk: the repository's own
+/// folder first, then its worktrees.
+///
+/// Git is the authority on which worktrees exist, so the panel no longer infers
+/// the list from whichever sessions happen to have been run. A worktree that
+/// hosted only dispatched lanes is still a worktree, and it belongs in the tree.
+///
+/// Deleted checkouts are left out. Git keeps a worktree's administrative record
+/// until someone prunes it, so `git worktree list` names folders that are gone;
+/// listing those would fill the panel with checkouts nobody can open.
+///
+/// Deliberately light. `scan_worktrees` above asks each worktree whether it is
+/// dirty, whether it has unmerged commits, and how big it is — three more
+/// commands per checkout — and none of that is needed to draw a heading.
+pub fn repository_checkouts(repo_path: &str) -> Vec<RepositoryCheckout> {
+    let output = Command::new("git")
+        .args(["-C", repo_path, "worktree", "list", "--porcelain"])
+        .output();
+
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    parse_worktree_porcelain(&String::from_utf8_lossy(&output.stdout))
+        .into_iter()
+        .filter(|record| Path::new(&record.path).is_dir())
+        .map(|record| RepositoryCheckout {
+            is_main: Path::new(&record.path) == Path::new(repo_path),
+            path: record.path,
+            branch: record.branch,
+        })
+        .collect()
+}
+
 pub fn scan_worktrees_with_options(
     repo_path: &str,
     options: WorktreeScanOptions,

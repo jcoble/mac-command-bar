@@ -27,6 +27,7 @@
   import { HoverActionButton } from '$lib/components/ui/hover-actions/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
+  import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import { normalizeProvider } from '$lib/shell/ownedSessions.ts';
   import { exactLocalTime, formatLastActivity } from '$lib/shell/relativeTime.ts';
@@ -192,9 +193,11 @@
           </h3>
           <div class="rounded-lg border bg-background p-2">
             <div class="flex items-start gap-2">
-              <p class="min-w-0 flex-1 text-[13px] leading-snug whitespace-pre-wrap text-foreground">
-                {record.firstPrompt}
-              </p>
+              <ScrollArea class="first-prompt min-w-0 flex-1">
+                <p class="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">
+                  {record.firstPrompt}
+                </p>
+              </ScrollArea>
               <Button
                 size="xs"
                 variant="ghost"
@@ -209,17 +212,32 @@
       {/if}
 
       {#if userTurns.length > 0}
-        <section class="flex flex-col gap-1">
+        <section class="flex flex-col gap-2">
           <h3 class="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
             <MessageSquare class="size-3" aria-hidden="true" />
             Latest turns
           </h3>
           {#each userTurns as turn, index (index)}
-            <div class="rounded-lg border bg-background p-2">
-              <p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            <!--
+              Each turn scrolls inside its own box. An agent's last answer runs
+              to thousands of characters, and letting one of them grow to its
+              full height pushed the next session off the panel entirely — the
+              two turns are here to be compared, so both have to stay on screen.
+            -->
+            <div class="turn-block overflow-hidden rounded-lg border bg-background">
+              <p
+                class="flex items-center gap-1.5 border-b px-2 py-1 text-[11px] font-semibold
+                       tracking-wide uppercase"
+                class:speaker-user={turn.speaker === 'user'}
+                class:speaker-agent={turn.speaker !== 'user'}
+              >
                 {turn.speaker === 'user' ? 'You' : 'Agent'}
               </p>
-              <p class="text-[13px] leading-snug whitespace-pre-wrap text-foreground">{turn.text}</p>
+              <ScrollArea>
+                <p class="px-2 py-1.5 text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">
+                  {turn.text}
+                </p>
+              </ScrollArea>
             </div>
           {/each}
         </section>
@@ -267,5 +285,49 @@
     opacity: 1;
     pointer-events: auto;
     transform: none;
+  }
+
+  /*
+    Who said it, told apart at a glance. Both headers were the same muted grey,
+    so two stacked turns read as one block of text and the whole point of
+    showing a pair — seeing the question against the answer — was lost.
+  */
+  .turn-block .speaker-user {
+    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+    color: var(--color-text);
+  }
+
+  .turn-block .speaker-agent {
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+    color: var(--color-text-2, var(--color-text));
+  }
+
+  /*
+    The height limit belongs on the element that scrolls.
+
+    Setting it on the scroll area's outer box did nothing: that box is only a
+    positioning parent, and the viewport inside it is `height: 100%`. A
+    percentage height measured against a parent whose own height is `auto` — a
+    max-height does not change that — resolves to `auto` as well, so the viewport
+    grew to the full height of the turn, never overflowed itself, and never had
+    anything to scroll. The text simply ran past the box and was cut off by an
+    ancestor, with no scrollbar anywhere.
+
+    Bounding the viewport instead gives it something to scroll, and leaves a
+    short turn its natural height rather than a fixed box with empty space under
+    it.
+  */
+  .turn-block :global([data-slot='scroll-area-viewport']) {
+    /* The viewport ships as `height: 100%`, and its parent has no height of its
+       own, so it measured zero and there was nothing to scroll. Letting it size
+       to the turn and capping it there is what gives the scrollbar something to
+       do. */
+    height: auto;
+    max-height: 11rem;
+  }
+
+  :global(.first-prompt) :global([data-slot='scroll-area-viewport']) {
+    height: auto;
+    max-height: 10rem;
   }
 </style>

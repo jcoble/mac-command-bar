@@ -20,6 +20,7 @@
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
+  import * as Collapsible from '$lib/components/ui/collapsible/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -33,21 +34,30 @@
     isSessionHistoryGroupOpen,
     resetSessionHistoryWindowOnFilterChange,
     toggleSessionHistoryGroup,
-    type SessionHistoryRow
+    type SessionHistoryRow,
+    type SessionHistoryWorktreeGroup
   } from '$lib/shell/history/sessionHistoryViewModel.ts';
   import {
     buildSessionLibrary,
     type SessionLibraryRecord
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
   import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
-  import { ensureStructuredConversation } from '$lib/shell/conversation/conversationService.ts';
+  import {
+    ensureStructuredConversation,
+    loadConversationForRead
+  } from '$lib/shell/conversation/conversationService.ts';
+  import { warmAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
+  import { setConversationAgentConfigState } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
   import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
-    importAgentConversationTranscriptFromTauri,
+    beginAgentConversationImportFromTauri,
+    finishAgentConversationImportFromTauri,
     listAgentConversationSessionsFromTauri,
+    listRepositoryCheckoutsFromTauri,
     openPathFromTauri,
-    revealPathFromTauri
+    revealPathFromTauri,
+    type RepositoryCheckout
   } from '$lib/tauriSource.ts';
   import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation.ts';
 
@@ -83,8 +93,58 @@
   let now = $state(new Date());
 
   const records = $derived(buildSessionLibrary(rail.owned, rail.available));
+
+  /**
+   * The checkouts each repository still has, asked of git once the sessions have
+   * named their repositories.
+   *
+   * This is what lets a worktree appear that no session was ever run in — one
+   * that only ever hosted dispatched lanes — and what keeps a checkout that has
+   * since been deleted out. Empty until the answer arrives, and the tree simply
+   * shows the checkouts the sessions name until then.
+   */
+  let checkouts = $state<Record<string, RepositoryCheckout[]>>({});
+
+  /**
+   * The repositories to ask about, as one string.
+   *
+   * A string and not the array it came from, because asking git costs a process
+   * per repository — around forty of them here. The rail rebuilds its records
+   * whenever anything about a session changes, which hands back a fresh array
+   * every time even when it holds exactly the same repositories, and an effect
+   * watching the array would re-run on each of those and fork forty more
+   * processes for an answer it already had. A string compares by value, so the
+   * work happens when the set of repositories genuinely changes and not before.
+   */
+  const projectRootKey = $derived(
+    [
+      ...new Set(
+        records
+          .map((record) => record.projectRoot)
+          .filter((root): root is string => Boolean(root))
+      )
+    ]
+      .toSorted()
+      .join('\n')
+  );
+
+  $effect(() => {
+    if (!visible) return;
+    const key = projectRootKey;
+    if (!key) return;
+    let cancelled = false;
+    void listRepositoryCheckoutsFromTauri(key.split('\n'))
+      .then((result) => {
+        if (!cancelled && result) checkouts = result;
+      })
+      .catch((error) => console.error('[history] could not list checkouts', error));
+    return () => {
+      cancelled = true;
+    };
+  });
+
   const viewModel = $derived(
-    buildSessionHistoryViewModel(records, { query, windowState })
+    buildSessionHistoryViewModel(records, { query, windowState, checkouts })
   );
 
   /** A new search starts every checkout back at its first page of cards. */
@@ -147,7 +207,11 @@
     const request = sessionTranscriptImport(record);
     if (!request) return;
     try {
-      const ownedId = await importAgentConversationTranscriptFromTauri(request);
+      // Naming the session reads none of its transcript, so the rail, the title
+      // and the agent are all there straight away. The two slow halves — reading
+      // the records, and starting the agent — then run together below rather
+      // than one behind the other.
+      const ownedId = await beginAgentConversationImportFromTauri(request);
       if (!ownedId) return;
       const stored = (await listAgentConversationSessionsFromTauri()) ?? [];
       const imported = stored.find((session) => session.ownedId === ownedId);
@@ -156,20 +220,53 @@
         console.error('[resume]', rail.error);
         return;
       }
-      // The import knows nothing about what the session was called, so the row
-      // takes the title this card is already showing rather than arriving blank.
-      addOwnedSession({ ...ownedSessionFromBackend(imported), title: record.title });
+      addOwnedSession(ownedSessionFromBackend(imported));
       await host.service.open({ ...record, ownedId });
       // A session you asked to resume is one you want to look at, so bring it
       // forward the same way adopting a scanned session does.
       showCenterTab('session');
-      await ensureStructuredConversation({
-        ownedId,
-        provider: request.provider,
-        cwd: request.cwd,
-        nativeSessionId: request.nativeSessionId,
-        nativeSessionMode: 'resume'
-      });
+      const [transcript, conversation] = await Promise.allSettled([
+        finishAgentConversationImportFromTauri(ownedId),
+        ensureStructuredConversation({
+          ownedId,
+          provider: request.provider,
+          cwd: request.cwd,
+          nativeSessionId: request.nativeSessionId,
+          nativeSessionMode: 'resume'
+        })
+      ]);
+      // Both halves wrote to the same session and either could have landed last.
+      // Starting the agent reads the conversation back as part of its own work,
+      // and when that read wins the race it happens before the records exist.
+      // Reading it once more, after both are done, is what makes the transcript
+      // appear rather than an empty session under a correct title.
+      await loadConversationForRead(ownedId);
+      // Either half can fail on its own and the other still has value. A
+      // transcript that would not load is a failed resume and is said so. An
+      // agent that would not start is not: the conversation is imported, on
+      // screen and readable, and the usual reason is that the folder it was
+      // recorded in has since been deleted. Throwing there put an error over a
+      // conversation that had loaded perfectly well.
+      if (transcript.status === 'rejected') throw transcript.reason;
+      if (conversation.status === 'rejected') {
+        rail.error = `"${record.title}" is open and readable, but its agent could not start: ${describeError(conversation.reason)}`;
+        console.warn('[resume]', rail.error, conversation.reason);
+      } else if (conversation.value) {
+        // Ensuring the conversation records it; it does not ask the agent
+        // anything. A session picked up from a transcript has never run, so the
+        // models, effort levels and approval policies the composer offers do not
+        // exist yet. This asks once and stops the adapter again, and what comes
+        // back is stored — every read after this is an ordinary read.
+        try {
+          const warmed = await warmAgentConversationConfig(ownedId, conversation.value.generation);
+          setConversationAgentConfigState(ownedId, warmed);
+        } catch (error) {
+          // The conversation is imported, on screen and readable. Not knowing
+          // what the agent offers is worth a sentence, not a failed resume.
+          rail.error = `"${record.title}" is open, but its agent settings could not be read: ${describeError(error)}`;
+          console.warn('[resume]', rail.error, error);
+        }
+      }
     } catch (error) {
       rail.error = `could not resume "${record.title}" as an Assembly session: ${describeError(error)}`;
       console.error('[resume]', rail.error, error);
@@ -252,6 +349,31 @@
     />
   </div>
 
+  <!-- The sessions of one checkout, drawn the same whether they sit under a
+       worktree heading or directly under the project. -->
+  {#snippet sessionRows(worktree: SessionHistoryWorktreeGroup)}
+    {#each worktree.rows as row (row.record.key)}
+      <SessionHistoryCard
+        record={row.record}
+        title={row.displayTitle}
+        excerpt={row.excerpt}
+        expanded={expandedKey === row.record.key}
+        {now}
+        onToggle={() => toggleCard(row)}
+        onAction={(id) => void runAction(row.record, id)}
+        onCopyText={(value) => void copyText(value)}
+        onOpenLog={(path) => openFileInEditor({ path })}
+      />
+    {/each}
+    {#if worktree.olderCount > 0}
+      <div class="px-3 py-1.5">
+        <Button size="sm" variant="ghost" onclick={() => showOlder(worktree.key)}>
+          Show {worktree.olderCount} older
+        </Button>
+      </div>
+    {/if}
+  {/snippet}
+
   <!-- The list only exists in the document while its tab is showing. A hidden
        tab used to keep every session card mounted under display:none, and the
        browser engine walks that invisible text character by character during
@@ -277,16 +399,13 @@
       {#each viewModel.projects as project (project.key)}
         {@const searching = query.trim().length > 0}
         {@const open = searching || isSessionHistoryGroupOpen(collapseState, 'project', project.key)}
-        <section>
+        <Collapsible.Root {open} onOpenChange={() => toggleGroup('project', project.key)}>
           <h2 class="sticky top-0 z-10 bg-card">
-            <button
-              type="button"
+            <Collapsible.Trigger
               class="flex min-h-7 w-full items-center gap-2 px-3 py-1.5 text-left
                      text-[13px] leading-tight font-medium text-foreground outline-none
                      transition-colors hover:bg-accent/60 focus-visible:ring-3
                      focus-visible:ring-ring/50"
-              aria-expanded={open}
-              onclick={() => toggleGroup('project', project.key)}
             >
               <ChevronRight
                 class={`size-3.5 shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
@@ -294,58 +413,51 @@
               />
               <span class="min-w-0 flex-1 truncate">{project.name}</span>
               <Chip tone="count">{project.count}</Chip>
-            </button>
+            </Collapsible.Trigger>
           </h2>
 
-          {#if open}
-            {#each project.worktrees as worktree (worktree.key)}
-              {@const worktreeOpen =
-                project.singleCheckout
-                || searching
-                || isSessionHistoryGroupOpen(collapseState, 'worktree', worktree.key)}
-              {#if !project.singleCheckout}
-                <button
-                  type="button"
-                  class="flex min-h-6 w-full items-center gap-2 px-3 py-1 text-left text-sm
-                         leading-tight text-muted-foreground outline-none transition-colors
-                         hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
-                  aria-expanded={worktreeOpen}
-                  onclick={() => toggleGroup('worktree', worktree.key)}
-                >
-                  <ChevronRight
-                    class={`size-3 shrink-0 transition-transform duration-150 ${worktreeOpen ? 'rotate-90' : ''}`}
-                    aria-hidden="true"
-                  />
-                  <span class="min-w-0 flex-1 truncate">{worktree.name}</span>
-                  <Chip tone="count">{worktree.count}</Chip>
-                </button>
-              {/if}
-
-              {#if worktreeOpen}
-                {#each worktree.rows as row (row.record.key)}
-                  <SessionHistoryCard
-                    record={row.record}
-                    title={row.displayTitle}
-                    excerpt={row.excerpt}
-                    expanded={expandedKey === row.record.key}
-                    {now}
-                    onToggle={() => toggleCard(row)}
-                    onAction={(id) => void runAction(row.record, id)}
-                    onCopyText={(value) => void copyText(value)}
-                    onOpenLog={(path) => openFileInEditor({ path })}
-                  />
-                {/each}
-                {#if worktree.olderCount > 0}
-                  <div class="px-3 py-1.5">
-                    <Button size="sm" variant="ghost" onclick={() => showOlder(worktree.key)}>
-                      Show {worktree.olderCount} older
-                    </Button>
-                  </div>
+          <Collapsible.Content>
+            <!-- One checkout means no second heading to sit under, so its
+                 sessions stay at the project's own depth. Everything else steps
+                 in once per level it is nested, against a rail — without it a
+                 worktree heading and the sessions of the worktree above it
+                 shared a left edge and the tree read as one flat list. -->
+            <div class={project.singleCheckout ? '' : 'history-nest'}>
+              {#each project.worktrees as worktree (worktree.key)}
+                {@const worktreeOpen =
+                  project.singleCheckout
+                  || searching
+                  || isSessionHistoryGroupOpen(collapseState, 'worktree', worktree.key)}
+                {#if project.singleCheckout}
+                  {@render sessionRows(worktree)}
+                {:else}
+                  <Collapsible.Root
+                    open={worktreeOpen}
+                    onOpenChange={() => toggleGroup('worktree', worktree.key)}
+                  >
+                    <Collapsible.Trigger
+                      class="flex min-h-6 w-full items-center gap-2 py-1 pr-3 pl-2 text-left text-sm
+                             leading-tight text-muted-foreground outline-none transition-colors
+                             hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
+                    >
+                      <ChevronRight
+                        class={`size-3 shrink-0 transition-transform duration-150 ${worktreeOpen ? 'rotate-90' : ''}`}
+                        aria-hidden="true"
+                      />
+                      <span class="min-w-0 flex-1 truncate">{worktree.name}</span>
+                      <Chip tone="count">{worktree.count}</Chip>
+                    </Collapsible.Trigger>
+                    <Collapsible.Content>
+                      <div class="history-nest">
+                        {@render sessionRows(worktree)}
+                      </div>
+                    </Collapsible.Content>
+                  </Collapsible.Root>
                 {/if}
-              {/if}
-            {/each}
-          {/if}
-        </section>
+              {/each}
+            </div>
+          </Collapsible.Content>
+        </Collapsible.Root>
       {/each}
     {/if}
   </ScrollArea>
@@ -382,3 +494,20 @@
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>
+
+<style>
+  /*
+    One step in per level of nesting, against a rail that runs the height of the
+    group. Everything used to sit at the same left edge — a worktree heading, the
+    sessions inside it, and the next heading below — so the tree read as a flat
+    list and there was no way to see what belonged to what.
+
+    The rail is drawn on the container rather than on each row so it stays
+    unbroken between a heading and the cards under it.
+  */
+  .history-nest {
+    margin-left: 0.875rem;
+    padding-left: 0.375rem;
+    border-left: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
+  }
+</style>

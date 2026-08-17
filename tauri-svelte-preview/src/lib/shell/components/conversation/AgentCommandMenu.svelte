@@ -51,19 +51,20 @@
   /* Anchored to the top edge of the input zone rather than a fixed offset from
      its bottom: the composer grows as you type, and a fixed offset walked into
      the line being typed. */
-  .command-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 4; display: flex; flex-direction: column; max-height: min(58vh, 520px); overflow: auto; padding: 7px; border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent); border-radius: 16px; background: color-mix(in srgb, var(--color-surface) 97%, transparent); box-shadow: var(--shadow-lg); }
+  .command-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 4; display: flex; flex-direction: column; max-height: min(58vh, 520px); overflow: auto; padding: var(--menu-sheet-inset); border: 1px solid var(--color-border); border-radius: var(--menu-sheet-radius); background: var(--menu-sheet-surface); box-shadow: var(--shadow-lg); }
   /* `flex: none` so a long list scrolls instead of squashing the rows into each
      other — the column has a max height, and flex children shrink by default. */
-  .command-menu button { display: flex; flex: none; align-items: flex-start; gap: 8px; width: 100%; min-height: 42px; border: 0; border-radius: 10px; background: transparent; color: inherit; padding: 8px 9px; text-align: left; cursor: pointer; }
-  .command-menu button:hover, .command-menu button.active { background: color-mix(in srgb, var(--color-accent) 11%, transparent); }
+  .command-menu button { display: flex; flex: none; align-items: flex-start; gap: var(--menu-row-gap); width: 100%; min-height: 42px; border: 0; border-radius: var(--menu-row-radius); background: transparent; color: inherit; padding: var(--menu-row-inset); text-align: left; cursor: pointer; }
+  .command-menu button:hover { background: var(--menu-row-hover); }
+  .command-menu button.active { background: var(--menu-row-active); }
   .command-menu button:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: -1px; }
-  .command-glyph { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent); border-radius: 7px; color: var(--color-accent); font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .command-main { display: grid; min-width: 0; flex: 1; gap: 1px; }
+  .command-glyph { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-accent); font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .command-main { display: grid; min-width: 0; flex: 1; gap: var(--menu-row-description-gap); }
   .command-main strong { color: var(--color-text); font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
   .command-label, .command-description, .command-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .command-label { color: var(--color-text); font-size: 13px; }
   .command-description { color: var(--color-text-2); font-size: 12px; }
   .command-source { flex: 0 0 auto; max-width: 100px; padding-top: 2px; color: var(--color-text-2); font-size: 12px; }
   .command-source.assembly { color: var(--color-accent); }
-  .command-empty { margin: 0; padding: 11px 10px; color: var(--color-text-2); font-size: 13px; }
+  .command-empty { margin: 0; padding: var(--menu-row-inset); color: var(--color-text-2); font-size: 13px; }
 </style>

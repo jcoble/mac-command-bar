@@ -9,10 +9,14 @@
   four.
 
   Two controls, because the two questions are different:
-    left  — how much the agent may do without asking. A decision about this
-            conversation's safety, so it sits where the eye starts.
-    right — which model, and how hard it is thinking. Read as one phrase
-            ("5.6 Sol Extra High") on a quiet pill, opened for the rare change.
+    approvals — how much the agent may do without asking. A decision about this
+                conversation's safety.
+    model     — which model, and how hard it is thinking. Read as one phrase
+                ("5.6 Sol Extra High"), opened for the rare change.
+
+  Both are the same pill, side by side at the right of the composer's control
+  row, and each takes a highlighted state while its own menu is on screen so
+  you can see which chip the sheet belongs to.
 
   Every label comes from `agentConfigLabels.ts`; nothing here invents wording.
 -->
@@ -21,7 +25,6 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
 
-  import { Button } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import {
     approvalDescription,
@@ -94,21 +97,20 @@
       Agent settings unavailable
     </span>
   {:else}
-    <!-- Left: what the agent may do on its own. -->
+    <!-- What the agent may do on its own. -->
     <DropdownMenu.Root onOpenChange={snapshotOnOpen}>
     <DropdownMenu.Trigger disabled={!canChooseApproval || approvalBusy}>
       {#snippet child({ props })}
-        <Button
+        <button
           {...props}
           data-testid="conversation-config-approval-policy"
-          variant="ghost"
-          size="xs"
-          class="text-muted-foreground hover:text-foreground gap-1 px-1.5 text-[13px] font-normal"
+          class="composer-chip"
+          type="button"
         >
-          <ShieldCheck aria-hidden="true" />
+          <ShieldCheck size={14} aria-hidden="true" />
           {approvalLabel(configState.approvalPolicy)}
-          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
-        </Button>
+          <ChevronDown size={13} class="chip-chevron" aria-hidden="true" />
+        </button>
       {/snippet}
     </DropdownMenu.Trigger>
     <!-- Opens upward. This strip sits on the bottom edge of the window, so a
@@ -125,19 +127,14 @@
     >
       <DropdownMenu.Label>When {menuProvider} needs permission</DropdownMenu.Label>
       {#each menuApprovalOptions as policy (policy)}
-        <DropdownMenu.Item
-          class="items-start gap-2 py-1.5"
-          onSelect={() => onChange?.('approvalPolicy', policy)}
-        >
-          <span class="mt-0.5 flex size-3.5 shrink-0 items-center justify-center">
+        <DropdownMenu.Item onSelect={() => onChange?.('approvalPolicy', policy)}>
+          <span class="check-slot">
             {#if policy === menuState.approvalPolicy}<Check aria-hidden="true" class="size-3.5" />{/if}
           </span>
-          <span class="flex min-w-0 flex-col gap-0.5">
+          <span class="menu-row-copy">
             <span>{approvalLabel(policy)}</span>
             {#if approvalDescription(policy)}
-              <span class="text-muted-foreground text-[13px] leading-[1.4] whitespace-normal">
-                {approvalDescription(policy)}
-              </span>
+              <span class="menu-row-description">{approvalDescription(policy)}</span>
             {/if}
           </span>
         </DropdownMenu.Item>
@@ -145,7 +142,7 @@
     </DropdownMenu.Content>
     </DropdownMenu.Root>
 
-    <!-- Right: which model, thinking how hard. -->
+    <!-- Which model, thinking how hard. -->
     <div class="config-right">
     {#if saving}
       <span class="text-primary text-[13px]" data-testid="conversation-config-saving">Saving…</span>
@@ -162,16 +159,15 @@
     <DropdownMenu.Root onOpenChange={snapshotOnOpen}>
       <DropdownMenu.Trigger disabled={modelOptions.length === 0 && !canChooseEffort}>
         {#snippet child({ props })}
-          <Button
+          <button
             {...props}
             data-testid="conversation-config-pill"
-            variant="ghost"
-            size="xs"
-            class="border-border/70 text-muted-foreground hover:text-foreground gap-1 rounded-full border px-2.5 text-[13px] font-normal"
+            class="composer-chip"
+            type="button"
           >
             {modelEffortLabel(configState.model, configState.reasoningEffort)}
-            <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
-          </Button>
+            <ChevronDown size={13} class="chip-chevron" aria-hidden="true" />
+          </button>
         {/snippet}
       </DropdownMenu.Trigger>
       <!-- Same reason as the approval menu: upward, away from the window edge. -->
@@ -193,7 +189,12 @@
           </DropdownMenu.SubTrigger>
           <!-- A submenu hangs off its row, near the bottom of the window: its
                bottom edge is pinned to the row's so it grows upward. -->
+          <!-- Opens to the LEFT. This chip is right-aligned in the composer,
+               and collision avoidance measures the window rather than the
+               centre pane, so a submenu allowed to open rightward has room in
+               the window and lands on top of the file tree. -->
           <DropdownMenu.SubContent
+            side="left"
             align="end"
             avoidCollisions
             collisionPadding={12}
@@ -207,17 +208,19 @@
                 class="model-option"
                 onSelect={() => onChange?.('model', model)}
               >
-                <span class="flex size-3.5 shrink-0 items-center justify-center">
+                <span class="check-slot">
                   {#if model === menuState.model}<Check aria-hidden="true" class="size-3.5" />{/if}
                 </span>
-                <span class="model-option-copy">
+                <span class="menu-row-copy">
                   <span class="model-option-name">{modelLabel(model)}</span>
-                  <span class="model-option-provider">{menuProvider}</span>
+                  <span class="menu-row-description">{menuProvider}</span>
                 </span>
               </DropdownMenu.Item>
             {/each}
           </DropdownMenu.SubContent>
         </DropdownMenu.Sub>
+
+        <DropdownMenu.Separator />
 
         <DropdownMenu.Sub>
           <DropdownMenu.SubTrigger
@@ -231,7 +234,12 @@
           </DropdownMenu.SubTrigger>
           <!-- A submenu hangs off its row, near the bottom of the window: its
                bottom edge is pinned to the row's so it grows upward. -->
+          <!-- Opens to the LEFT. This chip is right-aligned in the composer,
+               and collision avoidance measures the window rather than the
+               centre pane, so a submenu allowed to open rightward has room in
+               the window and lands on top of the file tree. -->
           <DropdownMenu.SubContent
+            side="left"
             align="end"
             avoidCollisions
             collisionPadding={12}
@@ -239,7 +247,7 @@
           >
             {#each menuEffortOptions as effort (effort)}
               <DropdownMenu.Item onSelect={() => onChange?.('reasoningEffort', effort)}>
-                <span class="flex size-3.5 shrink-0 items-center justify-center">
+                <span class="check-slot">
                   {#if effort === menuState.reasoningEffort}
                     <Check aria-hidden="true" class="size-3.5" />
                   {/if}
@@ -256,26 +264,58 @@
 </div>
 
 <style>
-  /* One 24px line under the text area, inside the composer's own border. */
+  /* The two chips sit together at the right of the composer's control row. */
   .config-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    min-height: 24px;
+    gap: var(--composer-row-gap);
+    min-width: 0;
   }
   .config-right {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--composer-row-gap);
     min-width: 0;
   }
   .unavailable {
     color: var(--secondary-label);
     font-size: 13px;
   }
+
+  /* One pill for both chips. The open state is what tells you which chip the
+     menu on screen belongs to; bits-ui marks the trigger while its menu is up. */
+  .composer-chip {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: var(--composer-pill-gap);
+    padding: var(--composer-pill-inset);
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: var(--composer-pill-surface);
+    color: var(--composer-pill-text);
+    font: 400 13px/1.2 inherit;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .composer-chip:hover:not(:disabled) {
+    background: var(--composer-pill-surface-hover);
+    color: var(--composer-pill-text-open);
+  }
+  .composer-chip[data-state='open'] {
+    background: var(--composer-pill-surface-open);
+    color: var(--composer-pill-text-open);
+  }
+  .composer-chip:disabled { cursor: default; opacity: .5; }
+  .composer-chip:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 2px; }
+  :global(.chip-chevron) { opacity: .7; }
+  @media (prefers-reduced-motion: no-preference) {
+    .composer-chip { transition: background-color .14s ease, color .14s ease; }
+  }
+
   :global(.model-option[data-disabled]) { cursor: not-allowed; }
-  .model-option-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+  .check-slot { display: inline-grid; place-items: center; flex: none; width: 15px; color: var(--color-accent); }
+  .menu-row-copy { display: flex; min-width: 0; flex-direction: column; gap: var(--menu-row-description-gap); }
+  .menu-row-description { color: var(--secondary-label); font-size: 13px; line-height: 1.4; white-space: normal; }
   .model-option-name { overflow: hidden; color: var(--color-text); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-  .model-option-provider { color: var(--secondary-label); font-size: 13px; }
 </style>

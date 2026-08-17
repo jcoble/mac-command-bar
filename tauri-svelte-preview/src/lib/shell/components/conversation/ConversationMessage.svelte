@@ -1,4 +1,5 @@
 <script lang="ts">
+  import FileText from '@lucide/svelte/icons/file-text';
   import { parseSafeMarkdown, type SafeInlinePart } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import CodeBlock from './CodeBlock.svelte';
 
@@ -46,7 +47,7 @@
   {:else if part.kind === 'emphasis'}<em>{part.value}</em>
   {:else if part.kind === 'code'}<code class="inline-code">{part.value}</code>
   {:else if part.kind === 'link'}<a href={part.href} target="_blank" rel="noreferrer">{part.value}</a>
-  {:else if part.kind === 'file-link'}<button class="file-link" data-testid="conversation-file-link" type="button" onclick={() => onFileLink?.(part.path)}>{part.value}</button>
+  {:else if part.kind === 'file-link'}<button class="file-link" data-testid="conversation-file-link" type="button" title={part.path} onclick={() => onFileLink?.(part.path)}><FileText size={13} strokeWidth={1.8} aria-hidden="true" />{part.value}</button>
   {:else}{part.value}{/if}
 {/snippet}
 
@@ -85,7 +86,11 @@
   .turn-body li::marker{color:var(--color-text-3)}
   .turn-body li.task-row{list-style:none;margin-left:-18px;padding-left:0}
   .turn-body a{color:var(--color-accent);text-decoration:underline;text-underline-offset:2px}
-  .file-link{border:0;background:transparent;color:var(--color-accent);padding:0;text-decoration:underline;text-underline-offset:2px;font:inherit;cursor:pointer}
+  /* A document link is the file's name with the page mark in front of it, so a
+     file being pointed at is distinguishable at a glance from a link off to
+     the web. The mark keeps out of the underline; the name carries it. */
+  .file-link{display:inline-flex;align-items:baseline;gap:4px;border:0;background:transparent;color:var(--color-accent);padding:0;text-decoration:underline;text-underline-offset:2px;font:inherit;cursor:pointer}
+  .file-link :global(svg){align-self:center;flex:none}
   /* Tinted, not outlined. The border made a two-word span read as a button,
      which was loudest exactly where inline code is most common: table cells. */
   .inline-code{padding:1.5px 5px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}

@@ -189,6 +189,7 @@
     isNativeTauriRuntime,
     listAgentConversationSessionsFromTauri,
     listAgentSessionsFromTauri,
+    openMainDevtoolsFromTauri,
     updateAgentConversationSessionMetaFromTauri,
     type AgentSession
   } from '$lib/tauriSource';
@@ -1433,6 +1434,17 @@
       window.removeEventListener('dragover', swallowStrayDrop);
       window.removeEventListener('drop', swallowStrayDrop);
     });
+    // ⌥⌘I opens the inspector, the same chord every browser uses. WebKit offers
+    // this itself, but only in a build the inspector was compiled into, and only
+    // when the shortcut has not been swallowed on its way through — asking the
+    // desktop app outright is the version that keeps working.
+    const openDevtoolsOnChord = (event: KeyboardEvent): void => {
+      if (!event.metaKey || !event.altKey || event.ctrlKey || event.code !== 'KeyI') return;
+      event.preventDefault();
+      void openMainDevtoolsFromTauri().catch(() => undefined);
+    };
+    window.addEventListener('keydown', openDevtoolsOnChord);
+    disposers.push(() => window.removeEventListener('keydown', openDevtoolsOnChord));
     const stopExtensionApiProbeObservations = onExtensionApiProbeObservation((observation) => {
       extensionApiProbeObservation = observation;
     });

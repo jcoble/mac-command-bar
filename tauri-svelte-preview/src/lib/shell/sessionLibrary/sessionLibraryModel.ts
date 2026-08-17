@@ -6,7 +6,7 @@
  * archive and never starts a provider. Identity intentionally never includes a
  * title: two same-title sessions in different worktrees are different rows.
  */
-import type { AgentSession } from '../../tauriSource.ts';
+import type { AgentSession, AgentSessionTurn } from '../../tauriSource.ts';
 import type { AgentRuntimeState, OwnedSession } from '../ownedSessions.ts';
 
 export type SessionLibraryState = 'working' | 'done' | 'settled' | 'resumable';
@@ -39,6 +39,13 @@ export interface SessionLibraryRecord {
   title: string;
   description: string | null;
   projectPath: string | null;
+  /**
+   * The repository the session's folder belongs to, as git reported it during
+   * the scan. This is what a project group is keyed on, so a repository's main
+   * checkout and all of its worktrees land together under its folder's name.
+   * Null for a live session, and for a folder that is gone from disk.
+   */
+  projectRoot: string | null;
   model: string | null;
   state: SessionLibraryState;
   runtimeState: AgentRuntimeState | null;
@@ -152,7 +159,24 @@ function bestUpdatedAt(session: OwnedSession): string | null {
   return session.lastActivity ?? session.settledAt ?? session.completedAt ?? null;
 }
 
-function latestTurnsFor(preview: string | null | undefined): SessionLibraryTurn[] {
+/**
+ * The turns an expanded card shows.
+ *
+ * The scanner sends the real pair — who spoke and the whole of what they said —
+ * so that is what is used when it is there. The one-line preview is the
+ * fallback for records that have no scan behind them, and it is genuinely one
+ * line: 120 characters with `You: ` or `Agent: ` already written into it. It
+ * cannot say who spoke, so it does not claim to.
+ */
+function latestTurnsFor(
+  turns: AgentSessionTurn[] | null | undefined,
+  preview: string | null | undefined
+): SessionLibraryTurn[] {
+  const scanned = (turns ?? []).filter((turn) => turn.text.trim().length > 0);
+  if (scanned.length > 0) {
+    return scanned.map((turn) => ({ speaker: turn.speaker, text: turn.text }));
+  }
+
   return preview ? [{ speaker: 'agent', text: preview }] : [];
 }
 
@@ -169,6 +193,9 @@ export function ownedSessionLibraryRecord(session: OwnedSession): SessionLibrary
     title: session.title || session.ownedId,
     description: session.latestTurnPreview,
     projectPath: session.projectPath,
+    // A live session is not scanned, so nothing has asked git about its folder.
+    // The panel falls back to reading the path when this is null.
+    projectRoot: null,
     model: null,
     state: deriveOwnedLibraryState(session),
     runtimeState: session.runtimeState ?? null,
@@ -177,7 +204,7 @@ export function ownedSessionLibraryRecord(session: OwnedSession): SessionLibrary
     messageCount: session.messageCount ?? null,
     logPath: null,
     firstPrompt: null,
-    latestTurns: latestTurnsFor(session.latestTurnPreview),
+    latestTurns: latestTurnsFor(null, session.latestTurnPreview),
     subagents: [],
     owned: session,
     available: null
@@ -198,6 +225,7 @@ export function providerSessionLibraryRecord(session: AgentSession): SessionLibr
     title: session.title || session.id,
     description: session.description ?? session.latestTurnPreview ?? null,
     projectPath: session.projectPath,
+    projectRoot: session.projectRoot ?? null,
     model: session.model ?? null,
     state: 'resumable',
     runtimeState: null,
@@ -206,7 +234,7 @@ export function providerSessionLibraryRecord(session: AgentSession): SessionLibr
     messageCount: session.messageCount ?? null,
     logPath: session.logPath ?? null,
     firstPrompt: null,
-    latestTurns: latestTurnsFor(session.latestTurnPreview),
+    latestTurns: latestTurnsFor(session.latestTurns, session.latestTurnPreview),
     subagents: [],
     owned: null,
     available: session
