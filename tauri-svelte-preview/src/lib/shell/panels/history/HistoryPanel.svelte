@@ -40,6 +40,7 @@
     type SessionLibraryRecord
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
   import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
+  import { ensureStructuredConversation } from '$lib/shell/conversation/conversationService.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
   import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
@@ -48,17 +49,12 @@
     openPathFromTauri,
     revealPathFromTauri
   } from '$lib/tauriSource.ts';
-  import {
-    openFileInEditor,
-    showCenterTab,
-    startWorkbenchSession
-  } from '$lib/shell/workbenchNavigation.ts';
+  import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation.ts';
 
   import SessionHistoryCard from './SessionHistoryCard.svelte';
   import {
     sessionHistoryActions,
     sessionHistoryIdentity,
-    sessionHistoryStartRequest,
     sessionResumeCommand,
     sessionTranscriptImport,
     type SessionHistoryActionId
@@ -117,20 +113,37 @@
     await navigator.clipboard.writeText(value);
   }
 
+  /**
+   * The words an error carries.
+   *
+   * A native command rejects with the plain `{ code, message, recoverable }`
+   * object the backend serialized, not with an Error, and `String()` turns that
+   * into "[object Object]" — which is what the rail used to show. Read the
+   * message off either shape.
+   */
   function describeError(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
+    if (error instanceof Error) return error.message;
+    if (error && typeof error === 'object') {
+      const { message } = error as { message?: unknown };
+      if (typeof message === 'string' && message.trim()) return message;
+    }
+    return String(error);
   }
 
   /**
-   * Read a past session's own transcript into the app and put it on screen.
+   * Pick a past session back up as a session of this app's own.
    *
-   * The backend writes the transcript in as a new app-owned conversation and
-   * hands back its id, so the rail has to be told about that row before
-   * anything can open it — opening a session reads the rail for the agent it
-   * belongs to. Once the row is there this is the same open every other card
-   * goes through, and the same failure channel the rail already shows.
+   * Two steps, and both are needed for the one button to mean what it says. The
+   * import writes the past conversation into this app's storage as a new
+   * app-owned session and hands back its id, so the rail is told about that row
+   * before anything opens it — opening a session reads the rail for the agent it
+   * belongs to. That much puts the transcript on screen. What makes it a session
+   * you can SEND to is the second step: the ACP adapter is started for it, the
+   * same call adopting a scanned session makes, which is also what fills in the
+   * model and effort the composer offers. No CLI and no terminal are involved —
+   * the adapter is the whole runtime here.
    */
-  async function openTranscript(record: SessionLibraryRecord): Promise<void> {
+  async function resumeAsAssemblySession(record: SessionLibraryRecord): Promise<void> {
     const request = sessionTranscriptImport(record);
     if (!request) return;
     try {
@@ -146,11 +159,18 @@
       // takes the title this card is already showing rather than arriving blank.
       addOwnedSession({ ...ownedSessionFromBackend(imported), title: record.title });
       await host.service.open({ ...record, ownedId });
-      // A transcript you asked to see is one you want to look at, so bring the
-      // session forward the same way adopting a scanned session does.
+      // A session you asked to resume is one you want to look at, so bring it
+      // forward the same way adopting a scanned session does.
       showCenterTab('session');
+      await ensureStructuredConversation({
+        ownedId,
+        provider: request.provider,
+        cwd: request.cwd,
+        nativeSessionId: request.nativeSessionId,
+        nativeSessionMode: 'resume'
+      });
     } catch (error) {
-      rail.error = `could not open the transcript for "${record.title}": ${describeError(error)}`;
+      rail.error = `could not resume "${record.title}" as an Assembly session: ${describeError(error)}`;
     }
   }
 
@@ -164,14 +184,8 @@
     if (!allowed?.enabled) return;
 
     switch (id) {
-      case 'resume-worktree':
-        await host.service.resume(record);
-        return;
-      case 'continue-new-session':
-        await startWorkbenchSession(sessionHistoryStartRequest(record));
-        return;
-      case 'open-transcript':
-        await openTranscript(record);
+      case 'resume-assembly':
+        await resumeAsAssemblySession(record);
         return;
       case 'view-log':
         if (record.logPath) openFileInEditor({ path: record.logPath });

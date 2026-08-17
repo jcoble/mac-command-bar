@@ -13,12 +13,9 @@
 import { normalizeProvider } from '../../ownedSessions.ts';
 import type { AgentConversationTranscriptImport } from '../../../tauriSource.ts';
 import type { SessionLibraryRecord } from '../../sessionLibrary/sessionLibraryModel.ts';
-import type { StartSessionRequest } from '../../workbenchNavigation.ts';
 
 export type SessionHistoryActionId =
-  | 'resume-worktree'
-  | 'continue-new-session'
-  | 'open-transcript'
+  | 'resume-assembly'
   | 'view-log'
   | 'copy-resume-command'
   | 'open-log'
@@ -39,9 +36,7 @@ export interface SessionHistoryAction {
 
 /** The order a person sees, in the menu and in the expanded action row. */
 export const SESSION_HISTORY_ACTION_IDS: readonly SessionHistoryActionId[] = [
-  'resume-worktree',
-  'continue-new-session',
-  'open-transcript',
+  'resume-assembly',
   'view-log',
   'copy-resume-command',
   'open-log',
@@ -62,7 +57,6 @@ export const SESSION_HISTORY_MENU_ACTION_IDS: readonly SessionHistoryActionId[] 
 const NO_TRANSCRIPT = 'No transcript file was found for this session.';
 const NO_FOLDER = 'This session has no folder recorded.';
 const NO_RESUME_COMMAND = 'This session has no resume command to copy.';
-const NOT_RESUMABLE = 'There is nothing left to resume for this session.';
 const NOT_OURS = 'Only sessions started in this app can be deleted.';
 const NO_SESSION_ID = 'This session has no provider session id to read a transcript for.';
 const UNREADABLE_AGENT = 'This app cannot read transcripts written by this agent.';
@@ -79,30 +73,14 @@ export function sessionHistoryIdentity(record: SessionLibraryRecord): string {
 }
 
 /**
- * What Continue in New Session asks for: this card's folder, this card's
- * agent. Both used to be dropped on the way — the folder because the request
- * was built from fields the card had already blanked, and the agent because
- * the request never carried one, so every continued session started as codex.
- */
-export function sessionHistoryStartRequest(record: SessionLibraryRecord): StartSessionRequest {
-  const folder = record.canonicalCwd?.trim() || record.projectPath?.trim() || '';
-  const provider = record.provider === 'claude' || record.provider === 'codex' || record.provider === 'antigravity'
-    ? record.provider
-    : undefined;
-  return {
-    prompt: record.firstPrompt ?? '',
-    cwd: folder,
-    projectPath: record.projectPath?.trim() || folder,
-    title: record.title,
-    ...(provider ? { provider } : {})
-  };
-}
-
-/**
- * What Open Transcript asks the backend for: which agent wrote the transcript,
- * the id that agent knew the session by, the file it wrote, and the folder it
- * ran in. Null when the row is missing any of the first three, which is the
+ * What Resume as Assembly Session asks the backend for: which agent wrote the
+ * transcript, the id that agent knew the session by, the file it wrote, and the
+ * folder it ran in. Null when the row is missing any of the four, which is the
  * same answer that switches the action off.
+ *
+ * The folder is required because resuming is not only reading: the conversation
+ * is handed back to its agent through the ACP adapter, and an adapter has to be
+ * started somewhere.
  */
 export function sessionTranscriptImport(
   record: SessionLibraryRecord
@@ -115,8 +93,9 @@ export function sessionTranscriptImport(
     agent === 'claude' || agent === 'codex' || agent === 'antigravity' ? agent : null;
   const nativeSessionId = record.nativeSessionId?.trim() ?? '';
   const transcriptPath = record.logPath?.trim() ?? '';
-  if (!provider || !nativeSessionId || !transcriptPath) return null;
-  return { provider, nativeSessionId, transcriptPath, cwd: record.canonicalCwd };
+  const cwd = record.canonicalCwd?.trim() ?? '';
+  if (!provider || !nativeSessionId || !transcriptPath || !cwd) return null;
+  return { provider, nativeSessionId, transcriptPath, cwd };
 }
 
 function action(
@@ -135,30 +114,25 @@ function action(
   };
 }
 
-/** The eleven actions a session card offers, in the order a person sees them. */
+/** The nine actions a session card offers, in the order a person sees them. */
 export function sessionHistoryActions(record: SessionLibraryRecord): SessionHistoryAction[] {
   const hasLog = Boolean(record.logPath?.trim());
   const hasFolder = Boolean(record.canonicalCwd?.trim());
-  // Reading a past transcript needs all three of the agent, the id it knew the
-  // session by, and the file it wrote. Say which one is missing, most specific
-  // first — a row with no id at all is a different problem from a row whose
-  // agent this app cannot read.
-  const canOpenTranscript = sessionTranscriptImport(record) !== null;
-  const transcriptReason = !record.nativeSessionId?.trim()
+  // Resuming needs all four of the agent, the id it knew the session by, the
+  // file it wrote, and the folder it ran in. Say which one is missing, most
+  // specific first — a row with no id at all is a different problem from a row
+  // whose agent this app cannot read.
+  const canResumeAssembly = sessionTranscriptImport(record) !== null;
+  const resumeReason = !record.nativeSessionId?.trim()
     ? NO_SESSION_ID
     : !hasLog
       ? NO_TRANSCRIPT
-      : UNREADABLE_AGENT;
-  // A scanned session is resumed by starting an agent in its folder, so a row
-  // whose scan never found one has nothing to resume into. Sessions this app
-  // already owns keep their folder in the database and do not need the scan.
-  const canResume = Boolean(record.ownedId) || Boolean(record.available && hasFolder);
-  const resumeReason = record.available && !hasFolder ? NO_FOLDER : NOT_RESUMABLE;
+      : !hasFolder
+        ? NO_FOLDER
+        : UNREADABLE_AGENT;
 
   return [
-    action('resume-worktree', 'Resume in Worktree', canResume, resumeReason),
-    action('continue-new-session', 'Continue in New Session', hasFolder, NO_FOLDER),
-    action('open-transcript', 'Open Transcript', canOpenTranscript, transcriptReason),
+    action('resume-assembly', 'Resume as Assembly Session', canResumeAssembly, resumeReason),
     action('view-log', 'View Log', hasLog, NO_TRANSCRIPT),
     action(
       'copy-resume-command',

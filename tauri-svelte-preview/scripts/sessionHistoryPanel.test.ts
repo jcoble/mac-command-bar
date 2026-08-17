@@ -11,7 +11,6 @@ import assert from 'node:assert/strict';
 import {
   SESSION_HISTORY_ACTION_IDS,
   sessionHistoryActions,
-  sessionHistoryStartRequest,
   type SessionHistoryActionId
 } from '../src/lib/shell/panels/history/sessionHistoryActions.ts';
 import type { SessionLibraryRecord } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
@@ -63,9 +62,7 @@ const LOG_ACTIONS: SessionHistoryActionId[] = [
   assert.deepEqual(
     actions.map((action) => action.id),
     [
-      'resume-worktree',
-      'continue-new-session',
-      'open-transcript',
+      'resume-assembly',
       'view-log',
       'copy-resume-command',
       'open-log',
@@ -149,88 +146,48 @@ const LOG_ACTIONS: SessionHistoryActionId[] = [
 }
 
 {
-  // Nowhere to start from, and nowhere to open.
-  const actions = sessionHistoryActions(record({ canonicalCwd: '', projectPath: null }));
-  for (const id of ['continue-new-session', 'open-working-directory'] as SessionHistoryActionId[]) {
+  // Nowhere to resume into, and nowhere to open. Resuming hands the
+  // conversation back to its agent through the ACP adapter, and an adapter has
+  // to be started in a folder, so a row without one says so.
+  const actions = sessionHistoryActions(
+    record({
+      provider: 'claude',
+      logPath: '/Users/dev/.sessions/claude/S9.jsonl',
+      canonicalCwd: '',
+      projectPath: null
+    })
+  );
+  for (const id of ['resume-assembly', 'open-working-directory'] as SessionHistoryActionId[]) {
     const action = byId(actions, id);
     assert.equal(action.enabled, false, `${id} should be off without a folder`);
     assert.ok(action.disabledReason);
   }
+  assert.equal(
+    byId(actions, 'resume-assembly').disabledReason,
+    'This session has no folder recorded.'
+  );
 }
 
 {
-  // A scanned session with no folder has nothing to resume into, and the card
-  // says so rather than starting an agent that lands nowhere.
-  const scanned = {
-    provider: 'codex',
-    id: 'S9',
-    title: 'Fix the resume rail',
-    model: null,
-    projectPath: null,
-    lastActivity: '2026-08-01T10:00:00Z',
-    resumeCommands: ['codex resume S9']
-  };
-  const folderless = byId(
-    sessionHistoryActions(record({ canonicalCwd: '', projectPath: null, available: scanned })),
-    'resume-worktree'
-  );
-  assert.equal(folderless.enabled, false);
-  assert.equal(folderless.disabledReason, 'This session has no folder recorded.');
-
-  // The same session once the scan found its folder.
-  const located = byId(
+  // A row with an agent this app can read, the id that agent knew the session
+  // by, its transcript file and its folder is the one that resumes.
+  const ready = byId(
     sessionHistoryActions(
-      record({ available: { ...scanned, projectPath: '/Users/dev/work/mac-command-bar' } })
+      record({ provider: 'claude', logPath: '/Users/dev/.sessions/claude/S9.jsonl' })
     ),
-    'resume-worktree'
+    'resume-assembly'
   );
-  assert.equal(located.enabled, true);
-  assert.equal(located.disabledReason, null);
+  assert.equal(ready.enabled, true);
+  assert.equal(ready.disabledReason, null);
 
-  // A session this app owns keeps its folder in the database, so it resumes
-  // whether or not a scan found anything.
-  const owned = byId(
-    sessionHistoryActions(record({ ownedId: 'owned-1', canonicalCwd: '', projectPath: null })),
-    'resume-worktree'
+  // An agent whose transcripts this app cannot read says that, rather than
+  // offering a resume that would land nowhere.
+  const unreadable = byId(
+    sessionHistoryActions(record({ logPath: '/Users/dev/.sessions/alpha/S9.jsonl' })),
+    'resume-assembly'
   );
-  assert.equal(owned.enabled, true);
-}
-
-{
-  // Continue in New Session asks for this card's folder and this card's agent.
-  const request = sessionHistoryStartRequest(
-    record({
-      provider: 'claude',
-      canonicalCwd: '/Users/dev/work/rental-management',
-      projectPath: '/Users/dev/work/rental-management',
-      firstPrompt: 'Look at the ledger posting order',
-      title: 'Ledger posting'
-    })
-  );
-  assert.deepEqual(request, {
-    prompt: 'Look at the ledger posting order',
-    cwd: '/Users/dev/work/rental-management',
-    projectPath: '/Users/dev/work/rental-management',
-    title: 'Ledger posting',
-    provider: 'claude'
-  });
-
-  // A codex row keeps its own agent rather than falling back to a default.
-  assert.equal(sessionHistoryStartRequest(record({ provider: 'codex' })).provider, 'codex');
-
-  // An agent this app does not start leaves the choice to the caller.
-  assert.equal('provider' in sessionHistoryStartRequest(record({ provider: 'alpha' })), false);
-
-  // The folder survives when only one of the two fields carries it.
-  assert.equal(
-    sessionHistoryStartRequest(record({ canonicalCwd: '', projectPath: '/Users/dev/work/edi' })).cwd,
-    '/Users/dev/work/edi'
-  );
-  assert.equal(
-    sessionHistoryStartRequest(record({ canonicalCwd: '/Users/dev/work/edi', projectPath: null }))
-      .projectPath,
-    '/Users/dev/work/edi'
-  );
+  assert.equal(unreadable.enabled, false);
+  assert.equal(unreadable.disabledReason, 'This app cannot read transcripts written by this agent.');
 }
 
 {

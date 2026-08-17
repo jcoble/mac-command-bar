@@ -17,9 +17,7 @@
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import MessageSquare from '@lucide/svelte/icons/message-square';
-  import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import Play from '@lucide/svelte/icons/play';
-  import SquarePlus from '@lucide/svelte/icons/square-plus';
   import TextCursorInput from '@lucide/svelte/icons/text-cursor-input';
   import Users from '@lucide/svelte/icons/users';
 
@@ -105,23 +103,14 @@
     <span class="min-w-0 flex-1 truncate font-medium">{title}</span>
     {#snippet actions()}
       <HoverActionButton
-        label={action('resume-worktree').enabled
-          ? 'Resume in Worktree'
-          : (action('resume-worktree').disabledReason ?? 'Resume in Worktree')}
+        label={action('resume-assembly').enabled
+          ? 'Resume as Assembly Session'
+          : (action('resume-assembly').disabledReason ?? 'Resume as Assembly Session')}
         tone="primary"
-        disabled={!action('resume-worktree').enabled}
-        onclick={() => run('resume-worktree')}
+        disabled={!action('resume-assembly').enabled}
+        onclick={() => run('resume-assembly')}
       >
         <Play />
-      </HoverActionButton>
-      <HoverActionButton
-        label={action('continue-new-session').enabled
-          ? 'Continue in New Session'
-          : (action('continue-new-session').disabledReason ?? 'Continue in New Session')}
-        disabled={!action('continue-new-session').enabled}
-        onclick={() => run('continue-new-session')}
-      >
-        <SquarePlus />
       </HoverActionButton>
       <HoverActionButton label={expanded ? 'Hide details' : 'Show details'} onclick={onToggle}>
         {#if expanded}<ChevronUp />{:else}<ChevronDown />{/if}
@@ -176,32 +165,12 @@
         <Button
           size="sm"
           variant="secondary"
-          disabled={!action('resume-worktree').enabled}
-          title={action('resume-worktree').disabledReason ?? undefined}
-          onclick={() => run('resume-worktree')}
+          disabled={!action('resume-assembly').enabled}
+          title={action('resume-assembly').disabledReason ?? undefined}
+          onclick={() => run('resume-assembly')}
         >
           <Play aria-hidden="true" />
-          Resume in Worktree
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={!action('continue-new-session').enabled}
-          title={action('continue-new-session').disabledReason ?? undefined}
-          onclick={() => run('continue-new-session')}
-        >
-          <SquarePlus aria-hidden="true" />
-          Continue in New Session
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={!action('open-transcript').enabled}
-          title={action('open-transcript').disabledReason ?? undefined}
-          onclick={() => run('open-transcript')}
-        >
-          <MessagesSquare aria-hidden="true" />
-          Open Transcript
+          Resume as Assembly Session
         </Button>
         <Button
           size="sm"
