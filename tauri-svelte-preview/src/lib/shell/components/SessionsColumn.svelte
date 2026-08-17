@@ -192,7 +192,7 @@
 
 <Tooltip.Provider delayDuration={250}>
   {#if collapsed}
-    <div class="flex h-full w-full flex-col items-center gap-1 overflow-hidden bg-[var(--color-bg)] py-2">
+    <div class="flex h-full w-full flex-col items-center gap-1 overflow-hidden py-2">
       {@render action('Open the sessions column', PanelLeftOpen, () => onCollapse(false))}
 
       <div class="mt-1 flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
@@ -223,7 +223,7 @@
       </div>
     </div>
   {:else}
-    <div data-testid="sessions-column" class="sessions-column flex h-full min-h-0 flex-col bg-[var(--color-bg)] text-[var(--color-text)]">
+    <div data-testid="sessions-column" class="sessions-column flex h-full min-h-0 flex-col text-[var(--color-text)]">
       <header class="sessions-header">
         <h2 class="text-[14px] font-semibold text-[var(--color-text)]">Sessions</h2>
         <div class="header-actions ml-auto flex items-center gap-2">
@@ -386,6 +386,11 @@
   .state-dot[data-state='background'] { background: var(--color-live); }
   .state-dot[data-state='exited'] { background: transparent; box-shadow: inset 0 0 0 1px var(--color-text-2); }
 
+  /* No background here, and none on the folded rail above either. The panel
+     this column is mounted into already paints the shell's card — the surface
+     colour and the light along its top edge — so a fill of our own only covers
+     it up, which is what made this column read as a hole cut in the backdrop
+     while the other two read as cards. */
   .sessions-column {
     box-sizing: border-box;
     overflow: hidden;

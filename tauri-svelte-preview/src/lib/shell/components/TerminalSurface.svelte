@@ -190,7 +190,11 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    background: var(--color-bg);
+    /* The card's own surface colour, not the backdrop: this overlay reads as
+       part of the panel rather than a hole in it. It stays opaque on purpose —
+       covering a terminal that is still on screen is the whole reason it
+       exists (see the note above) — so it cannot simply be dropped. */
+    background: var(--color-surface);
     color: var(--color-text-2);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
     font-size: 12px;
