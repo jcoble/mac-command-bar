@@ -164,7 +164,7 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col bg-card">
+<div class="flex h-full min-h-0 flex-col">
   <PanelHeader title="History" count={viewModel.totalCount}>
     {#snippet actions()}
       <IconButton

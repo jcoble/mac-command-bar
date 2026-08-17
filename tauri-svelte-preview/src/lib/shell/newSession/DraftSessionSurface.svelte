@@ -393,7 +393,11 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--color-bg);
+    /* The card's own surface colour, not the backdrop, so the draft reads as
+       part of the panel. It stays opaque: this layer sits over a conversation
+       that keeps its size and its terminals while the draft is open, and it
+       has to hide them. */
+    background: var(--color-surface);
     color: var(--color-text);
     font: 13px ui-sans-serif, system-ui;
   }

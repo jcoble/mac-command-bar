@@ -175,7 +175,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="flex h-full min-h-0 flex-col bg-card">
+<div class="flex h-full min-h-0 flex-col">
   <PanelHeader title="Run" count={rows.length}>
     {#snippet actions()}
       <IconButton

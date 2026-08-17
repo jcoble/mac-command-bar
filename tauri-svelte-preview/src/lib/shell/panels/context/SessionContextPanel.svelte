@@ -107,7 +107,7 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col bg-card">
+<div class="flex h-full min-h-0 flex-col">
   <PanelHeader title="Context" data-testid="session-context-header" />
 
   {#if !ownedId}

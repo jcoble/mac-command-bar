@@ -132,7 +132,7 @@
 {/snippet}
 
 <div
-  class="flex h-full min-h-0 flex-col bg-[var(--color-bg)] text-[var(--color-text)]"
+  class="flex h-full min-h-0 flex-col text-[var(--color-text)]"
   data-testid="problems-panel"
 >
   <div
@@ -162,15 +162,15 @@
         aria-label="Filter problems"
         value={problemsState.filter}
         oninput={(event) => setProblemsFilter(event.currentTarget.value)}
-        class="h-7 rounded-md bg-[var(--color-surface)] pl-7 text-[13px] md:text-[13px]"
+        class="h-7 rounded-md bg-[var(--color-elevated)] pl-7 text-[13px] md:text-[13px]"
       />
     </div>
 
     <button
       type="button"
-      class="flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-[var(--color-surface)]
+      class="flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-[var(--color-elevated)]
              px-2 text-[12px] text-[var(--color-text-2)] transition-colors
-             hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]
+             hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]
              focus-visible:ring-3 focus-visible:ring-ring/50 outline-none
              disabled:opacity-60"
       disabled={problemsState.loading}

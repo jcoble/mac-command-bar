@@ -204,7 +204,7 @@
 </script>
 
 <div
-  class="flex h-full min-h-0 w-full flex-col bg-card text-foreground"
+  class="flex h-full min-h-0 w-full flex-col text-foreground"
   aria-label="Source control"
 >
   <PanelHeader title="Source control" count={diffstat.filesChanged} data-testid="source-control-header">

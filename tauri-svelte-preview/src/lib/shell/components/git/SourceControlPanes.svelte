@@ -168,7 +168,7 @@
 <!-- One padded column of cards, with real space between them, so the strip, the
      changes and the history read as separate things rather than one flat list. -->
 <div
-  class="flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden bg-[var(--color-bg)] p-2
+  class="flex h-full min-h-0 w-full flex-col gap-2 overflow-hidden p-2
          text-[var(--color-text)]"
   aria-label="Source control"
 >

@@ -126,7 +126,7 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 w-full flex-col bg-card text-foreground">
+<div class="flex h-full min-h-0 w-full flex-col text-foreground">
   <PanelHeader title="Files" count={explorer.activated ? listedCount : null}>
     {#snippet actions()}
       {#if explorer.activated}
