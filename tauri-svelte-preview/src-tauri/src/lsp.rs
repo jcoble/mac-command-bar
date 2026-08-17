@@ -219,6 +219,32 @@ pub(crate) fn set_language_intelligence(root: &str, enabled: bool) -> LanguageIn
 const READ_MODE_DETAIL: &str =
     "Language intelligence is off for this workspace. Files open with colouring only.";
 
+/// What asking for one workspace's language server did.
+///
+/// The switch asks the moment it is turned on, and most of these answers are
+/// the ones where nothing started. Each has to be something a reader can be
+/// shown: silence is what made the switch look broken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LanguageServerStart {
+    /// A server for this language is running for this workspace.
+    Running { server_name: &'static str },
+    /// This app has no language server for that language.
+    NoServerForLanguage,
+    /// There is one, but its program is not installed on this machine.
+    NotInstalled {
+        server_name: &'static str,
+        command: &'static str,
+    },
+    /// C# starts through the desktop app's own language client, not here.
+    NativeCsharpClient,
+    /// C# is switched off in Settings.
+    CsharpSwitchedOff,
+    /// Nothing under this workspace is a C# project.
+    NoCsharpProject,
+    /// The workspace is in read mode, so nothing may start.
+    ReadMode,
+}
+
 /// May a server for this language be started or reused right now?
 fn language_server_allowed(language_id: &str) -> bool {
     language_id != "csharp" || csharp_language_server_enabled()
@@ -2541,6 +2567,58 @@ impl SourceLspRegistry {
         Ok(warmed)
     }
 
+    /// Start this workspace's server for one language now, and say what that did.
+    ///
+    /// This is the lazy start the first hover performs, asked for on purpose
+    /// instead of by accident: the same [`Self::ensure_session`] slot, so a
+    /// server that is already warm is reused rather than started twice. Every
+    /// reason a server cannot start comes back as a plain answer rather than an
+    /// error, because "there is no server for this language" is an ordinary
+    /// thing for a workspace to be, not a fault.
+    pub(crate) fn start_server_for_language(
+        &self,
+        root: &str,
+        language: &str,
+    ) -> Result<LanguageServerStart, String> {
+        if !language_intelligence_on(root) {
+            return Ok(LanguageServerStart::ReadMode);
+        }
+        let Some(spec) = server_spec_for_language(language) else {
+            return Ok(LanguageServerStart::NoServerForLanguage);
+        };
+        if spec.language_id == "csharp" {
+            // C# belongs to the native language client, and starting a second
+            // Roslyn here beside it is exactly what the legacy pool must not do.
+            // Its own gates decide, and the reader is told which one held.
+            if !csharp_language_server_enabled() {
+                return Ok(LanguageServerStart::CsharpSwitchedOff);
+            }
+            if !workspace_has_csharp_project_marker(root) {
+                return Ok(LanguageServerStart::NoCsharpProject);
+            }
+            return Ok(LanguageServerStart::NativeCsharpClient);
+        }
+        let Some(command) = resolve_command(spec.command) else {
+            return Ok(LanguageServerStart::NotInstalled {
+                server_name: spec.server_name,
+                command: spec.command,
+            });
+        };
+        let Some(root) = normalized_lsp_root(root) else {
+            return Err("This project folder could not be found on this machine.".to_string());
+        };
+        self.ensure_session(
+            SourceLspSessionKey {
+                language: spec.language_id.to_string(),
+                root,
+            },
+            ResolvedLspServer { spec, command },
+        )?;
+        Ok(LanguageServerStart::Running {
+            server_name: spec.server_name,
+        })
+    }
+
     fn preload_languages_for_root(&self, root: &str) -> Result<Vec<String>, String> {
         if let Some(languages) = self
             .preload_languages_by_root
@@ -4851,6 +4929,77 @@ mod tests {
 
         // Turning full mode off again when nothing is running stops nothing.
         assert_eq!(registry.stop_servers_for_root(&root_text).unwrap(), 0);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The switch's own start path. A language this app has no server for must
+    /// come back saying that, because the switch is on and the reader is owed a
+    /// reason rather than a control that appears to do nothing.
+    #[test]
+    fn starting_a_language_with_no_server_says_so() {
+        let root = unique_lsp_temp_root("mcb-lsp-no-server");
+        let root_text = root.display().to_string();
+
+        let registry = SourceLspRegistry::default();
+        assert_eq!(
+            registry
+                .start_server_for_language(&root_text, "python")
+                .unwrap(),
+            LanguageServerStart::NoServerForLanguage
+        );
+        assert_eq!(registry.session_count().unwrap(), 0);
+        assert!(registry.running_language_server_processes().is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// C# has its own client and its own gates. The switch must report which
+    /// gate held rather than starting a second Roslyn through the legacy pool.
+    #[test]
+    fn starting_csharp_reports_its_gates_instead_of_starting_a_second_roslyn() {
+        let root = unique_lsp_temp_root("mcb-lsp-csharp-gate");
+        let root_text = root.display().to_string();
+
+        let registry = SourceLspRegistry::default();
+        assert_eq!(
+            registry
+                .start_server_for_language(&root_text, "csharp")
+                .unwrap(),
+            LanguageServerStart::NoCsharpProject,
+            "a workspace with no C# project in it says so"
+        );
+
+        std::fs::write(root.join("App.csproj"), "<Project />").unwrap();
+        assert_eq!(
+            registry
+                .start_server_for_language(&root_text, "csharp")
+                .unwrap(),
+            LanguageServerStart::NativeCsharpClient,
+            "C# starts through the native client, never through this pool"
+        );
+        assert_eq!(registry.session_count().unwrap(), 0);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Read mode still wins. Asking the switch's start path for a workspace
+    /// nobody switched on starts nothing, whatever the language.
+    #[test]
+    fn a_read_mode_workspace_starts_nothing_when_asked_directly() {
+        let root = unique_lsp_temp_root("mcb-lsp-start-read-mode");
+        let root_text = root.display().to_string();
+        set_language_intelligence(&root_text, false);
+
+        let registry = SourceLspRegistry::default();
+        assert_eq!(
+            registry
+                .start_server_for_language(&root_text, "typescript")
+                .unwrap(),
+            LanguageServerStart::ReadMode
+        );
+        assert_eq!(registry.session_count().unwrap(), 0);
+        assert!(registry.running_language_server_processes().is_empty());
 
         std::fs::remove_dir_all(root).unwrap();
     }

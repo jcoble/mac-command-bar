@@ -565,8 +565,12 @@
     countInvoke('warm_source_lsp_for_root');
     try {
       await warmSourceLspForRootFromTauri(projectRoot);
-    } catch {
-      // Warming is best effort: a failure costs nothing but a cold first lookup.
+    } catch (error) {
+      // Warming only costs a cold first lookup, but a reader who has the switch
+      // on is owed the reason rather than a project that quietly stays cold.
+      if (!destroyed) {
+        languageIntelligenceNote = `This project's language server could not be warmed: ${describeError(error)}`;
+      }
     }
   }
 
@@ -575,8 +579,8 @@
    *
    * Off closes this project's language client first — that is what sends the
    * server its goodbye — and then asks the desktop app to stop the process and
-   * reclaim its memory. On records the choice; the server starts with the file
-   * already open, or the next one.
+   * reclaim its memory. On records the choice and starts the server for the
+   * file already open, saying so — including when there is no server to start.
    */
   async function switchLanguageIntelligence(enabled: boolean): Promise<void> {
     const root = editorState.projectRoot;
@@ -614,18 +618,31 @@
       }
 
       countInvoke('set_workspace_language_intelligence');
-      const answer = await setWorkspaceLanguageIntelligenceFromTauri(root, enabled);
+      // The file already on screen is the one the reader wants answered, so its
+      // language is what the desktop app starts a server for — now, rather than
+      // at the next file opened. With nothing open there is nothing to start,
+      // and the answer says so.
+      const answer = await setWorkspaceLanguageIntelligenceFromTauri(
+        root,
+        enabled,
+        enabled ? activeFileLanguage() : null
+      );
       if (destroyed) return;
       languageIntelligenceNote = answer?.message ?? null;
       languageServerPids = answer?.serverPids ?? [];
 
       if (enabled) {
-        // The file already on screen is the one the reader wants answered, so
-        // start the server for it now rather than at the next open.
         await warmLanguageServer(root);
         if (destroyed) return;
         void ensureCodeEditor();
-        await ensureNativeCsharpForActiveFile().catch(() => undefined);
+        // C# comes up through its own client, and a failure there is the reader's
+        // to see: the switch is on, so an empty editor with no explanation is the
+        // one thing this must not do.
+        await ensureNativeCsharpForActiveFile().catch((error) => {
+          if (!destroyed) {
+            languageIntelligenceNote = `The C# language server could not be started: ${describeError(error)}`;
+          }
+        });
       }
       if (!destroyed) void refreshEditorIntelligenceForActiveFile();
     } catch (error) {

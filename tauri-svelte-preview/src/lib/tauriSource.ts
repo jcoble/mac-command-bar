@@ -813,18 +813,22 @@ export async function readWorkspaceLanguageIntelligenceFromTauri(
 }
 
 /**
- * Turn full mode on or off for a project. On starts nothing by itself — the
- * next file opened does that. Off stops that project's language server now.
+ * Turn full mode on or off for a project. Pass the language of the file on
+ * screen and turning it on starts that language's server now; leave it out and
+ * the choice is only recorded, with the next file opened starting the server.
+ * Off stops that project's language server now.
  */
 export async function setWorkspaceLanguageIntelligenceFromTauri(
   root: string,
-  enabled: boolean
+  enabled: boolean,
+  language?: string | null
 ): Promise<WorkspaceLanguageIntelligence | null> {
   if (!isTauriRuntime() || !root.trim()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<WorkspaceLanguageIntelligence>('set_workspace_language_intelligence', {
     root,
-    enabled
+    enabled,
+    language: language ?? null
   });
 }
 

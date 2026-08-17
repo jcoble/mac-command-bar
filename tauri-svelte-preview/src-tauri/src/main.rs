@@ -954,15 +954,18 @@ async fn read_workspace_language_intelligence(
 
 /// Turn language intelligence on or off for one workspace.
 ///
-/// On starts nothing by itself — the next file opened in that workspace does —
-/// which is what lets a saved choice be restored at launch without waking a
-/// server for a project nobody is looking at. Off stops the workspace's
+/// Give it the language the reader is looking at and turning it on starts that
+/// language's server there and then, through the same slot the first hover
+/// would have used. Leave the language out and it only records the choice,
+/// which is what lets a saved choice be restored on a file open without waking
+/// a server for a project nobody is looking at. Off stops the workspace's
 /// servers now and gives their memory back.
 #[tauri::command]
 async fn set_workspace_language_intelligence(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
     root: String,
     enabled: bool,
+    language: Option<String>,
 ) -> Result<WorkspaceLanguageIntelligence, String> {
     let registry = registry.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -977,15 +980,26 @@ async fn set_workspace_language_intelligence(
         // the caller asked for — the two only differ if something else changed
         // this workspace in between, and the reader should see the truth.
         let enabled = change.may_start_servers();
+        // A start that fails is not a failed switch: the choice is recorded
+        // either way, so the reason comes back in the message rather than as an
+        // error that would make the switch look like it never moved.
+        let start = language
+            .as_deref()
+            .map(str::trim)
+            .filter(|language| enabled && !language.is_empty())
+            .map(|language| registry.start_server_for_language(&key, language));
         let server_pids = workspace_language_server_pids(&registry, &key);
         Ok(WorkspaceLanguageIntelligence {
             enabled,
             running_servers: server_pids.len(),
-            message: describe_workspace_language_intelligence(
-                enabled,
-                server_pids.len(),
-                stopped_servers,
-            ),
+            message: match &start {
+                Some(start) => describe_language_server_start(start),
+                None => describe_workspace_language_intelligence(
+                    enabled,
+                    server_pids.len(),
+                    stopped_servers,
+                ),
+            },
             server_pids,
             stopped_servers,
             root: key,
@@ -1025,6 +1039,48 @@ fn describe_workspace_language_intelligence(
     }
     "Language intelligence is off for this project. Files open with colouring only, and nothing is started in the background."
         .to_string()
+}
+
+/// What the switch says after it has asked for a language server.
+///
+/// Every branch here is a sentence a reader can act on. The ones where nothing
+/// started matter most: those used to be silence, and silence next to a switch
+/// that is on reads as broken.
+fn describe_language_server_start(start: &Result<lsp::LanguageServerStart, String>) -> String {
+    match start {
+        Ok(lsp::LanguageServerStart::Running { server_name }) => {
+            format!("Language intelligence is on for this project, and {server_name} is running. It takes a moment to read the project.")
+        }
+        Ok(lsp::LanguageServerStart::NoServerForLanguage) => {
+            "Language intelligence is on for this project, but this app has no language server for the file you have open. It keeps colouring and the built-in index."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::NotInstalled {
+            server_name,
+            command,
+        }) => {
+            format!("Language intelligence is on for this project, but {server_name} is not installed. Install `{command}` and switch this on again.")
+        }
+        Ok(lsp::LanguageServerStart::NativeCsharpClient) => {
+            "Language intelligence is on for this project. The C# language server starts with the C# file you have open, and takes a minute to read the solution."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::CsharpSwitchedOff) => {
+            "Language intelligence is on for this project, but the C# language server is switched off in Settings."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::NoCsharpProject) => {
+            "Language intelligence is on for this project, but there is no C# project or solution under it to read."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::ReadMode) => {
+            "Language intelligence is off for this project, so no language server was started."
+                .to_string()
+        }
+        Err(error) => {
+            format!("Language intelligence is on for this project, but its language server could not be started: {error}")
+        }
+    }
 }
 
 fn describe_csharp_language_server_toggle(
@@ -7739,6 +7795,44 @@ mod tests {
         let back_on = describe_csharp_language_server_toggle(true, true, 0);
         assert!(back_on.contains("back on"));
         assert!(describe_csharp_language_server_toggle(true, false, 0).contains("already on"));
+    }
+
+    /// Every way the switch can fail to start a server has to say something. A
+    /// switch that is on next to silence is what made this look broken.
+    #[test]
+    fn turning_the_switch_on_says_what_happened_to_the_language_server() {
+        let running = describe_language_server_start(&Ok(lsp::LanguageServerStart::Running {
+            server_name: "typescript-language-server",
+        }));
+        assert!(running.contains("typescript-language-server is running"));
+
+        let unsupported =
+            describe_language_server_start(&Ok(lsp::LanguageServerStart::NoServerForLanguage));
+        assert!(unsupported.contains("no language server for the file you have open"));
+
+        let missing = describe_language_server_start(&Ok(lsp::LanguageServerStart::NotInstalled {
+            server_name: "rust-analyzer",
+            command: "rust-analyzer",
+        }));
+        assert!(missing.contains("rust-analyzer is not installed"));
+
+        let native =
+            describe_language_server_start(&Ok(lsp::LanguageServerStart::NativeCsharpClient));
+        assert!(native.contains("C# language server starts"));
+
+        let switched_off =
+            describe_language_server_start(&Ok(lsp::LanguageServerStart::CsharpSwitchedOff));
+        assert!(switched_off.contains("switched off in Settings"));
+
+        let no_project =
+            describe_language_server_start(&Ok(lsp::LanguageServerStart::NoCsharpProject));
+        assert!(no_project.contains("no C# project or solution"));
+
+        let read_mode = describe_language_server_start(&Ok(lsp::LanguageServerStart::ReadMode));
+        assert!(read_mode.contains("no language server was started"));
+
+        let failed = describe_language_server_start(&Err("stdin unavailable".to_string()));
+        assert!(failed.contains("could not be started: stdin unavailable"));
     }
 
     #[test]

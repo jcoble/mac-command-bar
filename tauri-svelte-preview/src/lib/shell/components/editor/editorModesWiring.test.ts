@@ -79,6 +79,40 @@ test('turning the switch off says goodbye before stopping the process', () => {
   );
 });
 
+test('turning the switch on asks for the open file language server', () => {
+  const on = panelSource.slice(
+    panelSource.indexOf('async function switchLanguageIntelligence'),
+    panelSource.indexOf('/** Keep the lookup service pointed')
+  );
+  assert.match(
+    on,
+    /setWorkspaceLanguageIntelligenceFromTauri\(\s*root,\s*enabled,\s*enabled \? activeFileLanguage\(\) : null\s*\)/,
+    'the language of the file on screen is what the desktop app starts a server for'
+  );
+});
+
+test('a language server that will not start reaches the switch tooltip', () => {
+  const warm = panelSource.slice(
+    panelSource.indexOf('async function warmLanguageServer'),
+    panelSource.indexOf('async function switchLanguageIntelligence')
+  );
+  assert.match(
+    warm,
+    /catch \(error\)[\s\S]*?languageIntelligenceNote =/,
+    'a failed warm must say why instead of being discarded'
+  );
+
+  const on = panelSource.slice(
+    panelSource.indexOf('async function switchLanguageIntelligence'),
+    panelSource.indexOf('/** Keep the lookup service pointed')
+  );
+  assert.match(
+    on,
+    /ensureNativeCsharpForActiveFile\(\)\.catch\(\(error\) => \{[\s\S]*?languageIntelligenceNote =/,
+    'a C# client that cannot start must say why instead of being discarded'
+  );
+});
+
 test('only one project is restored at launch', () => {
   assert.match(panelSource, /launchRestoreFor\(/);
   assert.ok(
