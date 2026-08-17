@@ -304,10 +304,18 @@
      Not the dockview classes. `.dv-groupview` exists only inside the centre's
      own nested dock, so styling it shaped one panel out of four. */
   .shell-frame :global(.shell-region-host) {
-    width: calc(100% - 6px);
-    height: calc(100% - 6px);
+    /* The inset is a pair of MAXIMUMS, not a width and a height. Dockview
+       writes `width: 100%; height: 100%` on this element as an inline style,
+       which outranks any rule here, so sizes set the ordinary way were thrown
+       away while the margin still moved the box: every card overhung its cell
+       by three pixels on the right and along the bottom, and the cell's
+       `overflow: hidden` shaved those two edges off square — taking two of the
+       four rounded corners with them. Nothing inline competes with a maximum,
+       so this holds, and the gutter is the same six pixels on all four sides. */
+    max-width: calc(100% - 6px);
+    max-height: calc(100% - 6px);
     margin: 3px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     overflow: hidden;
     /* A card is a lit surface, not a flat fill: each one carries a little more
        light along its top edge, falling off within the first couple of hundred
