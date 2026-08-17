@@ -167,7 +167,7 @@
   }
 </script>
 
-<div class="flex h-full w-full min-w-0 flex-col bg-background text-foreground">
+<div class="flex h-full w-full min-w-0 flex-col text-foreground">
   <PanelHeader
     title={worktreeManager.projectName || 'Worktrees'}
     count={worktreeManager.activated ? rows.length : null}
