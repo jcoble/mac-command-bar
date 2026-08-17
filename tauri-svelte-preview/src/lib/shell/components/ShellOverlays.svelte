@@ -141,11 +141,18 @@
 {#if message}
   <!-- Something went wrong, said once, along the bottom edge. Announced to
        screen readers, and see-through to the mouse so it can never swallow a
-       click meant for the shell underneath. -->
+       click meant for the shell underneath.
+
+       Fixed and above the dock, not absolute: the panes are their own stacking
+       contexts, so a strip that only said `absolute` painted behind whichever
+       pane sat over it and the message was never read. Being above content it
+       also carries its own surface — the old ten-percent wash was legible over
+       the shell background and over nothing else. -->
   <footer
     role="alert"
-    class="pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center
-           gap-2 rounded-lg bg-destructive/10 px-3 py-2 shadow-[var(--shadow-sm)]
+    class="pointer-events-none fixed bottom-2 left-1/2 z-[70] flex -translate-x-1/2 items-center
+           gap-2 rounded-lg border border-[color-mix(in_srgb,var(--color-bad)_32%,transparent)]
+           bg-[color-mix(in_srgb,var(--color-bad)_14%,var(--color-elevated))] px-3 py-2 shadow-[var(--shadow-md)]
            text-[13px] leading-[1.4] text-destructive"
   >
     <TriangleAlert class="size-3.5 shrink-0" aria-hidden="true" />

@@ -153,6 +153,7 @@
       const imported = stored.find((session) => session.ownedId === ownedId);
       if (!imported) {
         rail.error = `the imported transcript for "${record.title}" was not stored`;
+        console.error('[resume]', rail.error);
         return;
       }
       // The import knows nothing about what the session was called, so the row
@@ -171,6 +172,7 @@
       });
     } catch (error) {
       rail.error = `could not resume "${record.title}" as an Assembly session: ${describeError(error)}`;
+      console.error('[resume]', rail.error, error);
     }
   }
 

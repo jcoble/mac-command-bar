@@ -139,7 +139,6 @@
     createFreshSession,
     ownedSessionFromBackend,
     ownedSessionMetaForBackend,
-    parseStoredOwnedSessions,
     reconcileOwnedSessions
   } from '$lib/shell/ownedSessions';
   import {
@@ -196,7 +195,6 @@
 
   /** Hosts mount before the service finishes async init: parked here, drained later. */
   const pendingHosts = new Map<string, HTMLElement>();
-  const LEGACY_OWNED_SESSIONS_ADOPTION_KEY = 'mac-command-bar.next.owned-sessions';
   /** Owned ids whose surviving PTY still needs `adoptExisting` once its host mounts. */
   const awaitingReattach = new Set<string>();
   /** Sessions with a restart already under way. Added before the first await, so
@@ -1485,48 +1483,21 @@
           });
         }
 
-        // Rail hydration reads SQLite. The browser key is consumed only by this
-        // one-time empty-database adoption and is deleted after successful writes.
+        // The rail is whatever SQLite holds, and nothing else.
+        //
+        // An empty database used to mean "this must be an old install", and the
+        // shell re-imported a session list kept in the webview's own storage.
+        // That could not be turned off: the code deleted the key after reading
+        // it, but WebKit writes local storage lazily, so quitting the app threw
+        // the deletion away and the very same list came back on the next launch.
+        // Wiping sessions was therefore impossible — they returned every time,
+        // as empty rows, along with the failures of the ones that could not be
+        // carried over. The import was a one-time migration from a build that is
+        // long gone, so it is gone too.
         const live = (await backend.list()) ?? [];
         if (disposed) return;
         for (const i of live) livePtySizes.set(i.sessionId, { cols: i.cols, rows: i.rows });
-        let storedSessions = (await listAgentConversationSessionsFromTauri()) ?? [];
-        if (storedSessions.length === 0) {
-          const legacy = parseStoredOwnedSessions(
-            window.localStorage.getItem(LEGACY_OWNED_SESSIONS_ADOPTION_KEY)
-          );
-          let adopted = 0;
-          for (const session of legacy) {
-            const provider = session.agent === 'codex' || session.agent === 'claude'
-              ? session.agent
-              : null;
-            if (!provider) {
-              throw new Error(`legacy session ${session.ownedId} has no structured provider`);
-            }
-            await ensureStructuredConversation({
-              ownedId: session.ownedId,
-              provider,
-              cwd: session.cwd,
-              nativeSessionId: session.nativeSessionId,
-              nativeSessionMode: session.origin === 'external' ? 'load' : 'resume'
-            });
-            await updateAgentConversationSessionMetaFromTauri({
-              ownedId: session.ownedId,
-              model: session.model ?? null,
-              effort: null,
-              meta: ownedSessionMetaForBackend(session)
-            });
-            adopted += 1;
-          }
-          storedSessions = (await listAgentConversationSessionsFromTauri()) ?? [];
-          const storedIds = new Set(storedSessions.map((session) => session.ownedId));
-          if (
-            adopted === legacy.length
-            && legacy.every((session) => storedIds.has(session.ownedId))
-          ) {
-            window.localStorage.removeItem(LEGACY_OWNED_SESSIONS_ADOPTION_KEY);
-          }
-        }
+        const storedSessions = (await listAgentConversationSessionsFromTauri()) ?? [];
         const projected = storedSessions.map(ownedSessionFromBackend);
         const { owned, reattachable } = reconcileOwnedSessions(projected, live);
         // Tombstones re-attach too (final scrollback + a reapable PTY id); live first.
@@ -1555,7 +1526,7 @@
             failed.push(`"${session.title}" (${describeError(error)})`);
           }
         }
-        // scanRail CLEARS rail.error, so the re-attach report goes after it.
+        // scanRail CLEARS rail.error, so both reports go after it.
         await scanRail();
         if (failed.length > 0 && !disposed) {
           const prefix = rail.error ? `${rail.error}; ` : '';
