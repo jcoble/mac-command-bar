@@ -132,6 +132,13 @@
   const sendError = $derived(conversation?.sendError ?? '');
   let capabilityRequest = $state('');
   let configRequest = $state('');
+  /** A request key whose failure has already bought its one retry. The guard
+   * above is claimed before the call, so without this a read that lost a
+   * start-up race left the composer empty for good: the key still matched, so
+   * the effect never asked again. Clearing the guard lets it ask once more —
+   * and this remembers that it did, because the effect reads the guard and
+   * would otherwise retry forever against a failure that is not going away. */
+  let configRetried = $state('');
   let sendAnchorRequest = $state<ConversationSendAnchorRequest | null>(null);
   let sendAnchorRequestId = 0;
   let localTurnActive = $state(false);
@@ -189,6 +196,13 @@
     }).catch((error) => {
       if (conversationSessions[ownedId]?.generation === generation) {
         setConversationAgentConfigError(ownedId, error instanceof Error ? error.message : String(error));
+      }
+      // The usual failure here is a race, not a refusal: the session is stored
+      // but not yet in the manager's map. Asking a second time is what fills the
+      // composer in; asking forever would be a retry storm.
+      if (configRequest === key && configRetried !== key) {
+        configRetried = key;
+        configRequest = '';
       }
     });
   });
