@@ -50,6 +50,7 @@
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
   import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
   import { requestOpenFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
@@ -120,8 +121,14 @@
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
+  /* The same numbers the Context panel shows. This read only `metadata`, and a
+     provider that reports its usage as it goes puts those numbers on `usage` —
+     so the panel had a figure and the composer had nothing, from one session. */
+  const contextUsage = $derived(
+    sessionContextUsage(conversation?.metadata ?? null, conversation?.usage)
+  );
   const contextMeter = $derived(
-    contextMeterState(conversation?.metadata.usedTokens, conversation?.metadata.contextWindow)
+    contextMeterState(contextUsage.usedTokens, contextUsage.contextWindow)
   );
 
   let attachmentError = $state('');

@@ -11,6 +11,7 @@
   import X from '@lucide/svelte/icons/x';
   import FileChangeItem from './FileChangeItem.svelte';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { highlightCode, monacoLanguageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
 
   let { item, onFileLink }: {
     item: Extract<ConversationDisplayItem, { kind: 'tool' }>;
@@ -35,6 +36,25 @@
     foldable && !outputOpen ? outputLines.slice(0, OUTPUT_LINES_KEPT).join('\n') : output
   );
   const hiddenLines = $derived(outputLines.length - OUTPUT_LINES_KEPT);
+  /* Output that is a file — what Read hands back, what Edit shows — is
+     coloured in the file's language. A command's output is whatever it
+     printed and stays as printed. Plain until the editor answers. */
+  const language = $derived(monacoLanguageForPath(item.path));
+  let coloredLines = $state<HighlightedLine[] | null>(null);
+  $effect(() => {
+    const source = shownOutput;
+    const languageId = language;
+    let cancelled = false;
+    coloredLines = null;
+    if (languageId === 'plaintext' || !source) return;
+    void highlightCode(source, languageId).then((next) => {
+      if (!cancelled) coloredLines = next;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  const shownLines = $derived(coloredLines ?? plainHighlightedLines(shownOutput));
   /* The summary is already the row's preview line, so only real payload —
      output or a diff — earns a body worth opening. */
   const expandable = $derived(!!(output || item.diff));
@@ -93,7 +113,7 @@
     <div class="tool-body" data-testid="timeline-tool-body">
       {#if item.diff}<FileChangeItem item={fileDisplayItem(item)} {onFileLink} />{/if}
       {#if output}
-        <pre data-testid="timeline-tool-output"><code>{shownOutput}</code></pre>
+        <pre data-testid="timeline-tool-output"><code>{#each shownLines as line, index}{#if index > 0}{'\n'}{/if}{#each line as span}<span class={span.className}>{span.value}</span>{/each}{/each}</code></pre>
         {#if foldable}
           <button
             class="fold-more"
@@ -122,7 +142,7 @@
   .chevron,.tool-icon{display:grid;place-items:center;flex:none;color:var(--color-text-3)}
   .chevron.hidden{visibility:hidden}
   details[open] .chevron{transform:rotate(90deg)}
-  strong{flex:none;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 12px/20px ui-monospace,SFMono-Regular,Menlo,monospace}
+  strong{flex:none;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 12px/20px var(--font-mono)}
   .preview{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-3);font-size:12px;line-height:20px}
   .status-mark{display:grid;place-items:center;flex:none;margin-left:auto;color:var(--color-text-3)}
 
@@ -131,6 +151,12 @@
   .completed .status-mark{color:var(--color-good)}
   .failed .status-mark{color:var(--color-bad)}
   .failed strong{color:var(--color-bad)}
+  /* A call that failed says so in its body as well as its mark. Scrolling a run
+     of tool calls, the mark is 13px at the far right of the row; what a reader
+     actually lands on is the box under it, and it read the same as every
+     successful one. */
+  .failed[open]{border-color:color-mix(in srgb,var(--color-bad) 34%,transparent)}
+  .failed pre{border-color:color-mix(in srgb,var(--color-bad) 38%,transparent);background:color-mix(in srgb,var(--color-bad) 7%,var(--color-bg))}
   .running .status-mark,.running .tool-icon{color:var(--color-accent)}
 
   .tool-body{display:grid;gap:8px;padding:0 12px 12px 38px}
@@ -141,7 +167,13 @@
      screen is the height of what is being shown. Long lines run sideways
      inside the box rather than wrapping mid-word; the pane never widens. */
   pre{overflow-x:auto;margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-surface) 30%,var(--color-bg));white-space:pre;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
-  code{font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+  code{font:13px/1.55 var(--font-mono)}
+  .keyword{color:var(--color-accent)}
+  .string{color:var(--color-good)}
+  .comment{color:var(--color-text-3);font-style:italic}
+  .number{color:var(--color-attention)}
+  .type{color:var(--color-live)}
+  .plain{color:inherit}
   /* The same chevron the row header uses, so the control reads as one more
      thing that opens rather than as a caption under the box. */
   .fold-more{display:inline-flex;align-items:center;gap:5px;justify-self:start;min-height:24px;padding:2px 8px;margin-left:-8px;border:0;border-radius:6px;background:transparent;color:var(--color-text-2);font-size:12px;text-align:left;cursor:pointer}

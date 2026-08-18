@@ -140,9 +140,21 @@
    * so an opening keyed to it appears to fire at random. Content is the only
    * signal a person can predict, so content is the only one that moves the box.
    */
-  const relaxed = $derived(
+  const opening = $derived(
     Boolean(hasSendableContent || sending || composerLocked || dragging)
   );
+  /**
+   * Open is a one-way door. Sending a message empties the draft, which used to
+   * shut the box on the way — so the first thing a conversation did after
+   * accepting a message was shrink the place you type it, and the next line
+   * you wrote opened it again. Every editor of this kind holds its size once
+   * you have used it, and so does this one.
+   */
+  let hasOpened = $state(false);
+  $effect(() => {
+    if (opening) hasOpened = true;
+  });
+  const relaxed = $derived(opening || hasOpened);
   const bannerItems = $derived.by((): ComposerBannerItem[] => {
     const items: ComposerBannerItem[] = [];
     if (sendError) items.push({ id: 'send-error', variant: 'error', title: 'Message not sent', description: sendError, dismissLabel: 'Dismiss send failure', onDismiss: onDismissSendError });
@@ -357,7 +369,26 @@
             </DropdownMenu.Root>
           </div>
           <div class="footer-right">
-            {#if contextMeter}<span class="context-remaining" data-testid="conversation-context-remaining" title="Reported context usage">{contextMeter.kind === 'percent' ? `${contextMeter.remaining}% left` : `${formatContextTokens(contextMeter.usedTokens)} used`}</span>{/if}
+            <!-- How full the context window is, as a ring: the arc is what has
+                 been used, so a fresh session shows an empty circle and a
+                 session near its limit shows one nearly closed. The number is
+                 in the title and the hint line below; the ring is for the
+                 glance. Only a raw token count is left as text — a ring needs
+                 the window to draw against. -->
+            {#if contextMeter?.kind === 'percent'}
+              <span
+                class="context-ring"
+                class:context-ring-warm={contextMeter.remaining <= 25}
+                class:context-ring-hot={contextMeter.remaining <= 10}
+                data-testid="conversation-context-remaining"
+                role="img"
+                aria-label={`${contextMeter.remaining}% context left`}
+                title={`${contextMeter.remaining}% context left`}
+                style={`--used:${100 - contextMeter.remaining}`}
+              ><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="ring-track" cx="10" cy="10" r="7.5" /><circle class="ring-fill" cx="10" cy="10" r="7.5" pathLength="100" /></svg></span>
+            {:else if contextMeter}
+              <span class="context-remaining" data-testid="conversation-context-remaining" title="Reported context usage">{formatContextTokens(contextMeter.usedTokens)} used</span>
+            {/if}
             <div class="wide-controls"><ComposerConfigMenu {provider} state={configState} pending={pendingConfig} error={configError} onChange={onConfigChange} /></div>
             <div class="compact-controls"><CompactComposerControlsMenu {provider} state={configState} pending={pendingConfig} onChange={onConfigChange} /></div>
             <!-- The mic keeps its place in every state; send joins it to the
@@ -402,6 +433,10 @@
     background: var(--composer-surface);
     box-shadow: var(--shadow-md);
   }
+  /* Shut, the box is as tall as the controls sitting in it and no taller, which
+     came out shorter than the thing it is: the one place a conversation starts.
+     A floor gives it presence without changing the shape. */
+  .composer-box:not(.relaxed) { min-height: 70px; }
   .composer-box.relaxed { grid-template-areas: 'panels panels panels' 'prompt prompt prompt' 'lead . trail' 'hint hint hint'; border-radius: var(--composer-radius-relaxed); }
   .composer-box:focus-within { box-shadow: var(--shadow-lg); }
   .composer-box.dragging { border-color: var(--color-accent); background: var(--composer-surface-drop); }
@@ -409,6 +444,11 @@
   .composer-panels { grid-area: panels; }
   .composer-input-zone { grid-area: prompt; position: relative; padding: var(--composer-prompt-inset-capsule); }
   .composer-box.relaxed .composer-input-zone { padding: var(--composer-prompt-inset); }
+  /* Three lines of room once the box is open. The height a textarea is given
+     follows what is typed into it, which at one line left a box barely taller
+     than the capsule it just grew out of — opening that looked like nothing
+     happened. This is the floor; the text still grows past it to 190px. */
+  .composer-box.relaxed textarea { min-height: 63px; }
   .prompt-row { display: flex; }
   textarea { width: 100%; max-height: 190px; padding: 2px 0; resize: none; border: 0; outline: 0; background: transparent; color: var(--color-text); caret-color: var(--color-accent); font: 14px/1.5 inherit; }
   textarea::placeholder { color: var(--color-text-3); }
@@ -448,6 +488,17 @@
   .send.stop:hover:not(:disabled) { background: var(--color-bad); }
 
   .context-remaining { flex: none; padding: var(--composer-meter-inset); border: 1px solid var(--composer-border); border-radius: var(--radius-pill); color: var(--color-text-2); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  /* The ring is the size of the icons beside it and drawn in the same quiet
+     colour, warming as the window fills so the last stretch is noticed without
+     being read. `pathLength` makes the circle 100 units round, so the dash is
+     the percentage itself. */
+  .context-ring { display: grid; place-items: center; flex: none; width: var(--composer-control-size); height: var(--composer-control-size); color: var(--color-text-2); }
+  .context-ring svg { width: 18px; height: 18px; transform: rotate(-90deg); }
+  .context-ring circle { fill: none; stroke-width: 2.2; }
+  .ring-track { stroke: color-mix(in srgb, currentColor 22%, transparent); }
+  .ring-fill { stroke: currentColor; stroke-linecap: round; stroke-dasharray: var(--used) 100; }
+  .context-ring-warm { color: var(--color-attention); }
+  .context-ring-hot { color: var(--color-bad); }
   .menu-row-copy { display: flex; min-width: 0; flex-direction: column; gap: var(--menu-row-description-gap); }
   .menu-row-description { color: var(--secondary-label); font-size: 13px; line-height: 1.4; white-space: normal; }
 
@@ -477,6 +528,8 @@
   @keyframes send-pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
   @media (prefers-reduced-motion: no-preference) {
     .composer-box { transition: border-color .14s ease, border-radius .18s ease, background-color .14s ease, box-shadow .14s ease; }
+    .ring-fill { transition: stroke-dasharray .4s ease; }
+    .context-ring { transition: color .3s ease; }
     /* Commented out while we chase a UI freeze. Height is a layout property, so
        animating it makes the ResizeObserver on the composer fire every frame for
        160ms; each fire republishes `--composer-height`, which is the transcript's

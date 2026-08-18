@@ -107,16 +107,19 @@
      below it, so the code stays the thing being read and the strip reads as a
      caption rather than a second slab. */
   .code-meta{display:flex;align-items:center;gap:4px;min-height:30px;padding:3px 8px 3px 12px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 45%,transparent);background:color-mix(in srgb,var(--color-surface) 22%,transparent);color:var(--color-text-3);font-size:12px}
-  .code-language{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.03em}
+  .code-language{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);letter-spacing:.03em}
   .meta-action{display:inline-flex;align-items:center;gap:4px;min-height:24px;border:0;border-radius:6px;background:transparent;color:inherit;padding:2px 8px;font:inherit;cursor:pointer}
   .meta-action:hover{background:color-mix(in srgb,var(--color-hover) 70%,transparent);color:var(--color-text)}
   .meta-action:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:1px}
   /* A line too long for the measure scrolls here and nowhere else. The pane
      around it never moves sideways. The bar is the thin one the transcript
      uses, so it does not read as a second scrollbar for the page. */
-  pre{overflow:auto;margin:0;padding:12px;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
+  pre{overflow:auto;margin:0;padding:12px;font:13px/1.6 var(--font-mono);scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
   pre.wrapped{white-space:pre-wrap;overflow-wrap:anywhere}
-  code{user-select:text;-webkit-user-select:text}
+  /* The browser gives <code> a face of its own — plain `monospace`, which on
+     a Mac is Courier — so the code inside the box was not drawing in the face
+     the box asked for. It takes the box's. */
+  code{font:inherit;user-select:text;-webkit-user-select:text}
   .keyword{color:var(--color-accent)}
   .string{color:var(--color-good)}
   .comment{color:var(--color-text-3);font-style:italic}

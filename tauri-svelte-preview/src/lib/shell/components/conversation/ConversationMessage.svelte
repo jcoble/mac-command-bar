@@ -104,7 +104,7 @@
   .file-link :global(svg){align-self:center;flex:none}
   /* Tinted, not outlined. The border made a two-word span read as a button,
      which was loudest exactly where inline code is most common: table cells. */
-  .inline-code{padding:1.5px 5px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace}
+  .inline-code{padding:1.5px 5px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.35 var(--font-mono)}
 
   .user{width:fit-content;max-width:80%;margin-left:auto;padding:10px 14px;border-radius:16px;background:var(--color-elevated)}
 
@@ -113,7 +113,13 @@
   .table-scroll th,.table-scroll td{padding:7px 10px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);text-align:left;vertical-align:top}
   .table-scroll tr:last-child td{border-bottom:0}
   .table-scroll th{background:color-mix(in srgb,var(--color-surface) 65%,transparent);font-weight:620;white-space:nowrap}
-  .turn-body input{margin-right:7px;accent-color:var(--color-accent)}
+  /* A task row draws its own box. The platform control paints a disabled
+     checkbox the same grey whether or not it is ticked, so a finished task
+     looked no different from an open one — which is the only thing the box is
+     there to say. It stays a real checkbox for anything reading the page. */
+  .turn-body input[type=checkbox]{appearance:none;-webkit-appearance:none;display:inline-grid;place-content:center;flex:none;width:13px;height:13px;margin:0 8px 0 0;border:1.5px solid color-mix(in srgb,var(--color-border) 95%,var(--color-text));border-radius:4px;background:transparent;vertical-align:-2px}
+  .turn-body input[type=checkbox]:checked{border-color:var(--color-accent);background:var(--color-accent)}
+  .turn-body input[type=checkbox]:checked::after{content:'';width:6px;height:3px;border:1.6px solid var(--color-bg);border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg)}
   /* A sub-list is one step in, and gives up the gap under its parent row so the
      two read as one group rather than two lists. */
   .turn-body li > :global(ul),.turn-body li > :global(ol){margin:8px 0 0}

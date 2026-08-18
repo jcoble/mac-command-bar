@@ -66,6 +66,8 @@
     onFileLink
   }: Props = $props();
 
+  /** Where an already-read conversation is waiting to be put back to. */
+  let restoringScrollTop = $state<number | null>(null);
   let host = $state<HTMLDivElement | null>(null);
   let list = $state<HTMLDivElement | null>(null);
   let tail = $state<HTMLDivElement | null>(null);
@@ -190,10 +192,28 @@
     anchoredUserItemId = null;
     foldConversationId = renderWindowId;
     expandedTurns = new Map();
-    // A session opens on its newest turn rather than at the beginning of the
-    // transcript. This only records the intent; the scrolling waits until there
-    // are messages on screen to scroll to.
-    scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
+    // Coming back to a conversation returns to the place it was left. Only one
+    // being opened for the first time lands on its newest turn — and that is
+    // the only case with nowhere else to land. Both wait for messages to be on
+    // screen before anything moves.
+    if (savedScrollTop > 0) restoringScrollTop = savedScrollTop;
+    else scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
+  });
+
+  $effect(() => {
+    // Put the view back where it was. Rows are measured as they draw, so the
+    // page is still growing under this: it is set once the rows exist and again
+    // on the next frame, by which point the heights above the reader are real.
+    if (restoringScrollTop === null || renderedItems.length === 0) return;
+    const target = restoringScrollTop;
+    restoringScrollTop = null;
+    void tick().then(() => {
+      if (!host) return;
+      host.scrollTop = target;
+      requestAnimationFrame(() => {
+        if (host) host.scrollTop = target;
+      });
+    });
   });
 
   $effect(() => {
@@ -411,6 +431,12 @@
       previousUserItemId: anchorRequest.previousUserItemId,
       reducedMotion: prefersReducedMotion()
     }).state;
+    // The message just sent goes to the top and stays there. Following the
+    // writing as well meant the reply pushed that message off the top of the
+    // screen the moment it ran longer than one, so the reader was returned to
+    // the bottom of something they had not read the beginning of. Jump to
+    // latest is how following starts again.
+    follow = false;
   });
 
   $effect(() => {
@@ -433,7 +459,11 @@
       if (follow && decision.action.type === 'none') {
         animateTo(nextWritingFollowScrollTop(host.scrollTop, latestWritingScrollTop()), 'instant');
       }
-      follow = distanceBelowReader() <= 80;
+      // Whether the view follows is the reader's to decide — by scrolling to
+      // the bottom, or by asking for the latest. It used to be recomputed here
+      // as well, from how close the writing had grown to where they were
+      // sitting, which turned a reply catching up with the reader into
+      // permission to take the view from them.
     });
   });
 
@@ -446,11 +476,7 @@
     });
   });
 
-  $effect(() => {
-    if (host && savedScrollTop > 0 && host.scrollTop === 0) {
-      host.scrollTop = savedScrollTop;
-    }
-  });
+
 
   function handleUserInput(): void {
     const decision = decideConversationScroll(scrollState, { type: 'user-input' });

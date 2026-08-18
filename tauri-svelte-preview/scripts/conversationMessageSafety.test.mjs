@@ -22,6 +22,10 @@ assert.equal(table[0].rows.length, 1);
 const tasks = parseSafeMarkdown('- [x] shipped\n- [ ] pending');
 assert.equal(tasks[0].kind, 'list');
 assert.equal(tasks[0].items[0].checked, true);
+// The box says whether a task is done. The `[x]` the tokenizer read it from was
+// also being kept, and landed under the row as a paragraph of its own.
+assert.deepEqual(tasks[0].items[0].blocks, []);
+assert.equal(tasks[0].items[0].parts.map((part) => part.value).join(''), 'shipped');
 const fileLink = parseSafeMarkdown('[source](src/main.ts)');
 assert.equal(fileLink[0].parts[0].kind, 'file-link');
 

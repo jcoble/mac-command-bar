@@ -2,6 +2,7 @@
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { highlightCode, monacoLanguageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
 
   let { item, onFileLink }: {
     item: Extract<ConversationDisplayItem, { kind: 'file' }>;
@@ -61,6 +62,27 @@
     return rows;
   });
 
+  /* The code in the diff, coloured in the file's language. The one-character
+     mark at the front of each row is not code, so it is set aside for the
+     colouring and drawn back in front. Plain until the editor answers. */
+  const language = $derived(monacoLanguageForPath(path));
+  const bareLines = $derived(allRows.map((row) => row.text.slice(1)));
+  let coloredLines = $state<HighlightedLine[] | null>(null);
+  $effect(() => {
+    const source = bareLines.join('\n');
+    const languageId = language;
+    let cancelled = false;
+    coloredLines = null;
+    if (languageId === 'plaintext' || !source) return;
+    void highlightCode(source, languageId).then((next) => {
+      if (!cancelled && next.length === bareLines.length) coloredLines = next;
+    });
+    return () => {
+      cancelled = true;
+    };
+  });
+  const rowSpans = $derived(coloredLines ?? plainHighlightedLines(bareLines.join('\n')));
+
   const foldable = $derived(allRows.length > DIFF_FOLD_OVER_LINES);
   let diffOpen = $state(false);
   const rows = $derived(foldable && !diffOpen ? allRows.slice(0, DIFF_LINES_KEPT) : allRows);
@@ -98,7 +120,7 @@
       onclick={() => void copyDiff()}
     >{#if copied}<Check size={13} strokeWidth={2.2} />{:else}<Copy size={13} strokeWidth={1.8} />{/if}</button>
   </div>
-  <pre data-testid="timeline-file-diff" style={`--gutter-width:${gutterWidth}ch`}><code>{#each rows as row}<span class={row.tone}><span class="line-number" aria-hidden="true">{row.number ?? ''}</span>{row.text || ' '}{'\n'}</span>{/each}</code></pre>
+  <pre data-testid="timeline-file-diff" style={`--gutter-width:${gutterWidth}ch`}><code>{#each rows as row, index}<span class={row.tone}><span class="line-number" aria-hidden="true">{row.number ?? ''}</span>{row.text[0] ?? ' '}{#each rowSpans[index] ?? [] as span}<span class={span.className}>{span.value}</span>{/each}{'\n'}</span>{/each}</code></pre>
   {#if foldable}
     <button
       class="fold-more"
@@ -113,11 +135,11 @@
 <style>
   .file-change{min-width:0;border:1px solid color-mix(in srgb,var(--color-border) 72%,transparent);border-radius:8px;overflow:hidden;background:color-mix(in srgb,var(--color-bg) 78%,var(--color-surface))}
   .file-heading{display:flex;align-items:center;gap:8px;min-height:28px;padding:4px 6px 4px 10px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 64%,transparent);color:var(--color-text-3)}
-  .file-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text);font:500 12px ui-monospace,SFMono-Regular,Menlo,monospace;text-align:left}
+  .file-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text);font:500 12px var(--font-mono);text-align:left}
   button.file-name{border:0;background:transparent;padding:0;cursor:pointer}button.file-name:hover{text-decoration:underline}
   /* The counts sit against the name rather than across the row: the pair reads
      as one caption for the file, and the copy action keeps the far end. */
-  .counts{display:flex;flex:1;gap:7px;font:12px ui-monospace,SFMono-Regular,Menlo,monospace}.counts em{color:var(--color-good);font-style:normal}.counts del{color:var(--color-bad);text-decoration:none}
+  .counts{display:flex;flex:1;gap:7px;font:12px var(--font-mono)}.counts em{color:var(--color-good);font-style:normal}.counts del{color:var(--color-bad);text-decoration:none}
   .copy-diff{display:grid;place-items:center;flex:none;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--color-text-3);cursor:pointer}
   .copy-diff:hover{background:color-mix(in srgb,var(--color-hover) 70%,transparent);color:var(--color-text)}
   .copy-diff:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:1px}
@@ -126,7 +148,7 @@
      the way across when the diff is scrolled sideways. Sized to the container
      the bands stopped at the right edge and the rest of the line sat on bare
      background. */
-  code{display:block;width:max-content;min-width:100%;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+  code{display:block;width:max-content;min-width:100%;font:13px/1.55 var(--font-mono)}
   .fold-more{width:100%;min-height:28px;padding:4px 10px;border:0;border-top:1px solid color-mix(in srgb,var(--color-border) 45%,transparent);background:transparent;color:var(--color-text-2);font-size:12px;text-align:left;cursor:pointer}
   .fold-more:hover{background:color-mix(in srgb,var(--color-hover) 45%,transparent);color:var(--color-text)}
   .fold-more:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
@@ -138,7 +160,7 @@
      sideways past the tint's start, so a wide diff still says what it is. The
      bar is drawn as the row's left border so it stays put in the numbers
      column rather than travelling with the code. */
-  code span{display:block;min-height:1.55em;padding:0 10px 0 7px;border-left:3px solid transparent;color:var(--color-text-2)}
+  code > span{display:block;min-height:1.55em;padding:0 10px 0 7px;border-left:3px solid transparent;color:var(--color-text-2)}
   code .add{border-left-color:var(--color-good);background:color-mix(in srgb,var(--color-good) 11%,transparent);color:color-mix(in srgb,var(--color-good) 76%,var(--color-text))}
   code .delete{border-left-color:var(--color-bad);background:color-mix(in srgb,var(--color-bad) 11%,transparent);color:color-mix(in srgb,var(--color-bad) 74%,var(--color-text))}
   /* Real file line numbers, right-aligned in their own column so the code
@@ -146,4 +168,13 @@
      than the code and cannot be selected with it, so copying a diff out of the
      page does not bring the numbering along. */
   .line-number{display:inline-block;width:var(--gutter-width,3ch);margin-right:14px;color:var(--color-text-3);text-align:right;user-select:none;-webkit-user-select:none}
+  /* The same five colours a code block paints with. A run the tokenizer did
+     not name keeps the row's own colour, so an added or removed line still
+     reads as one. */
+  code .keyword{color:var(--color-accent)}
+  code .string{color:var(--color-good)}
+  code .comment{color:var(--color-text-3);font-style:italic}
+  code .number{color:var(--color-attention)}
+  code .type{color:var(--color-live)}
+  code .plain{color:inherit}
 </style>

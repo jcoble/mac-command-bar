@@ -176,6 +176,11 @@ function listItem(item: Tokens.ListItem): SafeListItem {
   const parts: SafeInlinePart[] = [];
   const blocks: SafeMarkdownBlock[] = [];
   for (const token of item.tokens ?? []) {
+    // The box a task row draws comes from `task`/`checked`, which the tokenizer
+    // has already read off the front of the row. Its leftover `[x]` token is the
+    // same fact written twice, and it was landing under the row as a paragraph
+    // of its own.
+    if (token.type === 'checkbox') continue;
     if (token.type === 'text' || token.type === 'paragraph') {
       const inner = token as Tokens.Text;
       if (parts.length) parts.push(text('\n'));

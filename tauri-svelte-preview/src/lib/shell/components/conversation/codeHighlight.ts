@@ -85,6 +85,14 @@ const FENCE_LANGUAGES: Record<string, string> = {
   zsh: 'shell'
 };
 
+/** The language a file is written in, from its name, or plain text. */
+export function monacoLanguageForPath(path: string | null | undefined): string {
+  const name = (path ?? '').split('/').pop() ?? '';
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return name.toLowerCase() === 'dockerfile' ? 'dockerfile' : 'plaintext';
+  return FENCE_LANGUAGES[name.slice(dot + 1).toLowerCase()] ?? 'plaintext';
+}
+
 /** Turn a fence's info string ("ts title=example.ts") into a language id. */
 export function monacoLanguageForFence(info: string): string {
   const first = info.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
