@@ -42,6 +42,10 @@ struct RetryAfterGate {
 pub enum RemoteQuotaError {
     Credential(ClaudeCredentialError),
     Request(ClaudeRequestError),
+    /// The sign-in could not be renewed, so usage was never asked for. Kept
+    /// apart from `Request`: both used to read "usage request failed", which
+    /// sent a whole investigation at the wrong endpoint.
+    Refresh(ClaudeRequestError),
     RateLimited { retry_after_seconds: u64 },
 }
 
@@ -66,6 +70,12 @@ impl RemoteQuotaError {
             }
             Self::Request(ClaudeRequestError::Decode) => {
                 "Claude usage response could not be decoded".to_string()
+            }
+            Self::Refresh(ClaudeRequestError::Http { status, .. }) => format!(
+                "Claude sign-in could not be renewed (HTTP status {status}); open Claude Code to sign in again"
+            ),
+            Self::Refresh(_) => {
+                "Claude sign-in could not be renewed; open Claude Code to sign in again".to_string()
             }
             Self::Request(ClaudeRequestError::CredentialWrite) => {
                 "Claude credential refresh could not be persisted".to_string()
@@ -119,7 +129,7 @@ impl UsageRemote {
             self.claude
                 .refresh_credentials(&mut credentials)
                 .await
-                .map_err(RemoteQuotaError::Request)?;
+                .map_err(RemoteQuotaError::Refresh)?;
             refreshed = true;
         }
         let first = self.claude.fetch_usage(&credentials).await;
