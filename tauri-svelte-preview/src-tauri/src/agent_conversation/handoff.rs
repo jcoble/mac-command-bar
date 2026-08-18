@@ -37,11 +37,11 @@ pub struct AgentConversationHistoryBoundary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_session_id: Option<String>,
     #[serde(default)]
-    pub first_sequence: u64,
+    pub first_sequence: i64,
     #[serde(default)]
-    pub last_sequence: u64,
+    pub last_sequence: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reconciled_sequence: Option<u64>,
+    pub reconciled_sequence: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

@@ -666,6 +666,12 @@ export interface AgentConversationConnection {
   config?: import('./conversationConfig').AgentConversationConfigState;
 }
 
+/** One backward page of transcript events, with whether older history remains. */
+export interface AgentConversationEventPage {
+  events: AgentConversationEvent[];
+  hasMore: boolean;
+}
+
 export interface AgentConversationSnapshot {
   connection: AgentConversationConnection;
   suspended?: boolean;

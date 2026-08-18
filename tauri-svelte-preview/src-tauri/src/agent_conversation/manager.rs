@@ -15,7 +15,8 @@ use super::handoff::{
 use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor,
     AgentConversationConfigState, AgentConversationConnection, AgentConversationEvent,
-    AgentConversationPayload, AgentConversationProvider, AgentConversationSessionMeta,
+    AgentConversationEventPage, AgentConversationPayload, AgentConversationProvider,
+    AgentConversationSessionMeta,
     AgentConversationSessionRecord, AgentConversationSnapshot, AgentEvent, AgentEventType,
     AgentExecutionOwner, AgentImplementation, AgentInteractionCapabilities, AgentNativeSessionMode,
     AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities,
@@ -35,7 +36,7 @@ use super::providers::{
 use super::transcript::{self, CodexChildRollout};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-const SNAPSHOT_EVENT_CAP: usize = 2_000;
+const SNAPSHOT_EVENT_CAP: usize = 1_000;
 const STORE_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
 const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
@@ -111,7 +112,7 @@ pub struct ManagedAgentSession {
     pub owner: AgentExecutionOwner,
     pub state: AgentRuntimeState,
     pub capabilities: AgentCapabilities,
-    pub next_sequence: u64,
+    pub next_sequence: i64,
     pub active_turn_id: Option<String>,
     prompt_once_active: bool,
     pub runtime: Option<Arc<AsyncMutex<StructuredRuntimeHandle>>>,
@@ -151,7 +152,7 @@ struct SessionEventCandidate {
     state: AgentRuntimeState,
     owner: AgentExecutionOwner,
     capabilities: AgentCapabilities,
-    next_sequence: u64,
+    next_sequence: i64,
     connection: AgentConversationConnection,
     writer_owner: AgentWriterLeaseOwner,
     last_activity_ms: u128,
@@ -1757,19 +1758,39 @@ impl AgentRuntimeManager {
     pub fn list_events(
         &self,
         owned_id: &str,
-        from_sequence: u64,
+        from_sequence: i64,
     ) -> Result<Vec<AgentConversationEvent>, String> {
-        let from_sequence = i64::try_from(from_sequence)
-            .map_err(|_| "Conversation event sequence exceeded the store limit".to_string())?;
         self.store
             .list_events(owned_id, from_sequence, STORE_EVENT_CAP)
             .map_err(|error| error.to_string())?
             .into_iter()
-            .map(|row| {
-                serde_json::from_str(&row.payload_json)
-                    .map_err(|error| format!("Could not decode stored conversation event: {error}"))
-            })
+            .map(stored_event)
             .collect()
+    }
+
+    /// The page of transcript events just older than `before_sequence`.
+    ///
+    /// Opening a conversation ships one screen of history; scrolling up calls
+    /// this for the previous page until `has_more` says there is nothing older.
+    pub fn list_events_before(
+        &self,
+        owned_id: &str,
+        before_sequence: i64,
+        limit: u32,
+    ) -> Result<AgentConversationEventPage, String> {
+        let page = self
+            .store
+            .list_events_before(owned_id, before_sequence, limit)
+            .map_err(|error| error.to_string())?;
+        let events = page
+            .events
+            .into_iter()
+            .map(stored_event)
+            .collect::<Result<Vec<AgentConversationEvent>, String>>()?;
+        Ok(AgentConversationEventPage {
+            events,
+            has_more: page.has_more,
+        })
     }
 
     pub fn submit_terminal_projection(
@@ -1798,10 +1819,7 @@ impl AgentRuntimeManager {
             .list_recent_events(owned_id, limit)
             .map_err(|error| error.to_string())?
             .into_iter()
-            .map(|row| {
-                serde_json::from_str(&row.payload_json)
-                    .map_err(|error| format!("Could not decode stored conversation event: {error}"))
-            })
+            .map(stored_event)
             .collect()
     }
 
@@ -2706,7 +2724,7 @@ fn recovered_session_from_row(
     let next_sequence = store
         .latest_seq(&row.owned_id)
         .map_err(|error| error.to_string())?
-        .saturating_add(1) as u64;
+        .saturating_add(1);
     let connection = AgentConversationConnection {
         owned_id: row.owned_id.clone(),
         provider,
@@ -2937,6 +2955,21 @@ fn record_payload_for_session_with_lifecycle(
         session.recent_events.pop_front();
     }
     Ok(frontend_event)
+}
+
+/// Reads one stored row back as the event it holds.
+///
+/// The row's `seq` column is the authority on where the event sits in the
+/// journal; the copy inside the payload is only a copy, and it has been wrong.
+/// Importing older history writes descending sequences, and a build that could
+/// not represent a negative one wrote zero into every payload it touched. Those
+/// rows are still in the database. Taking the position from the column repairs
+/// them as they are read, and keeps the two from ever disagreeing again.
+fn stored_event(row: EventRow) -> Result<AgentConversationEvent, String> {
+    let mut event: AgentConversationEvent = serde_json::from_str(&row.payload_json)
+        .map_err(|error| format!("Could not decode stored conversation event: {error}"))?;
+    event.sequence = row.seq;
+    Ok(event)
 }
 
 /// Records durably, then emits while the session lock still preserves event order.
@@ -4040,7 +4073,7 @@ fn is_reject_kind(kind: &str) -> bool {
 fn canonical_event(
     session: &ManagedAgentSession,
     native_session_id: Option<String>,
-    sequence: u64,
+    sequence: i64,
     timestamp_ms: u128,
     payload: &AgentConversationPayload,
 ) -> Result<AgentEvent, String> {
@@ -5924,11 +5957,11 @@ mod tests {
         assert_eq!(snapshot.events.len(), SNAPSHOT_EVENT_CAP);
         assert_eq!(
             snapshot.events.first().unwrap().sequence,
-            u64::from(STORE_EVENT_CAP) + 2 - SNAPSHOT_EVENT_CAP as u64
+            i64::from(STORE_EVENT_CAP) + 2 - SNAPSHOT_EVENT_CAP as i64
         );
         assert_eq!(
             snapshot.events.last().unwrap().sequence,
-            u64::from(STORE_EVENT_CAP) + 1
+            i64::from(STORE_EVENT_CAP) + 1
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -8284,6 +8317,33 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// A build that could not hold a negative sequence wrote zero into the
+    /// payload of every event it imported backwards. Those rows are in the
+    /// database now, and every one of them claims to sit at position zero. The
+    /// column knows better, and reading has to believe it — otherwise the
+    /// transcript reads 112 events as one, and draws nothing.
+    #[test]
+    fn a_stored_event_takes_its_position_from_the_column_not_the_payload() {
+        let event = serde_json::json!({
+            "ownedId": "owned-a",
+            "provider": "codex",
+            "generation": 0,
+            "sequence": 0,
+            "timestampMs": 1_000,
+            "payload": { "kind": "assistantMessage", "itemId": "a", "text": "hi", "completed": true }
+        });
+        let decoded = stored_event(EventRow {
+            owned_id: "owned-a".into(),
+            seq: -42,
+            turn_id: None,
+            kind: "item.completed".into(),
+            payload_json: event.to_string(),
+            created_at_ms: 1_000,
+        })
+        .expect("a stored row decodes");
+        assert_eq!(decoded.sequence, -42);
+    }
+
     #[test]
     fn canonical_sequence_and_bounded_snapshot_tail_are_repairable() {
         let root = temp_root();
@@ -8316,7 +8376,7 @@ mod tests {
         let snapshot = manager.snapshot("owned-a").unwrap().unwrap().events;
         assert_eq!(snapshot.len(), SNAPSHOT_EVENT_CAP);
         assert_eq!(snapshot.first().unwrap().sequence, 4);
-        assert_eq!(snapshot.last().unwrap().sequence, 2_003);
+        assert_eq!(snapshot.last().unwrap().sequence, SNAPSHOT_EVENT_CAP as i64 + 3);
         assert!(snapshot
             .windows(2)
             .all(|pair| pair[1].sequence == pair[0].sequence + 1));

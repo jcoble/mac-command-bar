@@ -35,6 +35,10 @@
     assistantLabel?: string;
     savedScrollTop?: number;
     emptyText?: string;
+    /** Older history exists behind the first row on screen. */
+    hasOlder?: boolean;
+    loadingOlder?: boolean;
+    onLoadOlder?(): void;
     onScroll?(scrollTop: number): void;
     onApprovalDecision?(requestId: string, decision: string): void;
     onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
@@ -53,6 +57,9 @@
     assistantLabel = 'Assistant',
     savedScrollTop = 0,
     emptyText = 'Start the conversation below.',
+    hasOlder = false,
+    loadingOlder = false,
+    onLoadOlder,
     onScroll,
     onApprovalDecision,
     onInputSubmit,
@@ -338,10 +345,50 @@
     if (top !== null) animateTo(top, action.motion, action.itemId, action.offsetPx);
   }
 
+  /*
+   * Reading older history moves everything already on screen down by the height
+   * of what arrived above it, so the view would jump. The scroll height before
+   * the page is asked for is recorded here, and the difference is added back to
+   * the scroll position once the new rows are laid out, which leaves the row the
+   * reader was looking at exactly where it was.
+   */
+  let prependAnchor: { scrollHeight: number; scrollTop: number; firstItemId: string } | null = null;
+  let anchoredFirstItemId = '';
+
+  function requestOlderHistory(): void {
+    if (!host || !hasOlder || loadingOlder || !onLoadOlder) return;
+    // A session opens by scrolling to its newest turn. Reading backwards is the
+    // reader's move, not something an opening animation asks for.
+    if (scrollState.openingToLatest) return;
+    // One viewport of warning, so the page arrives before the reader hits the top.
+    if (host.scrollTop > Math.max(viewportHeight, 1)) return;
+    prependAnchor = {
+      scrollHeight: host.scrollHeight,
+      scrollTop: host.scrollTop,
+      firstItemId: renderedItems[0]?.itemId ?? ''
+    };
+    onLoadOlder();
+  }
+
+  $effect(() => {
+    const firstItemId = renderedItems[0]?.itemId ?? '';
+    if (firstItemId === anchoredFirstItemId) return;
+    anchoredFirstItemId = firstItemId;
+    const anchor = prependAnchor;
+    if (!anchor || anchor.firstItemId === firstItemId) return;
+    prependAnchor = null;
+    void tick().then(() => {
+      if (!host) return;
+      const grown = host.scrollHeight - anchor.scrollHeight;
+      if (grown > 0) host.scrollTop = anchor.scrollTop + grown;
+    });
+  });
+
   function handleScroll(): void {
     if (!host) return;
     follow = distanceBelowReader() <= 80;
     onScroll?.(host.scrollTop);
+    requestOlderHistory();
   }
 
   function jumpToLatest(): void {
@@ -454,6 +501,9 @@
 </script>
 
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
+  {#if loadingOlder}
+    <p class="older-loading" data-testid="conversation-older-loading" role="status">Loading earlier messages</p>
+  {/if}
   <div
     class="timeline-scroll"
     data-testid="conversation-timeline-scroll"
@@ -525,6 +575,10 @@
 
 <style>
   .timeline-wrap{position:relative;flex:1;min-height:0}
+  /* Laid over the top of the transcript rather than placed in it: a row in the
+     scroll flow would change its height while a page is arriving, and the
+     scroll position is being corrected against exactly that height. */
+  .older-loading{position:absolute;top:calc(var(--center-head-height) + 4px);left:0;right:0;z-index:2;margin:0;text-align:center;font-size:11px;color:var(--color-text-2);pointer-events:none}
   /* scrollbar-width/-color are set here rather than on the shell root: they are
      inherited, and declaring them globally turns every overlay scrollbar in the
      app into a permanent one, including horizontal bars nobody asked for. Code

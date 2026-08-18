@@ -18,7 +18,10 @@ import {
   setConversationCapabilities,
   setConversationCapabilityError,
   setConversationWriterLeaseTransition,
-  clearConversationWriterLeaseTransition
+  clearConversationWriterLeaseTransition,
+  beginLoadingOlderConversationEvents,
+  failLoadingOlderConversationEvents,
+  prependOlderConversationEvents
 } from './conversationStore.svelte.ts';
 import type {
   AgentCapabilities,
@@ -44,6 +47,8 @@ import {
 } from './conversationTypes.ts';
 import {
   readAgentConversationCapabilitiesFromTauri,
+  listAgentConversationEventsBeforeFromTauri,
+  extendAgentConversationImportFromTauri,
   readAgentConversationSnapshotFromTauri,
   writeTerminalSessionFromTauri
 } from '$lib/tauriSource';
@@ -453,6 +458,53 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
   if (!snapshot) return;
   applyAgentConversationSnapshot(snapshot);
   void hydrateSentConversationAttachments(ownedId, snapshot.events);
+}
+
+/** How much older history one scroll to the top reads. */
+const OLDER_PAGE_EVENT_CAP = 250;
+
+/**
+ * Reads the page of stored events just older than the transcript and puts it in
+ * front. Opening a conversation ships one screen; this is how the rest of a
+ * long session is reached.
+ */
+export async function loadOlderConversationEvents(ownedId: string): Promise<void> {
+  if (!beginLoadingOlderConversationEvents(ownedId)) return;
+  const before = getConversationSession(ownedId)?.oldestLoadedSequence ?? 0;
+  try {
+    const page = await listAgentConversationEventsBeforeFromTauri(
+      ownedId,
+      before,
+      OLDER_PAGE_EVENT_CAP
+    );
+    if (!page) {
+      failLoadingOlderConversationEvents(ownedId);
+      return;
+    }
+    if (page.events.length || page.hasMore) {
+      prependOlderConversationEvents(ownedId, page);
+      return;
+    }
+    // The database is exhausted, which is not the same as the conversation
+    // being. A session picked up from a past transcript holds only the tail
+    // that was read at the time; the rest is still on disk behind a byte
+    // cursor. Read the next chunk into the database and ask again. A session
+    // started here has no transcript behind it and reports nothing added,
+    // which is how this stops.
+    const added = await extendAgentConversationImportFromTauri(ownedId);
+    if (!added) {
+      prependOlderConversationEvents(ownedId, { events: [], hasMore: false });
+      return;
+    }
+    const grown = await listAgentConversationEventsBeforeFromTauri(
+      ownedId,
+      before,
+      OLDER_PAGE_EVENT_CAP
+    );
+    prependOlderConversationEvents(ownedId, grown ?? { events: [], hasMore: false });
+  } catch {
+    failLoadingOlderConversationEvents(ownedId);
+  }
 }
 
 export async function startConversationEvents(): Promise<void> {

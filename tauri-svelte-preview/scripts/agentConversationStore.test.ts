@@ -869,4 +869,131 @@ store.removeConversationSession('owned-a');
 assert.equal(store.getConversationSession('owned-a'), null);
 assert.ok(store.getConversationSession('owned-b'));
 
+// Scrolling up loads the page of stored events just older than what is on
+// screen. The older rows have to land in front of the ones already there,
+// keeping one ascending transcript, and an item that straddles the page
+// boundary must not be drawn twice.
+{
+  const olderEvent = (sequence, itemId, kind, text) => ({
+    ownedId: 'owned-paged',
+    provider: 'codex',
+    generation: 1,
+    sequence,
+    timestampMs: 100 + sequence,
+    payload: { kind, itemId, text, completed: true }
+  });
+
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId: 'owned-paged',
+      provider: 'codex',
+      generation: 1,
+      state: 'connected',
+      nativeSessionId: 'thread-paged'
+    },
+    lastSequence: 12,
+    events: [
+      olderEvent(11, 'user-newer', 'userMessage', 'Newer question'),
+      olderEvent(12, 'assistant-newer', 'assistantMessage', 'Newer answer')
+    ]
+  });
+
+  const opened = store.getConversationSession('owned-paged');
+  assert.equal(opened.oldestLoadedSequence, 11, 'opening records the oldest event it was given');
+  assert.equal(opened.reachedTranscriptStart, false);
+
+  store.prependOlderConversationEvents('owned-paged', {
+    events: [
+      olderEvent(9, 'user-older', 'userMessage', 'Older question'),
+      olderEvent(10, 'assistant-older', 'assistantMessage', 'Older answer')
+    ],
+    hasMore: true
+  });
+
+  const paged = store.getConversationSession('owned-paged');
+  assert.deepEqual(
+    paged.timeline.map((entry) => entry.text),
+    ['Older question', 'Older answer', 'Newer question', 'Newer answer'],
+    'an older page lands in front of the transcript already on screen'
+  );
+  assert.deepEqual(
+    paged.agentItems.map((item) => item.content.map((part) => part.text).join('')),
+    ['Older question', 'Older answer', 'Newer question', 'Newer answer']
+  );
+  const itemIds = paged.timeline.map((entry) => entry.itemId);
+  assert.equal(new Set(itemIds).size, itemIds.length, 'no row is drawn twice');
+  assert.equal(paged.oldestLoadedSequence, 9);
+  assert.equal(paged.reachedTranscriptStart, false);
+  assert.equal(paged.lastSequence, 12, 'reading older history never rewinds the live cursor');
+
+  // An item whose start is in the older page and whose completion is already on
+  // screen must not produce a second row.
+  store.prependOlderConversationEvents('owned-paged', {
+    events: [olderEvent(8, 'user-older', 'userMessage', 'Older question')],
+    hasMore: false
+  });
+  const deduped = store.getConversationSession('owned-paged');
+  assert.deepEqual(
+    deduped.timeline.map((entry) => entry.text),
+    ['Older question', 'Older answer', 'Newer question', 'Newer answer']
+  );
+  assert.equal(deduped.oldestLoadedSequence, 8);
+  assert.equal(deduped.reachedTranscriptStart, true, 'the start stops any further request');
+}
+
+// Reading further back into a provider's own transcript writes those older
+// events BELOW the ones already stored, so their sequences count down through
+// zero and into negatives. A reducer that treats "not greater than the last
+// sequence" as "already seen" throws every one of them away, which is what
+// happened: 112 events arrived off disk and none of them ever reached a row.
+{
+  const event = (sequence, itemId, kind, text) => ({
+    ownedId: 'owned-negative',
+    provider: 'codex',
+    generation: 0,
+    sequence,
+    timestampMs: 1000 + sequence,
+    payload: { kind, itemId, text, completed: true }
+  });
+
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId: 'owned-negative',
+      provider: 'codex',
+      generation: 0,
+      state: 'connected',
+      nativeSessionId: 'thread-negative'
+    },
+    lastSequence: 2,
+    events: [
+      event(1, 'user-stored', 'userMessage', 'Stored question'),
+      event(2, 'assistant-stored', 'assistantMessage', 'Stored answer')
+    ]
+  });
+
+  store.prependOlderConversationEvents('owned-negative', {
+    events: [
+      event(-2, 'user-disk', 'userMessage', 'Question from the transcript'),
+      event(-1, 'assistant-disk', 'assistantMessage', 'Answer from the transcript'),
+      event(0, 'assistant-disk-2', 'assistantMessage', 'Second answer from the transcript')
+    ],
+    hasMore: true
+  });
+
+  const negative = store.getConversationSession('owned-negative');
+  assert.deepEqual(
+    negative.timeline.map((entry) => entry.text),
+    [
+      'Question from the transcript',
+      'Answer from the transcript',
+      'Second answer from the transcript',
+      'Stored question',
+      'Stored answer'
+    ],
+    'events at sequences at or below zero must still reach the transcript'
+  );
+  assert.equal(negative.oldestLoadedSequence, -2);
+  assert.equal(negative.lastSequence, 2, 'reading older history never rewinds the live cursor');
+}
+
 console.log('agent conversation store tests passed');

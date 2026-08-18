@@ -18,7 +18,8 @@ use mcb_core::session_store::AnnotationRow;
 use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
-    AgentConversationEvent, AgentConversationSessionRecord, AgentConversationSnapshot,
+    AgentConversationEvent, AgentConversationEventPage, AgentConversationSessionRecord,
+    AgentConversationSnapshot,
     CommandResult, EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
     RespondAgentConversationInputRequest, RespondAgentConversationPermissionRequest,
     SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
@@ -387,9 +388,20 @@ pub async fn list_agent_conversation_sessions(
 pub async fn list_agent_conversation_events(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
-    from_sequence: Option<u64>,
+    from_sequence: Option<i64>,
 ) -> CommandResult<Vec<AgentConversationEvent>> {
     command_result(manager.list_events(&owned_id, from_sequence.unwrap_or(0)))
+}
+
+#[tauri::command]
+/// Lists the page of durable events just older than the requested sequence.
+pub async fn list_agent_conversation_events_before(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    before_sequence: i64,
+    limit: u32,
+) -> CommandResult<AgentConversationEventPage> {
+    command_result(manager.list_events_before(&owned_id, before_sequence, limit))
 }
 
 #[tauri::command]

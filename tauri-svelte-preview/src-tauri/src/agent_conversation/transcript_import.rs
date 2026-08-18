@@ -270,7 +270,12 @@ pub fn extend_session(
         .get_session(owned_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Imported session was not found".to_string())?;
-    let cursor = import_cursor(&session.extra_json)?;
+    // A session started here rather than picked up from a transcript has no
+    // cursor, and nothing older than its first event exists. Scrolling to the
+    // top of one asks this question and deserves an answer, not an error.
+    let Some(cursor) = optional_import_cursor(&session.extra_json)? else {
+        return Ok(0);
+    };
     if cursor.reached_start {
         return Ok(0);
     }
@@ -414,7 +419,7 @@ fn append_imported_record(
         owned_id: owned_id.to_string(),
         provider,
         generation: 0,
-        sequence: u64::try_from(sequence).unwrap_or(0),
+        sequence,
         timestamp_ms: u128::try_from(created_at_ms.max(0)).unwrap_or_default(),
         payload,
     };
@@ -462,6 +467,18 @@ fn projection_payload(
             redacted: true,
         },
     }
+}
+
+/// The import cursor when the session has one, and `None` when it never did.
+fn optional_import_cursor(extra_json: &str) -> Result<Option<ImportCursor>, String> {
+    let extra: Value = serde_json::from_str(extra_json)
+        .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
+    let Some(cursor) = extra.get("import").cloned() else {
+        return Ok(None);
+    };
+    serde_json::from_value(cursor)
+        .map(Some)
+        .map_err(|error| format!("Could not decode import cursor: {error}"))
 }
 
 fn import_cursor(extra_json: &str) -> Result<ImportCursor, String> {
@@ -788,6 +805,38 @@ mod tests {
             stored_item_ids(&store, &owned_id),
             ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6"]
         );
+    }
+
+    /// Scrolling to the top of any conversation asks for older history. Most
+    /// sessions were started here rather than picked up from a transcript, so
+    /// they have no import cursor and there is simply nothing older on disk.
+    /// That is an answer, not a failure.
+    #[test]
+    fn extending_a_session_that_was_never_imported_adds_nothing() {
+        let store = SessionStore::open_in_memory().expect("store should open");
+        store
+            .upsert_session(&mcb_core::session_store::SessionRow {
+                owned_id: "owned-native".to_owned(),
+                native_session_id: None,
+                provider: "codex".to_owned(),
+                model: None,
+                effort: None,
+                cwd: "/tmp/project".to_owned(),
+                worktree: None,
+                branch: None,
+                title: None,
+                project: None,
+                state: "idle".to_owned(),
+                suspended: false,
+                created_at_ms: 1,
+                last_activity_at_ms: 1,
+                extra_json: "{}".to_owned(),
+            })
+            .expect("session should be written");
+
+        let added = extend_session(&store, "owned-native", 1024, usize::MAX)
+            .expect("a session with no transcript behind it reports nothing older");
+        assert_eq!(added, 0);
     }
 
     #[test]

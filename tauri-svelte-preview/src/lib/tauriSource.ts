@@ -105,6 +105,7 @@ export type UsageDailyTotalsRow = import('./shell/usage/usageTypes.ts').UsageDai
 export type AgentConversationCapabilities = import('./shell/conversation/conversationTypes.ts').AgentCapabilities;
 export type AgentConversationEvent = import('./shell/conversation/conversationTypes.ts').AgentConversationEvent;
 export type AgentConversationSnapshot = import('./shell/conversation/conversationTypes.ts').AgentConversationSnapshot;
+export type AgentConversationEventPage = import('./shell/conversation/conversationTypes.ts').AgentConversationEventPage;
 
 export type TerminalOutputPayload = {
   sessionId: string;
@@ -1332,6 +1333,21 @@ export async function listAgentConversationEventsFromTauri(
   if (!isTauriRuntime() || !ownedId.trim()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<AgentConversationEvent[]>('list_agent_conversation_events', { ownedId, fromSequence });
+}
+
+/** The page of stored events just older than `beforeSequence`, for scrolling up. */
+export async function listAgentConversationEventsBeforeFromTauri(
+  ownedId: string,
+  beforeSequence: number,
+  limit: number
+): Promise<AgentConversationEventPage | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
+    ownedId,
+    beforeSequence,
+    limit
+  });
 }
 
 export async function updateAgentConversationSessionMetaFromTauri(input: {

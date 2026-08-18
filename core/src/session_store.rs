@@ -105,6 +105,13 @@ pub struct EventRow {
     pub created_at_ms: i64,
 }
 
+/// One backward page of events, with whether older history remains.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OlderEvents {
+    pub events: Vec<EventRow>,
+    pub has_more: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachmentRow {
     pub id: String,
@@ -506,6 +513,48 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not list recent events", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the recent event list", error))
+    }
+
+    /// The newest event window strictly older than `before_seq`, in transcript
+    /// order, plus whether anything older than that window still exists.
+    ///
+    /// This is what scrolling up asks for. Like `list_recent_events`, both the
+    /// limiting and the final ordering stay in SQLite. One extra row is read so
+    /// the caller learns there is more history without paying for a second
+    /// query, and can stop asking once the start is reached.
+    pub fn list_events_before(
+        &self,
+        owned_id: &str,
+        before_seq: i64,
+        limit: u32,
+    ) -> Result<OlderEvents> {
+        let lookahead = i64::from(limit).saturating_add(1);
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT owned_id, seq, turn_id, kind, payload, created_at
+                 FROM (
+                     SELECT owned_id, seq, turn_id, kind, payload, created_at
+                     FROM events
+                     WHERE owned_id = ? AND seq < ?
+                     ORDER BY seq DESC
+                     LIMIT ?
+                 )
+                 ORDER BY seq ASC",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare the older event list", error))?;
+        let rows = statement
+            .query_map(params![owned_id, before_seq, lookahead], event_from_row)
+            .map_err(|error| StoreError::sqlite("could not list older events", error))?;
+        let mut events: Vec<EventRow> = rows
+            .collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the older event list", error))?;
+        let has_more = events.len() > limit as usize;
+        if has_more {
+            // The lookahead row is the oldest one, and the caller did not ask for it.
+            events.remove(0);
+        }
+        Ok(OlderEvents { events, has_more })
     }
 
     pub fn latest_seq(&self, owned_id: &str) -> Result<i64> {
@@ -1325,6 +1374,63 @@ mod tests {
             .list_recent_events(&session.owned_id, 0)
             .expect("list zero-sized recent page")
             .is_empty());
+    }
+
+    /// Scrolling up asks for the window just older than what is already on
+    /// screen. The lookahead row tells the caller whether another page exists
+    /// without a second query, so the transcript can stop asking at the start.
+    #[test]
+    fn list_events_before_returns_the_window_just_older_than_the_cursor() {
+        let (_directory, _path, store) = open_temp_store();
+        let session = fixture_session("owned-older", 2_000);
+        store.upsert_session(&session).expect("insert session");
+        for seq in 1..=600 {
+            store
+                .append_event(&fixture_event(&session.owned_id, seq))
+                .expect("append event");
+        }
+
+        let page = store
+            .list_events_before(&session.owned_id, 400, 250)
+            .expect("list the page before the cursor");
+        let seqs: Vec<i64> = page.events.iter().map(|event| event.seq).collect();
+        assert_eq!(seqs.len(), 250);
+        assert_eq!(seqs.first().copied(), Some(150));
+        assert_eq!(seqs.last().copied(), Some(399));
+        assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(page.has_more);
+
+        let start = store
+            .list_events_before(&session.owned_id, 1, 250)
+            .expect("list the page before the first event");
+        assert!(start.events.is_empty());
+        assert!(!start.has_more);
+    }
+
+    #[test]
+    fn list_events_before_does_not_cross_sessions() {
+        let (_directory, _path, store) = open_temp_store();
+        for owned_id in ["owned-left", "owned-right"] {
+            store
+                .upsert_session(&fixture_session(owned_id, 2_000))
+                .expect("insert session");
+            for seq in 1..=10 {
+                store
+                    .append_event(&fixture_event(owned_id, seq))
+                    .expect("append event");
+            }
+        }
+
+        let page = store
+            .list_events_before("owned-left", 8, 5)
+            .expect("list the page before the cursor");
+        assert!(page
+            .events
+            .iter()
+            .all(|event| event.owned_id == "owned-left"));
+        let seqs: Vec<i64> = page.events.iter().map(|event| event.seq).collect();
+        assert_eq!(seqs, [3, 4, 5, 6, 7]);
+        assert!(page.has_more);
     }
 
     #[test]

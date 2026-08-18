@@ -267,7 +267,9 @@ pub struct AgentEvent {
     pub provider: AgentConversationProvider,
     pub provider_instance_id: String,
     pub generation: u64,
-    pub sequence: u64,
+    /// Position in the session journal. Signed because importing older history
+    /// writes it below what is already stored, counting down through zero.
+    pub sequence: i64,
     pub timestamp_ms: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_session_id: Option<String>,
@@ -529,7 +531,9 @@ pub struct AgentConversationEvent {
     pub owned_id: String,
     pub provider: AgentConversationProvider,
     pub generation: u64,
-    pub sequence: u64,
+    /// Position in the session journal. Signed because importing older history
+    /// writes it below what is already stored, counting down through zero.
+    pub sequence: i64,
     pub timestamp_ms: u128,
     pub payload: AgentConversationPayload,
 }
@@ -641,12 +645,20 @@ pub struct AgentConversationConnection {
     pub config: AgentConversationConfigState,
 }
 
+/// One backward page of transcript events, with whether older history remains.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationEventPage {
+    pub events: Vec<AgentConversationEvent>,
+    pub has_more: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationSnapshot {
     pub connection: AgentConversationConnection,
     pub suspended: bool,
-    pub last_sequence: u64,
+    pub last_sequence: i64,
     pub events: Vec<AgentConversationEvent>,
 }
 

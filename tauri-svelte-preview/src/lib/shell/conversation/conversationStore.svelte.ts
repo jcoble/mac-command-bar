@@ -12,6 +12,7 @@ import type {
   AgentEvent,
   AgentConversationConnection,
   AgentConversationEvent,
+  AgentConversationEventPage,
   AgentConversationProvider,
   AgentConversationSnapshot,
   AgentConfigValue,
@@ -110,6 +111,13 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   pendingConfig: Record<string, AgentConfigValue>;
   configErrors: Record<string, string>;
   recentEvents: ConversationRecentEvent[];
+  /** The lowest stored sequence currently on screen, and where scrolling up
+   * asks from. Zero until a session has been opened. */
+  oldestLoadedSequence: number;
+  /** A backward page is in flight; the transcript must not ask for another. */
+  loadingOlder: boolean;
+  /** Nothing older than what is on screen exists, so stop asking. */
+  reachedTranscriptStart: boolean;
 }
 
 const emptyMetadata = (): ConversationMetadata => ({
@@ -165,7 +173,10 @@ function freshState(
     pendingInputs: {},
     pendingConfig: {},
     configErrors: {},
-    recentEvents: []
+    recentEvents: [],
+    oldestLoadedSequence: 0,
+    loadingOlder: false,
+    reachedTranscriptStart: false
   };
 }
 
@@ -554,7 +565,10 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   // immediately before that window so the first retained event is contiguous
   // without pretending the omitted older journal was materialized.
   rebuilt.generation = firstEvent?.generation ?? snapshot.connection.generation;
-  rebuilt.lastSequence = firstEvent ? Math.max(0, firstEvent.sequence - 1) : 0;
+  // Not clamped at zero: importing older history writes it at descending
+  // sequences that run through zero into negatives, and a clamp here would make
+  // the reducer read every one of those as already seen and drop it.
+  rebuilt.lastSequence = firstEvent ? firstEvent.sequence - 1 : 0;
   rebuilt.connectionState = snapshot.connection.state;
   rebuilt.nativeSessionId = snapshot.connection.nativeSessionId;
   for (const event of events) {
@@ -614,7 +628,12 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     agentConfig: current.agentConfig,
     pendingAgentConfig: current.pendingAgentConfig,
     agentConfigError: current.agentConfigError,
-    recentEvents: []
+    recentEvents: [],
+    // A snapshot is the newest window of a longer journal. Scrolling up asks
+    // for what came before its first event.
+    oldestLoadedSequence: firstEvent?.sequence ?? 0,
+    loadingOlder: false,
+    reachedTranscriptStart: false
   };
   for (const event of events) {
     const displayEvent = displayEventFrom(event);
@@ -632,6 +651,83 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   }));
   // One reactive publication: subscribers see only the finished snapshot.
   conversationSessions[snapshot.connection.ownedId] = restored;
+}
+
+/**
+ * Puts the page of stored events just older than the transcript in front of it.
+ *
+ * Opening a conversation ships one screen of history, so reaching further back
+ * means reading a page and prepending it. The page is replayed into a throwaway
+ * session first: it is built by the same reducer the live path uses, but its
+ * metadata, plan, tasks and usage are stale by definition and must never
+ * overwrite what is on screen. Only the rows are taken.
+ *
+ * An item whose start is in the older page and whose completion is already on
+ * screen appears in both, so anything already drawn is dropped rather than
+ * duplicated.
+ */
+export function prependOlderConversationEvents(
+  ownedId: string,
+  page: AgentConversationEventPage
+): void {
+  const current = conversationSessions[ownedId];
+  if (!current) return;
+  const events = idempotentSnapshotEvents(page.events);
+  const firstEvent = events[0];
+  let rebuilt = createConversationState(current.ownedId, current.provider);
+  rebuilt.generation = firstEvent?.generation ?? current.generation;
+  // Not clamped at zero: importing older history writes it at descending
+  // sequences that run through zero into negatives, and a clamp here would make
+  // the reducer read every one of those as already seen and drop it.
+  rebuilt.lastSequence = firstEvent ? firstEvent.sequence - 1 : 0;
+  for (const event of events) {
+    rebuilt = applyConversationEvent(rebuilt, event);
+  }
+  const older: ConversationWorkspaceState = {
+    ...freshState(current.ownedId, current.provider),
+    ...rebuilt
+  };
+  for (const event of events) {
+    const displayEvent = displayEventFrom(event);
+    const typedItem = agentItemFromEvent(displayEvent);
+    if (typedItem) {
+      mergeAgentItemInPlace(older, typedItem, conversationEventAppendsItemContent(displayEvent));
+    }
+  }
+
+  const drawnEntries = new Set(current.timeline.map((entry) => entry.itemId));
+  const entries = older.timeline.filter((entry) => !drawnEntries.has(entry.itemId));
+  const drawnItems = new Set(current.agentItems.map((item) => item.id));
+  const items = older.agentItems.filter((item) => !drawnItems.has(item.id));
+  if (entries.length) current.timeline.unshift(...entries);
+  if (items.length) current.agentItems.unshift(...items);
+  // Both caches map an item id to its position, and every position just moved.
+  timelineIndexBySession.delete(current);
+  agentItemIndexBySession.delete(current);
+
+  if (firstEvent) current.oldestLoadedSequence = firstEvent.sequence;
+  current.reachedTranscriptStart = !page.hasMore;
+  current.loadingOlder = false;
+  current.timelineRevision += 1;
+}
+
+/** Marks a backward page as in flight so only one is ever asked for. */
+export function beginLoadingOlderConversationEvents(ownedId: string): boolean {
+  const current = conversationSessions[ownedId];
+  if (!current) return false;
+  if (current.loadingOlder || current.reachedTranscriptStart) return false;
+  // Nothing is on screen yet, so there is no cursor to read backwards from.
+  // Sequence numbers themselves say nothing here: extending an import writes
+  // older events at descending sequences, which run through 1 and past it.
+  if (current.timeline.length === 0) return false;
+  current.loadingOlder = true;
+  return true;
+}
+
+/** Releases the in-flight guard when a backward page could not be read. */
+export function failLoadingOlderConversationEvents(ownedId: string): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.loadingOlder = false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

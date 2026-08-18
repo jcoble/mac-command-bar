@@ -51,6 +51,7 @@
     "tauri:dev": "tauri dev",
     "tauri:dev:attach": "tauri dev --config src-tauri/tauri.dev.attach.conf.json",
     "tauri:dev:next": "sh scripts/dev-next.sh",
+    "tauri:dev:next:alt": "sh scripts/dev-next.sh --config '{\"build\":{\"beforeDevCommand\":\"pnpm dev --port 5187\",\"devUrl\":\"http://127.0.0.1:5187/next\"}}'",
     "tauri:build": "tauri build",
     "test:open-file-bus": "node --experimental-strip-types scripts/openFileBus.test.mjs",
     "test:source-record-from-path": "node --experimental-strip-types scripts/sourceRecordFromPath.test.mjs",
