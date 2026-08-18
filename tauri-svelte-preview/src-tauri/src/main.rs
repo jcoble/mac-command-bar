@@ -4526,25 +4526,58 @@ fn list_playwright_sessions_sync() -> Result<Vec<PlaywrightSessionInfo>, String>
     )))
 }
 
+/// How long a Playwright process is given to leave on its own before it is
+/// forced. Waited out on a thread of its own, not inside the command: the
+/// answer to "stop" used to be held for the whole grace period plus a second
+/// process scan, so the button sat busy and the app sat still for the best part
+/// of a second every time. Now TERM is sent, the receipt goes straight back,
+/// and the forcing happens behind it — the same shape `resources.rs` uses.
+const PLAYWRIGHT_STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(800);
+
 fn kill_playwright_sessions_sync() -> Result<PlaywrightCleanupResult, String> {
     let sessions = list_playwright_sessions_sync()?;
-    kill_playwright_sessions_with(
-        sessions,
-        signal_process,
-        || std::thread::sleep(std::time::Duration::from_millis(800)),
-        list_playwright_sessions_sync,
-    )
+    let (result, survivors) = term_playwright_sessions(sessions, signal_process);
+    force_playwright_survivors_after_grace(survivors);
+    Ok(result)
 }
 
 fn kill_playwright_session_sync(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
     let sessions = list_playwright_sessions_sync()?;
-    kill_playwright_session_with(
-        sessions,
-        pgid,
-        signal_process,
-        || std::thread::sleep(std::time::Duration::from_millis(800)),
-        list_playwright_sessions_sync,
-    )
+    let session = select_playwright_session(sessions, pgid)?;
+    let (result, survivors) = term_playwright_sessions(vec![session], signal_process);
+    force_playwright_survivors_after_grace(survivors);
+    Ok(result)
+}
+
+/// The sessions just told to stop, ready for the forcing pass.
+struct PlaywrightTermSweep {
+    sessions: Vec<PlaywrightSessionInfo>,
+    terminated_pids: HashSet<u32>,
+}
+
+/// After the grace period, force whatever the TERM sweep left running. Off the
+/// command's thread, so nothing waits on it; the outcome is logged, not
+/// returned, the way a forced stop is elsewhere in the app.
+fn force_playwright_survivors_after_grace(sweep: PlaywrightTermSweep) {
+    if sweep.terminated_pids.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(PLAYWRIGHT_STOP_GRACE);
+        let failures = kill_playwright_survivors(
+            &sweep.sessions,
+            &sweep.terminated_pids,
+            signal_process,
+            list_playwright_sessions_sync,
+        );
+        for failure in failures {
+            crate::debug_log::stderr_log!(
+                "playwright: could not force process group {} after the stop grace period: {}",
+                failure.pgid,
+                failure.message
+            );
+        }
+    });
 }
 
 /// Stops ONE Playwright process group, the same polite-then-forceful way the
@@ -4591,12 +4624,32 @@ fn kill_playwright_sessions_with<SignalProcess, SleepAfterTerm, ListSessions>(
     sessions: Vec<PlaywrightSessionInfo>,
     mut signal_process: SignalProcess,
     sleep_after_term: SleepAfterTerm,
-    mut list_sessions: ListSessions,
+    list_sessions: ListSessions,
 ) -> Result<PlaywrightCleanupResult, String>
 where
     SignalProcess: FnMut(u32, &str) -> Result<(), String>,
     SleepAfterTerm: FnOnce(),
     ListSessions: FnMut() -> Result<Vec<PlaywrightSessionInfo>, String>,
+{
+    let (mut result, sweep) = term_playwright_sessions(sessions, &mut signal_process);
+    sleep_after_term();
+    result.failed_pgids.extend(kill_playwright_survivors(
+        &sweep.sessions,
+        &sweep.terminated_pids,
+        signal_process,
+        list_sessions,
+    ));
+    Ok(result)
+}
+
+/// Ask every process in every session to leave. What could not even be asked is
+/// reported straight away; what was asked is handed on for the forcing pass.
+fn term_playwright_sessions<SignalProcess>(
+    sessions: Vec<PlaywrightSessionInfo>,
+    mut signal_process: SignalProcess,
+) -> (PlaywrightCleanupResult, PlaywrightTermSweep)
+where
+    SignalProcess: FnMut(u32, &str) -> Result<(), String>,
 {
     let mut terminated_pgids = Vec::new();
     let mut terminated_pids = Vec::new();
@@ -4621,36 +4674,59 @@ where
         }
     }
 
-    sleep_after_term();
+    let sweep = PlaywrightTermSweep {
+        sessions: sessions.clone(),
+        terminated_pids: terminated_pids.iter().copied().collect(),
+    };
+    (
+        PlaywrightCleanupResult {
+            sessions,
+            terminated_pgids,
+            terminated_pids,
+            failed_pgids,
+        },
+        sweep,
+    )
+}
 
+/// Force whatever the TERM sweep asked to leave and is still here. Only a
+/// process this app itself signalled is forced: a number that has since been
+/// handed to something else is left alone.
+fn kill_playwright_survivors<SignalProcess, ListSessions>(
+    sessions: &[PlaywrightSessionInfo],
+    terminated_pids: &HashSet<u32>,
+    mut signal_process: SignalProcess,
+    mut list_sessions: ListSessions,
+) -> Vec<PlaywrightCleanupFailure>
+where
+    SignalProcess: FnMut(u32, &str) -> Result<(), String>,
+    ListSessions: FnMut() -> Result<Vec<PlaywrightSessionInfo>, String>,
+{
+    let mut failed_pgids = Vec::new();
     let remaining_pids = match list_sessions() {
         Ok(remaining_sessions) => remaining_sessions
             .into_iter()
             .flat_map(|session| session.pids)
             .collect::<HashSet<_>>(),
         Err(error) => {
-            for pgid in &terminated_pgids {
-                failed_pgids.push(PlaywrightCleanupFailure {
-                    pgid: *pgid,
-                    pid: None,
-                    message: format!("Could not verify Playwright cleanup after TERM: {error}"),
-                });
+            for session in sessions {
+                if session.pids.iter().any(|pid| terminated_pids.contains(pid)) {
+                    failed_pgids.push(PlaywrightCleanupFailure {
+                        pgid: session.pgid,
+                        pid: None,
+                        message: format!("Could not verify Playwright cleanup after TERM: {error}"),
+                    });
+                }
             }
-            return Ok(PlaywrightCleanupResult {
-                sessions,
-                terminated_pgids,
-                terminated_pids,
-                failed_pgids,
-            });
+            return failed_pgids;
         }
     };
-    let terminated_pid_set = terminated_pids.iter().copied().collect::<HashSet<_>>();
-    for session in &sessions {
+    for session in sessions {
         for pid in session
             .pids
             .iter()
             .copied()
-            .filter(|pid| terminated_pid_set.contains(pid) && remaining_pids.contains(pid))
+            .filter(|pid| terminated_pids.contains(pid) && remaining_pids.contains(pid))
         {
             if let Err(message) = signal_process(pid, "KILL") {
                 failed_pgids.push(PlaywrightCleanupFailure {
@@ -4661,13 +4737,7 @@ where
             }
         }
     }
-
-    Ok(PlaywrightCleanupResult {
-        sessions,
-        terminated_pgids,
-        terminated_pids,
-        failed_pgids,
-    })
+    failed_pgids
 }
 
 fn kill_process_sync(pid: u32, expected_command: Option<String>) -> ProcessKillResult {
