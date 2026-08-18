@@ -424,7 +424,7 @@ export type AgentConversationPayload =
   | { kind: 'userMessage'; itemId: string; text: string; completed: boolean; attachmentIds?: string[] }
   | { kind: 'assistantDelta'; itemId: string; delta: string }
   | { kind: 'assistantMessage'; itemId: string; text: string; completed: true }
-  | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string }
+  | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string; output?: string; path?: string; diff?: string }
   | {
       kind: 'childUpdate';
       childId: string;
@@ -562,6 +562,10 @@ export type ConversationTimelineEntry =
       name: string;
       state: ToolState;
       summary?: string;
+      /** What the call produced, which is what a row opens onto. */
+      output?: string;
+      path?: string;
+      diff?: string;
       timestampMs: number;
     }
   | {

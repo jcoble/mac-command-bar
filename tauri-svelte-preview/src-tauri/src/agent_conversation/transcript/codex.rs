@@ -266,6 +266,24 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                 native: Some(native),
             });
         }
+        (
+            Some("response_item"),
+            Some("function_call_output" | "custom_tool_call_output"),
+        ) => {
+            // The result line carries the same `call_id` as the call and no
+            // tool name, so it is the same row saying what came back. It used
+            // to be read past, which left every tool row with nothing in it.
+            let Some(call_id) = value.pointer("/payload/call_id").and_then(Value::as_str) else {
+                return records;
+            };
+            let Some(output) = value
+                .pointer("/payload/output")
+                .and_then(super::tool_output_text)
+            else {
+                return records;
+            };
+            records.push(super::tool_output_record(call_id, output, timestamp(value)));
+        }
         (Some("response_item"), Some("function_call" | "custom_tool_call")) => {
             // The call, not its result. Both lines carry the same `call_id`, but
             // only this one names the tool, and the app's tool event has one

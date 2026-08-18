@@ -338,14 +338,31 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
     case 'tool': {
       const existing = timelineEntry(current, payload.itemId);
       if (existing?.kind === 'tool') {
-        displayChanged = existing.name !== payload.name || existing.state !== payload.state || existing.summary !== payload.summary;
-        existing.name = payload.name;
+        displayChanged = existing.name !== payload.name
+          || existing.state !== payload.state
+          || existing.summary !== payload.summary
+          || existing.output !== payload.output
+          || existing.diff !== payload.diff;
+        // A call and its result are the same row arriving twice: the call names
+        // the tool and says what was asked, the result says what came back and
+        // names nothing. Each only writes what it actually carries, or the
+        // result would blank out the row it belongs to.
+        if (payload.name) existing.name = payload.name;
         existing.state = payload.state;
-        existing.summary = payload.summary;
+        if (payload.summary !== undefined) existing.summary = payload.summary;
+        if (payload.output !== undefined) existing.output = payload.output;
+        if (payload.path !== undefined) existing.path = payload.path;
+        if (payload.diff !== undefined) existing.diff = payload.diff;
       } else {
         appendTimelineEntry(current, {
-          kind: 'tool', itemId: payload.itemId, name: payload.name,
-          state: payload.state, summary: payload.summary, timestampMs: event.timestampMs
+          kind: 'tool', itemId: payload.itemId,
+          // A result names no tool, and its call is what would have. When the
+          // two are separated — a page boundary can fall between them — the row
+          // is still worth drawing, so it takes a plain name until the call
+          // turns up and gives it the real one.
+          name: payload.name || 'Tool',
+          state: payload.state, summary: payload.summary, output: payload.output,
+          path: payload.path, diff: payload.diff, timestampMs: event.timestampMs
         });
         displayChanged = true;
       }

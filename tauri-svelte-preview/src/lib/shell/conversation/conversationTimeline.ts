@@ -529,7 +529,12 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
     title: entry.name,
     toolKind: toolKindOf('', entry.name),
     state: toolStateOf(entry.state),
-    output: entry.summary,
+    // The body and the row's one line are different things. This handed the
+    // summary over as both, so a row either repeated itself or, far more often,
+    // opened onto nothing at all because the summary was all that was stored.
+    output: entry.output,
+    diff: entry.diff,
+    path: entry.path,
     summary: entry.summary,
     timestampMs: entry.timestampMs
   };
@@ -708,7 +713,9 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
   // once on the row and again inside it when it was opened — and, on a file
   // edit with no patch attached, offered the file's path as though it were the
   // change. Only real content is a body.
-  const contentText = textFromValue(payload.content);
+  // `output` is what a stored call answered; `content` is what a live ACP
+  // update carries. A row reads whichever it was given.
+  const contentText = textFromValue(payload.output) || textFromValue(payload.content);
   const rawKind = stringOf(payload.toolKind, stringOf(payload.category, stringOf(payload.type)));
   const toolKind = toolKindOf(rawKind, name);
   const title = givenTitle || plainToolTitle(toolKind, name);

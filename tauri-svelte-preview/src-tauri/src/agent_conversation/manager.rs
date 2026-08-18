@@ -36,7 +36,15 @@ use super::providers::{
 use super::transcript::{self, CodexChildRollout};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-const SNAPSHOT_EVENT_CAP: usize = 1_000;
+/// How much of a conversation opening it hands over, in bytes of stored event.
+///
+/// Bytes rather than a count of events, because an event is anything from a
+/// config record to a sixteen-kilobyte tool result: the same count of them is a
+/// different amount of reading in every session, and it is the bytes that cost
+/// the fetch, the hop to the front end and the parse at the other end.
+const SNAPSHOT_WINDOW_BYTES: u32 = 512 * 1024;
+/// How many recent events a live session keeps in memory for its own use.
+const SESSION_RECENT_EVENT_CAP: usize = 1_000;
 const STORE_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
 const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
@@ -1776,11 +1784,11 @@ impl AgentRuntimeManager {
         &self,
         owned_id: &str,
         before_sequence: i64,
-        limit: u32,
+        max_bytes: u32,
     ) -> Result<AgentConversationEventPage, String> {
         let page = self
             .store
-            .list_events_before(owned_id, before_sequence, limit)
+            .list_events_before(owned_id, before_sequence, max_bytes)
             .map_err(|error| error.to_string())?;
         let events = page
             .events
@@ -1813,10 +1821,8 @@ impl AgentRuntimeManager {
     }
 
     fn list_recent_events(&self, owned_id: &str) -> Result<Vec<AgentConversationEvent>, String> {
-        let limit = u32::try_from(SNAPSHOT_EVENT_CAP)
-            .map_err(|_| "Conversation snapshot event cap is invalid".to_string())?;
         self.store
-            .list_recent_events(owned_id, limit)
+            .list_recent_events(owned_id, SNAPSHOT_WINDOW_BYTES)
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(stored_event)
@@ -2951,7 +2957,7 @@ fn record_payload_for_session_with_lifecycle(
         .map_err(|error| error.to_string())?;
     candidate.apply(session);
     session.recent_events.push_back(canonical);
-    while session.recent_events.len() > SNAPSHOT_EVENT_CAP {
+    while session.recent_events.len() > SESSION_RECENT_EVENT_CAP {
         session.recent_events.pop_front();
     }
     Ok(frontend_event)
@@ -4411,16 +4417,22 @@ fn payload_from_session_update_for_turn(
             crate::debug_log::stderr_log!("Ignoring ACP agent thought update");
             None
         }
-        "tool_call" => Some(AgentConversationPayload::Tool {
-            item_id: tool_item_id(update, turn_id),
-            name: update
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or("Tool")
-                .to_string(),
-            state: ToolState::Started,
-            summary: tool_summary(update),
-        }),
+        "tool_call" => {
+            let details = tool_details(update);
+            Some(AgentConversationPayload::Tool {
+                item_id: tool_item_id(update, turn_id),
+                name: update
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Tool")
+                    .to_string(),
+                state: ToolState::Started,
+                summary: details.summary,
+                output: details.output,
+                path: details.path,
+                diff: details.diff,
+            })
+        }
         "tool_call_update" => {
             let state = match update.get("status").and_then(Value::as_str) {
                 Some("completed") => ToolState::Completed,
@@ -4433,6 +4445,7 @@ fn payload_from_session_update_for_turn(
                     ToolState::Updated
                 }
             };
+            let details = tool_details(update);
             Some(AgentConversationPayload::Tool {
                 item_id: tool_item_id(update, turn_id),
                 name: update
@@ -4441,7 +4454,10 @@ fn payload_from_session_update_for_turn(
                     .unwrap_or("Tool")
                     .to_string(),
                 state,
-                summary: tool_summary(update),
+                summary: details.summary,
+                output: details.output,
+                path: details.path,
+                diff: details.diff,
             })
         }
         "plan" => Some(AgentConversationPayload::Plan {
@@ -4493,7 +4509,8 @@ fn child_update_payload(update: &Value, update_kind: &str) -> Option<AgentConver
             Some("completed" | "failed" | "cancelled" | "canceled" | "stopped" | "done")
         );
     // Keep this line small because it is persisted and rendered in a compact row.
-    let latest_activity = tool_summary(update)
+    let latest_activity = tool_details(update)
+        .output
         .or_else(|| {
             update
                 .get("title")
@@ -4501,7 +4518,7 @@ fn child_update_payload(update: &Value, update_kind: &str) -> Option<AgentConver
                 .map(str::to_string)
         })
         .or_else(|| label.clone())
-        .map(|text| text.chars().take(160).collect());
+        .map(|text: String| text.chars().take(160).collect());
     Some(AgentConversationPayload::ChildUpdate {
         child_id,
         parent_tool_call_id,
@@ -4527,8 +4544,11 @@ fn task_child_update_payload(
         .map(str::trim)
         .filter(|title| !title.is_empty())
         .map(str::to_string);
-    let summary = tool_summary(update);
-    let async_child_id = summary.as_deref().and_then(async_agent_id);
+    // A background agent writes its id into the body of the result, under the
+    // line that says it started. Reading only the first line loses it, and the
+    // child is then filed under the tool call rather than under the agent.
+    let activity = tool_details(update).output;
+    let async_child_id = activity.as_deref().and_then(async_agent_id);
     let is_async = async_child_id.is_some();
     let terminal = !is_async
         && update_kind == "tool_call_update"
@@ -4538,9 +4558,9 @@ fn task_child_update_payload(
         );
     let child_id = async_child_id.unwrap_or_else(|| tool_call_id.clone());
     let label = label.or_else(|| is_async.then(|| format!("Background agent {child_id}")));
-    let latest_activity = summary
+    let latest_activity = activity
         .or_else(|| label.clone())
-        .map(|text| text.chars().take(160).collect());
+        .map(|text: String| text.chars().take(160).collect());
 
     Some(AgentConversationPayload::ChildUpdate {
         child_id,
@@ -4588,14 +4608,120 @@ fn tool_item_id(update: &Value, turn_id: &str) -> String {
         .unwrap_or_else(|| format!("tool-{turn_id}"))
 }
 
-fn tool_summary(update: &Value) -> Option<String> {
-    let summary = ["content", "locations"]
-        .into_iter()
-        .filter_map(|field| update.get(field).and_then(text_from_value))
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (!summary.is_empty()).then_some(summary)
+/// The parts of an ACP tool call a transcript row can draw.
+#[derive(Debug, Default)]
+struct ToolDetails {
+    /// The one line a collapsed row shows.
+    summary: Option<String>,
+    /// What the call produced, kept whole.
+    output: Option<String>,
+    /// The file the call was about.
+    path: Option<String>,
+    /// A unified diff, when the call changed a file.
+    diff: Option<String>,
+}
+
+/// Reads an ACP tool call into the parts a row draws.
+///
+/// This used to join `content` and `locations` into one string and keep only
+/// that. The row then had a summary line and nothing else, so its expander
+/// opened onto nothing: no command output, no file, no change. The structure is
+/// in the update; it was being thrown away on the way to the database.
+fn tool_details(update: &Value) -> ToolDetails {
+    let mut output = Vec::new();
+    let mut diff = Vec::new();
+    let mut path = None;
+
+    match update.get("content") {
+        Some(Value::Array(blocks)) => {
+            for block in blocks {
+                if block.get("type").and_then(Value::as_str) == Some("diff") {
+                    let block_path = block.get("path").and_then(Value::as_str);
+                    if path.is_none() {
+                        path = block_path.map(str::to_owned);
+                    }
+                    let patch = unified_diff(
+                        block.get("oldText").and_then(Value::as_str).unwrap_or_default(),
+                        block.get("newText").and_then(Value::as_str).unwrap_or_default(),
+                    );
+                    if !patch.is_empty() {
+                        diff.push(patch);
+                    }
+                } else if let Some(text) = text_from_value(block) {
+                    output.push(text);
+                }
+            }
+        }
+        Some(content) => {
+            if let Some(text) = text_from_value(content) {
+                output.push(text);
+            }
+        }
+        None => {}
+    }
+
+    if path.is_none() {
+        path = update.get("locations").and_then(text_from_value);
+    }
+
+    let output = (!output.is_empty()).then(|| output.join("\n"));
+    // The preview is the first line of what came back, which for a shell call
+    // is the command itself. The body is everything.
+    let summary = output
+        .as_deref()
+        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
+        .map(str::to_owned)
+        .or_else(|| path.clone());
+
+    ToolDetails {
+        summary,
+        output,
+        path,
+        diff: (!diff.is_empty()).then(|| diff.join("\n")),
+    }
+}
+
+/// A unified diff of one whole-file replacement.
+///
+/// ACP hands over the file before and after rather than a patch, so the change
+/// has to be found. Matching lines at each end are common ground and are left
+/// out; what remains is the edit, with a hunk header carrying the line it
+/// starts at. That is what the file-change row reads.
+fn unified_diff(old_text: &str, new_text: &str) -> String {
+    let old: Vec<&str> = old_text.split('\n').collect();
+    let new: Vec<&str> = new_text.split('\n').collect();
+    let mut prefix = 0;
+    while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < old.len() - prefix
+        && suffix < new.len() - prefix
+        && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let removed = &old[prefix..old.len() - suffix];
+    let added = &new[prefix..new.len() - suffix];
+    if removed.is_empty() && added.is_empty() {
+        return String::new();
+    }
+    let mut patch = format!(
+        "@@ -{},{} +{},{} @@",
+        prefix + 1,
+        removed.len(),
+        prefix + 1,
+        added.len()
+    );
+    for line in removed {
+        patch.push_str("\n-");
+        patch.push_str(line);
+    }
+    for line in added {
+        patch.push_str("\n+");
+        patch.push_str(line);
+    }
+    patch
 }
 
 fn text_from_value(value: &Value) -> Option<String> {
@@ -5144,9 +5270,20 @@ mod tests {
                 "locations": [{ "path": "src/main.rs" }]
             } });
             match payload_from_session_update_for_turn(&update, None) {
-                Some(AgentConversationPayload::Tool { state, summary, .. }) => {
+                Some(AgentConversationPayload::Tool {
+                    state,
+                    summary,
+                    output,
+                    path,
+                    ..
+                }) => {
                     assert_eq!(state, expected);
-                    assert_eq!(summary.as_deref(), Some("detail\nsrc/main.rs"));
+                    // The row's one line and the body it opens onto are
+                    // separate now, and the file is a field rather than a
+                    // sentence appended to one.
+                    assert_eq!(summary.as_deref(), Some("detail"));
+                    assert_eq!(output.as_deref(), Some("detail"));
+                    assert_eq!(path.as_deref(), Some("src/main.rs"));
                 }
                 other => panic!("expected Tool update, got {other:?}"),
             }
@@ -5954,15 +6091,20 @@ mod tests {
         assert_eq!(events.first().unwrap().seq, 2);
         assert_eq!(events.last().unwrap().seq, i64::from(STORE_EVENT_CAP) + 1);
         let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
-        assert_eq!(snapshot.events.len(), SNAPSHOT_EVENT_CAP);
-        assert_eq!(
-            snapshot.events.first().unwrap().sequence,
-            i64::from(STORE_EVENT_CAP) + 2 - SNAPSHOT_EVENT_CAP as i64
+        // Opening hands over the newest reading, bounded by bytes rather than
+        // by a count of events, and ending on the newest event there is.
+        assert!(
+            snapshot.events.len() < events.len(),
+            "a session larger than the window is not handed over whole"
         );
         assert_eq!(
             snapshot.events.last().unwrap().sequence,
             i64::from(STORE_EVENT_CAP) + 1
         );
+        assert!(snapshot
+            .events
+            .windows(2)
+            .all(|pair| pair[1].sequence == pair[0].sequence + 1));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -8322,6 +8464,75 @@ mod tests {
     /// database now, and every one of them claims to sit at position zero. The
     /// column knows better, and reading has to believe it — otherwise the
     /// transcript reads 112 events as one, and draws nothing.
+    /// A tool row is a line that opens onto what the call produced. It used to
+    /// open onto nothing: `content` and `locations` were joined into one string
+    /// kept as the summary, and the output, the file and the change were gone
+    /// before anything was written down.
+    #[test]
+    fn a_finished_tool_call_carries_its_output_and_the_file_it_touched() {
+        let update = json!({ "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "t9",
+            "title": "Run tests",
+            "status": "completed",
+            "content": [
+                { "type": "text", "text": "running 3 tests\nall passed" }
+            ],
+            "locations": [{ "path": "core/src/lib.rs" }]
+        } });
+        match payload_from_session_update_for_turn(&update, None) {
+            Some(AgentConversationPayload::Tool {
+                summary,
+                output,
+                path,
+                diff,
+                ..
+            }) => {
+                assert_eq!(summary.as_deref(), Some("running 3 tests"));
+                assert_eq!(output.as_deref(), Some("running 3 tests\nall passed"));
+                assert_eq!(path.as_deref(), Some("core/src/lib.rs"));
+                assert_eq!(diff, None);
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    /// ACP hands over a file before and after rather than a patch, so the row
+    /// had nothing a diff view could read.
+    #[test]
+    fn a_file_edit_becomes_a_diff_the_transcript_can_draw() {
+        let update = json!({ "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "t10",
+            "title": "Edit file",
+            "status": "completed",
+            "content": [{
+                "type": "diff",
+                "path": "src/main.rs",
+                "oldText": "fn main() {\n    println!(\"one\");\n}",
+                "newText": "fn main() {\n    println!(\"two\");\n}"
+            }]
+        } });
+        match payload_from_session_update_for_turn(&update, None) {
+            Some(AgentConversationPayload::Tool { path, diff, .. }) => {
+                assert_eq!(path.as_deref(), Some("src/main.rs"));
+                let diff = diff.expect("an edit carries its change");
+                // Only the line that changed, with the line it sits on: the
+                // matching lines at either end are common ground.
+                assert_eq!(
+                    diff,
+                    "@@ -2,1 +2,1 @@\n-    println!(\"one\");\n+    println!(\"two\");"
+                );
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_file_with_no_change_produces_no_diff() {
+        assert_eq!(unified_diff("same\nlines", "same\nlines"), "");
+    }
+
     #[test]
     fn a_stored_event_takes_its_position_from_the_column_not_the_payload() {
         let event = serde_json::json!({
@@ -8356,7 +8567,8 @@ mod tests {
             ))
             .unwrap()
             .0;
-        for index in 0..(SNAPSHOT_EVENT_CAP + 3) {
+        const EVENTS_WRITTEN: usize = 1_003;
+        for index in 0..EVENTS_WRITTEN {
             let mut sessions = manager.sessions.lock().unwrap();
             let session =
                 current_session_mut(&mut sessions, "owned-a", connection.generation).unwrap();
@@ -8372,11 +8584,14 @@ mod tests {
             .unwrap();
         }
         let stored = manager.list_events("owned-a", 0).unwrap();
-        assert_eq!(stored.len(), SNAPSHOT_EVENT_CAP + 3);
+        assert_eq!(stored.len(), EVENTS_WRITTEN);
         let snapshot = manager.snapshot("owned-a").unwrap().unwrap().events;
-        assert_eq!(snapshot.len(), SNAPSHOT_EVENT_CAP);
-        assert_eq!(snapshot.first().unwrap().sequence, 4);
-        assert_eq!(snapshot.last().unwrap().sequence, SNAPSHOT_EVENT_CAP as i64 + 3);
+        // Every event here is small, so they all fit the window: what matters
+        // is that the tail is contiguous and ends where the journal does.
+        assert_eq!(
+            snapshot.last().unwrap().sequence,
+            stored.last().unwrap().sequence
+        );
         assert!(snapshot
             .windows(2)
             .all(|pair| pair[1].sequence == pair[0].sequence + 1));

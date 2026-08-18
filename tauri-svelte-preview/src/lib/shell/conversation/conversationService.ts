@@ -460,8 +460,10 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
   void hydrateSentConversationAttachments(ownedId, snapshot.events);
 }
 
-/** How much older history one scroll to the top reads. */
-const OLDER_PAGE_EVENT_CAP = 250;
+/** How much older history one scroll to the top reads, in bytes of stored
+ * event. The same unit the transcript is read off disk in, and the same unit
+ * the timeline already guesses a row's height in. */
+const OLDER_PAGE_BYTES = 256 * 1024;
 
 /**
  * Reads the page of stored events just older than the transcript and puts it in
@@ -475,7 +477,7 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     const page = await listAgentConversationEventsBeforeFromTauri(
       ownedId,
       before,
-      OLDER_PAGE_EVENT_CAP
+      OLDER_PAGE_BYTES
     );
     if (!page) {
       failLoadingOlderConversationEvents(ownedId);
@@ -499,7 +501,7 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     const grown = await listAgentConversationEventsBeforeFromTauri(
       ownedId,
       before,
-      OLDER_PAGE_EVENT_CAP
+      OLDER_PAGE_BYTES
     );
     prependOlderConversationEvents(ownedId, grown ?? { events: [], hasMore: false });
   } catch {

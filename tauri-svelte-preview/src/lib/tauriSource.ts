@@ -1339,14 +1339,14 @@ export async function listAgentConversationEventsFromTauri(
 export async function listAgentConversationEventsBeforeFromTauri(
   ownedId: string,
   beforeSequence: number,
-  limit: number
+  maxBytes: number
 ): Promise<AgentConversationEventPage | null> {
   if (!isTauriRuntime() || !ownedId.trim()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
     ownedId,
     beforeSequence,
-    limit
+    maxBytes
   });
 }
 

@@ -486,74 +486,118 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the first user message", error))
     }
 
-    /// The newest bounded event window, returned in transcript order.
+    /// How many rows a byte-budgeted window will ever look at.
     ///
-    /// Both the limiting and final ordering stay in SQLite so opening a long
-    /// conversation never materializes its full journal just to discard the
-    /// oldest rows in application code.
-    pub fn list_recent_events(&self, owned_id: &str, limit: u32) -> Result<Vec<EventRow>> {
+    /// The budget is bytes, but a running total has to be built row by row, and
+    /// left unbounded that walk covers every older event in the session. This
+    /// ceiling is far above any real page; it exists only so the walk is a page
+    /// of work rather than a session of it.
+    const WINDOW_ROW_CEILING: u32 = 2_000;
+
+    /// The newest window of a conversation, bounded by bytes.
+    ///
+    /// Bytes rather than a count of rows, because a row is anything from a
+    /// config record of a couple of hundred bytes to a tool result of sixteen
+    /// thousand. Rows are what the reader is given; bytes are what it costs to
+    /// give them, and what the transcript already uses to guess how tall a row
+    /// will be. Both the limiting and the final ordering stay in SQLite.
+    pub fn list_recent_events(&self, owned_id: &str, max_bytes: u32) -> Result<Vec<EventRow>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT owned_id, seq, turn_id, kind, payload, created_at
                  FROM (
-                     SELECT owned_id, seq, turn_id, kind, payload, created_at
-                     FROM events
-                     WHERE owned_id = ?
-                     ORDER BY seq DESC
-                     LIMIT ?
+                     SELECT owned_id, seq, turn_id, kind, payload, created_at,
+                            SUM(LENGTH(payload)) OVER (
+                                ORDER BY seq DESC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                            ) AS spent
+                     FROM (
+                         SELECT owned_id, seq, turn_id, kind, payload, created_at
+                         FROM events
+                         WHERE owned_id = ?
+                         ORDER BY seq DESC
+                         LIMIT ?
+                     )
                  )
+                 WHERE COALESCE(spent, 0) <= ?
                  ORDER BY seq ASC",
             )
             .map_err(|error| {
                 StoreError::sqlite("could not prepare the recent event list", error)
             })?;
         let rows = statement
-            .query_map(params![owned_id, i64::from(limit)], event_from_row)
+            .query_map(
+                params![
+                    owned_id,
+                    i64::from(Self::WINDOW_ROW_CEILING),
+                    i64::from(max_bytes)
+                ],
+                event_from_row,
+            )
             .map_err(|error| StoreError::sqlite("could not list recent events", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the recent event list", error))
     }
 
-    /// The newest event window strictly older than `before_seq`, in transcript
-    /// order, plus whether anything older than that window still exists.
+    /// The window of events just older than `before_seq`, bounded by bytes.
     ///
-    /// This is what scrolling up asks for. Like `list_recent_events`, both the
-    /// limiting and the final ordering stay in SQLite. One extra row is read so
-    /// the caller learns there is more history without paying for a second
-    /// query, and can stop asking once the start is reached.
+    /// This is what scrolling up asks for. The budget is spent before a row is
+    /// counted rather than after, so the oldest row always fits: a single event
+    /// larger than the whole budget would otherwise return an empty page
+    /// forever and the reader would never get past it.
     pub fn list_events_before(
         &self,
         owned_id: &str,
         before_seq: i64,
-        limit: u32,
+        max_bytes: u32,
     ) -> Result<OlderEvents> {
-        let lookahead = i64::from(limit).saturating_add(1);
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT owned_id, seq, turn_id, kind, payload, created_at
                  FROM (
-                     SELECT owned_id, seq, turn_id, kind, payload, created_at
-                     FROM events
-                     WHERE owned_id = ? AND seq < ?
-                     ORDER BY seq DESC
-                     LIMIT ?
+                     SELECT owned_id, seq, turn_id, kind, payload, created_at,
+                            SUM(LENGTH(payload)) OVER (
+                                ORDER BY seq DESC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                            ) AS spent
+                     FROM (
+                         SELECT owned_id, seq, turn_id, kind, payload, created_at
+                         FROM events
+                         WHERE owned_id = ? AND seq < ?
+                         ORDER BY seq DESC
+                         LIMIT ?
+                     )
                  )
+                 WHERE COALESCE(spent, 0) <= ?
                  ORDER BY seq ASC",
             )
             .map_err(|error| StoreError::sqlite("could not prepare the older event list", error))?;
         let rows = statement
-            .query_map(params![owned_id, before_seq, lookahead], event_from_row)
+            .query_map(
+                params![
+                    owned_id,
+                    before_seq,
+                    i64::from(Self::WINDOW_ROW_CEILING),
+                    i64::from(max_bytes)
+                ],
+                event_from_row,
+            )
             .map_err(|error| StoreError::sqlite("could not list older events", error))?;
-        let mut events: Vec<EventRow> = rows
+        let events: Vec<EventRow> = rows
             .collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the older event list", error))?;
-        let has_more = events.len() > limit as usize;
-        if has_more {
-            // The lookahead row is the oldest one, and the caller did not ask for it.
-            events.remove(0);
-        }
+        // Whether anything older than this page exists. An index probe on the
+        // primary key, not a count.
+        let oldest = events.first().map_or(before_seq, |event| event.seq);
+        let has_more: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE owned_id = ? AND seq < ?)",
+                params![owned_id, oldest],
+                |row| row.get(0),
+            )
+            .map_err(|error| StoreError::sqlite("could not look past the older window", error))?;
         Ok(OlderEvents { events, has_more })
     }
 
@@ -1352,6 +1396,11 @@ mod tests {
             .is_empty());
     }
 
+    /// A fixture event's payload is nine bytes, so a budget is stated as a
+    /// multiple of that. The budget is spent before a row is counted, which is
+    /// what keeps the newest row in the window however large that row is.
+    const FIXTURE_PAYLOAD_BYTES: u32 = 9;
+
     #[test]
     fn recent_event_page_is_bounded_and_keeps_transcript_order() {
         let (_directory, _path, store) = open_temp_store();
@@ -1364,21 +1413,28 @@ mod tests {
         }
 
         let seqs: Vec<i64> = store
-            .list_recent_events(&session.owned_id, 3)
+            .list_recent_events(&session.owned_id, FIXTURE_PAYLOAD_BYTES * 2)
             .expect("list recent event page")
             .into_iter()
             .map(|event| event.seq)
             .collect();
         assert_eq!(seqs, [4, 5, 6]);
-        assert!(store
+
+        // A budget too small for anything still returns the newest event. A
+        // window that could come back empty would leave a reader stuck behind a
+        // row bigger than the budget with no way past it.
+        let seqs: Vec<i64> = store
             .list_recent_events(&session.owned_id, 0)
-            .expect("list zero-sized recent page")
-            .is_empty());
+            .expect("list a window with no budget")
+            .into_iter()
+            .map(|event| event.seq)
+            .collect();
+        assert_eq!(seqs, [6]);
     }
 
-    /// Scrolling up asks for the window just older than what is already on
-    /// screen. The lookahead row tells the caller whether another page exists
-    /// without a second query, so the transcript can stop asking at the start.
+    /// Scrolling up asks for the window just older than what is on screen, and
+    /// the answer says whether anything older remains, so the transcript knows
+    /// when to stop asking.
     #[test]
     fn list_events_before_returns_the_window_just_older_than_the_cursor() {
         let (_directory, _path, store) = open_temp_store();
@@ -1391,17 +1447,22 @@ mod tests {
         }
 
         let page = store
-            .list_events_before(&session.owned_id, 400, 250)
+            .list_events_before(&session.owned_id, 400, 1_024)
             .expect("list the page before the cursor");
         let seqs: Vec<i64> = page.events.iter().map(|event| event.seq).collect();
-        assert_eq!(seqs.len(), 250);
-        assert_eq!(seqs.first().copied(), Some(150));
-        assert_eq!(seqs.last().copied(), Some(399));
-        assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(page.has_more);
+        assert_eq!(seqs.last().copied(), Some(399), "the page ends at the cursor");
+        assert!(seqs.windows(2).all(|pair| pair[1] == pair[0] + 1), "no gaps");
+        let spent: usize = page
+            .events
+            .iter()
+            .skip(1)
+            .map(|event| event.payload_json.len())
+            .sum();
+        assert!(spent <= 1_024, "the window stays inside its budget");
+        assert!(page.has_more, "there is more behind a bounded window");
 
         let start = store
-            .list_events_before(&session.owned_id, 1, 250)
+            .list_events_before(&session.owned_id, 1, 1_024)
             .expect("list the page before the first event");
         assert!(start.events.is_empty());
         assert!(!start.has_more);
@@ -1422,7 +1483,7 @@ mod tests {
         }
 
         let page = store
-            .list_events_before("owned-left", 8, 5)
+            .list_events_before("owned-left", 8, FIXTURE_PAYLOAD_BYTES * 4)
             .expect("list the page before the cursor");
         assert!(page
             .events

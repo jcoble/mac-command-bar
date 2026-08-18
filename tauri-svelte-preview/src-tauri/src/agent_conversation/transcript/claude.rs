@@ -165,6 +165,27 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
             ));
         }
     }
+    // The answer to a call is written on the person's turn rather than the
+    // assistant's, under the id of the call it answers and with no tool name on
+    // it. It used to be read past entirely, which is why a tool row had nothing
+    // to open: what the tool was asked was kept and what it said was dropped.
+    if role == "user" {
+        for block in value
+            .pointer("/message/content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        {
+            let Some(item_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(output) = block.get("content").and_then(super::tool_output_text) else {
+                continue;
+            };
+            records.push(super::tool_output_record(item_id, output, timestamp(value)));
+        }
+    }
     let model = value.pointer("/message/model").and_then(Value::as_str);
     let effort = value.get("effort").and_then(Value::as_str);
     let approval = value.get("permissionMode").and_then(Value::as_str);

@@ -469,8 +469,20 @@ pub enum AgentConversationPayload {
         item_id: String,
         name: String,
         state: ToolState,
+        /// The one line a collapsed row shows.
         #[serde(skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
+        /// What the call produced, kept whole. A row with nothing here has
+        /// nothing to open, which is what a tool call used to be: its content
+        /// was flattened into the summary and the rest thrown away.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+        /// The file the call was about.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// A unified diff, when the call changed a file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diff: Option<String>,
     },
     ChildUpdate {
         child_id: String,

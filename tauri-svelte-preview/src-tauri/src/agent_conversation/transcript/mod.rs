@@ -319,6 +319,63 @@ pub fn tool_record(
             name: name.to_string(),
             state: ToolState::Completed,
             summary,
+            // A past transcript records the call, not what came back: the
+            // result is written under a different id with no tool name on it.
+            output: None,
+            path: None,
+            diff: None,
+        }),
+    }
+}
+
+/// The writing inside a tool result, however the provider wrote it.
+///
+/// Claude puts a string or a list of blocks under `content`; Codex puts a
+/// string or a list of `input_text` under `output`. Both are the answer a tool
+/// gave, which is the thing a reader opens a row to see.
+pub fn tool_output_text(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(tool_output_text)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(fields) => {
+            for key in ["text", "content", "output"] {
+                if let Some(text) = fields.get(key).and_then(tool_output_text) {
+                    return Some(text);
+                }
+            }
+            String::new()
+        }
+        _ => String::new(),
+    };
+    let text = text.trim_end();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// What a tool answered, said under the id of the call it answers.
+///
+/// A transcript writes the result on its own line, after the call and with no
+/// tool name on it. Both lines carry the same id, so this is the same row
+/// arriving twice: once for what was asked, once for what came back. The name
+/// is left empty because this line does not know it, and the row already does.
+pub fn tool_output_record(item_id: &str, output: String, timestamp_ms: u128) -> ProjectedRecord {
+    ProjectedRecord {
+        key: format!("tool-output:{item_id}"),
+        event_type: AgentEventType::ItemCompleted,
+        timestamp_ms,
+        item_id: Some(item_id.to_string()),
+        payload: std::collections::BTreeMap::from([("historical".to_string(), Value::Bool(true))]),
+        native: Some(AgentConversationPayload::Tool {
+            item_id: item_id.to_string(),
+            name: String::new(),
+            state: ToolState::Completed,
+            summary: None,
+            output: Some(output),
+            path: None,
+            diff: None,
         }),
     }
 }
@@ -407,6 +464,76 @@ fn file_identity(metadata: &Metadata) -> FileIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tool row opens onto what the tool answered. Both providers write that
+    /// answer on its own line, under the id of the call and with no tool name,
+    /// and both readers skipped it — so a resumed conversation showed what each
+    /// tool was asked and never what it said.
+    #[test]
+    fn a_claude_tool_result_is_read_as_the_answer_to_its_call() {
+        let line = serde_json::json!({
+            "timestamp": "2026-08-01T12:00:00.000Z",
+            "type": "user",
+            "sessionId": "session-1",
+            "message": { "role": "user", "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": "running 3 tests\nall passed"
+            }]}
+        })
+        .to_string();
+        let records = parse_durable_line(
+            AgentConversationProvider::Claude,
+            "session-1",
+            line.as_bytes(),
+        );
+        let tool = records
+            .iter()
+            .find(|record| record.item_id.as_deref() == Some("toolu_1"))
+            .expect("the answer is kept");
+        match tool.native.as_ref().expect("it is a tool event") {
+            AgentConversationPayload::Tool { output, name, .. } => {
+                assert_eq!(output.as_deref(), Some("running 3 tests\nall passed"));
+                assert!(name.is_empty(), "a result names no tool; the call already did");
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_codex_tool_output_is_read_as_the_answer_to_its_call() {
+        let line = serde_json::json!({
+            "timestamp": "2026-08-01T12:00:00.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call_1",
+                "output": [
+                    { "type": "input_text", "text": "Script completed" },
+                    { "type": "input_text", "text": "Wall time 0.1 seconds" }
+                ]
+            }
+        })
+        .to_string();
+        let records = parse_durable_line(
+            AgentConversationProvider::Codex,
+            "session-1",
+            line.as_bytes(),
+        );
+        let tool = records
+            .iter()
+            .find(|record| record.item_id.as_deref() == Some("call_1"))
+            .expect("the answer is kept");
+        match tool.native.as_ref().expect("it is a tool event") {
+            AgentConversationPayload::Tool { output, .. } => {
+                assert_eq!(
+                    output.as_deref(),
+                    Some("Script completed\nWall time 0.1 seconds")
+                );
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
 
     #[test]
     fn reads_the_time_a_transcript_line_says_it_happened() {

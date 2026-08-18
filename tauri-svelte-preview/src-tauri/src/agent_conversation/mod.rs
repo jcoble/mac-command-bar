@@ -399,9 +399,9 @@ pub async fn list_agent_conversation_events_before(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
     before_sequence: i64,
-    limit: u32,
+    max_bytes: u32,
 ) -> CommandResult<AgentConversationEventPage> {
-    command_result(manager.list_events_before(&owned_id, before_sequence, limit))
+    command_result(manager.list_events_before(&owned_id, before_sequence, max_bytes))
 }
 
 #[tauri::command]
