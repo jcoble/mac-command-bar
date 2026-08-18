@@ -57,6 +57,7 @@
     type BackendAnswer,
     type ProjectGitRef
   } from '$lib/shell/newSession/newSessionBackend.ts';
+  import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
 
   interface Props {
     /** Folders the sessions on the rail are running in, so the project picker
@@ -184,6 +185,8 @@
     if (field === 'model') updateDraft({ model: value });
     else if (field === 'reasoningEffort') updateDraft({ effort: value });
     else updateDraft({ access: value });
+    // A pick here is the choice the next new session opens on.
+    rememberAgentConfigChoice(draft.provider, { [field]: value });
   }
 
   async function send(): Promise<void> {

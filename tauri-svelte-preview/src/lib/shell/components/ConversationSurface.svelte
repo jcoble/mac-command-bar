@@ -54,6 +54,7 @@
   import { requestOpenFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
 
   interface Props {
     owned: OwnedSession[];
@@ -376,6 +377,8 @@
       const state = await setAgentConversationConfig(request);
       if (conversationSessions[active.ownedId]?.generation !== generation) throw new Error('Configuration response belongs to a stale conversation generation');
       confirmConversationAgentConfigChange(active.ownedId, field, state);
+      // The next new session of this agent opens on what was just chosen.
+      rememberAgentConfigChoice(conversation.provider, { [field]: state[field] });
     } catch (error) {
       if (conversationSessions[active.ownedId]?.generation === generation) {
         failConversationAgentConfigChange(

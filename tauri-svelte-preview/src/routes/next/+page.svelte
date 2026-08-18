@@ -58,6 +58,7 @@
     setConversationDraft,
     setConversationMode
   } from '$lib/shell/conversation/conversationStore.svelte';
+  import { rememberedAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
     closeStructuredConversation,
     commitConversationHandoff,
@@ -295,13 +296,16 @@
     return (['codex', 'claude', 'antigravity'] as const).map((provider) => {
       const existing = Object.values(conversationSessions).find((session) => session.provider === provider);
       const config = existing?.agentConfig;
+      // The lists come from any session that has them; the choice is the
+      // reader's last one, not whichever session happened to be found.
+      const chosen = rememberedAgentConfigChoice(provider);
       return {
         provider,
-        model: config?.model ?? null,
+        model: chosen?.model ?? config?.model ?? null,
         availableModels: config?.availableModels ?? [],
-        reasoningEffort: config?.reasoningEffort ?? null,
+        reasoningEffort: chosen?.reasoningEffort ?? config?.reasoningEffort ?? null,
         availableEfforts: config?.availableEfforts ?? [],
-        approvalPolicy: config?.approvalPolicy ?? null,
+        approvalPolicy: chosen?.approvalPolicy ?? config?.approvalPolicy ?? null,
         availableApprovalPolicies: config?.availableApprovalPolicies ?? []
       };
     });

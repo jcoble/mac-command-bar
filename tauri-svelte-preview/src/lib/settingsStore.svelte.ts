@@ -94,6 +94,23 @@ export interface IntelligenceSettings {
 	csharpLanguageServer: boolean;
 }
 
+/** The model, effort and access last chosen for one agent. */
+export interface AgentConfigChoice {
+	model: string | null;
+	reasoningEffort: string | null;
+	approvalPolicy: string | null;
+}
+
+export interface AgentsSettings {
+	/**
+	 * What was last chosen for each agent, by provider id. A new session opens
+	 * on these. Without them a new session took its settings from whichever
+	 * session of that agent happened to be loaded, or from nothing at all after
+	 * a restart — which is why a choice never seemed to stick.
+	 */
+	lastChoiceByProvider: Record<string, AgentConfigChoice>;
+}
+
 export interface Settings {
 	appearance: AppearanceSettings;
 	editor: EditorSettings;
@@ -101,6 +118,7 @@ export interface Settings {
 	general: GeneralSettings;
 	panels: PanelsSettings;
 	intelligence: IntelligenceSettings;
+	agents: AgentsSettings;
 }
 
 /** A section key of {@link Settings}. */
@@ -142,6 +160,9 @@ export function defaultSettings(): Settings {
 		intelligence: {
 			languageServers: true,
 			csharpLanguageServer: true
+		},
+		agents: {
+			lastChoiceByProvider: {}
 		}
 	};
 }
