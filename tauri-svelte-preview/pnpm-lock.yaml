@@ -176,6 +176,9 @@ importers:
       dockview-core:
         specifier: ^6.6.1
         version: 6.6.1
+      marked:
+        specifier: ^18.0.10
+        version: 18.0.10
       monaco-editor:
         specifier: npm:@codingame/monaco-vscode-editor-api@25.1.2
         version: '@codingame/monaco-vscode-editor-api@25.1.2'
@@ -1169,6 +1172,11 @@ packages:
   marked@14.0.0:
     resolution: {integrity: sha512-uIj4+faQ+MgHgwUW1l2PsPglZLOLOT1uErt06dAPtx2kjteLAkbsd/0FiYg/MGS+i7ZKLb7w2WClxHkzOOuryQ==}
     engines: {node: '>= 18'}
+    hasBin: true
+
+  marked@18.0.10:
+    resolution: {integrity: sha512-FJeH4bRpYoXiggcgriCGItKCSv3xkngJc4QCZ/rkQCogU3VYaLxYJoZl8Nw/b4+x7iij/pd+09mZ6A1dXzpL0A==}
+    engines: {node: '>= 20'}
     hasBin: true
 
   mdn-data@2.0.30:
@@ -2373,6 +2381,8 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   marked@14.0.0: {}
+
+  marked@18.0.10: {}
 
   mdn-data@2.0.30: {}
 

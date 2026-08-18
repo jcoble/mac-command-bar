@@ -1,6 +1,6 @@
 <script lang="ts">
   import FileText from '@lucide/svelte/icons/file-text';
-  import { parseSafeMarkdown, type SafeInlinePart } from '$lib/shell/conversation/conversationMessageSafety.ts';
+  import { parseSafeMarkdown, type SafeInlinePart, type SafeMarkdownBlock } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import CodeBlock from './CodeBlock.svelte';
 
   interface Props {
@@ -23,31 +23,42 @@
   class:streaming={!completed}
 >
   <div class="turn-body" data-testid="conversation-message-body">
-    {#each blocks as block, blockIndex}
-      {#if block.kind === 'code'}
-        <CodeBlock value={block.value} info={block.language} />
-      {:else if block.kind === 'heading'}
-        <h3 class={`heading level-${Math.min(block.level, 4)}`} data-testid="conversation-markdown-heading">{#each block.parts as part}{@render inline(part)}{/each}</h3>
-      {:else if block.kind === 'quote'}
-        <blockquote data-testid="conversation-markdown-quote">{#each block.parts as part}{@render inline(part)}{/each}</blockquote>
-      {:else if block.kind === 'list'}
-        {#if block.ordered}<ol data-testid="conversation-markdown-list">{#each block.items as entry}<li class:task-row={entry.task}>{#if entry.task}<input data-testid="conversation-task-checkbox" type="checkbox" checked={entry.checked} disabled />{/if}{#each entry.parts as part}{@render inline(part)}{/each}</li>{/each}</ol>
-        {:else}<ul data-testid="conversation-markdown-list">{#each block.items as entry}<li class:task-row={entry.task}>{#if entry.task}<input data-testid="conversation-task-checkbox" type="checkbox" checked={entry.checked} disabled />{/if}{#each entry.parts as part}{@render inline(part)}{/each}</li>{/each}</ul>{/if}
-      {:else if block.kind === 'table'}
-        <div class="table-scroll" data-testid="conversation-markdown-table"><table><thead><tr>{#each block.headers as cell}<th>{#each cell as part}{@render inline(part)}{/each}</th>{/each}</tr></thead><tbody>{#each block.rows as row}<tr>{#each row as cell}<td>{#each cell as part}{@render inline(part)}{/each}</td>{/each}</tr>{/each}</tbody></table></div>
-      {:else}
-        <p data-testid={blockIndex === 0 ? 'conversation-markdown-paragraph' : undefined}>{#each block.parts as part}{@render inline(part)}{/each}</p>
-      {/if}
-    {/each}
+    {#each blocks as block, blockIndex}{@render node(block, blockIndex === 0)}{/each}
   </div>
 </article>
 
+<!-- Blocks nest: a list item can hold a list, a quote can hold anything. This
+     renders one block and calls itself for whatever is underneath it. -->
+{#snippet node(block: SafeMarkdownBlock, first = false)}
+  {#if block.kind === 'code'}
+    <CodeBlock value={block.value} info={block.language} />
+  {:else if block.kind === 'heading'}
+    <h3 class={`heading level-${Math.min(block.level, 4)}`} data-testid="conversation-markdown-heading">{#each block.parts as part}{@render inline(part)}{/each}</h3>
+  {:else if block.kind === 'quote'}
+    <blockquote data-testid="conversation-markdown-quote">{#each block.blocks as inner}{@render node(inner)}{/each}</blockquote>
+  {:else if block.kind === 'rule'}
+    <hr data-testid="conversation-markdown-rule" />
+  {:else if block.kind === 'list'}
+    {#if block.ordered}<ol data-testid="conversation-markdown-list">{#each block.items as entry}{@render row(entry)}{/each}</ol>
+    {:else}<ul data-testid="conversation-markdown-list">{#each block.items as entry}{@render row(entry)}{/each}</ul>{/if}
+  {:else if block.kind === 'table'}
+    <div class="table-scroll" data-testid="conversation-markdown-table"><table><thead><tr>{#each block.headers as cell}<th>{#each cell as part}{@render inline(part)}{/each}</th>{/each}</tr></thead><tbody>{#each block.rows as tableRow}<tr>{#each tableRow as cell}<td>{#each cell as part}{@render inline(part)}{/each}</td>{/each}</tr>{/each}</tbody></table></div>
+  {:else}
+    <p data-testid={first ? 'conversation-markdown-paragraph' : undefined}>{#each block.parts as part}{@render inline(part)}{/each}</p>
+  {/if}
+{/snippet}
+
+{#snippet row(entry: { task: boolean; checked: boolean; parts: SafeInlinePart[]; blocks: SafeMarkdownBlock[] })}
+  <li class:task-row={entry.task}>{#if entry.task}<input data-testid="conversation-task-checkbox" type="checkbox" checked={entry.checked} disabled />{/if}{#each entry.parts as part}{@render inline(part)}{/each}{#each entry.blocks as inner}{@render node(inner)}{/each}</li>
+{/snippet}
+
 {#snippet inline(part: SafeInlinePart)}
-  {#if part.kind === 'strong'}<strong>{part.value}</strong>
-  {:else if part.kind === 'emphasis'}<em>{part.value}</em>
+  {#if part.kind === 'strong'}<strong>{#each part.parts as inner}{@render inline(inner)}{/each}</strong>
+  {:else if part.kind === 'emphasis'}<em>{#each part.parts as inner}{@render inline(inner)}{/each}</em>
+  {:else if part.kind === 'strike'}<del>{#each part.parts as inner}{@render inline(inner)}{/each}</del>
   {:else if part.kind === 'code'}<code class="inline-code">{part.value}</code>
-  {:else if part.kind === 'link'}<a href={part.href} target="_blank" rel="noreferrer">{part.value}</a>
-  {:else if part.kind === 'file-link'}<button class="file-link" data-testid="conversation-file-link" type="button" title={part.path} onclick={() => onFileLink?.(part.path)}><FileText size={13} strokeWidth={1.8} aria-hidden="true" />{part.value}</button>
+  {:else if part.kind === 'link'}<a href={part.href} target="_blank" rel="noreferrer">{#each part.parts as inner}{@render inline(inner)}{/each}</a>
+  {:else if part.kind === 'file-link'}<button class="file-link" data-testid="conversation-file-link" type="button" title={part.path} onclick={() => onFileLink?.(part.path)}><FileText size={13} strokeWidth={1.8} aria-hidden="true" />{#each part.parts as inner}{@render inline(inner)}{/each}</button>
   {:else}{part.value}{/if}
 {/snippet}
 
@@ -103,5 +114,10 @@
   .table-scroll tr:last-child td{border-bottom:0}
   .table-scroll th{background:color-mix(in srgb,var(--color-surface) 65%,transparent);font-weight:620;white-space:nowrap}
   .turn-body input{margin-right:7px;accent-color:var(--color-accent)}
+  /* A sub-list is one step in, and gives up the gap under its parent row so the
+     two read as one group rather than two lists. */
+  .turn-body li > :global(ul),.turn-body li > :global(ol){margin:8px 0 0}
+  .turn-body hr{margin:16px 0;border:0;border-top:1px solid color-mix(in srgb,var(--color-border) 70%,transparent)}
+  .turn-body del{color:var(--color-text-3);text-decoration-thickness:1px}
 
 </style>

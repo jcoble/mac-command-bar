@@ -25,4 +25,59 @@ assert.equal(tasks[0].items[0].checked, true);
 const fileLink = parseSafeMarkdown('[source](src/main.ts)');
 assert.equal(fileLink[0].parts[0].kind, 'file-link');
 
+
+// What the hand-written scanner could not read. Each of these arrived as raw
+// punctuation in the transcript, and each is ordinary in what an agent writes.
+const flat = (parts) => parts.map(function text(part) {
+  return part.kind === 'text' || part.kind === 'code' ? part.value : flat(part.parts);
+}).join('');
+
+// A sub-list used to flatten into its parent, so every level looked like one.
+const nested = parseSafeMarkdown('- outer\n  - inner one\n  - inner two\n- second');
+assert.equal(nested[0].kind, 'list');
+assert.equal(nested[0].items.length, 2, 'two rows at the top level, not four');
+assert.equal(nested[0].items[0].blocks[0].kind, 'list');
+assert.equal(nested[0].items[0].blocks[0].items.length, 2);
+
+// Emphasis holding code broke into asterisks and a stray backtick.
+const nestedInline = parseSafeMarkdown('**bold with `code` in it**');
+assert.equal(nestedInline[0].parts[0].kind, 'strong');
+assert.deepEqual(
+  nestedInline[0].parts[0].parts.map((part) => part.kind),
+  ['text', 'code', 'text']
+);
+
+// Emphasis that wrapped across a line was left as punctuation.
+const wrapped = parseSafeMarkdown('a **mark that\nspans the wrap** b');
+assert.ok(
+  wrapped[0].parts.some((part) => part.kind === 'strong'),
+  'emphasis across a wrapped line is still emphasis'
+);
+
+// A backslash escape printed the backslash.
+const escaped = parseSafeMarkdown('\\*not emphasis\\*');
+assert.equal(flat(escaped[0].parts), '*not emphasis*');
+
+// Neither existed at all.
+assert.equal(parseSafeMarkdown('~~gone~~')[0].parts[0].kind, 'strike');
+assert.equal(parseSafeMarkdown('a\n\n---\n\nb')[1].kind, 'rule');
+
+// Markup an agent typed is writing, never markup.
+const typed = parseSafeMarkdown('before <script>alert(1)</script> after');
+assert.equal(typed[0].kind, 'paragraph');
+assert.match(flat(typed[0].parts), /<script>/, 'it reaches the reader as characters');
+assert.ok(
+  typed[0].parts.every((part) => part.kind === 'text' || part.kind === 'code'),
+  'no part carries markup'
+);
+
+// A closed fence is complete; the one still being written is not.
+assert.equal(parseSafeMarkdown('```ts\nconst a = 1;\n```')[0].complete, true);
+assert.equal(parseSafeMarkdown('```ts\nconst a = 1;')[0].complete, false);
+
+// A quote holds blocks, so a list or a fence inside one survives.
+const quoted = parseSafeMarkdown('> a note\n>\n> - one\n> - two');
+assert.equal(quoted[0].kind, 'quote');
+assert.deepEqual(quoted[0].blocks.map((block) => block.kind), ['paragraph', 'list']);
+
 console.log('conversationMessageSafety.test.mjs passed');

@@ -1,34 +1,57 @@
 /**
- * Small, dependency-free Markdown adapter for conversation output.
+ * Markdown adapter for conversation output.
  *
  * The renderer deliberately returns data rather than HTML. Svelte renders every
  * text value as text, so a partial fence or a provider supplied `<script>` can
- * never become executable markup while a turn is streaming.
+ * never become executable markup while a turn is streaming. Nothing here
+ * produces a string of markup, and nothing downstream needs a sanitizer.
+ *
+ * The reading of the Markdown itself is `marked`'s GFM tokenizer rather than
+ * the hand-written scanner this used to carry. That scanner could not nest: a
+ * sub-list flattened into its parent, emphasis holding code broke apart,
+ * emphasis across a wrapped line was left as asterisks, and a backslash escape
+ * printed the backslash. Those are most of what an agent writes.
  */
+
+import { marked, type Token, type Tokens } from 'marked';
 
 export type SafeInlinePart =
   | { kind: 'text'; value: string }
-  | { kind: 'strong' | 'emphasis' | 'code'; value: string }
-  | { kind: 'link'; value: string; href: string }
-  | { kind: 'file-link'; value: string; path: string };
+  | { kind: 'code'; value: string }
+  | { kind: 'strong'; parts: SafeInlinePart[] }
+  | { kind: 'emphasis'; parts: SafeInlinePart[] }
+  | { kind: 'strike'; parts: SafeInlinePart[] }
+  | { kind: 'link'; href: string; parts: SafeInlinePart[] }
+  | { kind: 'file-link'; path: string; parts: SafeInlinePart[] };
+
+/** A row of a list, with whatever blocks are nested underneath it. */
+export interface SafeListItem {
+  task: boolean;
+  checked: boolean;
+  parts: SafeInlinePart[];
+  blocks: SafeMarkdownBlock[];
+}
 
 export type SafeMarkdownBlock =
   | { kind: 'paragraph'; parts: SafeInlinePart[] }
   | { kind: 'heading'; level: number; parts: SafeInlinePart[] }
   | { kind: 'code'; language: string; value: string; complete: boolean }
-  | { kind: 'quote'; parts: SafeInlinePart[] }
-  | { kind: 'list'; ordered: boolean; items: { task: boolean; checked: boolean; parts: SafeInlinePart[] }[] }
-  | { kind: 'table'; headers: SafeInlinePart[][]; rows: SafeInlinePart[][][] };
+  | { kind: 'quote'; blocks: SafeMarkdownBlock[] }
+  | { kind: 'list'; ordered: boolean; items: SafeListItem[] }
+  | { kind: 'table'; headers: SafeInlinePart[][]; rows: SafeInlinePart[][][] }
+  | { kind: 'rule' };
 
 const SAFE_PROTOCOL = /^(?:https?:|mailto:|#)/i;
 
 /** A URL scheme at the front of a target, which a file path never has. */
 const SCHEME_PREFIX = /^[a-z][a-z0-9+.-]*:/i;
 
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
 /** Return a URL only when it is safe to put in an href attribute. */
 export function sanitizeConversationHref(value: string): string | null {
   const href = value.trim();
-  if (!href || /[\u0000-\u001f\u007f]/.test(href)) return null;
+  if (!href || CONTROL_CHARACTERS.test(href)) return null;
   // Relative links are intentionally not treated as external URLs. File/path
   // links are routed through the editor bus by a later controller receipt.
   return SAFE_PROTOCOL.test(href) ? href : null;
@@ -44,136 +67,207 @@ export function sanitizeConversationMarkdown(value: string): string {
     .replaceAll("'", '&#39;');
 }
 
-function inlineParts(value: string): SafeInlinePart[] {
+function text(value: string): SafeInlinePart {
+  return { kind: 'text', value };
+}
+
+/**
+ * A link target that is not a URL at all.
+ *
+ * What must not reach a link is a URL scheme — `javascript:`, `data:` and their
+ * kind. Rejecting every target that held a colon did that, but it also rejected
+ * the most common link an agent writes: a file with the line it means,
+ * `src/thing.ts:71`. A scheme can only sit at the front, so that is where one
+ * is looked for.
+ */
+function filePath(href: string): string | null {
+  const path = href.trim();
+  if (!path || SCHEME_PREFIX.test(path) || CONTROL_CHARACTERS.test(path)) return null;
+  return path;
+}
+
+/** The writing a part holds, with its marks dropped. */
+function partText(part: SafeInlinePart): string {
+  return part.kind === 'text' || part.kind === 'code'
+    ? part.value
+    : part.parts.map(partText).join('');
+}
+
+function linkPart(href: string, parts: SafeInlinePart[]): SafeInlinePart {
+  const safe = sanitizeConversationHref(href);
+  if (safe) return { kind: 'link', href: safe, parts };
+  const path = filePath(href);
+  if (path) return { kind: 'file-link', path, parts };
+  return text(parts.map(partText).join(''));
+}
+
+function inlineParts(tokens: Token[] | undefined, raw = ''): SafeInlinePart[] {
+  if (!tokens?.length) return [text(raw)];
   const parts: SafeInlinePart[] = [];
-  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^\)\n]+\))/g;
-  let cursor = 0;
-  for (const match of value.matchAll(pattern)) {
-    const start = match.index ?? 0;
-    if (start > cursor) parts.push({ kind: 'text', value: value.slice(cursor, start) });
-    const token = match[0];
-    if (token.startsWith('`')) {
-      parts.push({ kind: 'code', value: token.slice(1, -1) });
-    } else if (token.startsWith('**') || token.startsWith('__')) {
-      parts.push({ kind: 'strong', value: token.slice(2, -2) });
-    } else if (token.startsWith('*') || token.startsWith('_')) {
-      parts.push({ kind: 'emphasis', value: token.slice(1, -1) });
-    } else {
-      const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
-      const href = link ? sanitizeConversationHref(link[2]) : null;
-      if (link && href) parts.push({ kind: 'link', value: link[1], href });
-      // What must not reach a link is a URL scheme — `javascript:`, `data:` and
-      // their kind. Rejecting every target that held a colon did that, but it
-      // also rejected the most common link an agent writes: a file with the
-      // line it means, `src/thing.ts:71`. Those arrived as raw markdown in the
-      // middle of a sentence. A scheme can only sit at the front, so that is
-      // where one is looked for.
-      else if (link && !SCHEME_PREFIX.test(link[2]) && !/[\u0000-\u001f\u007f]/.test(link[2])) {
-        parts.push({ kind: 'file-link', value: link[1], path: link[2].trim() });
-      } else parts.push({ kind: 'text', value: token });
+  for (const token of tokens) {
+    switch (token.type) {
+      case 'text':
+      case 'escape': {
+        const inner = token as Tokens.Text;
+        // A text token carries children only when it holds marks of its own.
+        if (inner.tokens?.length) parts.push(...inlineParts(inner.tokens));
+        else parts.push(text(inner.text));
+        break;
+      }
+      case 'codespan':
+        parts.push({ kind: 'code', value: (token as Tokens.Codespan).text });
+        break;
+      case 'strong':
+        parts.push({ kind: 'strong', parts: inlineParts((token as Tokens.Strong).tokens) });
+        break;
+      case 'em':
+        parts.push({ kind: 'emphasis', parts: inlineParts((token as Tokens.Em).tokens) });
+        break;
+      case 'del':
+        parts.push({ kind: 'strike', parts: inlineParts((token as Tokens.Del).tokens) });
+        break;
+      case 'link': {
+        const link = token as Tokens.Link;
+        parts.push(linkPart(link.href, inlineParts(link.tokens, link.text)));
+        break;
+      }
+      case 'image': {
+        // An image is shown as the link it is. Nothing in a transcript loads a
+        // remote resource on the reader's behalf.
+        const image = token as Tokens.Image;
+        parts.push(linkPart(image.href, [text(image.text || image.href)]));
+        break;
+      }
+      case 'br':
+        parts.push(text('\n'));
+        break;
+      // Raw markup an agent typed stays the characters it typed. This is the
+      // one branch where turning a token into anything but text would matter.
+      case 'html':
+      default: {
+        const other = token as { raw?: string; text?: string };
+        parts.push(text(other.raw ?? other.text ?? ''));
+        break;
+      }
     }
-    cursor = start + token.length;
   }
-  if (cursor < value.length) parts.push({ kind: 'text', value: value.slice(cursor) });
-  return parts.length ? parts : [{ kind: 'text', value: '' }];
+  return parts.length ? parts : [text('')];
 }
 
-function isTableSeparator(line: string): boolean {
-  const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|');
-  return cells.length > 0 && cells.every((cell) => /^\s*:?-{3,}:?\s*$/.test(cell));
+/**
+ * Whether a fenced block was closed.
+ *
+ * `marked` reads an unterminated fence as code and says nothing about it having
+ * run off the end, which is the ordinary state of a code block while a turn is
+ * still being written. The opening fence is in the token's raw text; a closed
+ * block has a second one.
+ */
+function fenceIsClosed(raw: string): boolean {
+  const lines = raw.replace(/\n$/, '').split('\n');
+  const opening = /^\s*(`{3,}|~{3,})/.exec(lines[0] ?? '');
+  // An indented code block has no fence to close.
+  if (!opening) return true;
+  const marker = opening[1][0] === '`' ? '`' : '~';
+  const closing = new RegExp(`^\\s*${marker}{${opening[1].length},}\\s*$`);
+  return lines.slice(1).some((line) => closing.test(line));
 }
 
-function tableCells(line: string): string[] {
-  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
-}
-
-/** Parse GFM-shaped Markdown into safe, streaming-friendly blocks. */
-export function parseSafeMarkdown(source: string): SafeMarkdownBlock[] {
-  const lines = source.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
+function listItem(item: Tokens.ListItem): SafeListItem {
+  const parts: SafeInlinePart[] = [];
   const blocks: SafeMarkdownBlock[] = [];
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line.trim()) {
-      index += 1;
-      continue;
+  for (const token of item.tokens ?? []) {
+    if (token.type === 'text' || token.type === 'paragraph') {
+      const inner = token as Tokens.Text;
+      if (parts.length) parts.push(text('\n'));
+      parts.push(...inlineParts(inner.tokens, inner.text));
+    } else {
+      blocks.push(...blocksFrom([token]));
     }
+  }
+  return {
+    task: item.task === true,
+    checked: item.checked === true,
+    parts: parts.length ? parts : [text('')],
+    blocks
+  };
+}
 
-    const fence = /^\s*(```+|~~~+)\s*([^\s]*)\s*$/.exec(line);
-    if (fence) {
-      const marker = fence[1];
-      const language = fence[2] ?? '';
-      const code: string[] = [];
-      index += 1;
-      let complete = false;
-      while (index < lines.length) {
-        if (new RegExp(`^\\s*${marker[0]}{${marker.length},}\\s*$`).test(lines[index])) {
-          complete = true;
-          index += 1;
-          break;
-        }
-        code.push(lines[index]);
-        index += 1;
-      }
-      blocks.push({ kind: 'code', language, value: code.join('\n'), complete });
-      continue;
-    }
-
-    const heading = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
-    if (heading) {
-      blocks.push({ kind: 'heading', level: heading[1].length, parts: inlineParts(heading[2]) });
-      index += 1;
-      continue;
-    }
-
-    if (index + 1 < lines.length && line.includes('|') && isTableSeparator(lines[index + 1])) {
-      const headers = tableCells(line).map(inlineParts);
-      const rows: SafeInlinePart[][][] = [];
-      index += 2;
-      while (index < lines.length && lines[index].trim() && lines[index].includes('|')) {
-        rows.push(tableCells(lines[index]).map(inlineParts));
-        index += 1;
-      }
-      blocks.push({ kind: 'table', headers, rows });
-      continue;
-    }
-
-    const quote = /^\s*>\s?(.*)$/.exec(line);
-    if (quote) {
-      blocks.push({ kind: 'quote', parts: inlineParts(quote[1]) });
-      index += 1;
-      continue;
-    }
-
-    const list = /^\s*(?:[-+*]|\d+[.)])\s+(.*)$/.exec(line);
-    if (list) {
-      const ordered = /^\s*\d/.test(line);
-      const items: { task: boolean; checked: boolean; parts: SafeInlinePart[] }[] = [];
-      while (index < lines.length) {
-        const next = /^\s*(?:[-+*]|\d+[.)])\s+(.*)$/.exec(lines[index]);
-        if (!next || /^\s*\d/.test(lines[index]) !== ordered) break;
-        const task = /^\[([ xX])\]\s+(.+)$/.exec(next[1]);
-        items.push({
-          task: !!task,
-          checked: task?.[1].toLowerCase() === 'x',
-          parts: inlineParts(task?.[2] ?? next[1])
+function blocksFrom(tokens: Token[]): SafeMarkdownBlock[] {
+  const blocks: SafeMarkdownBlock[] = [];
+  for (const token of tokens) {
+    switch (token.type) {
+      case 'space':
+      case 'def':
+        break;
+      case 'heading': {
+        const heading = token as Tokens.Heading;
+        blocks.push({
+          kind: 'heading',
+          level: heading.depth,
+          parts: inlineParts(heading.tokens, heading.text)
         });
-        index += 1;
+        break;
       }
-      blocks.push({ kind: 'list', ordered, items });
-      continue;
+      case 'code': {
+        const code = token as Tokens.Code;
+        blocks.push({
+          kind: 'code',
+          language: code.lang?.trim().split(/\s+/)[0] ?? '',
+          value: code.text,
+          complete: fenceIsClosed(code.raw)
+        });
+        break;
+      }
+      case 'blockquote':
+        blocks.push({
+          kind: 'quote',
+          blocks: blocksFrom((token as Tokens.Blockquote).tokens ?? [])
+        });
+        break;
+      case 'list': {
+        const list = token as Tokens.List;
+        blocks.push({
+          kind: 'list',
+          ordered: list.ordered === true,
+          items: list.items.map(listItem)
+        });
+        break;
+      }
+      case 'table': {
+        const table = token as Tokens.Table;
+        blocks.push({
+          kind: 'table',
+          headers: table.header.map((cell) => inlineParts(cell.tokens, cell.text)),
+          rows: table.rows.map((row) => row.map((cell) => inlineParts(cell.tokens, cell.text)))
+        });
+        break;
+      }
+      case 'hr':
+        blocks.push({ kind: 'rule' });
+        break;
+      case 'paragraph': {
+        const paragraph = token as Tokens.Paragraph;
+        blocks.push({ kind: 'paragraph', parts: inlineParts(paragraph.tokens, paragraph.text) });
+        break;
+      }
+      // Markup an agent typed is writing, not structure. It reaches the reader
+      // as the characters it is.
+      case 'html':
+      default: {
+        const other = token as { raw?: string; text?: string };
+        const value = other.raw ?? other.text ?? '';
+        if (value.trim()) blocks.push({ kind: 'paragraph', parts: [text(value)] });
+        break;
+      }
     }
-
-    const paragraph: string[] = [line.trim()];
-    index += 1;
-    while (index < lines.length && lines[index].trim()) {
-      if (/^\s*(?:```|~~~|#{1,6}\s|>|[-+*]\s|\d+[.)]\s)/.test(lines[index])) break;
-      paragraph.push(lines[index].trim());
-      index += 1;
-    }
-    blocks.push({ kind: 'paragraph', parts: inlineParts(paragraph.join('\n')) });
   }
   return blocks;
+}
+
+/** Parse GFM Markdown into safe, streaming-friendly blocks. */
+export function parseSafeMarkdown(source: string): SafeMarkdownBlock[] {
+  if (!source) return [];
+  return blocksFrom(marked.lexer(source, { gfm: true }));
 }
 
 /** Compatibility name used by safety-focused tests and adapters. */
