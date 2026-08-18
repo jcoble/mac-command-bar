@@ -4584,6 +4584,10 @@ fn force_playwright_survivors_after_grace(sweep: PlaywrightTermSweep) {
 /// stop-everything command does. The group has to be one this app just listed as a
 /// Playwright session; anything else is refused, so this can never be used to stop an
 /// arbitrary process by number.
+///
+/// The two phases run apart in the app (see `kill_playwright_session_sync`);
+/// this composes them in one so the tests can watch the whole sequence.
+#[cfg(test)]
 fn kill_playwright_session_with<SignalProcess, SleepAfterTerm, ListSessions>(
     sessions: Vec<PlaywrightSessionInfo>,
     pgid: i32,
@@ -4620,6 +4624,7 @@ fn select_playwright_session(
     })
 }
 
+#[cfg(test)]
 fn kill_playwright_sessions_with<SignalProcess, SleepAfterTerm, ListSessions>(
     sessions: Vec<PlaywrightSessionInfo>,
     mut signal_process: SignalProcess,

@@ -46,6 +46,9 @@ pub enum RemoteQuotaError {
     /// apart from `Request`: both used to read "usage request failed", which
     /// sent a whole investigation at the wrong endpoint.
     Refresh(ClaudeRequestError),
+    /// The sign-in has run out and it is not this app's to renew — it was read
+    /// from Claude Code's Keychain item, and Claude Code renews it as it works.
+    SignInExpired,
     RateLimited { retry_after_seconds: u64 },
 }
 
@@ -76,6 +79,9 @@ impl RemoteQuotaError {
             ),
             Self::Refresh(_) => {
                 "Claude sign-in could not be renewed; open Claude Code to sign in again".to_string()
+            }
+            Self::SignInExpired => {
+                "Claude sign-in has run out; use Claude Code once and it renews itself".to_string()
             }
             Self::Request(ClaudeRequestError::CredentialWrite) => {
                 "Claude credential refresh could not be persisted".to_string()
@@ -126,6 +132,9 @@ impl UsageRemote {
     ) -> Result<ClaudeQuotaSnapshot, RemoteQuotaError> {
         let mut refreshed = false;
         if credentials.is_expired(now_ms_u64()) {
+            if !credentials.can_renew() {
+                return Err(RemoteQuotaError::SignInExpired);
+            }
             self.claude
                 .refresh_credentials(&mut credentials)
                 .await
@@ -138,10 +147,13 @@ impl UsageRemote {
             Some(401)
         ) && !refreshed
         {
+            if !credentials.can_renew() {
+                return Err(RemoteQuotaError::SignInExpired);
+            }
             self.claude
                 .refresh_credentials(&mut credentials)
                 .await
-                .map_err(RemoteQuotaError::Request)?;
+                .map_err(RemoteQuotaError::Refresh)?;
             self.claude.fetch_usage(&credentials).await
         } else {
             first

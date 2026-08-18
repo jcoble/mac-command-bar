@@ -20,7 +20,6 @@ const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const USER_PROFILE_SCOPE: &str = "user:profile";
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25_300;
-const ALLOW_KEYCHAIN_CREDENTIALS_ENV: &str = "MCB_ALLOW_KEYCHAIN_CREDENTIALS";
 const CLAUDE_USER_AGENT: &str = "claude-code";
 
 pub struct ClaudeCredentials {
@@ -48,6 +47,12 @@ trait CredentialStore: Send + Sync {
     fn label(&self) -> &'static str;
     fn read(&self) -> Result<Vec<StoredCredential>, CredentialStoreError>;
     fn write(&self, record_id: &str, document: &[u8]) -> Result<(), ClaudeRequestError>;
+    /// May this app renew a sign-in it read here? Renewing rotates the
+    /// refresh token, and a token another program is also holding must not be
+    /// rotated out from under it.
+    fn renews_here(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -130,6 +135,13 @@ impl CredentialStore for KeychainStore {
         "Claude Keychain"
     }
 
+    /// The Keychain item is Claude Code's. It renews the token itself as it
+    /// works, and holds the refresh token in memory while it runs — so a
+    /// renewal from here would rotate that token away underneath it.
+    fn renews_here(&self) -> bool {
+        false
+    }
+
     fn read(&self) -> Result<Vec<StoredCredential>, CredentialStoreError> {
         let search = ItemSearchOptions::new()
             .class(ItemClass::generic_password())
@@ -145,7 +157,7 @@ impl CredentialStore for KeychainStore {
                 ));
             }
             Err(_) => {
-                return Err(CredentialStoreError::access(
+                return Err(CredentialStoreError::missing(
                     "generic-password item could not be accessed",
                 ));
             }
@@ -170,7 +182,7 @@ impl CredentialStore for KeychainStore {
                 Ok(result) => result,
                 Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => continue,
                 Err(_) => {
-                    return Err(CredentialStoreError::access(
+                    return Err(CredentialStoreError::missing(
                         "generic-password item data could not be accessed",
                     ));
                 }
@@ -188,7 +200,7 @@ impl CredentialStore for KeychainStore {
             ));
         }
         *self.items.lock().map_err(|_| {
-            CredentialStoreError::access("generic-password item state could not be retained")
+            CredentialStoreError::missing("generic-password item state could not be retained")
         })? = items;
         Ok(records)
     }
@@ -437,49 +449,23 @@ fn latest_installed_claude_version(versions_dir: &Path) -> Option<String> {
         .map(|(_, version)| version)
 }
 
+/// The sign-in Claude Code holds, from wherever it is freshest.
+///
+/// Claude Code keeps its token in the macOS Keychain and renews it there as it
+/// works; the credentials file beside it is written less and less. Reading the
+/// file first, and only the file, is what left this app renewing with a token
+/// Claude Code had already rotated away — every open of the usage popup was a
+/// 400 from the token endpoint. Both are read now and the one that expires
+/// last wins. The first read of the Keychain item asks the reader once.
 pub fn read_credentials() -> Result<ClaudeCredentials, ClaudeCredentialError> {
-    let file_path = credential_path().ok();
-    let file_store: Arc<dyn CredentialStore> = match file_path.clone() {
+    let file_store: Arc<dyn CredentialStore> = match credential_path().ok() {
         Some(path) => Arc::new(FileStore::new(path)),
         None => Arc::new(FileStore::unavailable()),
     };
-    let refresh_store = Arc::clone(&file_store);
-    let stores =
-        if credential_file_is_missing(file_path.as_deref()) && keychain_credentials_enabled() {
-            vec![
-                file_store,
-                Arc::new(KeychainStore::default()) as Arc<dyn CredentialStore>,
-            ]
-        } else {
-            vec![file_store]
-        };
-    let mut credentials = select_credentials(stores)?;
-    credentials.owner.store = refresh_store;
-    credentials.owner.record_id = "file".to_string();
-    Ok(credentials)
-}
-
-fn credential_file_is_missing(path: Option<&Path>) -> bool {
-    path.is_none_or(|path| {
-        matches!(fs::metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
-    })
-}
-
-fn keychain_credentials_enabled() -> bool {
-    keychain_credentials_value_enabled(
-        std::env::var(ALLOW_KEYCHAIN_CREDENTIALS_ENV)
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn keychain_credentials_value_enabled(value: Option<&str>) -> bool {
-    value.is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes"
-        )
-    })
+    select_credentials(vec![
+        file_store,
+        Arc::new(KeychainStore::default()) as Arc<dyn CredentialStore>,
+    ])
 }
 
 fn credential_path() -> Result<PathBuf, ClaudeCredentialError> {
@@ -553,6 +539,7 @@ fn select_credentials(
     stores: Vec<Arc<dyn CredentialStore>>,
 ) -> Result<ClaudeCredentials, ClaudeCredentialError> {
     let mut skipped = Vec::new();
+    let mut freshest: Option<ClaudeCredentials> = None;
     for store in stores {
         let records = match store.read() {
             Ok(records) => records,
@@ -576,7 +563,7 @@ fn select_credentials(
                     continue;
                 }
             };
-            return Ok(ClaudeCredentials {
+            let candidate = ClaudeCredentials {
                 owner: CredentialOwner {
                     store: Arc::clone(&store),
                     record_id: record.record_id,
@@ -587,8 +574,18 @@ fn select_credentials(
                 expires_at: parsed.expires_at,
                 subscription_type: parsed.subscription_type,
                 rate_limit_tier: parsed.rate_limit_tier,
-            });
+            };
+            // The one that expires last is the one renewed most recently.
+            if freshest
+                .as_ref()
+                .is_none_or(|current| candidate.expires_at > current.expires_at)
+            {
+                freshest = Some(candidate);
+            }
         }
+    }
+    if let Some(credentials) = freshest {
+        return Ok(credentials);
     }
     Err({
         let reason = if skipped.is_empty() {
@@ -612,6 +609,12 @@ pub(crate) fn read_credentials_at(
 impl ClaudeCredentials {
     pub fn is_expired(&self, current_time_ms: u64) -> bool {
         self.expires_at <= current_time_ms.saturating_add(30_000)
+    }
+
+    /// Whether this app may renew the sign-in itself. A sign-in read from the
+    /// Keychain is Claude Code's to renew.
+    pub fn can_renew(&self) -> bool {
+        self.refresh_token.is_some() && self.owner.store.renews_here()
     }
 
     pub fn plan_label(&self) -> Option<String> {
@@ -898,6 +901,7 @@ mod tests {
         label: &'static str,
         records: Vec<StoredCredential>,
         writes: Arc<Mutex<Vec<String>>>,
+        failure: Option<CredentialStoreError>,
     }
 
     impl FakeStore {
@@ -910,6 +914,17 @@ mod tests {
                         .expect("credential fixture should encode"),
                 }],
                 writes: Arc::new(Mutex::new(Vec::new())),
+                failure: None,
+            }
+        }
+
+        /// A store that cannot be read — a Keychain the reader said no to.
+        fn failing(label: &'static str, failure: CredentialStoreError) -> Self {
+            Self {
+                label,
+                records: Vec::new(),
+                writes: Arc::new(Mutex::new(Vec::new())),
+                failure: Some(failure),
             }
         }
     }
@@ -920,7 +935,10 @@ mod tests {
         }
 
         fn read(&self) -> Result<Vec<StoredCredential>, CredentialStoreError> {
-            Ok(self.records.clone())
+            match self.failure {
+                Some(failure) => Err(failure),
+                None => Ok(self.records.clone()),
+            }
         }
 
         fn write(&self, record_id: &str, _document: &[u8]) -> Result<(), ClaudeRequestError> {
@@ -1070,8 +1088,11 @@ mod tests {
         assert_eq!(fallback, PathBuf::from("/home/.claude/.credentials.json"));
     }
 
+    /// The file used to win by being first. That is how a five-day-old file
+    /// beat a Keychain item renewed this morning, and every usage read became
+    /// a renewal with a token Claude Code had already rotated away.
     #[test]
-    fn quota_prefers_the_file_source_before_keychain() {
+    fn quota_prefers_the_freshest_credential_whichever_store_holds_it() {
         let keychain: Arc<dyn CredentialStore> = Arc::new(FakeStore::new(
             "Keychain fake",
             "keychain-record",
@@ -1084,14 +1105,24 @@ mod tests {
         ));
         let selected = select_credentials(vec![file, keychain])
             .expect("one valid credential should be selected");
-        assert_eq!(selected.owner.store.label(), "File fake");
+        assert_eq!(selected.owner.store.label(), "Keychain fake");
+        assert_eq!(selected.access_token, "fixture-keychain-access");
     }
 
     #[test]
-    fn quota_keychain_opt_in_is_disabled_by_default() {
-        assert!(!keychain_credentials_value_enabled(None));
-        assert!(!keychain_credentials_value_enabled(Some("0")));
-        assert!(keychain_credentials_value_enabled(Some("true")));
+    fn quota_falls_back_to_the_file_when_the_keychain_cannot_be_read() {
+        let file: Arc<dyn CredentialStore> = Arc::new(FakeStore::new(
+            "File fake",
+            "file-record",
+            credential_fixture("fixture-file-access", 100, &["user:profile"]),
+        ));
+        let keychain: Arc<dyn CredentialStore> = Arc::new(FakeStore::failing(
+            "Keychain fake",
+            CredentialStoreError::missing("generic-password item could not be accessed"),
+        ));
+        let selected = select_credentials(vec![file, keychain])
+            .expect("the file should still answer");
+        assert_eq!(selected.owner.store.label(), "File fake");
     }
 
     #[test]
@@ -1142,9 +1173,13 @@ mod tests {
         assert!(!error.reason().contains("fixture-keychain-access"));
     }
 
+    /// A renewed token goes back to the store the sign-in was read from — never
+    /// to a store that did not hold it, which would leave two copies of a
+    /// rotating token and each renewal invalidating the other's.
     #[test]
-    fn claude_quota_writes_rotation_back_to_the_selected_owner() {
+    fn claude_quota_writes_rotation_back_to_the_store_it_came_from() {
         for (keychain_expiry, file_expiry) in [(200, 100), (100, 200)] {
+            let keychain_holds_it = keychain_expiry > file_expiry;
             let keychain = Arc::new(FakeStore::new(
                 "Keychain fake",
                 "keychain-record",
@@ -1177,13 +1212,28 @@ mod tests {
                     .lock()
                     .expect("keychain writes should lock")
                     .len(),
-                0
+                usize::from(keychain_holds_it)
             );
             assert_eq!(
                 file_writes.lock().expect("file writes should lock").len(),
-                1
+                usize::from(!keychain_holds_it)
             );
         }
+    }
+
+    /// The real Keychain item is Claude Code's, and this app does not renew
+    /// what it did not sign in to.
+    #[test]
+    fn claude_quota_does_not_renew_a_keychain_sign_in() {
+        let store: Arc<dyn CredentialStore> = Arc::new(KeychainStore::default());
+        assert!(!store.renews_here());
+        let file: Arc<dyn CredentialStore> = Arc::new(FakeStore::new(
+            "File fake",
+            "file-record",
+            credential_fixture("fixture-file-access", 100, &["user:profile"]),
+        ));
+        let selected = select_credentials(vec![file]).expect("the file should answer");
+        assert!(selected.can_renew());
     }
 
     #[test]
