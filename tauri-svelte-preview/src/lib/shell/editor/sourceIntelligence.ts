@@ -1276,6 +1276,42 @@ export interface CsharpLanguageServerToggleResult {
 }
 
 /**
+ * Turn every language server off or on. Off stops each one that is running,
+ * every language and every workspace. Call it on start-up with the saved
+ * setting as well as when the switch is flipped: the desktop app forgets
+ * between launches and starts with servers allowed.
+ */
+export async function setLanguageServersEnabled(
+  enabled: boolean
+): Promise<CsharpLanguageServerToggleResult> {
+  const unsupported: CsharpLanguageServerToggleResult = {
+    enabled: true,
+    stoppedServers: 0,
+    supported: false,
+    message:
+      'This build of the app cannot do this yet — restart the desktop app after updating.'
+  };
+  if (!isNativeTauriRuntime()) return unsupported;
+  if (!(await hasBackendCapability('languageServersToggle'))) return unsupported;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    countInvoke('set_language_servers_enabled');
+    const result = await invoke<Omit<CsharpLanguageServerToggleResult, 'supported'>>(
+      'set_language_servers_enabled',
+      { enabled }
+    );
+    return { ...result, supported: true };
+  } catch {
+    return {
+      enabled: !enabled,
+      stoppedServers: 0,
+      supported: true,
+      message: 'The language servers setting could not be changed just now. Please try again.'
+    };
+  }
+}
+
+/**
  * Turn the C# language server off or on.
  *
  * The C# server is by far the most expensive thing the app starts — around

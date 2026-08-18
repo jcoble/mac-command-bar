@@ -45,7 +45,7 @@
     type ProblemsLocation,
     type SettingsSection
   } from '$lib/settingsStore.svelte';
-  import { setCsharpLanguageServerEnabled } from '$lib/shell/editor/sourceIntelligence';
+  import { setCsharpLanguageServerEnabled, setLanguageServersEnabled } from '$lib/shell/editor/sourceIntelligence';
   import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
   import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
@@ -244,6 +244,15 @@
       keywords: 'errors warnings bottom right hidden panel'
     },
     {
+      id: 'language-servers',
+      section: 'general',
+      card: 'Language support',
+      title: 'Language servers',
+      description:
+        'One switch over every language server. Off stops the ones running and nothing starts until it is on again; files still open with colouring and the built-in index. Turning language intelligence on in an editor header only works while this is on.',
+      keywords: 'lsp intelligence typescript rust svelte roslyn memory off'
+    },
+    {
       id: 'csharp-language-server',
       section: 'general',
       card: 'Language support',
@@ -321,6 +330,8 @@
    * as-is under the switch: the backend answers in whole sentences, including
    * the one that says this build of the app cannot do it at all.
    */
+  let languageServersNote = $state<string | null>(null);
+  let languageServersSupported = $state(true);
   let csharpLanguageServerNote = $state<string | null>(null);
   /** False once the app has said it cannot switch the server. The control is
    * then switched off rather than left looking live and doing nothing. */
@@ -329,6 +340,15 @@
   function moveProblems(location: ProblemsLocation): void {
     settings.panels.problemsLocation = location;
     onProblemsLocationChange?.(location);
+  }
+
+  async function switchLanguageServers(enabled: boolean): Promise<void> {
+    const before = settings.intelligence.languageServers;
+    settings.intelligence.languageServers = enabled;
+    const result = await setLanguageServersEnabled(enabled);
+    languageServersSupported = result.supported;
+    languageServersNote = result.message;
+    if (!result.supported) settings.intelligence.languageServers = before;
   }
 
   async function switchCsharpLanguageServer(enabled: boolean): Promise<void> {
@@ -534,6 +554,8 @@
                       {@render settingRow(id, terminalAppControl)}
                     {:else if id === 'problems-location'}
                       {@render settingRow(id, problemsLocationControl)}
+                    {:else if id === 'language-servers'}
+                      {@render settingRow(id, languageServersControl)}
                     {:else if id === 'csharp-language-server'}
                       {@render settingRow(id, csharpLanguageServerControl)}
                     {/if}
@@ -707,6 +729,20 @@
     ariaLabel="Where the problems list sits"
     onChange={(value) => moveProblems(value as ProblemsLocation)}
   />
+{/snippet}
+
+{#snippet languageServersControl()}
+  <div class="flex flex-col items-end gap-1.5">
+    <Switch
+      checked={settings.intelligence.languageServers}
+      disabled={!languageServersSupported}
+      onCheckedChange={(checked) => void switchLanguageServers(checked)}
+      aria-label="Language servers"
+    />
+    {#if languageServersNote}
+      <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">{languageServersNote}</p>
+    {/if}
+  </div>
 {/snippet}
 
 {#snippet csharpLanguageServerControl()}

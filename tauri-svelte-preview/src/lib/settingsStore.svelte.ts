@@ -76,6 +76,13 @@ export interface PanelsSettings {
 
 export interface IntelligenceSettings {
 	/**
+	 * Run language servers at all. Off stops every one that is running and
+	 * nothing starts until it is on again — one switch over the whole app,
+	 * because the per-project switch in each editor header was easy to find to
+	 * turn on and hard to find again to turn off.
+	 */
+	languageServers: boolean;
+	/**
 	 * Run the C# language server for C# projects.
 	 *
 	 * Turning it off frees the memory and processor time it uses; in exchange the
@@ -133,6 +140,7 @@ export function defaultSettings(): Settings {
 			problemsLocation: 'hidden'
 		},
 		intelligence: {
+			languageServers: true,
 			csharpLanguageServer: true
 		}
 	};

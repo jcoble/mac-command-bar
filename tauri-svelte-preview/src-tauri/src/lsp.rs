@@ -84,6 +84,24 @@ pub(crate) fn csharp_language_server_enabled() -> bool {
     CSHARP_LANGUAGE_SERVER_ENABLED.load(Ordering::Relaxed)
 }
 
+/// Whether ANY language server may run. One switch over all of them, in
+/// Settings — a per-project switch in each editor header turned out to be a
+/// switch that could be found to turn on and not to turn off.
+static LANGUAGE_SERVERS_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Are language servers allowed at all?
+pub(crate) fn language_servers_enabled() -> bool {
+    LANGUAGE_SERVERS_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Allow or forbid every language server. Returns whether this changed
+/// anything. Forbidding does not stop what is running — see
+/// [`SourceLspRegistry::stop_all_servers`] — for the same reason as the C#
+/// switch: the flag can be set at startup before a registry exists.
+pub(crate) fn set_language_servers_enabled(enabled: bool) -> bool {
+    LANGUAGE_SERVERS_ENABLED.swap(enabled, Ordering::Relaxed) != enabled
+}
+
 /// Allow or forbid the C# language server. Returns whether this changed
 /// anything, so the caller can tell the reader what actually happened.
 ///
@@ -237,6 +255,8 @@ pub(crate) enum LanguageServerStart {
     },
     /// C# starts through the desktop app's own language client, not here.
     NativeCsharpClient,
+    /// Every language server is switched off in Settings.
+    SwitchedOff,
     /// C# is switched off in Settings.
     CsharpSwitchedOff,
     /// Nothing under this workspace is a C# project.
@@ -247,7 +267,7 @@ pub(crate) enum LanguageServerStart {
 
 /// May a server for this language be started or reused right now?
 fn language_server_allowed(language_id: &str) -> bool {
-    language_id != "csharp" || csharp_language_server_enabled()
+    language_servers_enabled() && (language_id != "csharp" || csharp_language_server_enabled())
 }
 
 /// C# is owned by the VS Code-compatible Monaco language client in the desktop app.
@@ -1684,6 +1704,9 @@ impl SourceLspRegistry {
         &self,
         root: &str,
     ) -> Result<NativeCsharpEndpoint, String> {
+        if !language_servers_enabled() {
+            return Err("Language servers are switched off in Settings.".to_string());
+        }
         if !csharp_language_server_enabled() {
             return Err("The C# language server is switched off in Settings.".to_string());
         }
@@ -2312,6 +2335,28 @@ impl SourceLspRegistry {
     /// stall lookups for every other language.
     ///
     /// Returns how many servers were stopped, so the caller can say so plainly.
+    /// Stop every language server, whatever the language and workspace.
+    pub(crate) fn stop_all_servers(&self) -> Result<usize, String> {
+        let mut languages = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Language server registry lock poisoned".to_string())?;
+            sessions
+                .keys()
+                .map(|key| key.language.clone())
+                .collect::<Vec<_>>()
+        };
+        languages.push("csharp".to_string());
+        languages.sort();
+        languages.dedup();
+        let mut stopped = 0;
+        for language in languages {
+            stopped += self.stop_servers_for_language(&language)?;
+        }
+        Ok(stopped)
+    }
+
     pub(crate) fn stop_servers_for_language(&self, language_id: &str) -> Result<usize, String> {
         let stopped = {
             let mut sessions = self
@@ -2580,6 +2625,9 @@ impl SourceLspRegistry {
         root: &str,
         language: &str,
     ) -> Result<LanguageServerStart, String> {
+        if !language_servers_enabled() {
+            return Ok(LanguageServerStart::SwitchedOff);
+        }
         if !language_intelligence_on(root) {
             return Ok(LanguageServerStart::ReadMode);
         }

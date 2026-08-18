@@ -373,6 +373,15 @@ struct CsharpLanguageServerToggleResult {
     message: String,
 }
 
+/// What happened when every language server was switched off or on.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LanguageServersToggleResult {
+    enabled: bool,
+    stopped_servers: usize,
+    message: String,
+}
+
 /// Whether one workspace is in full mode, and what the editor should say.
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -938,6 +947,33 @@ async fn set_csharp_language_server_enabled(
     .map_err(|error| format!("C# language server switch task failed: {error}"))?
 }
 
+/// Switch every language server off or on. Off stops each one that is running,
+/// every language and every workspace, and nothing starts until it is on
+/// again. Like the C# switch, the desktop app forgets this between launches,
+/// so the shell pushes the saved setting on start.
+#[tauri::command]
+async fn set_language_servers_enabled(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    enabled: bool,
+) -> Result<LanguageServersToggleResult, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = lsp::set_language_servers_enabled(enabled);
+        let stopped_servers = if enabled {
+            0
+        } else {
+            registry.stop_all_servers()?
+        };
+        Ok(LanguageServersToggleResult {
+            enabled,
+            stopped_servers,
+            message: describe_language_servers_toggle(enabled, changed, stopped_servers),
+        })
+    })
+    .await
+    .map_err(|error| format!("Language servers switch task failed: {error}"))?
+}
+
 /// What full mode is doing for one workspace right now.
 ///
 /// Reading costs nothing and starts nothing: the editor asks this when it
@@ -1078,6 +1114,10 @@ fn describe_language_server_start(start: &Result<lsp::LanguageServerStart, Strin
             "Language intelligence is on for this project. The C# language server starts with the C# file you have open, and takes a minute to read the solution."
                 .to_string()
         }
+        Ok(lsp::LanguageServerStart::SwitchedOff) => {
+            "Language servers are switched off in Settings, so nothing was started. Files open with colouring and the built-in index."
+                .to_string()
+        }
         Ok(lsp::LanguageServerStart::CsharpSwitchedOff) => {
             "Language intelligence is on for this project, but the C# language server is switched off in Settings."
                 .to_string()
@@ -1093,6 +1133,26 @@ fn describe_language_server_start(start: &Result<lsp::LanguageServerStart, Strin
         Err(error) => {
             format!("Language intelligence is on for this project, but its language server could not be started: {error}")
         }
+    }
+}
+
+fn describe_language_servers_toggle(enabled: bool, changed: bool, stopped_servers: usize) -> String {
+    if enabled {
+        return if changed {
+            "Language servers are back on. One starts the next time you open a file in a project that has language intelligence on."
+                .to_string()
+        } else {
+            "Language servers were already on.".to_string()
+        };
+    }
+    match stopped_servers {
+        0 => "Language servers are off. None was running, so nothing had to be stopped. Files still open with colouring and the built-in index."
+            .to_string(),
+        1 => "Language servers are off and the running one has been stopped. Files still open with colouring and the built-in index."
+            .to_string(),
+        count => format!(
+            "Language servers are off and the {count} running ones have been stopped. Files still open with colouring and the built-in index."
+        ),
     }
 }
 
@@ -1449,7 +1509,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 28] = [
+const BACKEND_CAPABILITIES: [&str; 29] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1467,6 +1527,8 @@ const BACKEND_CAPABILITIES: [&str; 28] = [
     "worktreePruneSingle",
     // `set_csharp_language_server_enabled` turns the C# language server off and on.
     "csharpLanguageServerToggle",
+    // `set_language_servers_enabled` turns every language server off and on.
+    "languageServersToggle",
     // `read_workspace_language_intelligence` and
     // `set_workspace_language_intelligence` read and set one project's editor
     // mode: read mode (colouring only, nothing started) or full mode.
@@ -5873,6 +5935,7 @@ fn main() {
             ensure_native_csharp_language_client,
             mark_native_csharp_language_client_ready,
             set_csharp_language_server_enabled,
+            set_language_servers_enabled,
             read_workspace_language_intelligence,
             set_workspace_language_intelligence,
             find_source_lsp_definitions,
@@ -8901,6 +8964,7 @@ mod tests {
                 "processKill".to_string(),
                 "worktreePruneSingle".to_string(),
                 "csharpLanguageServerToggle".to_string(),
+                "languageServersToggle".to_string(),
                 "workspaceLanguageIntelligence".to_string(),
                 "lspDocumentSymbols".to_string(),
                 "lspStatusEvents".to_string(),

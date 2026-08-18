@@ -84,6 +84,7 @@
     sourceIntelligence,
     type SourceInlayHintRequest
   } from '$lib/shell/editor/sourceIntelligence';
+  import { settings } from '$lib/settingsStore.svelte';
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
   import {
     isNativeTauriRuntime,
@@ -168,9 +169,12 @@
   let destroyed = false;
 
   const activeFile = $derived(activeEditorFile());
-  /** Is this project in full mode — language server allowed to run? */
+  /** Is this project in full mode — language server allowed to run? Settings
+   * can switch every server off at once, and then no project is, whatever its
+   * own switch says: the switch reads Off, and its title says which one held. */
   const fullMode = $derived(
-    languageIntelligenceOn(languageIntelligenceChoices, editorState.projectRoot)
+    settings.intelligence.languageServers
+      && languageIntelligenceOn(languageIntelligenceChoices, editorState.projectRoot)
   );
   /**
    * The sentence on hover: what the mode means for this project, and the
@@ -178,6 +182,9 @@
    */
   const languageIntelligenceTitle = $derived.by(() => {
     if (!editorState.projectRoot) return 'Open a file in a project to switch this on.';
+    if (!settings.intelligence.languageServers) {
+      return 'Language servers are switched off in Settings → General → Language support. Turn them on there first.';
+    }
     const note =
       languageIntelligenceNote ??
       (fullMode

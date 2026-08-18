@@ -86,6 +86,7 @@
   } from '$lib/shell/editor/editorStore.svelte';
   import {
     setCsharpLanguageServerEnabled,
+    setLanguageServersEnabled,
     sourceIntelligence
   } from '$lib/shell/editor/sourceIntelligence';
   import {
@@ -1462,6 +1463,9 @@
     // someone who turned it off last week silently gets the 800MB back.
     if (!settings.intelligence.csharpLanguageServer) {
       void setCsharpLanguageServerEnabled(false);
+    }
+    if (!settings.intelligence.languageServers) {
+      void setLanguageServersEnabled(false);
     }
     // The stacks pane never spawns or kills anything itself — the page owns the
     // rail, the terminal service and the terminal hosts, so it does the work and
