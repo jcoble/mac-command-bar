@@ -3053,7 +3053,7 @@
 		background: #23262d;
 		color: #cfd3dc;
 		cursor: pointer;
-		font-family: ui-monospace, Menlo, monospace;
+		font-family: var(--font-mono);
 		font-size: 12px;
 		padding: 3px 10px;
 	}

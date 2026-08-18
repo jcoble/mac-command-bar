@@ -674,7 +674,7 @@
 
   .source-search-results code {
     color: #d7dddb;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
   }
 
@@ -1268,7 +1268,7 @@
     color: #071b18;
     border-radius: 5px;
     background: #d8aa55;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 850;
     line-height: 1;

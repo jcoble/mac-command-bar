@@ -213,7 +213,7 @@
     border-radius: 5px;
     background: transparent;
     color: var(--color-text-2);
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     cursor: pointer;
   }

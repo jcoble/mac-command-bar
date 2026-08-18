@@ -813,7 +813,7 @@
     justify-content: flex-end;
     padding-left: 8px;
     color: var(--color-text-3);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;

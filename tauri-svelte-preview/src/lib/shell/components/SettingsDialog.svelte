@@ -48,6 +48,8 @@
   import { setCsharpLanguageServerEnabled } from '$lib/shell/editor/sourceIntelligence';
   import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
+  import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
+  import { UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
 
   interface Props {
     /** Whether the settings screen is showing. */
@@ -65,6 +67,9 @@
   // ── Option lists ────────────────────────────────────────────────────────
   /** The themes the app actually ships, straight from the registry. */
   const themeItems = themeChoices();
+  /** The faces the app ships, from the same kind of registry. */
+  const uiFontItems = UI_FONTS.map((font) => ({ value: font.id, label: font.label }));
+  const monoFontItems = MONO_FONTS.map((font) => ({ value: font.id, label: font.label }));
 
   const fontFamilyItems = [
     { value: 'Google Sans Mono', label: 'Google Sans Mono' },
@@ -125,6 +130,22 @@
       title: 'Theme',
       description: 'Overall color scheme for the app.',
       keywords: 'dark light palette houston'
+    },
+    {
+      id: 'ui-font',
+      section: 'appearance',
+      card: 'Text',
+      title: 'Interface font',
+      description: 'The face for labels, menus and messages.',
+      keywords: 'typeface family inter manrope figtree sans'
+    },
+    {
+      id: 'mono-font',
+      section: 'appearance',
+      card: 'Text',
+      title: 'Code font',
+      description: 'The face for paths, commands and code outside the editor.',
+      keywords: 'typeface family monospace jetbrains fira geist'
     },
     {
       id: 'app-font-size',
@@ -485,6 +506,10 @@
                   {#each card.rowIds as id (id)}
                     {#if id === 'theme'}
                       {@render settingRow(id, themeControl)}
+                    {:else if id === 'ui-font'}
+                      {@render settingRow(id, uiFontControl)}
+                    {:else if id === 'mono-font'}
+                      {@render settingRow(id, monoFontControl)}
                     {:else if id === 'app-font-size'}
                       {@render settingRow(id, appFontSizeControl, true)}
                     {:else if id === 'editor-font-family'}
@@ -533,6 +558,26 @@
     value={shownThemeId}
     ariaLabel="Theme"
     onChange={(value) => applyTheme(value)}
+  />
+{/snippet}
+
+{#snippet uiFontControl()}
+  <!-- Not `bind:value`, for the same reason as the theme: applying writes the
+       setting itself. -->
+  <SettingsSelect
+    items={uiFontItems}
+    value={settings.appearance.uiFontId}
+    ariaLabel="Interface font"
+    onChange={(value) => applyUiFont(value)}
+  />
+{/snippet}
+
+{#snippet monoFontControl()}
+  <SettingsSelect
+    items={monoFontItems}
+    value={settings.appearance.monoFontId}
+    ariaLabel="Code font"
+    onChange={(value) => applyMonoFont(value)}
   />
 {/snippet}
 

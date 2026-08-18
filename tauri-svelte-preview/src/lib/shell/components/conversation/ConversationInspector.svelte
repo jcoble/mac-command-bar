@@ -37,7 +37,7 @@
     background: var(--color-bg);
     color: var(--color-text);
     box-shadow: var(--shadow-lg);
-    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: 12px/1.45 var(--font-mono);
   }
 
   .inspector-heading {

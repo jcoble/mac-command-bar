@@ -775,7 +775,7 @@
 	// font stack / 15px / 1.2 line height (the store default fontFamily is the
 	// bare "Google Sans Mono", which is NOT the same as this fallback stack).
 	const EMBEDDED_TERMINAL_FONT_DEFAULTS = {
-		fontFamily: '"Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace',
+		fontFamily: '"Google Sans Mono", "SF Mono", var(--font-mono)',
 		fontSize: 15,
 		lineHeight: 1.2,
 	} as const;
@@ -16777,7 +16777,7 @@
 		color: #071b18;
 		border-radius: 999px;
 		background: #6fdfcf;
-		font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+		font-family: var(--font-mono);
 		font-size: 9px;
 		font-weight: 850;
 		line-height: 16px;
@@ -17086,13 +17086,7 @@
 		outline: 0;
 		background: rgba(0, 0, 0, 0.16);
 		font:
-			10px/1.2 ui-monospace,
-			SFMono-Regular,
-			"SF Mono",
-			Menlo,
-			Monaco,
-			Consolas,
-			monospace;
+			10px/1.2 var(--font-mono);
 		text-overflow: ellipsis;
 	}
 
@@ -18892,7 +18886,7 @@
 
 	.runtime-port {
 		color: #6fdfcf;
-		font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+		font-family: var(--font-mono);
 		font-size: 11px;
 		font-weight: 820;
 	}
@@ -18917,7 +18911,7 @@
 
 	.repo-branch-badge {
 		color: #6fdfcf;
-		font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+		font-family: var(--font-mono);
 		font-size: 10px;
 		font-weight: 820;
 	}
@@ -19210,7 +19204,7 @@
 
 	.embedded-terminal-toolbar code {
 		color: var(--color-text-3);
-		font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+		font-family: "Google Sans Mono", "SF Mono", var(--font-mono);
 		font-size: var(--text-xs);
 	}
 
@@ -19226,7 +19220,7 @@
 	.embedded-terminal-host :global(.xterm) {
 		height: 100%;
 		padding: 5px 8px 6px;
-		font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+		font-family: "Google Sans Mono", "SF Mono", var(--font-mono);
 	}
 
 	.embedded-terminal-host :global(.xterm-viewport) {
@@ -19241,7 +19235,7 @@
 		min-width: 0;
 		overflow: hidden;
 		color: #d8aa55;
-		font-family: "Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+		font-family: "Google Sans Mono", "SF Mono", var(--font-mono);
 		font-size: 10px;
 		font-weight: 760;
 		text-overflow: ellipsis;

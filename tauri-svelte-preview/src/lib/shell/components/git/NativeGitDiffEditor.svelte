@@ -113,7 +113,7 @@
         ignoreTrimWhitespace: false,
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, monospace',
+        fontFamily: 'var(--font-mono)',
         fontSize: 12,
         lineHeight: 19
       });

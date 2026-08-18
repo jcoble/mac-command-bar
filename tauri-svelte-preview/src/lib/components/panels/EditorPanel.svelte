@@ -906,7 +906,7 @@
   .editor-file-state small {
     flex: 0 0 auto;
     color: var(--color-text-3);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
   }
@@ -1040,7 +1040,7 @@
 
   .editor-action-menu kbd {
     color: #8d9995;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     font-weight: 760;
   }

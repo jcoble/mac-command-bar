@@ -55,7 +55,7 @@ export type ViewHooks = {
  * exactly as it did before.
  */
 const TERMINAL_FONT_DEFAULTS = {
-  fontFamily: '"Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace',
+  fontFamily: '"Google Sans Mono", "SF Mono", var(--font-mono)',
   fontSize: 15,
   lineHeight: 1.2
 } as const;

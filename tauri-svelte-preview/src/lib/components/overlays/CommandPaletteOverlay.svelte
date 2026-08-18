@@ -190,7 +190,7 @@
 
   .command-palette-search kbd {
     color: #7f8b87;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 800;
   }

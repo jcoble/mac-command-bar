@@ -220,7 +220,7 @@
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--color-surface) 92%, var(--color-bg));
     color: var(--color-text-3);
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     padding: 3px 8px;
     pointer-events: none;

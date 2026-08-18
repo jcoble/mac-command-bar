@@ -64,7 +64,7 @@
   dl{display:grid;gap:4px;margin:0}
   dl div{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px}
   dt{color:var(--color-text-3);font-size:12px}
-  dd{margin:0;min-width:0;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+  dd{margin:0;min-width:0;overflow-wrap:anywhere;font:12px/1.55 var(--font-mono)}
 
   @media (prefers-reduced-motion:no-preference){
     .chevron{transition:transform .14s ease}

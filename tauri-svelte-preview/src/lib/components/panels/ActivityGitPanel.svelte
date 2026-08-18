@@ -937,7 +937,7 @@
 
   .activity-git-secondary-section summary small {
     color: #7ff0df;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     font-weight: 820;
   }
@@ -1339,7 +1339,7 @@
 
   .git-status-row strong {
     color: #6fdfcf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 860;
   }
@@ -1411,7 +1411,7 @@
     min-width: 0;
     overflow: hidden;
     color: #6fdfcf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 820;
     text-overflow: ellipsis;

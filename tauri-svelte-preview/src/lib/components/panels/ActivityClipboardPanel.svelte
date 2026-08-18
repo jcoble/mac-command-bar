@@ -394,7 +394,7 @@
     border-radius: 8px;
     outline: 0;
     background: rgba(0, 0, 0, 0.18);
-    font: 12px/1.45 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font: 12px/1.45 var(--font-mono);
   }
 
   .paste-cleanup-textarea:focus {

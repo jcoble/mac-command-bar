@@ -43,7 +43,7 @@
   .approval-event{padding:12px;border:1px solid color-mix(in srgb,var(--color-accent) 34%,var(--color-border));border-radius:10px;background:color-mix(in srgb,var(--color-accent) 7%,transparent)}
   .approval-heading{display:flex;align-items:center;gap:8px;font-size:13px}
   .approval-icon{display:grid;place-items:center;color:var(--color-accent)}
-  .tool-title{margin-top:8px;font:500 12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--color-text)}
+  .tool-title{margin-top:8px;font:500 12px/1.55 var(--font-mono);color:var(--color-text)}
   p{margin:4px 0 0;color:var(--color-text-2);font-size:12px}
   small{display:block;margin-top:8px;color:var(--color-text-3);font-size:12px}
   .approval-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}

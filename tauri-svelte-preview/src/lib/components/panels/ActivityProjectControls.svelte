@@ -280,7 +280,7 @@
     min-height: 28px;
     margin-bottom: var(--space-1);
     color: var(--color-text-3);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
   }
@@ -309,7 +309,7 @@
     min-height: 18px;
     margin: var(--space-1) 0;
     color: var(--color-live);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-xs);
     font-weight: var(--weight-medium);
   }

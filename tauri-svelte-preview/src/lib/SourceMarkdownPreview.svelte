@@ -145,7 +145,7 @@
     border-radius: 4px;
     color: #aeeede;
     background: rgba(92, 226, 207, 0.09);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 0.92em;
   }
 

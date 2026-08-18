@@ -297,7 +297,7 @@
   .section-heading .count {
     margin-left: auto;
     color: var(--color-text-3);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 

@@ -58,9 +58,9 @@
   .command-menu button:hover { background: var(--menu-row-hover); }
   .command-menu button.active { background: var(--menu-row-active); }
   .command-menu button:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: -1px; }
-  .command-glyph { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-accent); font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .command-glyph { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-accent); font: 600 13px var(--font-mono); }
   .command-main { display: grid; min-width: 0; flex: 1; gap: var(--menu-row-description-gap); }
-  .command-main strong { color: var(--color-text); font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .command-main strong { color: var(--color-text); font: 600 13px var(--font-mono); }
   .command-label, .command-description, .command-source { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .command-label { color: var(--color-text); font-size: 13px; }
   .command-description { color: var(--color-text-2); font-size: 12px; }

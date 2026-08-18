@@ -183,6 +183,7 @@
   } from '$lib/shell/stores/sessionRailStore.svelte';
   import { createTerminalService, tauriTerminalBackend } from '$lib/shell/terminalService';
   import { applyStoredTheme, clearTheme } from '$lib/shell/themes/themeService';
+  import { applyStoredFonts, clearFonts } from '$lib/shell/themes/fontService';
   import { loadXtermModules, makeTerminalView } from '$lib/shell/xtermFactory';
   import {
     listAgentSessionsFromLocalBridge,
@@ -1421,6 +1422,7 @@
     // paints in the theme it sets.
     document.documentElement.classList.add('next-shell-document');
     applyStoredTheme();
+    applyStoredFonts();
     disposed = false;
     // A file dropped anywhere but a drop zone would otherwise navigate the
     // window to that file and take the whole shell with it. Anything a zone
@@ -1591,6 +1593,7 @@
       // back off, so a same-document navigation to the old shell renders it
       // exactly as it was found.
       clearTheme();
+      clearFonts();
       document.documentElement.classList.remove('next-shell-document');
     };
   });

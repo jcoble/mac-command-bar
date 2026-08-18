@@ -22,6 +22,10 @@ export interface AppearanceSettings {
 	themeId: string;
 	/** Base UI font size in px (chrome/labels, not the editor). */
 	appFontSize: number;
+	/** The face the interface reads in — an id from fontRegistry.ts. */
+	uiFontId: string;
+	/** The face code is shown in outside the editor and terminal — same registry. */
+	monoFontId: string;
 }
 
 export interface EditorSettings {
@@ -104,7 +108,9 @@ export function defaultSettings(): Settings {
 	return {
 		appearance: {
 			themeId: 'dark',
-			appFontSize: 13
+			appFontSize: 13,
+			uiFontId: 'system',
+			monoFontId: 'system'
 		},
 		editor: {
 			fontFamily: 'Google Sans Mono',

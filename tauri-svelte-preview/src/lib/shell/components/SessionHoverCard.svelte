@@ -187,7 +187,7 @@
   .session-card-line.error .session-card-value { color: var(--color-bad); }
 
   .session-card-value.mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 13px;
   }
 

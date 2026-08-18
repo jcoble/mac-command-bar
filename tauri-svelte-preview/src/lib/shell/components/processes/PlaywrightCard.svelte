@@ -418,7 +418,7 @@
   }
 
   .mono {
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
   }
 
   .chip {

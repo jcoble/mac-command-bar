@@ -195,7 +195,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     color: #e6e6ee;
   }
@@ -278,12 +278,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     color: #5d5d6b;
   }
 
   .hunk {
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1.5;
   }
