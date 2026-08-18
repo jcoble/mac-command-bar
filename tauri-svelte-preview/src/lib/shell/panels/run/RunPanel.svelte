@@ -44,8 +44,9 @@
   import {
     clearStackNotice,
     removeStack,
+    allStackRows,
+    hydrateStacks,
     stacks,
-    visibleStackRows,
     type StackDefinition,
     type StackRow
   } from '$lib/shell/stacks/stackStore.svelte';
@@ -79,7 +80,17 @@
   /** The last lines each running action printed, by session id. */
   let tails = $state<Record<string, string[]>>({});
 
-  const rows = $derived(visibleStackRows());
+  // Read what is saved before showing anything. The store was only read once a
+  // session had been picked, so opening this tab first showed "No actions
+  // saved yet" over a full list on disk.
+  hydrateStacks();
+
+  // Every saved action, whichever folder it belongs to. The list was filtered
+  // to the active session's working folder, which is not a project root — a
+  // session sitting one directory down hid every action saved at the top, and
+  // the count read 0 over a list that had just been added to. It "saved once
+  // in a while": only when the folder typed happened to match the session's.
+  const rows = $derived(allStackRows());
   const running = $derived(rows.filter((row) => row.state === 'running' || row.state === 'starting'));
 
   /** The folder a new action starts in: the project the shell is on. */

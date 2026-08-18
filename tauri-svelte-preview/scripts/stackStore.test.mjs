@@ -39,6 +39,16 @@ const compiled = compileModule(javascript, {
 });
 writeFileSync(outputPath, compiled.js.code);
 
+// A save that does not reach storage is refused, so the store needs
+// somewhere to save to. The smallest thing that answers like localStorage.
+const memory = new Map();
+globalThis.localStorage = {
+  getItem: (key) => (memory.has(key) ? memory.get(key) : null),
+  setItem: (key, value) => void memory.set(key, String(value)),
+  removeItem: (key) => void memory.delete(key),
+  clear: () => memory.clear()
+};
+
 let store;
 try {
   store = await import(outputPath);
@@ -58,7 +68,7 @@ const {
   recordStackExit,
   recordStackStart,
   removeStack,
-  resetStacks,
+  resetStacks: resetStore,
   serializeStackDefinitions,
   serializeStackRuns,
   stackIdForOwnedId,
@@ -66,6 +76,12 @@ const {
   stacks,
   updateStack
 } = store;
+
+/** A clean store AND clean storage: adding reads storage first now. */
+function resetStacks() {
+  resetStore();
+  memory.clear();
+}
 
 let passed = 0;
 function test(name, run) {
@@ -328,6 +344,38 @@ test('an unusable shortcut or toggle drops that field and keeps the configuratio
   const parsed = parseStackDefinitions(raw);
   assert.equal(parsed.length, 1);
   assert.deepEqual(parsed[0], { id: 'a', name: 'Web', script: 'pnpm dev', cwd: '/p' });
+});
+
+test('adding to a store that was never read keeps what was already saved', () => {
+  resetStacks();
+  localStorage.setItem(
+    'mac-command-bar.next.stacks.definitions',
+    JSON.stringify([{ id: 'kept', name: 'Dev server', script: 'pnpm dev', cwd: '/p' }])
+  );
+  // Nothing hydrated: the Run tab was opened before a session was picked.
+  const added = addStack({ name: 'Database', script: 'docker compose up db', cwd: '/p' });
+  assert.ok(added);
+  const onDisk = JSON.parse(localStorage.getItem('mac-command-bar.next.stacks.definitions'));
+  assert.deepEqual(
+    onDisk.map((definition) => definition.name),
+    ['Dev server', 'Database'],
+    'the save must not write over what was already there'
+  );
+});
+
+test('a save that does not reach storage is refused, not claimed', () => {
+  resetStacks();
+  const setItem = localStorage.setItem;
+  localStorage.setItem = () => {
+    throw new Error('QuotaExceededError');
+  };
+  try {
+    const added = addStack({ name: 'Web', script: 'pnpm dev', cwd: '/p' });
+    assert.equal(added, null);
+    assert.equal(stacks.definitions.length, 0, 'nothing is shown that was not saved');
+  } finally {
+    localStorage.setItem = setItem;
+  }
 });
 
 test('adding and changing a configuration keeps the four fields', () => {

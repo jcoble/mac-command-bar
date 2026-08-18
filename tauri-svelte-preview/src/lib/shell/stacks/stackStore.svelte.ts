@@ -751,9 +751,16 @@ export function addStack(draft: StackDraft): StackDefinition | null {
     cwd: clean.cwd
   };
   applyOptionalFields(definition, clean);
+  // What is on disk comes first. Adding to a list that was never read wrote
+  // one action over every action ever saved, whenever the Run tab was opened
+  // before a session had been picked.
+  hydrateStacks();
   stacks.definitions = [...stacks.definitions, definition];
   stacks.notice = null;
-  persistDefinitions();
+  if (!persistDefinitions()) {
+    stacks.definitions = stacks.definitions.filter((existing) => existing.id !== definition.id);
+    return null;
+  }
   return definition;
 }
 
@@ -784,11 +791,15 @@ export function updateStack(stackId: string, draft: StackDraft): StackDefinition
     cwd: clean.cwd
   };
   applyOptionalFields(updated, clean);
+  const before = stacks.definitions;
   stacks.definitions = stacks.definitions.map((definition) =>
     definition.id === stackId ? updated : definition
   );
   stacks.notice = null;
-  persistDefinitions();
+  if (!persistDefinitions()) {
+    stacks.definitions = before;
+    return null;
+  }
   return updated;
 }
 
