@@ -10,7 +10,7 @@
   import type { ConversationAttachment, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
-  import { draftAfterSlashCommand, moveSlashMenuIndex, slashCommandQuery, slashMenuState, snapshotConversationCommands } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { draftAfterSlashCommand, formatContextTokens, moveSlashMenuIndex, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
   import AttachmentLightbox from './AttachmentLightbox.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
@@ -29,7 +29,7 @@
     pendingConfig: Partial<Record<AgentConversationConfigField, string>>;
     configError?: string | null;
     commands: readonly ConversationCommand[];
-    contextRemainingPercent?: number | null;
+    contextMeter?: ContextMeterState | null;
     attachmentError?: string;
     sendError?: string;
     /** Clears the send failure. Given only where the failure is per-session
@@ -67,7 +67,7 @@
     pendingConfig,
     configError = null,
     commands,
-    contextRemainingPercent = null,
+    contextMeter = null,
     attachmentError = '',
     sendError = '',
     onDismissSendError,
@@ -357,7 +357,7 @@
             </DropdownMenu.Root>
           </div>
           <div class="footer-right">
-            {#if contextRemainingPercent !== null}<span class="context-remaining" data-testid="conversation-context-remaining" title="Reported context remaining">{contextRemainingPercent}% left</span>{/if}
+            {#if contextMeter}<span class="context-remaining" data-testid="conversation-context-remaining" title="Reported context usage">{contextMeter.kind === 'percent' ? `${contextMeter.remaining}% left` : `${formatContextTokens(contextMeter.usedTokens)} used`}</span>{/if}
             <div class="wide-controls"><ComposerConfigMenu {provider} state={configState} pending={pendingConfig} error={configError} onChange={onConfigChange} /></div>
             <div class="compact-controls"><CompactComposerControlsMenu {provider} state={configState} pending={pendingConfig} onChange={onConfigChange} /></div>
             <!-- The mic keeps its place in every state; send joins it to the
@@ -374,7 +374,7 @@
       {#if dragging}<p class="drop-hint" data-testid="conversation-drop-hint">Drop images to attach them</p>{/if}
     </div>
   </form>
-  <div class="composer-hint" data-testid="conversation-paste-hint"><span>Paste or drop images · type / for commands</span>{#if contextRemainingPercent !== null}<span aria-hidden="true">·</span><span>{contextRemainingPercent}% context left</span>{/if}</div>
+  <div class="composer-hint" data-testid="conversation-paste-hint"><span>Paste or drop images · type / for commands</span>{#if contextMeter}<span aria-hidden="true">·</span><span>{contextMeter.kind === 'percent' ? `${contextMeter.remaining}% context left` : `${formatContextTokens(contextMeter.usedTokens)} tokens used`}</span>{/if}</div>
 </div>
 
 <style>

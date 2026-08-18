@@ -49,6 +49,37 @@ export function remainingContextPercent(
   return Math.max(0, Math.min(100, Math.round(remaining)));
 }
 
+export type ContextMeterState =
+  | { kind: 'percent'; remaining: number }
+  | { kind: 'absolute'; usedTokens: number };
+
+/** Tokens as a short label: 940, 9.4k, 398k, 1.2m. */
+export function formatContextTokens(value: number): string {
+  if (value < 1_000) return String(Math.round(value));
+  if (value < 10_000) return `${Math.floor(value / 100) / 10}k`;
+  if (value < 1_000_000) return `${Math.round(value / 1_000)}k`;
+  return `${Math.floor(value / 100_000) / 10}m`;
+}
+
+/**
+ * What the composer should show for context. Null when there is nothing
+ * usable. Falls back to the absolute count when the window is missing or the
+ * reported usage exceeds it, because a percentage would then be nonsense:
+ * agents that report a lifetime token total rather than current occupancy
+ * would otherwise sit at "0% left" forever.
+ */
+export function contextMeterState(
+  usedTokens: number | null | undefined,
+  contextWindow: number | null | undefined
+): ContextMeterState | null {
+  const remaining = remainingContextPercent(usedTokens, contextWindow);
+  if (remaining !== null && (usedTokens as number) <= (contextWindow as number)) {
+    return { kind: 'percent', remaining };
+  }
+  if (!Number.isFinite(usedTokens)) return null;
+  return { kind: 'absolute', usedTokens: usedTokens as number };
+}
+
 function rank(command: ConversationCommand, query: string): number {
   const name = command.name.toLowerCase();
   if (name.startsWith(query)) return 0;

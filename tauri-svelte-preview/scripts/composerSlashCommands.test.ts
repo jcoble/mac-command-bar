@@ -10,7 +10,9 @@
  */
 import assert from 'node:assert/strict';
 import {
+  contextMeterState,
   draftAfterSlashCommand,
+  formatContextTokens,
   moveSlashMenuIndex,
   remainingContextPercent,
   slashCommandQuery,
@@ -107,5 +109,29 @@ assert.equal(remainingContextPercent(401, 400), 0, 'usage over the window clamps
 assert.equal(remainingContextPercent(-1, 400), 100, 'negative usage clamps to the full window');
 assert.equal(remainingContextPercent(1, 0), null, 'an absent context window hides the indicator');
 assert.equal(remainingContextPercent(null, 400), null);
+
+// ── What the composer shows for context ──────────────────────────────────
+assert.deepEqual(
+  contextMeterState(50_000, 200_000),
+  { kind: 'percent', remaining: 75 },
+  'a known context window still reports remaining percent'
+);
+assert.deepEqual(
+  contextMeterState(398_832, null),
+  { kind: 'absolute', usedTokens: 398_832 },
+  'a missing context window falls back to the token count'
+);
+assert.deepEqual(
+  contextMeterState(334_581_117, 237_500),
+  { kind: 'absolute', usedTokens: 334_581_117 },
+  'usage larger than the window is treated as untrustworthy'
+);
+assert.equal(contextMeterState(null, null), null, 'nothing usable renders nothing');
+
+// ── Token labels ─────────────────────────────────────────────────────────
+assert.equal(formatContextTokens(940), '940');
+assert.equal(formatContextTokens(9_400), '9.4k');
+assert.equal(formatContextTokens(398_832), '399k');
+assert.equal(formatContextTokens(1_250_000), '1.2m');
 
 console.log('composerSlashCommands.test.ts passed');

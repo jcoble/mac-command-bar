@@ -48,7 +48,7 @@
     typedConversationTimeline,
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { remainingContextPercent } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { requestOpenFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
@@ -119,10 +119,8 @@
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
-  const remainingContext = $derived(
-    conversation?.provider === 'codex'
-      ? remainingContextPercent(conversation.metadata.usedTokens, conversation.metadata.contextWindow)
-      : null
+  const contextMeter = $derived(
+    contextMeterState(conversation?.metadata.usedTokens, conversation?.metadata.contextWindow)
   );
 
   let attachmentError = $state('');
@@ -434,7 +432,7 @@
           pendingConfig={conversation.pendingAgentConfig}
           configError={conversation.agentConfigError}
           commands={commandCatalog}
-          contextRemainingPercent={remainingContext}
+          contextMeter={contextMeter}
           pendingApproval={pendingApprovals[0] ?? null}
           pendingApprovalCount={pendingApprovals.length}
           pendingInputs={pendingInputs}

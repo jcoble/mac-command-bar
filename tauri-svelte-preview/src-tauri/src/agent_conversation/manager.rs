@@ -664,7 +664,18 @@ impl AgentRuntimeManager {
             generation,
             native_session_id,
             state: ConversationConnectionState::Connecting,
-            config: AgentConversationConfigState::default(),
+            // Claude's efforts are a fixed list on this side, so the composer can
+            // offer them before the adapter has ever run. Without this the picker
+            // has nothing to show until the first turn, and the choice that is
+            // supposed to be made before the first turn cannot be made at all.
+            config: if request.provider == AgentConversationProvider::Claude {
+                claude_session_config(
+                    AgentConversationConfigState::default(),
+                    reasoning_effort.as_deref(),
+                )
+            } else {
+                AgentConversationConfigState::default()
+            },
         };
         let provider_instance_id = format!("{}-{generation}", provider_id(request.provider));
         let created_at_ms = timestamp_millis();
@@ -996,7 +1007,18 @@ impl AgentRuntimeManager {
         }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
+        // Starting the adapter refreshes what the provider offers, but it must
+        // not discard what the person already chose. Claude reports its model
+        // as "default" whatever was picked, so a plain assignment loses the
+        // choice on every turn that had to start the process again. Their pick
+        // wins wherever the provider still offers it.
+        let chosen_model = session.config.model.clone();
         session.config = started.config;
+        if let Some(model) = chosen_model {
+            if session.config.available_models.contains(&model) {
+                session.config.model = Some(model);
+            }
+        }
         session.connection.config = session.config.clone();
         let restoring_terminal_transition = session.owner
             == AgentExecutionOwner::TransitioningToStructured
@@ -1521,12 +1543,17 @@ impl AgentRuntimeManager {
             approval_policy: normalized_optional_id(request.approval_policy),
         };
         let native_session_id = {
-            let sessions = self
+            let mut sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session(&sessions, &request.owned_id, request.generation)?;
-            if session.provider == AgentConversationProvider::Claude
+            let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+            let started = session.native_session_id.is_some();
+            // Claude fixes its thinking budget when the process starts, so a
+            // live session cannot be re-pointed. Before the start there is
+            // nothing to re-point, and that is when the choice is made.
+            if started
+                && session.provider == AgentConversationProvider::Claude
                 && update.reasoning_effort.is_some()
             {
                 return Err(
@@ -1534,14 +1561,38 @@ impl AgentRuntimeManager {
                         .to_string(),
                 );
             }
-            validate_conversation_config_update(&session.config, &update)?;
+            if started {
+                validate_conversation_config_update(&session.config, &update)?;
+            }
             if update == AgentConversationConfigUpdate::default() {
                 return Ok(session.config.clone());
             }
-            session
-                .native_session_id
-                .clone()
-                .ok_or_else(|| "Structured provider session has not started".to_string())?
+            match session.native_session_id.clone() {
+                Some(native_session_id) => native_session_id,
+                None => {
+                    // The adapter only starts when the first turn is sent, so a
+                    // choice made now has no session to carry it. Keep it on the
+                    // record instead: the composer reads it back, and the spawn
+                    // reads `spawn_reasoning_effort` when it finally runs.
+                    let effort = normalized_session_start_effort(
+                        session.provider,
+                        update.reasoning_effort.clone(),
+                    )?;
+                    if let Some(model) = update.model.clone() {
+                        session.config.model = Some(model);
+                    }
+                    if let Some(effort) = effort {
+                        session.config.reasoning_effort = Some(effort.clone());
+                        session.spawn_reasoning_effort = Some(effort);
+                    }
+                    if let Some(approval_policy) = update.approval_policy.clone() {
+                        session.config.approval_policy = Some(approval_policy);
+                    }
+                    session.connection.config = session.config.clone();
+                    persist_session(session)?;
+                    return Ok(session.config.clone());
+                }
+            }
         };
         let runtime = self
             .runtime_or_activate(&request.owned_id, request.generation)
@@ -1557,6 +1608,15 @@ impl AgentRuntimeManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+        // Claude's efforts are ours, not the provider's: standard ACP has no
+        // such field, so the reply to any config change comes back with the
+        // list empty. Assigning it whole erased the efforts every time the
+        // model was changed, and the picker then offered only the current one.
+        let config = if session.provider == AgentConversationProvider::Claude {
+            claude_session_config(config, session.spawn_reasoning_effort.as_deref())
+        } else {
+            config
+        };
         session.config = config.clone();
         session.connection.config = config.clone();
         persist_session(session)?;
@@ -1761,6 +1821,16 @@ impl AgentRuntimeManager {
             session.spawn_reasoning_effort.clone_from(&request.effort);
             session.config.model.clone_from(&request.model);
             session.config.reasoning_effort.clone_from(&request.effort);
+            // Setting the value without the list left the menu showing exactly
+            // one option: the picker falls back to the current value when the
+            // available list is empty, so a session started with "medium" could
+            // only ever offer "medium".
+            if session.provider == AgentConversationProvider::Claude {
+                session.config = claude_session_config(
+                    session.config.clone(),
+                    session.spawn_reasoning_effort.as_deref(),
+                );
+            }
             session.connection.config = session.config.clone();
             session.rail_meta = request.meta;
             persist_session(session)?;
@@ -7269,6 +7339,120 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn changing_the_model_does_not_empty_claude_efforts() {
+        // Standard ACP has no effort field, so the reply to a model change comes
+        // back with the effort list empty. Assigning that whole erased the
+        // efforts, and the picker then offered only whichever one was already
+        // set — the list appeared to shrink each time anything was chosen.
+        let root = temp_root();
+        let log = root.join("standard_config.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "standard_config",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let owned_id = "owned-standard_config".to_string();
+        let mut ensure_request = request(
+            root.to_str().unwrap(),
+            &owned_id,
+            AgentConversationProvider::Claude,
+        );
+        ensure_request.reasoning_effort = Some("medium".to_string());
+        let connection = manager.ensure_inner(ensure_request).expect("ensure").0;
+        manager
+            .activate(&owned_id, connection.generation)
+            .await
+            .expect("activate");
+
+        let before = manager.conversation_config(&owned_id).expect("config");
+        assert_eq!(before.available_efforts, ["low", "medium", "high", "max"]);
+        assert_eq!(before.reasoning_effort.as_deref(), Some("medium"));
+
+        let after = manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: owned_id.clone(),
+                generation: connection.generation,
+                model: Some("sonnet".to_string()),
+                reasoning_effort: None,
+                approval_policy: None,
+            })
+            .await
+            .expect("changing the model is allowed on a live Claude session");
+        assert_eq!(after.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            after.available_efforts,
+            ["low", "medium", "high", "max"],
+            "changing the model must not empty the effort list"
+        );
+        assert_eq!(after.reasoning_effort.as_deref(), Some("medium"));
+
+        manager.close(&owned_id, connection.generation).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn effort_chosen_before_the_adapter_starts_is_kept_and_used_at_spawn() {
+        // A session picks its model and effort before anything is running: the
+        // adapter only starts when the first turn is sent. The choice has to
+        // survive that gap, or the composer reverts it and the turn spawns with
+        // the provider's default.
+        let root = temp_root();
+        let log = root.join("claude_preselect.jsonl");
+        let manifest =
+            super::super::providers::acp_client::tests::fixture_manifest_named(&log, "claude_preselect");
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let owned_id = "owned-claude_preselect".to_string();
+        let ensure_request = request(
+            root.to_str().unwrap(),
+            &owned_id,
+            AgentConversationProvider::Claude,
+        );
+        let connection = manager.ensure_inner(ensure_request).expect("ensure").0;
+        // The picker has to be able to offer efforts before the first turn,
+        // which is the only time Claude's effort can be chosen at all.
+        assert_eq!(
+            connection.config.available_efforts,
+            ["low", "medium", "high", "max"]
+        );
+
+        let config = manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: owned_id.clone(),
+                generation: connection.generation,
+                model: Some("gpt-5.6-luna".to_string()),
+                reasoning_effort: Some("high".to_string()),
+                approval_policy: None,
+            })
+            .await
+            .expect("a choice made before the adapter starts is kept");
+        assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(config.model.as_deref(), Some("gpt-5.6-luna"));
+
+        manager
+            .activate(&owned_id, connection.generation)
+            .await
+            .expect("activate");
+        let spawn_log = fs::read_to_string(&log).expect("Claude spawn log");
+        assert!(
+            spawn_log.contains("MAX_THINKING_TOKENS=32000"),
+            "the effort chosen before the start must reach the adapter: {spawn_log}"
+        );
+        let after_start = manager.conversation_config(&owned_id).expect("config");
+        assert_eq!(after_start.reasoning_effort.as_deref(), Some("high"));
+        // Starting the adapter must not throw the choice away. The provider
+        // reports its own view of the session — the fixture says the model is
+        // "gpt-5.6-sol", and Claude says "default" — neither is what was picked.
+        assert_eq!(after_start.model.as_deref(), Some("gpt-5.6-luna"));
+
+        manager.close(&owned_id, connection.generation).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
