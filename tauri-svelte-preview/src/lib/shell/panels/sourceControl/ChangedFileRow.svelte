@@ -140,7 +140,12 @@
               <span class="text-sm text-muted-foreground">{parts.folder}</span>
             {/if}
           </span>
-          <span class="shrink-0 text-sm text-muted-foreground">
+          <!-- The stage and discard buttons appear at the right edge on hover —
+               exactly where this word sits — and their discs are see-through,
+               so "modified" was reading straight through the glyphs. The word
+               steps aside the moment the row is hovered or focused, the way
+               a worktree row's age does; the buttons take its place. -->
+          <span class="shrink-0 text-sm text-muted-foreground transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
             {describeGitFileChange(file)}
           </span>
 
