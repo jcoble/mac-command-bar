@@ -174,9 +174,10 @@
   const markupBounds = $derived.by(() => {
     layoutTick;
     const placement = wantedPlacement(true);
-    if (placement.kind !== 'bounds' || typeof window === 'undefined') {
-      return { x: 0, y: 0, right: 0, bottom: 0 };
-    }
+    // Nothing to measure against means no layer this pass. The fallback used
+    // to be a zero rect, which as `inset: 0` was a sheet over the whole window
+    // — toolbar, address bar and all — whenever the host measured zero.
+    if (placement.kind !== 'bounds' || typeof window === 'undefined') return null;
     const { x, y, width, height } = placement.bounds;
     return {
       x,
@@ -631,6 +632,9 @@
       tool = 'browse';
       dropStill();
     } catch (error) {
+      // The still stays up with the marks on it, so a failed send can be tried
+      // again rather than drawn again. Discard is always reachable now that
+      // freehand marks count, so this is not the trap it was.
       say(error);
     } finally {
       busy = false;
@@ -780,7 +784,7 @@
     {/if}
   </div>
 
-  {#if showsStill}
+  {#if showsStill && visible && markupBounds}
     <div
       class="markup-layer"
       use:bodyPortal
@@ -810,6 +814,7 @@
           <BrowserMiniComposer
             {description}
             annotations={numbered}
+            inkCount={strokes.length}
             {backdrop}
             surface={layerSize}
             {busy}

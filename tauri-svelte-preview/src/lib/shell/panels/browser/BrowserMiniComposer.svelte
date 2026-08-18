@@ -30,6 +30,9 @@
   interface Props {
     description: string;
     annotations: readonly NumberedAnnotation[];
+    /** Freehand marks on the still. They have no number and no row in the
+     * list, but they are drawn into what is sent, so they count. */
+    inkCount?: number;
     /** The still the annotations were made on, for the list's crops. */
     backdrop: string | null;
     /** The marking surface's size, the coordinates the boxes are in. */
@@ -49,6 +52,7 @@
   let {
     description,
     annotations,
+    inkCount = 0,
     backdrop,
     surface,
     busy,
@@ -65,7 +69,11 @@
   const THUMB_WIDTH = 30;
   const THUMB_HEIGHT = 20;
 
-  const canSend = $derived(!disabled && !busy && (description.trim().length > 0 || annotations.length > 0));
+  /* A page marked only with the marker used to leave Send disabled — the
+     strokes were never counted — and, because the row holding Discard was
+     gated on the same count, left no way out of the still at all. */
+  const marked = $derived(annotations.length > 0 || inkCount > 0);
+  const canSend = $derived(!disabled && !busy && (description.trim().length > 0 || marked));
 
   /**
    * The still, scaled and shifted so one annotation's box fills the tile. A
@@ -126,7 +134,7 @@
   {/if}
 
   <form class="card" onsubmit={submit}>
-    {#if annotations.length > 0}
+    {#if marked}
       <div class="chip-row">
         <button
           type="button"
