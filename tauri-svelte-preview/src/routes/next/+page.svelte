@@ -109,7 +109,6 @@
     SESSIONS_WIDTH,
     TOOLS_MAX_WIDTH,
     TOOLS_MIN_WIDTH,
-    TOOLS_WIDTH,
     type RegionHeightLimits,
     type RegionWidthLimits,
     type ShellRegionId
@@ -608,26 +607,6 @@
    * so widening the page is this and nothing else, and narrowing it again puts
    * the seam back where the user had dragged it rather than at a default.
    */
-  let toolsWidthBeforeWide: number | null = null;
-
-  /** The Browser panel asking for a wide column, or for the width it had. */
-  function widenTools(wide: boolean): void {
-    if (!frameControls) return;
-    if (wide) {
-      if (toolsWidthBeforeWide === null) {
-        toolsWidthBeforeWide = frameControls.regionWidth('tools') ?? TOOLS_WIDTH;
-      }
-      frameControls.setRegionWidth('tools', TOOLS_MAX_WIDTH);
-      return;
-    }
-    // Nothing was widened, so there is nothing to put back — and a width the
-    // user dragged must not be replaced by a default just because the panel
-    // said it is not wide.
-    if (toolsWidthBeforeWide === null) return;
-    frameControls.setRegionWidth('tools', toolsWidthBeforeWide);
-    toolsWidthBeforeWide = null;
-  }
-
   /** Fold the sessions column up, or open it out. Remembered under its own
    * key so the next launch comes back the way it was left. */
   function collapseSessions(collapsed: boolean): void {
@@ -1639,7 +1618,6 @@
     onSelect={selectRightTab}
     root={readSelection().root}
     ownedId={rail.activeOwnedId}
-    onWidenBrowser={widenTools}
   />
 {/snippet}
 {#snippet centerTabsArea()}

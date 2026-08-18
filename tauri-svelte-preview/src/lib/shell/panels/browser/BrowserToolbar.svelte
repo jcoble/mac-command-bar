@@ -137,7 +137,7 @@
   <span class="divide" aria-hidden="true"></span>
 
   <IconButton
-    label={expanded ? 'Narrow the panel back' : 'Widen the panel'}
+    label={expanded ? 'Put the browser back in its column' : 'Fill the window with the browser'}
     size="xs"
     data-testid="browser-expand"
     onclick={onToggleExpand}

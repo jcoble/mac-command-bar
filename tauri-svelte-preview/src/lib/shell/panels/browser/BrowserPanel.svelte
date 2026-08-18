@@ -12,10 +12,13 @@
    *
    * The page has no width of its own. It is the right column's content, so the
    * column's width IS the page's width: dragging the seam between the center
-   * and this column resizes the page, and Widen asks the shell for a wider
-   * column rather than stretching a rectangle out over the middle of the app.
-   * One width, one seam, and a column that cannot be dragged past the point
-   * where the center pane would be squeezed out.
+   * and this column resizes the page. Filling the window is the one exception:
+   * marking up wants the biggest picture the window can give, so the whole
+   * panel — its rows and its page — moves out of the column and lies over the
+   * shell from edge to edge until it is put back. It moves out of the document
+   * position it had, not just out of the column: the column paints its panels
+   * inside its own box (`contain: paint`), so a panel that only positioned
+   * itself over the shell would still be clipped to the column.
    *
    * Marking up works on a still of the page rather than the live view, for the
    * same reason: nothing in the document can be drawn over a native view. The
@@ -102,14 +105,8 @@
     root: string;
     /** The session whose browser this is. */
     ownedId: string | null;
-    /**
-     * Ask the shell for a wide right column, or for the width it had before.
-     * The column's width is the grid's business, not this panel's, so Widen
-     * says what it wants and the shell decides how far the seam may travel.
-     */
-    onWiden(wide: boolean): void;
   }
-  let { visible, ownedId, onWiden }: Props = $props();
+  let { visible, ownedId }: Props = $props();
 
   let pageHost = $state<HTMLDivElement | null>(null);
   /** The panel's own rows above the page — measured, never assumed. */
@@ -171,6 +168,9 @@
    * and typed off the screen.
    */
   const showsStill = $derived(backdrop !== null);
+  /** Lying over the whole shell. Only while this tab is the one in front: a
+   * panel that is not showing must not be found lying over everything else. */
+  const fillsWindow = $derived(expanded && visible);
   const markupBounds = $derived.by(() => {
     layoutTick;
     const placement = wantedPlacement(true);
@@ -206,6 +206,24 @@
   function bodyPortal(node: HTMLElement): { destroy(): void } {
     document.body.appendChild(node);
     return { destroy: () => node.remove() };
+  }
+
+  /**
+   * Move the panel out to the document body while it fills the window, and
+   * back to the place in the column it came from when it stops. The column
+   * clips what it contains, so lying over the shell means leaving the column.
+   */
+  function fillWindow(node: HTMLElement, fills: boolean): { update(fills: boolean): void } {
+    const home = node.parentElement;
+    const place = (out: boolean): void => {
+      if (out) {
+        if (node.parentElement !== document.body) document.body.appendChild(node);
+      } else if (home && node.parentElement !== home) {
+        home.appendChild(node);
+      }
+    };
+    place(fills);
+    return { update: place };
   }
 
   // ── Where the native view goes ─────────────────────────────────────────────
@@ -678,17 +696,6 @@
   });
 
   /**
-   * The one place the column's width is asked for. Widen is a wish, not an act:
-   * this says what the wish is now — including when the wish was restored with
-   * a session, and when the reader looked at another panel, which must not be
-   * left holding a column widened for a page it is not showing.
-   */
-  $effect(() => {
-    const wide = visible && expanded;
-    untrack(() => onWiden(wide));
-  });
-
-  /**
    * A session that comes back to a page it had open comes back to the page.
    * Switching away closes the native view — one view, and the next session's
    * page is not this one's — so the address survives the switch but the view
@@ -752,7 +759,12 @@
   });
 </script>
 
-<div class="browser-panel" data-testid="browser-panel">
+<div
+  class="browser-panel"
+  class:fills-window={fillsWindow}
+  use:fillWindow={fillsWindow}
+  data-testid="browser-panel"
+>
   <div class="chrome" bind:this={chromeHost} data-testid="browser-panel-chrome">
     <BrowserToolbar
       address={addressValue}
@@ -843,6 +855,15 @@
     width: 100%;
     grid-template-rows: auto minmax(0, 1fr) auto;
     background: var(--color-surface);
+  }
+
+  /* Edge to edge over the shell. Under the markup layer, which is the next
+     thing up in the document body; the page host is measured wherever it is,
+     so the native view and the still follow the panel out here on their own. */
+  .browser-panel.fills-window {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
   }
 
   .page {

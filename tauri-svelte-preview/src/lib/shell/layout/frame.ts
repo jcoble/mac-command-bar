@@ -59,13 +59,10 @@ export const SESSIONS_WIDTH = 360;
 export const TOOLS_WIDTH = 320;
 
 /**
- * How narrow and how wide the tool column may be dragged. The maximum is what
- * "widen the browser" means: the browser page is this column's content, so the
- * seam beside it is the only thing that sets the page's width, and the button
- * that widens the page drags that seam to this number. It stops here rather
- * than at the window's edge because the center pane keeps `CENTER_MIN_WIDTH`
- * whatever else happens — a page that swallowed the session it is being marked
- * up for would be worse than a narrow page.
+ * How narrow and how wide the tool column may be dragged. It stops short of
+ * the window's edge because the center pane keeps `CENTER_MIN_WIDTH` whatever
+ * else happens. A browser page that wants more than this fills the window
+ * from inside its own panel rather than by dragging the seam.
  */
 export const TOOLS_MIN_WIDTH = 240;
 export const TOOLS_MAX_WIDTH = 960;

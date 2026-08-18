@@ -35,20 +35,8 @@
     root: string;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
-    /**
-     * The Browser panel asking for a wide column, or for the width it had
-     * before. It travels through here because this column's width belongs to
-     * the page's grid, not to a panel inside it.
-     */
-    onWidenBrowser(wide: boolean): void;
   }
-  let {
-    activeId,
-    onSelect,
-    root,
-    ownedId,
-    onWidenBrowser
-  }: Props = $props();
+  let { activeId, onSelect, root, ownedId }: Props = $props();
 </script>
 
 <div class="right-panel">
@@ -74,7 +62,7 @@
       <AgentsPanel visible={activeId === 'agents'} {root} {ownedId} />
     </div>
     <div class="panel-body" class:showing={activeId === 'browser'}>
-      <BrowserPanel visible={activeId === 'browser'} {root} {ownedId} onWiden={onWidenBrowser} />
+      <BrowserPanel visible={activeId === 'browser'} {root} {ownedId} />
     </div>
     <div class="panel-body" class:showing={activeId === 'history'}>
       <HistoryPanel visible={activeId === 'history'} {root} {ownedId} />
