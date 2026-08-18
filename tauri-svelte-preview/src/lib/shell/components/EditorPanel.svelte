@@ -81,11 +81,9 @@
   } from '$lib/shell/editor/editorStore.svelte';
   import { needsRead } from '$lib/shell/editor/editorStoreOps';
   import {
-    setCsharpLanguageServerEnabled,
     sourceIntelligence,
     type SourceInlayHintRequest
   } from '$lib/shell/editor/sourceIntelligence';
-  import { settings } from '$lib/settingsStore.svelte';
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
   import {
     isNativeTauriRuntime,
@@ -619,15 +617,11 @@
         diagnosticsByPath = {};
       }
 
-      // Settings is where C# is switched off for good — it is not a veto over a
-      // switch the reader has just flipped on in front of the project. Lifting it
-      // here, and writing the setting back, is also what stops the launch restore
-      // in `next/+page.svelte` from pushing the same "off" again next launch.
-      if (enabled && !settings.intelligence.csharpLanguageServer) {
-        const lifted = await setCsharpLanguageServerEnabled(true);
-        if (destroyed) return;
-        if (lifted.supported) settings.intelligence.csharpLanguageServer = true;
-      }
+      // Settings is where the C# server is switched off, and that holds. This
+      // switch used to lift that setting back on whenever it was flipped on for
+      // a project — so turning the server off in Settings kept undoing itself,
+      // and the two switches read as one that "would not stay off". A C# start
+      // that Settings has refused now says so in the note under the switch.
 
       countInvoke('set_workspace_language_intelligence');
       // The file already on screen is the one the reader wants answered, so its
@@ -1227,7 +1221,7 @@
     border-radius: 5px;
     color: var(--color-text-2);
     cursor: pointer;
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     padding: 2px 7px;
   }
@@ -1246,7 +1240,7 @@
     background: var(--color-surface);
     border-top: 1px solid var(--color-border);
     color: var(--color-text-2);
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     padding: 3px 8px;
   }
