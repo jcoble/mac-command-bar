@@ -142,6 +142,11 @@ pub fn discover(
     path.map(location).transpose()
 }
 
+/// Whether Claude's own transcript for this session holds a turn to resume.
+pub fn claude_transcript_holds_a_turn(native_session_id: &str) -> Result<bool, String> {
+    claude::holds_a_turn(&safe_session_id(native_session_id)?)
+}
+
 pub(crate) fn scan_codex_child_rollouts(
     parent_path: &Path,
     parent_id: &str,

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::ptr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -12,6 +13,14 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use super::super::protocol::AgentProviderManifest;
 
 const STDERR_LINE_CAP: usize = 200;
+
+/// How long a stopped sidecar has to leave on its own before it is killed.
+///
+/// The Claude CLI writes a turn to its transcript about fifty milliseconds
+/// after it has answered it, and is gone within a second once told to go.
+/// Killing the group the moment the answer arrived lost that write on every
+/// turn, and a session whose transcript was never written cannot be resumed.
+const STOP_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SidecarEnvironment {
@@ -222,9 +231,33 @@ impl SidecarReadHalf {
 }
 
 impl SidecarProcessHandle {
+    /// Ask the process group to leave, and kill whatever has not left in time.
+    ///
+    /// The group leader answers SIGTERM at once and is waited for here. Its
+    /// descendants finish what they were writing and leave on their own; a
+    /// watchdog kills the group if any of them is still there when the grace
+    /// runs out, so nothing idles on for long either way.
     pub async fn stop(&mut self) {
-        stop_process_group(&mut self.child);
-        let _ = self.child.wait().await;
+        let Some(pid) = self.child.id() else {
+            return;
+        };
+        let group = -(pid as i32);
+        if unsafe { libc::kill(group, libc::SIGTERM) } != 0 {
+            let _ = self.child.start_kill();
+        }
+        if tokio::time::timeout(STOP_GRACE, self.child.wait())
+            .await
+            .is_err()
+        {
+            stop_process_group(&mut self.child);
+            let _ = self.child.wait().await;
+        }
+        tokio::spawn(async move {
+            tokio::time::sleep(STOP_GRACE).await;
+            if unsafe { libc::kill(group, 0) } == 0 {
+                let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+            }
+        });
     }
 
     pub fn process_id(&self) -> Option<u32> {
@@ -273,6 +306,110 @@ mod tests {
         stderr.push("two".into());
         stderr.push("three".into());
         assert_eq!(stderr.snapshot(), vec!["two", "three"]);
+    }
+
+    fn fixture_manifest(id: &str, script: String) -> AgentProviderManifest {
+        AgentProviderManifest {
+            id: id.into(),
+            display_name: "Process fixture".into(),
+            transport: ProviderTransport::AcpStdio,
+            executable: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), script],
+            version: "1".into(),
+            content_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
+            trusted_source: ProviderSource::Bundled,
+        }
+    }
+
+    // The Claude CLI writes a turn to its transcript only after it has answered
+    // it. A sidecar that is asked to stop must get to finish that write.
+    #[tokio::test(flavor = "current_thread")]
+    async fn stopping_a_sidecar_lets_it_finish_what_it_was_writing() {
+        let marker = std::env::temp_dir().join(format!("mcb-stop-grace-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let manifest = fixture_manifest(
+            "stop-grace-fixture",
+            format!(
+                "trap 'sleep 0.2; : > \"{}\"; exit 0' TERM; sleep 30 & wait",
+                marker.display()
+            ),
+        );
+        let process =
+            SidecarProcess::spawn(&manifest, &std::env::temp_dir(), "owned-stop-grace").unwrap();
+        let (_read, _write, mut handle) = process.split();
+        let leader = handle.process_id().unwrap() as i32;
+        // The trap is only in place once the shell has read the script.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        handle.stop().await;
+
+        // Stopping waits for the leader, not for its descendants: they leave on
+        // their own once they have finished. The whole group is gone before the
+        // grace runs out, and the write it was in the middle of is on disk.
+        let group = -leader;
+        let deadline = Instant::now() + STOP_GRACE;
+        while unsafe { libc::kill(group, 0) } == 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_ne!(
+            unsafe { libc::kill(group, 0) },
+            0,
+            "sidecar group outlived the grace"
+        );
+        assert!(
+            marker.is_file(),
+            "the sidecar was killed before it finished writing"
+        );
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    // Being asked is a courtesy with a deadline: a group that ignores it is
+    // killed once the grace runs out, descendants included.
+    #[tokio::test(flavor = "current_thread")]
+    async fn stopping_a_sidecar_that_ignores_the_ask_kills_it() {
+        let manifest = fixture_manifest(
+            "stop-ignored-fixture",
+            "trap '' TERM; sleep 30 & child=$!; echo $child >&2; wait".into(),
+        );
+        let process =
+            SidecarProcess::spawn(&manifest, &std::env::temp_dir(), "owned-stop-ignored").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let child = loop {
+            if let Some(child) = process
+                .stderr
+                .snapshot()
+                .first()
+                .and_then(|line| line.parse::<i32>().ok())
+            {
+                break child;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fixture child pid was not captured"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        let (_read, _write, mut handle) = process.split();
+        let leader = handle.process_id().unwrap() as i32;
+
+        handle.stop().await;
+
+        assert_ne!(
+            unsafe { libc::kill(leader, 0) },
+            0,
+            "sidecar leader survived stop"
+        );
+        // The descendant ignored the ask; the watchdog kills it once the grace
+        // is up, and not before.
+        let reap_deadline = Instant::now() + STOP_GRACE + Duration::from_secs(2);
+        while unsafe { libc::kill(child, 0) } == 0 && Instant::now() < reap_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_ne!(
+            unsafe { libc::kill(child, 0) },
+            0,
+            "sidecar descendant survived stop"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

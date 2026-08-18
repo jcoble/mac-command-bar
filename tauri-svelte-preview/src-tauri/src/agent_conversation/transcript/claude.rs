@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use super::{
@@ -12,6 +13,35 @@ use crate::agent_conversation::protocol::{AgentConversationPayload, AgentEventTy
 
 pub(super) fn discover_path(id: &str) -> Result<Option<PathBuf>, String> {
     find(&home_dir()?.join(".claude/projects"), id)
+}
+
+/// Whether the transcript Claude keeps for this session holds a turn.
+///
+/// The Claude CLI writes a session's file the moment it starts — a queue line,
+/// the title — and the turn itself some fifty milliseconds after answering it.
+/// A file with the first and not the second is one whose process was stopped
+/// before it wrote, and it cannot be resumed: the CLI reads a session holding
+/// no conversation and leaves. A file that cannot be found holds nothing either.
+pub(super) fn holds_a_turn(id: &str) -> Result<bool, String> {
+    match discover_path(id)? {
+        Some(path) => holds_a_turn_at(&path),
+        None => Ok(false),
+    }
+}
+
+fn holds_a_turn_at(path: &Path) -> Result<bool, String> {
+    let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|error| error.to_string())?;
+        let is_turn = serde_json::from_str::<Value>(&line)
+            .ok()
+            .and_then(|record| record.get("type")?.as_str().map(str::to_owned))
+            .is_some_and(|kind| kind == "user" || kind == "assistant");
+        if is_turn {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn find(root: &Path, id: &str) -> Result<Option<PathBuf>, String> {
@@ -386,4 +416,44 @@ fn discover_children(parent: &Path, id: &str) -> Result<Vec<ChildAgentDescriptor
         });
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::holds_a_turn_at;
+    use std::path::PathBuf;
+
+    fn transcript(name: &str, lines: &[&str]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "mcb-holds-a-turn-{}-{name}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        path
+    }
+
+    // Stopped before it wrote: the queue line is there and the turn is not.
+    #[test]
+    fn a_transcript_with_only_the_queue_line_holds_no_turn() {
+        let path = transcript(
+            "queue-only",
+            &[r#"{"type":"queue-operation","operation":"dequeue","sessionId":"s"}"#],
+        );
+        assert!(!holds_a_turn_at(&path).unwrap());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_transcript_with_a_user_message_holds_a_turn() {
+        let path = transcript(
+            "with-turn",
+            &[
+                r#"{"type":"ai-title","aiTitle":"Hello","sessionId":"s"}"#,
+                r#"{"type":"queue-operation","operation":"dequeue","sessionId":"s"}"#,
+                r#"{"type":"user","message":{"role":"user","content":"hello"},"sessionId":"s"}"#,
+            ],
+        );
+        assert!(holds_a_turn_at(&path).unwrap());
+        let _ = std::fs::remove_file(path);
+    }
 }

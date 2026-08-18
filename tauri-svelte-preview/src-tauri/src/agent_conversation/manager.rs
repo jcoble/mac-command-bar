@@ -801,12 +801,22 @@ impl AgentRuntimeManager {
             )
         };
         let mut expected_native_session_id = native_session_id.clone();
-        let can_start_fresh = expected_native_session_id.is_some()
-            && self
-                .store
-                .first_user_message_payload(owned_id)
-                .map_err(|error| error.to_string())?
-                .is_none();
+        let never_had_a_turn = self
+            .store
+            .first_user_message_payload(owned_id)
+            .map_err(|error| error.to_string())?
+            .is_none();
+        // A stored native session that cannot be resumed is started fresh when
+        // there is nothing to lose by it: this store never recorded a turn for
+        // it, or the provider no longer holds one. Asked only once a resume has
+        // failed, because the second answer means reading the provider's files.
+        let can_start_fresh = || {
+            native_session_id
+                .as_deref()
+                .is_some_and(|native_session_id| {
+                    never_had_a_turn || !provider_holds_session(provider, native_session_id)
+                })
+        };
         let shared_key = AdapterPoolKey::Shared(provider);
         let mut pools = self.adapter_pools.lock().await;
         let (capabilities, started_result, runtime, transport, inbound, pool_key, started_fresh) =
@@ -826,9 +836,9 @@ impl AgentRuntimeManager {
                         },
                         None => runtime.new_session_multi(&cwd).await,
                     };
-                    if attempted.is_err() && can_start_fresh {
+                    if attempted.is_err() && can_start_fresh() {
                         crate::debug_log::stderr_log!(
-                            "{owned_id}: stored native session never started; starting fresh"
+                            "{owned_id}: stored native session holds nothing to resume; starting fresh"
                         );
                         started_fresh = true;
                         runtime.new_session_multi(&cwd).await
@@ -878,9 +888,9 @@ impl AgentRuntimeManager {
                             .await
                     }
                 };
-                let (started, started_fresh) = if attempted.is_err() && can_start_fresh {
+                let (started, started_fresh) = if attempted.is_err() && can_start_fresh() {
                     crate::debug_log::stderr_log!(
-                        "{owned_id}: stored native session never started; starting fresh"
+                        "{owned_id}: stored native session holds nothing to resume; starting fresh"
                     );
                     (
                         adapter
@@ -1848,7 +1858,12 @@ impl AgentRuntimeManager {
                 .get_mut(&owned_id)
                 .ok_or_else(|| "Conversation session was not found".to_string())?;
             session.spawn_reasoning_effort.clone_from(&request.effort);
-            session.config.model.clone_from(&request.model);
+            // The rail row this comes from is a copy that a fresh session has
+            // not filled in yet, and it is saved right after the first send.
+            // Taking its empty model wrote a blank over the choice every time.
+            if request.model.is_some() {
+                session.config.model = request.model;
+            }
             session.config.reasoning_effort.clone_from(&request.effort);
             // Setting the value without the list left the menu showing exactly
             // one option: the picker falls back to the current value when the
@@ -2869,6 +2884,22 @@ fn record_payload_for_session(
     payload: AgentConversationPayload,
 ) -> Result<AgentConversationEvent, String> {
     record_payload_for_session_with_lifecycle(session, payload, None)
+}
+
+/// Whether the provider still holds anything for this session to resume.
+///
+/// Only Claude keeps a transcript this side can read. A Claude session whose
+/// file holds no turn — its process was stopped before it wrote one — is gone
+/// on Claude's side however many turns this store shows for it, and every
+/// resume of it fails the same way. Other providers are taken at their word,
+/// as is a transcript that cannot be read at all.
+fn provider_holds_session(provider: AgentConversationProvider, native_session_id: &str) -> bool {
+    match provider {
+        AgentConversationProvider::Claude => {
+            transcript::claude_transcript_holds_a_turn(native_session_id).unwrap_or(true)
+        }
+        AgentConversationProvider::Codex | AgentConversationProvider::Antigravity => true,
+    }
 }
 
 /// Commits an event and an optional lifecycle change before publishing either in memory.
@@ -6301,6 +6332,46 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    // The rail row is saved right after the first send, before it has copied
+    // the model in. Saving it must not blank the model the session was given.
+    #[test]
+    fn saving_the_rail_row_without_a_model_keeps_the_one_chosen() {
+        let root = temp_root();
+        let log = root.join("keep-model.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "prompt_with_update",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let (connection, _) = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-keep-model",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap();
+        let row = |model: Option<&str>| UpdateAgentConversationSessionMetaRequest {
+            owned_id: connection.owned_id.clone(),
+            model: model.map(str::to_owned),
+            effort: None,
+            meta: AgentConversationSessionMeta::default(),
+        };
+        manager
+            .update_session_meta(row(Some("gpt-5.6-luna")))
+            .unwrap();
+
+        let saved = manager.update_session_meta(row(None)).unwrap();
+
+        assert_eq!(saved.model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(
+            manager.list_sessions().unwrap()[0].model.as_deref(),
+            Some("gpt-5.6-luna")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn selecting_and_reading_session_never_spawns_runtime() {
         let root = temp_root();
@@ -7106,6 +7177,66 @@ mod tests {
         let requests = fs::read_to_string(&log).unwrap();
         assert!(requests.contains(r#""method":"session/resume""#));
         assert!(!requests.contains(r#""method":"session/new""#));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Claude keeps a transcript this side can read. When it holds no turn — the
+    // process was stopped before it wrote one — there is nothing on Claude's
+    // side to resume however many turns this store shows, and every resume of
+    // it fails the same way. Starting fresh is the only thing that works.
+    #[tokio::test(flavor = "current_thread")]
+    async fn resume_failure_of_a_claude_session_whose_transcript_holds_nothing_starts_fresh() {
+        let root = temp_root();
+        let log = root.join("resume-failure-claude.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "resume_failure",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let mut ensure = request(
+            root.to_str().unwrap(),
+            "owned-resume-failure-claude",
+            AgentConversationProvider::Claude,
+        );
+        // No transcript by this name exists anywhere under ~/.claude/projects.
+        ensure.native_session_id = Some("mcb-test-transcript-never-written".into());
+        let connection = manager.ensure_inner(ensure).unwrap().0;
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&connection.owned_id).unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::UserMessage {
+                    item_id: "stored-user-message".into(),
+                    text: "Earlier message".into(),
+                    completed: true,
+                    attachment_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+        }
+
+        let resumed = manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .expect("a session Claude no longer holds starts fresh");
+
+        assert_eq!(resumed.native_session_id.as_deref(), Some("new-session"));
+        let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
+        assert!(!snapshot.suspended);
+        assert!(!snapshot.events.iter().any(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::Error { code, .. } if code == "session-resume-failed"
+        )));
+        let requests = fs::read_to_string(&log).unwrap();
+        assert!(requests.contains(r#""method":"session/resume""#));
+        assert!(requests.contains(r#""method":"session/new""#));
+        manager
+            .close(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

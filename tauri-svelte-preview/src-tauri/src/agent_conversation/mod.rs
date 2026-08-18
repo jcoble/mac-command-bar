@@ -350,29 +350,7 @@ pub async fn read_agent_conversation_snapshot(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
 ) -> CommandResult<Option<AgentConversationSnapshot>> {
-    let result = manager.snapshot(&owned_id);
-    // TEMPORARY: tracking down a resumed transcript that is stored but not shown.
-    let short = &owned_id[..8.min(owned_id.len())];
-    match &result {
-        Ok(Some(snapshot)) => eprintln!(
-            "[snapshot] {short} SOME conn_gen={} suspended={} last_seq={} events={} [{}]",
-            snapshot.connection.generation,
-            snapshot.suspended,
-            snapshot.last_sequence,
-            snapshot.events.len(),
-            snapshot
-                .events
-                .iter()
-                .map(|event| format!("{}g{}", event.sequence, event.generation))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        Ok(None) => {
-            eprintln!("[snapshot] {short} NONE - no live overlay for this session")
-        }
-        Err(error) => eprintln!("[snapshot] {short} ERR {error}"),
-    }
-    command_result(result)
+    command_result(manager.snapshot(&owned_id))
 }
 
 #[tauri::command]
