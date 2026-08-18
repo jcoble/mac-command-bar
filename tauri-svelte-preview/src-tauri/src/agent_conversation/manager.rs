@@ -45,7 +45,12 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 const SNAPSHOT_WINDOW_BYTES: u32 = 512 * 1024;
 /// How many recent events a live session keeps in memory for its own use.
 const SESSION_RECENT_EVENT_CAP: usize = 1_000;
-const STORE_EVENT_CAP: u32 = 10_000;
+/// The most events one catch-up read will hand back after a missed update.
+///
+/// A bound on a single fetch, not on what a session keeps. Nothing trims a
+/// conversation's journal: history costs disk and nothing else, and every read
+/// of it is already bounded.
+const CATCH_UP_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
 const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
@@ -428,7 +433,7 @@ impl AgentRuntimeManager {
         owned_id: &str,
         max_bytes: u64,
         max_records: usize,
-    ) -> Result<usize, String> {
+    ) -> Result<super::transcript_import::ExtendedImport, String> {
         super::transcript_import::extend_session(&self.store, owned_id, max_bytes, max_records)
     }
 
@@ -1769,7 +1774,7 @@ impl AgentRuntimeManager {
         from_sequence: i64,
     ) -> Result<Vec<AgentConversationEvent>, String> {
         self.store
-            .list_events(owned_id, from_sequence, STORE_EVENT_CAP)
+            .list_events(owned_id, from_sequence, CATCH_UP_EVENT_CAP)
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(stored_event)
@@ -2953,7 +2958,7 @@ fn record_payload_for_session_with_lifecycle(
     };
     session
         .store
-        .upsert_session_with_event(&row, Some(&event_row), STORE_EVENT_CAP)
+        .upsert_session_with_event(&row, Some(&event_row))
         .map_err(|error| error.to_string())?;
     candidate.apply(session);
     session.recent_events.push_back(canonical);
@@ -4265,6 +4270,11 @@ fn first_u64(value: &Value, paths: &[&[&str]]) -> Option<u64> {
 
 fn parse_usage_payload(update: &Value) -> Option<AgentConversationPayload> {
     let usage = update.get("usage").unwrap_or(update);
+    // What this number answers is "how full is the context window", so the last
+    // request's total comes first. `total_token_usage` is every turn of the
+    // session added together, cached reads included — it passes the window
+    // inside an afternoon and reads as 100% full for the rest of the session.
+    // It stays as a fallback for a report that carries nothing else.
     let used_tokens = first_u64(
         update,
         &[
@@ -4273,6 +4283,7 @@ fn parse_usage_payload(update: &Value) -> Option<AgentConversationPayload> {
             &["used_tokens"],
             &["totalTokens"],
             &["total_tokens"],
+            &["info", "last_token_usage", "total_tokens"],
             &["info", "total_token_usage", "total_tokens"],
         ],
     )
@@ -5327,6 +5338,28 @@ mod tests {
                 ]
             })
         );
+        // How full the window is, not how much the session has spent getting
+        // here. A report carrying both used to hand over the running total,
+        // which passes the window early in a day's work and pins the meter at
+        // full for everything after it.
+        let session_totals = json!({ "update": {
+            "sessionUpdate": "token_count",
+            "info": {
+                "model_context_window": 237_500,
+                "total_token_usage": { "total_tokens": 15_908_466 },
+                "last_token_usage": { "total_tokens": 41_233 }
+            }
+        }});
+        assert_eq!(
+            payload_from_session_update_for_turn(&session_totals, None),
+            Some(AgentConversationPayload::Usage {
+                input_tokens: None,
+                output_tokens: None,
+                used_tokens: Some(41_233),
+                context_window: Some(237_500),
+            })
+        );
+
         let usage = json!({ "update": {
             "sessionUpdate": "usage_update", "used": 120, "size": 4096,
             "inputTokens": 100, "outputTokens": 20
@@ -6055,8 +6088,15 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// A conversation keeps every event it was given.
+    ///
+    /// The journal used to be trimmed to its newest ten thousand on every
+    /// write, which was reasonable when opening a conversation handed over all
+    /// of them. Once a window became a bounded read that trim only did harm: it
+    /// deleted the reading a person had just scrolled back to fetch, and it did
+    /// it on their next message.
     #[test]
-    fn events_persisted_and_capped() {
+    fn a_conversation_keeps_every_event_it_was_given() {
         let root = temp_root();
         let database = root.join("sessions.db");
         let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
@@ -6071,7 +6111,7 @@ mod tests {
         {
             let mut sessions = manager.sessions.lock().unwrap();
             let session = sessions.get_mut(&connection.owned_id).unwrap();
-            for index in 0..=STORE_EVENT_CAP {
+            for index in 0..=CATCH_UP_EVENT_CAP {
                 record_payload_for_session(
                     session,
                     AgentConversationPayload::Error {
@@ -6083,13 +6123,20 @@ mod tests {
                 .unwrap();
             }
         }
+        let written = i64::from(CATCH_UP_EVENT_CAP) + 1;
+        assert_eq!(
+            manager.store.latest_seq(&connection.owned_id).unwrap(),
+            written,
+            "nothing older is dropped to make room"
+        );
         let events = manager
             .store
-            .list_events(&connection.owned_id, 0, STORE_EVENT_CAP)
+            .list_events(&connection.owned_id, 0, CATCH_UP_EVENT_CAP)
             .unwrap();
-        assert_eq!(events.len(), STORE_EVENT_CAP as usize);
-        assert_eq!(events.first().unwrap().seq, 2);
-        assert_eq!(events.last().unwrap().seq, i64::from(STORE_EVENT_CAP) + 1);
+        // A catch-up read is bounded, but it starts at the first event there
+        // ever was rather than at whatever survived a trim.
+        assert_eq!(events.len(), CATCH_UP_EVENT_CAP as usize);
+        assert_eq!(events.first().unwrap().seq, 1);
         let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
         // Opening hands over the newest reading, bounded by bytes rather than
         // by a count of events, and ending on the newest event there is.
@@ -6097,10 +6144,7 @@ mod tests {
             snapshot.events.len() < events.len(),
             "a session larger than the window is not handed over whole"
         );
-        assert_eq!(
-            snapshot.events.last().unwrap().sequence,
-            i64::from(STORE_EVENT_CAP) + 1
-        );
+        assert_eq!(snapshot.events.last().unwrap().sequence, written);
         assert!(snapshot
             .events
             .windows(2)

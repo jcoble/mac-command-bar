@@ -260,12 +260,32 @@ pub fn finish_import_session(
     Ok(record_count)
 }
 
+/// What one reach further back into a transcript found.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtendedImport {
+    /// How many events the reach added.
+    pub added: usize,
+    /// Whether the beginning of the transcript has now been reached.
+    pub reached_start: bool,
+}
+
+/// How many windows one reach will read before giving the answer it has.
+///
+/// A window of a transcript can hold nothing a reader would want — a long run
+/// of internal records, or of a tool talking to itself. Stopping at the first
+/// such window and calling it the beginning is what made scrolling up look
+/// broken: there was more behind it, and nothing asked again. So a reach keeps
+/// going until it finds something or runs out of transcript, and this bounds
+/// how much of the file one reach is allowed to walk in the meantime.
+const EXTEND_WINDOW_LIMIT: usize = 8;
+
 pub fn extend_session(
     store: &SessionStore,
     owned_id: &str,
     max_bytes: u64,
     max_records: usize,
-) -> Result<usize, String> {
+) -> Result<ExtendedImport, String> {
     let mut session = store
         .get_session(owned_id)
         .map_err(|error| error.to_string())?
@@ -274,25 +294,45 @@ pub fn extend_session(
     // cursor, and nothing older than its first event exists. Scrolling to the
     // top of one asks this question and deserves an answer, not an error.
     let Some(cursor) = optional_import_cursor(&session.extra_json)? else {
-        return Ok(0);
+        return Ok(ExtendedImport {
+            added: 0,
+            reached_start: true,
+        });
     };
     if cursor.reached_start {
-        return Ok(0);
+        return Ok(ExtendedImport {
+            added: 0,
+            reached_start: true,
+        });
     }
     let provider = super::transcript::parse_provider(&session.provider)?;
     let native_session_id = session
         .native_session_id
-        .as_deref()
+        .clone()
         .ok_or_else(|| "Imported session has no native session id".to_string())?;
-    let tail = read_tail(
-        provider,
-        native_session_id,
-        Path::new(&cursor.transcript_path),
-        cursor.cutoff_offset,
-        max_bytes,
-        max_records,
-    )?;
-    let records = importable(tail.records);
+
+    // Keep reading back until there is something to show or the file runs out.
+    // An empty window is not the beginning of a conversation, only a stretch of
+    // it that holds nothing a reader wants.
+    let mut offset = cursor.cutoff_offset;
+    let mut reached_start = false;
+    let mut records = Vec::new();
+    for _ in 0..EXTEND_WINDOW_LIMIT {
+        let tail = read_tail(
+            provider,
+            &native_session_id,
+            Path::new(&cursor.transcript_path),
+            offset,
+            max_bytes,
+            max_records,
+        )?;
+        offset = tail.cutoff_offset;
+        reached_start = tail.reached_start;
+        records = importable(tail.records);
+        if !records.is_empty() || reached_start {
+            break;
+        }
+    }
     let record_count = records.len();
     let lowest_sequence = store
         .list_events(owned_id, i64::MIN, 1)
@@ -323,14 +363,17 @@ pub fn extend_session(
     }
     let next_cursor = ImportCursor {
         transcript_path: cursor.transcript_path,
-        cutoff_offset: tail.cutoff_offset,
-        reached_start: tail.reached_start,
+        cutoff_offset: offset,
+        reached_start,
     };
     session.extra_json = merge_import_cursor(&session.extra_json, &next_cursor)?;
     store
         .upsert_session(&session)
         .map_err(|error| error.to_string())?;
-    Ok(record_count)
+    Ok(ExtendedImport {
+        added: record_count,
+        reached_start,
+    })
 }
 
 /// The records an import stores: the ones that are conversation in their own
@@ -593,11 +636,12 @@ mod tests {
 
     impl TranscriptFixture {
         fn new(record_count: usize) -> Self {
+            Self::from_lines((1..=record_count).map(message_line).collect())
+        }
+
+        fn from_lines(lines: Vec<String>) -> Self {
             let path = std::env::temp_dir().join(format!("mcb-tail-{}.jsonl", Uuid::new_v4()));
-            let contents = (1..=record_count)
-                .map(message_line)
-                .collect::<Vec<_>>()
-                .join("");
+            let contents = lines.join("");
             fs::write(&path, &contents).expect("transcript fixture should be written");
             Self { path, contents }
         }
@@ -623,6 +667,14 @@ mod tests {
     fn message_line(index: usize) -> String {
         format!(
             "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"item-{index}\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"message\"}}]}}}}\n"
+        )
+    }
+
+    /// A line a reader keeps nothing from. Real transcripts are full of them:
+    /// bookkeeping, internal state, one side of a tool talking to itself.
+    fn skipped_line(index: usize) -> String {
+        format!(
+            "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"skip-{index}\",\"role\":\"system\",\"content\":[{{\"type\":\"input_text\",\"text\":\"message\"}}]}}}}\n"
         )
     }
 
@@ -800,7 +852,8 @@ mod tests {
         let added = extend_session(&store, &owned_id, fixture.line_len() * 4, usize::MAX)
             .expect("session should extend");
 
-        assert_eq!(added, 3);
+        assert_eq!(added.added, 3);
+        assert!(added.reached_start);
         assert_eq!(
             stored_item_ids(&store, &owned_id),
             ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6"]
@@ -836,7 +889,40 @@ mod tests {
 
         let added = extend_session(&store, "owned-native", 1024, usize::MAX)
             .expect("a session with no transcript behind it reports nothing older");
-        assert_eq!(added, 0);
+        assert_eq!(added.added, 0);
+        assert!(added.reached_start);
+    }
+
+    /// Scrolling up used to stop for good in the middle of a conversation. A
+    /// window of transcript can hold nothing a reader wants, and reporting that
+    /// as "nothing older" made the last thing on screen look like the first
+    /// thing said. Reaching back keeps going until it finds something.
+    #[test]
+    fn extending_reads_past_a_window_holding_nothing_worth_showing() {
+        let mut lines = vec![message_line(1), message_line(2)];
+        lines.extend((1..=6).map(skipped_line));
+        lines.push(message_line(3));
+        let fixture = TranscriptFixture::from_lines(lines);
+        let store = SessionStore::open_in_memory().expect("store should open");
+        let owned_id = import_session(
+            &store,
+            fixture_provider(),
+            "session-1",
+            &fixture.path,
+            "/tmp/project",
+            None,
+            fixture.line_len() * 2,
+            usize::MAX,
+        )
+        .expect("session should import");
+        assert_eq!(stored_item_ids(&store, &owned_id), ["item-3"]);
+
+        let added = extend_session(&store, &owned_id, fixture.line_len() * 2, usize::MAX)
+            .expect("session should extend");
+
+        let stored = stored_item_ids(&store, &owned_id);
+        assert!(added.added > 0, "one reach should cross the empty windows");
+        assert!(stored.contains(&"item-2".to_owned()), "{stored:?}");
     }
 
     #[test]
@@ -862,7 +948,8 @@ mod tests {
         let added = extend_session(&store, &owned_id, fixture.len(), usize::MAX)
             .expect("extension should be checked");
 
-        assert_eq!(added, 0);
+        assert_eq!(added.added, 0);
+        assert!(added.reached_start);
         assert_eq!(
             store
                 .list_events(&owned_id, i64::MIN, 100)

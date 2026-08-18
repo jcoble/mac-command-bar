@@ -493,9 +493,19 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     // cursor. Read the next chunk into the database and ask again. A session
     // started here has no transcript behind it and reports nothing added,
     // which is how this stops.
-    const added = await extendAgentConversationImportFromTauri(ownedId);
-    if (!added) {
-      prependOlderConversationEvents(ownedId, { events: [], hasMore: false });
+    const extended = await extendAgentConversationImportFromTauri(ownedId);
+    if (!extended) {
+      failLoadingOlderConversationEvents(ownedId);
+      return;
+    }
+    // Only the file running out means the conversation has none left. A reach
+    // that added nothing but did not reach the start walked past a stretch
+    // holding nothing worth showing, and there is more behind it.
+    if (!extended.added) {
+      prependOlderConversationEvents(ownedId, {
+        events: [],
+        hasMore: !extended.reachedStart
+      });
       return;
     }
     const grown = await listAgentConversationEventsBeforeFromTauri(
@@ -503,7 +513,10 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
       before,
       OLDER_PAGE_BYTES
     );
-    prependOlderConversationEvents(ownedId, grown ?? { events: [], hasMore: false });
+    prependOlderConversationEvents(ownedId, {
+      events: grown?.events ?? [],
+      hasMore: grown?.hasMore || !extended.reachedStart
+    });
   } catch {
     failLoadingOlderConversationEvents(ownedId);
   }

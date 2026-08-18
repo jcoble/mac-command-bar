@@ -304,13 +304,18 @@ impl SessionStore {
     /// Saves the next session row and its optional event as one durable change.
     ///
     /// The immediate transaction guarantees that a failed event insert cannot
-    /// leave the session row ahead of its journal, and caps that journal before
-    /// either row becomes visible to another reader.
+    /// leave the session row ahead of its journal.
+    ///
+    /// Nothing is trimmed here. This used to keep only the newest ten thousand
+    /// events of a session, which was a reasonable guard when opening a
+    /// conversation meant handing over all of them. It stopped being one once a
+    /// window became a bounded read: history costs disk and nothing else, and
+    /// the trim silently deleted the reading a person had just scrolled back to
+    /// fetch, on their next message.
     pub fn upsert_session_with_event(
         &self,
         session: &SessionRow,
         event: Option<&EventRow>,
-        event_cap: u32,
     ) -> Result<()> {
         let mut connection = self.lock()?;
         let transaction = connection
@@ -334,20 +339,6 @@ impl SessionStore {
                     ],
                 )
                 .map_err(|error| StoreError::sqlite("could not append the event", error))?;
-            transaction
-                .execute(
-                    "DELETE FROM events
-                     WHERE owned_id = ?
-                       AND seq NOT IN (
-                           SELECT seq
-                           FROM events
-                           WHERE owned_id = ?
-                           ORDER BY seq DESC
-                           LIMIT ?
-                       )",
-                    params![event.owned_id, event.owned_id, i64::from(event_cap)],
-                )
-                .map_err(|error| StoreError::sqlite("could not enforce the event limit", error))?;
         }
         transaction
             .commit()
@@ -1319,8 +1310,10 @@ mod tests {
         );
     }
 
+    /// The session row and its event are one durable change, and the journal
+    /// keeps everything written to it.
     #[test]
-    fn session_and_event_commit_is_atomic_and_caps_events() {
+    fn session_and_event_commit_is_atomic_and_keeps_every_event() {
         let (_directory, _path, store) = open_temp_store();
         let original = fixture_session("owned-atomic", 2_000);
         store.upsert_session(&original).expect("insert session");
@@ -1333,7 +1326,7 @@ mod tests {
         failed_candidate.state = "working".into();
         failed_candidate.last_activity_at_ms = 30_000;
         assert!(store
-            .upsert_session_with_event(&failed_candidate, Some(&duplicate), 2)
+            .upsert_session_with_event(&failed_candidate, Some(&duplicate))
             .is_err());
         let stored_after_failure = store
             .get_session(&original.owned_id)
@@ -1348,13 +1341,13 @@ mod tests {
         for seq in 2..=3 {
             store
                 .append_event(&fixture_event(&original.owned_id, seq))
-                .expect("seed event for cap");
+                .expect("seed an earlier event");
         }
         let committed_event = fixture_event(&original.owned_id, 4);
         let mut committed_session = failed_candidate;
         committed_session.last_activity_at_ms = committed_event.created_at_ms;
         store
-            .upsert_session_with_event(&committed_session, Some(&committed_event), 2)
+            .upsert_session_with_event(&committed_session, Some(&committed_event))
             .expect("commit session and event");
 
         assert_eq!(
@@ -1365,10 +1358,11 @@ mod tests {
         );
         let events = store
             .list_events(&original.owned_id, 0, 10)
-            .expect("read capped events");
+            .expect("read the journal back");
         assert_eq!(
             events.iter().map(|event| event.seq).collect::<Vec<_>>(),
-            [3, 4]
+            [1, 2, 3, 4],
+            "writing an event never drops an older one"
         );
     }
 

@@ -472,7 +472,7 @@ pub async fn finish_agent_conversation_import(
 pub async fn extend_agent_conversation_import(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
-) -> CommandResult<usize> {
+) -> CommandResult<transcript_import::ExtendedImport> {
     command_result(manager.extend_imported_session(&owned_id, IMPORT_MAX_BYTES, IMPORT_MAX_RECORDS))
 }
 

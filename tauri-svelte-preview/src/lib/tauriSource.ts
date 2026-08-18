@@ -1403,14 +1403,22 @@ export async function finishAgentConversationImportFromTauri(
   return invoke<number>('finish_agent_conversation_import', { ownedId });
 }
 
-/** Read one more window of an imported transcript, older than what it already
- * holds, and report how many events that added. */
+/** What one reach further back into a transcript found. */
+export interface ExtendedImport {
+  added: number;
+  reachedStart: boolean;
+}
+
+/** Read further back into an imported transcript, past what it already holds.
+ * Reports what that added and whether the beginning has now been reached. A
+ * stretch of transcript holding nothing a reader wants is not the beginning,
+ * so the two are answered separately. */
 export async function extendAgentConversationImportFromTauri(
   ownedId: string
-): Promise<number | null> {
+): Promise<ExtendedImport | null> {
   if (!isTauriRuntime() || !ownedId.trim()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<number>('extend_agent_conversation_import', { ownedId });
+  return invoke<ExtendedImport>('extend_agent_conversation_import', { ownedId });
 }
 
 export async function listAgentSessionsFromLocalBridge(): Promise<AgentSession[] | null> {
