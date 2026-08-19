@@ -418,12 +418,21 @@
     width: 29px;
     height: 29px;
     padding: 0;
-    border-radius: 7px;
+    border-radius: var(--radius-pill);
     font-size: 13.3333px;
     line-height: normal;
   }
 
-  .sessions-header .header-actions { gap: 5px; }
+  /* The three controls sit in one container, in the same tone and shape as the
+     right panel's tab strip, so the shell's grouped controls all look alike.
+     There is no sliding pill here: search, view options and new session are
+     three things you do, not one choice out of three. */
+  .sessions-header .header-actions {
+    gap: 1px;
+    padding: 3px;
+    border-radius: var(--radius-pill);
+    background: var(--color-elevated);
+  }
 
   .filter-strip {
     flex: 0 0 auto;
