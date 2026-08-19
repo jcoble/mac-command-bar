@@ -7,6 +7,8 @@
  * request sent on the first message.
  */
 
+import { sessionTitleFromPrompt } from '../sessionStrip.ts';
+
 export type ThreadStartProvider = 'codex' | 'claude' | 'antigravity';
 
 export type ThreadStartProviderConfig = {
@@ -320,12 +322,18 @@ export function accessChoicesFor(
   return available.length ? available : [...FALLBACK_ACCESS_CHOICES[provider]];
 }
 
-/** The first line becomes the rail title, trimmed to the row's readable width. */
+/**
+ * The first line becomes the rail title.
+ *
+ * Shaped by the one function that decides what a prompt's first line looks like
+ * as a name, because the backend writes exactly the same string when the
+ * message goes out. The rail saves this row back seconds later, and a title
+ * that differs by a character reads as a rename there — which would stop the
+ * session from ever being given a better name after its first turn.
+ */
 export function titleFromPrompt(prompt: string, projectPath: string): string {
   const fallback = tidy(projectPath).split('/').filter(Boolean).at(-1) || 'project';
-  const firstLine = tidy(prompt).split(/\r?\n/, 1)[0].replace(/\s+/g, ' ').trim();
-  if (!firstLine) return `Build in ${fallback}`;
-  return firstLine.length > 72 ? `${firstLine.slice(0, 71).trimEnd()}…` : firstLine;
+  return sessionTitleFromPrompt(prompt) ?? `Build in ${fallback}`;
 }
 
 /**

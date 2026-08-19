@@ -2073,14 +2073,18 @@ impl AgentRuntimeManager {
             }
             Arc::clone(&session.store)
         };
-        let Some(input) = title_input(&store, owned_id, turn_id) else {
-            return;
-        };
         let sessions = Arc::clone(&self.sessions);
         let renamed_listener = Arc::clone(&self.renamed_listener);
         let owned_id = owned_id.to_string();
-        // The helper's transport blocks, so it is never run on a runtime thread.
+        let turn_id = turn_id.to_string();
+        // The helper's transport blocks, and so do the two reads that gather
+        // what it is given, so neither runs on the thread carrying the session's
+        // events. This is the last thing a finished turn does, and the pump
+        // moves on without it.
         tokio::task::spawn_blocking(move || {
+            let Some(input) = title_input(&store, &owned_id, &turn_id) else {
+                return;
+            };
             let answer = match namer(&input) {
                 Ok(answer) => answer,
                 // No key stored means the helper is off, which is a choice
@@ -5484,6 +5488,46 @@ mod tests {
 
         assert_eq!(*calls.lock().unwrap(), 1);
         assert_eq!(stored_title(&fixture).as_deref(), Some("Fix rail titles"));
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// The rail saves a new session's row back within seconds of the send,
+    /// carrying the same provisional name the prompt path has just written.
+    /// That is not a rename, and reading it as one would stop the session from
+    /// ever being given a better name after its first turn.
+    #[tokio::test(flavor = "current_thread")]
+    async fn saving_the_row_back_unchanged_is_not_a_rename() {
+        let fixture = fixture_manager_with_acp_session("saved_back_title").await;
+        let prompt = "n".repeat(100);
+
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt(&prompt))
+            .await
+            .expect("prompt starts");
+        wait_until(|| stored_title(&fixture).is_some()).await;
+
+        let provisional = stored_title(&fixture).expect("the prompt names the session");
+        assert_eq!(provisional.chars().count(), SESSION_TITLE_CHAR_CAP);
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+
+        fixture
+            .manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: fixture.owned_id.clone(),
+                model: None,
+                effort: None,
+                meta: renamed_meta(&provisional),
+            })
+            .expect("save the row back");
+
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+        assert_eq!(stored_title(&fixture), Some(provisional));
         fixture
             .manager
             .close(&fixture.owned_id, fixture.generation)

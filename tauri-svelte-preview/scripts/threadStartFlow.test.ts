@@ -12,6 +12,7 @@ import {
   titleFromPrompt,
   validateThreadStart
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
+import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
 
 {
   const projects = deriveThreadStartProjects([
@@ -256,6 +257,27 @@ assert.equal(
   'First line that names the work'
 );
 assert.equal(titleFromPrompt('', '/Users/me/app'), 'Build in app');
-assert.equal(titleFromPrompt('x'.repeat(100), '/Users/me/app').length, 72);
+
+// The provisional title has to be the same string the backend writes from the
+// same prompt. The rail saves the row back seconds after the send; a title that
+// differs by so much as a character reads as a rename there, and a renamed
+// session is never given a better name after its first turn.
+{
+  const longPrompt = `${'x'.repeat(100)}\nsecond line`;
+  const request = buildThreadStartRequest({
+    prompt: longPrompt,
+    provider: 'claude',
+    model: 'claude-opus',
+    effort: 'high',
+    access: 'acceptedits',
+    projectPath: '/Users/me/dev/work/mac-command-bar',
+    cwd: '/Users/me/dev/work/worktrees/mac-command-bar/tsk-808-rail',
+    branch: 'tsk-808-rail',
+    createNewWorktree: false
+  });
+  assert.equal(request?.title, sessionTitleFromPrompt(longPrompt));
+  assert.equal(request?.title.length, 64);
+  assert.equal(titleFromPrompt(longPrompt, '/Users/me/app'), sessionTitleFromPrompt(longPrompt));
+}
 
 console.log('threadStartFlow.test.ts passed');

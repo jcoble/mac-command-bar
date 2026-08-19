@@ -1038,7 +1038,7 @@
         <p>SQLite runs in WAL mode with <code>synchronous=NORMAL</code> and foreign keys enabled. A live event write uses an immediate transaction to upsert the session and append the event before anything is emitted to the UI. Deleting a session cascades its events, draft, annotations, and attachment rows; the rail’s Remove does that through <code>delete_agent_conversation_session</code>, so a removed session does not come back at the next launch. The attachment files in the vault are not removed yet (tracked follow-up).</p>
         <span class="source"><code>core/src/session_store.rs:7,155-223,304-345,388-435</code></span>
         <p>The version ladder upgrades in place and never rewrites a row. A version 1, 2 or 3 database goes straight to 4, each of those steps adding the <code>title_source</code> column if it is not already there.</p>
-        <span class="source"><code>core/src/session_store.rs:11,244-311,940-960</code></span>
+        <span class="source"><code>core/src/session_store.rs:7,179-314,957-972</code></span>
 
         <div class="callout current">
           <p><strong>The durable event journal is not trimmed.</strong> An older 10,000-event cap was removed. Snapshot and paging APIs enforce byte/row budgets for what is loaded into memory, while the journal itself remains complete. Only superseded “current state” events—currently usage and session configuration—are collapsed.</p>

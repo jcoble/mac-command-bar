@@ -49,7 +49,7 @@ impl HelperJob {
                 "Name this conversation in at most six words. Answer with the name alone: no quotation marks, no trailing period, no preamble."
             }
             Self::Inspect => {
-                "Answer the question about the text below in plain English, in three to five sentences; name one recommended next action."
+                "Answer the question about the text below in plain English, in three to five sentences; name one recommended next action. Use only what the text says."
             }
         }
     }
