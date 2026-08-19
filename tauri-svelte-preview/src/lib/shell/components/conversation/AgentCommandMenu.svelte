@@ -10,6 +10,14 @@
   }
   let { commands, activeIndex, emptyText = '', onSelect }: Props = $props();
   const visible = $derived(commands);
+  let rowEls: (HTMLButtonElement | null)[] = $state([]);
+
+  // The keyboard can move the highlight past what's currently scrolled into
+  // view (arrowing through a long list); this keeps the highlighted row on
+  // screen without disturbing scroll position when it's already visible.
+  $effect(() => {
+    rowEls[activeIndex]?.scrollIntoView({ block: 'nearest' });
+  });
 
   function sourceLabel(command: ConversationCommand): string {
     if (command.source === 'assembly') return 'Built-in';
@@ -24,6 +32,7 @@
   {#if visible.length}
     {#each visible as command, index (command.id)}
       <button
+        bind:this={rowEls[index]}
         class:active={index === activeIndex}
         id={`conversation-command-${command.id}`}
         data-testid="conversation-command-row"

@@ -10,7 +10,7 @@
   import type { ConversationAttachment, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
-  import { draftAfterSlashCommand, formatContextTokens, moveSlashMenuIndex, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
   import AttachmentLightbox from './AttachmentLightbox.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
@@ -378,16 +378,14 @@
             {#if contextMeter?.kind === 'percent'}
               <span
                 class="context-ring"
-                class:context-ring-warm={contextMeter.remaining <= 25}
+                class:context-ring-warm={contextMeter.warm}
                 class:context-ring-hot={contextMeter.remaining <= 10}
                 data-testid="conversation-context-remaining"
                 role="img"
                 aria-label={`${contextMeter.remaining}% context left`}
                 title={`${contextMeter.remaining}% context left`}
-                style={`--used:${100 - contextMeter.remaining}`}
+                style={`--remaining:${ringDash(contextMeter.remaining, 100)}`}
               ><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="ring-track" cx="10" cy="10" r="7.5" /><circle class="ring-fill" cx="10" cy="10" r="7.5" pathLength="100" /></svg></span>
-            {:else if contextMeter}
-              <span class="context-remaining" data-testid="conversation-context-remaining" title="Reported context usage">{formatContextTokens(contextMeter.usedTokens)} used</span>
             {/if}
             <div class="wide-controls"><ComposerConfigMenu {provider} state={configState} pending={pendingConfig} error={configError} onChange={onConfigChange} /></div>
             <div class="compact-controls"><CompactComposerControlsMenu {provider} state={configState} pending={pendingConfig} onChange={onConfigChange} /></div>
@@ -405,7 +403,7 @@
       {#if dragging}<p class="drop-hint" data-testid="conversation-drop-hint">Drop images to attach them</p>{/if}
     </div>
   </form>
-  <div class="composer-hint" data-testid="conversation-paste-hint"><span>Paste or drop images · type / for commands</span>{#if contextMeter}<span aria-hidden="true">·</span><span>{contextMeter.kind === 'percent' ? `${contextMeter.remaining}% context left` : `${formatContextTokens(contextMeter.usedTokens)} tokens used`}</span>{/if}</div>
+  <div class="composer-hint" data-testid="conversation-paste-hint"><span>Paste or drop images · type / for commands</span>{#if contextMeter?.kind === 'percent'}<span aria-hidden="true">·</span><span>{contextMeter.remaining}% left</span>{/if}</div>
 </div>
 
 <style>
@@ -493,16 +491,16 @@
   .send.stop { background: var(--color-bad); }
   .send.stop:hover:not(:disabled) { background: var(--color-bad); }
 
-  .context-remaining { flex: none; padding: var(--composer-meter-inset); border: 1px solid var(--composer-border); border-radius: var(--radius-pill); color: var(--color-text-2); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   /* The ring is the size of the icons beside it and drawn in the same quiet
-     colour, warming as the window fills so the last stretch is noticed without
-     being read. `pathLength` makes the circle 100 units round, so the dash is
-     the percentage itself. */
+     colour, warming as the window empties so the last stretch is noticed
+     without being read. `pathLength` makes the circle 100 units round, so the
+     dash is the remaining percentage itself — the ring empties as the window
+     fills, agreeing with the "N% left" text beside it. */
   .context-ring { display: grid; place-items: center; flex: none; width: var(--composer-control-size); height: var(--composer-control-size); color: var(--color-text-2); }
   .context-ring svg { width: 18px; height: 18px; transform: rotate(-90deg); }
   .context-ring circle { fill: none; stroke-width: 2.2; }
   .ring-track { stroke: color-mix(in srgb, currentColor 22%, transparent); }
-  .ring-fill { stroke: currentColor; stroke-linecap: round; stroke-dasharray: var(--used) 100; }
+  .ring-fill { stroke: currentColor; stroke-linecap: round; stroke-dasharray: var(--remaining) 100; }
   .context-ring-warm { color: var(--color-attention); }
   .context-ring-hot { color: var(--color-bad); }
   .menu-row-copy { display: flex; min-width: 0; flex-direction: column; gap: var(--menu-row-description-gap); }

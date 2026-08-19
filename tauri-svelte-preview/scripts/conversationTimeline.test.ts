@@ -314,3 +314,23 @@ const bareCompaction = displayItemsFromConversationEvents([event(1, { kind: 'con
 assert.equal(bareCompaction.length, 1);
 assert.equal(bareCompaction[0].kind, 'compaction');
 assert.equal(bareCompaction[0].preTokens, undefined);
+
+// ── Tool row titles strip fences (tool_title_strips_fences) ──────────────
+// Some providers stuff a fenced block into the title field instead of a
+// separate summary; a row should not print raw fence markers.
+const fencedTitleTool = displayItemFromAgentItem({
+  id: 'tool-fenced',
+  type: 'mcp-tool',
+  content: [],
+  providerMetadata: { title: 'Tool ```console\nls -la\n```' }
+});
+assert.equal(fencedTitleTool.title, 'Tool', 'the title drops the fenced block');
+assert.equal(fencedTitleTool.summary, 'ls -la', 'the summary is the first fenced line, fences and language tag stripped');
+
+const blankFenceTool = displayItemFromAgentItem({
+  id: 'tool-blank-fence',
+  type: 'mcp-tool',
+  content: [],
+  providerMetadata: { title: '```\n\n```' }
+});
+assert.equal(blankFenceTool.summary, '', 'a fence with no content has an empty summary');

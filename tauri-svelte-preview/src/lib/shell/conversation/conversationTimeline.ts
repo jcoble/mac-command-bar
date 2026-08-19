@@ -385,6 +385,15 @@ function toolKindOf(value: unknown, title = ''): ConversationToolKind {
   return 'tool';
 }
 
+/** The first readable line of a title's fenced block, with the fence
+ * markers and language tag stripped. Empty when the fence has no content. */
+function toolSummaryLine(raw: string): string {
+  const fenced = raw.match(/```[^\n]*\n([\s\S]*?)```/);
+  const body = fenced ? fenced[1] : '';
+  const line = body.split('\n').find((entry) => entry.trim().length > 0) ?? '';
+  return line.trim().slice(0, 80);
+}
+
 function toolStateOf(value: unknown): ConversationToolState {
   const normalized = stringOf(value, 'pending').toLowerCase().replaceAll('_', '-');
   if (['completed', 'complete', 'success', 'succeeded'].includes(normalized)) return 'completed';
@@ -442,7 +451,13 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     timestampMs: startedAt
   };
   if (kind === 'tool') {
-    const title = stringOf(metadata?.title, stringOf(metadata?.name, item.type));
+    const rawTitle = stringOf(metadata?.title, stringOf(metadata?.name, item.type));
+    // A raw title sometimes has a fenced block stuffed into it instead of a
+    // separate summary; when it does, the fence is the row's one-line
+    // preview and the title keeps only the plain text ahead of it.
+    const fenceIndex = rawTitle.indexOf('```');
+    const title = fenceIndex < 0 ? rawTitle : rawTitle.slice(0, fenceIndex).trim() || 'Tool';
+    const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : toolSummaryLine(rawTitle);
     const output = textOf(item.content) || stringOf(metadata?.output);
     const diff = stringOf(metadata?.diff, item.type === 'file-change' ? output : '');
     return {
@@ -455,7 +470,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
       output: output || undefined,
       diff: diff || undefined,
       path: stringOf(metadata?.path) || undefined,
-      summary: stringOf(metadata?.summary) || undefined,
+      summary,
       metadata,
       timestampMs: startedAt
     };

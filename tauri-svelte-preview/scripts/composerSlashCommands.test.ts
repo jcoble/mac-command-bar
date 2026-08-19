@@ -15,6 +15,7 @@ import {
   formatContextTokens,
   moveSlashMenuIndex,
   remainingContextPercent,
+  ringDash,
   slashCommandQuery,
   slashMenuState,
   snapshotConversationCommands
@@ -113,20 +114,42 @@ assert.equal(remainingContextPercent(null, 400), null);
 // ── What the composer shows for context ──────────────────────────────────
 assert.deepEqual(
   contextMeterState(50_000, 200_000),
-  { kind: 'percent', remaining: 75 },
+  { kind: 'percent', remaining: 75, warm: false },
   'a known context window still reports remaining percent'
 );
 assert.deepEqual(
   contextMeterState(398_832, null),
-  { kind: 'absolute', usedTokens: 398_832 },
-  'a missing context window falls back to the token count'
+  { kind: 'unknown' },
+  'a missing context window hides the indicator'
 );
 assert.deepEqual(
   contextMeterState(334_581_117, 237_500),
-  { kind: 'absolute', usedTokens: 334_581_117 },
+  { kind: 'unknown' },
   'usage larger than the window is treated as untrustworthy'
 );
-assert.equal(contextMeterState(null, null), null, 'nothing usable renders nothing');
+assert.deepEqual(contextMeterState(null, null), { kind: 'unknown' }, 'nothing usable renders nothing');
+
+// ── One-source context meter: ring and text agree (ring_and_text_agree) ──
+// The ring and the hint text both read this one object, so they can no
+// longer disagree about how much context is left.
+assert.deepEqual(
+  contextMeterState(36598, 200000),
+  { kind: 'percent', remaining: 82, warm: false },
+  'a healthy remaining share is not warm'
+);
+assert.deepEqual(
+  contextMeterState(160000, 200000),
+  { kind: 'percent', remaining: 20, warm: true },
+  'a low remaining share is warm'
+);
+assert.deepEqual(
+  contextMeterState(undefined, 200000),
+  { kind: 'unknown' },
+  'missing usage renders nothing'
+);
+assert.equal(ringDash(82, 100), 82, 'the ring fills to the remaining share of its circumference');
+assert.equal(ringDash(20, 100), 20);
+assert.equal(ringDash(0, 100), 0, 'an empty ring at zero remaining');
 
 // ── Token labels ─────────────────────────────────────────────────────────
 assert.equal(formatContextTokens(940), '940');
