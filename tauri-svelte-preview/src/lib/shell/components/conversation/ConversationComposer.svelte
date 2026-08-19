@@ -369,12 +369,12 @@
             </DropdownMenu.Root>
           </div>
           <div class="footer-right">
-            <!-- How full the context window is, as a ring: the arc is what has
-                 been used, so a fresh session shows an empty circle and a
-                 session near its limit shows one nearly closed. The number is
-                 in the title and the hint line below; the ring is for the
-                 glance. Only a raw token count is left as text — a ring needs
-                 the window to draw against. -->
+            <!-- How full the context window is, as a ring: the arc is what
+                 remains, so a fresh session shows a full circle and a session
+                 near its limit shows one nearly empty. The number is in the
+                 title and the hint line below; the ring is for the glance.
+                 Nothing is shown when the usage isn't trustworthy enough to
+                 turn into a percentage. -->
             {#if contextMeter?.kind === 'percent'}
               <span
                 class="context-ring"
