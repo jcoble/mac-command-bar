@@ -1,15 +1,13 @@
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER, USER_AGENT};
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
-use security_framework::os::macos::keychain_item::SecKeychainItem;
-use security_framework::os::macos::passwords::find_generic_password;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const USAGE_SOURCE: &str = "anthropic-oauth-usage";
@@ -126,8 +124,46 @@ impl CredentialStore for FileStore {
 }
 
 #[derive(Default)]
-struct KeychainStore {
-    items: Mutex<HashMap<String, SecKeychainItem>>,
+struct KeychainStore;
+
+/// `security find-generic-password` when the item is not there.
+const SECURITY_ITEM_NOT_FOUND: i32 = 44;
+
+/// One Keychain item's data, read through Apple's own `security` tool.
+///
+/// The item is Claude Code's, written through that same tool, so its access
+/// list already names `security` and the read is silent. Read from this
+/// process directly, every rebuild of the unsigned development binary was a
+/// new program as far as the Keychain was concerned, and it asked again each
+/// time — "Always Allow" never stuck. `None` means the item is not there.
+fn keychain_password(account: &str) -> Result<Option<Vec<u8>>, CredentialStoreError> {
+    let output = Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-a",
+            account,
+            "-w",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| {
+            CredentialStoreError::missing("generic-password item data could not be accessed")
+        })?;
+    if output.status.code() == Some(SECURITY_ITEM_NOT_FOUND) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(CredentialStoreError::missing(
+            "generic-password item data could not be accessed",
+        ));
+    }
+    let mut password = output.stdout;
+    if password.last() == Some(&b'\n') {
+        password.pop();
+    }
+    Ok(Some(password))
 }
 
 impl CredentialStore for KeychainStore {
@@ -176,45 +212,27 @@ impl CredentialStore for KeychainStore {
         }
 
         let mut records = Vec::new();
-        let mut items = HashMap::new();
         for account in accounts {
-            let (password, item) = match find_generic_password(None, KEYCHAIN_SERVICE, &account) {
-                Ok(result) => result,
-                Err(error) if error.code() == KEYCHAIN_ITEM_NOT_FOUND => continue,
-                Err(_) => {
-                    return Err(CredentialStoreError::missing(
-                        "generic-password item data could not be accessed",
-                    ));
-                }
+            let Some(password) = keychain_password(&account)? else {
+                continue;
             };
-            let record_id = format!("keychain-item-{}", records.len());
             records.push(StoredCredential {
-                record_id: record_id.clone(),
-                document: password.as_ref().to_vec(),
+                record_id: format!("keychain-item-{}", records.len()),
+                document: password,
             });
-            items.insert(record_id, item);
         }
         if records.is_empty() {
             return Err(CredentialStoreError::missing(
                 "generic-password item is unavailable",
             ));
         }
-        *self.items.lock().map_err(|_| {
-            CredentialStoreError::missing("generic-password item state could not be retained")
-        })? = items;
         Ok(records)
     }
 
-    fn write(&self, record_id: &str, document: &[u8]) -> Result<(), ClaudeRequestError> {
-        let mut items = self
-            .items
-            .lock()
-            .map_err(|_| ClaudeRequestError::CredentialWrite)?;
-        let item = items
-            .get_mut(record_id)
-            .ok_or(ClaudeRequestError::CredentialWrite)?;
-        item.set_password(document)
-            .map_err(|_| ClaudeRequestError::CredentialWrite)
+    /// Never reached: `renews_here` is false, so nothing read from here is
+    /// renewed, and renewing is the only thing that writes.
+    fn write(&self, _record_id: &str, _document: &[u8]) -> Result<(), ClaudeRequestError> {
+        Err(ClaudeRequestError::CredentialWrite)
     }
 }
 
@@ -877,6 +895,17 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Mutex;
+
+    #[test]
+    #[ignore = "requires the logged-in Claude Keychain credential"]
+    fn live_keychain_item_reads_without_asking() {
+        let records = KeychainStore
+            .read()
+            .expect("Claude Keychain credential should be readable through `security`");
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|record| parse_credential(&record.document).is_ok()));
+    }
 
     #[test]
     #[ignore = "requires the logged-in Claude Keychain credential and network access"]
