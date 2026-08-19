@@ -752,16 +752,6 @@ impl AcpClient {
     ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
         let offered = self.require_session(session_id)?.config_option_ids;
         let offers = |id: &str| offered.iter().any(|option| option == id);
-        if let Some(effort) = &update.reasoning_effort {
-            if !offers("effort") {
-                return Err(AgentRuntimeError::new(
-                    "unsupported-config",
-                    "This ACP session does not expose a reasoning-effort control",
-                ));
-            }
-            self.set_standard_config_option(session_id, "effort", effort)
-                .await?;
-        }
         if let Some(model_id) = &update.model {
             if offers("model") {
                 self.set_standard_config_option(session_id, "model", model_id)
@@ -777,6 +767,16 @@ impl AcpClient {
                     config.model = Some(model_id.clone())
                 })?;
             }
+        }
+        if let Some(effort) = &update.reasoning_effort {
+            if !offers("effort") {
+                return Err(AgentRuntimeError::new(
+                    "unsupported-config",
+                    "This ACP session does not expose a reasoning-effort control",
+                ));
+            }
+            self.set_standard_config_option(session_id, "effort", effort)
+                .await?;
         }
         if let Some(mode_id) = &update.approval_policy {
             self.transport

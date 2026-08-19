@@ -620,8 +620,7 @@ impl AgentRuntimeManager {
             .display()
             .to_string();
         let native_session_id = normalized_optional_id(request.native_session_id);
-        let reasoning_effort =
-            normalized_session_start_effort(request.provider, request.reasoning_effort)?;
+        let reasoning_effort = normalized_optional_id(request.reasoning_effort);
         if request.native_session_mode == AgentNativeSessionMode::Load
             && native_session_id.is_none()
         {
@@ -802,7 +801,14 @@ impl AgentRuntimeManager {
                 std::path::PathBuf::from(&session.cwd),
                 session.native_session_id.clone(),
                 session.native_session_mode,
-                session.spawn_reasoning_effort.clone(),
+                // What the session is on now, which a live change has already
+                // written. Only a session that has never reported an effort
+                // falls back to the one it was created with.
+                session
+                    .config
+                    .reasoning_effort
+                    .clone()
+                    .or_else(|| session.spawn_reasoning_effort.clone()),
                 session.config.model.clone(),
                 session.state == AgentRuntimeState::Suspended,
             )
@@ -1648,12 +1654,9 @@ impl AgentRuntimeManager {
                 None => {
                     // The adapter only starts when the first turn is sent, so a
                     // choice made now has no session to carry it. Keep it on the
-                    // record instead: the composer reads it back, and the spawn
-                    // reads `spawn_reasoning_effort` when it finally runs.
-                    let effort = normalized_session_start_effort(
-                        session.provider,
-                        update.reasoning_effort.clone(),
-                    )?;
+                    // record instead: the composer reads it back, and the start
+                    // asks the adapter for it when there is finally one.
+                    let effort = update.reasoning_effort.clone();
                     if let Some(model) = update.model.clone() {
                         session.config.model = Some(model);
                     }
@@ -2876,7 +2879,7 @@ fn recovered_session_from_row(
         ordered_events: None,
         cwd: row.cwd,
         spawn_reasoning_effort: row.effort,
-        adapter_offers_effort: false,
+        adapter_offers_effort: !stored.config.available_efforts.is_empty(),
         config: stored.config,
         connection,
         store: Arc::clone(store),
@@ -4974,23 +4977,6 @@ fn normalized_optional_id(value: Option<String>) -> Option<String> {
         let value = value.trim();
         (!value.is_empty()).then(|| value.to_string())
     })
-}
-
-fn normalized_session_start_effort(
-    provider: AgentConversationProvider,
-    value: Option<String>,
-) -> Result<Option<String>, String> {
-    let value = normalized_optional_id(value);
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if provider != AgentConversationProvider::Claude
-        || CLAUDE_SESSION_EFFORTS.iter().any(|effort| *effort == value)
-    {
-        Ok(Some(value))
-    } else {
-        Err("Claude session effort must be low, medium, high, or max".to_string())
-    }
 }
 
 /// How hard a session thinks is the adapter's own setting, asked for through
@@ -7976,6 +7962,7 @@ mod tests {
         // a different model, and the different model is what is shown.
         let after_start = manager.conversation_config(&owned_id).expect("config");
         assert_eq!(after_start.model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(after_start.reasoning_effort.as_deref(), Some("xhigh"));
 
         manager.close(&owned_id, connection.generation).await.unwrap();
         fs::remove_dir_all(root).unwrap();
@@ -8124,6 +8111,150 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// An effort chosen while a session is running has to survive the adapter
+    /// going away and coming back. Adapters stop when a turn ends, so the next
+    /// message reactivates one, and reactivation asks for the effort the
+    /// session is on now — not the one it was created with.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reactivating_a_session_asks_for_the_effort_it_is_on_now() {
+        let fixture = fixture_manager_with_provider(
+            "suspend_effort_reactivation",
+            AgentConversationProvider::Codex,
+            Some("medium"),
+        )
+        .await;
+
+        // The adapter answers the start-time effort with one of its own, so the
+        // session is on "xhigh" while it was created with "medium".
+        fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: Some("high".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect("a live effort change");
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config")
+                .reasoning_effort
+                .as_deref(),
+            Some("xhigh")
+        );
+
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+        fixture
+            .manager
+            .activate(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("reactivate");
+
+        let log = fs::read_to_string(fixture.root.join("suspend_effort_reactivation.jsonl"))
+            .expect("fixture request log");
+        assert!(
+            log.contains(r#""reasoningEffort":"xhigh""#),
+            "reactivation must ask for the effort the session is on now: {log}"
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// Whether the adapter has an effort control is a fact about the adapter,
+    /// not about this run of the app. A conversation read back from the store
+    /// after a restart still has one, and can still be re-pointed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_read_back_after_a_restart_can_still_change_its_effort() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let log = root.join("recovered-effort.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "suspend_recovered_effort",
+        );
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Claude, manifest.clone())]).unwrap();
+        let manager = AgentRuntimeManager::open(providers, &database).unwrap();
+        let connection = manager
+            .ensure_async(request(
+                root.to_str().unwrap(),
+                "owned-recovered-effort",
+                AgentConversationProvider::Claude,
+            ))
+            .await
+            .unwrap();
+        manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        drop(manager);
+
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)]).unwrap();
+        let recovered = AgentRuntimeManager::open(providers, &database).unwrap();
+        let config = recovered
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: connection.owned_id.clone(),
+                generation: connection.generation,
+                model: None,
+                reasoning_effort: Some("xhigh".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect("an adapter that offers an effort control still offers one after a restart");
+        assert_eq!(config.reasoning_effort.as_deref(), Some("xhigh"));
+
+        recovered
+            .close(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Which efforts exist is the adapter's answer, so a new session may be
+    /// started on any of them. A conversation left on an effort outside the
+    /// list this app can offer before an adapter exists must still be able to
+    /// start one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_new_session_may_start_on_any_effort_the_adapter_offers() {
+        let root = temp_root();
+        let log = root.join("ensure-effort.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "config_options",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let mut ensure_request = request(
+            root.to_str().unwrap(),
+            "owned-ensure-effort",
+            AgentConversationProvider::Claude,
+        );
+        ensure_request.reasoning_effort = Some("xhigh".to_string());
+
+        let connection = manager
+            .ensure_inner(ensure_request)
+            .expect("an effort the adapter offers is not refused before it runs")
+            .0;
+        assert_eq!(connection.config.reasoning_effort.as_deref(), Some("xhigh"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
