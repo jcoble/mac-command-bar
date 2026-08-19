@@ -1,5 +1,5 @@
 use crate::usage_db::{
-    UsageBreakdownRow, UsageDailyRow, UsageDailyTotalsRow, UsageDb, UsageFilter,
+    UsageBreakdownRow, UsageDailyRow, UsageDailyTotalsRow, UsageDb, UsageEvent, UsageFilter,
     UsageProviderSummaryRow, UsageSummary,
 };
 use crate::usage_indexer::UsageIndexer;
@@ -105,6 +105,52 @@ pub async fn refresh_usage_history(app: AppHandle) -> Result<usize, String> {
     })
     .await
     .map_err(|error| format!("usage task failed: {error}"))?
+}
+
+/// Files one helper-model call in the same store the agents' own token counts
+/// go to, so the Usage popover counts it without knowing the helper exists.
+/// The vendor is the provider ("openai", "anthropic"), the job is the source
+/// key, and the identifier is fresh every time so nothing is ever collapsed
+/// into an earlier row.
+pub fn record_helper_call(
+    app: &AppHandle,
+    job: &str,
+    vendor: &str,
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> Result<(), String> {
+    let event = UsageEvent {
+        provider: vendor.to_string(),
+        provider_instance_id: "local".to_string(),
+        owned_id: None,
+        workflow_id: None,
+        turn_id: None,
+        project_id: None,
+        workspace_id: None,
+        occurred_at_micros: now_micros(),
+        input_tokens,
+        output_tokens,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        model: model.to_string(),
+        estimated_cost_micros: None,
+        estimate_rate_version: None,
+        source_kind: "helper".to_string(),
+        source_event_id: uuid::Uuid::new_v4().to_string(),
+        source_key: format!("helper/{job}"),
+    };
+    let db = UsageDb::open(usage_db_path(app)?)?;
+    db.insert_events_with_cursor_deferred_rollup(&[event], None)?;
+    db.rebuild_daily_rollups()
+}
+
+fn now_micros() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_micros() as i64)
+        .unwrap_or_default()
 }
 
 pub fn usage_db_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {

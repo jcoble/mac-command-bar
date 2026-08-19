@@ -712,6 +712,52 @@ export async function refreshUsageHistoryFromTauri(): Promise<number | null> {
   return invoke<number>('refresh_usage_history');
 }
 
+/** Which service the helper model calls, and therefore which key it needs. */
+export type HelperVendor = 'openai' | 'anthropic';
+
+/** What Settings needs to draw the Helper section. The model lists come from
+ *  the backend so that the ids live in one place. */
+export type HelperSettingsView = {
+  vendor: HelperVendor;
+  model: string;
+  hasKey: boolean;
+  openaiModels: string[];
+  anthropicModels: string[];
+};
+
+/** The answer to the Test button: a sentence either way. */
+export type HelperTestResult = {
+  ok: boolean;
+  message: string;
+};
+
+export async function readHelperSettingsFromTauri(): Promise<HelperSettingsView | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<HelperSettingsView>('read_helper_settings');
+}
+
+export async function writeHelperSettingsFromTauri(
+  settings: { vendor: HelperVendor; model: string }
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('write_helper_settings', { settings });
+}
+
+/** Stores the key in the Keychain. An empty key removes the one that is there. */
+export async function setHelperKeyFromTauri(vendor: HelperVendor, key: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('set_helper_key', { vendor, key });
+}
+
+export async function testHelperFromTauri(): Promise<HelperTestResult | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<HelperTestResult>('test_helper');
+}
+
 export async function readTerminalSessionScrollbackFromTauri(
   sessionId: string
 ): Promise<string | null> {

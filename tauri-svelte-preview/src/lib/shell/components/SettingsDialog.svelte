@@ -29,6 +29,7 @@
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Search from '@lucide/svelte/icons/search';
   import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Type from '@lucide/svelte/icons/type';
 
@@ -46,6 +47,14 @@
     type SettingsSection
   } from '$lib/settingsStore.svelte';
   import { setCsharpLanguageServerEnabled, setLanguageServersEnabled } from '$lib/shell/editor/sourceIntelligence';
+  import {
+    readHelperSettingsFromTauri,
+    setHelperKeyFromTauri,
+    testHelperFromTauri,
+    writeHelperSettingsFromTauri,
+    type HelperSettingsView,
+    type HelperVendor
+  } from '$lib/tauriSource';
   import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
   import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
@@ -113,7 +122,8 @@
     { id: 'appearance', group: 'Interface', label: 'Appearance', icon: Palette },
     { id: 'editor', group: 'Workspace', label: 'Editor', icon: Type },
     { id: 'terminal', group: 'Workspace', label: 'Terminal', icon: SquareTerminal },
-    { id: 'general', group: 'Application', label: 'General', icon: SlidersHorizontal }
+    { id: 'general', group: 'Application', label: 'General', icon: SlidersHorizontal },
+    { id: 'helper', group: 'Application', label: 'Helper model', icon: Sparkles }
   ];
 
   /**
@@ -260,6 +270,41 @@
       description:
         'Off saves about 800MB of memory. Reference counts and project-wide search keep working. What you lose is the squiggles under mistakes, and the precision of go-to-definition when a name is used in more than one place.',
       keywords: 'roslyn omnisharp intellisense memory'
+    },
+    {
+      id: 'helper-vendor',
+      section: 'helper',
+      card: 'Which model',
+      title: 'Service',
+      description:
+        'Who the small helper model is asked. The app pays nothing for this; the key is yours and the calls are billed to you.',
+      keywords: 'openai anthropic provider vendor byok'
+    },
+    {
+      id: 'helper-model',
+      section: 'helper',
+      card: 'Which model',
+      title: 'Model',
+      description:
+        'Cheapest first. The work is a few hundred tokens at a time, so the cheapest model is usually the right one.',
+      keywords: 'gpt claude haiku cheap small'
+    },
+    {
+      id: 'helper-key',
+      section: 'helper',
+      card: 'Key',
+      title: 'API key',
+      description:
+        'Stored in your login Keychain, never in a settings file, and never shown again after it is saved. Saving an empty field removes the key and turns the helper off.',
+      keywords: 'secret token keychain password credentials'
+    },
+    {
+      id: 'helper-test',
+      section: 'helper',
+      card: 'Key',
+      title: 'Test',
+      description: 'Makes one tiny call and says what came back.',
+      keywords: 'check verify connection try'
     }
   ];
 
@@ -364,6 +409,78 @@
     if (!result.supported) settings.intelligence.csharpLanguageServer = before;
   }
 
+  /**
+   * The helper model's settings, as the app holds them. Not part of the store
+   * above: the app runs helper jobs itself, so vendor and model live in a file
+   * it can read with no window open, and the key lives in the Keychain. This
+   * screen is a view onto those, not a second copy of them.
+   */
+  let helper = $state<HelperSettingsView | null>(null);
+  /** What has been typed into the key field but not saved yet. */
+  let helperKey = $state('');
+  /** The last thing the Test button, or saving a key, had to say. */
+  let helperNote = $state<string | null>(null);
+  let helperTesting = $state(false);
+
+  const helperVendorItems = [
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'anthropic', label: 'Anthropic' }
+  ];
+
+  /** The models the chosen service offers, cheapest first. */
+  const helperModelItems = $derived(
+    (helper === null
+      ? []
+      : helper.vendor === 'anthropic'
+        ? helper.anthropicModels
+        : helper.openaiModels
+    ).map((id) => ({ value: id, label: id }))
+  );
+
+  async function loadHelper(): Promise<void> {
+    helper = await readHelperSettingsFromTauri();
+  }
+
+  /**
+   * Changing service changes which key is wanted, so the model goes back to
+   * that service's cheapest and the screen re-reads whether a key is stored.
+   */
+  async function chooseHelperVendor(value: string): Promise<void> {
+    if (!helper) return;
+    const vendor = value as HelperVendor;
+    const models = vendor === 'anthropic' ? helper.anthropicModels : helper.openaiModels;
+    const model = models[0] ?? helper.model;
+    helper = { ...helper, vendor, model };
+    helperNote = null;
+    helperKey = '';
+    await writeHelperSettingsFromTauri({ vendor, model });
+    await loadHelper();
+  }
+
+  async function chooseHelperModel(model: string): Promise<void> {
+    if (!helper) return;
+    helper = { ...helper, model };
+    await writeHelperSettingsFromTauri({ vendor: helper.vendor, model });
+  }
+
+  /** Saving hands the key to the Keychain and forgets it here. */
+  async function saveHelperKey(): Promise<void> {
+    if (!helper) return;
+    const removing = helperKey.trim().length === 0;
+    await setHelperKeyFromTauri(helper.vendor, helperKey);
+    helperKey = '';
+    helperNote = removing ? 'Key removed.' : 'Key saved to your Keychain.';
+    await loadHelper();
+  }
+
+  async function testHelper(): Promise<void> {
+    helperTesting = true;
+    helperNote = 'Asking…';
+    const result = await testHelperFromTauri();
+    helperTesting = false;
+    helperNote = result?.message ?? 'The helper model only works in the desktop app.';
+  }
+
   /** The label to show on a closed dropdown, given what is selected. */
   function labelFor(items: { value: string; label: string }[], value: string): string {
     return items.find((item) => item.value === value)?.label ?? value;
@@ -409,6 +526,12 @@
   // way to reach a setting, and it costs a person nothing to ignore.
   $effect(() => {
     if (open) searchField?.focus();
+  });
+
+  // Read the helper's settings each time the screen opens, so a key stored or
+  // removed elsewhere is not shown stale.
+  $effect(() => {
+    if (open) void loadHelper();
   });
 </script>
 
@@ -513,10 +636,14 @@
                   </p>
                 {/if}
               </div>
-              <Button variant="ghost" size="sm" onclick={resetShownSection} class="gap-1.5">
-                <RotateCcw aria-hidden="true" />
-                Reset section
-              </Button>
+              <!-- The Helper section has nothing in the settings store to put
+                   back, so it is not offered a reset it could not carry out. -->
+              {#if shownSection.id !== 'helper'}
+                <Button variant="ghost" size="sm" onclick={resetShownSection} class="gap-1.5">
+                  <RotateCcw aria-hidden="true" />
+                  Reset section
+                </Button>
+              {/if}
             </div>
 
             {#each shownCards as card (card.name)}
@@ -558,6 +685,14 @@
                       {@render settingRow(id, languageServersControl)}
                     {:else if id === 'csharp-language-server'}
                       {@render settingRow(id, csharpLanguageServerControl)}
+                    {:else if id === 'helper-vendor'}
+                      {@render settingRow(id, helperVendorControl)}
+                    {:else if id === 'helper-model'}
+                      {@render settingRow(id, helperModelControl)}
+                    {:else if id === 'helper-key'}
+                      {@render settingRow(id, helperKeyControl, true)}
+                    {:else if id === 'helper-test'}
+                      {@render settingRow(id, helperTestControl)}
                     {/if}
                   {/each}
                 </div>
@@ -755,6 +890,55 @@
     />
     {#if csharpLanguageServerNote}
       <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">{csharpLanguageServerNote}</p>
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet helperVendorControl()}
+  <SettingsSelect
+    items={helperVendorItems}
+    value={helper?.vendor ?? 'openai'}
+    ariaLabel="Helper service"
+    onChange={(value) => void chooseHelperVendor(value)}
+  />
+{/snippet}
+
+{#snippet helperModelControl()}
+  <SettingsSelect
+    items={helperModelItems}
+    value={helper?.model ?? ''}
+    ariaLabel="Helper model"
+    onChange={(value) => void chooseHelperModel(value)}
+  />
+{/snippet}
+
+{#snippet helperKeyControl()}
+  <div class="flex flex-col gap-1.5">
+    <div class="flex items-center gap-2">
+      <Input
+        bind:value={helperKey}
+        type="password"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder={helper?.hasKey ? 'Replace the stored key' : 'Paste your key'}
+        aria-label="Helper API key"
+        class="h-7 flex-1"
+      />
+      <Button variant="secondary" size="sm" onclick={() => void saveHelperKey()}>Save</Button>
+    </div>
+    <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">
+      {helper?.hasKey ? 'Key saved' : 'No key'}
+    </p>
+  </div>
+{/snippet}
+
+{#snippet helperTestControl()}
+  <div class="flex flex-col items-end gap-1.5">
+    <Button variant="secondary" size="sm" disabled={helperTesting} onclick={() => void testHelper()}>
+      Test
+    </Button>
+    {#if helperNote}
+      <p class="text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]">{helperNote}</p>
     {/if}
   </div>
 {/snippet}

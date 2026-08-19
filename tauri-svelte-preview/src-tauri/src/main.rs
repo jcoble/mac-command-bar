@@ -32,6 +32,7 @@ mod debug_log;
 mod git_diff_models;
 mod git_pr;
 mod git_workspace;
+mod helper;
 mod lsp;
 mod orchestration;
 mod product_identity;
@@ -6138,7 +6139,12 @@ fn main() {
             browser::inspect_browser_rect,
             browser::capture_browser_viewport,
             browser::open_browser_tab_devtools,
-            browser::open_browser_tab_external
+            browser::open_browser_tab_external,
+            helper::run_helper_job,
+            helper::set_helper_key,
+            helper::read_helper_settings,
+            helper::write_helper_settings,
+            helper::test_helper
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {

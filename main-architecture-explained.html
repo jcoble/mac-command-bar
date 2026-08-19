@@ -567,6 +567,7 @@
       <a href="#compaction">Compaction design</a>
       <a href="#dotnet">Rust for .NET</a>
       <a href="#native">Native surfaces</a>
+      <a href="#helper">Helper model</a>
       <a href="#sources">Source map</a>
     </nav>
 
@@ -657,6 +658,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-19 · “The app can call a small model of its own”</td><td>Helper model: bring-your-own-key OpenAI or Anthropic calls behind one transport, the key in the login Keychain under <code>Assembly Helper</code>, vendor and model in <code>helper-settings.json</code>, a Helper section in Settings with a Test button, and every successful call written to the usage store so it counts in the Usage popover.</td><td>19, 20</td></tr>
             <tr><td>2026-08-19 · Files panel: fs/opener/clipboard plugins, Trash command, watcher</td><td>The Files panel’s row menu makes, renames, removes, reveals and copies through <code>plugin-fs</code>, <code>plugin-opener</code> and <code>plugin-clipboard-manager</code>; <code>list_source_files</code> adds each listed root to the fs scope; Delete goes through a new <code>move_to_trash</code> command; the listed folder is watched, so the tree refreshes itself.</td><td>03, 18</td></tr>
             <tr><td>2026-08-19 · “An effort chosen mid-conversation stays chosen”</td><td>Reactivating a session asks the adapter for the effort the session is on now rather than the one it was created with; a conversation read back from the store keeps the adapter’s effort control, so it is not refused a change; a new session may start on any effort the adapter offers, not only the four this app can name before one runs.</td><td>04, 07</td></tr>
             <tr><td>2026-08-19 · “Claude’s model and effort are asked of the adapter”</td><td>A new Claude session takes what the adapter reports and then sets the chosen model and effort with <code>session/set_config_option</code>; the <code>MAX_THINKING_TOKENS</code> spawn mapping is gone; effort changes live whenever the adapter offers an <code>effort</code> option.</td><td>04, 07</td></tr>
@@ -1425,8 +1427,44 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
         </div>
       </section>
 
+      <section id="helper">
+        <span class="section-label">19 · Helper model</span>
+        <h2>A small model the app calls for itself.</h2>
+        <p class="intro">Everything above this section is the coding agent: a process Assembly starts, talks ACP to, and bills to whatever account that agent signs in with. The helper is the other thing — a short, cheap language model call the app makes on its own behalf, to name a session or to answer a question about one. It is bring-your-own-key: with no key stored it does not exist, and nothing in the app waits on it.</p>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Where the key lives</span>
+            <h3>The Keychain, never a settings file</h3>
+            <p>The key goes into the login Keychain under the service <code>Assembly Helper</code>, with the vendor name (<code>openai</code>, <code>anthropic</code>) as the account. It is read and written through <code>/usr/bin/security</code> for the reason §18 gives for the Claude sign-in: an unsigned development build is a new program to the Keychain after every rebuild, and an item that tool wrote already trusts that tool, so neither direction prompts. Settings never reads the key back — it only learns whether one is there. Saving an empty field removes it, which turns the helper off.</p>
+            <span class="source"><code>src-tauri/src/helper/keychain.rs</code></span>
+          </article>
+          <article class="card">
+            <span class="badge current">Two services, one shape</span>
+            <h3>One request, one answer, no memory</h3>
+            <p>OpenAI is asked through the Responses API (<code>instructions</code>, <code>input</code>, <code>max_output_tokens</code>); Anthropic through the Messages API (<code>system</code>, <code>messages</code>, <code>max_tokens</code>, and the <code>anthropic-version</code> header). Each vendor module phrases one request and reads one answer; a single transport sends it, with a twenty-second ceiling and one retry only when the call never left the machine. A timeout is not retried, and neither is a refusal. Nothing streams and nothing is remembered between calls, so a job is exactly as expensive as the text handed to it.</p>
+            <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>openai.rs</code> · <code>anthropic.rs</code></span>
+          </article>
+        </div>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Five commands</span>
+            <h3>What the frontend can ask for</h3>
+            <p><code>run_helper_job(job, input)</code> runs one job — <code>title</code> or <code>inspect</code> — and answers with the text or with the sentence explaining why not. <code>read_helper_settings</code> gives Settings the chosen vendor and model, whether a key is stored, and the model ids each vendor offers; <code>write_helper_settings</code> stores the choice; <code>set_helper_key</code> puts a key in the Keychain; <code>test_helper</code> makes one tiny call and answers “OK · 41 ms · 12 tokens” or the same sentence an error would give. Vendor and model are kept in <code>helper-settings.json</code> in the application data directory, not in the frontend’s settings store, because the app itself runs helper jobs and has to read the choice with no window open.</p>
+            <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>src/lib/tauriSource.ts</code> · <code>src/lib/shell/components/SettingsDialog.svelte</code></span>
+          </article>
+          <article class="card">
+            <span class="badge current">Counted like everything else</span>
+            <h3>Helper calls show up in Usage</h3>
+            <p>Every call that succeeds writes one row to the usage store through <code>record_helper_call</code>: the vendor as the provider, the model id, the input and output token counts, source kind <code>helper</code> and source key <code>helper/&lt;job&gt;</code>. That is the same table the indexed agent transcripts land in, so the Usage popover counts helper spend without knowing the helper exists, and no schema change was needed to carry it. A failed write is swallowed — someone asked for a title, not for bookkeeping.</p>
+            <span class="source"><code>src-tauri/src/usage_history.rs:115-154</code> · <code>src-tauri/src/usage_db.rs:17-38</code></span>
+          </article>
+        </div>
+      </section>
+
       <section id="sources">
-        <span class="section-label">19 · Repository source map</span>
+        <span class="section-label">20 · Repository source map</span>
         <h2>Where to read next.</h2>
         <p class="intro">Start with the manager and session store, then move outward to the adapter client and Svelte projection. The launcher scripts explain which executable actually runs on this machine.</p>
 
@@ -1453,6 +1491,7 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
           <div class="source-row"><strong>Compaction marker</strong><code>tauri-svelte-preview/src/lib/shell/components/conversation/CompactionItem.svelte</code> · <code>conversationTimeline.ts</code></div>
           <div class="source-row"><strong>Resources</strong><code>tauri-svelte-preview/src-tauri/src/resources.rs</code> · <code>core/src/scanners/resources.rs</code></div>
           <div class="source-row"><strong>Claude usage and Keychain</strong><code>tauri-svelte-preview/src-tauri/src/claude_quota.rs</code></div>
+          <div class="source-row"><strong>Helper model</strong><code>tauri-svelte-preview/src-tauri/src/helper/</code> · <code>mod.rs</code> · <code>openai.rs</code> · <code>anthropic.rs</code> · <code>keychain.rs</code></div>
         </div>
 
         <div class="callout current">
