@@ -1,5 +1,23 @@
 # mac-command-bar
 
+## ⛔ `main-architecture-explained.html` is the architecture source of truth (2026-08-19, owner)
+
+The page at the repository root, `main-architecture-explained.html`, is the single description of how
+the app works: boundaries, provider adapters, session/prompt/suspend lifecycle, storage, wire formats,
+frontend projection, native surfaces. It is the only architecture description that is kept current;
+there is no second copy anywhere in the tree (not under `docs/`, not in a plan).
+
+Any commit that changes what the page describes — a Tauri command, an event or payload, a table, an
+adapter version or protocol call, a lifecycle rule, a file's responsibility, a new subsystem — updates
+the page IN THE SAME COMMIT: fix the sections it touches, keep the `file:line` receipts true, and add a
+row to the change log in section 01 (commit, what changed, sections). A commit that changes nothing the
+page describes (styling, copy, tests, tooling) says so with the line `Architecture: unchanged` in its
+message body.
+
+Enforced by `.githooks/commit-msg`: a commit that neither stages the page nor carries that line is
+refused. One-time setup per clone: `git config core.hooksPath .githooks` (already set for this
+repository's worktrees). Paste this rule into every dispatch that may commit.
+
 ## ⛔ Every UI dispatch carries the Notion task and the screenshot paths (2026-08-17, owner)
 
 A sub-agent starts cold. It cannot see the conversation, the owner's messages, or any image the

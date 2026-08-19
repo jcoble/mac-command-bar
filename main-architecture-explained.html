@@ -1,0 +1,1489 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>From keystroke to sidecar — Assembly's agent architecture</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='13' fill='%231b6672'/%3E%3Cpath d='M14 19h36v6H14zm0 10h25v6H14zm0 10h31v6H14z' fill='%23f2b35d'/%3E%3Ccircle cx='49' cy='42' r='6' fill='%23f5f1e8'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --paper: light-dark(#edf3f2, #091418);
+      --sheet: light-dark(#f8fbfa, #102126);
+      --sheet-strong: light-dark(#ffffff, #152a30);
+      --ink: light-dark(#173139, #edf7f6);
+      --muted: light-dark(#61747a, #9eb2b6);
+      --line: light-dark(#c8d6d6, #2c454b);
+      --line-strong: light-dark(#8da8ab, #4e6d74);
+      --teal: light-dark(#1b6672, #6fc6d0);
+      --teal-soft: light-dark(#dcebed, #15343a);
+      --amber: light-dark(#ad650d, #f2b35d);
+      --amber-soft: light-dark(#f8e9d2, #392816);
+      --plum: light-dark(#6b536f, #cea9d2);
+      --plum-soft: light-dark(#eee5ef, #302533);
+      --green: light-dark(#387050, #81c99f);
+      --green-soft: light-dark(#dfede4, #173428);
+      --red: light-dark(#9a4338, #ef9a8e);
+      --red-soft: light-dark(#f4e1de, #391f1d);
+      --blue: light-dark(#335f96, #8db8ec);
+      --blue-soft: light-dark(#e1e9f4, #1b2d42);
+      --shadow: 0 22px 58px light-dark(rgb(25 60 67 / 11%), rgb(0 0 0 / 30%));
+      --display: "Avenir Next Condensed", "Arial Narrow", system-ui, sans-serif;
+      --body: Charter, "Iowan Old Style", Georgia, serif;
+      --sans: "Avenir Next", Inter, system-ui, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(90deg, color-mix(in srgb, var(--line) 22%, transparent) 1px, transparent 1px) 0 0 / 48px 48px,
+        linear-gradient(color-mix(in srgb, var(--line) 22%, transparent) 1px, transparent 1px) 0 0 / 48px 48px,
+        var(--paper);
+      color: var(--ink);
+      font: 18px/1.68 var(--body);
+      text-rendering: optimizeLegibility;
+    }
+
+    a { color: var(--teal); text-underline-offset: 0.18em; }
+    a:hover { color: var(--amber); }
+    a:focus-visible,
+    button:focus-visible,
+    summary:focus-visible {
+      outline: 3px solid var(--amber);
+      outline-offset: 4px;
+      border-radius: 4px;
+    }
+    code, pre { font-family: var(--mono); }
+    code {
+      padding: 0.1rem 0.3rem;
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--teal-soft) 75%, transparent);
+      font-size: 0.82em;
+    }
+    p code, li code, dd code, td code, h3 code, h4 code { overflow-wrap: anywhere; }
+    pre {
+      max-width: 100%;
+      overflow: auto;
+      margin: 1rem 0;
+      padding: 1.15rem 1.25rem;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--teal);
+      background: light-dark(#12252b, #071014);
+      color: #dff2f2;
+      font-size: 0.78rem;
+      line-height: 1.62;
+      tab-size: 2;
+      white-space: pre;
+    }
+    pre code { padding: 0; background: transparent; color: inherit; font-size: inherit; }
+
+    .skip-link {
+      position: fixed;
+      z-index: 120;
+      top: 1rem;
+      left: 1rem;
+      transform: translateY(-180%);
+      padding: 0.65rem 0.9rem;
+      background: var(--sheet-strong);
+      border: 1px solid var(--line-strong);
+      font: 700 0.8rem/1 var(--sans);
+    }
+    .skip-link:focus { transform: translateY(0); }
+    .reading-progress {
+      position: fixed;
+      z-index: 110;
+      inset: 0 0 auto;
+      height: 4px;
+      background: transparent;
+    }
+    .reading-progress span {
+      display: block;
+      width: 0;
+      height: 100%;
+      background: var(--amber);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 82vh;
+      padding: clamp(3.5rem, 7vw, 7.5rem) max(1.25rem, calc((100vw - 1480px) / 2));
+      border-bottom: 1px solid var(--line-strong);
+      background: var(--sheet);
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      top: -17vw;
+      right: -12vw;
+      width: min(47vw, 700px);
+      aspect-ratio: 1;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      box-shadow:
+        0 0 0 44px color-mix(in srgb, var(--teal) 7%, transparent),
+        0 0 0 88px color-mix(in srgb, var(--teal) 5%, transparent),
+        0 0 0 132px color-mix(in srgb, var(--teal) 3%, transparent);
+      pointer-events: none;
+    }
+    .hero-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(330px, 0.8fr);
+      gap: clamp(2rem, 5vw, 6rem);
+      align-items: end;
+      max-width: 1480px;
+      margin: 0 auto;
+    }
+    .eyebrow,
+    .section-label,
+    .nav-kicker,
+    .badge,
+    .source,
+    th {
+      font: 700 0.71rem/1.25 var(--mono);
+      letter-spacing: 0.085em;
+      text-transform: uppercase;
+    }
+    .eyebrow { margin: 0 0 1.3rem; color: var(--teal); }
+    h1, h2, h3, h4 {
+      font-family: var(--display);
+      font-weight: 650;
+      line-height: 1.03;
+      letter-spacing: -0.028em;
+      text-wrap: balance;
+    }
+    h1 { max-width: 980px; margin: 0; font-size: clamp(3.4rem, 8vw, 8.6rem); }
+    h2 { margin: 0.45rem 0 1.5rem; font-size: clamp(2.5rem, 5vw, 5.1rem); }
+    h3 { margin: 2.7rem 0 0.8rem; font-size: clamp(1.75rem, 3vw, 2.65rem); }
+    h4 { margin: 1.8rem 0 0.55rem; font-size: 1.34rem; }
+    p { max-width: 78ch; }
+    .hero .lede {
+      max-width: 780px;
+      margin: 2rem 0 0;
+      color: var(--muted);
+      font-size: clamp(1.14rem, 1.6vw, 1.44rem);
+      line-height: 1.5;
+    }
+    .hero-note {
+      align-self: end;
+      padding: 1.5rem;
+      border-left: 4px solid var(--teal);
+      background: var(--teal-soft);
+      box-shadow: var(--shadow);
+    }
+    .hero-note strong { display: block; margin-bottom: 0.5rem; font: 700 1.03rem/1.35 var(--sans); }
+    .hero-note p { margin: 0; color: var(--muted); }
+    .snapshot {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      max-width: 1480px;
+      margin: 4rem auto 0;
+      border: 1px solid var(--line-strong);
+      background: var(--sheet-strong);
+    }
+    .snapshot div { padding: 1.1rem 1.2rem; border-right: 1px solid var(--line); }
+    .snapshot div:last-child { border-right: 0; }
+    .snapshot b { display: block; font: 700 1.04rem/1.3 var(--sans); }
+    .snapshot span { display: block; margin-top: 0.3rem; color: var(--muted); font-size: 0.9rem; line-height: 1.42; }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1060px);
+      gap: clamp(2rem, 4vw, 5rem);
+      align-items: start;
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 4rem clamp(1.25rem, 3vw, 3rem) 8rem;
+    }
+    .toc {
+      position: sticky;
+      top: 1.5rem;
+      max-height: calc(100vh - 3rem);
+      overflow: auto;
+      padding: 1.25rem 0;
+      border-top: 3px solid var(--ink);
+      border-bottom: 1px solid var(--line-strong);
+    }
+    .nav-kicker { margin-bottom: 0.8rem; color: var(--muted); }
+    .toc a {
+      display: block;
+      padding: 0.43rem 0.7rem;
+      border-left: 2px solid transparent;
+      color: var(--muted);
+      font: 650 0.81rem/1.35 var(--sans);
+      text-decoration: none;
+    }
+    .toc a:hover,
+    .toc a[aria-current="true"] {
+      color: var(--ink);
+      border-left-color: var(--amber);
+      background: color-mix(in srgb, var(--amber-soft) 64%, transparent);
+    }
+    main { min-width: 0; }
+    section { scroll-margin-top: 2rem; margin-bottom: 7rem; }
+    .section-label { color: var(--teal); }
+    .intro { color: var(--muted); font-size: 1.21rem; line-height: 1.58; }
+    .plain-answer {
+      margin: 1.5rem 0;
+      padding: 1.55rem 1.7rem;
+      border-left: 5px solid var(--amber);
+      background: var(--amber-soft);
+      font-size: 1.13rem;
+    }
+    .plain-answer > :first-child { margin-top: 0; }
+    .plain-answer > :last-child { margin-bottom: 0; }
+
+    .two-up,
+    .three-up,
+    .four-up,
+    .truth-grid,
+    .provider-grid {
+      display: grid;
+      gap: 1rem;
+      margin: 1.6rem 0;
+    }
+    .two-up, .truth-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .three-up, .provider-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .four-up { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card,
+    .truth-card,
+    .provider-card {
+      padding: 1.35rem 1.45rem;
+      border: 1px solid var(--line);
+      background: var(--sheet-strong);
+    }
+    .card h3,
+    .truth-card h3,
+    .provider-card h3 { margin-top: 0.35rem; font-size: 1.55rem; }
+    .card p:last-child,
+    .truth-card p:last-child,
+    .provider-card p:last-child { margin-bottom: 0; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 1.55rem;
+      padding: 0.22rem 0.48rem;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+    }
+    .badge.current { color: var(--green); background: var(--green-soft); }
+    .badge.conditional { color: var(--amber); background: var(--amber-soft); }
+    .badge.proposed { color: var(--plum); background: var(--plum-soft); }
+    .badge.limit { color: var(--red); background: var(--red-soft); }
+    .badge.external { color: var(--blue); background: var(--blue-soft); }
+    .source {
+      display: block;
+      margin-top: 0.85rem;
+      color: var(--muted);
+      letter-spacing: 0;
+      text-transform: none;
+      overflow-wrap: anywhere;
+    }
+    .source code { background: transparent; padding: 0; font-size: inherit; }
+
+    .architecture {
+      margin: 2.2rem 0;
+      padding: clamp(1rem, 2.5vw, 2rem);
+      border: 1px solid var(--line-strong);
+      background: var(--sheet-strong);
+      box-shadow: var(--shadow);
+    }
+    .architecture figcaption { margin-bottom: 1.3rem; font: 700 0.9rem/1.4 var(--sans); }
+    .durable-map {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 68px minmax(0, 1.2fr) 68px minmax(0, 1fr);
+      gap: 0.65rem;
+      align-items: stretch;
+    }
+    .system-box {
+      min-width: 0;
+      padding: 1.1rem;
+      border: 1px solid var(--line);
+      background: var(--sheet);
+    }
+    .system-box.durable { border-top: 5px solid var(--green); }
+    .system-box.live { border-top: 5px solid var(--teal); }
+    .system-box.disposable { border-top: 5px solid var(--amber); }
+    .system-box h3 { margin: 0.3rem 0 0.65rem; font-size: 1.45rem; }
+    .system-box p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+    .connector {
+      display: grid;
+      place-items: center;
+      color: var(--amber);
+      font: 700 1.7rem/1 var(--mono);
+    }
+    .mini-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.55rem;
+      margin: 1.3rem 0;
+      counter-reset: flow;
+    }
+    .mini-flow > div {
+      position: relative;
+      min-height: 9rem;
+      padding: 2.7rem 0.9rem 0.9rem;
+      border: 1px solid var(--line);
+      background: var(--sheet-strong);
+      font: 650 0.9rem/1.42 var(--sans);
+    }
+    .mini-flow > div::before {
+      counter-increment: flow;
+      content: counter(flow, decimal-leading-zero);
+      position: absolute;
+      top: 0.75rem;
+      left: 0.85rem;
+      color: var(--amber);
+      font: 700 0.75rem/1 var(--mono);
+    }
+    .mini-flow small { display: block; margin-top: 0.45rem; color: var(--muted); font: 400 0.78rem/1.45 var(--sans); }
+
+    .sequence {
+      position: relative;
+      margin: 2rem 0;
+      padding-left: 3.4rem;
+      counter-reset: seq;
+    }
+    .sequence::before {
+      content: "";
+      position: absolute;
+      top: 0.5rem;
+      bottom: 0.5rem;
+      left: 1.05rem;
+      width: 1px;
+      background: var(--line-strong);
+    }
+    .sequence > li {
+      position: relative;
+      list-style: none;
+      margin: 0 0 1rem;
+      padding: 1rem 1.1rem;
+      border: 1px solid var(--line);
+      background: var(--sheet-strong);
+    }
+    .sequence > li::before {
+      counter-increment: seq;
+      content: counter(seq);
+      position: absolute;
+      left: -3.4rem;
+      top: 0.85rem;
+      display: grid;
+      place-items: center;
+      width: 2.15rem;
+      height: 2.15rem;
+      border-radius: 50%;
+      background: var(--teal);
+      color: var(--sheet-strong);
+      font: 700 0.76rem/1 var(--mono);
+    }
+    .sequence strong { font-family: var(--sans); }
+    .sequence p { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.95rem; }
+
+    table {
+      width: 100%;
+      margin: 1.5rem 0;
+      border-collapse: collapse;
+      background: var(--sheet-strong);
+      font-size: 0.94rem;
+    }
+    caption { padding: 0 0 0.65rem; text-align: left; color: var(--muted); font-style: italic; }
+    th, td { padding: 0.8rem 0.9rem; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--teal-soft); color: var(--ink); }
+    .changelog td:first-child, .changelog td:last-child { white-space: nowrap; }
+    td code { overflow-wrap: anywhere; }
+    ul.clean, ol.clean { padding-left: 1.3rem; }
+    ul.clean li, ol.clean li { margin: 0.55rem 0; }
+
+    .callout {
+      margin: 1.5rem 0;
+      padding: 1.2rem 1.35rem;
+      border: 1px solid var(--line);
+      border-left-width: 5px;
+      background: var(--sheet-strong);
+    }
+    .callout strong { font-family: var(--sans); }
+    .callout.current { border-left-color: var(--green); }
+    .callout.conditional { border-left-color: var(--amber); }
+    .callout.limit { border-left-color: var(--red); }
+    .callout.proposed { border-left-color: var(--plum); }
+    .callout p:first-child { margin-top: 0; }
+    .callout p:last-child { margin-bottom: 0; }
+
+    details {
+      margin: 1rem 0;
+      border: 1px solid var(--line);
+      background: var(--sheet-strong);
+    }
+    summary {
+      cursor: pointer;
+      padding: 0.9rem 1rem;
+      color: var(--ink);
+      font: 700 0.95rem/1.45 var(--sans);
+    }
+    details[open] summary { border-bottom: 1px solid var(--line); }
+    .details-body { padding: 0.2rem 1rem 1rem; }
+    .details-body > :last-child { margin-bottom: 0; }
+
+    .json-stack { display: grid; min-width: 0; gap: 1rem; margin: 1.5rem 0; }
+    .json-card { min-width: 0; border: 1px solid var(--line); background: var(--sheet-strong); }
+    .json-card header { padding: 0.75rem 1rem; border-bottom: 1px solid var(--line); font: 700 0.87rem/1.4 var(--sans); }
+    .json-card pre { margin: 0; border: 0; border-left: 4px solid var(--teal); }
+
+    .truth-line {
+      display: grid;
+      grid-template-columns: 155px minmax(0, 1fr);
+      gap: 1rem;
+      padding: 0.85rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .truth-line:last-child { border-bottom: 0; }
+    .truth-line dt { font: 700 0.83rem/1.4 var(--sans); }
+    .truth-line dd { margin: 0; color: var(--muted); }
+
+    .source-map {
+      display: grid;
+      gap: 0.65rem;
+      margin-top: 1.5rem;
+    }
+    .source-row {
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      gap: 1rem;
+      padding: 0.85rem 1rem;
+      border: 1px solid var(--line);
+      background: var(--sheet-strong);
+    }
+    .source-row strong { font: 700 0.85rem/1.4 var(--sans); }
+    .source-row code { overflow-wrap: anywhere; }
+
+    footer {
+      padding: 2.5rem max(1.25rem, calc((100vw - 1480px) / 2));
+      border-top: 1px solid var(--line-strong);
+      background: var(--sheet);
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    footer p { max-width: 1480px; margin: 0 auto; }
+
+    @media (max-width: 1120px) {
+      .layout { grid-template-columns: 220px minmax(0, 1fr); gap: 2rem; }
+      .provider-grid, .three-up { grid-template-columns: 1fr; }
+      .four-up { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .mini-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .mini-flow > div:last-child { grid-column: 1 / -1; min-height: auto; }
+    }
+    @media (max-width: 820px) {
+      body { font-size: 16px; }
+      .hero { min-height: auto; padding-top: 4.5rem; }
+      .hero-grid, .layout { grid-template-columns: 1fr; }
+      .hero-note { margin-top: 1rem; }
+      .snapshot { grid-template-columns: repeat(2, 1fr); }
+      .snapshot div:nth-child(2) { border-right: 0; }
+      .snapshot div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .toc { position: relative; top: auto; max-height: none; }
+      .toc a { display: inline-block; margin: 0.15rem; border: 1px solid var(--line); }
+      .toc a:hover, .toc a[aria-current="true"] { border-color: var(--amber); }
+      .durable-map { grid-template-columns: 1fr; }
+      .connector { min-height: 42px; transform: rotate(90deg); }
+      .two-up, .truth-grid { grid-template-columns: 1fr; }
+      section { margin-bottom: 5rem; }
+    }
+    @media (max-width: 520px) {
+      h1 { font-size: clamp(3rem, 17vw, 4.7rem); }
+      h2 { font-size: clamp(2.25rem, 13vw, 3.5rem); }
+      .snapshot, .four-up, .mini-flow { grid-template-columns: 1fr; }
+      .snapshot div { border-right: 0; border-bottom: 1px solid var(--line); }
+      .snapshot div:last-child { border-bottom: 0; }
+      .mini-flow > div:last-child { grid-column: auto; }
+      .sequence { padding-left: 2.8rem; }
+      .sequence > li::before { left: -2.8rem; }
+      .truth-line, .source-row { grid-template-columns: 1fr; gap: 0.35rem; }
+      table { display: block; overflow-x: auto; white-space: normal; }
+      pre { font-size: 0.71rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+    @media print {
+      .reading-progress, .toc, .skip-link { display: none; }
+      .hero { min-height: 0; }
+      .layout { display: block; max-width: none; }
+      section { break-inside: avoid-page; }
+      details { break-inside: avoid; }
+      details > .details-body { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#guide">Skip to the guide</a>
+  <div class="reading-progress" aria-hidden="true"><span></span></div>
+
+  <header class="hero">
+    <div class="hero-grid">
+      <div>
+        <p class="eyebrow">Assembly architecture · implementation guide</p>
+        <h1>From keystroke to sidecar.</h1>
+        <p class="lede">How Svelte, Tauri, Rust, ACP adapters, native coding agents, SQLite, provider transcripts, terminals, and the future compaction boundary fit together.</p>
+      </div>
+      <aside class="hero-note" aria-label="Source authority">
+        <strong>This guide describes the newer worktree.</strong>
+        <p>Written against <code>tsk-808-assembly-wave</code> at <code>ce644e3</code>; kept current through <code>424aae7</code> (2026-08-19). It does not describe the older code on <code>main</code>. This page is the app’s architecture source of truth: a commit that changes what it describes updates it in the same commit and adds a row to the <a href="#changelog">change log</a>.</p>
+      </aside>
+    </div>
+    <div class="snapshot" aria-label="Architecture snapshot">
+      <div><b>Live ACP runtime</b><span>Rust is a real ACP client now, not the old unwired provider spike.</span></div>
+      <div><b>3 provider paths</b><span>Codex, Claude, and optional Antigravity/Agy adapters.</span></div>
+      <div><b>SQLite schema v3</b><span>Durable sessions, ordered events, drafts, annotations, and attachments.</span></div>
+      <div><b>Turn-level suspension</b><span>Quiescent resumable sessions release heavy sidecars between turns.</span></div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Guide sections">
+      <div class="nav-kicker">On this page</div>
+      <a href="#answer">The short answer</a>
+      <a href="#truth">What is current</a>
+      <a href="#changelog">Change log</a>
+      <a href="#vocabulary">Vocabulary</a>
+      <a href="#topology">System topology</a>
+      <a href="#providers">Provider adapters</a>
+      <a href="#startup">App startup</a>
+      <a href="#session-start">Starting a session</a>
+      <a href="#prompt">Every message</a>
+      <a href="#updates">Streaming and tools</a>
+      <a href="#shutdown">After each turn</a>
+      <a href="#persistence">SQLite and storage</a>
+      <a href="#formats">Wire formats</a>
+      <a href="#restart">Restart and history</a>
+      <a href="#svelte">Svelte and Markdown</a>
+      <a href="#terminal">PTY handoff</a>
+      <a href="#accounting">Counts and context</a>
+      <a href="#compaction">Compaction design</a>
+      <a href="#dotnet">Rust for .NET</a>
+      <a href="#native">Native surfaces</a>
+      <a href="#sources">Source map</a>
+    </nav>
+
+    <main id="guide">
+      <section id="answer">
+        <span class="section-label">00 · The short answer</span>
+        <h2>Two durable ledgers. One disposable process.</h2>
+        <p class="intro">The Svelte interface does not talk to Claude, Codex, or Agy directly. It calls Tauri commands. Rust owns the session, records every normalized event in SQLite, launches an ACP adapter only when work begins, and streams ordered updates back to Svelte.</p>
+
+        <div class="plain-answer">
+          <p><strong>The easiest accurate mental model is this:</strong></p>
+          <p>The provider keeps the model’s real conversation context in its own native session. Assembly keeps a second, durable, normalized account of the conversation in <code>sessions.db</code> so the UI can restart, page backward, restore drafts, and audit what happened. The ACP adapter is a translator process between them. When a turn is finished and nothing is still running, Rust disconnects that translator to reclaim memory, but it keeps both durable records and the provider’s native session ID.</p>
+        </div>
+
+        <figure class="architecture">
+          <figcaption>The central architecture: provider context and Assembly history survive; the heavy bridge can disappear.</figcaption>
+          <div class="durable-map">
+            <div class="system-box durable">
+              <span class="badge current">Durable</span>
+              <h3>Provider-native session</h3>
+              <p>Claude, Codex, or Agy owns the context the model resumes. Its native session ID is stored by Assembly, but the provider is the context authority.</p>
+            </div>
+            <div class="connector" aria-hidden="true">↔</div>
+            <div class="system-box live">
+              <span class="badge current">Assembly</span>
+              <h3>Rust manager + <code>sessions.db</code></h3>
+              <p>Stable identity, ordered journal, drafts, attachments, recovery state, writer ownership, and the event stream that Svelte renders.</p>
+            </div>
+            <div class="connector" aria-hidden="true">↔</div>
+            <div class="system-box disposable">
+              <span class="badge conditional">Disposable</span>
+              <h3>ACP adapter sidecar</h3>
+              <p>A child process translating newline-delimited ACP JSON-RPC to the provider’s native API or CLI. It is re-created and resumed when needed.</p>
+            </div>
+          </div>
+        </figure>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">What exists now</span>
+            <h3>A real ACP client</h3>
+            <p>The newer Rust backend uses the pinned <code>agent-client-protocol</code> crate, a provider registry, an ACP stdio client, a runtime manager, and a durable SQLite store.</p>
+            <span class="source"><code>src-tauri/Cargo.toml:11-34</code> · <code>providers/acp_client.rs</code> · <code>manager.rs</code></span>
+          </article>
+          <article class="card">
+            <span class="badge limit">What does not exist yet</span>
+            <h3>Assembly-owned compaction</h3>
+            <p>There is no backend summarizer, compaction table, or Assembly-owned compaction boundary in this worktree. What does exist: when the <em>provider</em> compacts its own context, the adapter reports it, Rust records a <code>contextCompaction</code> event, and the transcript shows a marker. The compaction section designs the Assembly-owned addition and marks it as proposed.</p>
+            <span class="source"><code>conversationTypes.ts:231-280,648-683</code> · <code>session_store.rs:184-223</code> · <code>manager.rs:4496-4510</code></span>
+          </article>
+        </div>
+      </section>
+
+      <section id="truth">
+        <span class="section-label">01 · Source authority</span>
+        <h2>What changed from the stale guide.</h2>
+        <p class="intro">The old explanation was accurate for old <code>main</code>: PTY-owned agents, provider JSONL tail polling, an unwired Rust spike, and no conversation database. Those are no longer the main structured-conversation architecture in this worktree.</p>
+
+        <div class="truth-grid">
+          <article class="truth-card">
+            <span class="badge current">Current worktree</span>
+            <h3>ACP is wired</h3>
+            <p>Rust launches trusted adapter manifests, negotiates capabilities, creates or resumes native sessions, prompts over ACP, handles agent requests, and normalizes updates.</p>
+          </article>
+          <article class="truth-card">
+            <span class="badge current">Current worktree</span>
+            <h3>History is database-backed</h3>
+            <p><code>sessions.db</code> is the durable Assembly journal. Svelte loads bounded windows from SQLite and can page backward. Provider JSONL is now an import/fallback source, not the only UI source.</p>
+          </article>
+          <article class="truth-card">
+            <span class="badge current">Current worktree</span>
+            <h3>Images are typed ACP content</h3>
+            <p>Structured prompts send text and base64 image blocks when the provider advertises image support. Paths are appended only in the raw terminal fallback.</p>
+          </article>
+          <article class="truth-card">
+            <span class="badge current">Current worktree</span>
+            <h3>Markdown is real and safe</h3>
+            <p>The frontend tokenizes GitHub-flavored Markdown with <code>marked</code>, converts it to typed blocks, and renders escaped Svelte nodes. It does not inject generated HTML.</p>
+          </article>
+        </div>
+
+        <div class="callout limit">
+          <p><strong>Do not blend branches mentally.</strong> Older plans may still describe interim designs. For “what runs,” the code in this worktree wins, and this page is the only description of it that is kept current. It calls out external and proposed parts instead of presenting them as shipped.</p>
+        </div>
+
+        <h3 id="changelog">Change log</h3>
+        <p>Every commit that changes what this page describes adds a row here and updates the sections it names. A commit that changes nothing described here says so in its message body with the line <code>Architecture: unchanged</code>; the repository’s <code>.githooks/commit-msg</code> hook refuses a commit that does neither.</p>
+        <table class="changelog">
+          <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
+          <tbody>
+            <tr><td><code>424aae7</code></td><td>Provider compaction is recorded: an ACP <code>context_compaction</code> update becomes a <code>contextCompaction</code> event; the Codex bridge forwards <code>thread/compacted</code>; Claude <code>compact_boundary</code> and Codex <code>context_compacted</code> transcript records import as the same event; the reducer also infers a compaction from a large usage drop; the transcript shows a “Context compacted” marker.</td><td>00, 08, 12, 13, 15, 16</td></tr>
+            <tr><td><code>72edd13</code></td><td>The Context and Run tabs group their content into cards. Presentation only.</td><td>—</td></tr>
+            <tr><td><code>97dc734</code></td><td>The composer’s backdrop runs the width of the panel with a long, soft fade. Presentation only.</td><td>—</td></tr>
+            <tr><td><code>a723996</code></td><td>Resources measures each process by its physical footprint (Activity Monitor’s “Memory”) and attributes the app’s WebKit helper processes to it.</td><td>18</td></tr>
+            <tr><td><code>df39bdf</code></td><td>Claude runs on <code>@agentclientprotocol/claude-agent-acp</code> 0.70.0, the version <code>capabilities.rs</code> declares; the <code>claude-code-acp</code> launcher path is gone. Model and effort arrive as <code>configOptions</code> and are set with <code>session/set_config_option</code>.</td><td>04, 06, 07</td></tr>
+            <tr><td><code>3ed8afa</code></td><td>Claude usage reads the sign-in from the Keychain through <code>/usr/bin/security</code>, so an unsigned development build no longer prompts.</td><td>18</td></tr>
+            <tr><td><code>81ad473</code></td><td>One manager entry point for a send: <code>send_message</code> activates, applies model and approval policy, prompts, and stops the adapter it started when the send is refused.</td><td>06, 07, 09</td></tr>
+            <tr><td><code>2db3da6</code></td><td>Sub-agent <code>childUpdate</code> payloads draw no transcript row; an unknown item with no text is hidden.</td><td>08, 13</td></tr>
+            <tr><td><code>c99b8a2</code></td><td>Removing a session deletes its row from <code>sessions.db</code> (<code>delete_agent_conversation_session</code>).</td><td>06, 10</td></tr>
+            <tr><td><code>83986b4</code></td><td>The new-session draft falls back to the model, effort and access ids each provider actually takes; a start error from one session is put down when another is selected. Frontend only.</td><td>—</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="vocabulary">
+        <span class="section-label">02 · Vocabulary</span>
+        <h2>Protocol, adapter, agent, session.</h2>
+        <p class="intro">These words name different layers. Keeping them separate makes the whole system much easier to reason about.</p>
+
+        <dl>
+          <div class="truth-line">
+            <dt>ACP</dt>
+            <dd><strong>Agent Client Protocol.</strong> A JSON-RPC contract for initialization, sessions, prompts, streaming updates, cancellation, permissions, user input, configuration, and capabilities. It is the language on the wire, not the model.</dd>
+          </div>
+          <div class="truth-line">
+            <dt>ACP client</dt>
+            <dd>Assembly’s Rust code. It spawns an adapter, writes requests to stdin, reads stdout, answers requests from the adapter, and maps provider-specific updates into one app vocabulary.</dd>
+          </div>
+          <div class="truth-line">
+            <dt>ACP adapter</dt>
+            <dd>A provider-specific child process. It accepts standard ACP on one side and translates to Codex app-server, the Claude Code adapter, or Agy stream JSON on the other.</dd>
+          </div>
+          <div class="truth-line">
+            <dt>Coding agent</dt>
+            <dd>The underlying program that performs the actual model and tool work: Codex, Claude Code, or Antigravity/Agy. It may have its own native protocol and transcript storage.</dd>
+          </div>
+          <div class="truth-line">
+            <dt>Tauri</dt>
+            <dd>The desktop boundary. Svelte invokes named Rust commands in-process; Rust emits named events back to the webview. There is no HTTP server between this UI and its backend.</dd>
+          </div>
+          <div class="truth-line">
+            <dt>Sidecar</dt>
+            <dd>A child process launched and supervised by the desktop app. Here, it is usually the ACP adapter and sometimes a native provider process beneath it.</dd>
+          </div>
+        </dl>
+
+        <h3>The IDs you will see</h3>
+        <table>
+          <thead><tr><th>Name</th><th>Owner</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>ownedId</code></td><td>Assembly</td><td>The stable primary key. It keys the SQLite session, events, drafts, attachments, workspace state, and rail row.</td></tr>
+            <tr><td><code>nativeSessionId</code></td><td>Provider</td><td>The provider’s resumable conversation/context ID. It can be absent before the first ACP session is created.</td></tr>
+            <tr><td><code>generation</code></td><td>Rust manager</td><td>An activation/configuration incarnation. Stale UI requests are rejected when their generation no longer matches.</td></tr>
+            <tr><td><code>sequence</code></td><td>SQLite journal</td><td>The durable per-session event order. Live events increase; imported older history may use negative sequence numbers.</td></tr>
+            <tr><td><code>turnId</code></td><td>Assembly/provider</td><td>One prompt-to-result cycle.</td></tr>
+            <tr><td><code>itemId</code></td><td>Normalizer</td><td>One message, reasoning block, command, tool, file change, plan, or similar timeline item.</td></tr>
+            <tr><td><code>providerInstanceId</code></td><td>Runtime</td><td>Identifies the adapter/provider incarnation that produced an event.</td></tr>
+            <tr><td><code>ptySessionId</code></td><td>Terminal registry</td><td>A native CLI terminal session. This is deliberately separate from an ACP session.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="topology">
+        <span class="section-label">03 · Topology</span>
+        <h2>Who talks to whom.</h2>
+        <p class="intro">The normal structured path crosses four boundaries. Only the middle boundary—between Rust and the adapter—is ACP.</p>
+
+        <div class="mini-flow" aria-label="Structured message flow">
+          <div>Svelte webview<small>Components, stores, reducer, composer, safe Markdown renderer.</small></div>
+          <div>Tauri commands + events<small>Typed in-process IPC. No localhost REST API.</small></div>
+          <div>Rust runtime manager<small>Identity, writer lease, SQLite, activation, normalization, recovery.</small></div>
+          <div>ACP sidecar over stdio<small>One JSON-RPC object per line on stdin/stdout.</small></div>
+          <div>Native coding agent<small>Codex app-server, Claude Code adapter internals, or <code>agy</code> stream JSON.</small></div>
+        </div>
+
+        <div class="three-up">
+          <article class="card">
+            <span class="badge current">Boundary 1</span>
+            <h3>Svelte ↔ Rust</h3>
+            <p>Svelte calls commands such as ensure, send, respond to approval, read snapshot, load older, save draft, and manage attachments. Rust emits <code>agent-conversation-event</code>.</p>
+          </article>
+          <article class="card">
+            <span class="badge current">Boundary 2</span>
+            <h3>Rust ↔ adapter</h3>
+            <p>ACP JSON-RPC 2.0 over newline-delimited stdin/stdout. Requests have numeric IDs; notifications do not; responses resolve pending one-shot channels.</p>
+          </article>
+          <article class="card">
+            <span class="badge external">Boundary 3</span>
+            <h3>Adapter ↔ provider</h3>
+            <p>Provider-specific. Codex bridge speaks app-server JSON-RPC. Agy adapter invokes stream JSON. Claude behavior lives in the installed external adapter.</p>
+          </article>
+        </div>
+
+        <div class="callout current">
+          <p><strong>The Workflow Engine reuses this same runtime.</strong> Startup constructs <code>WorkflowEngine::managed(agent_runtime.clone())</code>. Workflows are orchestration above the ACP manager, not a second hidden way of talking to agents.</p>
+          <span class="source"><code>src-tauri/src/main.rs:5891-5903</code></span>
+        </div>
+      </section>
+
+      <section id="providers">
+        <span class="section-label">04 · Provider adapters</span>
+        <h2>One protocol, three translations.</h2>
+        <p class="intro">The Rust provider registry does not hardcode “run a model.” It holds trusted executable manifests, validates them, and constructs the same <code>AcpRuntimeAdapter</code> interface for each provider.</p>
+
+        <div class="provider-grid">
+          <article class="provider-card">
+            <span class="badge current">Default development path</span>
+            <h3>Codex</h3>
+            <p><strong>Manifest ID:</strong> <code>codex-acp</code></p>
+            <p><strong>Actual launcher:</strong> <code>dev-next.sh</code> prefers the installed <code>codex</code> CLI and generates a wrapper for the repository’s <code>tools/codex-acp-bridge/bridge.mjs</code>. It falls back to an installed <code>codex-acp</code> binary only when native Codex is absent.</p>
+            <p>The bridge converts ACP sessions and prompts into Codex <code>thread/start</code>, <code>thread/resume</code>, <code>turn/start</code>, <code>turn/interrupt</code>, approvals, deltas, and completed items.</p>
+            <span class="source"><code>scripts/dev-next.sh:22-66</code> · <code>tools/codex-acp-bridge/bridge.mjs:990-1174</code></span>
+          </article>
+          <article class="provider-card">
+            <span class="badge external">Installed external adapter</span>
+            <h3>Claude</h3>
+            <p><strong>Manifest ID:</strong> <code>claude-agent-acp</code> — <code>@agentclientprotocol/claude-agent-acp</code> 0.70.0, the version <code>CLAUDE_AGENT_ACP_VERSION</code> declares. It bundles its own Claude Code SDK and CLI; <code>CLAUDE_CODE_EXECUTABLE</code> and <code>MAX_THINKING_TOKENS</code> in its environment are honoured.</p>
+            <p><strong>Actual launcher:</strong> the development script requires the installed command <code>claude-agent-acp</code> (no fallback to the retired <code>claude-code-acp</code>), regenerates <code>~/.mac-command-bar/claude-acp-wrapper.sh</code>, and unsets nested Claude session environment markers before launching it.</p>
+            <p>Its implementation is external to this repository. Assembly treats it as an ACP agent and learns its session, image, command, and interaction capabilities during <code>initialize</code>. <code>session/new</code> answers with <code>modes</code> and <code>configOptions</code> (<code>mode</code>, <code>model</code>, <code>effort</code>, <code>agent</code>) rather than a <code>models</code> list; the client remembers the offered option ids and changes model or effort with <code>session/set_config_option</code>, whose reply carries the whole option set back. The adapter has no <code>session/set_model</code>.</p>
+            <span class="source"><code>scripts/dev-next.sh:21-90</code> · <code>capabilities.rs:11</code> · <code>providers/acp_client.rs:58-60,748-815,1238-1293</code> · <code>providers/mod.rs:175-226</code></span>
+          </article>
+          <article class="provider-card">
+            <span class="badge conditional">Optional recon adapter</span>
+            <h3>Antigravity / Agy</h3>
+            <p><strong>Manifest ID:</strong> <code>agy-acp</code></p>
+            <p>It is registered only when both <code>agy</code> and a built adapter binary exist. The adapter source currently lives under the recon artifact tree, translates ACP to <code>agy --output-format stream-json</code>, and persists its session-to-conversation mapping separately.</p>
+            <p>Agy lacks interactive ACP permission-answer support, so the development wrapper explicitly passes its skip-permission mode.</p>
+            <span class="source"><code>scripts/dev-next.sh:95-113</code> · <code>artifacts/recon/probe-agy/agy-acp/README.md:1-21,60-61,109-111</code></span>
+          </article>
+        </div>
+
+        <h3>The Rust adapter interface</h3>
+        <pre><code>trait AgentRuntimeAdapter {
+    initialize(...)
+    new_session(...)
+    load_session(...)
+    resume_session(...)
+    detach_session(...) // stop transport; keep native session
+    close_session(...)  // intentionally close native session
+}</code></pre>
+        <p>That trait is the provider boundary. Today its live structured handle has one implementation family: ACP. Codex, Claude, and Agy differ through manifests and the adapter process, not through three separate Svelte pipelines.</p>
+        <span class="source"><code>providers/mod.rs:23-127</code> · <code>providers/acp.rs:15-216</code></span>
+
+        <div class="callout limit">
+          <p><strong>Integrity limitation:</strong> the registry requires a 64-character SHA-shaped value and an absolute existing executable, and the launch scripts calculate wrapper hashes. The Rust validator checks the hash’s shape but does not recompute the executable’s bytes. “Pinned and identified” is accurate; “cryptographically verified at runtime” is not yet accurate.</p>
+          <span class="source"><code>capabilities.rs:14-37,98-108</code></span>
+        </div>
+      </section>
+
+      <section id="startup">
+        <span class="section-label">05 · Desktop startup</span>
+        <h2>What happens when Assembly opens.</h2>
+        <p class="intro">Startup reconstructs durable session metadata first. It does not eagerly start one ACP process per session.</p>
+
+        <ol class="sequence">
+          <li><strong>Tauri resolves the application data directory.</strong><p>Rust opens <code>sessions.db</code> there and creates or migrates schema version 3.</p></li>
+          <li><strong>Rust builds the trusted provider registry.</strong><p>It reads the Codex, Claude, and optional Agy executable/hash environment pairs prepared by the launcher.</p></li>
+          <li><strong>The runtime manager recovers sessions.</strong><p>Stored rows become suspended, disconnected in-memory session records with their native IDs, capabilities, configuration, and next durable sequence. No adapter is attached yet.</p></li>
+          <li><strong>Legacy import runs only when appropriate.</strong><p>If the database has no owned sessions, the manager can import provider transcript history into the normalized journal rather than discarding it.</p></li>
+          <li><strong>Rust starts the stale-sidecar reaper.</strong><p>It removes marked adapter process groups whose owning app instance is dead. It does not kill sidecars belonging to a live Assembly instance.</p></li>
+          <li><strong>Tauri installs the event emitter.</strong><p>Normalized manager events are emitted to the webview as <code>agent-conversation-event</code>.</p></li>
+          <li><strong>The Svelte route attaches one event listener.</strong><p>It then initializes the terminal service, asks Rust for live PTYs and persisted sessions, reconciles them, and hydrates the rail from SQLite.</p></li>
+          <li><strong>Small UI workspace state is restored.</strong><p>Open files, split layout, selected child, scroll position, and conversation mode come from localStorage. Provider history and drafts do not.</p></li>
+        </ol>
+
+        <div class="callout current">
+          <p><strong>Resource-saving starts at launch:</strong> a hundred suspended rows in SQLite do not mean a hundred adapter processes. Selecting a row loads its journal; the first operation that needs a provider calls <code>activate</code>.</p>
+          <span class="source"><code>main.rs:5870-5903</code> · <code>manager.rs:272-322,2700-2805</code> · <code>routes/next/+page.svelte:1395-1551</code></span>
+        </div>
+      </section>
+
+      <section id="session-start">
+        <span class="section-label">06 · Session creation</span>
+        <h2>When you start a session.</h2>
+        <p class="intro">There are three related actions—creating an Assembly record, creating or loading a provider-native session, and creating a process. They intentionally do not all happen at the same moment.</p>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Brand-new structured session</span>
+            <h3>The first prompt creates it</h3>
+            <p>The UI mints an <code>OwnedSession</code> only when the first non-empty composer submission arrives. Rust <em>ensures</em> the row and generation, but provider activation is lazy. Sending that same first prompt activates an adapter, negotiates ACP, calls <code>session/new</code>, saves the returned native ID, records the turn and user message, then prompts.</p>
+            <span class="source"><code>routes/next/+page.svelte:1056-1122</code> · <code>agent_conversation/mod.rs:93-152</code></span>
+          </article>
+          <article class="card">
+            <span class="badge current">Existing provider session</span>
+            <h3>Load or resume by native ID</h3>
+            <p>An adopted scanner record gets a new stable <code>ownedId</code> and keeps the provider’s ID as <code>nativeSessionId</code>. Structured activation selects <code>session/load</code> or <code>session/resume</code> according to the stored mode and negotiated capabilities.</p>
+            <span class="source"><code>routes/next/+page.svelte:1010-1054</code> · <code>manager.rs:749-1111</code></span>
+          </article>
+        </div>
+
+        <h3><code>ensure</code> is metadata; <code>activate</code> is a process</h3>
+        <table>
+          <thead><tr><th>Operation</th><th>What it does</th><th>What it deliberately avoids</th></tr></thead>
+          <tbody>
+            <tr><td><code>ensure_agent_conversation</code></td><td>Validates provider, working directory, native ID/mode; creates or updates the durable session; chooses generation; returns connection metadata.</td><td>It does not spawn an adapter just because a row was selected or restored.</td></tr>
+            <tr><td><code>activate</code></td><td>Spawns or joins a compatible adapter pool, initializes ACP, creates/loads/resumes the provider session, restores config, starts ordered update processing, and claims structured writer ownership.</td><td>It does not replay the entire Assembly event journal into each prompt.</td></tr>
+            <tr><td><code>prompt</code></td><td>Creates a turn, durably records the user message, builds typed ACP content, and starts the asynchronous provider request.</td><td>It does not wait for the full response before returning the Tauri command.</td></tr>
+            <tr><td><code>send_message</code></td><td>The one entry point behind <code>send_agent_conversation_message</code>: <code>activate</code>, then apply the model and approval policy the composer chose (<code>set_conversation_config</code>), then <code>prompt</code>. If any step is refused, it calls <code>suspend_if_quiescent</code> so the adapter it just started does not outlive the failed send.</td><td>It does not leave a provider process behind after a refused send.</td></tr>
+            <tr><td><code>delete</code></td><td>Behind <code>delete_agent_conversation_session</code> (the rail’s Remove): closes the conversation if it is running, forgets it in the live map, and deletes the SQLite row, which cascades events, draft, annotations, and attachment rows.</td><td>It does not touch the provider’s own transcript or native session.</td></tr>
+          </tbody>
+        </table>
+        <span class="source"><code>agent_conversation/mod.rs:123-144,342-347</code> · <code>manager.rs:1122-1153,2258-2285</code></span>
+
+        <div class="callout conditional">
+          <p><strong>Pooling is capability-driven.</strong> A single adapter process may host multiple native sessions only if the adapter advertises that this is safe. Otherwise each active conversation gets its own sidecar. The manager never assumes multi-session safety.</p>
+        </div>
+      </section>
+
+      <section id="prompt">
+        <span class="section-label">07 · One message, end to end</span>
+        <h2>What happens every time you press Send.</h2>
+        <p class="intro">A structured prompt is both a durable state transition and an asynchronous conversation with another process. The database write is part of the delivery path, not a later best-effort backup.</p>
+
+        <ol class="sequence">
+          <li><strong>The composer validates the submission.</strong><p>It refuses an empty prompt, a concurrent send, a read-only child view, or a state that cannot currently write.</p></li>
+          <li><strong>Svelte clears the visible draft and its SQLite draft.</strong><p>If sending later fails, it restores both. Draft durability is no longer just localStorage.</p></li>
+          <li><strong>The service chooses the writer path.</strong><p>A structured-owned session follows ACP. An explicitly terminal-owned external session writes to its PTY instead. The writer lease prevents both paths from writing at once.</p></li>
+          <li><strong>Attachments become typed prompt blocks.</strong><p>For structured ACP, persisted image bytes are loaded and encoded as image content alongside text. Capability checks happen before delivery.</p></li>
+          <li><strong>The frontend ensures the session metadata.</strong><p>The current <code>ownedId</code>, provider, working directory, native ID, and generation are synchronized with Rust.</p></li>
+          <li><strong>Rust lazily activates if suspended.</strong><p><code>send_message</code> launches or joins an adapter, initializes ACP, resumes or loads the native provider session, restores configuration, and acquires the structured writer lease. A model or approval policy chosen in the composer is applied next through <code>set_conversation_config</code>: for Claude that is <code>session/set_config_option</code> on the offered <code>model</code> and <code>effort</code> options; an adapter that offers no such option gets <code>session/set_model</code>. If activation, configuration, or the prompt itself is refused, the adapter this send started is stopped again.</p></li>
+          <li><strong>The generation is checked again.</strong><p>A request from an older activation cannot accidentally write into the current one.</p></li>
+          <li><strong>Rust creates an Assembly turn ID.</strong><p>The turn begins before the provider response. This gives the journal a stable boundary even when the provider uses different internal IDs.</p></li>
+          <li><strong>The turn-start event is written to SQLite.</strong><p>The manager allocates the next sequence and writes the updated session plus the event in one transaction.</p></li>
+          <li><strong>The user message is written to SQLite.</strong><p>Assembly records it itself, including attachment IDs. It does not depend on the provider echoing the input.</p></li>
+          <li><strong>Only committed events reach Svelte.</strong><p>After the transaction succeeds, the live in-memory state changes and Tauri emits the normalized event. The UI is therefore never ahead of the durable journal by design.</p></li>
+          <li><strong>Rust sends <code>session/prompt</code> over ACP.</strong><p>The prompt contains a provider native session ID plus typed text/image blocks. The ACP client assigns a numeric JSON-RPC request ID.</p></li>
+          <li><strong>The Tauri send command returns.</strong><p>The provider turn remains active. A background task awaits the ACP response while independent <code>session/update</code> notifications stream.</p></li>
+          <li><strong>Each update is normalized, ordered, and persisted.</strong><p>Assistant text, reasoning, tools, files, plans, tasks, approvals, usage, warnings, and errors become canonical events and then frontend payloads.</p></li>
+          <li><strong>The prompt result closes the turn.</strong><p>Rust expires unresolved requests, writes completed/interrupted/failed state, clears active-turn state, and considers suspending the adapter.</p></li>
+        </ol>
+
+        <div class="callout current">
+          <p><strong>The app sends the current prompt, not the entire transcript.</strong> The provider resumes its own native context. Assembly’s journal is the durable UI/audit copy; it is not re-uploaded as model context on every message.</p>
+          <span class="source"><code>conversationService.ts:609-752</code> · <code>manager.rs:1122-1194,2905-3014,3078-3101,3738-3972</code></span>
+        </div>
+      </section>
+
+      <section id="updates">
+        <span class="section-label">08 · Streaming, tools, and questions</span>
+        <h2>A turn is more than assistant text.</h2>
+        <p class="intro">ACP can carry a conversation in both directions while the prompt is active. The provider sends notifications, and it can also send requests that require a response from the user.</p>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Provider → Assembly</span>
+            <h3>Streaming updates</h3>
+            <p>The ACP reader recognizes <code>session/update</code> notifications and agent-to-client requests. Updates become typed content: assistant deltas, reasoning, plans, task state, command output, tool calls, file changes, children, usage, context compaction, warnings, and errors. A <code>context_compaction</code> update (the Claude adapter sends one; the Codex bridge sends one on <code>thread/compacted</code>) becomes a <code>contextCompaction</code> payload with the trigger and the token counts before and after, when the provider gives them. Child progress (<code>childUpdate</code>) updates the session’s children and draws no transcript row of its own.</p>
+          </article>
+          <article class="card">
+            <span class="badge current">Assembly → provider</span>
+            <h3>Interactive responses</h3>
+            <p>Permission or user-input requests are persisted and displayed. Accept, decline, or supplied input returns through the manager to the pending ACP request. The adapter’s original JSON-RPC request ID ties the response to the right operation.</p>
+          </article>
+        </div>
+
+        <h3>The ordered event path</h3>
+        <div class="mini-flow" aria-label="Event path">
+          <div>Adapter frame<small>ACP update or agent-to-client request.</small></div>
+          <div>Rust normalizer<small>Provider vocabulary becomes canonical <code>AgentEvent</code>.</small></div>
+          <div>SQLite transaction<small>Allocate sequence; persist session and serialized event.</small></div>
+          <div>Tauri emission<small><code>agent-conversation-event</code> after commit.</small></div>
+          <div>Svelte reducer<small>Validate generation and sequence; update typed timeline.</small></div>
+        </div>
+
+        <div class="callout conditional">
+          <p><strong>Sequence gaps fail visibly.</strong> The reducer rejects stale or duplicate events. If it observes a gap, it marks the session desynchronized instead of inventing missing content, then the service reloads a bounded snapshot from Rust.</p>
+          <span class="source"><code>conversationReducer.ts:108-130</code> · <code>conversationService.ts:439-567</code></span>
+        </div>
+
+        <details>
+          <summary>What counts as a canonical event?</summary>
+          <div class="details-body">
+            <p>The richer backend vocabulary includes session lifecycle, turn lifecycle, item creation/update/completion, content deltas, approvals, user input, plans, tasks, children, commands, usage, rate limits, warnings, and errors. A thinner frontend payload is derived for rendering. This separation keeps the durable event model provider-neutral without requiring Svelte to understand every provider frame.</p>
+            <span class="source"><code>protocol.rs:192-287,444-551</code></span>
+          </div>
+        </details>
+      </section>
+
+      <section id="shutdown">
+        <span class="section-label">09 · Resource lifecycle</span>
+        <h2>Yes, it usually shuts down after a turn.</h2>
+        <p class="intro">Your understanding is now substantially correct, with one important word: <em>quiescent</em>. Rust only detaches a resumable session after the turn and all related live work are truly finished.</p>
+
+        <div class="plain-answer">
+          <p><strong>Normal case:</strong> the prompt result is persisted, the active turn is cleared, Rust calls <code>suspend_if_quiescent</code>, the ACP session is detached, the sidecar process is gracefully stopped, and the SQLite row becomes suspended/disconnected. The provider-native session is not deleted. The next prompt launches a sidecar and resumes that same native ID.</p>
+        </div>
+
+        <h3>Suspension is allowed only when all of these are true</h3>
+        <div class="four-up">
+          <article class="card"><h4>Resumable</h4><p>The adapter advertised resume support and a native session ID exists.</p></article>
+          <article class="card"><h4>No turn</h4><p>No active prompt or application turn remains.</p></article>
+          <article class="card"><h4>No questions</h4><p>No permission, user-input, or ownership handoff is pending.</p></article>
+          <article class="card"><h4>No live work</h4><p>No live tool or registered background work still depends on the runtime.</p></article>
+        </div>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge conditional">Dedicated sidecar</span>
+            <h3>Process goes away</h3>
+            <p>Detaching the only session leaves the pool empty, so Rust asks the runtime to detach and removes the pool. The child process receives a graceful stop.</p>
+          </article>
+          <article class="card">
+            <span class="badge conditional">Shared sidecar</span>
+            <h3>Last member turns out the light</h3>
+            <p>If a capability-safe pooled adapter still hosts another active session, removing this session does not stop the shared process. It stops when the pool has no members.</p>
+          </article>
+        </div>
+
+        <h3>Why the stop is not immediate</h3>
+        <p>The process supervisor sends <code>SIGTERM</code> to the adapter’s whole process group, waits up to three seconds, and then uses <code>SIGKILL</code> as a fallback. The grace period exists because Claude can write its durable transcript shortly after returning the answer; immediate killing previously lost completed turns.</p>
+        <span class="source"><code>providers/process.rs:17-23,127-180,233-289</code></span>
+
+        <div class="callout current">
+          <p><strong>Detach is not close.</strong> Detach releases transport/process resources but preserves the provider session for resume. Close intentionally closes the native session. Those operations must never be treated as synonyms.</p>
+          <span class="source"><code>providers/mod.rs:23-127</code> · <code>manager.rs:440-481,1888-1969,4847-4863</code></span>
+        </div>
+
+        <div class="callout current">
+          <p><strong>A refused send stops what it started.</strong> When <code>send_message</code> activates an adapter and the configuration or the prompt is then refused, it takes the same <code>suspend_if_quiescent</code> path, so a failed first message does not leave a provider process idling until the app quits.</p>
+          <span class="source"><code>manager.rs:1122-1153,1929-1990</code></span>
+        </div>
+      </section>
+
+      <section id="persistence">
+        <span class="section-label">10 · Persistence</span>
+        <h2>There is SQLite now—plus other stores.</h2>
+        <p class="intro">There is no single database containing every byte the system touches. Each store has a deliberately different job.</p>
+
+        <table>
+          <caption>Durability map</caption>
+          <thead><tr><th>Store</th><th>What it owns</th><th>Survives restart?</th></tr></thead>
+          <tbody>
+            <tr><td><code>sessions.db</code></td><td>Assembly sessions, ordered normalized events/messages, drafts, annotations, and attachment metadata.</td><td>Yes</td></tr>
+            <tr><td>Attachment vault</td><td>Validated image bytes under app data <code>conversation-attachments/&lt;ownedId&gt;/</code>.</td><td>Yes</td></tr>
+            <tr><td>Provider-native storage</td><td>The conversation context Codex, Claude, or Agy resumes; often provider JSONL or its equivalent.</td><td>Yes, provider-controlled</td></tr>
+            <tr><td><code>usage-history.sqlite3</code></td><td>Separate usage analytics: token/cost events, source cursors, rate versions, and daily rollups.</td><td>Yes</td></tr>
+            <tr><td>localStorage</td><td>Small per-session UI workspace state: layout, open paths, mode, selected child, and scroll position.</td><td>Yes, UI only</td></tr>
+            <tr><td>Rust live maps</td><td>Attached runtimes, pending RPC calls, writer lease, active tools, recent-event cache, and process handles.</td><td>No; reconstructed</td></tr>
+            <tr><td>PTY scrollback</td><td>Bounded output for native terminal sessions.</td><td>Only for the live backend process</td></tr>
+          </tbody>
+        </table>
+
+        <h3><code>sessions.db</code> schema version 3</h3>
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Table</span>
+            <h3><code>sessions</code></h3>
+            <p>One row per <code>ownedId</code>: provider/native identity, model and effort, working directory/worktree/branch, title/project, state/suspended flag, timestamps, and extensible JSON metadata.</p>
+          </article>
+          <article class="card">
+            <span class="badge current">Table</span>
+            <h3><code>events</code></h3>
+            <p>Primary key <code>(owned_id, seq)</code>, optional turn ID, event kind, serialized JSON payload, and creation time. This is where messages are saved: as ordered event JSON, not in a dedicated messages table.</p>
+          </article>
+          <article class="card">
+            <span class="badge current">Table</span>
+            <h3><code>drafts</code></h3>
+            <p>One current composer draft per owned session, with an update timestamp.</p>
+          </article>
+          <article class="card">
+            <span class="badge current">Tables</span>
+            <h3><code>attachments</code> + <code>annotations</code></h3>
+            <p>Attachment identity, MIME, byte count and relative vault path; browser/page annotations store URL, rectangle JSON, note, and timestamp.</p>
+          </article>
+        </div>
+
+        <p>SQLite runs in WAL mode with <code>synchronous=NORMAL</code> and foreign keys enabled. A live event write uses an immediate transaction to upsert the session and append the event before anything is emitted to the UI. Deleting a session cascades its events, draft, annotations, and attachment rows; the rail’s Remove does that through <code>delete_agent_conversation_session</code>, so a removed session does not come back at the next launch. The attachment files in the vault are not removed yet (tracked follow-up).</p>
+        <span class="source"><code>core/src/session_store.rs:7,155-223,304-345,388-435</code></span>
+
+        <div class="callout current">
+          <p><strong>The durable event journal is not trimmed.</strong> An older 10,000-event cap was removed. Snapshot and paging APIs enforce byte/row budgets for what is loaded into memory, while the journal itself remains complete. Only superseded “current state” events—currently usage and session configuration—are collapsed.</p>
+          <span class="source"><code>session_store.rs:9-22,304-345,407-419,495-592</code></span>
+        </div>
+
+        <h3>How image attachments are made durable</h3>
+        <ol class="clean">
+          <li>Rust validates owner ID, maximum size (20 MiB), and PNG/JPEG/GIF/WebP signatures.</li>
+          <li>It writes a generated filename beneath the owned session’s app-data vault and verifies canonical path containment.</li>
+          <li>It inserts the attachment row in SQLite. If that insert fails, it deletes the just-written file.</li>
+          <li>The user-message event stores attachment IDs, so restart replay can reconnect timeline items to indexed files.</li>
+          <li>Structured send loads the bytes as ACP image content. Raw terminal send can only append managed file paths to text.</li>
+        </ol>
+        <span class="source"><code>attachments.rs:29-163</code> · <code>conversationService.ts:133-220,390-437,609-752</code></span>
+      </section>
+
+      <section id="formats">
+        <span class="section-label">11 · Message formats</span>
+        <h2>The same prompt changes shape four times.</h2>
+        <p class="intro">Each boundary has its own contract. These are representative, simplified frames with the real field names.</p>
+
+        <div class="json-stack">
+          <article class="json-card">
+            <header>1 · Svelte → Tauri command argument</header>
+            <pre><code>{
+  "ownedId": "owned-7f2…",
+  "generation": 4,
+  "text": "Explain this module",
+  "content": [
+    { "type": "text", "text": "Explain this module" },
+    { "type": "image", "mimeType": "image/png", "data": "iVBOR…" }
+  ],
+  "attachmentIds": ["attachment-a91…"]
+}</code></pre>
+          </article>
+
+          <article class="json-card">
+            <header>2 · Rust ACP client → adapter stdin</header>
+            <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "session/prompt",
+  "params": {
+    "sessionId": "native-provider-session-42",
+    "prompt": [
+      { "type": "text", "text": "Explain this module" },
+      { "type": "image", "mimeType": "image/png", "data": "iVBOR…" }
+    ]
+  }
+}</code></pre>
+          </article>
+
+          <article class="json-card">
+            <header>3 · Adapter stdout → Rust ACP client</header>
+            <pre><code>{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "native-provider-session-42",
+    "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": { "type": "text", "text": "The manager owns…" }
+    }
+  }
+}</code></pre>
+          </article>
+
+          <article class="json-card">
+            <header>4 · Rust → SQLite payload and Tauri event</header>
+            <pre><code>{
+  "ownedId": "owned-7f2…",
+  "provider": "codex",
+  "generation": 4,
+  "sequence": 91,
+  "timestampMs": 1787134460123,
+  "payload": {
+    "kind": "assistantDelta",
+    "itemId": "message-13",
+    "delta": "The manager owns…"
+  }
+}</code></pre>
+          </article>
+        </div>
+
+        <p>ACP framing is <strong>NDJSON</strong>: serialize one JSON object, append <code>\n</code>, write, and flush. It is not HTTP, WebSocket, or <code>Content-Length</code> framing. Stderr is reserved for bounded adapter diagnostics so it cannot corrupt stdout’s protocol frames.</p>
+        <span class="source"><code>providers/acp_client.rs:40-149,367-435</code> · <code>providers/process.rs:200-230</code></span>
+
+        <details>
+          <summary>How Codex images cross its native boundary</summary>
+          <div class="details-body">
+            <p>ACP transports image bytes. Codex app-server expects image file paths. The repository’s bridge writes each base64 image to a temporary file, includes that path in the native turn request, and removes the files when the turn settles. That translation is an adapter concern; Svelte and the Rust ACP client remain provider-neutral.</p>
+            <span class="source"><code>tools/codex-acp-bridge/bridge.mjs:245-290,1040-1085</code></span>
+          </div>
+        </details>
+      </section>
+
+      <section id="restart">
+        <span class="section-label">12 · Restart and long history</span>
+        <h2>How the conversation comes back.</h2>
+        <p class="intro">Assembly reconstructs its view from SQLite and reconstructs provider connectivity by native-session resume. Those are related, but they are not the same recovery operation.</p>
+
+        <ol class="sequence">
+          <li><strong>Rust opens <code>sessions.db</code>.</strong><p>Stored sessions that were not closed are recovered as suspended/disconnected with no runtime handle.</p></li>
+          <li><strong>The rail is loaded from SQLite.</strong><p>The Svelte route no longer treats an old localStorage rail as the session source of truth.</p></li>
+          <li><strong>Selecting a session loads a bounded snapshot.</strong><p>The backend uses a window query with a 512 KiB budget and a 2,000-row ceiling; Svelte rebuilds the timeline from those durable events.</p></li>
+          <li><strong>Attachments are rehydrated by ID.</strong><p>Persisted attachment rows locate the managed files; browser object URLs are recreated only for the live UI.</p></li>
+          <li><strong>Older history pages on demand.</strong><p>“Load Older” asks SQLite for another byte-bounded page rather than retaining an unbounded DOM from startup.</p></li>
+          <li><strong>The next prompt resumes provider context.</strong><p>Activation launches an adapter and passes the stored <code>nativeSessionId</code> to ACP resume/load. It does not paste SQLite history into the prompt.</p></li>
+        </ol>
+
+        <h3>Provider transcript import</h3>
+        <p>When adopting or migrating provider-owned history, the importer stores a byte-offset cursor in session metadata. Older imported records can receive negative event sequences, leaving zero and positive sequences available for current Assembly activity. When SQLite paging reaches the imported boundary, the frontend can ask Rust to extend the provider transcript import and then query SQLite again.</p>
+        <span class="source"><code>transcript_import.rs:16-29</code> · <code>conversationService.ts:456-523</code></span>
+
+        <div class="callout conditional">
+          <p><strong>History and context can diverge deliberately.</strong> Assembly may show a complete normalized journal even though a provider has internally compacted its native context. Conversely, an imported provider transcript can contain records Assembly has not loaded into the current page. Durable display history is not proof of the provider’s current context window.</p>
+        </div>
+
+        <div class="callout current">
+          <p><strong>Claude import removes one synthetic artifact:</strong> the importer strips the machine-authored “This session is being continued…” continuation summary from user messages so provider compaction scaffolding is not misrepresented as something the human typed.</p>
+          <span class="source"><code>transcript/claude.rs:66-97</code></span>
+        </div>
+
+        <div class="callout current">
+          <p><strong>Provider compactions import as markers.</strong> A Claude <code>compact_boundary</code> record (with its <code>compactMetadata</code> trigger and token counts) and a Codex <code>context_compacted</code> event become the same <code>contextCompaction</code> event the live path records, so an imported transcript shows where the provider cut its context just as a live one does.</p>
+          <span class="source"><code>transcript/claude.rs:105-125</code> · <code>transcript/codex.rs:372-380</code></span>
+        </div>
+      </section>
+
+      <section id="svelte">
+        <span class="section-label">13 · Svelte frontend</span>
+        <h2>From event journal to conversation UI.</h2>
+        <p class="intro">Svelte is a projection of backend truth plus temporary interaction state. It does not own provider processes, context recovery, or durable event ordering.</p>
+
+        <div class="mini-flow" aria-label="Frontend rendering flow">
+          <div>Conversation service<small>Commands, one Tauri listener, snapshot paging, draft and attachment IO.</small></div>
+          <div>Reducer<small>Checks owned ID, provider, generation, and sequence before applying.</small></div>
+          <div>Reactive store<small>Holds current bounded state and rebuilds from snapshots without doing IO.</small></div>
+          <div>Timeline builder<small>Groups items by turn and merges plan/task/child state.</small></div>
+          <div>Typed components<small>Message, reasoning, plan, task, command, file, tool, child, approval, input, compaction marker, error.</small></div>
+        </div>
+
+        <h3>What the conversation state tracks</h3>
+        <p>Per <code>ownedId</code>, the store carries provider and generation, last sequence and desync status, connection/suspension state, native ID, active turn, current usage, timeline revision, normalized timeline items, draft/send state, attachments, metadata, children, selection, and scroll information. It is a bounded live view over the durable journal—not another database.</p>
+        <span class="source"><code>conversationTypes.ts:541-683</code> · <code>conversationStore.svelte.ts</code></span>
+
+        <h3>Where the context was cut</h3>
+        <p>A <code>contextCompaction</code> event becomes a <code>compaction</code> timeline entry, drawn by <code>CompactionItem.svelte</code> as a divider (“Context compacted · 351k → 22k” when the provider reports sizes). Not every adapter reports one, so the reducer also infers a compaction from usage: a drop to at most 60% of the previous figure, from at least 32k tokens, adds the same entry unless the last entry already is one. <code>childUpdate</code> payloads (sub-agent progress) update the child state and produce no timeline row; an unknown item with no text is hidden like an empty message.</p>
+        <span class="source"><code>conversationReducer.ts:11-30,260-275</code> · <code>conversationTimeline.ts:369,474,582,809-815</code> · <code>conversationItemVisibility.ts</code> · <code>components/conversation/CompactionItem.svelte</code></span>
+
+        <h3>How Markdown is displayed safely</h3>
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Parsing</span>
+            <h3>GFM → typed blocks</h3>
+            <p><code>marked</code> tokenizes paragraphs, headings, fenced code, block quotes, lists, tables, rules, links, inline code, strong/emphasis, and strike-through. Streaming logic can tolerate an unclosed fence while text is arriving.</p>
+          </article>
+          <article class="card">
+            <span class="badge current">Rendering</span>
+            <h3>Typed blocks → Svelte nodes</h3>
+            <p>The renderer recursively creates ordinary components and escaped text. It does not use arbitrary HTML injection. HTTP(S), mail, anchors, and safe file targets are classified; unsafe schemes and control characters are rejected.</p>
+          </article>
+        </div>
+
+        <div class="callout current">
+          <p><strong>Remote Markdown images do not silently load.</strong> Image tokens become links rather than active remote image requests. File links can route through Assembly’s file-opening behavior. This protects both the webview and user privacy.</p>
+          <span class="source"><code>conversationMessageSafety.ts:1-16,35-128,160-275</code> · <code>ConversationMessage.svelte:1-82</code></span>
+        </div>
+
+        <details>
+          <summary>Why “Load Older” is better than a frontend event cap</summary>
+          <div class="details-body">
+            <p>The old design could simply hide old items after a fixed count. The current design makes SQLite windowing the authority: the UI holds a bounded page and explicitly fetches older pages. If rendering itself becomes expensive, the correct frontend optimization is virtualization, not deleting visible history from the model.</p>
+            <span class="source"><code>conversationTimeline.ts:215-235</code> · <code>conversationService.ts:463-523</code></span>
+          </div>
+        </details>
+      </section>
+
+      <section id="terminal">
+        <span class="section-label">14 · Native terminal path</span>
+        <h2>ACP and a PTY are different sessions.</h2>
+        <p class="intro">Assembly supports a structured ACP conversation and a native interactive CLI/TUI. They can represent the same provider conversation, but only one may be the writer at a time.</p>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Structured-owned</span>
+            <h3>ACP owns writes</h3>
+            <p>The composer sends typed prompt content through the Rust runtime. The UI receives normalized tools, plans, approvals, usage, and messages. Images are first-class content when supported.</p>
+          </article>
+          <article class="card">
+            <span class="badge current">Terminal-owned</span>
+            <h3>PTY owns writes</h3>
+            <p>Keyboard input and composer fallback write to a native terminal. Text uses bracketed paste followed by a separate carriage return; attachments are represented as managed paths because a terminal has no typed image channel.</p>
+          </article>
+        </div>
+
+        <h3>The handoff rule</h3>
+        <p>A session transitions through preparing states while Assembly detaches one writer and activates the other. The writer lease is the proof: structured prompting requires the structured lease, and PTY writes require the terminal lease. If preparation fails, the system can roll back without creating two competing writers.</p>
+
+        <pre><code>StructuredOwned
+      ↓ prepare + detach ACP
+PreparingTerminal
+      ↓ terminal acquires lease
+TerminalOwned
+      ↓ prepare + release PTY writer
+PreparingStructured
+      ↓ ACP resumes and acquires lease
+StructuredOwned</code></pre>
+
+        <div class="callout conditional">
+          <p><strong>A PTY is a deliberate mode, not ACP transport.</strong> The terminal can show a provider’s full native TUI and remains useful for recovery or unsupported capabilities. Its raw bytes are not parsed as ACP just because the command running inside is an agent.</p>
+          <span class="source"><code>routes/next/+page.svelte:860-1007</code> · <code>conversationService.ts:609-752</code></span>
+        </div>
+      </section>
+
+      <section id="accounting">
+        <span class="section-label">15 · Counts, tokens, and context</span>
+        <h2>What the app knows—and what it does not.</h2>
+        <p class="intro">The newer branch has much stronger durability, but it still does not maintain one exact “message count” or one universal context counter in conversation state.</p>
+
+        <table>
+          <thead><tr><th>Question</th><th>Current answer</th><th>Authority</th></tr></thead>
+          <tbody>
+            <tr><td>How many durable journal events?</td><td>Exactly queryable from SQLite by <code>owned_id</code>. Events are not the same thing as messages.</td><td><code>sessions.db.events</code></td></tr>
+            <tr><td>How many user/assistant messages?</td><td>Derivable from durable event kinds, but not stored as a maintained counter in session state.</td><td>SQL query over <code>events</code></td></tr>
+            <tr><td>How many turns?</td><td>Derivable from turn lifecycle events or distinct stable turn IDs; not stored as a dedicated session column.</td><td>SQL query over <code>events</code></td></tr>
+            <tr><td>What does rail <code>messageCount</code> mean?</td><td>For discovered/imported sessions it can be scanner-derived metadata. It is not guaranteed to be the exact live journal count.</td><td>Session scan/import metadata</td></tr>
+            <tr><td>How many model tokens are used?</td><td>The conversation can show normalized usage/context metadata when a provider supplies it. Completeness varies by adapter and provider.</td><td>Usage events + session metadata</td></tr>
+            <tr><td>How much context remains?</td><td>The surface combines available used-token/context-window information. Absence of telemetry means “unknown,” not zero.</td><td>Provider capability/update data</td></tr>
+            <tr><td>When was the context compacted?</td><td>Recorded when the adapter reports it (<code>context_compaction</code>), imported from provider transcripts, or inferred from a large usage drop; shown as a marker in the transcript. Not stored as a session column.</td><td><code>contextCompaction</code> events</td></tr>
+            <tr><td>What is <code>usage-history.sqlite3</code>?</td><td>A separate analytics store for usage/cost events and rollups, not the transcript database.</td><td>Usage history subsystem</td></tr>
+          </tbody>
+        </table>
+
+        <div class="plain-answer">
+          <p><strong>The simple accounting fix:</strong> derive exact message and turn counts in SQL from the durable journal and return them with session summaries. Do not increment mutable counters in Svelte, because replay, import, deduplication, and restart will eventually make those counters disagree with the journal.</p>
+        </div>
+
+        <pre><code>-- Conceptual shape, not a checked-in migration:
+SELECT
+  owned_id,
+  COUNT(*) FILTER (WHERE kind IN (&lt;completed user/assistant kinds&gt;)) AS message_count,
+  COUNT(DISTINCT turn_id) FILTER (WHERE turn_id IS NOT NULL) AS turn_count
+FROM events
+WHERE owned_id = ?
+GROUP BY owned_id;</code></pre>
+
+        <p>The exact kind list should use the canonical stored vocabulary and exclude streaming deltas, transient updates, superseded state, errors, and tool events unless the product explicitly chooses to count them.</p>
+        <span class="source"><code>session_store.rs:184-223,388-435</code> · <code>conversationTypes.ts:648-683</code> · <code>usage_history.rs:110-118</code></span>
+      </section>
+
+      <section id="compaction">
+        <span class="section-label">16 · Proposed work</span>
+        <h2>Building Assembly-owned compaction safely.</h2>
+        <p class="intro">The journal now gives you enough durable source material to summarize a conversation. It does <em>not</em> by itself let Assembly replace the context inside an existing provider-native session.</p>
+
+        <div class="callout limit">
+          <p><span class="badge limit">Not implemented</span></p>
+          <p>There is currently no Rust summarizer service, no “fast tier” backend setting, no compaction artifact or boundary in SQLite, and no evidenced standard ACP method that mutates a session’s context. The <code>contextCompaction</code> event that exists records a compaction the <em>provider</em> performed (its own auto-compaction or <code>/compact</code>); it is a marker in the journal, not a compaction engine.</p>
+        </div>
+
+        <h3>The minimum safe design</h3>
+        <ol class="sequence">
+          <li><strong>Choose a stable durable boundary.</strong><p>Capture <code>through_sequence</code> for one <code>ownedId</code>. Never summarize “whatever happens to be loaded in Svelte.”</p></li>
+          <li><strong>Select source material in one backend SQL query.</strong><p>Read completed human/assistant content and required tool/file outcomes through that boundary. Exclude streaming deltas and superseded state.</p></li>
+          <li><strong>Hash the normalized source.</strong><p>A source hash plus boundary makes retries idempotent and proves exactly what the summary represents.</p></li>
+          <li><strong>Call a separate one-shot summarizer.</strong><p>The Rust backend sends a bounded document to the explicitly configured lower-latency/lower-cost model tier. This should not borrow the active conversation’s writer lease or silently alter it while a turn is running.</p></li>
+          <li><strong>Persist the result before applying it.</strong><p>Store summary text, boundary, source hash, model/tier, status, token accounting, and timestamps. Preserve the original event journal.</p></li>
+          <li><strong>Apply through an explicit provider strategy.</strong><p>If the adapter advertises a real provider compaction command, invoke it under the structured writer lease. Otherwise create or fork a new native session seeded with the summary plus the uncompacted tail. Do not pretend that writing a summary row changed the old provider context.</p></li>
+          <li><strong>Record the context transition.</strong><p>Append the durable <code>contextCompaction</code> event that already marks provider compactions, extended with the summary and the new native-session boundary, so the UI can explain what changed without hiding old messages.</p></li>
+          <li><strong>Resume ordinary prompting.</strong><p>Only after the compaction state and provider transition are durable should the writer lease return to normal use.</p></li>
+        </ol>
+
+        <h3>Smallest useful durable schema</h3>
+        <pre><code>compactions
+───────────
+id                 TEXT PRIMARY KEY
+owned_id           TEXT NOT NULL REFERENCES sessions(owned_id)
+through_sequence   INTEGER NOT NULL
+source_hash        TEXT NOT NULL
+summary_text       TEXT
+model              TEXT
+service_tier       TEXT
+status             TEXT NOT NULL  -- pending | ready | applied | failed
+created_at_ms      INTEGER NOT NULL
+applied_at_ms      INTEGER
+
+UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
+
+        <p>A dedicated row makes resumable work, retries, failure recovery, and “which summary was applied?” easy to query. The visible transition should still be an ordinary canonical event so timeline replay remains complete.</p>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge proposed">Guardrail</span>
+            <h3>Never compact live work</h3>
+            <p>Require the same quiescence checks as suspension: no active prompt/turn, approval, input, handoff, live tool, or background work. Compaction is another writer.</p>
+          </article>
+          <article class="card">
+            <span class="badge proposed">Guardrail</span>
+            <h3>Never delete the journal</h3>
+            <p>Compaction changes future model context; it should not erase the user-visible, auditable history that produced the summary.</p>
+          </article>
+          <article class="card">
+            <span class="badge proposed">Guardrail</span>
+            <h3>Do not assume ACP support</h3>
+            <p>Capabilities or provider command discovery must decide whether in-place provider compaction is possible. Otherwise use an explicit new/forked native session.</p>
+          </article>
+          <article class="card">
+            <span class="badge proposed">Guardrail</span>
+            <h3>Measure the actual context</h3>
+            <p>Trigger from provider telemetry when available; use conservative byte/token estimates when it is not. Message count alone is not a context-window measurement.</p>
+          </article>
+        </div>
+
+        <h3>What the user should see</h3>
+        <p>A compacted session should retain scrollback and show a small, inspectable timeline marker: what range was summarized, which model produced it, whether the provider accepted it in-place or a new native session was created, and where the full original history remains. Failure should leave the old session untouched and retryable.</p>
+
+        <div class="callout proposed">
+          <p><strong>Recommended implementation order:</strong> first add SQL-derived counts and a context-health DTO; then persist summary artifacts; then add the one-shot backend summarizer; only then implement one provider application strategy with an explicit capability check. That sequence keeps the risky provider-context mutation separate from the useful accounting foundation.</p>
+        </div>
+      </section>
+
+      <section id="dotnet">
+        <span class="section-label">17 · Rust through a .NET lens</span>
+        <h2>The same ideas in familiar terms.</h2>
+        <p class="intro">The analogies are structural, not exact language equivalences, but they are close enough to navigate the code confidently.</p>
+
+        <table>
+          <thead><tr><th>Rust / Tauri</th><th>.NET mental model</th><th>How it is used here</th></tr></thead>
+          <tbody>
+            <tr><td><code>#[tauri::command]</code></td><td>Controller or hub method</td><td>A typed method Svelte can invoke inside the desktop app.</td></tr>
+            <tr><td><code>app.emit</code> / frontend <code>listen</code></td><td>SignalR/event bus push</td><td>Streams committed normalized events to the webview.</td></tr>
+            <tr><td><code>AgentRuntimeManager</code></td><td>Singleton application service</td><td>Owns live agent sessions, activation, writer leases, recovery, and the session store.</td></tr>
+            <tr><td><code>Arc&lt;Mutex&lt;HashMap&lt;…&gt;&gt;&gt;</code></td><td>Shared service with a locked dictionary</td><td>Multiple async tasks safely reach common runtime state.</td></tr>
+            <tr><td><code>trait</code></td><td>Interface</td><td><code>AgentRuntimeAdapter</code> defines the provider/runtime boundary.</td></tr>
+            <tr><td>Data-carrying <code>enum</code></td><td>Discriminated union</td><td>A payload can be one of many typed variants, each with different fields.</td></tr>
+            <tr><td><code>Option&lt;T&gt;</code></td><td><code>T?</code> / Maybe</td><td>A value can explicitly be absent; callers must handle that case.</td></tr>
+            <tr><td><code>Result&lt;T, E&gt;</code> and <code>?</code></td><td>Explicit success/error return</td><td>Errors propagate through return types instead of relying on thrown exceptions.</td></tr>
+            <tr><td>Tokio task + channel</td><td><code>Task</code> + <code>Channel&lt;T&gt;</code></td><td>Commands, stdout updates, turn results, and ordered event work run concurrently.</td></tr>
+            <tr><td>Tokio <code>oneshot</code></td><td><code>TaskCompletionSource&lt;T&gt;</code></td><td>A pending JSON-RPC request waits for the response carrying the same ID.</td></tr>
+            <tr><td>Serde</td><td><code>System.Text.Json</code></td><td>Typed Rust structs/enums serialize to Tauri and ACP JSON shapes.</td></tr>
+            <tr><td><code>rusqlite::Transaction</code></td><td>ADO.NET SQLite transaction</td><td>Session mutation and event append commit as one unit.</td></tr>
+            <tr><td>Child stdin/stdout</td><td>Redirected <code>System.Diagnostics.Process</code></td><td>ACP is carried over pipe streams; the process group is supervised and killed as a tree.</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Read one Rust flow as C#-style pseudocode</h3>
+        <pre><code>async Task Send(SendRequest request)
+{
+    Session session = await manager.EnsureCurrent(request.OwnedId);
+    Runtime runtime = await manager.ActivateIfSuspended(session);
+
+    using (SqliteTransaction tx = store.BeginImmediate())
+    {
+        store.AppendTurnStarted(tx, session, NextSequence());
+        store.AppendUserMessage(tx, session, request.Content, NextSequence());
+        tx.Commit();
+    }
+
+    EmitCommittedEventsToSvelte();
+    _ = runtime.PromptAsync(session.NativeSessionId, request.Content);
+    // Streaming updates follow independently; completion may suspend runtime.
+}</code></pre>
+
+        <p>The real Rust code is more defensive because it handles pooled adapters, generation changes, capability negotiation, approvals, input requests, and failure recovery. But the core layering is ordinary application-service code: validate, transition durable state, call an external process, persist results, notify UI.</p>
+      </section>
+
+      <section id="native">
+        <span class="section-label">18 · Native surfaces</span>
+        <h2>Two places the app asks macOS directly.</h2>
+        <p class="intro">Outside the conversation path, two panels depend on native calls that are easy to get subtly wrong. Both were, so both are written down here.</p>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Resources panel</span>
+            <h3>Memory the way Activity Monitor counts it</h3>
+            <p>Each process is measured by its physical footprint (<code>proc_pid_rusage</code> → <code>ri_phys_footprint</code>), which is Activity Monitor’s “Memory” column; resident size is the fallback only when the kernel will not answer. The app’s WebKit helpers (Web content, Networking, Graphics and Media) are XPC services whose parent is <code>launchd</code>, so a walk down from the app never meets them; they are attributed to the app through <code>responsibility_get_pid_responsible_for_pid</code> plus start time, given the app as their parent for the walk, and named as Activity Monitor names them.</p>
+            <span class="source"><code>core/src/scanners/resources.rs:311-360</code> · <code>src-tauri/src/resources.rs:619-700,760-790</code></span>
+          </article>
+          <article class="card">
+            <span class="badge current">Usage popover</span>
+            <h3>The Claude sign-in is read without a prompt</h3>
+            <p>Reading Claude Code’s Keychain item through Security.framework from an unsigned development binary asks for permission on every rebuild — “Always Allow” never sticks. The Keychain store therefore reads it with <code>/usr/bin/security find-generic-password -w</code>, which the item’s access list already trusts, and treats exit code 44 as “no item”. That store never writes: nothing read from it is renewed, and renewing is the only thing that writes.</p>
+            <span class="source"><code>src-tauri/src/claude_quota.rs:126-160,232-236</code></span>
+          </article>
+        </div>
+      </section>
+
+      <section id="sources">
+        <span class="section-label">19 · Repository source map</span>
+        <h2>Where to read next.</h2>
+        <p class="intro">Start with the manager and session store, then move outward to the adapter client and Svelte projection. The launcher scripts explain which executable actually runs on this machine.</p>
+
+        <div class="source-map">
+          <div class="source-row"><strong>App composition</strong><code>tauri-svelte-preview/src-tauri/src/main.rs:5870-5903,6032-6064</code></div>
+          <div class="source-row"><strong>Tauri commands</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs:93-152</code></div>
+          <div class="source-row"><strong>Runtime manager</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs</code></div>
+          <div class="source-row"><strong>ACP transport</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/providers/acp_client.rs</code></div>
+          <div class="source-row"><strong>Adapter boundary</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/providers/mod.rs</code></div>
+          <div class="source-row"><strong>Process lifecycle</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/providers/process.rs</code></div>
+          <div class="source-row"><strong>Event protocol</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/protocol.rs</code></div>
+          <div class="source-row"><strong>SQLite store</strong><code>tauri-svelte-preview/core/src/session_store.rs</code></div>
+          <div class="source-row"><strong>Attachments</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs</code></div>
+          <div class="source-row"><strong>Codex adapter</strong><code>tauri-svelte-preview/tools/codex-acp-bridge/bridge.mjs</code></div>
+          <div class="source-row"><strong>Development wiring</strong><code>tauri-svelte-preview/scripts/dev-next.sh</code></div>
+          <div class="source-row"><strong>Agy adapter recon</strong><code>tauri-svelte-preview/artifacts/recon/probe-agy/agy-acp/README.md</code></div>
+          <div class="source-row"><strong>Route lifecycle</strong><code>tauri-svelte-preview/src/routes/next/+page.svelte</code></div>
+          <div class="source-row"><strong>Frontend service</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationService.ts</code></div>
+          <div class="source-row"><strong>Reducer and types</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationReducer.ts</code> · <code>conversationTypes.ts</code></div>
+          <div class="source-row"><strong>Timeline rendering</strong><code>tauri-svelte-preview/src/lib/shell/components/conversation/TimelineItem.svelte</code></div>
+          <div class="source-row"><strong>Markdown safety</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationMessageSafety.ts</code> · <code>ConversationMessage.svelte</code></div>
+          <div class="source-row"><strong>History import</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/transcript_import.rs</code> · <code>transcript/claude.rs</code> · <code>transcript/codex.rs</code></div>
+          <div class="source-row"><strong>Adapter manifests</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/capabilities.rs</code></div>
+          <div class="source-row"><strong>Compaction marker</strong><code>tauri-svelte-preview/src/lib/shell/components/conversation/CompactionItem.svelte</code> · <code>conversationTimeline.ts</code></div>
+          <div class="source-row"><strong>Resources</strong><code>tauri-svelte-preview/src-tauri/src/resources.rs</code> · <code>core/src/scanners/resources.rs</code></div>
+          <div class="source-row"><strong>Claude usage and Keychain</strong><code>tauri-svelte-preview/src-tauri/src/claude_quota.rs</code></div>
+        </div>
+
+        <div class="callout current">
+          <p><strong>Final mental checksum:</strong> <code>ownedId</code> ties Assembly state together; <code>nativeSessionId</code> ties provider context together; <code>sequence</code> makes UI history deterministic; the writer lease prevents split-brain input; SQLite commits before the UI sees an event; and the adapter process is expendable only because both durable identities survive it.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    <p>Implementation-focused architecture guide for the <code>tsk-808-assembly-wave</code> worktree, kept current commit by commit (see the change log). Labels distinguish code that runs today from conditional behavior, external adapters, known limitations, and proposed compaction work.</p>
+  </footer>
+
+  <script>
+    (() => {
+      const progress = document.querySelector('.reading-progress span');
+      const links = [...document.querySelectorAll('.toc a')];
+      const sections = links
+        .map((link) => document.querySelector(link.getAttribute('href')))
+        .filter(Boolean);
+
+      const update = () => {
+        const height = document.documentElement.scrollHeight - window.innerHeight;
+        const ratio = height > 0 ? window.scrollY / height : 0;
+        progress.style.width = `${Math.min(100, Math.max(0, ratio * 100))}%`;
+
+        let active = sections[0];
+        for (const section of sections) {
+          if (section.getBoundingClientRect().top <= 150) active = section;
+        }
+        for (const link of links) {
+          const selected = active && link.getAttribute('href') === `#${active.id}`;
+          if (selected) link.setAttribute('aria-current', 'true');
+          else link.removeAttribute('aria-current');
+        }
+      };
+
+      update();
+      addEventListener('scroll', update, { passive: true });
+      addEventListener('resize', update);
+    })();
+  </script>
+</body>
+</html>

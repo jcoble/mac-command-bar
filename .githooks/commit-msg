@@ -1,0 +1,36 @@
+#!/bin/sh
+# Every commit either updates the architecture guide or says it did not need to.
+#
+# main-architecture-explained.html at the repository root is the single
+# description of how the app works. A commit that changes anything it describes
+# stages an update to it. A commit that changes nothing it describes carries the
+# line "Architecture: unchanged" in its message body. A commit that does neither
+# is refused here. Set up once per clone: git config core.hooksPath .githooks
+
+message_file="$1"
+guide="main-architecture-explained.html"
+
+# A merge commit's message is not the place to answer the question.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+  exit 0
+fi
+
+# The guide is staged (changed or newly added): the question is answered.
+if ! git diff --cached --quiet -- "$guide"; then
+  exit 0
+fi
+
+if grep -qi '^Architecture: unchanged' "$message_file"; then
+  exit 0
+fi
+
+cat >&2 <<MSG
+commit stopped: $guide is the app's architecture source of truth and this commit does not update it.
+
+  Either stage your update to the guide (and add a row to its change log):
+      git add $guide
+  or, when this commit changes nothing the guide describes (styling, copy, tests, tooling),
+  say so with this line in the commit message body:
+      Architecture: unchanged
+MSG
+exit 1
