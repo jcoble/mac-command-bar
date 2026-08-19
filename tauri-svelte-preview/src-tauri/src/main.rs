@@ -6044,6 +6044,7 @@ fn main() {
             agent_conversation::warm_agent_conversation_config,
             agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
+            agent_conversation::delete_agent_conversation_session,
             agent_conversation::read_agent_conversation_snapshot,
             agent_conversation::list_agent_conversation_sessions,
             agent_conversation::list_agent_conversation_events,

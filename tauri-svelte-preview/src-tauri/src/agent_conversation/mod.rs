@@ -345,6 +345,17 @@ pub async fn close_agent_conversation(
 }
 
 #[tauri::command]
+/// Takes one conversation out of the store for good, stopping it first if it
+/// is running. Answers whether there was anything to delete.
+pub async fn delete_agent_conversation_session(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> CommandResult<bool> {
+    let result = manager.delete(&owned_id).await;
+    log_command_error("delete_agent_conversation_session", &owned_id, result)
+}
+
+#[tauri::command]
 /// Reads the durable snapshot for one conversation.
 pub async fn read_agent_conversation_snapshot(
     manager: tauri::State<'_, AgentRuntimeManager>,

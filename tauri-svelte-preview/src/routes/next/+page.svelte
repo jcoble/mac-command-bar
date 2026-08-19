@@ -189,6 +189,7 @@
   import {
     listAgentSessionsFromLocalBridge,
     isNativeTauriRuntime,
+    deleteAgentConversationSessionFromTauri,
     listAgentConversationSessionsFromTauri,
     listAgentSessionsFromTauri,
     openMainDevtoolsFromTauri,
@@ -1379,6 +1380,9 @@
    */
   async function removeSession(ownedId: string): Promise<void> {
     await closeTerminal(ownedId);
+    // The row is what the next launch rebuilds the rail from. Left in the
+    // store, a removed session came back every time the app opened.
+    await deleteAgentConversationSessionFromTauri(ownedId);
     pendingHosts.delete(ownedId);
     awaitingReattach.delete(ownedId);
     removeOwnedSession(ownedId);

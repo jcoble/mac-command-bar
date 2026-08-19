@@ -2207,6 +2207,41 @@ impl AgentRuntimeManager {
         Ok(true)
     }
 
+    /// Take a conversation out of the store for good.
+    ///
+    /// Stops it first if anything is running it, then drops the row — and with
+    /// it, through the store's cascades, its events, draft, annotations and
+    /// attachment records — and forgets it here, so nothing rebuilds it at the
+    /// next launch. The provider's own transcript on disk is not touched.
+    /// Answers whether there was anything to delete.
+    pub async fn delete(&self, owned_id: &str) -> Result<bool, String> {
+        let owned_id = required_id(owned_id, "Owned session id")?;
+        let live = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions
+                .get(&owned_id)
+                .map(|session| (session.generation, session.state != AgentRuntimeState::Closed))
+        };
+        let Some((generation, open)) = live else {
+            return Ok(false);
+        };
+        if open {
+            self.close(&owned_id, generation).await?;
+        }
+        let _lifecycle = self.lifecycle_guard(&owned_id).await?;
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&owned_id);
+        self.store
+            .delete_session(&owned_id)
+            .map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
     pub(crate) fn handoff_prepare(
         &self,
         request: &AgentConversationHandoffRequest,
@@ -6369,6 +6404,56 @@ mod tests {
             manager.list_sessions().unwrap()[0].model.as_deref(),
             Some("gpt-5.6-luna")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // Removing a row on the rail used to remove nothing here, and the next
+    // launch rebuilt the rail from this store — so every removed session came
+    // back. Deleting takes the row, and everything hanging off it, out for good.
+    #[tokio::test(flavor = "current_thread")]
+    async fn deleting_a_conversation_takes_it_out_of_the_store() {
+        let root = temp_root();
+        let log = root.join("delete-session.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "prompt_with_update",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let (connection, _) = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-to-delete",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap();
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&connection.owned_id).unwrap();
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::UserMessage {
+                    item_id: "message-to-delete".into(),
+                    text: "stored".into(),
+                    completed: true,
+                    attachment_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(manager.list_sessions().unwrap().len(), 1);
+
+        assert!(manager.delete(&connection.owned_id).await.unwrap());
+
+        assert!(manager.list_sessions().unwrap().is_empty());
+        assert!(manager
+            .list_events(&connection.owned_id, 0)
+            .unwrap()
+            .is_empty());
+        assert!(manager.snapshot(&connection.owned_id).unwrap().is_none());
+        // Gone is gone: asking again is not an error, just nothing to do.
+        assert!(!manager.delete(&connection.owned_id).await.unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 

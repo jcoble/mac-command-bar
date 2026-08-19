@@ -1363,6 +1363,14 @@ export async function updateAgentConversationSessionMetaFromTauri(input: {
   });
 }
 
+/** Takes a conversation out of the store for good; the agent's own transcript
+ * on disk stays. Answers whether there was anything to delete. */
+export async function deleteAgentConversationSessionFromTauri(ownedId: string): Promise<boolean> {
+  if (!isTauriRuntime() || !ownedId.trim()) return false;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<boolean>('delete_agent_conversation_session', { ownedId });
+}
+
 /** Everything the backend needs to read a past session's transcript file in. */
 export interface AgentConversationTranscriptImport {
   provider: import('./shell/conversation/conversationTypes.ts').AgentConversationProvider;
