@@ -996,4 +996,104 @@ assert.ok(store.getConversationSession('owned-b'));
   assert.equal(negative.lastSequence, 2, 'reading older history never rewinds the live cursor');
 }
 
+// Claude never says it compacted; the only sign is the reported occupancy
+// falling off a cliff. Without this the transcript has a silent gap and the
+// reply after it reads as though the agent forgot the conversation.
+{
+  const ownedId = 'owned-compaction';
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    lastSequence: 1,
+    events: [
+      {
+        ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 900,
+        payload: { kind: 'usage', usedTokens: 351_238, contextWindow: 400_000 }
+      }
+    ]
+  });
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 910,
+    payload: { kind: 'usage', usedTokens: 22_202, contextWindow: 400_000 }
+  });
+  const compactions = store.getConversationSession(ownedId).timeline
+    .filter((entry) => entry.kind === 'compaction');
+  assert.equal(compactions.length, 1, 'a window falling to a fraction of itself is a compaction');
+  assert.equal(compactions[0].preTokens, 351_238);
+  assert.equal(compactions[0].postTokens, 22_202);
+  assert.equal(store.getConversationSession(ownedId).usage.usedTokens, 22_202);
+}
+
+// An ordinary decline is not one. Agents report the last request as often as
+// the session, so a modest fall says nothing about the window being emptied.
+{
+  const ownedId = 'owned-no-compaction';
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    lastSequence: 1,
+    events: [
+      {
+        ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 900,
+        payload: { kind: 'usage', usedTokens: 351_238 }
+      }
+    ]
+  });
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 910,
+    payload: { kind: 'usage', usedTokens: 300_000 }
+  });
+  assert.equal(
+    store.getConversationSession(ownedId).timeline.filter((entry) => entry.kind === 'compaction').length,
+    0
+  );
+}
+
+// The same drop read back from the journal when the session is reopened. A
+// marker that only appeared live would be gone by morning.
+{
+  const ownedId = 'owned-replayed-compaction';
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    lastSequence: 3,
+    events: [
+      {
+        ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 900,
+        payload: { kind: 'usage', usedTokens: 351_238 }
+      },
+      {
+        ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 910,
+        payload: { kind: 'usage', usedTokens: 22_202 }
+      },
+      {
+        ownedId, provider: 'claude', generation: 1, sequence: 3, timestampMs: 920,
+        payload: { kind: 'assistantMessage', itemId: 'after', text: 'Carrying on.', completed: true }
+      }
+    ]
+  });
+  assert.deepEqual(
+    store.getConversationSession(ownedId).timeline.map((entry) => entry.kind),
+    ['compaction', 'assistant'],
+    'replayed history marks the boundary where the live session did'
+  );
+}
+
+// Codex reports its compaction outright, and then reports nothing else about
+// the window. The explicit record is the row.
+{
+  const ownedId = 'owned-explicit-compaction';
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 1,
+    events: [
+      {
+        ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 900,
+        payload: { kind: 'contextCompaction', trigger: 'auto' }
+      }
+    ]
+  });
+  const timeline = store.getConversationSession(ownedId).timeline;
+  assert.deepEqual(timeline.map((entry) => entry.kind), ['compaction']);
+  assert.equal(timeline[0].trigger, 'auto');
+  assert.equal(timeline[0].preTokens, undefined);
+}
+
 console.log('agent conversation store tests passed');

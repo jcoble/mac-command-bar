@@ -14,6 +14,7 @@
   import ApprovalItem from './ApprovalItem.svelte';
   import UserInputItem from './UserInputItem.svelte';
   import ErrorItem from './ErrorItem.svelte';
+  import CompactionItem from './CompactionItem.svelte';
 
   interface Props {
     item: ConversationDisplayItem;
@@ -43,6 +44,7 @@
     {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />
     {:else if item.kind === 'input'}<UserInputItem {item} onSubmit={onInputSubmit} />
     {:else if item.kind === 'error'}<ErrorItem {item} />
+    {:else if item.kind === 'compaction'}<CompactionItem {item} />
     {:else}<div class="unknown-item" data-testid="timeline-unknown-item">{item.text}</div>{/if}
   </div>
 {/if}

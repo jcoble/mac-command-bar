@@ -454,6 +454,9 @@ export type AgentConversationPayload =
       usedTokens?: number;
       contextWindow?: number;
     }
+  /** The agent threw away the older part of the conversation to make room.
+   * The sizes are absent when the provider does not say what it cost. */
+  | { kind: 'contextCompaction'; trigger?: string | null; preTokens?: number | null; postTokens?: number | null }
   | {
       kind: 'terminalProjection';
       eventType: AgentEventType;
@@ -595,6 +598,14 @@ export type ConversationTimelineEntry =
       code: string;
       message: string;
       recoverable: boolean;
+      timestampMs: number;
+    }
+  | {
+      kind: 'compaction';
+      itemId: string;
+      trigger?: string;
+      preTokens?: number;
+      postTokens?: number;
       timestampMs: number;
     };
 

@@ -540,6 +540,64 @@ mod tests {
         }
     }
 
+    /// A resumed conversation shows where the agent threw the older part of it
+    /// away. Without the record the transcript has a silent gap: the reply
+    /// after a compaction reads as though it forgot what came before.
+    #[test]
+    fn a_claude_compaction_boundary_is_read_with_the_sizes_it_names() {
+        let line = serde_json::json!({
+            "timestamp": "2026-08-01T12:00:00.000Z",
+            "type": "system",
+            "subtype": "compact_boundary",
+            "sessionId": "session-1",
+            "content": "Conversation compacted",
+            "compactMetadata": { "trigger": "auto", "preTokens": 351_238, "postTokens": 22_202 }
+        })
+        .to_string();
+        let records = parse_durable_line(
+            AgentConversationProvider::Claude,
+            "session-1",
+            line.as_bytes(),
+        );
+        assert_eq!(records.len(), 1, "one record, and it is the compaction");
+        match records[0].native.as_ref().expect("it is a compaction event") {
+            AgentConversationPayload::ContextCompaction {
+                trigger,
+                pre_tokens,
+                post_tokens,
+            } => {
+                assert_eq!(trigger.as_deref(), Some("auto"));
+                assert_eq!(*pre_tokens, Some(351_238));
+                assert_eq!(*post_tokens, Some(22_202));
+            }
+            other => panic!("expected ContextCompaction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_codex_compaction_is_read_even_though_it_names_no_sizes() {
+        let line = serde_json::json!({
+            "timestamp": "2026-08-01T12:00:00.000Z",
+            "type": "event_msg",
+            "payload": { "type": "context_compacted" }
+        })
+        .to_string();
+        let records = parse_durable_line(
+            AgentConversationProvider::Codex,
+            "session-1",
+            line.as_bytes(),
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].native,
+            Some(AgentConversationPayload::ContextCompaction {
+                trigger: None,
+                pre_tokens: None,
+                post_tokens: None,
+            })
+        );
+    }
+
     #[test]
     fn reads_the_time_a_transcript_line_says_it_happened() {
         // Both providers write the time as an RFC 3339 string. Only a bare

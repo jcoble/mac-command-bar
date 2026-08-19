@@ -900,6 +900,22 @@ async function handleAppNotification(message) {
     return;
   }
 
+  // The agent threw away the older part of the thread to make room. Codex
+  // reports no context occupancy at all, so this notification is the only sign
+  // a compaction happened; without it the transcript has a silent gap.
+  if (message.method === "thread/compacted") {
+    const prompt = promptForEvent(params);
+    if (!prompt) return;
+    await emitSessionUpdate(prompt, {
+      sessionUpdate: "context_compaction",
+      ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+      ...(typeof params.trigger === "string" ? { trigger: params.trigger } : {}),
+      ...(Number.isFinite(params.preTokens) ? { preTokens: params.preTokens } : {}),
+      ...(Number.isFinite(params.postTokens) ? { postTokens: params.postTokens } : {}),
+    });
+    return;
+  }
+
   if (message.method === "model/rerouted") {
     const session = sessions.get(params.threadId);
     if (session && typeof params.toModel === "string") {

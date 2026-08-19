@@ -104,6 +104,40 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
     {
         return Vec::new();
     }
+    // The point where the older part of the conversation was thrown away. It
+    // is written under its own record type rather than as a turn, so it has to
+    // be read before the filter below, which keeps only what somebody said.
+    if value.get("type").and_then(Value::as_str) == Some("system")
+        && value.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+    {
+        let trigger = value
+            .pointer("/compactMetadata/trigger")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let pre_tokens = value
+            .pointer("/compactMetadata/preTokens")
+            .and_then(Value::as_u64);
+        let post_tokens = value
+            .pointer("/compactMetadata/postTokens")
+            .and_then(Value::as_u64);
+        return vec![ProjectedRecord {
+            key: stable_key("claude-compaction", line),
+            event_type: AgentEventType::ItemCompleted,
+            timestamp_ms: timestamp(value),
+            item_id: None,
+            payload: BTreeMap::from([
+                ("historical".into(), json!(true)),
+                ("trigger".into(), json!(trigger)),
+                ("preTokens".into(), json!(pre_tokens)),
+                ("postTokens".into(), json!(post_tokens)),
+            ]),
+            native: Some(AgentConversationPayload::ContextCompaction {
+                trigger,
+                pre_tokens,
+                post_tokens,
+            }),
+        }];
+    }
     let Some(role) = value
         .get("type")
         .and_then(Value::as_str)

@@ -81,6 +81,7 @@ export type ConversationDisplayItem = (
       timestampMs: number;
     }
   | { kind: 'input'; itemId: string; requestId: string; title: string; description?: string; fields: AgentUserInputField[]; timestampMs: number }
+  | { kind: 'compaction'; itemId: string; trigger?: string; preTokens?: number; postTokens?: number; timestampMs: number }
   | { kind: 'unknown'; itemId: string; text: string; timestampMs: number; metadata?: Record<string, AgentConfigValue> }
 ) & {
   readonly turnId?: string | null;
@@ -250,6 +251,11 @@ function stringOf(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+/** A token count from metadata, or nothing when the provider did not say. */
+function positiveNumberOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 function numberOf(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
@@ -360,6 +366,7 @@ function kindFor(item: AgentItem): ConversationDisplayItem['kind'] {
     case 'image-view':
     case 'image-generation': return 'tool';
     case 'subagent': return 'subagent';
+    case 'context-compaction': return 'compaction';
     case 'error': return 'error';
     default: return 'unknown';
   }
@@ -464,6 +471,15 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     metadata,
     timestampMs: startedAt
   };
+  if (kind === 'compaction') return {
+    kind,
+    itemId: item.id,
+    turnId,
+    trigger: stringOf(metadata?.trigger) || undefined,
+    preTokens: positiveNumberOf(metadata?.preTokens),
+    postTokens: positiveNumberOf(metadata?.postTokens),
+    timestampMs: startedAt
+  };
   if (kind === 'unknown') return { kind, itemId: item.id, turnId, text: textOf(item.content), metadata, timestampMs: startedAt };
   const completed = typeof metadata?.completed === 'boolean'
     ? metadata.completed
@@ -562,6 +578,14 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
     text: conversationErrorText(entry.message),
     timestampMs: entry.timestampMs,
     metadata: { code: entry.code, recoverable: entry.recoverable }
+  };
+  if (entry.kind === 'compaction') return {
+    kind: 'compaction',
+    itemId: entry.itemId,
+    trigger: entry.trigger,
+    preTokens: entry.preTokens,
+    postTokens: entry.postTokens,
+    timestampMs: entry.timestampMs
   };
   if (entry.kind === 'turn') return {
     kind: 'unknown',
@@ -783,6 +807,20 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
   // A sub-agent's progress belongs to the agent tree, which reads it from the
   // session's children. As a transcript row it had nothing to show.
   if (payloadKind === 'childUpdate') return null;
+  if (payloadKind === 'contextCompaction') {
+    return {
+      id: `compaction:${event.sequence}`,
+      type: 'context-compaction',
+      turnId: 'turnId' in event ? event.turnId : stringOf(payload.turnId) || undefined,
+      content: [],
+      providerMetadata: eventMetadata(event, payload, {
+        completed: true,
+        trigger: stringOf(payload.trigger) || undefined,
+        preTokens: positiveNumberOf(payload.preTokens),
+        postTokens: positiveNumberOf(payload.postTokens)
+      })
+    };
+  }
   if (payloadKind === 'plan') return planItemFromPayload(event, payload);
   if (payloadKind === 'toolCall' || payloadKind === 'toolCallUpdate' || payloadKind === 'tool') {
     return toolItemFromPayload(event, payload, payloadKind);

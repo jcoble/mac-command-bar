@@ -291,3 +291,26 @@ assert.equal(
   false,
   'an unknown item with nothing to say draws nothing'
 );
+
+// Where the agent threw the older part of the conversation away. Both
+// providers can say so, and the reply after it reads as though it forgot what
+// came before unless the transcript marks the boundary.
+const compaction = displayItemsFromConversationEvents([
+  event(1, { kind: 'assistantDelta', itemId: 'msg-1', delta: 'Working.' }),
+  event(2, { kind: 'contextCompaction', trigger: 'auto', preTokens: 351238, postTokens: 22202 })
+]);
+assert.deepEqual(compaction.map((item) => item.kind), ['assistant', 'compaction']);
+assert.deepEqual(
+  compaction.filter((item) => item.kind === 'compaction').map((item) => [item.trigger, item.preTokens, item.postTokens]),
+  [['auto', 351238, 22202]]
+);
+assert.equal(
+  conversationItemHasVisibleContent({ kind: 'compaction', itemId: 'compaction:2', timestampMs: 2 }),
+  true,
+  'a compaction is a boundary, so it draws even carrying no text'
+);
+// Codex records that it happened and nothing about what it cost.
+const bareCompaction = displayItemsFromConversationEvents([event(1, { kind: 'contextCompaction' })]);
+assert.equal(bareCompaction.length, 1);
+assert.equal(bareCompaction[0].kind, 'compaction');
+assert.equal(bareCompaction[0].preTokens, undefined);

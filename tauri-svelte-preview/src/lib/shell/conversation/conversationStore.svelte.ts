@@ -4,7 +4,7 @@
  * This module performs no IO. The conversation service owns Tauri calls and
  * feeds normalized events into `applyAgentConversationEvent`.
  */
-import { applyConversationEvent, createConversationState } from './conversationReducer.ts';
+import { applyConversationEvent, createConversationState, usageDropIsCompaction } from './conversationReducer.ts';
 import type {
   AgentApprovalRequest,
   AgentCapabilities,
@@ -415,7 +415,32 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
     case 'turn':
       current.activeTurnId = payload.state === 'started' ? payload.turnId : undefined;
       break;
-    case 'usage':
+    case 'contextCompaction': {
+      appendTimelineEntry(current, {
+        kind: 'compaction', itemId: `compaction:${event.sequence}`,
+        trigger: payload.trigger ?? undefined,
+        preTokens: payload.preTokens ?? undefined,
+        postTokens: payload.postTokens ?? undefined,
+        timestampMs: event.timestampMs
+      });
+      displayChanged = true;
+      break;
+    }
+    case 'usage': {
+      // Claude says nothing when it compacts; the only sign is the reported
+      // occupancy falling off a cliff. A full window dropping to a fraction of
+      // itself has no other cause, so the transcript says so where it happened
+      // rather than leaving the reader to guess. A small decline is ordinary —
+      // a report of the last request rather than the session — and is ignored.
+      const previous = current.usage?.usedTokens;
+      const alreadySaid = current.timeline[current.timeline.length - 1]?.kind === 'compaction';
+      if (!alreadySaid && usageDropIsCompaction(previous, payload.usedTokens)) {
+        appendTimelineEntry(current, {
+          kind: 'compaction', itemId: `compaction:${event.sequence}`,
+          preTokens: previous, postTokens: payload.usedTokens, timestampMs: event.timestampMs
+        });
+        displayChanged = true;
+      }
       current.usage = {
         inputTokens: payload.inputTokens ?? current.usage?.inputTokens,
         outputTokens: payload.outputTokens ?? current.usage?.outputTokens,
@@ -423,6 +448,7 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
         contextWindow: payload.contextWindow ?? current.usage?.contextWindow
       };
       break;
+    }
     case 'terminalProjection':
       break;
     case 'agentThoughtChunk':

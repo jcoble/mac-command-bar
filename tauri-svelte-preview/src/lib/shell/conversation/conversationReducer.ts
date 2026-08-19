@@ -6,6 +6,29 @@ import type {
   ConversationTimelineEntry
 } from './conversationTypes.ts';
 
+/** Below this the window is not full enough for a fall to mean a compaction;
+ * agents report small numbers for other reasons. */
+const COMPACTION_FLOOR_TOKENS = 32_000;
+/** How much of the old total has to survive for the fall to be ordinary. */
+const COMPACTION_DROP_RATIO = 0.6;
+
+/**
+ * Whether a reported occupancy falling from `previous` to `used` can only be a
+ * compaction. Claude says nothing when it throws the older part of a
+ * conversation away — the number dropping off a cliff is the only sign there
+ * is. A modest decline is ordinary, an agent reporting its last request rather
+ * than the whole session, and means nothing.
+ */
+export function usageDropIsCompaction(
+  previous: number | undefined,
+  used: number | undefined
+): boolean {
+  return previous !== undefined
+    && used !== undefined
+    && previous >= COMPACTION_FLOOR_TOKENS
+    && used <= previous * COMPACTION_DROP_RATIO;
+}
+
 export function shouldClearConversationSending(
   event: AgentConversationEvent | AgentEvent
 ): boolean {
@@ -234,9 +257,40 @@ export function applyConversationEvent(
       };
     }
 
-    case 'usage':
+    case 'contextCompaction': {
+      const itemId = `compaction:${event.sequence}`;
       return {
         ...next,
+        timeline: replaceOrAppend(next.timeline, itemId, () => ({
+          kind: 'compaction',
+          itemId,
+          trigger: payload.trigger ?? undefined,
+          preTokens: payload.preTokens ?? undefined,
+          postTokens: payload.postTokens ?? undefined,
+          timestampMs: event.timestampMs
+        }))
+      };
+    }
+
+    case 'usage': {
+      const previous = next.usage?.usedTokens;
+      // A drop already announced by the provider is not announced twice.
+      const marked = usageDropIsCompaction(previous, payload.usedTokens)
+        && next.timeline[next.timeline.length - 1]?.kind !== 'compaction';
+      return {
+        ...next,
+        timeline: marked
+          ? [
+            ...next.timeline,
+            {
+              kind: 'compaction',
+              itemId: `compaction:${event.sequence}`,
+              preTokens: previous,
+              postTokens: payload.usedTokens,
+              timestampMs: event.timestampMs
+            }
+          ]
+          : next.timeline,
         usage: {
           inputTokens: payload.inputTokens ?? next.usage?.inputTokens,
           outputTokens: payload.outputTokens ?? next.usage?.outputTokens,
@@ -244,6 +298,7 @@ export function applyConversationEvent(
           contextWindow: payload.contextWindow ?? next.usage?.contextWindow
         }
       };
+    }
 
     case 'terminalProjection': {
       // History replayed from the database arrives this way, so it cannot be

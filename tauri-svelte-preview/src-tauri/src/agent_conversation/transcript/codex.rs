@@ -369,6 +369,22 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                 ]),
             });
         }
+        (Some("event_msg"), Some("context_compacted")) => {
+            // The rollout records only that it happened, so the row says only
+            // that. What it cost is not written at this layer.
+            records.push(ProjectedRecord {
+                key: stable_key("codex-compaction", line),
+                event_type: AgentEventType::ItemCompleted,
+                timestamp_ms: timestamp(value),
+                item_id: None,
+                payload: BTreeMap::from([("historical".into(), json!(true))]),
+                native: Some(AgentConversationPayload::ContextCompaction {
+                    trigger: None,
+                    pre_tokens: None,
+                    post_tokens: None,
+                }),
+            });
+        }
         (Some("event_msg"), Some("sub_agent_activity")) => {
             let Some(child_id) = value
                 .pointer("/payload/agent_thread_id")

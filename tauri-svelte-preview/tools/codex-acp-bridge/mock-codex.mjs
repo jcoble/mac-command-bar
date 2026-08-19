@@ -275,6 +275,7 @@ async function richScenario(threadId, turnId) {
     turnId,
     diff: "diff --git a/src/app.js b/src/app.js",
   });
+  await notification("thread/compacted", { threadId, turnId, trigger: "auto" });
   await notification("item/agentMessage/delta", {
     threadId,
     turnId,

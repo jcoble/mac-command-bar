@@ -529,6 +529,18 @@ pub enum AgentConversationPayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         context_window: Option<u64>,
     },
+    /// The agent threw away the older part of the conversation to make room.
+    /// The provider says so outright, or the reported occupancy falls far
+    /// enough that nothing else explains it; either way the transcript says
+    /// where it happened rather than leaving a silent gap.
+    ContextCompaction {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pre_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        post_tokens: Option<u64>,
+    },
     TerminalProjection(TerminalProjectionPayload),
     Error {
         code: String,

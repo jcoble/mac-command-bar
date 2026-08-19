@@ -4221,6 +4221,7 @@ fn canonical_event(
         } => AgentEventType::TurnInterrupted,
         AgentConversationPayload::Turn { .. } => AgentEventType::TurnCompleted,
         AgentConversationPayload::Usage { .. } => AgentEventType::UsageUpdated,
+        AgentConversationPayload::ContextCompaction { .. } => AgentEventType::ItemCompleted,
         AgentConversationPayload::TerminalProjection(projection) => projection.event_type,
         AgentConversationPayload::Error { .. } => AgentEventType::RuntimeError,
     };
@@ -4491,6 +4492,16 @@ fn payload_from_session_update_for_turn(
         }
         "usage_update" | "usage-update" | "token_count" | "token-count" => {
             parse_usage_payload(update)
+        }
+        "context_compaction" | "context-compaction" => {
+            Some(AgentConversationPayload::ContextCompaction {
+                trigger: update
+                    .get("trigger")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                pre_tokens: first_u64(update, &[&["preTokens"], &["pre_tokens"]]),
+                post_tokens: first_u64(update, &[&["postTokens"], &["post_tokens"]]),
+            })
         }
         "agent_message_chunk" if replay => Some(AgentConversationPayload::AssistantMessage {
             item_id: update
@@ -5218,6 +5229,7 @@ mod tests {
             AgentConversationPayload::Turn { .. } => "turn",
             AgentConversationPayload::AvailableCommandsUpdate { .. } => "availableCommandsUpdate",
             AgentConversationPayload::Usage { .. } => "usage",
+            AgentConversationPayload::ContextCompaction { .. } => "contextCompaction",
             AgentConversationPayload::TerminalProjection(_) => "terminalProjection",
             AgentConversationPayload::Error { .. } => "error",
         }
@@ -5478,6 +5490,32 @@ mod tests {
                 output_tokens: Some(20),
                 used_tokens: Some(120),
                 context_window: Some(4096),
+            })
+        );
+        // The bridge reports a compaction outright, because nothing else in a
+        // Codex session shows one: no occupancy is reported at all, so the drop
+        // that gives a compaction away elsewhere cannot be seen here.
+        let compaction = json!({ "update": {
+            "sessionUpdate": "context_compaction", "trigger": "auto",
+            "preTokens": 351_238, "postTokens": 22_202
+        }});
+        assert_eq!(
+            payload_from_session_update_for_turn(&compaction, None),
+            Some(AgentConversationPayload::ContextCompaction {
+                trigger: Some("auto".into()),
+                pre_tokens: Some(351_238),
+                post_tokens: Some(22_202),
+            })
+        );
+        assert_eq!(
+            payload_from_session_update_for_turn(
+                &json!({ "update": { "sessionUpdate": "context_compaction" } }),
+                None
+            ),
+            Some(AgentConversationPayload::ContextCompaction {
+                trigger: None,
+                pre_tokens: None,
+                post_tokens: None,
             })
         );
         assert_eq!(

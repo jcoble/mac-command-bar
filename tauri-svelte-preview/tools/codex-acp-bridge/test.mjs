@@ -690,6 +690,13 @@ tests.push([
         ["Thinking", " carefully", "Fallback thought"],
       );
 
+      // A compaction is reported outright, because nothing else in the stream
+      // shows one: no context occupancy is sent at all.
+      assert.deepEqual(
+        updatesOf(peer, "context_compaction").map((update) => update.trigger),
+        ["auto"],
+      );
+
       const starts = updatesOf(peer, "tool_call");
       const toolIds = ["tool-command", "tool-file", "tool-mcp", "tool-dynamic"];
       for (const toolId of toolIds) {
