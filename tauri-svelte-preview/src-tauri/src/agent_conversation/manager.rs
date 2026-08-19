@@ -771,6 +771,7 @@ impl AgentRuntimeManager {
             native_session_mode,
             reasoning_effort,
             requested_model,
+            requested_approval_policy,
             was_suspended,
         ) = {
             let mut sessions = self
@@ -810,6 +811,10 @@ impl AgentRuntimeManager {
                     .clone()
                     .or_else(|| session.spawn_reasoning_effort.clone()),
                 session.config.model.clone(),
+                // The policy the session is on now, which a live change has
+                // already written. A restarted adapter comes back on its own
+                // default, so the policy has to be asked for again.
+                session.config.approval_policy.clone(),
                 session.state == AgentRuntimeState::Suspended,
             )
         };
@@ -1003,7 +1008,9 @@ impl AgentRuntimeManager {
             reasoning_effort: reasoning_effort.clone().filter(|effort| {
                 Some(effort.as_str()) != started.config.reasoning_effort.as_deref()
             }),
-            approval_policy: None,
+            approval_policy: requested_approval_policy.filter(|policy| {
+                Some(policy.as_str()) != started.config.approval_policy.as_deref()
+            }),
         };
         if requested != AgentConversationConfigUpdate::default() {
             match runtime
@@ -1643,9 +1650,6 @@ impl AgentRuntimeManager {
                         .to_string(),
                 );
             }
-            if started {
-                validate_conversation_config_update(&session.config, &update)?;
-            }
             if update == AgentConversationConfigUpdate::default() {
                 return Ok(session.config.clone());
             }
@@ -1676,6 +1680,18 @@ impl AgentRuntimeManager {
         let runtime = self
             .runtime_or_activate(&request.owned_id, request.generation)
             .await?;
+        // What a session offers is the running adapter's answer, and the
+        // activation above has just refreshed it. Judging the request any
+        // earlier weighs it against the snapshot an adapter that is no longer
+        // running left behind, which refuses a choice the live one offers.
+        {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session(&sessions, &request.owned_id, request.generation)?;
+            validate_conversation_config_update(&session.config, &update)?;
+        }
         let config = runtime
             .lock()
             .await
@@ -8166,6 +8182,125 @@ mod tests {
             log.contains(r#""reasoningEffort":"xhigh""#),
             "reactivation must ask for the effort the session is on now: {log}"
         );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// An approval policy chosen while a session is running has to survive the
+    /// adapter going away and coming back, just as the effort does. Adapters
+    /// stop when a turn ends, so reactivation must ask for the policy the
+    /// session is on now rather than let the restarted adapter's default win.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reactivating_a_session_keeps_the_approval_policy_it_is_on() {
+        let fixture = fixture_manager_with_provider(
+            "suspend_approval_reactivation",
+            AgentConversationProvider::Codex,
+            None,
+        )
+        .await;
+
+        // The adapter answers the requested policy with one of its own, so the
+        // session lands on "never" having been asked for "untrusted".
+        fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: None,
+                approval_policy: Some("untrusted".into()),
+            })
+            .await
+            .expect("a live approval policy change");
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config")
+                .approval_policy
+                .as_deref(),
+            Some("never")
+        );
+
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+        fixture
+            .manager
+            .activate(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("reactivate");
+
+        let log = fs::read_to_string(fixture.root.join("suspend_approval_reactivation.jsonl"))
+            .expect("fixture request log");
+        assert!(
+            log.contains(r#""approvalPolicy":"never""#),
+            "reactivation must ask for the approval policy the session is on now: {log}"
+        );
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config")
+                .approval_policy
+                .as_deref(),
+            Some("never")
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// Which approval policies a session offers is the running adapter's
+    /// answer, and a suspended session carries only the snapshot the adapter
+    /// that last ran left behind. A policy the adapter installed now offers
+    /// must not be refused on the strength of that stale list.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_policy_the_running_adapter_offers_is_not_refused_by_a_stale_list() {
+        let fixture = fixture_manager_with_provider(
+            "suspend_approval_stale_list",
+            AgentConversationProvider::Codex,
+            None,
+        )
+        .await;
+
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            session
+                .config
+                .available_approval_policies
+                .retain(|policy| policy.as_str() != "never");
+        }
+
+        let config = fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: None,
+                approval_policy: Some("never".into()),
+            })
+            .await
+            .expect("a policy the running adapter offers is refused by a stale list");
+        assert_eq!(config.approval_policy.as_deref(), Some("never"));
 
         fixture
             .manager
