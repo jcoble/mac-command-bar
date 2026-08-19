@@ -52,6 +52,18 @@ const SESSION_RECENT_EVENT_CAP: usize = 1_000;
 /// of it is already bounded.
 const CATCH_UP_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
+
+/// Where a session's name came from, as it is written to the row. A row with
+/// none of these on it was written before the app recorded this, and is read as
+/// having come from the prompt.
+const TITLE_SOURCE_PROMPT: &str = "prompt";
+const TITLE_SOURCE_HELPER: &str = "helper";
+const TITLE_SOURCE_USER: &str = "user";
+
+/// How much of the first prompt, and of the reply to it, the helper model is
+/// given to name a session by. A name comes from the shape of an exchange, not
+/// from all of it, and the call is billed by the token.
+const TITLE_INPUT_CHAR_CAP: usize = 1_000;
 const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 /// The efforts a Claude conversation can offer before it has an adapter.
@@ -62,6 +74,16 @@ const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 const CLAUDE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "max"];
 
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
+
+/// Asks the helper model to name one session from its first exchange. Set once
+/// at launch; with none set the helper is not involved and a session keeps the
+/// name taken from its first prompt.
+pub type SessionNamer =
+    std::sync::Arc<dyn Fn(&str) -> Result<String, crate::helper::HelperError> + Send + Sync>;
+
+/// Told which session has just been given a new name, once that name is saved,
+/// so the rail can show it without asking for it.
+pub type SessionRenamedListener = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 #[derive(Clone, Debug)]
 struct PermissionOption {
@@ -156,6 +178,10 @@ pub struct ManagedAgentSession {
     child_rollout_parent_path: Option<PathBuf>,
     codex_children: HashMap<String, CodexChildRollout>,
     rail_meta: AgentConversationSessionMeta,
+    /// Where the current name came from: the first prompt, the helper model, or
+    /// the person. A session recovered from a row written before this was
+    /// recorded carries none, and counts as the first prompt.
+    title_source: Option<String>,
     suspending: bool,
 }
 
@@ -279,6 +305,8 @@ pub struct AgentRuntimeManager {
     sessions: Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
     providers: Arc<ProviderRegistry>,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
+    namer: Arc<Mutex<Option<SessionNamer>>>,
+    renamed_listener: Arc<Mutex<Option<SessionRenamedListener>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     store: Arc<SessionStore>,
     adapter_pools: Arc<AsyncMutex<HashMap<AdapterPoolKey, AdapterPoolEntry>>>,
@@ -320,6 +348,8 @@ impl AgentRuntimeManager {
             sessions: Arc::new(Mutex::new(sessions)),
             providers: Arc::new(providers),
             emitter: Arc::new(Mutex::new(None)),
+            namer: Arc::new(Mutex::new(None)),
+            renamed_listener: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -526,6 +556,22 @@ impl AgentRuntimeManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *current = Some(emitter);
+    }
+
+    pub fn set_session_namer(&self, namer: SessionNamer) {
+        let mut current = self
+            .namer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(namer);
+    }
+
+    pub fn set_session_renamed_listener(&self, listener: SessionRenamedListener) {
+        let mut current = self
+            .renamed_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(listener);
     }
 
     /// Snapshot the provider processes that this registry currently owns.
@@ -740,6 +786,7 @@ impl AgentRuntimeManager {
                 child_rollout_parent_path: None,
                 codex_children: HashMap::new(),
                 rail_meta: AgentConversationSessionMeta::default(),
+                title_source: None,
                 suspending: false,
             },
         );
@@ -1221,6 +1268,7 @@ impl AgentRuntimeManager {
                     .is_none();
                 if is_first_user_prompt {
                     session.rail_meta.title = prompt_title(&input.text);
+                    session.title_source = Some(TITLE_SOURCE_PROMPT.to_string());
                 }
             }
             let lifecycle = lifecycle_update_for_state(
@@ -1969,13 +2017,112 @@ impl AgentRuntimeManager {
                 );
             }
             session.connection.config = session.config.clone();
+            // A name typed here is the person's own, and nothing overwrites it
+            // afterwards. Everything else this request carries — model, effort,
+            // the rail's own copy of the row — arrives with the name unchanged,
+            // so only a different one counts as a rename.
+            let renamed = request
+                .meta
+                .title
+                .as_deref()
+                .is_some_and(|title| !title.trim().is_empty())
+                && request.meta.title != session.rail_meta.title;
             session.rail_meta = request.meta;
+            if renamed {
+                session.title_source = Some(TITLE_SOURCE_USER.to_string());
+            }
             persist_session(session)?;
         }
         self.list_sessions()?
             .into_iter()
             .find(|session| session.owned_id == owned_id)
             .ok_or_else(|| "Conversation session was not found after metadata update".to_string())
+    }
+
+    /// Replaces the provisional name of a session with one the helper model
+    /// writes from the first exchange, in the background.
+    ///
+    /// The provisional name is the first line the person typed, which is rarely
+    /// what the session turns out to be about. Once a turn has finished there
+    /// is enough to summarise, so the helper is asked for a short one. Nothing
+    /// waits on the answer: a send has already finished by the time this runs,
+    /// and a helper that is off, slow, or unreachable simply leaves the name
+    /// alone. A name the person typed is never touched, and neither is one the
+    /// helper has already written, so this happens once per session.
+    fn name_session_after_turn(&self, owned_id: &str, generation: u64, turn_id: &str) {
+        let namer = {
+            let namer = self
+                .namer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(namer) = namer.as_ref() else {
+                return;
+            };
+            Arc::clone(namer)
+        };
+        let store = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Ok(session) = current_session(&sessions, owned_id, generation) else {
+                return;
+            };
+            if !title_can_be_replaced(session.title_source.as_deref()) {
+                return;
+            }
+            Arc::clone(&session.store)
+        };
+        let Some(input) = title_input(&store, owned_id, turn_id) else {
+            return;
+        };
+        let sessions = Arc::clone(&self.sessions);
+        let renamed_listener = Arc::clone(&self.renamed_listener);
+        let owned_id = owned_id.to_string();
+        // The helper's transport blocks, so it is never run on a runtime thread.
+        tokio::task::spawn_blocking(move || {
+            let answer = match namer(&input) {
+                Ok(answer) => answer,
+                // No key stored means the helper is off, which is a choice
+                // rather than a fault: the session keeps its prompt name.
+                Err(crate::helper::HelperError::NoKey) => return,
+                Err(error) => {
+                    crate::debug_log::stderr_log!(
+                        "Could not name the session: {}",
+                        error.sentence()
+                    );
+                    return;
+                }
+            };
+            let Some(title) = helper_title(&answer) else {
+                return;
+            };
+            let mut sessions = sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
+                return;
+            };
+            // The person may have renamed the session while the helper was
+            // being asked, and their name wins.
+            if !title_can_be_replaced(session.title_source.as_deref()) {
+                return;
+            }
+            session.rail_meta.title = Some(title.clone());
+            session.title_source = Some(TITLE_SOURCE_HELPER.to_string());
+            if let Err(error) = persist_session(session) {
+                crate::debug_log::stderr_log!("Could not save the session name: {error}");
+                return;
+            }
+            drop(sessions);
+            let listener = renamed_listener
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(listener) = listener {
+                listener(&owned_id, &title);
+            }
+        });
     }
 
     pub async fn suspend_if_quiescent(
@@ -2786,6 +2933,7 @@ fn persisted_session_row_for_candidate(
             .or_else(|| Some(session.cwd.clone())),
         branch: session.rail_meta.branch.clone(),
         title: session.rail_meta.title.clone(),
+        title_source: session.title_source.clone(),
         project: session.rail_meta.project.clone(),
         state: enum_storage_value(candidate.state)?,
         suspended: candidate.state == AgentRuntimeState::Suspended,
@@ -2929,6 +3077,7 @@ fn recovered_session_from_row(
         child_rollout_parent_path: None,
         codex_children: HashMap::new(),
         rail_meta: stored.rail_meta,
+        title_source: row.title_source,
         suspending: false,
     };
     Ok(session)
@@ -2963,6 +3112,65 @@ fn prompt_title(prompt: &str) -> Option<String> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(|line| line.chars().take(SESSION_TITLE_CHAR_CAP).collect())
+}
+
+/// Whether a name may still be replaced by one the helper writes. A name the
+/// person typed is theirs to keep, and one the helper has already written is
+/// the name of the session.
+fn title_can_be_replaced(source: Option<&str>) -> bool {
+    !matches!(source, Some(TITLE_SOURCE_USER) | Some(TITLE_SOURCE_HELPER))
+}
+
+/// Reads the helper's answer as a name. It is asked for bare words and usually
+/// gives them, but a model that wraps a name in quotation marks anyway must not
+/// put those on the rail.
+fn helper_title(answer: &str) -> Option<String> {
+    let trimmed = answer
+        .trim()
+        .trim_matches(|character| matches!(character, '"' | '\'' | '\u{201c}' | '\u{201d}'))
+        .trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(SESSION_TITLE_CHAR_CAP).collect())
+}
+
+/// What the helper is given to name a session by: what the person first asked
+/// for, and what came back in the turn that just finished. On a live session
+/// the reply is only ever stored as its deltas, so they are joined back
+/// together here; a session read in from elsewhere holds whole messages, and
+/// both are read the same way.
+fn title_input(store: &SessionStore, owned_id: &str, turn_id: &str) -> Option<String> {
+    let prompt = store
+        .first_user_message_payload(owned_id)
+        .ok()
+        .flatten()
+        .and_then(|payload| serde_json::from_str::<AgentConversationEvent>(&payload).ok())
+        .and_then(|event| match event.payload {
+            AgentConversationPayload::UserMessage { text, .. } => Some(text),
+            _ => None,
+        })?;
+    let mut reply = String::new();
+    for row in store
+        .list_recent_events(owned_id, SNAPSHOT_WINDOW_BYTES)
+        .ok()?
+    {
+        if row.turn_id.as_deref() != Some(turn_id) || reply.chars().count() >= TITLE_INPUT_CHAR_CAP
+        {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<AgentConversationEvent>(&row.payload_json) else {
+            continue;
+        };
+        match event.payload {
+            AgentConversationPayload::AssistantDelta { delta, .. } => reply.push_str(&delta),
+            AgentConversationPayload::AssistantMessage { text, .. } => reply.push_str(&text),
+            _ => {}
+        }
+    }
+    let prompt: String = prompt.chars().take(TITLE_INPUT_CHAR_CAP).collect();
+    let reply: String = reply.chars().take(TITLE_INPUT_CHAR_CAP).collect();
+    Some(format!("{prompt}\n\n{reply}"))
 }
 
 fn current_session<'a>(
@@ -3961,6 +4169,10 @@ async fn handle_ordered_session_event(
                 .as_ref()
                 .err()
                 .map(|error| (error.code.to_string(), error.message.clone()));
+            // The same reading of the result that decides the turn payload
+            // below. A turn that was interrupted or that failed has nothing
+            // worth naming a session after.
+            let turn_completed = result.is_ok() && !cancelled;
 
             // Approval draining and terminal event emission are one atomic
             // session-lock operation. If transport closure wins this lock,
@@ -4089,6 +4301,9 @@ async fn handle_ordered_session_event(
                         );
                     }
                 }
+            }
+            if turn_completed {
+                manager.name_session_after_turn(owned_id, generation, &turn_id);
             }
             // A finished turn stops the adapter process as soon as no prompt,
             // approval, input request, or tool work remains. The stored native
@@ -5191,6 +5406,150 @@ mod tests {
                 latest_activity: Some("Finished".into()),
             }]
         );
+    }
+
+    /// The stored name of a fixture session, read back the way the rail reads it.
+    fn stored_title(fixture: &FixtureManager) -> Option<String> {
+        fixture
+            .manager
+            .store()
+            .get_session(&fixture.owned_id)
+            .expect("read the session row")
+            .and_then(|row| row.title)
+    }
+
+    fn stored_title_source(fixture: &FixtureManager) -> Option<String> {
+        fixture
+            .manager
+            .store()
+            .get_session(&fixture.owned_id)
+            .expect("read the session row")
+            .and_then(|row| row.title_source)
+    }
+
+    /// A namer that answers from memory instead of from a helper model, and
+    /// counts how many times it was asked.
+    fn counting_namer(calls: &Arc<Mutex<usize>>, answer: &'static str) -> SessionNamer {
+        let calls = Arc::clone(calls);
+        Arc::new(move |_input: &str| {
+            *calls.lock().unwrap() += 1;
+            Ok(answer.to_string())
+        })
+    }
+
+    fn renamed_meta(title: &str) -> AgentConversationSessionMeta {
+        AgentConversationSessionMeta {
+            title: Some(title.to_string()),
+            ..AgentConversationSessionMeta::default()
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_helper_title_replaces_the_prompt_title_once() {
+        let fixture = fixture_manager_with_acp_session("helper_title").await;
+        let calls: Arc<Mutex<usize>> = Default::default();
+        fixture
+            .manager
+            .set_session_namer(counting_namer(&calls, "Fix rail titles"));
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("make the rail titles readable"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| stored_title(&fixture).as_deref() == Some("Fix rail titles")).await;
+
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("helper"));
+        assert_eq!(*calls.lock().unwrap(), 1);
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("and one more thing"),
+            )
+            .await
+            .expect("second prompt starts");
+        wait_until(|| completed_turns(&seen) == 2).await;
+
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(stored_title(&fixture).as_deref(), Some("Fix rail titles"));
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_user_title_is_never_overwritten() {
+        let fixture = fixture_manager_with_acp_session("user_title").await;
+        let calls: Arc<Mutex<usize>> = Default::default();
+        fixture
+            .manager
+            .set_session_namer(counting_namer(&calls, "Fix rail titles"));
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: fixture.owned_id.clone(),
+                model: None,
+                effort: None,
+                meta: renamed_meta("Rail work"),
+            })
+            .expect("rename the session");
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("make the rail titles readable"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| completed_turns(&seen) == 1).await;
+
+        assert_eq!(stored_title(&fixture).as_deref(), Some("Rail work"));
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("user"));
+        assert_eq!(*calls.lock().unwrap(), 0);
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    fn completed_turns(seen: &Arc<Mutex<Vec<AgentConversationEvent>>>) -> usize {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Completed,
+                        ..
+                    }
+                )
+            })
+            .count()
     }
 
     struct FixtureManager {

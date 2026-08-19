@@ -1616,6 +1616,16 @@ const BACKEND_CAPABILITIES: [&str; 29] = [
 
 /// The event the app sends whenever a language server changes what it is doing.
 const SOURCE_LSP_STATUS_CHANGED_EVENT: &str = "source-lsp-status-changed";
+const SESSION_TITLE_CHANGED_EVENT: &str = "session-title-changed";
+
+/// A session that has just been given a better name than the one taken from
+/// its first prompt, so the rail can show it without asking.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionTitleChanged {
+    owned_id: String,
+    title: String,
+}
 
 fn backend_capabilities() -> Vec<String> {
     BACKEND_CAPABILITIES
@@ -5951,6 +5961,23 @@ fn main() {
             let handle = app.handle().clone();
             agent_runtime.set_emitter(Arc::new(move |event| {
                 let _ = handle.emit("agent-conversation-event", event);
+            }));
+            // Names a session from its first exchange. The manager decides
+            // when a name is wanted and saves the answer; this is the call
+            // itself, and the listener below puts the saved name on the rail.
+            let handle = app.handle().clone();
+            agent_runtime.set_session_namer(Arc::new(move |input: &str| {
+                helper::name_session(&handle, input)
+            }));
+            let handle = app.handle().clone();
+            agent_runtime.set_session_renamed_listener(Arc::new(move |owned_id, title| {
+                let _ = handle.emit(
+                    SESSION_TITLE_CHANGED_EVENT,
+                    SessionTitleChanged {
+                        owned_id: owned_id.to_string(),
+                        title: title.to_string(),
+                    },
+                );
             }));
             app.manage(workflow_engine);
             app.manage(agent_runtime);

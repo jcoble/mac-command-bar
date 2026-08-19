@@ -68,6 +68,7 @@ import { ConversationDraftPersistence } from './conversationDraftPersistence.ts'
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 
 let unlisten: UnlistenFn | null = null;
+let unlistenTitles: UnlistenFn | null = null;
 let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
 const resyncing = new Map<string, Promise<void>>();
@@ -547,11 +548,20 @@ export async function startConversationEvents(): Promise<void> {
         setConversationSending(payload.ownedId, false);
       }
     });
+    // A session starts out named after the first words of its prompt. Once
+    // its first turn is done the app writes a short summary over that, and this
+    // is how the rail row hears about it.
+    const stopTitles = await listen<{ ownedId: string; title: string }>(
+      'session-title-changed',
+      ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
+    );
     if (conversationEventsDisposed) {
       stop();
+      stopTitles();
       return;
     }
     unlisten = stop;
+    unlistenTitles = stopTitles;
   })();
   try {
     await conversationEventsSetup;
@@ -564,6 +574,8 @@ export function stopConversationEvents(): void {
   conversationEventsDisposed = true;
   unlisten?.();
   unlisten = null;
+  unlistenTitles?.();
+  unlistenTitles = null;
   for (const ownedId of [...terminalProjections.keys()]) stopConversationTerminalProjection(ownedId);
 }
 

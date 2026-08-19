@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Event kinds where only the newest row still means anything.
 ///
@@ -87,6 +87,10 @@ pub struct SessionRow {
     pub worktree: Option<String>,
     pub branch: Option<String>,
     pub title: Option<String>,
+    /// Where the title came from: the first prompt, the helper model, or the
+    /// person. A row written before this column existed reads as `None`, which
+    /// counts as the first prompt.
+    pub title_source: Option<String>,
     pub project: Option<String>,
     pub state: String,
     pub suspended: bool,
@@ -196,7 +200,8 @@ impl SessionStore {
                             suspended INTEGER NOT NULL CHECK (suspended IN (0, 1)),
                             created_at INTEGER NOT NULL,
                             last_activity_at INTEGER NOT NULL,
-                            extra TEXT NOT NULL
+                            extra TEXT NOT NULL,
+                            title_source TEXT
                         );
                         CREATE TABLE events (
                             owned_id TEXT NOT NULL REFERENCES sessions(owned_id) ON DELETE CASCADE,
@@ -257,6 +262,7 @@ impl SessionStore {
                 // two one does, and goes straight to the current version, so it
                 // is cleared here rather than falling through to that upgrade.
                 clear_superseded_events(&transaction)?;
+                add_title_source_column(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -273,6 +279,7 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the event cleanup", error)
                     })?;
                 clear_superseded_events(&transaction)?;
+                add_title_source_column(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -280,6 +287,22 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the event cleanup", error)
+                })?;
+            }
+            3 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the title source upgrade", error)
+                    })?;
+                add_title_source_column(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the title source upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -350,7 +373,8 @@ impl SessionStore {
         connection
             .query_row(
                 "SELECT owned_id, native_session_id, provider, model, effort, cwd, worktree,
-                        branch, title, project, state, suspended, created_at, last_activity_at, extra
+                        branch, title, project, state, suspended, created_at, last_activity_at,
+                        extra, title_source
                  FROM sessions
                  WHERE owned_id = ?",
                 [owned_id],
@@ -365,7 +389,8 @@ impl SessionStore {
         let mut statement = connection
             .prepare(
                 "SELECT owned_id, native_session_id, provider, model, effort, cwd, worktree,
-                        branch, title, project, state, suspended, created_at, last_activity_at, extra
+                        branch, title, project, state, suspended, created_at, last_activity_at,
+                        extra, title_source
                  FROM sessions
                  ORDER BY last_activity_at DESC, owned_id ASC",
             )
@@ -880,8 +905,9 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
         .execute(
             "INSERT INTO sessions (
                 owned_id, native_session_id, provider, model, effort, cwd, worktree,
-                branch, title, project, state, suspended, created_at, last_activity_at, extra
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                branch, title, project, state, suspended, created_at, last_activity_at, extra,
+                title_source
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(owned_id) DO UPDATE SET
                 native_session_id = excluded.native_session_id,
                 provider = excluded.provider,
@@ -896,7 +922,8 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
                 suspended = excluded.suspended,
                 created_at = excluded.created_at,
                 last_activity_at = excluded.last_activity_at,
-                extra = excluded.extra",
+                extra = excluded.extra,
+                title_source = excluded.title_source",
             params![
                 row.owned_id,
                 row.native_session_id,
@@ -913,9 +940,34 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
                 row.created_at_ms,
                 row.last_activity_at_ms,
                 extra_json,
+                row.title_source,
             ],
         )
         .map_err(|error| StoreError::sqlite("could not save the session", error))?;
+    Ok(())
+}
+
+/// Adds the column that records where a session's name came from, unless the
+/// database already has it.
+///
+/// Version one and two databases go straight to the current version rather than
+/// climbing one step at a time, so each of them adds this column as well. A
+/// database whose version has been set back by hand already has the column, and
+/// adding it twice is an error, so the column list is read first.
+fn add_title_source_column(connection: &Connection) -> Result<()> {
+    let present: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'title_source'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| StoreError::sqlite("could not read the session columns", error))?;
+    if present > 0 {
+        return Ok(());
+    }
+    connection
+        .execute("ALTER TABLE sessions ADD COLUMN title_source TEXT", [])
+        .map_err(|error| StoreError::sqlite("could not add the title source column", error))?;
     Ok(())
 }
 
@@ -936,6 +988,7 @@ fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
         created_at_ms: row.get(12)?,
         last_activity_at_ms: row.get(13)?,
         extra_json: row.get(14)?,
+        title_source: row.get(15)?,
     })
 }
 
@@ -993,6 +1046,7 @@ mod tests {
             worktree: Some("/work/project-tree".to_owned()),
             branch: Some("lane/store".to_owned()),
             title: Some(format!("Session {owned_id}")),
+            title_source: None,
             project: Some("Command Bar".to_owned()),
             state: "idle".to_owned(),
             suspended: false,
@@ -1160,6 +1214,51 @@ mod tests {
         let kinds: Vec<&str> = events.iter().map(|event| event.kind.as_str()).collect();
         assert_eq!(kinds, vec!["content.delta", "usage.updated"]);
         assert_eq!(events[1].seq, 5);
+    }
+
+    /// A database written before the helper could name a session has no record
+    /// of where a name came from. Opening one adds the column and leaves every
+    /// row exactly as it was, so a name already on screen stays on screen.
+    #[test]
+    fn schema_v4_adds_title_source() {
+        let (_directory, path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        drop(store);
+
+        // Put the database back the way one written before this column looked.
+        let connection = Connection::open(&path).expect("open database directly");
+        connection
+            .execute("ALTER TABLE sessions DROP COLUMN title_source", [])
+            .expect("drop the column an older database never had");
+        connection
+            .pragma_update(None, "user_version", 3)
+            .expect("set the older schema version");
+        drop(connection);
+
+        let store = SessionStore::open(&path).expect("reopen session store");
+        let row = store
+            .get_session("session-a")
+            .expect("read the upgraded row")
+            .expect("the row survives the upgrade");
+        assert_eq!(row.title, Some("Session session-a".to_owned()));
+        assert_eq!(row.title_source, None);
+        drop(store);
+
+        let connection = Connection::open(&path).expect("inspect the upgraded database");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read schema version");
+        assert_eq!(version, 4);
+        let columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'title_source'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the session columns");
+        assert_eq!(columns, 1);
     }
 
     fn open_temp_store() -> (TempDir, std::path::PathBuf, SessionStore) {

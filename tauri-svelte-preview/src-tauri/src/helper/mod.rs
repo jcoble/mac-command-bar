@@ -49,7 +49,7 @@ impl HelperJob {
                 "Name this conversation in at most six words. Answer with the name alone: no quotation marks, no trailing period, no preamble."
             }
             Self::Inspect => {
-                "Answer the question about this conversation in plain English, in at most three sentences. Use only what the text says."
+                "Answer the question about the text below in plain English, in three to five sentences; name one recommended next action."
             }
         }
     }
@@ -63,7 +63,7 @@ impl HelperJob {
     fn max_output(self) -> u32 {
         match self {
             Self::Title => 256,
-            Self::Inspect => 200,
+            Self::Inspect => 1024,
         }
     }
 }
@@ -334,6 +334,15 @@ fn run_job(app: &AppHandle, job: HelperJob, input: &str) -> Result<HelperComplet
         completion.output_tokens,
     );
     Ok(completion)
+}
+
+/// Names one session from its first exchange.
+///
+/// The app's own call rather than a person's: it is made on a background thread
+/// the moment a session's first turn ends, and its answer replaces the name
+/// taken from the first prompt.
+pub fn name_session(app: &AppHandle, input: &str) -> Result<String, HelperError> {
+    run_job(app, HelperJob::Title, input).map(|completion| completion.text)
 }
 
 #[tauri::command]

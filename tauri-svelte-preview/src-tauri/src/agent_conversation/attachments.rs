@@ -235,6 +235,7 @@ mod tests {
                 worktree: None,
                 branch: None,
                 title: None,
+                title_source: None,
                 project: None,
                 state: "idle".to_owned(),
                 suspended: false,

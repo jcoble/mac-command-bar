@@ -658,6 +658,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-19 · session titles from the helper after the first turn; schema v4 <code>title_source</code></td><td>A session keeps the first words of its prompt only until its first turn ends; the helper model is then asked to name it from that prompt and the reply, and the answer is saved and shown on the rail. <code>sessions.db</code> reaches version 4 with a <code>title_source</code> column recording whether a name came from the prompt, the helper, or the person, so a name typed by hand is never written over.</td><td>01, 10, 19</td></tr>
             <tr><td>2026-08-19 · “Antigravity runs as a third provider”</td><td>The Agy adapter is tracked at <code>tools/agy-acp/</code> instead of the recon artifact tree, and <code>dev-next.sh</code> builds it when it is missing or stale. An Antigravity session says once that it runs with its own permission mode, drops images before a send and says so, and offers the models <code>agy</code> itself names. A test pins that its sessions are never pooled onto one adapter process.</td><td>04, 19</td></tr>
             <tr><td>2026-08-19 · approval policy survives reactivation; validated against the running adapter</td><td>Reactivating a session asks the adapter for the approval policy the session is on, so a policy chosen mid-conversation is no longer undone when the adapter restarts; a policy change is checked against the list the running adapter reports rather than the snapshot a suspended session carries.</td><td>07</td></tr>
             <tr><td>2026-08-19 · “The app can call a small model of its own”</td><td>Helper model: bring-your-own-key OpenAI or Anthropic calls behind one transport, the key in the login Keychain under <code>Assembly Helper</code>, vendor and model in <code>helper-settings.json</code>, a Helper section in Settings with a Test button, and every successful call written to the usage store so it counts in the Usage popover.</td><td>19, 20</td></tr>
@@ -1010,12 +1011,12 @@
           </tbody>
         </table>
 
-        <h3><code>sessions.db</code> schema version 3</h3>
+        <h3><code>sessions.db</code> schema version 4</h3>
         <div class="two-up">
           <article class="card">
             <span class="badge current">Table</span>
             <h3><code>sessions</code></h3>
-            <p>One row per <code>ownedId</code>: provider/native identity, model and effort, working directory/worktree/branch, title/project, state/suspended flag, timestamps, and extensible JSON metadata.</p>
+            <p>One row per <code>ownedId</code>: provider/native identity, model and effort, working directory/worktree/branch, title/project, state/suspended flag, timestamps, and extensible JSON metadata. Version 4 adds <code>title_source</code> beside the title — <code>prompt</code>, <code>helper</code> or <code>user</code> — which is what stops a name the person typed from being written over. A row from an older database has none, and is read as having come from the prompt.</p>
           </article>
           <article class="card">
             <span class="badge current">Table</span>
@@ -1036,6 +1037,8 @@
 
         <p>SQLite runs in WAL mode with <code>synchronous=NORMAL</code> and foreign keys enabled. A live event write uses an immediate transaction to upsert the session and append the event before anything is emitted to the UI. Deleting a session cascades its events, draft, annotations, and attachment rows; the rail’s Remove does that through <code>delete_agent_conversation_session</code>, so a removed session does not come back at the next launch. The attachment files in the vault are not removed yet (tracked follow-up).</p>
         <span class="source"><code>core/src/session_store.rs:7,155-223,304-345,388-435</code></span>
+        <p>The version ladder upgrades in place and never rewrites a row. A version 1, 2 or 3 database goes straight to 4, each of those steps adding the <code>title_source</code> column if it is not already there.</p>
+        <span class="source"><code>core/src/session_store.rs:11,244-311,940-960</code></span>
 
         <div class="callout current">
           <p><strong>The durable event journal is not trimmed.</strong> An older 10,000-event cap was removed. Snapshot and paging APIs enforce byte/row budgets for what is loaded into memory, while the journal itself remains complete. Only superseded “current state” events—currently usage and session configuration—are collapsed.</p>
@@ -1457,6 +1460,12 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
             <h3>What the frontend can ask for</h3>
             <p><code>run_helper_job(job, input)</code> runs one job — <code>title</code> or <code>inspect</code> — and answers with the text or with the sentence explaining why not. <code>read_helper_settings</code> gives Settings the chosen vendor and model, whether a key is stored, and the model ids each vendor offers; <code>write_helper_settings</code> stores the choice; <code>set_helper_key</code> puts a key in the Keychain; <code>test_helper</code> makes one tiny call and answers “OK · 41 ms · 12 tokens” or the same sentence an error would give. Vendor and model are kept in <code>helper-settings.json</code> in the application data directory, not in the frontend’s settings store, because the app itself runs helper jobs and has to read the choice with no window open.</p>
             <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>src/lib/tauriSource.ts</code> · <code>src/lib/shell/components/SettingsDialog.svelte</code></span>
+          </article>
+          <article class="card">
+            <span class="badge current">The app asks too</span>
+            <h3>A session names itself after its first turn</h3>
+            <p>A new session is named after the first line the person typed, which is rarely what it turns out to be about. The moment its first turn finishes, the runtime manager hands the helper that prompt and the reply to it — a thousand characters of each — and writes the short name that comes back over the provisional one, marking the row <code>title_source = helper</code> and telling the rail so the row changes where it stands. Nothing waits on the call: the send has already finished, a helper with no key stored does nothing at all, and any other failure leaves the prompt name alone. A name the person typed themselves is never touched, and neither is one the helper has already written, so this happens once per session.</p>
+            <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>agent_conversation/manager.rs</code> · <code>src-tauri/src/main.rs</code></span>
           </article>
           <article class="card">
             <span class="badge current">Counted like everything else</span>
