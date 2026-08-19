@@ -89,7 +89,7 @@
   function actionLabel(action: WorktreeAgentAction): string {
     if (!action.enabled) return `${action.label} — ${action.disabledReason ?? 'not available'}`;
     if (action.id === 'inspect') {
-      return 'Inspect: starts a session that looks at this worktree and explains what is in it';
+      return 'Inspect: asks the helper model about this worktree and shows the answer under the row';
     }
     if (action.id === 'archive-and-remove') {
       return 'Archive and remove: starts a session that copies the work somewhere safe, then removes the worktree';
