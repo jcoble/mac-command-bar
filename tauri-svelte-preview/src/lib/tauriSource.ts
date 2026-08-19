@@ -712,6 +712,70 @@ export async function refreshUsageHistoryFromTauri(): Promise<number | null> {
   return invoke<number>('refresh_usage_history');
 }
 
+/** Which service the helper model calls, and therefore which key it needs. */
+export type HelperVendor = 'openai' | 'anthropic';
+
+/** What Settings needs to draw the Helper section. The model lists come from
+ *  the backend so that the ids live in one place. */
+export type HelperSettingsView = {
+  vendor: HelperVendor;
+  model: string;
+  hasKey: boolean;
+  openaiModels: string[];
+  anthropicModels: string[];
+};
+
+/** The answer to the Test button: a sentence either way. */
+export type HelperTestResult = {
+  ok: boolean;
+  message: string;
+};
+
+export async function readHelperSettingsFromTauri(): Promise<HelperSettingsView | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<HelperSettingsView>('read_helper_settings');
+}
+
+export async function writeHelperSettingsFromTauri(
+  settings: { vendor: HelperVendor; model: string }
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('write_helper_settings', { settings });
+}
+
+/** Stores the key in the Keychain. An empty key removes the one that is there. */
+export async function setHelperKeyFromTauri(vendor: HelperVendor, key: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('set_helper_key', { vendor, key });
+}
+
+export async function testHelperFromTauri(): Promise<HelperTestResult | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<HelperTestResult>('test_helper');
+}
+
+/**
+ * Ask the helper model to do one small job and give back its answer.
+ *
+ * Unlike its neighbours this cannot answer with `null`: an empty answer and a
+ * helper that is switched off would look the same to the caller. Away from the
+ * desktop app there is no helper at all, so this rejects with the sentence to
+ * show instead. The backend rejects the same way — one plain-English sentence,
+ * "No key — helper off" among them.
+ */
+export async function runHelperJobFromTauri(
+  job: 'title' | 'inspect',
+  input: string
+): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('The helper only runs in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('run_helper_job', { job, input });
+}
+
 export async function readTerminalSessionScrollbackFromTauri(
   sessionId: string
 ): Promise<string | null> {
@@ -905,6 +969,21 @@ export async function openPathFromTauri(path: string): Promise<boolean> {
 
 export async function revealPathFromTauri(path: string): Promise<boolean> {
   return runPathCommand('reveal_path', path);
+}
+
+/**
+ * Move one path to the Finder's Trash. The file-system plugin's `remove`
+ * deletes for good, so anything a person can undo goes through here instead.
+ * Rejects when the path is outside the folders the window may change.
+ */
+export async function moveToTrashFromTauri(path: string): Promise<boolean> {
+  if (!isTauriRuntime() || !path.trim()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('move_to_trash', { path });
+  return true;
 }
 
 export async function openTerminalPathFromTauri(

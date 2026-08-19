@@ -30,6 +30,7 @@
 		configureMonacoWorkers,
 		monacoVscodeApiIsInitialized,
 	} from "$lib/shell/editor/monacoWorkers";
+	import { ensureVscodeServices } from "$lib/shell/editor/vscodeServices";
 	import {
 		editorStartFailureMessage,
 		waitForConnectedHost,
@@ -2563,6 +2564,15 @@
 		window.addEventListener("error", handleMonacoCancellationWindowError);
 		window.addEventListener("unhandledrejection", handleMonacoCancellationRejection);
 		installWorker();
+
+		// Wait for the VS Code services rather than sample them. A start that is
+		// still running answers "not ready" to the check below, and an editor
+		// built on that answer does not open: creating it asks the markdown
+		// renderer service to take a code-block renderer, and the stand-in that
+		// stands in for the real service until the start finishes refuses. This
+		// returns immediately once they are up, and immediately when nothing has
+		// started them, so the only case it changes is the one that was failing.
+		await ensureVscodeServices();
 
 		const vscodeServicesReady = monacoVscodeApiIsInitialized();
 		const [monaco, _standaloneLanguages, _jsonLanguage, typeScriptLanguage] = await Promise.all([

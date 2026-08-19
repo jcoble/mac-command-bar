@@ -10,10 +10,11 @@
   WHERE THE NUMBERS COME FROM, AND WHERE THEY DO NOT. Providers report wildly
   different amounts of housekeeping. One sends a used-token count and a window
   size, another sends neither, a third sends the count alone. Rather than paper
-  over that with a plausible-looking default, every unreported field says "not
-  reported" in plain words, and a percentage appears only when both halves of
-  the pair are real. `sessionContextModel.ts` holds that rule and the script
-  test pins it.
+  over that with a plausible-looking default, every unreported field names the
+  provider that did not send it — "not reported by Codex" — so the gap reads as
+  a fact about that provider rather than as a hole in the panel, and a
+  percentage appears only when both halves of the pair are real.
+  `sessionContextModel.ts` holds that rule and the script test pins it.
 
   Files touched is derived, not stored: the panel reads the session's events
   once each time it comes on screen and folds them down. It deliberately does
@@ -30,6 +31,7 @@
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
+  import { agentDisplayName } from '$lib/shell/agentIcons.ts';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { openFileInEditor } from '$lib/shell/workbenchNavigation';
   import { listAgentConversationEventsFromTauri } from '$lib/tauriSource';
@@ -67,6 +69,11 @@
   );
   const usage = $derived(sessionContextUsage(session?.metadata ?? null, session?.usage));
   const attachments = $derived(session?.attachments ?? []);
+
+  /** Whoever did not send a figure gets named for it, so "not reported" reads
+   * as a fact about the provider rather than as a hole in the panel. */
+  const providerName = $derived(session ? agentDisplayName(session.provider) : '');
+  const notReported = $derived(`not reported by ${providerName}`);
 
   let filesTouched = $state<SessionFileTouch[]>([]);
   let filesLoaded = $state(false);
@@ -143,7 +150,7 @@
                       class="min-w-0 flex-1 truncate text-right text-[13px] leading-tight"
                       class:text-muted-foreground={item.missing}
                     >
-                      {item.missing ? 'not reported' : item.value}
+                      {item.missing ? notReported : item.value}
                     </dd>
                   </div>
                 {/each}
@@ -162,12 +169,12 @@
               <div class="flex items-baseline gap-2">
                 <span class="text-[13px] leading-tight">
                   {usage.usedTokens === null
-                    ? 'Tokens used not reported'
+                    ? `Tokens used ${notReported}`
                     : `${formatTokenCount(usage.usedTokens)} tokens used`}
                 </span>
                 <span class="min-w-0 flex-1 truncate text-right text-sm text-muted-foreground">
                   {usage.contextWindow === null
-                    ? 'window size not reported'
+                    ? `window size ${notReported}`
                     : `of ${formatTokenCount(usage.contextWindow)}`}
                 </span>
               </div>
@@ -191,12 +198,12 @@
               <div class="flex items-center gap-2 text-sm text-muted-foreground">
                 <span class="min-w-0 flex-1 truncate">
                   In: {usage.inputTokens === null
-                    ? 'not reported'
+                    ? notReported
                     : formatTokenCount(usage.inputTokens)}
                 </span>
                 <span class="min-w-0 flex-1 truncate text-right">
                   Out: {usage.outputTokens === null
-                    ? 'not reported'
+                    ? notReported
                     : formatTokenCount(usage.outputTokens)}
                 </span>
               </div>

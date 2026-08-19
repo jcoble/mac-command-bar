@@ -69,6 +69,7 @@ pub fn import_if_store_empty(store: &SessionStore, directory: &Path) -> Result<u
                 worktree: optional_string(value, &["worktreePath", "worktree_path"]).or(Some(cwd)),
                 branch: optional_string(value, &["branch"]),
                 title: optional_string(value, &["title"]),
+                title_source: None,
                 project: optional_string(value, &["project", "projectName"]),
                 state: state.to_string(),
                 suspended: state == "suspended",

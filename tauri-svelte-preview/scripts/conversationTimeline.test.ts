@@ -3,7 +3,9 @@ import {
   conversationTurnGroups,
   displayItemFromAgentItem,
   displayItemsFromConversationEvents,
+  diffLineCounts,
   formatWorkedFor,
+  latestPlan,
   type ConversationDisplayItem,
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
@@ -198,6 +200,66 @@ const instant = conversationTurnGroups([
 ]);
 assert.equal(instant[0].elapsedMs, null, 'a turn that spans no time reports no elapsed time');
 
+// A streamed reply is opened and never closed: the provider sends the text in
+// chunks and no event afterwards says the message ended, so every assistant
+// row in a finished transcript still reads as unfinished. A turn is finished
+// when nothing in it is still waiting, not when every row says it stopped
+// writing.
+const streamedReply = conversationTurnGroups([
+  textItem('user', 'streamed-user', 'streamed-turn', 0),
+  toolItem('streamed-tool-a', 'streamed-turn', 60_000),
+  toolItem('streamed-tool-b', 'streamed-turn', 120_000),
+  textItem('assistant', 'streamed-answer', 'streamed-turn', 840_000, false)
+]);
+assert.equal(streamedReply.length, 1, 'a finished turn is one group');
+assert.equal(streamedReply[0].completed, true, 'a finished turn folds even though its reply still reads as streaming');
+assert.equal(streamedReply[0].elapsedMs, 840_000);
+assert.equal(formatWorkedFor(840_000), '14m 0s');
+assert.deepEqual(
+  streamedReply[0].workItemIds,
+  ['streamed-tool-a', 'streamed-tool-b'],
+  'the tool calls are what the fold hides'
+);
+assert.deepEqual(
+  streamedReply[0].tailItemIds,
+  ['streamed-user', 'streamed-answer'],
+  'the prompt and the reply stay on screen while the turn is collapsed'
+);
+
+// A compaction marker is recorded by the app rather than by the agent, so it
+// arrives without the turn id the rows around it carry. It belongs to the turn
+// it interrupts; treating it as the start of another one cut the turn in two
+// and lost the fold over both halves.
+const compacted = conversationTurnGroups([
+  textItem('user', 'compacted-user', 'compacted-turn', 0),
+  toolItem('compacted-tool-a', 'compacted-turn', 60_000),
+  { kind: 'compaction', itemId: 'compacted-marker', turnId: null, timestampMs: 120_000 },
+  toolItem('compacted-tool-b', 'compacted-turn', 180_000),
+  textItem('assistant', 'compacted-answer', 'compacted-turn', 840_000, false)
+]);
+assert.equal(compacted.length, 1, 'a compaction marker stays inside the turn it interrupts');
+assert.equal(compacted[0].completed, true, 'the turn still folds around the marker');
+assert.deepEqual(
+  compacted[0].workItemIds,
+  ['compacted-tool-a', 'compacted-tool-b'],
+  'both halves of the interrupted turn fold together'
+);
+
+// Nothing folds while the agent is still writing. Most providers put no turn id
+// on the rows they send, so the running turn cannot be found by matching ids —
+// it is the newest turn, and there is a running turn only while one is named.
+const writing = conversationTurnGroups([
+  textItem('user', 'writing-user-a', null, 0),
+  toolItem('writing-tool-a', null, 1_000),
+  textItem('assistant', 'writing-answer-a', null, 2_000, false),
+  textItem('user', 'writing-user-b', null, 3_000),
+  toolItem('writing-tool-b', null, 4_000),
+  textItem('assistant', 'writing-answer-b', null, 5_000, false)
+], 'turn-the-agent-is-writing');
+assert.equal(writing.length, 2);
+assert.equal(writing[0].completed, true, 'an earlier turn folds while a later one runs');
+assert.equal(writing[1].completed, false, 'the turn being written never folds');
+
 assert.equal(formatWorkedFor(800), '0.8s');
 assert.equal(formatWorkedFor(5_540), '5.5s');
 assert.equal(formatWorkedFor(42_100), '42s');
@@ -314,3 +376,107 @@ const bareCompaction = displayItemsFromConversationEvents([event(1, { kind: 'con
 assert.equal(bareCompaction.length, 1);
 assert.equal(bareCompaction[0].kind, 'compaction');
 assert.equal(bareCompaction[0].preTokens, undefined);
+
+// ── Tool row titles strip fences (tool_title_strips_fences) ──────────────
+// Some providers stuff a fenced block into the title field instead of a
+// separate summary; a row should not print raw fence markers.
+const fencedTitleTool = displayItemFromAgentItem({
+  id: 'tool-fenced',
+  type: 'mcp-tool',
+  content: [],
+  providerMetadata: { title: 'Tool ```console\nls -la\n```' }
+});
+assert.equal(fencedTitleTool.title, 'Tool', 'the title drops the fenced block');
+assert.equal(fencedTitleTool.summary, 'ls -la', 'the summary is the first fenced line, fences and language tag stripped');
+
+const blankFenceTool = displayItemFromAgentItem({
+  id: 'tool-blank-fence',
+  type: 'mcp-tool',
+  content: [],
+  providerMetadata: { title: '```\n\n```' }
+});
+assert.equal(blankFenceTool.summary, '', 'a fence with no content has an empty summary');
+
+// ── The plan chip reads one newest plan (latest_plan_across_turns) ───────
+// The chip above the composer shows the plan the session is working to, so it
+// needs the newest one no matter which turn produced it.
+const planAcrossTurns = typedConversationTimeline([
+  {
+    id: 'plan-first',
+    type: 'plan',
+    turnId: 'turn-1',
+    content: [],
+    providerMetadata: { title: 'Plan', steps: [{ id: 'one', title: 'Read the store', state: 'in_progress' }] }
+  },
+  {
+    id: 'plan-second',
+    type: 'plan',
+    turnId: 'turn-2',
+    content: [],
+    providerMetadata: {
+      title: 'Plan',
+      steps: [
+        { id: 'one', title: 'Read the store', state: 'completed' },
+        { id: 'two', title: 'Write the page', state: 'in_progress' }
+      ]
+    }
+  }
+]);
+assert.equal(latestPlan(planAcrossTurns)?.itemId, 'plan-second', 'the newest plan wins across turns');
+assert.equal(latestPlan(planAcrossTurns)?.steps.length, 2);
+assert.equal(latestPlan([]), null, 'a transcript with no plan has no plan');
+
+// ── Repeated plan updates draw one line (duplicate_plan_updates_collapse) ─
+// A plan update arrives without an id of its own, so every one of them lands
+// on a row of its own and an unchanged plan printed itself twice. Two updates
+// carrying the same steps are one update.
+const planSteps = [
+  { id: 'one', title: 'Read the store', state: 'completed' },
+  { id: 'two', title: 'Write the page', state: 'pending' }
+];
+const repeatedPlan = typedConversationTimeline([
+  { id: 'plan-repeat-1', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } },
+  { id: 'plan-repeat-2', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } }
+]);
+assert.deepEqual(
+  repeatedPlan.filter((item) => item.kind === 'plan').map((item) => item.itemId),
+  ['plan-repeat-1'],
+  'an unchanged plan update is dropped'
+);
+
+const movedPlan = typedConversationTimeline([
+  { id: 'plan-moved-1', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } },
+  {
+    id: 'plan-moved-2',
+    type: 'plan',
+    content: [],
+    providerMetadata: {
+      title: 'Plan',
+      steps: [
+        { id: 'one', title: 'Read the store', state: 'completed' },
+        { id: 'two', title: 'Write the page', state: 'in_progress' }
+      ]
+    }
+  }
+]);
+assert.deepEqual(
+  movedPlan.filter((item) => item.kind === 'plan').map((item) => item.itemId),
+  ['plan-moved-1', 'plan-moved-2'],
+  'a plan that moved on keeps its own line'
+);
+
+// ── A diff counts its own lines (diff_line_counts) ───────────────────────
+// The chip says how much the turn changed. The `+++`/`---` lines name the
+// file rather than change a line in it, so they are not part of the count.
+const counted = diffLineCounts(
+  'diff --git a/one.ts b/one.ts\n--- a/one.ts\n+++ b/one.ts\n@@ -1,2 +1,3 @@\n context\n+added one\n+added two\n-removed one\n'
+);
+assert.deepEqual(counted, { added: 2, removed: 1 }, 'file headers are not changed lines');
+assert.deepEqual(diffLineCounts(''), { added: 0, removed: 0 }, 'nothing changed counts as nothing');
+// A file header only appears before the first hunk. Inside a hunk, a line of
+// three dashes is a removed line that started with a comment marker.
+assert.deepEqual(
+  diffLineCounts('--- a/notes.sql\n+++ b/notes.sql\n@@ -1,2 +1,2 @@\n--- note\n+++ more\n'),
+  { added: 1, removed: 1 },
+  'dashes inside a hunk are changed lines, not headers'
+);

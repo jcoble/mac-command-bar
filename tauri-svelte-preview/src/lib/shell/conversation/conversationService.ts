@@ -9,6 +9,7 @@ import {
   setConversationDraft,
   setConversationConnection,
   setConversationAttachments,
+  setConversationProviderNotice,
   recordSentConversationAttachments,
   restoreSentConversationAttachments,
   setConversationSending,
@@ -67,6 +68,7 @@ import { ConversationDraftPersistence } from './conversationDraftPersistence.ts'
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 
 let unlisten: UnlistenFn | null = null;
+let unlistenTitles: UnlistenFn | null = null;
 let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
 const resyncing = new Map<string, Promise<void>>();
@@ -546,11 +548,20 @@ export async function startConversationEvents(): Promise<void> {
         setConversationSending(payload.ownedId, false);
       }
     });
+    // A session starts out named after the first words of its prompt. Once
+    // its first turn is done the app writes a short summary over that, and this
+    // is how the rail row hears about it.
+    const stopTitles = await listen<{ ownedId: string; title: string }>(
+      'session-title-changed',
+      ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
+    );
     if (conversationEventsDisposed) {
       stop();
+      stopTitles();
       return;
     }
     unlisten = stop;
+    unlistenTitles = stopTitles;
   })();
   try {
     await conversationEventsSetup;
@@ -563,6 +574,8 @@ export function stopConversationEvents(): void {
   conversationEventsDisposed = true;
   unlisten?.();
   unlisten = null;
+  unlistenTitles?.();
+  unlistenTitles = null;
   for (const ownedId of [...terminalProjections.keys()]) stopConversationTerminalProjection(ownedId);
 }
 
@@ -641,9 +654,10 @@ export async function sendStructuredMessage(
         generation: state.generation
       })
     ) {
-      const provider: AgentConversationProvider | null = owned.agent === 'codex' || owned.agent === 'claude'
-        ? owned.agent
-        : null;
+      const provider: AgentConversationProvider | null =
+        owned.agent === 'codex' || owned.agent === 'claude' || owned.agent === 'antigravity'
+          ? owned.agent
+          : null;
       if (!provider) throw new Error('This stopped session cannot be revived as a conversation');
 
       const previousGeneration = state.generation;
@@ -695,6 +709,21 @@ export async function sendStructuredMessage(
       return;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
+    // Antigravity's adapter reads only the words of a prompt, so a screenshot
+    // sent with one arrives as nothing at all. The message still goes; the
+    // notice beside the box says what was left behind.
+    if (state.provider === 'antigravity' && state.attachments.length > 0) {
+      await Promise.all(
+        state.attachments.map((attachment) => cleanupConversationAttachment(ownedId, attachment))
+      );
+      setConversationAttachments(ownedId, []);
+      setConversationProviderNotice(ownedId, 'Antigravity cannot take images yet; they were left out.');
+      // A screenshot on its own leaves nothing to say, so nothing is sent.
+      if (!text.trim()) {
+        setConversationSending(ownedId, false);
+        return;
+      }
+    }
     // An unread or stale capability snapshot is not a refusal. Blocking the
     // send here left a screenshot that could never go out and no way to learn
     // why, so only a connected session's own answer refuses.

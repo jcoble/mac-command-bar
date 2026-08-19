@@ -107,8 +107,17 @@ const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'tasks'
 ]);
 
-function displayItemCompleted(item: ConversationDisplayItem): boolean {
-  if (typeof item.completed === 'boolean') return item.completed;
+/** Whether a row has stopped waiting on anything.
+ *
+ * Only a row that waits can say its turn is unfinished: a tool that has not
+ * returned, a sub-agent still working, a request sitting in front of the
+ * reader. Writing is not waiting. This used to read the `completed` flag on
+ * every row first, and a message is marked unfinished the moment its first
+ * chunk arrives and is never marked finished afterwards — the provider streams
+ * the text and sends nothing to say it ended. So every turn holding a reply
+ * counted as unfinished for ever, and the fold that only a finished turn draws
+ * never appeared again once a conversation had any writing in it. */
+function turnItemSettled(item: ConversationDisplayItem): boolean {
   if (item.kind === 'tool') return item.state === 'completed' || item.state === 'failed';
   if (item.kind === 'subagent') {
     return ['completed', 'complete', 'failed', 'cancelled', 'canceled', 'stopped', 'done']
@@ -127,7 +136,7 @@ function displayItemCompleted(item: ConversationDisplayItem): boolean {
   return true;
 }
 
-function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], activeTurnId: string | null): ConversationTurnGroup {
+function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], running: boolean): ConversationTurnGroup {
   let tailStart = items.length;
   while (tailStart > 0 && items[tailStart - 1].kind === 'assistant') tailStart -= 1;
   const hasFoldableWork = items.some((item) => FOLDABLE_TURN_KINDS.has(item.kind));
@@ -154,7 +163,7 @@ function turnGroup(turnId: string | null, items: readonly ConversationDisplayIte
     items,
     workItemIds,
     tailItemIds,
-    completed: turnId !== activeTurnId && items.every(displayItemCompleted),
+    completed: !running && items.every(turnItemSettled),
     elapsedMs
   };
 }
@@ -171,38 +180,45 @@ function turnGroup(turnId: string | null, items: readonly ConversationDisplayIte
  * A prompt is what starts a turn, so a user message is where a stored turn
  * begins and everything after it belongs to that turn until the next prompt.
  * The id is the first row's own id, which keeps it stable across re-renders —
- * the fold's open state is keyed by it. */
+ * the fold's open state is keyed by it.
+ *
+ * A row that carries no id of its own carries on the turn it sits in, whether
+ * that turn was named by the agent or read off a prompt. Some rows are written
+ * by this app rather than by the agent — a compaction marker is — and starting
+ * a new turn at one of those cut the turn it interrupted in half. */
 function turnIdsOf(items: readonly ConversationDisplayItem[]): (string | null)[] {
-  let storedTurnId: string | null = null;
+  let currentTurnId: string | null = null;
   return items.map((item) => {
-    if (item.turnId) return item.turnId;
-    if (item.kind === 'user' || storedTurnId === null) storedTurnId = `stored-turn:${item.itemId}`;
-    return storedTurnId;
+    if (item.turnId) currentTurnId = item.turnId;
+    else if (item.kind === 'user' || currentTurnId === null) currentTurnId = `stored-turn:${item.itemId}`;
+    return currentTurnId;
   });
 }
 
-/** Groups adjacent display rows without changing their transcript order. */
+/** Groups adjacent display rows without changing their transcript order.
+ *
+ * The turn the agent is still writing into is the newest one. It cannot be
+ * found by matching `activeTurnId` against the rows: most providers put no turn
+ * id on what they send, so the rows of a live turn carry an id read off the
+ * prompt that opened it, which is never the id the session reports. There is a
+ * turn running only while the session names one, and while one runs it is the
+ * last group. */
 export function conversationTurnGroups(
   items: readonly ConversationDisplayItem[],
   activeTurnId: string | null = null
 ): readonly ConversationTurnGroup[] {
   const turnIds = turnIdsOf(items);
-  const groups: ConversationTurnGroup[] = [];
-  let groupItems: ConversationDisplayItem[] = [];
-  let groupTurnId: string | null = null;
-  const publish = (): void => {
-    if (groupItems.length === 0) return;
-    groups.push(turnGroup(groupTurnId, groupItems, activeTurnId));
-    groupItems = [];
-  };
+  const partitions: { turnId: string | null; items: ConversationDisplayItem[] }[] = [];
   items.forEach((item, index) => {
-    const itemTurnId = turnIds[index];
-    if (groupItems.length > 0 && itemTurnId !== groupTurnId) publish();
-    groupTurnId = itemTurnId;
-    groupItems.push(item);
+    const open = partitions[partitions.length - 1];
+    if (open && turnIds[index] === open.turnId) open.items.push(item);
+    else partitions.push({ turnId: turnIds[index], items: [item] });
   });
-  publish();
-  return groups;
+  return partitions.map((partition, index) => turnGroup(
+    partition.turnId,
+    partition.items,
+    activeTurnId !== null && index === partitions.length - 1
+  ));
 }
 
 export function formatWorkedFor(elapsedMs: number): string {
@@ -385,6 +401,15 @@ function toolKindOf(value: unknown, title = ''): ConversationToolKind {
   return 'tool';
 }
 
+/** The first readable line of a title's fenced block, with the fence
+ * markers and language tag stripped. Empty when the fence has no content. */
+function toolSummaryLine(raw: string): string {
+  const fenced = raw.match(/```[^\n]*\n([\s\S]*?)```/);
+  const body = fenced ? fenced[1] : '';
+  const line = body.split('\n').find((entry) => entry.trim().length > 0) ?? '';
+  return line.trim().slice(0, 80);
+}
+
 function toolStateOf(value: unknown): ConversationToolState {
   const normalized = stringOf(value, 'pending').toLowerCase().replaceAll('_', '-');
   if (['completed', 'complete', 'success', 'succeeded'].includes(normalized)) return 'completed';
@@ -442,7 +467,13 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     timestampMs: startedAt
   };
   if (kind === 'tool') {
-    const title = stringOf(metadata?.title, stringOf(metadata?.name, item.type));
+    const rawTitle = stringOf(metadata?.title, stringOf(metadata?.name, item.type));
+    // A raw title sometimes has a fenced block stuffed into it instead of a
+    // separate summary; when it does, the fence is the row's one-line
+    // preview and the title keeps only the plain text ahead of it.
+    const fenceIndex = rawTitle.indexOf('```');
+    const title = fenceIndex < 0 ? rawTitle : rawTitle.slice(0, fenceIndex).trim() || 'Tool';
+    const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : toolSummaryLine(rawTitle);
     const output = textOf(item.content) || stringOf(metadata?.output);
     const diff = stringOf(metadata?.diff, item.type === 'file-change' ? output : '');
     return {
@@ -455,7 +486,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
       output: output || undefined,
       diff: diff || undefined,
       path: stringOf(metadata?.path) || undefined,
-      summary: stringOf(metadata?.summary) || undefined,
+      summary,
       metadata,
       timestampMs: startedAt
     };
@@ -606,6 +637,64 @@ export function conversationErrorText(message: string | null | undefined): strin
 }
 
 /** Merge typed provider items with legacy reducer entries without flattening them. */
+/** The plan the session is working to, or nothing when it has none.
+ *
+ * A transcript holds every plan update it was ever sent, and the chip above
+ * the composer shows one plan: the newest, whichever turn produced it. */
+export function latestPlan(
+  items: readonly ConversationDisplayItem[]
+): Extract<ConversationDisplayItem, { kind: 'plan' }> | null {
+  return items.findLast(
+    (item): item is Extract<ConversationDisplayItem, { kind: 'plan' }> => item.kind === 'plan'
+  ) ?? null;
+}
+
+/** How many lines a unified diff adds and removes.
+ *
+ * The `+++` and `---` lines name the file the hunks belong to rather than
+ * change a line in it, so they are read past. They only appear ahead of the
+ * first hunk: once one has started, a line of three dashes is a removed line
+ * that began with a comment marker, and skipping it lost the change. */
+export function diffLineCounts(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  let seenHunk = false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('@@')) {
+      seenHunk = true;
+      continue;
+    }
+    if (!seenHunk && (line.startsWith('+++') || line.startsWith('---'))) continue;
+    if (line.startsWith('+')) added += 1;
+    else if (line.startsWith('-')) removed += 1;
+  }
+  return { added, removed };
+}
+
+/** Whether two plans say the same thing: the same steps, in the same order,
+ * each in the same state. */
+function samePlanSteps(left: readonly AgentPlanStep[], right: readonly AgentPlanStep[]): boolean {
+  return left.length === right.length
+    && left.every((step, index) => step.title === right[index].title && step.state === right[index].state);
+}
+
+/** Drops a plan update that repeats the one before it.
+ *
+ * A plan update arrives with no id of its own, so each one is filed under the
+ * sequence it came in on and takes a row of its own. A provider that re-sends
+ * an unchanged plan therefore wrote the same plan into the transcript twice.
+ * The first of a run keeps its place, which holds the row still while the
+ * repeats arrive; anything that actually moved on keeps its own row. */
+function withoutRepeatedPlans(items: readonly ConversationDisplayItem[]): ConversationDisplayItem[] {
+  let previousSteps: readonly AgentPlanStep[] | null = null;
+  return items.filter((item) => {
+    if (item.kind !== 'plan') return true;
+    const repeat = previousSteps !== null && samePlanSteps(previousSteps, item.steps);
+    previousSteps = item.steps;
+    return !repeat;
+  });
+}
+
 export function typedConversationTimeline(
   items: readonly AgentItem[] = [],
   legacy: readonly ConversationTimelineEntry[] = [],
@@ -622,12 +711,14 @@ export function typedConversationTimeline(
     item.id,
     displayItemFromAgentItem(item, timestamps[item.id] ?? displayTimestamp(item, legacyEnd + index + 1))
   ));
-  const next = [...byId.values()]
-    .map((item) => {
-      const sent = item.kind === 'user' ? sentAttachments[item.itemId] : undefined;
-      return sent?.length ? { ...item, attachments: sent } : item;
-    })
-    .sort((left, right) => left.timestampMs - right.timestampMs);
+  const next = withoutRepeatedPlans(
+    [...byId.values()]
+      .map((item) => {
+        const sent = item.kind === 'user' ? sentAttachments[item.itemId] : undefined;
+        return sent?.length ? { ...item, attachments: sent } : item;
+      })
+      .sort((left, right) => left.timestampMs - right.timestampMs)
+  );
   return reuseConversationDisplayItems(next, previous);
 }
 

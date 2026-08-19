@@ -7,6 +7,8 @@
  * request sent on the first message.
  */
 
+import { sessionTitleFromPrompt } from '../sessionStrip.ts';
+
 export type ThreadStartProvider = 'codex' | 'claude' | 'antigravity';
 
 export type ThreadStartProviderConfig = {
@@ -92,7 +94,16 @@ const PROVIDER_LABELS: Record<ThreadStartProvider, string> = {
 const FALLBACK_MODELS: Record<ThreadStartProvider, readonly string[]> = {
   codex: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
   claude: ['default', 'sonnet', 'haiku', 'opus', 'claude-opus-5', 'claude-fable-5'],
-  antigravity: []
+  // Antigravity names a model by the display name its own `models` command
+  // prints, and its speed tiers are separate models rather than an effort
+  // setting. The first is the one it starts on when nothing is chosen.
+  antigravity: [
+    'Gemini 3.7 Flash (High)',
+    'Gemini 3.7 Flash (Medium)',
+    'Gemini 3.7 Flash (Low)',
+    'Gemini 3.1 Pro (High)',
+    'Gemini 3.1 Pro (Low)'
+  ]
 };
 
 const MODEL_HINTS: Record<string, string> = {
@@ -119,13 +130,15 @@ const FALLBACK_EFFORT_CHOICES: Record<ThreadStartProvider, readonly string[]> = 
 const FALLBACK_ACCESS: Record<ThreadStartProvider, string> = {
   codex: 'on-request',
   claude: 'acceptEdits',
-  antigravity: ''
+  // Antigravity has one setting and no way to change it: its adapter cannot
+  // pass a permission question on, so it runs everything without asking.
+  antigravity: 'bypassPermissions'
 };
 
 const FALLBACK_ACCESS_CHOICES: Record<ThreadStartProvider, readonly string[]> = {
   codex: ['untrusted', 'on-request', 'never'],
   claude: ['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions'],
-  antigravity: []
+  antigravity: ['bypassPermissions']
 };
 
 function providerFor(value: string): value is ThreadStartProvider {
@@ -309,12 +322,18 @@ export function accessChoicesFor(
   return available.length ? available : [...FALLBACK_ACCESS_CHOICES[provider]];
 }
 
-/** The first line becomes the rail title, trimmed to the row's readable width. */
+/**
+ * The first line becomes the rail title.
+ *
+ * Shaped by the one function that decides what a prompt's first line looks like
+ * as a name, because the backend writes exactly the same string when the
+ * message goes out. The rail saves this row back seconds later, and a title
+ * that differs by a character reads as a rename there — which would stop the
+ * session from ever being given a better name after its first turn.
+ */
 export function titleFromPrompt(prompt: string, projectPath: string): string {
   const fallback = tidy(projectPath).split('/').filter(Boolean).at(-1) || 'project';
-  const firstLine = tidy(prompt).split(/\r?\n/, 1)[0].replace(/\s+/g, ' ').trim();
-  if (!firstLine) return `Build in ${fallback}`;
-  return firstLine.length > 72 ? `${firstLine.slice(0, 71).trimEnd()}…` : firstLine;
+  return sessionTitleFromPrompt(tidy(prompt)) ?? `Build in ${fallback}`;
 }
 
 /**
@@ -355,7 +374,10 @@ export function buildThreadStartRequest(
     provider: state.provider,
     model: tidy(state.model) || null,
     reasoningEffort: tidy(state.effort) || null,
-    approvalPolicy: tidy(state.access) || null,
+    // Antigravity's access is a statement, not a choice: its adapter offers no
+    // approval control, and a session asked to change one refuses the message
+    // that carried the request.
+    approvalPolicy: state.provider === 'antigravity' ? null : (tidy(state.access) || null),
     projectPath: tidy(state.projectPath),
     cwd: tidy(state.cwd),
     branch: tidy(state.branch),

@@ -147,6 +147,10 @@ function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
   return paths;
 }
 
+/** The panel is a quick glance, not a file browser; a session that has
+ * touched hundreds of paths still shows only the most recent 50. */
+const MAX_FILES_TOUCHED = 50;
+
 /**
  * Pulls `path` and `locations` out of toolCall / toolCallUpdate payloads,
  * de-duplicates by path, and sorts by most recently touched.
@@ -173,10 +177,9 @@ export function sessionFilesTouched(
     }
   }
 
-  return [...touches.values()].sort(
-    (left, right) =>
-      right.lastTouchedMs - left.lastTouchedMs || left.path.localeCompare(right.path)
-  );
+  return [...touches.values()]
+    .sort((left, right) => right.lastTouchedMs - left.lastTouchedMs || left.path.localeCompare(right.path))
+    .slice(0, MAX_FILES_TOUCHED);
 }
 
 /** A token count with thousands separators, for a line a person reads. */

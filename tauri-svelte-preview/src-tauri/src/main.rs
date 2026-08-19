@@ -22,6 +22,7 @@ use orchestration::{
     OrchestrationRun,
 };
 use tauri::{Emitter, Manager};
+use tauri_plugin_fs::FsExt;
 use workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
 
 mod agent_conversation;
@@ -31,6 +32,7 @@ mod debug_log;
 mod git_diff_models;
 mod git_pr;
 mod git_workspace;
+mod helper;
 mod lsp;
 mod orchestration;
 mod product_identity;
@@ -620,6 +622,25 @@ impl SourceScanWalkProgress {
     }
 }
 
+/// Let the file-system plugin reach everything under a workspace root.
+///
+/// Which folders those are is decided at run time — a session's checkout, a
+/// worktree, a repository someone just opened — so the capability file cannot
+/// name them. Listing a folder is the one moment the app is told which folder
+/// it is looking at, and the Files panel only ever creates, renames or deletes
+/// inside a folder it has listed, so the grant belongs here.
+fn allow_workspace_root_in_fs_scope(app: &tauri::AppHandle, root: &str) {
+    let Ok(canonical) = std::fs::canonicalize(root) else {
+        return;
+    };
+    if let Err(error) = app.fs_scope().allow_directory(&canonical, true) {
+        crate::debug_log::stderr_log!(
+            "fs scope: could not allow {}: {error}",
+            canonical.display()
+        );
+    }
+}
+
 #[tauri::command]
 async fn list_source_files(
     app: tauri::AppHandle,
@@ -629,6 +650,7 @@ async fn list_source_files(
     query: Option<String>,
     scan_id: Option<String>,
 ) -> Result<SourceScanResult, String> {
+    allow_workspace_root_in_fs_scope(&app, &root);
     let cancellation =
         source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
     let scan_id_for_cleanup = scan_id.clone();
@@ -759,6 +781,34 @@ async fn reveal_path(path: String) -> Result<(), String> {
     })
     .await
     .map_err(|error| format!("Path reveal task failed: {error}"))?
+}
+
+/// Move one path to the Finder's Trash.
+///
+/// The file-system plugin's `remove` deletes for good, and deleting a file from
+/// a tree is the kind of press people take back a second later, so the Files
+/// panel goes through here instead. The path must sit inside a folder the
+/// plugin's scope already covers — the same folders `list_source_files` grants
+/// — so this command can never be pointed at somewhere the window has no
+/// business changing.
+#[tauri::command]
+async fn move_to_trash(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let target = std::fs::canonicalize(&path)
+        .map_err(|error| format!("Could not find {path}: {error}"))?;
+    if !app.fs_scope().is_allowed(&target) {
+        return Err(format!(
+            "{} is outside the folders this window is allowed to change.",
+            target.display()
+        ));
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        trash::delete(&target).map_err(|error| {
+            format!("Could not move {} to the Trash: {error}", target.display())
+        })
+    })
+    .await
+    .map_err(|error| format!("Trash task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1566,6 +1616,16 @@ const BACKEND_CAPABILITIES: [&str; 29] = [
 
 /// The event the app sends whenever a language server changes what it is doing.
 const SOURCE_LSP_STATUS_CHANGED_EVENT: &str = "source-lsp-status-changed";
+const SESSION_TITLE_CHANGED_EVENT: &str = "session-title-changed";
+
+/// A session that has just been given a better name than the one taken from
+/// its first prompt, so the rail can show it without asking.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionTitleChanged {
+    owned_id: String,
+    title: String,
+}
 
 fn backend_capabilities() -> Vec<String> {
     BACKEND_CAPABILITIES
@@ -5864,8 +5924,11 @@ fn main() {
         .manage(browser::BrowserRegistry::default())
         .manage(resources::ResourceRegistry::default())
         .manage(usage_history::UsageHistoryState::default())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data_dir = app
                 .path()
@@ -5899,6 +5962,23 @@ fn main() {
             agent_runtime.set_emitter(Arc::new(move |event| {
                 let _ = handle.emit("agent-conversation-event", event);
             }));
+            // Names a session from its first exchange. The manager decides
+            // when a name is wanted and saves the answer; this is the call
+            // itself, and the listener below puts the saved name on the rail.
+            let handle = app.handle().clone();
+            agent_runtime.set_session_namer(Arc::new(move |input: &str| {
+                helper::name_session(&handle, input)
+            }));
+            let handle = app.handle().clone();
+            agent_runtime.set_session_renamed_listener(Arc::new(move |owned_id, title| {
+                let _ = handle.emit(
+                    SESSION_TITLE_CHANGED_EVENT,
+                    SessionTitleChanged {
+                        owned_id: owned_id.to_string(),
+                        title: title.to_string(),
+                    },
+                );
+            }));
             app.manage(workflow_engine);
             app.manage(agent_runtime);
             // Every time a language server starts, finishes reading a project, or stops,
@@ -5922,6 +6002,7 @@ fn main() {
             reveal_source_file,
             open_path,
             reveal_path,
+            move_to_trash,
             open_terminal_path,
             open_terminal_command,
             search_source_files,
@@ -6085,7 +6166,12 @@ fn main() {
             browser::inspect_browser_rect,
             browser::capture_browser_viewport,
             browser::open_browser_tab_devtools,
-            browser::open_browser_tab_external
+            browser::open_browser_tab_external,
+            helper::run_helper_job,
+            helper::set_helper_key,
+            helper::read_helper_settings,
+            helper::write_helper_settings,
+            helper::test_helper
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {

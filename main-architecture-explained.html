@@ -567,6 +567,7 @@
       <a href="#compaction">Compaction design</a>
       <a href="#dotnet">Rust for .NET</a>
       <a href="#native">Native surfaces</a>
+      <a href="#helper">Helper model</a>
       <a href="#sources">Source map</a>
     </nav>
 
@@ -615,7 +616,7 @@
             <span class="badge limit">What does not exist yet</span>
             <h3>Assembly-owned compaction</h3>
             <p>There is no backend summarizer, compaction table, or Assembly-owned compaction boundary in this worktree. What does exist: when the <em>provider</em> compacts its own context, the adapter reports it, Rust records a <code>contextCompaction</code> event, and the transcript shows a marker. The compaction section designs the Assembly-owned addition and marks it as proposed.</p>
-            <span class="source"><code>conversationTypes.ts:231-280,648-683</code> · <code>session_store.rs:184-223</code> · <code>manager.rs:4496-4510</code></span>
+            <span class="source"><code>conversationTypes.ts:231-280,648-683</code> · <code>session_store.rs:184-223</code> · <code>manager.rs:4521-4535</code></span>
           </article>
         </div>
       </section>
@@ -653,10 +654,18 @@
         </div>
 
         <h3 id="changelog">Change log</h3>
-        <p>Every commit that changes what this page describes adds a row here and updates the sections it names. A commit that changes nothing described here says so in its message body with the line <code>Architecture: unchanged</code>; the repository’s <code>.githooks/commit-msg</code> hook refuses a commit that does neither.</p>
+        <p>Every commit that changes what this page describes adds a row here and updates the sections it names (a row added in the same commit names the date and the commit subject, since its hash does not exist yet). A commit that changes nothing described here says so in its message body with the line <code>Architecture: unchanged</code>; the repository’s <code>.githooks/commit-msg</code> hook refuses a commit that does neither.</p>
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-19 · “Keep a session’s record across a live effort change”</td><td>Ensuring a session matches the effort it is on now rather than the one it was created with, so the send that follows an effort change is recognised as the same session instead of replacing it and losing its name, the name’s source, its model and its approval policy. A generation that genuinely is replaced now carries the previous one’s name and name source forward, and saving a rail row that names no effort no longer wipes the effort the session is on.</td><td>04, 06, 07, 10</td></tr>
+            <tr><td>2026-08-19 · session titles from the helper after the first turn; schema v4 <code>title_source</code></td><td>A session keeps the first words of its prompt only until its first turn ends; the helper model is then asked to name it from that prompt and the reply, and the answer is saved and shown on the rail. <code>sessions.db</code> reaches version 4 with a <code>title_source</code> column recording whether a name came from the prompt, the helper, or the person, so a name typed by hand is never written over.</td><td>01, 10, 19</td></tr>
+            <tr><td>2026-08-19 · “Antigravity runs as a third provider”</td><td>The Agy adapter is tracked at <code>tools/agy-acp/</code> instead of the recon artifact tree, and <code>dev-next.sh</code> builds it when it is missing or stale. An Antigravity session says once that it runs with its own permission mode, drops images before a send and says so, and offers the models <code>agy</code> itself names. A test pins that its sessions are never pooled onto one adapter process.</td><td>04, 19</td></tr>
+            <tr><td>2026-08-19 · approval policy survives reactivation; validated against the running adapter</td><td>Reactivating a session asks the adapter for the approval policy the session is on, so a policy chosen mid-conversation is no longer undone when the adapter restarts; a policy change is checked against the list the running adapter reports rather than the snapshot a suspended session carries.</td><td>07</td></tr>
+            <tr><td>2026-08-19 · “The app can call a small model of its own”</td><td>Helper model: bring-your-own-key OpenAI or Anthropic calls behind one transport, the key in the login Keychain under <code>Assembly Helper</code>, vendor and model in <code>helper-settings.json</code>, a Helper section in Settings with a Test button, and every successful call written to the usage store so it counts in the Usage popover.</td><td>19, 20</td></tr>
+            <tr><td>2026-08-19 · Files panel: fs/opener/clipboard plugins, Trash command, watcher</td><td>The Files panel’s row menu makes, renames, removes, reveals and copies through <code>plugin-fs</code>, <code>plugin-opener</code> and <code>plugin-clipboard-manager</code>; <code>list_source_files</code> adds each listed root to the fs scope; Delete goes through a new <code>move_to_trash</code> command; the listed folder is watched, so the tree refreshes itself.</td><td>03, 18</td></tr>
+            <tr><td>2026-08-19 · “An effort chosen mid-conversation stays chosen”</td><td>Reactivating a session asks the adapter for the effort the session is on now rather than the one it was created with; a conversation read back from the store keeps the adapter’s effort control, so it is not refused a change; a new session may start on any effort the adapter offers, not only the four this app can name before one runs.</td><td>04, 07</td></tr>
+            <tr><td>2026-08-19 · “Claude’s model and effort are asked of the adapter”</td><td>A new Claude session takes what the adapter reports and then sets the chosen model and effort with <code>session/set_config_option</code>; the <code>MAX_THINKING_TOKENS</code> spawn mapping is gone; effort changes live whenever the adapter offers an <code>effort</code> option.</td><td>04, 07</td></tr>
             <tr><td><code>424aae7</code></td><td>Provider compaction is recorded: an ACP <code>context_compaction</code> update becomes a <code>contextCompaction</code> event; the Codex bridge forwards <code>thread/compacted</code>; Claude <code>compact_boundary</code> and Codex <code>context_compacted</code> transcript records import as the same event; the reducer also infers a compaction from a large usage drop; the transcript shows a “Context compacted” marker.</td><td>00, 08, 12, 13, 15, 16</td></tr>
             <tr><td><code>72edd13</code></td><td>The Context and Run tabs group their content into cards. Presentation only.</td><td>—</td></tr>
             <tr><td><code>97dc734</code></td><td>The composer’s backdrop runs the width of the panel with a long, soft fade. Presentation only.</td><td>—</td></tr>
@@ -737,6 +746,7 @@
             <span class="badge current">Boundary 1</span>
             <h3>Svelte ↔ Rust</h3>
             <p>Svelte calls commands such as ensure, send, respond to approval, read snapshot, load older, save draft, and manage attachments. Rust emits <code>agent-conversation-event</code>.</p>
+            <p>Some of what crosses here is not ours. Tauri’s own plugins register commands on this same boundary, and the Files panel calls three of them directly rather than through a command of ours: <code>plugin-fs</code> to make, rename and watch, <code>plugin-opener</code> to show a path in the Finder, and <code>plugin-clipboard-manager</code> to copy one. <code>plugin-dialog</code> and <code>plugin-notification</code> were already registered and are called from elsewhere. Each plugin is registered in the builder and each carries its own permission in <code>src-tauri/capabilities/default.json</code>.</p>
           </article>
           <article class="card">
             <span class="badge current">Boundary 2</span>
@@ -773,18 +783,20 @@
           <article class="provider-card">
             <span class="badge external">Installed external adapter</span>
             <h3>Claude</h3>
-            <p><strong>Manifest ID:</strong> <code>claude-agent-acp</code> — <code>@agentclientprotocol/claude-agent-acp</code> 0.70.0, the version <code>CLAUDE_AGENT_ACP_VERSION</code> declares. It bundles its own Claude Code SDK and CLI; <code>CLAUDE_CODE_EXECUTABLE</code> and <code>MAX_THINKING_TOKENS</code> in its environment are honoured.</p>
+            <p><strong>Manifest ID:</strong> <code>claude-agent-acp</code> — <code>@agentclientprotocol/claude-agent-acp</code> 0.70.0, the version <code>CLAUDE_AGENT_ACP_VERSION</code> declares. It bundles its own Claude Code SDK and CLI; <code>CLAUDE_CODE_EXECUTABLE</code> in its environment is honoured, and an inherited <code>MAX_THINKING_TOKENS</code> is scrubbed so the adapter’s own effort option is the only way effort is set.</p>
             <p><strong>Actual launcher:</strong> the development script requires the installed command <code>claude-agent-acp</code> (no fallback to the retired <code>claude-code-acp</code>), regenerates <code>~/.mac-command-bar/claude-acp-wrapper.sh</code>, and unsets nested Claude session environment markers before launching it.</p>
-            <p>Its implementation is external to this repository. Assembly treats it as an ACP agent and learns its session, image, command, and interaction capabilities during <code>initialize</code>. <code>session/new</code> answers with <code>modes</code> and <code>configOptions</code> (<code>mode</code>, <code>model</code>, <code>effort</code>, <code>agent</code>) rather than a <code>models</code> list; the client remembers the offered option ids and changes model or effort with <code>session/set_config_option</code>, whose reply carries the whole option set back. The adapter has no <code>session/set_model</code>.</p>
-            <span class="source"><code>scripts/dev-next.sh:21-90</code> · <code>capabilities.rs:11</code> · <code>providers/acp_client.rs:58-60,748-815,1238-1293</code> · <code>providers/mod.rs:175-226</code></span>
+            <p>Its implementation is external to this repository. Assembly treats it as an ACP agent and learns its session, image, command, and interaction capabilities during <code>initialize</code>. <code>session/new</code> answers with <code>modes</code> and <code>configOptions</code> (<code>mode</code>, <code>model</code>, <code>effort</code>, <code>agent</code>) rather than a <code>models</code> list; the client remembers the offered option ids and changes model or effort with <code>session/set_config_option</code>, whose reply carries the whole option set back. The adapter has no <code>session/set_model</code>. A new session takes whatever the adapter reports; the model and effort chosen for the conversation are then asked of it, and the reply names what the session is actually on — a request the adapter resolves to something else is shown resolved, not as typed. Effort is no longer fixed when the process starts, so it can change at any point in a conversation; the “Effort is set when the session starts” refusal is reserved for an adapter that reports no effort option at all.</p>
+            <span class="source"><code>scripts/dev-next.sh:21-90</code> · <code>capabilities.rs:11</code> · <code>providers/acp_client.rs:58-60,748-815,1238-1293</code> · <code>manager.rs:1067-1100,1694-1811,5277-5319</code> · <code>providers/mod.rs:175-226</code></span>
           </article>
           <article class="provider-card">
-            <span class="badge conditional">Optional recon adapter</span>
+            <span class="badge conditional">Tracked adapter, registered when agy is installed</span>
             <h3>Antigravity / Agy</h3>
-            <p><strong>Manifest ID:</strong> <code>agy-acp</code></p>
-            <p>It is registered only when both <code>agy</code> and a built adapter binary exist. The adapter source currently lives under the recon artifact tree, translates ACP to <code>agy --output-format stream-json</code>, and persists its session-to-conversation mapping separately.</p>
-            <p>Agy lacks interactive ACP permission-answer support, so the development wrapper explicitly passes its skip-permission mode.</p>
-            <span class="source"><code>scripts/dev-next.sh:95-113</code> · <code>artifacts/recon/probe-agy/agy-acp/README.md:1-21,60-61,109-111</code></span>
+            <p><strong>Manifest ID:</strong> <code>agy-acp</code> — version <code>AGY_ACP_VERSION</code> 0.1.0, the version the adapter crate declares for itself.</p>
+            <p><strong>Actual launcher:</strong> the adapter is a Rust crate tracked in this repository at <code>tools/agy-acp/</code>, no longer a recon artifact. <code>dev-next.sh</code> builds it with <code>cargo build --release</code> whenever the binary is missing or older than any file under its <code>src/</code>, then writes <code>~/.mac-command-bar/agy-acp-wrapper.sh</code>, which sets <code>AGY_EXTRA_ARGS=--dangerously-skip-permissions</code> and executes what it built. The manifest is registered only when both that binary and the installed <code>agy</code> command exist, and it is pinned by the wrapper’s SHA-256 exactly as Codex and Claude are.</p>
+            <p><strong>What it implements:</strong> the <code>initialize</code> handshake (<code>loadSession</code> and <code>sessionCapabilities.resume</code>), <code>session/new</code>, streamed <code>agent_message_chunk</code> and <code>agent_thought_chunk</code> updates, tool calls with their inputs and outputs, <code>session/cancel</code>, <code>session/load</code> and <code>session/resume</code> against a store of its own, and a model list — all of it translated into <code>agy --output-format stream-json</code>. A model is named by the display name <code>agy models</code> prints (“Gemini 3.7 Flash (High)”), and the speed tiers are separate models rather than an effort setting, so an Antigravity session reports models and no effort control at all.</p>
+            <p><strong>What it does not do:</strong> it never sends <code>session/request_permission</code>, because <code>agy</code> has no way to hand a permission question to an ACP host — which is why the wrapper skips them. An Antigravity conversation therefore says so once beside the composer rather than ever showing an approval panel. It reads only the words of a prompt, so images are dropped before a send and the same notice says they were left out. It reports no token usage and no plan updates: the Context panel names the provider that did not report a figure, and a plan is drawn only when plan steps arrive, so both are quiet absences rather than holes.</p>
+            <p>Its <code>session/new</code> also ignores the folder it is handed — the adapter’s working directory is fixed when its process starts. That is correct only because every Antigravity session gets a process of its own: the adapter advertises no multi-session support, and the manager pools sessions onto one process only when a provider does. A test pins the pairing so pooling cannot be turned on without teaching the adapter about folders first.</p>
+            <span class="source"><code>scripts/dev-next.sh:96-141</code> · <code>tools/agy-acp/src/adapter.rs:35-46,238-273,487-660</code> · <code>tools/agy-acp/README.md:60-61</code> · <code>capabilities.rs:12</code> · <code>manager.rs:998,5213-5215</code> · <code>conversationStore.svelte.ts:59-67,162</code> · <code>conversationService.ts:712-725</code></span>
           </article>
         </div>
 
@@ -824,7 +836,7 @@
 
         <div class="callout current">
           <p><strong>Resource-saving starts at launch:</strong> a hundred suspended rows in SQLite do not mean a hundred adapter processes. Selecting a row loads its journal; the first operation that needs a provider calls <code>activate</code>.</p>
-          <span class="source"><code>main.rs:5870-5903</code> · <code>manager.rs:272-322,2700-2805</code> · <code>routes/next/+page.svelte:1395-1551</code></span>
+          <span class="source"><code>main.rs:5870-5903</code> · <code>manager.rs:272-322,2725-2830</code> · <code>routes/next/+page.svelte:1395-1551</code></span>
         </div>
       </section>
 
@@ -844,7 +856,7 @@
             <span class="badge current">Existing provider session</span>
             <h3>Load or resume by native ID</h3>
             <p>An adopted scanner record gets a new stable <code>ownedId</code> and keeps the provider’s ID as <code>nativeSessionId</code>. Structured activation selects <code>session/load</code> or <code>session/resume</code> according to the stored mode and negotiated capabilities.</p>
-            <span class="source"><code>routes/next/+page.svelte:1010-1054</code> · <code>manager.rs:749-1111</code></span>
+            <span class="source"><code>routes/next/+page.svelte:1010-1054</code> · <code>manager.rs:763-1133</code></span>
           </article>
         </div>
 
@@ -859,7 +871,7 @@
             <tr><td><code>delete</code></td><td>Behind <code>delete_agent_conversation_session</code> (the rail’s Remove): closes the conversation if it is running, forgets it in the live map, and deletes the SQLite row, which cascades events, draft, annotations, and attachment rows.</td><td>It does not touch the provider’s own transcript or native session.</td></tr>
           </tbody>
         </table>
-        <span class="source"><code>agent_conversation/mod.rs:123-144,342-347</code> · <code>manager.rs:1122-1153,2258-2285</code></span>
+        <span class="source"><code>agent_conversation/mod.rs:123-144,342-347</code> · <code>manager.rs:1144-1175,2283-2310</code></span>
 
         <div class="callout conditional">
           <p><strong>Pooling is capability-driven.</strong> A single adapter process may host multiple native sessions only if the adapter advertises that this is safe. Otherwise each active conversation gets its own sidecar. The manager never assumes multi-session safety.</p>
@@ -877,7 +889,7 @@
           <li><strong>The service chooses the writer path.</strong><p>A structured-owned session follows ACP. An explicitly terminal-owned external session writes to its PTY instead. The writer lease prevents both paths from writing at once.</p></li>
           <li><strong>Attachments become typed prompt blocks.</strong><p>For structured ACP, persisted image bytes are loaded and encoded as image content alongside text. Capability checks happen before delivery.</p></li>
           <li><strong>The frontend ensures the session metadata.</strong><p>The current <code>ownedId</code>, provider, working directory, native ID, and generation are synchronized with Rust.</p></li>
-          <li><strong>Rust lazily activates if suspended.</strong><p><code>send_message</code> launches or joins an adapter, initializes ACP, resumes or loads the native provider session, restores configuration, and acquires the structured writer lease. A model or approval policy chosen in the composer is applied next through <code>set_conversation_config</code>: for Claude that is <code>session/set_config_option</code> on the offered <code>model</code> and <code>effort</code> options; an adapter that offers no such option gets <code>session/set_model</code>. If activation, configuration, or the prompt itself is refused, the adapter this send started is stopped again.</p></li>
+          <li><strong>Rust lazily activates if suspended.</strong><p><code>send_message</code> launches or joins an adapter, initializes ACP, resumes or loads the native provider session, asks the restarted adapter for the model, effort and approval policy the session is on, and acquires the structured writer lease. A model or approval policy chosen in the composer is applied next through <code>set_conversation_config</code>: for Claude that is <code>session/set_config_option</code> on the offered <code>model</code> and <code>effort</code> options; an adapter that offers no such option gets <code>session/set_model</code>; either way the choice is weighed against what the adapter now running offers rather than a stored list, and the session then reports the adapter’s answer, not the request. If activation, configuration, or the prompt itself is refused, the adapter this send started is stopped again.</p></li>
           <li><strong>The generation is checked again.</strong><p>A request from an older activation cannot accidentally write into the current one.</p></li>
           <li><strong>Rust creates an Assembly turn ID.</strong><p>The turn begins before the provider response. This gives the journal a stable boundary even when the provider uses different internal IDs.</p></li>
           <li><strong>The turn-start event is written to SQLite.</strong><p>The manager allocates the next sequence and writes the updated session plus the event in one transaction.</p></li>
@@ -891,7 +903,7 @@
 
         <div class="callout current">
           <p><strong>The app sends the current prompt, not the entire transcript.</strong> The provider resumes its own native context. Assembly’s journal is the durable UI/audit copy; it is not re-uploaded as model context on every message.</p>
-          <span class="source"><code>conversationService.ts:609-752</code> · <code>manager.rs:1122-1194,2905-3014,3078-3101,3738-3972</code></span>
+          <span class="source"><code>conversationService.ts:609-752</code> · <code>manager.rs:1144-1216,2930-3039,3103-3126,3763-3997</code></span>
         </div>
       </section>
 
@@ -972,12 +984,12 @@
 
         <div class="callout current">
           <p><strong>Detach is not close.</strong> Detach releases transport/process resources but preserves the provider session for resume. Close intentionally closes the native session. Those operations must never be treated as synonyms.</p>
-          <span class="source"><code>providers/mod.rs:23-127</code> · <code>manager.rs:440-481,1888-1969,4847-4863</code></span>
+          <span class="source"><code>providers/mod.rs:23-127</code> · <code>manager.rs:440-481,1910-1991,4872-4888</code></span>
         </div>
 
         <div class="callout current">
           <p><strong>A refused send stops what it started.</strong> When <code>send_message</code> activates an adapter and the configuration or the prompt is then refused, it takes the same <code>suspend_if_quiescent</code> path, so a failed first message does not leave a provider process idling until the app quits.</p>
-          <span class="source"><code>manager.rs:1122-1153,1929-1990</code></span>
+          <span class="source"><code>manager.rs:1144-1175,1951-2012</code></span>
         </div>
       </section>
 
@@ -1000,12 +1012,12 @@
           </tbody>
         </table>
 
-        <h3><code>sessions.db</code> schema version 3</h3>
+        <h3><code>sessions.db</code> schema version 4</h3>
         <div class="two-up">
           <article class="card">
             <span class="badge current">Table</span>
             <h3><code>sessions</code></h3>
-            <p>One row per <code>ownedId</code>: provider/native identity, model and effort, working directory/worktree/branch, title/project, state/suspended flag, timestamps, and extensible JSON metadata.</p>
+            <p>One row per <code>ownedId</code>: provider/native identity, model and effort, working directory/worktree/branch, title/project, state/suspended flag, timestamps, and extensible JSON metadata. Version 4 adds <code>title_source</code> beside the title — <code>prompt</code>, <code>helper</code> or <code>user</code> — which is what stops a name the person typed from being written over. A row from an older database has none, and is read as having come from the prompt.</p>
           </article>
           <article class="card">
             <span class="badge current">Table</span>
@@ -1026,6 +1038,8 @@
 
         <p>SQLite runs in WAL mode with <code>synchronous=NORMAL</code> and foreign keys enabled. A live event write uses an immediate transaction to upsert the session and append the event before anything is emitted to the UI. Deleting a session cascades its events, draft, annotations, and attachment rows; the rail’s Remove does that through <code>delete_agent_conversation_session</code>, so a removed session does not come back at the next launch. The attachment files in the vault are not removed yet (tracked follow-up).</p>
         <span class="source"><code>core/src/session_store.rs:7,155-223,304-345,388-435</code></span>
+        <p>The version ladder upgrades in place and never rewrites a row. A version 1, 2 or 3 database goes straight to 4, each of those steps adding the <code>title_source</code> column if it is not already there.</p>
+        <span class="source"><code>core/src/session_store.rs:7,179-314,957-972</code></span>
 
         <div class="callout current">
           <p><strong>The durable event journal is not trimmed.</strong> An older 10,000-event cap was removed. Snapshot and paging APIs enforce byte/row budgets for what is loaded into memory, while the journal itself remains complete. Only superseded “current state” events—currently usage and session configuration—are collapsed.</p>
@@ -1396,10 +1410,10 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
 
       <section id="native">
         <span class="section-label">18 · Native surfaces</span>
-        <h2>Two places the app asks macOS directly.</h2>
-        <p class="intro">Outside the conversation path, two panels depend on native calls that are easy to get subtly wrong. Both were, so both are written down here.</p>
+        <h2>Three places the app asks macOS directly.</h2>
+        <p class="intro">Outside the conversation path, three panels depend on native calls that are easy to get subtly wrong. Each one was, so each is written down here.</p>
 
-        <div class="two-up">
+        <div class="three-up">
           <article class="card">
             <span class="badge current">Resources panel</span>
             <h3>Memory the way Activity Monitor counts it</h3>
@@ -1412,11 +1426,59 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
             <p>Reading Claude Code’s Keychain item through Security.framework from an unsigned development binary asks for permission on every rebuild — “Always Allow” never sticks. The Keychain store therefore reads it with <code>/usr/bin/security find-generic-password -w</code>, which the item’s access list already trusts, and treats exit code 44 as “no item”. That store never writes: nothing read from it is renewed, and renewing is the only thing that writes.</p>
             <span class="source"><code>src-tauri/src/claude_quota.rs:126-160,232-236</code></span>
           </article>
+          <article class="card">
+            <span class="badge current">Files panel</span>
+            <h3>The plugins do the file work, and the Trash is the undo</h3>
+            <p>Making, renaming and watching a path is <code>plugin-fs</code>; showing one in the Finder is <code>plugin-opener</code>; copying one is <code>plugin-clipboard-manager</code>. Which folders those may touch cannot be written into the capability file, because a workspace root is chosen while the app is running, so <code>list_source_files</code> adds each root it is asked to list to the plugin’s scope (<code>fs_scope().allow_directory(root, true)</code>): the panel can only change a folder it has already listed. Delete is the one thing the plugins cannot do properly — <code>plugin-fs</code>’s <code>remove</code> deletes for good — so it calls <code>move_to_trash</code>, one command of ours that refuses any path the scope does not already cover and hands the rest to the Finder’s Trash.</p>
+            <span class="source"><code>src-tauri/src/main.rs:624-641,785-811</code> · <code>src/lib/shell/panels/files/FilesPanel.svelte</code></span>
+          </article>
+        </div>
+      </section>
+
+      <section id="helper">
+        <span class="section-label">19 · Helper model</span>
+        <h2>A small model the app calls for itself.</h2>
+        <p class="intro">Everything above this section is the coding agent: a process Assembly starts, talks ACP to, and bills to whatever account that agent signs in with. The helper is the other thing — a short, cheap language model call the app makes on its own behalf, to name a session or to answer a question about one. It is bring-your-own-key: with no key stored it does not exist, and nothing in the app waits on it.</p>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Where the key lives</span>
+            <h3>The Keychain, never a settings file</h3>
+            <p>The key goes into the login Keychain under the service <code>Assembly Helper</code>, with the vendor name (<code>openai</code>, <code>anthropic</code>) as the account. It is read and written through <code>/usr/bin/security</code> for the reason §18 gives for the Claude sign-in: an unsigned development build is a new program to the Keychain after every rebuild, and an item that tool wrote already trusts that tool, so neither direction prompts. Settings never reads the key back — it only learns whether one is there. Saving an empty field removes it, which turns the helper off.</p>
+            <span class="source"><code>src-tauri/src/helper/keychain.rs</code></span>
+          </article>
+          <article class="card">
+            <span class="badge current">Two services, one shape</span>
+            <h3>One request, one answer, no memory</h3>
+            <p>OpenAI is asked through the Responses API (<code>instructions</code>, <code>input</code>, <code>max_output_tokens</code>); Anthropic through the Messages API (<code>system</code>, <code>messages</code>, <code>max_tokens</code>, and the <code>anthropic-version</code> header). Each vendor module phrases one request and reads one answer; a single transport sends it, with a twenty-second ceiling and one retry only when the call never left the machine. A timeout is not retried, and neither is a refusal. Nothing streams and nothing is remembered between calls, so a job is exactly as expensive as the text handed to it.</p>
+            <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>openai.rs</code> · <code>anthropic.rs</code></span>
+          </article>
+        </div>
+
+        <div class="two-up">
+          <article class="card">
+            <span class="badge current">Five commands</span>
+            <h3>What the frontend can ask for</h3>
+            <p><code>run_helper_job(job, input)</code> runs one job — <code>title</code> or <code>inspect</code> — and answers with the text or with the sentence explaining why not. <code>read_helper_settings</code> gives Settings the chosen vendor and model, whether a key is stored, and the model ids each vendor offers; <code>write_helper_settings</code> stores the choice; <code>set_helper_key</code> puts a key in the Keychain; <code>test_helper</code> makes one tiny call and answers “OK · 41 ms · 12 tokens” or the same sentence an error would give. Vendor and model are kept in <code>helper-settings.json</code> in the application data directory, not in the frontend’s settings store, because the app itself runs helper jobs and has to read the choice with no window open.</p>
+            <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>src/lib/tauriSource.ts</code> · <code>src/lib/shell/components/SettingsDialog.svelte</code></span>
+          </article>
+          <article class="card">
+            <span class="badge current">The app asks too</span>
+            <h3>A session names itself after its first turn</h3>
+            <p>A new session is named after the first line the person typed, which is rarely what it turns out to be about. The moment its first turn finishes, the runtime manager hands the helper that prompt and the reply to it — a thousand characters of each — and writes the short name that comes back over the provisional one, marking the row <code>title_source = helper</code> and telling the rail so the row changes where it stands. Nothing waits on the call: the send has already finished, a helper with no key stored does nothing at all, and any other failure leaves the prompt name alone. A name the person typed themselves is never touched, and neither is one the helper has already written, so this happens once per session.</p>
+            <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>agent_conversation/manager.rs</code> · <code>src-tauri/src/main.rs</code></span>
+          </article>
+          <article class="card">
+            <span class="badge current">Counted like everything else</span>
+            <h3>Helper calls show up in Usage</h3>
+            <p>Every call that succeeds writes one row to the usage store through <code>record_helper_call</code>: the vendor as the provider, the model id, the input and output token counts, source kind <code>helper</code> and source key <code>helper/&lt;job&gt;</code>. That is the same table the indexed agent transcripts land in, so the Usage popover counts helper spend without knowing the helper exists, and no schema change was needed to carry it. A failed write is swallowed — someone asked for a title, not for bookkeeping.</p>
+            <span class="source"><code>src-tauri/src/usage_history.rs:115-154</code> · <code>src-tauri/src/usage_db.rs:17-38</code></span>
+          </article>
         </div>
       </section>
 
       <section id="sources">
-        <span class="section-label">19 · Repository source map</span>
+        <span class="section-label">20 · Repository source map</span>
         <h2>Where to read next.</h2>
         <p class="intro">Start with the manager and session store, then move outward to the adapter client and Svelte projection. The launcher scripts explain which executable actually runs on this machine.</p>
 
@@ -1432,7 +1494,7 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
           <div class="source-row"><strong>Attachments</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs</code></div>
           <div class="source-row"><strong>Codex adapter</strong><code>tauri-svelte-preview/tools/codex-acp-bridge/bridge.mjs</code></div>
           <div class="source-row"><strong>Development wiring</strong><code>tauri-svelte-preview/scripts/dev-next.sh</code></div>
-          <div class="source-row"><strong>Agy adapter recon</strong><code>tauri-svelte-preview/artifacts/recon/probe-agy/agy-acp/README.md</code></div>
+          <div class="source-row"><strong>Agy adapter</strong><code>tauri-svelte-preview/tools/agy-acp/</code></div>
           <div class="source-row"><strong>Route lifecycle</strong><code>tauri-svelte-preview/src/routes/next/+page.svelte</code></div>
           <div class="source-row"><strong>Frontend service</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationService.ts</code></div>
           <div class="source-row"><strong>Reducer and types</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationReducer.ts</code> · <code>conversationTypes.ts</code></div>
@@ -1443,6 +1505,7 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
           <div class="source-row"><strong>Compaction marker</strong><code>tauri-svelte-preview/src/lib/shell/components/conversation/CompactionItem.svelte</code> · <code>conversationTimeline.ts</code></div>
           <div class="source-row"><strong>Resources</strong><code>tauri-svelte-preview/src-tauri/src/resources.rs</code> · <code>core/src/scanners/resources.rs</code></div>
           <div class="source-row"><strong>Claude usage and Keychain</strong><code>tauri-svelte-preview/src-tauri/src/claude_quota.rs</code></div>
+          <div class="source-row"><strong>Helper model</strong><code>tauri-svelte-preview/src-tauri/src/helper/</code> · <code>mod.rs</code> · <code>openai.rs</code> · <code>anthropic.rs</code> · <code>keychain.rs</code></div>
         </div>
 
         <div class="callout current">

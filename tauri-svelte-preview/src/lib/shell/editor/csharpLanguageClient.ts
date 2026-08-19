@@ -13,10 +13,7 @@ import {
   LanguageClientWrapper,
   type LanguageClientConfig,
 } from "monaco-languageclient/lcwrapper";
-import {
-  MonacoVscodeApiWrapper,
-  type MonacoVscodeApiConfig,
-} from "monaco-languageclient/vscodeApiWrapper";
+import type { MonacoVscodeApiConfig } from "monaco-languageclient/vscodeApiWrapper";
 import * as vscode from "vscode";
 
 import {
@@ -29,6 +26,7 @@ import {
   registerNativeCsharpFileSystem,
 } from "./csharpFileSystem";
 import { configureMonacoWorkers } from "./monacoWorkers";
+import { ensureVscodeServices } from "./vscodeServices";
 import { recordNativeCsharpDiagnostics } from "../problems/csharpDiagnosticsAdapter";
 import { currentTheme, registerMonacoApplier } from "../themes/themeService";
 import {
@@ -394,18 +392,20 @@ async function ensureApi(root: string): Promise<void> {
         },
         monacoWorkerFactory: configureMonacoWorkers,
       };
-      await new MonacoVscodeApiWrapper(config).start();
+      await ensureVscodeServices(config);
       await waitForCuratedExtensions();
       markRustGitScmApiReady();
       registerVscodeThemeApplier();
       registerDocumentActions();
       registerExtensionApiProbeBridgeCommands();
     })());
-    // A failed start must not be remembered as the answer. The editor cannot be
-    // built at all without these services, so keeping a rejected promise here
-    // meant one bad start left every file for the rest of the session opening
-    // onto an editor that never appeared, with no retry able to help. Only this
-    // attempt is forgotten; a retry that has already begun keeps its own.
+    // A failed start must not be remembered as the answer, so that the work
+    // around it — the workspace root, the curated extensions, the commands —
+    // gets another go. Only this attempt is forgotten; a retry that has already
+    // begun keeps its own. The service start itself is not repeated: the
+    // wrapper accepts exactly one for the life of the page, so `vscodeServices`
+    // keeps that promise and hands the same failure back rather than pretend a
+    // second start happened.
     started.catch(() => {
       if (apiReady === started) apiReady = null;
     });

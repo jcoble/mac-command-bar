@@ -28,11 +28,6 @@ pub struct SidecarEnvironment {
 }
 
 impl SidecarEnvironment {
-    pub fn set(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.values.insert(name.into(), Some(value.into()));
-        self
-    }
-
     pub fn remove(mut self, name: impl Into<String>) -> Self {
         self.values.insert(name.into(), None);
         self

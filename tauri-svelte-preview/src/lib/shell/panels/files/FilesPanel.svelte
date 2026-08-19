@@ -4,16 +4,28 @@
    *
    * The file tree of the active session's checkout. Folders open and close,
    * clicking a file opens it in the center Editor tab, and a filter box narrows
-   * the list. Nothing here changes a file: no rename, no move, no delete.
+   * the list. Right-clicking a row offers the six things a person does to a
+   * path: make a file or folder inside it, rename it, move it to the Trash,
+   * show it in the Finder, or copy where it is.
+   *
+   * Those six go through Tauri's own plugins rather than commands of ours —
+   * `plugin-fs` for the three that change the disk, `plugin-opener` for the
+   * Finder and `plugin-clipboard-manager` for the path. The one exception is
+   * Delete: `plugin-fs` only deletes for good, so it calls `move_to_trash`,
+   * which puts the path somewhere it can be fetched back from.
+   *
+   * While a folder is listed it is also watched, so a file another program
+   * writes shows up here without anyone pressing anything.
    *
    * This panel is a PRODUCER on `openFileBus` and never subscribes to it — a
    * listener here would swallow the request the editor is waiting for. It calls
    * `openFileInEditor`, which puts the request on the bus and brings the editor
    * forward in one go.
    *
-   * The tree maths lives in `fileTreeModel.ts` (pure, tested). The scan itself
-   * belongs to `explorerService`, which the shell activates when a session is
-   * picked; this panel only offers Refresh and Stop.
+   * The tree maths lives in `fileTreeModel.ts` (pure, tested), and which items
+   * a row's menu carries in `filesPanelActions.ts` (pure, tested). The scan
+   * itself belongs to `explorerService`, which the shell activates when a
+   * session is picked; this panel asks it to run again and to stop.
    */
   import FolderTree from '@lucide/svelte/icons/folder-tree';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -43,6 +55,7 @@
   import { projectRootLabel } from '$lib/shell/explorer/explorerTree';
   import { openFileInEditor } from '$lib/shell/workbenchNavigation';
   import { filterSourceRecords } from '$lib/sourceData';
+  import { isNativeTauriRuntime, moveToTrashFromTauri } from '$lib/tauriSource';
 
   import FileTreeRow from './FileTreeRow.svelte';
   import {
@@ -53,6 +66,7 @@
     windowFileTreeNodes,
     type FileTreeNode
   } from './fileTreeModel.ts';
+  import type { FilesPanelActionId } from './filesPanelActions.ts';
 
   interface Props {
     /** True while this panel's tab is the selected one. */
@@ -73,6 +87,19 @@
   /** The scrolling element inside the kit's ScrollArea, once it exists. */
   let viewport = $state<HTMLElement | null>(null);
 
+  /**
+   * The three actions that need a name before they can run. Renaming puts the
+   * field where the row was; making something new puts it under the folder it
+   * will land in, which is where a person is already looking.
+   */
+  let pending = $state<{ kind: 'rename' | 'new-file' | 'new-folder'; path: string } | null>(null);
+  /** What has been typed into that field so far. */
+  let pendingName = $state('');
+  /** The field itself, so it can take the keyboard as soon as it appears. */
+  let entryField = $state<HTMLElement | null>(null);
+  /** Why the last action did not happen. Cleared by the next one. */
+  let actionError = $state<string | null>(null);
+
   const records = $derived(explorerRecords());
   const filtering = $derived(explorer.query.trim().length > 0);
   const matchedRecords = $derived(filterSourceRecords(records, explorer.query));
@@ -88,6 +115,9 @@
   );
   const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
   const listedCount = $derived(filtering ? matchedRecords.length : records.length);
+  /** True once a scan has finished, which is also when the folder became a
+   * place the file-system plugin is allowed to look — see the watcher below. */
+  const listed = $derived(explorer.lastScanFinishedAt !== null);
 
   /**
    * Follow the tree's own height and scroll offset, so the rendered window
@@ -109,9 +139,172 @@
     };
   });
 
+  /**
+   * Watch the listed folder while this tab is in front, so a file another
+   * program writes turns up without anyone pressing Refresh.
+   *
+   * Only while it is in front: a build running behind a hidden panel would
+   * otherwise have it re-listing the project every third of a second for
+   * nothing. A burst of writes is already collapsed into one refresh by the
+   * plugin's own delay, a refresh that arrives while the previous one is still
+   * walking the tree is dropped rather than queued, and an event about nothing
+   * but build output is dropped before it becomes a refresh at all.
+   *
+   * Not before the first listing has finished. The folder is only a place the
+   * plugin may look once `list_source_files` has added it to the plugin's scope
+   * (`main.rs`, `allow_workspace_root_in_fs_scope`), and `explorer.root` is set
+   * before that call rather than after — starting the watch on the root alone
+   * races the grant, and a watch refused once is never asked for again.
+   */
+  $effect(() => {
+    const target = (explorer.root ?? '').trim();
+    if (!visible || !listed || !target || !isNativeTauriRuntime()) return;
+
+    let unwatch: (() => void) | null = null;
+    let abandoned = false;
+    void (async () => {
+      try {
+        const { watch } = await import('@tauri-apps/plugin-fs');
+        const stop = await watch(
+          target,
+          (event) => {
+            if (explorer.scanning || isBuildOutputOnly(event.paths)) return;
+            refresh();
+          },
+          { recursive: true, delayMs: 300 }
+        );
+        if (abandoned) stop();
+        else unwatch = stop;
+      } catch {
+        // Watching is a convenience. Without it the header's Refresh still works.
+      }
+    })();
+
+    return () => {
+      abandoned = true;
+      unwatch?.();
+      unwatch = null;
+    };
+  });
+
+  /** The name field takes the keyboard the moment it appears. */
+  $effect(() => {
+    const field = entryField;
+    if (!field) return;
+    field.focus();
+    // Renaming starts with the old name in the field, and a name being changed
+    // is usually being replaced rather than edited.
+    if (field instanceof HTMLInputElement) field.select();
+  });
+
   function onFilterInput(event: Event & { currentTarget: HTMLInputElement }): void {
     setQuery(event.currentTarget.value);
     if (viewport) viewport.scrollTop = 0;
+  }
+
+  function describeError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /**
+   * Folders the file scan never descends into, so a write inside one can never
+   * change the listed tree. These four are the ones a build or a git command
+   * writes to constantly; the scanner's own full list is `skip_dir_reason` in
+   * `src-tauri/src/main.rs` and `skipDirReason` in `src/lib/server/localSourceFs.ts`.
+   */
+  const UNLISTED_FOLDERS = ['/node_modules/', '/target/', '/.git/', '/.svelte-kit/'];
+
+  /**
+   * True when every path in a watch event sits inside one of those folders.
+   * A build writing into `target/` fires the watcher continuously, and each
+   * event would otherwise re-walk the whole project for a tree that cannot have
+   * changed. One path outside them is enough to make the event worth a refresh.
+   */
+  function isBuildOutputOnly(paths: readonly string[]): boolean {
+    if (paths.length === 0) return false;
+    return paths.every((path) => UNLISTED_FOLDERS.some((folder) => path.includes(folder)));
+  }
+
+  /** The folder a path sits in. */
+  function parentOf(path: string): string {
+    const cut = path.lastIndexOf('/');
+    return cut < 0 ? '' : path.slice(0, cut);
+  }
+
+  /**
+   * True when nothing is at `target` yet. Both `rename` and `writeTextFile`
+   * would go through whatever is already there, and a new file quietly emptying
+   * an old one is the kind of loss nobody notices until much later.
+   */
+  async function isFree(target: string): Promise<boolean> {
+    const { exists } = await import('@tauri-apps/plugin-fs');
+    if (!(await exists(target))) return true;
+    actionError = `Something is already called ${target.slice(target.lastIndexOf('/') + 1)} here.`;
+    return false;
+  }
+
+  /** One menu item. The three that need a name open the field instead. */
+  function onRowAction(node: FileTreeNode, id: FilesPanelActionId): void {
+    actionError = null;
+    if (id === 'copy-path' || id === 'reveal-in-finder' || id === 'delete') {
+      void runNamelessAction(node, id);
+      return;
+    }
+    if (id !== 'rename' && !expanded.has(node.path)) expanded = toggleDirectory(expanded, node);
+    pending = { kind: id, path: node.path };
+    pendingName = id === 'rename' ? node.name : '';
+  }
+
+  async function runNamelessAction(
+    node: FileTreeNode,
+    id: 'copy-path' | 'reveal-in-finder' | 'delete'
+  ): Promise<void> {
+    try {
+      if (id === 'copy-path') {
+        const { writeText } = await import('@tauri-apps/plugin-clipboard-manager');
+        await writeText(node.path);
+      } else if (id === 'reveal-in-finder') {
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        await revealItemInDir(node.path);
+      } else {
+        await moveToTrashFromTauri(node.path);
+      }
+    } catch (error) {
+      actionError = describeError(error);
+    }
+  }
+
+  /** Put the typed name on disk. An empty name means the person changed their mind. */
+  async function commitEntry(): Promise<void> {
+    const entry = pending;
+    const name = pendingName.trim();
+    pending = null;
+    if (!entry || !name || name.includes('/')) return;
+
+    try {
+      const fs = await import('@tauri-apps/plugin-fs');
+      if (entry.kind === 'rename') {
+        const target = `${parentOf(entry.path)}/${name}`;
+        if (target !== entry.path && (await isFree(target))) await fs.rename(entry.path, target);
+      } else {
+        const target = `${entry.path}/${name}`;
+        if (!(await isFree(target))) return;
+        if (entry.kind === 'new-folder') await fs.mkdir(target);
+        else await fs.writeTextFile(target, '');
+      }
+    } catch (error) {
+      actionError = describeError(error);
+    }
+  }
+
+  function onEntryKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void commitEntry();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      pending = null;
+    }
   }
 
   /** A folder opens and closes; a file is opened in the center Editor tab. */
@@ -196,24 +389,52 @@
         has more.
       </p>
     {/if}
+    {#if actionError}
+      <p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{actionError}</p>
+    {/if}
     <ScrollArea class="min-h-0 flex-1" bind:viewportRef={viewport}>
       <div class="flex flex-col px-2 pb-2" aria-label="Project files">
         <div aria-hidden="true" style={`height: ${renderWindow.topSpacerHeight}px`}></div>
         {#each renderWindow.nodes as node (node.path)}
-          <FileTreeRow
-            {node}
-            expanded={openFolders.has(node.path)}
-            selected={!node.isDirectory && node.path === explorer.selectedPath}
-            onclick={onRowClick}
-          />
+          {#if pending?.kind === 'rename' && pending.path === node.path}
+            {@render nameEntry(node.depth, `Rename ${node.name}`)}
+          {:else}
+            <FileTreeRow
+              {node}
+              expanded={openFolders.has(node.path)}
+              selected={!node.isDirectory && node.path === explorer.selectedPath}
+              onclick={onRowClick}
+              onaction={onRowAction}
+            />
+            {#if pending && pending.kind !== 'rename' && pending.path === node.path}
+              {@render nameEntry(
+                node.depth + 1,
+                pending.kind === 'new-folder' ? 'New folder name' : 'New file name'
+              )}
+            {/if}
+          {/if}
         {/each}
         <div aria-hidden="true" style={`height: ${renderWindow.bottomSpacerHeight}px`}></div>
       </div>
     </ScrollArea>
-    <p class="border-t px-3 py-2 text-sm leading-snug text-muted-foreground">
-      Source files only, and the list is not watched for changes — press Refresh after adding or
-      removing files.
-    </p>
   {/if}
 </div>
+
+<!-- The name field stands where the row it belongs to would, so a new file
+     appears to be typed straight into the tree. A row's own label sits 54px in
+     from the row's edge once its padding, indent, chevron and icon are counted,
+     and the field carries 9px of its own, so this leaves 45. -->
+{#snippet nameEntry(depth: number, label: string)}
+  <div class="flex h-7 shrink-0 items-center" style={`padding-left: ${depth * 12 + 45}px`}>
+    <Input
+      class="h-6 w-full"
+      aria-label={label}
+      placeholder={label}
+      bind:ref={entryField}
+      bind:value={pendingName}
+      onkeydown={onEntryKeydown}
+      onblur={() => void commitEntry()}
+    />
+  </div>
+{/snippet}
 

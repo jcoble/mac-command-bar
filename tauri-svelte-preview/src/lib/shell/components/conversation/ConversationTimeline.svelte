@@ -43,6 +43,8 @@
     onApprovalDecision?(requestId: string, decision: string): void;
     onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
     onFileLink?(path: string): void;
+    /** Opens the plan chip above the composer, for the transcript's plan line. */
+    onPlanOpen?(): void;
   }
 
   let {
@@ -63,7 +65,8 @@
     onScroll,
     onApprovalDecision,
     onInputSubmit,
-    onFileLink
+    onFileLink,
+    onPlanOpen
   }: Props = $props();
 
   /** Where an already-read conversation is waiting to be put back to. */
@@ -570,7 +573,7 @@
                 </button>
               {/if}
               {#if !workItem || expanded}
-                <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} />
+                <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
                 {#if showWorking && item.itemId === anchoredUserItemId}
                   <div class="working-row" data-testid="conversation-working-indicator" role="status">
                     <WorkingSpinner seed={group.turnId ?? item.itemId} />

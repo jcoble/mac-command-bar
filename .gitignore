@@ -10,6 +10,7 @@ tauri-svelte-preview/build/
 tauri-svelte-preview/node_modules/
 tauri-svelte-preview/src-tauri/gen/
 tauri-svelte-preview/src-tauri/target/
+tauri-svelte-preview/tools/agy-acp/target/
 *.xcuserstate
 .DS_Store
 

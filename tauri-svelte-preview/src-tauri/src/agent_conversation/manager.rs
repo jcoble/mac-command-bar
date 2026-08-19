@@ -52,16 +52,38 @@ const SESSION_RECENT_EVENT_CAP: usize = 1_000;
 /// of it is already bounded.
 const CATCH_UP_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
+
+/// Where a session's name came from, as it is written to the row. A row with
+/// none of these on it was written before the app recorded this, and is read as
+/// having come from the prompt.
+const TITLE_SOURCE_PROMPT: &str = "prompt";
+const TITLE_SOURCE_HELPER: &str = "helper";
+const TITLE_SOURCE_USER: &str = "user";
+
+/// How much of the first prompt, and of the reply to it, the helper model is
+/// given to name a session by. A name comes from the shape of an exchange, not
+/// from all of it, and the call is billed by the token.
+const TITLE_INPUT_CHAR_CAP: usize = 1_000;
 const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
-const CLAUDE_SESSION_EFFORTS: [(&str, &str); 4] = [
-    ("low", "4000"),
-    ("medium", "12000"),
-    ("high", "32000"),
-    ("max", "63999"),
-];
+/// The efforts a Claude conversation can offer before it has an adapter.
+///
+/// A new conversation picks its effort before anything is running, so the
+/// picker needs something to show. Once the adapter has a session it reports
+/// its own effort control, and that report replaces this list.
+const CLAUDE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "max"];
 
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
+
+/// Asks the helper model to name one session from its first exchange. Set once
+/// at launch; with none set the helper is not involved and a session keeps the
+/// name taken from its first prompt.
+pub type SessionNamer =
+    std::sync::Arc<dyn Fn(&str) -> Result<String, crate::helper::HelperError> + Send + Sync>;
+
+/// Told which session has just been given a new name, once that name is saved,
+/// so the rail can show it without asking for it.
+pub type SessionRenamedListener = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 #[derive(Clone, Debug)]
 struct PermissionOption {
@@ -141,6 +163,10 @@ pub struct ManagedAgentSession {
     ordered_events: Option<UnboundedSender<OrderedSessionEvent>>,
     cwd: String,
     spawn_reasoning_effort: Option<String>,
+    /// Whether the running adapter reported an effort control of its own.
+    /// When it did, the effort can be changed at any time; when it did not,
+    /// the session keeps the effort it was started with.
+    adapter_offers_effort: bool,
     config: AgentConversationConfigState,
     connection: AgentConversationConnection,
     store: Arc<SessionStore>,
@@ -152,6 +178,10 @@ pub struct ManagedAgentSession {
     child_rollout_parent_path: Option<PathBuf>,
     codex_children: HashMap<String, CodexChildRollout>,
     rail_meta: AgentConversationSessionMeta,
+    /// Where the current name came from: the first prompt, the helper model, or
+    /// the person. A session recovered from a row written before this was
+    /// recorded carries none, and counts as the first prompt.
+    title_source: Option<String>,
     suspending: bool,
 }
 
@@ -275,6 +305,8 @@ pub struct AgentRuntimeManager {
     sessions: Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
     providers: Arc<ProviderRegistry>,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
+    namer: Arc<Mutex<Option<SessionNamer>>>,
+    renamed_listener: Arc<Mutex<Option<SessionRenamedListener>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     store: Arc<SessionStore>,
     adapter_pools: Arc<AsyncMutex<HashMap<AdapterPoolKey, AdapterPoolEntry>>>,
@@ -316,6 +348,8 @@ impl AgentRuntimeManager {
             sessions: Arc::new(Mutex::new(sessions)),
             providers: Arc::new(providers),
             emitter: Arc::new(Mutex::new(None)),
+            namer: Arc::new(Mutex::new(None)),
+            renamed_listener: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
@@ -524,6 +558,22 @@ impl AgentRuntimeManager {
         *current = Some(emitter);
     }
 
+    pub fn set_session_namer(&self, namer: SessionNamer) {
+        let mut current = self
+            .namer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(namer);
+    }
+
+    pub fn set_session_renamed_listener(&self, listener: SessionRenamedListener) {
+        let mut current = self
+            .renamed_listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(listener);
+    }
+
     /// Snapshot the provider processes that this registry currently owns.
     /// The async runtime mutex is intentionally sampled with `try_lock`: a
     /// resource refresh must never block an agent turn. A session that is in a
@@ -616,8 +666,7 @@ impl AgentRuntimeManager {
             .display()
             .to_string();
         let native_session_id = normalized_optional_id(request.native_session_id);
-        let reasoning_effort =
-            normalized_session_start_effort(request.provider, request.reasoning_effort)?;
+        let reasoning_effort = normalized_optional_id(request.reasoning_effort);
         if request.native_session_mode == AgentNativeSessionMode::Load
             && native_session_id.is_none()
         {
@@ -648,7 +697,21 @@ impl AgentRuntimeManager {
                     .as_ref()
                     .is_none_or(|native_id| current.native_session_id.as_ref() == Some(native_id))
                 && current.native_session_mode == request.native_session_mode
-                && current.spawn_reasoning_effort == reasoning_effort
+                // An effort asked for here is matched against the one the
+                // session is on now, not the one it was created with: a change
+                // made while it was running has already written the first, and
+                // the next send carries that value back here. Comparing it
+                // against the spawn value read the same session as a different
+                // one and threw its record away. A request that names no effort
+                // asks for nothing and cannot disagree.
+                && reasoning_effort.as_ref().is_none_or(|asked_for| {
+                    current
+                        .config
+                        .reasoning_effort
+                        .as_ref()
+                        .or(current.spawn_reasoning_effort.as_ref())
+                        == Some(asked_for)
+                })
                 && current.connection.state != ConversationConnectionState::Failed
             {
                 return Ok((current.connection.clone(), None));
@@ -725,6 +788,7 @@ impl AgentRuntimeManager {
                 ordered_events: None,
                 cwd,
                 spawn_reasoning_effort: reasoning_effort,
+                adapter_offers_effort: false,
                 config: connection.config.clone(),
                 connection: connection.clone(),
                 store: Arc::clone(&self.store),
@@ -735,7 +799,16 @@ impl AgentRuntimeManager {
                 child_rollout_scan: None,
                 child_rollout_parent_path: None,
                 codex_children: HashMap::new(),
-                rail_meta: AgentConversationSessionMeta::default(),
+                // A replacement generation is the same conversation, so it keeps
+                // the name it was given and where that name came from. Starting
+                // these empty wrote a blank over the stored row.
+                rail_meta: prior
+                    .as_ref()
+                    .map(|session| session.rail_meta.clone())
+                    .unwrap_or_default(),
+                title_source: prior
+                    .as_ref()
+                    .and_then(|session| session.title_source.clone()),
                 suspending: false,
             },
         );
@@ -766,6 +839,8 @@ impl AgentRuntimeManager {
             native_session_id,
             native_session_mode,
             reasoning_effort,
+            requested_model,
+            requested_approval_policy,
             was_suspended,
         ) = {
             let mut sessions = self
@@ -796,7 +871,19 @@ impl AgentRuntimeManager {
                 std::path::PathBuf::from(&session.cwd),
                 session.native_session_id.clone(),
                 session.native_session_mode,
-                session.spawn_reasoning_effort.clone(),
+                // What the session is on now, which a live change has already
+                // written. Only a session that has never reported an effort
+                // falls back to the one it was created with.
+                session
+                    .config
+                    .reasoning_effort
+                    .clone()
+                    .or_else(|| session.spawn_reasoning_effort.clone()),
+                session.config.model.clone(),
+                // The policy the session is on now, which a live change has
+                // already written. A restarted adapter comes back on its own
+                // default, so the policy has to be asked for again.
+                session.config.approval_policy.clone(),
                 session.state == AgentRuntimeState::Suspended,
             )
         };
@@ -860,7 +947,7 @@ impl AgentRuntimeManager {
                 )
             } else {
                 let manifest = self.providers.manifest(provider)?;
-                let environment = session_spawn_environment(provider, reasoning_effort.as_deref());
+                let environment = session_spawn_environment(provider);
                 let mut adapter = AcpRuntimeAdapter::with_environment(
                     manifest,
                     format!("provider:{}", provider_id(provider)),
@@ -978,24 +1065,39 @@ impl AgentRuntimeManager {
                 return Err(error.to_string());
             }
         };
-        if provider == AgentConversationProvider::Claude {
-            started.config = claude_session_config(started.config, reasoning_effort.as_deref());
-        } else if let Some(reasoning_effort) = reasoning_effort {
-            let update = AgentConversationConfigUpdate {
-                reasoning_effort: Some(reasoning_effort),
-                ..AgentConversationConfigUpdate::default()
-            };
+        // The model and effort chosen for this conversation are asked of the
+        // adapter now that it has a session, and its answer is what the session
+        // reports from here on. Only what differs is sent: a session that
+        // already starts on the wanted settings needs no call, and a request
+        // the adapter resolves to something else must not be reported as if it
+        // had been honoured.
+        let requested = AgentConversationConfigUpdate {
+            model: requested_model
+                .filter(|model| Some(model.as_str()) != started.config.model.as_deref()),
+            reasoning_effort: reasoning_effort.clone().filter(|effort| {
+                Some(effort.as_str()) != started.config.reasoning_effort.as_deref()
+            }),
+            approval_policy: requested_approval_policy.filter(|policy| {
+                Some(policy.as_str()) != started.config.approval_policy.as_deref()
+            }),
+        };
+        if requested != AgentConversationConfigUpdate::default() {
             match runtime
                 .lock()
                 .await
-                .set_conversation_config_on(&started.native_session_id, &update)
+                .set_conversation_config_on(&started.native_session_id, &requested)
                 .await
             {
                 Ok(config) => started.config = config,
                 Err(error) => crate::debug_log::stderr_log!(
-                    "{owned_id}: session-start effort was not applied: {error}"
+                    "{owned_id}: the settings chosen for this session were not applied: {error}"
                 ),
             }
+        }
+        // An adapter that named an effort control owns the effort from now on.
+        let adapter_offers_effort = !started.config.available_efforts.is_empty();
+        if provider == AgentConversationProvider::Claude {
+            started.config = claude_session_config(started.config, reasoning_effort.as_deref());
         }
         if let Some(expected_native_session_id) = expected_native_session_id {
             if started.native_session_id != expected_native_session_id {
@@ -1031,18 +1133,8 @@ impl AgentRuntimeManager {
         }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
-        // Starting the adapter refreshes what the provider offers, but it must
-        // not discard what the person already chose. Claude reports its model
-        // as "default" whatever was picked, so a plain assignment loses the
-        // choice on every turn that had to start the process again. Their pick
-        // wins wherever the provider still offers it.
-        let chosen_model = session.config.model.clone();
+        session.adapter_offers_effort = adapter_offers_effort;
         session.config = started.config;
-        if let Some(model) = chosen_model {
-            if session.config.available_models.contains(&model) {
-                session.config.model = Some(model);
-            }
-        }
         session.connection.config = session.config.clone();
         let restoring_terminal_transition = session.owner
             == AgentExecutionOwner::TransitioningToStructured
@@ -1198,6 +1290,7 @@ impl AgentRuntimeManager {
                     .is_none();
                 if is_first_user_prompt {
                     session.rail_meta.title = prompt_title(&input.text);
+                    session.title_source = Some(TITLE_SOURCE_PROMPT.to_string());
                 }
             }
             let lifecycle = lifecycle_update_for_state(
@@ -1614,20 +1707,18 @@ impl AgentRuntimeManager {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
             let started = session.native_session_id.is_some();
-            // Claude fixes its thinking budget when the process starts, so a
-            // live session cannot be re-pointed. Before the start there is
-            // nothing to re-point, and that is when the choice is made.
+            // An adapter that named no effort control has no way to be
+            // re-pointed: it took its effort when its session was created and
+            // only a new session can carry a different one.
             if started
                 && session.provider == AgentConversationProvider::Claude
                 && update.reasoning_effort.is_some()
+                && !session.adapter_offers_effort
             {
                 return Err(
                     "Effort is set when the session starts. Start a new session to change it."
                         .to_string(),
                 );
-            }
-            if started {
-                validate_conversation_config_update(&session.config, &update)?;
             }
             if update == AgentConversationConfigUpdate::default() {
                 return Ok(session.config.clone());
@@ -1637,12 +1728,9 @@ impl AgentRuntimeManager {
                 None => {
                     // The adapter only starts when the first turn is sent, so a
                     // choice made now has no session to carry it. Keep it on the
-                    // record instead: the composer reads it back, and the spawn
-                    // reads `spawn_reasoning_effort` when it finally runs.
-                    let effort = normalized_session_start_effort(
-                        session.provider,
-                        update.reasoning_effort.clone(),
-                    )?;
+                    // record instead: the composer reads it back, and the start
+                    // asks the adapter for it when there is finally one.
+                    let effort = update.reasoning_effort.clone();
                     if let Some(model) = update.model.clone() {
                         session.config.model = Some(model);
                     }
@@ -1662,12 +1750,46 @@ impl AgentRuntimeManager {
         let runtime = self
             .runtime_or_activate(&request.owned_id, request.generation)
             .await?;
-        let config = runtime
-            .lock()
-            .await
-            .set_conversation_config_on(&native_session_id, &update)
-            .await
-            .map_err(|error| error.to_string())?;
+        let applied = async {
+            // What a session offers is the running adapter's answer, and the
+            // activation above has just refreshed it. Judging the request any
+            // earlier weighs it against the snapshot an adapter that is no
+            // longer running left behind, which refuses a choice the live one
+            // offers.
+            {
+                let sessions = self
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = current_session(&sessions, &request.owned_id, request.generation)?;
+                validate_conversation_config_update(&session.config, &update)?;
+            }
+            runtime
+                .lock()
+                .await
+                .set_conversation_config_on(&native_session_id, &update)
+                .await
+                .map_err(|error| error.to_string())
+        }
+        .await;
+        // Asking the adapter meant starting one, and a refused change gives it
+        // no turn to run: the teardown that keeps process trees from lingering
+        // runs when a turn ends, and this session never began one.
+        let config = match applied {
+            Ok(config) => config,
+            Err(error) => {
+                if let Err(suspend_error) = self
+                    .suspend_if_quiescent(&request.owned_id, request.generation)
+                    .await
+                {
+                    let owned_id = &request.owned_id;
+                    crate::debug_log::stderr_log!(
+                        "{owned_id}: could not stop the adapter after a refused settings change: {suspend_error}"
+                    );
+                }
+                return Err(error);
+            }
+        };
         let mut sessions = self
             .sessions
             .lock()
@@ -1898,14 +2020,17 @@ impl AgentRuntimeManager {
             let session = sessions
                 .get_mut(&owned_id)
                 .ok_or_else(|| "Conversation session was not found".to_string())?;
-            session.spawn_reasoning_effort.clone_from(&request.effort);
             // The rail row this comes from is a copy that a fresh session has
             // not filled in yet, and it is saved right after the first send.
-            // Taking its empty model wrote a blank over the choice every time.
+            // Taking its empty model or effort wrote a blank over the choice
+            // every time.
             if request.model.is_some() {
                 session.config.model = request.model;
             }
-            session.config.reasoning_effort.clone_from(&request.effort);
+            if request.effort.is_some() {
+                session.spawn_reasoning_effort.clone_from(&request.effort);
+                session.config.reasoning_effort.clone_from(&request.effort);
+            }
             // Setting the value without the list left the menu showing exactly
             // one option: the picker falls back to the current value when the
             // available list is empty, so a session started with "medium" could
@@ -1917,13 +2042,116 @@ impl AgentRuntimeManager {
                 );
             }
             session.connection.config = session.config.clone();
+            // A name typed here is the person's own, and nothing overwrites it
+            // afterwards. Everything else this request carries — model, effort,
+            // the rail's own copy of the row — arrives with the name unchanged,
+            // so only a different one counts as a rename.
+            let renamed = request
+                .meta
+                .title
+                .as_deref()
+                .is_some_and(|title| !title.trim().is_empty())
+                && request.meta.title != session.rail_meta.title;
             session.rail_meta = request.meta;
+            if renamed {
+                session.title_source = Some(TITLE_SOURCE_USER.to_string());
+            }
             persist_session(session)?;
         }
         self.list_sessions()?
             .into_iter()
             .find(|session| session.owned_id == owned_id)
             .ok_or_else(|| "Conversation session was not found after metadata update".to_string())
+    }
+
+    /// Replaces the provisional name of a session with one the helper model
+    /// writes from the first exchange, in the background.
+    ///
+    /// The provisional name is the first line the person typed, which is rarely
+    /// what the session turns out to be about. Once a turn has finished there
+    /// is enough to summarise, so the helper is asked for a short one. Nothing
+    /// waits on the answer: a send has already finished by the time this runs,
+    /// and a helper that is off, slow, or unreachable simply leaves the name
+    /// alone. A name the person typed is never touched, and neither is one the
+    /// helper has already written, so this happens once per session.
+    fn name_session_after_turn(&self, owned_id: &str, generation: u64, turn_id: &str) {
+        let namer = {
+            let namer = self
+                .namer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(namer) = namer.as_ref() else {
+                return;
+            };
+            Arc::clone(namer)
+        };
+        let store = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Ok(session) = current_session(&sessions, owned_id, generation) else {
+                return;
+            };
+            if !title_can_be_replaced(session.title_source.as_deref()) {
+                return;
+            }
+            Arc::clone(&session.store)
+        };
+        let sessions = Arc::clone(&self.sessions);
+        let renamed_listener = Arc::clone(&self.renamed_listener);
+        let owned_id = owned_id.to_string();
+        let turn_id = turn_id.to_string();
+        // The helper's transport blocks, and so do the two reads that gather
+        // what it is given, so neither runs on the thread carrying the session's
+        // events. This is the last thing a finished turn does, and the pump
+        // moves on without it.
+        tokio::task::spawn_blocking(move || {
+            let Some(input) = title_input(&store, &owned_id, &turn_id) else {
+                return;
+            };
+            let answer = match namer(&input) {
+                Ok(answer) => answer,
+                // No key stored means the helper is off, which is a choice
+                // rather than a fault: the session keeps its prompt name.
+                Err(crate::helper::HelperError::NoKey) => return,
+                Err(error) => {
+                    crate::debug_log::stderr_log!(
+                        "Could not name the session: {}",
+                        error.sentence()
+                    );
+                    return;
+                }
+            };
+            let Some(title) = helper_title(&answer) else {
+                return;
+            };
+            let mut sessions = sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
+                return;
+            };
+            // The person may have renamed the session while the helper was
+            // being asked, and their name wins.
+            if !title_can_be_replaced(session.title_source.as_deref()) {
+                return;
+            }
+            session.rail_meta.title = Some(title.clone());
+            session.title_source = Some(TITLE_SOURCE_HELPER.to_string());
+            if let Err(error) = persist_session(session) {
+                crate::debug_log::stderr_log!("Could not save the session name: {error}");
+                return;
+            }
+            drop(sessions);
+            let listener = renamed_listener
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if let Some(listener) = listener {
+                listener(&owned_id, &title);
+            }
+        });
     }
 
     pub async fn suspend_if_quiescent(
@@ -2734,6 +2962,7 @@ fn persisted_session_row_for_candidate(
             .or_else(|| Some(session.cwd.clone())),
         branch: session.rail_meta.branch.clone(),
         title: session.rail_meta.title.clone(),
+        title_source: session.title_source.clone(),
         project: session.rail_meta.project.clone(),
         state: enum_storage_value(candidate.state)?,
         suspended: candidate.state == AgentRuntimeState::Suspended,
@@ -2865,6 +3094,7 @@ fn recovered_session_from_row(
         ordered_events: None,
         cwd: row.cwd,
         spawn_reasoning_effort: row.effort,
+        adapter_offers_effort: !stored.config.available_efforts.is_empty(),
         config: stored.config,
         connection,
         store: Arc::clone(store),
@@ -2876,6 +3106,7 @@ fn recovered_session_from_row(
         child_rollout_parent_path: None,
         codex_children: HashMap::new(),
         rail_meta: stored.rail_meta,
+        title_source: row.title_source,
         suspending: false,
     };
     Ok(session)
@@ -2910,6 +3141,65 @@ fn prompt_title(prompt: &str) -> Option<String> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(|line| line.chars().take(SESSION_TITLE_CHAR_CAP).collect())
+}
+
+/// Whether a name may still be replaced by one the helper writes. A name the
+/// person typed is theirs to keep, and one the helper has already written is
+/// the name of the session.
+fn title_can_be_replaced(source: Option<&str>) -> bool {
+    !matches!(source, Some(TITLE_SOURCE_USER) | Some(TITLE_SOURCE_HELPER))
+}
+
+/// Reads the helper's answer as a name. It is asked for bare words and usually
+/// gives them, but a model that wraps a name in quotation marks anyway must not
+/// put those on the rail.
+fn helper_title(answer: &str) -> Option<String> {
+    let trimmed = answer
+        .trim()
+        .trim_matches(|character| matches!(character, '"' | '\'' | '\u{201c}' | '\u{201d}'))
+        .trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(SESSION_TITLE_CHAR_CAP).collect())
+}
+
+/// What the helper is given to name a session by: what the person first asked
+/// for, and what came back in the turn that just finished. On a live session
+/// the reply is only ever stored as its deltas, so they are joined back
+/// together here; a session read in from elsewhere holds whole messages, and
+/// both are read the same way.
+fn title_input(store: &SessionStore, owned_id: &str, turn_id: &str) -> Option<String> {
+    let prompt = store
+        .first_user_message_payload(owned_id)
+        .ok()
+        .flatten()
+        .and_then(|payload| serde_json::from_str::<AgentConversationEvent>(&payload).ok())
+        .and_then(|event| match event.payload {
+            AgentConversationPayload::UserMessage { text, .. } => Some(text),
+            _ => None,
+        })?;
+    let mut reply = String::new();
+    for row in store
+        .list_recent_events(owned_id, SNAPSHOT_WINDOW_BYTES)
+        .ok()?
+    {
+        if row.turn_id.as_deref() != Some(turn_id) || reply.chars().count() >= TITLE_INPUT_CHAR_CAP
+        {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<AgentConversationEvent>(&row.payload_json) else {
+            continue;
+        };
+        match event.payload {
+            AgentConversationPayload::AssistantDelta { delta, .. } => reply.push_str(&delta),
+            AgentConversationPayload::AssistantMessage { text, .. } => reply.push_str(&text),
+            _ => {}
+        }
+    }
+    let prompt: String = prompt.chars().take(TITLE_INPUT_CHAR_CAP).collect();
+    let reply: String = reply.chars().take(TITLE_INPUT_CHAR_CAP).collect();
+    Some(format!("{prompt}\n\n{reply}"))
 }
 
 fn current_session<'a>(
@@ -3908,6 +4198,10 @@ async fn handle_ordered_session_event(
                 .as_ref()
                 .err()
                 .map(|error| (error.code.to_string(), error.message.clone()));
+            // The same reading of the result that decides the turn payload
+            // below. A turn that was interrupted or that failed has nothing
+            // worth naming a session after.
+            let turn_completed = result.is_ok() && !cancelled;
 
             // Approval draining and terminal event emission are one atomic
             // session-lock operation. If transport closure wins this lock,
@@ -4036,6 +4330,9 @@ async fn handle_ordered_session_event(
                         );
                     }
                 }
+            }
+            if turn_completed {
+                manager.name_session_after_turn(owned_id, generation, &turn_id);
             }
             // A finished turn stops the adapter process as soon as no prompt,
             // approval, input request, or tool work remains. The stored native
@@ -4964,50 +5261,30 @@ fn normalized_optional_id(value: Option<String>) -> Option<String> {
     })
 }
 
-fn normalized_session_start_effort(
-    provider: AgentConversationProvider,
-    value: Option<String>,
-) -> Result<Option<String>, String> {
-    let value = normalized_optional_id(value);
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if provider != AgentConversationProvider::Claude
-        || CLAUDE_SESSION_EFFORTS
-            .iter()
-            .any(|(effort, _)| *effort == value)
-    {
-        Ok(Some(value))
-    } else {
-        Err("Claude session effort must be low, medium, high, or max".to_string())
-    }
-}
-
-fn session_spawn_environment(
-    provider: AgentConversationProvider,
-    reasoning_effort: Option<&str>,
-) -> SidecarEnvironment {
+/// How hard a session thinks is the adapter's own setting, asked for through
+/// its effort control. An inherited thinking budget would speak over it, so the
+/// adapter is started without one.
+fn session_spawn_environment(provider: AgentConversationProvider) -> SidecarEnvironment {
     if provider != AgentConversationProvider::Claude {
         return SidecarEnvironment::default();
     }
-    let mut environment = SidecarEnvironment::default().remove(MAX_THINKING_TOKENS_ENV);
-    if let Some((_, tokens)) = CLAUDE_SESSION_EFFORTS
-        .iter()
-        .find(|(effort, _)| Some(*effort) == reasoning_effort)
-    {
-        environment = environment.set(MAX_THINKING_TOKENS_ENV, *tokens);
-    }
-    environment
+    SidecarEnvironment::default().remove(MAX_THINKING_TOKENS_ENV)
 }
 
+/// Fills in the effort a Claude conversation shows while it has no adapter to
+/// ask. An adapter that reports an effort control of its own has already said
+/// what the session is on, and that answer is left alone.
 fn claude_session_config(
     mut config: AgentConversationConfigState,
     reasoning_effort: Option<&str>,
 ) -> AgentConversationConfigState {
+    if !config.available_efforts.is_empty() {
+        return config;
+    }
     config.reasoning_effort = reasoning_effort.map(str::to_string);
     config.available_efforts = CLAUDE_SESSION_EFFORTS
         .iter()
-        .map(|(effort, _)| (*effort).to_string())
+        .map(|effort| (*effort).to_string())
         .collect();
     config
 }
@@ -5158,6 +5435,190 @@ mod tests {
                 latest_activity: Some("Finished".into()),
             }]
         );
+    }
+
+    /// The stored name of a fixture session, read back the way the rail reads it.
+    fn stored_title(fixture: &FixtureManager) -> Option<String> {
+        fixture
+            .manager
+            .store()
+            .get_session(&fixture.owned_id)
+            .expect("read the session row")
+            .and_then(|row| row.title)
+    }
+
+    fn stored_title_source(fixture: &FixtureManager) -> Option<String> {
+        fixture
+            .manager
+            .store()
+            .get_session(&fixture.owned_id)
+            .expect("read the session row")
+            .and_then(|row| row.title_source)
+    }
+
+    /// A namer that answers from memory instead of from a helper model, and
+    /// counts how many times it was asked.
+    fn counting_namer(calls: &Arc<Mutex<usize>>, answer: &'static str) -> SessionNamer {
+        let calls = Arc::clone(calls);
+        Arc::new(move |_input: &str| {
+            *calls.lock().unwrap() += 1;
+            Ok(answer.to_string())
+        })
+    }
+
+    fn renamed_meta(title: &str) -> AgentConversationSessionMeta {
+        AgentConversationSessionMeta {
+            title: Some(title.to_string()),
+            ..AgentConversationSessionMeta::default()
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_helper_title_replaces_the_prompt_title_once() {
+        let fixture = fixture_manager_with_acp_session("helper_title").await;
+        let calls: Arc<Mutex<usize>> = Default::default();
+        fixture
+            .manager
+            .set_session_namer(counting_namer(&calls, "Fix rail titles"));
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("make the rail titles readable"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| stored_title(&fixture).as_deref() == Some("Fix rail titles")).await;
+
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("helper"));
+        assert_eq!(*calls.lock().unwrap(), 1);
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("and one more thing"),
+            )
+            .await
+            .expect("second prompt starts");
+        wait_until(|| completed_turns(&seen) == 2).await;
+
+        assert_eq!(*calls.lock().unwrap(), 1);
+        assert_eq!(stored_title(&fixture).as_deref(), Some("Fix rail titles"));
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// The rail saves a new session's row back within seconds of the send,
+    /// carrying the same provisional name the prompt path has just written.
+    /// That is not a rename, and reading it as one would stop the session from
+    /// ever being given a better name after its first turn.
+    #[tokio::test(flavor = "current_thread")]
+    async fn saving_the_row_back_unchanged_is_not_a_rename() {
+        let fixture = fixture_manager_with_acp_session("saved_back_title").await;
+        let prompt = "n".repeat(100);
+
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt(&prompt))
+            .await
+            .expect("prompt starts");
+        wait_until(|| stored_title(&fixture).is_some()).await;
+
+        let provisional = stored_title(&fixture).expect("the prompt names the session");
+        assert_eq!(provisional.chars().count(), SESSION_TITLE_CHAR_CAP);
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+
+        fixture
+            .manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: fixture.owned_id.clone(),
+                model: None,
+                effort: None,
+                meta: renamed_meta(&provisional),
+            })
+            .expect("save the row back");
+
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+        assert_eq!(stored_title(&fixture), Some(provisional));
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_user_title_is_never_overwritten() {
+        let fixture = fixture_manager_with_acp_session("user_title").await;
+        let calls: Arc<Mutex<usize>> = Default::default();
+        fixture
+            .manager
+            .set_session_namer(counting_namer(&calls, "Fix rail titles"));
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: fixture.owned_id.clone(),
+                model: None,
+                effort: None,
+                meta: renamed_meta("Rail work"),
+            })
+            .expect("rename the session");
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("make the rail titles readable"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| completed_turns(&seen) == 1).await;
+
+        assert_eq!(stored_title(&fixture).as_deref(), Some("Rail work"));
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("user"));
+        assert_eq!(*calls.lock().unwrap(), 0);
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    fn completed_turns(seen: &Arc<Mutex<Vec<AgentConversationEvent>>>) -> usize {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Completed,
+                        ..
+                    }
+                )
+            })
+            .count()
     }
 
     struct FixtureManager {
@@ -5627,6 +6088,26 @@ mod tests {
             payload_from_session_update_for_turn(&thought, None),
             Some(AgentConversationPayload::Tool { .. })
         ));
+    }
+
+    /// Antigravity's adapter fixes its working folder when its process starts
+    /// and never reads the folder named in `session/new`, so every session has
+    /// to keep a process of its own. It advertises no multi-session support,
+    /// and the app pools sessions onto one process only when a provider does.
+    /// Pinning the two together keeps anyone from turning pooling on later
+    /// without also teaching the adapter about per-session folders — every
+    /// pooled session would silently run in the first one's folder.
+    #[tokio::test(flavor = "current_thread")]
+    async fn antigravity_sessions_keep_a_process_each() {
+        let fixture =
+            fixture_manager_with_provider("agy", AgentConversationProvider::Antigravity, None)
+                .await;
+        let capabilities = fixture
+            .manager
+            .capabilities(&fixture.owned_id, fixture.generation)
+            .expect("capabilities");
+        assert!(!provider_is_multi_session_safe(&capabilities));
+        fs::remove_dir_all(fixture.root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -7910,11 +8391,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn effort_chosen_before_the_adapter_starts_is_kept_and_used_at_spawn() {
+    async fn choices_made_before_the_adapter_starts_are_asked_of_it_when_it_starts() {
         // A session picks its model and effort before anything is running: the
         // adapter only starts when the first turn is sent. The choice has to
-        // survive that gap, or the composer reverts it and the turn spawns with
-        // the provider's default.
+        // survive that gap and be asked of the adapter once there is one, or
+        // the composer reverts it and the turn runs on the provider's default.
         let root = temp_root();
         let log = root.join("claude_preselect.jsonl");
         let manifest =
@@ -7955,38 +8436,122 @@ mod tests {
             .expect("activate");
         let spawn_log = fs::read_to_string(&log).expect("Claude spawn log");
         assert!(
-            spawn_log.contains("MAX_THINKING_TOKENS=32000"),
-            "the effort chosen before the start must reach the adapter: {spawn_log}"
+            spawn_log.contains(r#""model":"gpt-5.6-luna""#),
+            "the model chosen before the start must reach the adapter: {spawn_log}"
         );
+        assert!(
+            spawn_log.contains("MAX_THINKING_TOKENS=<unset>"),
+            "nothing in the environment decides how hard a session thinks: {spawn_log}"
+        );
+        // The adapter answers with the session it actually has, and that answer
+        // is what the conversation reports. This fixture resolves the request to
+        // a different model, and the different model is what is shown.
         let after_start = manager.conversation_config(&owned_id).expect("config");
-        assert_eq!(after_start.reasoning_effort.as_deref(), Some("high"));
-        // Starting the adapter must not throw the choice away. The provider
-        // reports its own view of the session — the fixture says the model is
-        // "gpt-5.6-sol", and Claude says "default" — neither is what was picked.
-        assert_eq!(after_start.model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(after_start.model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(after_start.reasoning_effort.as_deref(), Some("xhigh"));
 
         manager.close(&owned_id, connection.generation).await.unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// The adapter resolves what it is asked for, so the model a session ends
+    /// up on and the model that was requested can differ. What the session
+    /// reports afterwards is the adapter's answer, never the request.
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_medium_effort_is_injected_at_spawn_and_exposed_as_session_config() {
-        let fixture = fixture_manager_with_provider(
-            "claude_medium_effort",
+    async fn acp_new_reports_the_model_the_adapter_chose_not_the_one_requested() {
+        let root = temp_root();
+        let log = root.join("config_options.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "config_options",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let owned_id = "owned-config_options_model".to_string();
+        let ensure_request = request(
+            root.to_str().unwrap(),
+            &owned_id,
             AgentConversationProvider::Claude,
-            Some("medium"),
+        );
+        let connection = manager.ensure_inner(ensure_request).expect("ensure").0;
+
+        // Picked before anything is running, which is when a new conversation's
+        // model is chosen.
+        manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: owned_id.clone(),
+                generation: connection.generation,
+                model: Some("haiku".into()),
+                reasoning_effort: None,
+                approval_policy: None,
+            })
+            .await
+            .expect("a model chosen before the adapter starts is kept");
+
+        manager
+            .activate(&owned_id, connection.generation)
+            .await
+            .expect("activate");
+
+        let frames = fs::read_to_string(&log).expect("fixture request log");
+        assert!(
+            frames.contains(r#""configId":"model","value":"haiku""#),
+            "the chosen model must be asked of the adapter: {frames}"
+        );
+        // The fixture's session starts on one model, is asked for "haiku", and
+        // answers "sonnet". The answer is what the session is on.
+        let config = manager.conversation_config(&owned_id).expect("config");
+        assert_eq!(config.model.as_deref(), Some("sonnet"));
+
+        manager.close(&owned_id, connection.generation).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An adapter that offers an effort control can be re-pointed at any time:
+    /// the change goes to the adapter, the session reports what the adapter
+    /// says it is now, and nothing in the process environment has a say.
+    #[tokio::test(flavor = "current_thread")]
+    async fn effort_changes_live_when_the_adapter_offers_it() {
+        let fixture = fixture_manager_with_provider(
+            "config_options",
+            AgentConversationProvider::Claude,
+            None,
         )
         .await;
 
-        let log = fs::read_to_string(fixture.root.join("claude_medium_effort.jsonl"))
-            .expect("Claude spawn log");
-        assert!(log.contains("MAX_THINKING_TOKENS=12000"));
-        let config = fixture
+        let configured = fixture
             .manager
-            .conversation_config(&fixture.owned_id)
-            .expect("Claude config");
-        assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
-        assert_eq!(config.available_efforts, ["low", "medium", "high", "max"]);
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: Some("high".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect("an adapter with an effort control takes a live change");
+        assert_eq!(configured.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("stored config")
+                .reasoning_effort
+                .as_deref(),
+            Some("high")
+        );
+
+        let frames = fs::read_to_string(fixture.root.join("config_options.jsonl"))
+            .expect("fixture request log");
+        assert!(
+            frames.contains(r#""configId":"effort","value":"high""#),
+            "the effort change must go to the adapter: {frames}"
+        );
+        assert!(
+            frames.contains("MAX_THINKING_TOKENS=<unset>"),
+            "the thinking budget must not be decided by the environment: {frames}"
+        );
 
         fixture
             .manager
@@ -7997,21 +8562,506 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_default_effort_removes_spawn_env_and_rejects_live_changes() {
+    async fn effort_chosen_for_a_new_session_is_asked_of_the_adapter() {
         let fixture = fixture_manager_with_provider(
-            "claude_default_effort",
+            "config_options",
+            AgentConversationProvider::Claude,
+            Some("medium"),
+        )
+        .await;
+
+        let log = fs::read_to_string(fixture.root.join("config_options.jsonl"))
+            .expect("Claude spawn log");
+        assert!(
+            log.contains(r#""configId":"effort","value":"medium""#),
+            "the effort the session was started with must be asked of the adapter: {log}"
+        );
+        assert!(
+            log.contains("MAX_THINKING_TOKENS=<unset>"),
+            "nothing in the environment decides how hard a session thinks: {log}"
+        );
+        let config = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("Claude config");
+        // The adapter answers "high", and the answer is what the session is on.
+        assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            config.available_efforts,
+            ["default", "low", "medium", "high", "xhigh", "max"]
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// An effort chosen while a session is running has to survive the adapter
+    /// going away and coming back. Adapters stop when a turn ends, so the next
+    /// message reactivates one, and reactivation asks for the effort the
+    /// session is on now — not the one it was created with.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reactivating_a_session_asks_for_the_effort_it_is_on_now() {
+        let fixture = fixture_manager_with_provider(
+            "suspend_effort_reactivation",
+            AgentConversationProvider::Codex,
+            Some("medium"),
+        )
+        .await;
+
+        // The adapter answers the start-time effort with one of its own, so the
+        // session is on "xhigh" while it was created with "medium".
+        fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: Some("high".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect("a live effort change");
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config")
+                .reasoning_effort
+                .as_deref(),
+            Some("xhigh")
+        );
+
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+        fixture
+            .manager
+            .activate(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("reactivate");
+
+        let log = fs::read_to_string(fixture.root.join("suspend_effort_reactivation.jsonl"))
+            .expect("fixture request log");
+        assert!(
+            log.contains(r#""reasoningEffort":"xhigh""#),
+            "reactivation must ask for the effort the session is on now: {log}"
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// A session's record — its name, where that name came from, the model it
+    /// is on — belongs to the session, not to the effort it was started with.
+    /// Every turn ends with the adapter stopped, so the next send ensures the
+    /// session again and sends the effort it is on now. Reading that as a
+    /// request for a different session threw the record away and started over.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ensure_after_a_live_effort_change_keeps_the_session_record() {
+        let fixture = fixture_manager_with_provider(
+            "suspend_live_effort_ensure",
+            AgentConversationProvider::Codex,
+            Some("high"),
+        )
+        .await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("give this session a name"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| completed_turns(&seen) == 1).await;
+        let title = stored_title(&fixture).expect("the prompt names the session");
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+
+        // A live change lands on the effort the adapter answers with, which is
+        // not the one the session was started with.
+        fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: Some("medium".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect("a live effort change");
+        let live = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("config");
+        assert_eq!(live.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(live.model.as_deref(), Some("gpt-5.6-terra"));
+
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+
+        // The next send ensures the session again, carrying the effort the
+        // composer is showing: the live one, not the spawn one.
+        let mut request = request(
+            fixture.root.to_str().unwrap(),
+            &fixture.owned_id,
+            AgentConversationProvider::Codex,
+        );
+        request.reasoning_effort = Some("xhigh".into());
+        let connection = fixture
+            .manager
+            .ensure_inner(request)
+            .expect("ensure the suspended session")
+            .0;
+
+        assert_eq!(connection.generation, fixture.generation);
+        assert_eq!(stored_title(&fixture).as_deref(), Some(title.as_str()));
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+        let after = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("config after ensure");
+        assert_eq!(after.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(after.model.as_deref(), Some("gpt-5.6-terra"));
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// The rail saves a session's row back carrying its own copy of the fields,
+    /// and a rail action that is not about the effort sends none. Writing that
+    /// empty answer over the session wiped the effort it was on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn saving_the_row_back_without_an_effort_leaves_the_effort() {
+        let fixture = fixture_manager_with_provider(
+            "meta_keeps_effort",
+            AgentConversationProvider::Codex,
+            Some("medium"),
+        )
+        .await;
+        // The adapter answers the start-time effort with one of its own, so the
+        // session is on "xhigh" while it was created with "medium".
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config")
+                .reasoning_effort
+                .as_deref(),
+            Some("xhigh")
+        );
+
+        fixture
+            .manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: fixture.owned_id.clone(),
+                model: None,
+                effort: None,
+                meta: renamed_meta("Rail work"),
+            })
+            .expect("save the row back");
+
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config after the save")
+                .reasoning_effort
+                .as_deref(),
+            Some("xhigh")
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// An approval policy chosen while a session is running has to survive the
+    /// adapter going away and coming back, just as the effort does. Adapters
+    /// stop when a turn ends, so reactivation must ask for the policy the
+    /// session is on now rather than let the restarted adapter's default win.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reactivating_a_session_keeps_the_approval_policy_it_is_on() {
+        let fixture = fixture_manager_with_provider(
+            "suspend_approval_reactivation",
+            AgentConversationProvider::Codex,
+            None,
+        )
+        .await;
+
+        // The adapter answers the requested policy with one of its own, so the
+        // session lands on "never" having been asked for "untrusted".
+        fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: None,
+                approval_policy: Some("untrusted".into()),
+            })
+            .await
+            .expect("a live approval policy change");
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config")
+                .approval_policy
+                .as_deref(),
+            Some("never")
+        );
+
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+        fixture
+            .manager
+            .activate(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("reactivate");
+
+        let log = fs::read_to_string(fixture.root.join("suspend_approval_reactivation.jsonl"))
+            .expect("fixture request log");
+        assert!(
+            log.contains(r#""approvalPolicy":"never""#),
+            "reactivation must ask for the approval policy the session is on now: {log}"
+        );
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config")
+                .approval_policy
+                .as_deref(),
+            Some("never")
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// Which approval policies a session offers is the running adapter's
+    /// answer, and a suspended session carries only the snapshot the adapter
+    /// that last ran left behind. A policy the adapter installed now offers
+    /// must not be refused on the strength of that stale list.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_policy_the_running_adapter_offers_is_not_refused_by_a_stale_list() {
+        let fixture = fixture_manager_with_provider(
+            "suspend_approval_stale_list",
+            AgentConversationProvider::Codex,
+            None,
+        )
+        .await;
+
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            session
+                .config
+                .available_approval_policies
+                .retain(|policy| policy.as_str() != "never");
+        }
+
+        let config = fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: None,
+                approval_policy: Some("never".into()),
+            })
+            .await
+            .expect("a policy the running adapter offers is refused by a stale list");
+        assert_eq!(config.approval_policy.as_deref(), Some("never"));
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// Judging a settings change against the running adapter means an adapter
+    /// is started to ask. When the change is then refused it has no turn to
+    /// run and nothing else would ever stop it, so the refusal has to put the
+    /// session back at rest itself.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_refused_config_change_does_not_leave_an_adapter_running() {
+        let fixture = fixture_manager_with_acp_session("suspend_refused_config").await;
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+
+        let refused = fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: None,
+                approval_policy: Some("acceptedits".into()),
+            })
+            .await
+            .expect_err("a policy the adapter does not offer is refused");
+        assert!(
+            refused.contains("approval policy"),
+            "the refusal names what was wrong: {refused}"
+        );
+        assert!(
+            fixture
+                .manager
+                .session_is_suspended(&fixture.owned_id, fixture.generation),
+            "a settings change that was refused leaves the session at rest"
+        );
+
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// Whether the adapter has an effort control is a fact about the adapter,
+    /// not about this run of the app. A conversation read back from the store
+    /// after a restart still has one, and can still be re-pointed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_read_back_after_a_restart_can_still_change_its_effort() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let log = root.join("recovered-effort.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "suspend_recovered_effort",
+        );
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Claude, manifest.clone())]).unwrap();
+        let manager = AgentRuntimeManager::open(providers, &database).unwrap();
+        let connection = manager
+            .ensure_async(request(
+                root.to_str().unwrap(),
+                "owned-recovered-effort",
+                AgentConversationProvider::Claude,
+            ))
+            .await
+            .unwrap();
+        manager
+            .activate(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        drop(manager);
+
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)]).unwrap();
+        let recovered = AgentRuntimeManager::open(providers, &database).unwrap();
+        let config = recovered
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: connection.owned_id.clone(),
+                generation: connection.generation,
+                model: None,
+                reasoning_effort: Some("xhigh".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect("an adapter that offers an effort control still offers one after a restart");
+        assert_eq!(config.reasoning_effort.as_deref(), Some("xhigh"));
+
+        recovered
+            .close(&connection.owned_id, connection.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Which efforts exist is the adapter's answer, so a new session may be
+    /// started on any of them. A conversation left on an effort outside the
+    /// list this app can offer before an adapter exists must still be able to
+    /// start one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_new_session_may_start_on_any_effort_the_adapter_offers() {
+        let root = temp_root();
+        let log = root.join("ensure-effort.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "config_options",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let mut ensure_request = request(
+            root.to_str().unwrap(),
+            "owned-ensure-effort",
+            AgentConversationProvider::Claude,
+        );
+        ensure_request.reasoning_effort = Some("xhigh".to_string());
+
+        let connection = manager
+            .ensure_inner(ensure_request)
+            .expect("an effort the adapter offers is not refused before it runs")
+            .0;
+        assert_eq!(connection.config.reasoning_effort.as_deref(), Some("xhigh"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_adapter_with_no_effort_control_refuses_a_live_effort_change() {
+        let fixture = fixture_manager_with_provider(
+            "standard_config",
             AgentConversationProvider::Claude,
             None,
         )
         .await;
 
-        let log = fs::read_to_string(fixture.root.join("claude_default_effort.jsonl"))
+        let log = fs::read_to_string(fixture.root.join("standard_config.jsonl"))
             .expect("Claude spawn log");
-        assert!(log.contains("MAX_THINKING_TOKENS=<unset>"));
+        assert!(
+            log.contains("MAX_THINKING_TOKENS=<unset>"),
+            "nothing in the environment decides how hard a session thinks: {log}"
+        );
         let config = fixture
             .manager
             .conversation_config(&fixture.owned_id)
             .expect("Claude config");
+        // This adapter named no effort control, so the conversation still shows
+        // the efforts it can offer before a session exists.
         assert_eq!(config.reasoning_effort, None);
         assert_eq!(config.available_efforts, ["low", "medium", "high", "max"]);
 
@@ -8025,7 +9075,7 @@ mod tests {
                 approval_policy: None,
             })
             .await
-            .expect_err("Claude effort cannot change after spawn");
+            .expect_err("an adapter with no effort control cannot be re-pointed");
         assert_eq!(
             error,
             "Effort is set when the session starts. Start a new session to change it."

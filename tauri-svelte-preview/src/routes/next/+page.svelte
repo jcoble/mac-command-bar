@@ -556,7 +556,9 @@
           provider,
           model: config?.model ?? null,
           reasoningEffort: config?.reasoningEffort ?? null,
-          approvalPolicy: config?.approvalPolicy ?? null,
+          // Same reason as the draft's own request: Antigravity's adapter has
+          // no approval control, so a remembered choice must not be sent to it.
+          approvalPolicy: provider === 'antigravity' ? null : (config?.approvalPolicy ?? null),
           projectPath: request.projectPath,
           cwd: request.cwd,
           branch: '',

@@ -17,7 +17,10 @@ httpdate = "1"
 libc = "0.2"
 mcb-core = { path = "../../core" }
 portable-pty = "0.9.0"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# `blocking` is here for the helper module: its transport is one synchronous
+# call made on a blocking task, which keeps the trait behind it plain enough
+# for a test to replace with a fake.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 security-framework = "3.5.1"
 serde = { version = "1", features = ["derive"] }
@@ -28,9 +31,16 @@ sysinfo = { version = "=0.38.4", default-features = false, features = ["system"]
 # `debug_assertions`, so the shortcut below would work while developing and
 # quietly do nothing in the app people actually install.
 tauri = { version = "2", features = ["devtools", "protocol-asset", "test", "unstable"] }
+tauri-plugin-clipboard-manager = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["io-util", "net", "process", "sync"] }
+# The file-system plugin's `remove` deletes for good. Deleting from the Files
+# panel has to be recoverable, so `move_to_trash` hands the path to the Finder's
+# Trash through this crate instead.
+trash = "5"
 uuid = { version = "1", features = ["v4"] }
 
 # Already in the tree through tauri/wry; declared here so the browser view can

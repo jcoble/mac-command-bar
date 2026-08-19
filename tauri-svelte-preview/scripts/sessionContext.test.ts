@@ -105,4 +105,13 @@ assert.equal(touched[1].lastTouchedMs, 3_000, 'the entry keeps its most recent t
 
 assert.deepEqual(sessionFilesTouched([]), [], 'no events means no files');
 
+// A session that has touched hundreds of files still shows only the most recent 50.
+const manyEvents = Array.from({ length: 60 }, (_, index) =>
+  toolEvent(index, index * 1_000, { kind: 'toolCall', toolCallId: `t${index}`, path: `src/file-${index}.ts` })
+);
+const capped = sessionFilesTouched(manyEvents);
+assert.equal(capped.length, 50, 'the list stops at 50 files even when more were touched');
+assert.equal(capped[0].path, 'src/file-59.ts', 'the cap keeps the most recently touched files');
+assert.equal(capped[49].path, 'src/file-10.ts', 'the cap drops the oldest touches first');
+
 console.log('session context tests passed');

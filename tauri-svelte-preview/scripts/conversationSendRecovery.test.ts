@@ -170,7 +170,7 @@ assert.match(
     'setConversationSending',
     'terminalProjections',
     'stopConversationTerminalProjection',
-    `let unlisten = null;\nlet conversationEventsSetup = null;\nlet conversationEventsDisposed = false;\n${javascript}\nreturn { startConversationEvents, stopConversationEvents };`
+    `let unlisten = null;\nlet unlistenTitles = null;\nlet conversationEventsSetup = null;\nlet conversationEventsDisposed = false;\n${javascript}\nreturn { startConversationEvents, stopConversationEvents };`
   )(
     () => true,
     listen,
@@ -195,11 +195,18 @@ assert.match(
   const secondStart = lifecycle.startConversationEvents();
   assert.equal(releaseListens.length, 1, 'concurrent starts share one listener setup');
   lifecycle.stopConversationEvents();
-  for (const release of releaseListens) release();
+  // The setup asks for its second listener only once the first has resolved,
+  // so releasing the waiting ones once leaves the later one hanging and the
+  // start never finishes. Keep letting them go until no new one appears.
+  let released = 0;
+  while (released < releaseListens.length) {
+    for (; released < releaseListens.length; released += 1) releaseListens[released]();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   await Promise.all([firstStart, secondStart]);
   emit({ ownedId: 'late' });
 
-  assert.equal(unlistens, 1, 'a listener resolving after stop is immediately disposed');
+  assert.equal(unlistens, 2, 'listeners resolving after stop are immediately disposed');
   assert.equal(dispatches, 0, 'a stopped late listener cannot dispatch conversation events');
 }
 
@@ -265,12 +272,12 @@ assert.doesNotMatch(
 );
 assert.match(
   surfaceSource,
-  /setConversationSendError\(activeOwnedId, ''\);[\s\S]*?await sendStructuredMessage/,
+  /setConversationSendError\(ownedId, ''\);[\s\S]*?await sendStructuredMessage/,
   'a send clears its own session failure before it goes out'
 );
 assert.match(
   surfaceSource,
-  /setConversationSendError\(activeOwnedId, error instanceof Error/,
+  /setConversationSendError\(ownedId, error instanceof Error/,
   'a failed send records the reason against the session it happened in'
 );
 assert.match(

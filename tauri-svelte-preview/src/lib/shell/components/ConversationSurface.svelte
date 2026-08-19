@@ -12,10 +12,12 @@
     failConversationAgentConfigChange,
     setConversationAgentConfigError,
     setConversationAgentConfigState,
+    setConversationAttachmentError,
     setConversationAttachments,
     setConversationDraft,
     setConversationSendError,
     setConversationMode,
+    setConversationProviderNotice,
     setConversationScrollTop,
     setConversationSelectedChild
   } from '$lib/shell/conversation/conversationStore.svelte';
@@ -46,6 +48,8 @@
     type ConversationCommand
   } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import {
+    diffLineCounts,
+    latestPlan,
     typedConversationTimeline,
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
@@ -119,6 +123,34 @@
     previousVisibleTimeline = items.sort((left, right) => left.timestampMs - right.timestampMs);
     return previousVisibleTimeline;
   });
+  const activePlan = $derived(latestPlan(visibleTimeline));
+  /* What the turn on screen has changed on disk, for the chip beside the step
+     count. A turn is what has happened since the last thing the reader asked
+     for, so the count starts at the last user message. The line counts are
+     read off the diffs the rows already carry; a row with no diff still
+     counts as a file changed. */
+  const planFileChanges = $derived.by(() => {
+    if (!activePlan) return null;
+    const paths = new Set<string>();
+    let added = 0;
+    let removed = 0;
+    for (let index = visibleTimeline.length - 1; index >= 0; index -= 1) {
+      const item = visibleTimeline[index];
+      if (item.kind === 'user') break;
+      let diff: string;
+      if (item.kind === 'file') {
+        paths.add(typeof item.metadata?.path === 'string' ? item.metadata.path : item.itemId);
+        diff = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
+      } else if (item.kind === 'tool' && item.toolKind === 'file-edit') {
+        paths.add(item.path ?? item.itemId);
+        diff = item.diff ?? '';
+      } else continue;
+      const counts = diffLineCounts(diff);
+      added += counts.added;
+      removed += counts.removed;
+    }
+    return paths.size ? { files: paths.size, added, removed } : null;
+  });
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
@@ -132,11 +164,12 @@
     contextMeterState(contextUsage.usedTokens, contextUsage.contextWindow)
   );
 
-  let attachmentError = $state('');
   // Read from the session rather than held here: this surface is mounted once
   // for the whole shell, so a failure kept in component state was shown under
   // every conversation and survived the send that fixed it.
+  const attachmentError = $derived(conversation?.attachmentError ?? '');
   const sendError = $derived(conversation?.sendError ?? '');
+  const providerNotice = $derived(conversation?.providerNotice ?? '');
   let capabilityRequest = $state('');
   let configRequest = $state('');
   /** A request key whose failure has already bought its one retry. The guard
@@ -151,7 +184,7 @@
   let localTurnActive = $state(false);
   let localTurnStarted = $state(false);
   let composerHeight = $state(0);
-  let composer = $state<{ focus(): void } | null>(null);
+  let composer = $state<{ focus(): void; expandPlan(): void } | null>(null);
 
   /** Put the caret in the prompt box. The page calls this when a panel hands
    * the composer something — an attachment, a line of text — so the reader ends
@@ -294,9 +327,9 @@
   async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
     if (!active || !conversation || conversation.selectedChildId) return;
     const images = files.filter((file) => file.type.startsWith('image/'));
-    attachmentError = '';
+    setConversationAttachmentError(active.ownedId, '');
     if (images.length === 0) {
-      attachmentError = rejectedMessage;
+      setConversationAttachmentError(active.ownedId, rejectedMessage);
       return;
     }
     const saved = [];
@@ -305,7 +338,7 @@
       setConversationAttachments(active.ownedId, [...conversation.attachments, ...saved]);
     } catch (error) {
       await Promise.all(saved.map((attachment) => cleanupConversationAttachment(active.ownedId, attachment).catch(() => undefined)));
-      attachmentError = error instanceof Error ? error.message : String(error);
+      setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
       // Draft and existing attachments remain untouched after a failed paste.
     }
   }
@@ -316,9 +349,9 @@
     if (!found) return;
     try {
       await removeConversationAttachment(active.ownedId, found);
-      attachmentError = '';
+      setConversationAttachmentError(active.ownedId, '');
     } catch (error) {
-      attachmentError = error instanceof Error ? error.message : String(error);
+      setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -336,31 +369,35 @@
 
   function onApprovalDecision(requestId: string, optionId: string): void {
     if (!active || !optionId) return;
-    void sendPermissionResponse(active.ownedId, requestId, optionId).catch((error) => {
-      attachmentError = error instanceof Error ? error.message : String(error);
+    const ownedId = active.ownedId;
+    void sendPermissionResponse(ownedId, requestId, optionId).catch((error) => {
+      setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
     });
   }
 
   function onInputSubmit(requestId: string, values: Record<string, AgentConfigValue>, cancelled = false): void {
     if (!active) return;
-    void respondToStructuredInput(active.ownedId, { requestId, values, cancelled }).catch((error) => {
-      attachmentError = error instanceof Error ? error.message : String(error);
+    const ownedId = active.ownedId;
+    void respondToStructuredInput(ownedId, { requestId, values, cancelled }).catch((error) => {
+      setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
     });
   }
 
   function openConversationFile(path: string): void {
-    const root = (active?.cwd || active?.projectPath || '').replace(/\/+$/, '');
+    if (!active) return;
+    const root = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
     const candidate = path.trim();
     if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
-      attachmentError = 'The file link is outside the active workspace.';
+      // Nothing here resolves to a file, so there is nothing to open.
+      setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
       return;
     }
     const absolute = candidate.startsWith('/') ? candidate : `${root}/${candidate.replace(/^\.\//, '')}`;
-    if (absolute !== root && !absolute.startsWith(`${root}/`)) {
-      attachmentError = 'The file link is outside the active workspace.';
-      return;
-    }
-    requestOpenFile({ path: absolute, projectRoot: root });
+    // A link that lands outside the workspace still opens, read-only: reading a
+    // file this session does not own is safe, and refusing it left the reader
+    // with a notice and no way to see what the link pointed at.
+    const outside = absolute !== root && !absolute.startsWith(`${root}/`);
+    requestOpenFile({ path: absolute, projectRoot: root, readOnly: outside });
   }
 
   async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {
@@ -434,6 +471,7 @@
         onApprovalDecision={onApprovalDecision}
         onInputSubmit={onInputSubmit}
         onFileLink={openConversationFile}
+        onPlanOpen={() => composer?.expandPlan()}
       />
       {#if !conversation.selectedChildId}
         <ConversationComposer
@@ -447,12 +485,17 @@
           configError={conversation.agentConfigError}
           commands={commandCatalog}
           contextMeter={contextMeter}
+          plan={activePlan}
+          planFileChanges={planFileChanges}
           pendingApproval={pendingApprovals[0] ?? null}
           pendingApprovalCount={pendingApprovals.length}
           pendingInputs={pendingInputs}
           {attachmentError}
           {sendError}
+          {providerNotice}
+          onDismissAttachmentError={() => setConversationAttachmentError(active.ownedId, '')}
           onDismissSendError={() => setConversationSendError(active.ownedId, '')}
+          onDismissProviderNotice={() => setConversationProviderNotice(active.ownedId, '')}
           onDraftChange={(value) => {
             setConversationDraft(active.ownedId, value);
             persistConversationSessionDraft(active.ownedId, value);

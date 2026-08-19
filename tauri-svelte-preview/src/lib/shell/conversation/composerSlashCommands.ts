@@ -50,8 +50,8 @@ export function remainingContextPercent(
 }
 
 export type ContextMeterState =
-  | { kind: 'percent'; remaining: number }
-  | { kind: 'absolute'; usedTokens: number };
+  | { kind: 'percent'; remaining: number; warm: boolean; hot: boolean }
+  | { kind: 'unknown' };
 
 /** Tokens as a short label: 940, 9.4k, 398k, 1.2m. */
 export function formatContextTokens(value: number): string {
@@ -62,22 +62,28 @@ export function formatContextTokens(value: number): string {
 }
 
 /**
- * What the composer should show for context. Null when there is nothing
- * usable. Falls back to the absolute count when the window is missing or the
- * reported usage exceeds it, because a percentage would then be nonsense:
- * agents that report a lifetime token total rather than current occupancy
- * would otherwise sit at "0% left" forever.
+ * What the composer should show for context: the one object the ring and the
+ * hint text both read, so they can't disagree. `unknown` when there is
+ * nothing trustworthy to show — the window is missing, or the reported usage
+ * exceeds it (a percentage would then be nonsense: agents that report a
+ * lifetime token total rather than current occupancy would otherwise sit at
+ * "0% left" forever).
  */
 export function contextMeterState(
   usedTokens: number | null | undefined,
   contextWindow: number | null | undefined
-): ContextMeterState | null {
+): ContextMeterState {
   const remaining = remainingContextPercent(usedTokens, contextWindow);
-  if (remaining !== null && (usedTokens as number) <= (contextWindow as number)) {
-    return { kind: 'percent', remaining };
+  if (remaining === null || (usedTokens as number) > (contextWindow as number)) {
+    return { kind: 'unknown' };
   }
-  if (!Number.isFinite(usedTokens)) return null;
-  return { kind: 'absolute', usedTokens: usedTokens as number };
+  return { kind: 'percent', remaining, warm: remaining <= 25, hot: remaining <= 10 };
+}
+
+/** Dash length for a ring whose full circumference reads 100%: the visible
+ * arc is the remaining share, so it empties as context is used. */
+export function ringDash(remaining: number, circumference: number): number {
+  return (remaining / 100) * circumference;
 }
 
 function rank(command: ConversationCommand, query: string): number {

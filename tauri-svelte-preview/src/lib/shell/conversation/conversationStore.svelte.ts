@@ -56,6 +56,16 @@ import {
   type SessionConversationWorkspace
 } from '../sessionWorkspaces.ts';
 
+/**
+ * What an Antigravity session says about itself the first time it is opened.
+ *
+ * Its adapter cannot pass a permission question on to the app, so every tool
+ * call is approved before the reader sees it. Saying so once is the honest
+ * alternative to a permission panel that would never appear.
+ */
+export const ANTIGRAVITY_PERMISSION_NOTICE =
+  'Antigravity runs with its own permission mode; it does not ask before acting.';
+
 export type ConversationViewMode = 'structured' | 'raw';
 
 export interface ConversationRecentEvent {
@@ -73,6 +83,12 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
    * the surface is one component for every session, so a failure kept there
    * showed up under every conversation and outlived the one it belonged to. */
   sendError: string;
+  /** Why this session could not take on an attachment or open a file link,
+   * held beside its own draft for the same reason as `sendError`. */
+  attachmentError: string;
+  /** What this session's provider will not do, said once beside the box and
+   * dismissed for good. Held per session for the same reason as `sendError`. */
+  providerNotice: string;
   mode: ConversationViewMode;
   sending: boolean;
   attachments: ConversationAttachment[];
@@ -142,6 +158,8 @@ function freshState(
     ...createConversationState(ownedId, provider),
     draft: '',
     sendError: '',
+    attachmentError: '',
+    providerNotice: provider === 'antigravity' ? ANTIGRAVITY_PERMISSION_NOTICE : '',
     mode: 'structured',
     sending: false,
     attachments: [],
@@ -638,6 +656,8 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     timelineRevision: current.timelineRevision + 1,
     draft: current.draft,
     sendError: current.sendError,
+    attachmentError: current.attachmentError,
+    providerNotice: current.providerNotice,
     mode: current.mode,
     sending: current.sending,
     attachments: current.attachments,
@@ -1311,6 +1331,20 @@ export function setConversationSendError(ownedId: string, message: string): void
   const current = conversationSessions[ownedId];
   if (!current || current.sendError === message) return;
   current.sendError = message;
+}
+
+/** Record or clear this session's attachment or file-link failure. */
+export function setConversationAttachmentError(ownedId: string, message: string): void {
+  const current = conversationSessions[ownedId];
+  if (!current || current.attachmentError === message) return;
+  current.attachmentError = message;
+}
+
+/** Record or clear what this session's provider will not do. */
+export function setConversationProviderNotice(ownedId: string, message: string): void {
+  const current = conversationSessions[ownedId];
+  if (!current || current.providerNotice === message) return;
+  current.providerNotice = message;
 }
 
 export function setConversationMode(ownedId: string, mode: ConversationViewMode): void {

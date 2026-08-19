@@ -150,6 +150,7 @@ pub fn begin_import_session(
         title: title
             .map(|title| title.trim().chars().take(200).collect::<String>())
             .filter(|title| !title.is_empty()),
+        title_source: None,
         project: None,
         state: "ready".to_string(),
         suspended: false,
@@ -878,6 +879,7 @@ mod tests {
                 worktree: None,
                 branch: None,
                 title: None,
+                title_source: None,
                 project: None,
                 state: "idle".to_owned(),
                 suspended: false,

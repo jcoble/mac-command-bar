@@ -169,6 +169,14 @@
   let destroyed = false;
 
   const activeFile = $derived(activeEditorFile());
+  /**
+   * Files opened for reading only, keyed by path. A file link in a conversation
+   * that points outside the workspace opens this way: the reader can see what
+   * it pointed at, but the session does not own the file, so nothing here may
+   * edit or save over it.
+   */
+  let readOnlyByPath = $state<Record<string, boolean>>({});
+  const activeFileReadOnly = $derived(Boolean(activeFile && readOnlyByPath[activeFile.path]));
   /** Is this project in full mode — language server allowed to run? Settings
    * can switch every server off at once, and then no project is, whatever its
    * own switch says: the switch reads Off, and its title says which one held. */
@@ -728,6 +736,7 @@
   async function saveActiveFile(): Promise<void> {
     const file = activeEditorFile();
     if (!file?.preview || !file.dirty || file.saving) return;
+    if (readOnlyByPath[file.path]) return;
     const content = file.draftContent ?? file.preview.content;
     setEditorFileSaving(file.path, true);
     try {
@@ -781,6 +790,9 @@
   }
 
   function handleOpenFileRequest(request: OpenFileRequest): void {
+    // Marked before the open, so the file is never editable for a frame. The
+    // record's path is the key: it is what the strip and the editor hold.
+    if (request.readOnly) readOnlyByPath[recordForPath(request.path).path] = true;
     // Only once the file is in the strip. The read runs after this and may still
     // fail — the tab is the right place to show that, so it stays in front.
     if (openPath(request.path, request.line, request.projectRoot)) onFileOpened?.();
@@ -809,6 +821,10 @@
     // A closed file stops holding its diagnostics; nothing can show them now.
     const { [path]: _closed, ...rest } = diagnosticsByPath;
     diagnosticsByPath = rest;
+    // The read-only mark belongs to the request that opened the file. Keeping
+    // it meant a later open of the same path arrived already locked.
+    const { [path]: _wasReadOnly, ...remaining } = readOnlyByPath;
+    readOnlyByPath = remaining;
   }
 
   function retryRead(path: string): void {
@@ -1006,7 +1022,7 @@
             onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
             preview={activeFile.preview}
             content={activeFile.draftContent ?? activeFile.preview.content}
-            editable={true}
+            editable={!activeFileReadOnly}
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}
@@ -1035,7 +1051,9 @@
           · {editorState.symbols.length}
           {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
         {/if}
-        {#if activeFile?.saving}
+        {#if activeFileReadOnly}
+          · read-only
+        {:else if activeFile?.saving}
           · saving
         {:else if activeFile?.dirty}
           · unsaved

@@ -12,11 +12,17 @@
    *
    * THE ONE THING THAT CHANGED: the panel used to print three commands per
    * worktree for the reader to paste into a terminal, because nothing in the app
-   * could be trusted to look before it deleted. Now each of the three starts a
+   * could be trusted to look before it deleted. Now the two removals start a
    * session in that folder — visible in the sessions list like any other — that
    * reads the worktree, explains what it found, warns about anything that would
    * be lost, and only then acts. The commands did not go away; they became the
    * substance of what that session is told to do.
+   *
+   * Inspect is the exception, and starts nothing: a whole session in a folder is
+   * a lot to set up for a question about facts this panel already has. It hands
+   * those facts to the app's small helper model and shows the answer under the
+   * row. So an answer here is about what the list last read, not about the
+   * folder as it is this second — the removals are the ones that go and look.
    *
    * So this panel removes nothing itself. The one exception is the quiet "clear
    * this entry" on a row whose folder is already gone, which touches no files
@@ -37,6 +43,7 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump';
   import { startWorkbenchSession } from '$lib/shell/workbenchNavigation';
+  import { runHelperJobFromTauri } from '$lib/tauriSource';
   import {
     buildWorktreeManagerRows,
     describeRemovalQuestion,
@@ -59,7 +66,9 @@
     describeWorktreeAgentQuestion,
     worktreeAgentActions,
     worktreeAgentPrompt,
-    type WorktreeAgentActionId
+    worktreeInspectFacts,
+    type WorktreeAgentActionId,
+    type WorktreeSessionActionId
   } from './worktreeAgentPrompts.ts';
 
   interface Props {
@@ -75,7 +84,7 @@
   /** What is being asked about, and which question it is. */
   let asking = $state<
     | { kind: 'clear'; row: WorktreeManagerRow }
-    | { kind: 'agent'; row: WorktreeManagerRow; action: WorktreeAgentActionId }
+    | { kind: 'agent'; row: WorktreeManagerRow; action: WorktreeSessionActionId }
     | null
   >(null);
 
@@ -85,6 +94,18 @@
   let startedMessage = $state('');
   /** Why a session could not be started. '' when the last one was. */
   let startError = $state('');
+
+  /** The path of the row the helper is being asked about, or ''. */
+  let inspecting = $state('');
+  /**
+   * What the helper said about a worktree, by folder. It stays on the row it
+   * belongs to for as long as the row is listed, so opening another row and
+   * coming back does not lose the answer.
+   */
+  let inspected = $state<Record<string, { text: string; failed: boolean }>>({});
+
+  /** What the backend says when no key is stored, word for word. */
+  const HELPER_OFF = 'No key — helper off';
 
   const rows = $derived(
     buildWorktreeManagerRows({
@@ -122,21 +143,58 @@
   }
 
   /**
-   * Start the session for one action. The two that can remove work ask first;
-   * the one that only looks does not, because a dialog in front of a read is a
-   * dialog people learn to dismiss without reading.
+   * Do one action. Inspect asks the helper and shows the answer under the row;
+   * it starts nothing, so it is not worth a dialog — a dialog in front of a read
+   * is a dialog people learn to dismiss without reading. The two that can remove
+   * work ask first.
    */
   function act(row: WorktreeManagerRow, id: WorktreeAgentActionId): void {
-    const action = worktreeAgentActions(row).find((entry) => entry.id === id);
-    if (!action || !action.enabled) return;
-    if (action.destructive) {
-      asking = { kind: 'agent', row, action: id };
+    if (id === 'inspect') {
+      void inspect(row);
       return;
     }
-    void startFor(row, id);
+    const action = worktreeAgentActions(row).find((entry) => entry.id === id);
+    if (!action || !action.enabled) return;
+    asking = { kind: 'agent', row, action: id };
   }
 
-  async function startFor(row: WorktreeManagerRow, id: WorktreeAgentActionId): Promise<void> {
+  /**
+   * Ask the helper about one worktree. The answer belongs under the row it is
+   * about, so a row asked about from its closed state is opened first — the
+   * button is on the closed row too, and an answer nobody can see is a button
+   * that appears to do nothing.
+   */
+  async function inspect(row: WorktreeManagerRow): Promise<void> {
+    if (inspecting !== '') return;
+    if (worktreeManager.selectedPath !== row.path) toggleWorktreeDetail(row.path);
+    inspecting = row.path;
+    try {
+      const answer = await runHelperJobFromTauri('inspect', worktreeInspectFacts(row));
+      inspected = {
+        ...inspected,
+        [row.path]: {
+          text: answer.trim() || 'The helper had nothing to say about this worktree.',
+          failed: false
+        }
+      };
+    } catch (error) {
+      const sentence = error instanceof Error ? error.message : String(error);
+      inspected = {
+        ...inspected,
+        [row.path]: {
+          text:
+            sentence === HELPER_OFF
+              ? 'Helper unavailable — add a key in Settings → Helper'
+              : sentence,
+          failed: true
+        }
+      };
+    } finally {
+      inspecting = '';
+    }
+  }
+
+  async function startFor(row: WorktreeManagerRow, id: WorktreeSessionActionId): Promise<void> {
     startedMessage = '';
     startError = '';
     starting = row.path;
@@ -256,6 +314,9 @@
                     actions={agentActions}
                     {panelBusy}
                     busy={starting === row.path}
+                    inspecting={inspecting === row.path}
+                    inspectMessage={inspected[row.path]?.text ?? ''}
+                    inspectFailed={inspected[row.path]?.failed ?? false}
                     onAction={(id) => act(row, id)}
                     onOpenSession={(id) => void sessionRowJump(id, 'session')}
                   />

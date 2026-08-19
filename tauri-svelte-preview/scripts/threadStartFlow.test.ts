@@ -12,6 +12,7 @@ import {
   titleFromPrompt,
   validateThreadStart
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
+import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
 
 {
   const projects = deriveThreadStartProjects([
@@ -138,6 +139,35 @@ const providerConfigs = [
   assert.deepEqual(effortChoicesFor('codex', []), ['low', 'medium', 'high', 'xhigh', 'max']);
 }
 
+// Antigravity has no separate effort control — its speed tiers are separate
+// models — and one access level that states what it does rather than offering
+// a choice. The draft says so, and sends no approval policy: the adapter has
+// none to set, and a session asked for one refuses the message that asked.
+{
+  const antigravity = groupProviderModels([]).find((group) => group.provider === 'antigravity');
+  const ids = antigravity?.models.map((model) => model.id) ?? [];
+  assert.equal(ids.length, 5);
+  assert.equal(ids[0], 'Gemini 3.7 Flash (High)');
+  assert.ok(ids.includes('Gemini 3.1 Pro (High)'));
+  assert.deepEqual(effortChoicesFor('antigravity', []), []);
+  assert.deepEqual(accessChoicesFor('antigravity', []), ['bypassPermissions']);
+
+  const state = defaultThreadStartState({
+    projectPath: '/Users/me/dev/work/mac-command-bar',
+    cwd: '/Users/me/dev/work/mac-command-bar',
+    branch: 'main',
+    provider: 'antigravity'
+  });
+  assert.equal(state.model, 'Gemini 3.7 Flash (High)');
+  assert.equal(state.effort, '');
+  assert.equal(state.access, 'bypassPermissions');
+
+  const request = buildThreadStartRequest({ ...state, prompt: 'say hi in five words' });
+  assert.equal(request?.model, 'Gemini 3.7 Flash (High)');
+  assert.equal(request?.reasoningEffort, null);
+  assert.equal(request?.approvalPolicy, null);
+}
+
 // Opening a thread is a draft only; the pure default is already usable once a
 // project and an existing checkout are supplied.
 {
@@ -227,6 +257,34 @@ assert.equal(
   'First line that names the work'
 );
 assert.equal(titleFromPrompt('', '/Users/me/app'), 'Build in app');
-assert.equal(titleFromPrompt('x'.repeat(100), '/Users/me/app').length, 72);
+// The backend names the session from the trimmed prompt, so a prompt that
+// opens with a blank line is named after its first real line here too. Reading
+// the untrimmed text found an empty first line and fell back to the project.
+assert.equal(
+  titleFromPrompt('\n\nName the work here\nand then details', '/Users/me/app'),
+  'Name the work here'
+);
+
+// The provisional title has to be the same string the backend writes from the
+// same prompt. The rail saves the row back seconds after the send; a title that
+// differs by so much as a character reads as a rename there, and a renamed
+// session is never given a better name after its first turn.
+{
+  const longPrompt = `${'x'.repeat(100)}\nsecond line`;
+  const request = buildThreadStartRequest({
+    prompt: longPrompt,
+    provider: 'claude',
+    model: 'claude-opus',
+    effort: 'high',
+    access: 'acceptedits',
+    projectPath: '/Users/me/dev/work/mac-command-bar',
+    cwd: '/Users/me/dev/work/worktrees/mac-command-bar/tsk-808-rail',
+    branch: 'tsk-808-rail',
+    createNewWorktree: false
+  });
+  assert.equal(request?.title, sessionTitleFromPrompt(longPrompt));
+  assert.equal(request?.title.length, 64);
+  assert.equal(titleFromPrompt(longPrompt, '/Users/me/app'), sessionTitleFromPrompt(longPrompt));
+}
 
 console.log('threadStartFlow.test.ts passed');

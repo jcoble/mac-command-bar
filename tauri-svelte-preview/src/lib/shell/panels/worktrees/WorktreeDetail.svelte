@@ -9,11 +9,15 @@
    *
    * This used to end in three commands printed for the reader to copy into a
    * terminal themselves, because nothing in the app could be trusted to look
-   * before it deleted. The same three commands are still what happens — they
-   * are just carried now by a session that reads the folder first, says what it
-   * found, warns about anything that would be lost, and only then acts. The
-   * session shows up in the sessions list like any other, so the work is watched
-   * rather than taken on trust.
+   * before it deleted. The two removals are still those commands — they are just
+   * carried now by a session that reads the folder first, says what it found,
+   * warns about anything that would be lost, and only then acts. The session
+   * shows up in the sessions list like any other, so the work is watched rather
+   * than taken on trust.
+   *
+   * Inspect starts nothing. The panel asks the app's small helper model about
+   * the facts above and hands the answer back here, which is why it is the one
+   * action with something to show under the buttons.
    *
    * What is on screen at rest is the short answer: the labelled facts, the one
    * sentence saying what this worktree needs, and the three things that can be
@@ -44,11 +48,27 @@
     busy: boolean;
     /** Something is happening somewhere in the panel; every button waits. */
     panelBusy: boolean;
+    /** The helper is being asked about this worktree right now. */
+    inspecting: boolean;
+    /** What the helper said about this worktree, or '' before it was asked. */
+    inspectMessage: string;
+    /** The message is why the helper could not answer, not an answer. */
+    inspectFailed: boolean;
     onAction(id: WorktreeAgentActionId): void;
     /** Focus a session that worked here. Left out, the sessions are plain text. */
     onOpenSession?: (ownedId: string) => void;
   }
-  let { row, actions, busy, panelBusy, onAction, onOpenSession }: Props = $props();
+  let {
+    row,
+    actions,
+    busy,
+    panelBusy,
+    inspecting,
+    inspectMessage,
+    inspectFailed,
+    onAction,
+    onOpenSession
+  }: Props = $props();
 
   const LANE_TONE: Record<string, 'bad' | 'attention' | 'live' | 'neutral' | 'good'> = {
     blocked: 'bad',
@@ -164,9 +184,10 @@
             </ul>
           {/if}
           <p class="m-0 text-(length:--text-quiet) leading-normal text-muted-foreground">
-            Each of the buttons below starts a session in this folder. It reads the
-            worktree, explains what it found, warns about anything that would be lost,
-            and only then does what you asked.
+            Inspect answers below from what this panel already knows. The other two
+            start a session in this folder: it reads the worktree, explains what it
+            found, warns about anything that would be lost, and only then does what
+            you asked.
           </p>
         </div>
       {/if}
@@ -203,10 +224,11 @@
     </div>
   {/if}
 
-  <!-- The three things that can be done about this worktree. Each starts a
-       session that looks first and says what it found before it acts.
-       Looking is the one that is safe, so it is the only filled button; the two
-       that can lose work are offered as words and ask a question first. -->
+  <!-- The three things that can be done about this worktree. The two removals
+       start a session that looks first and says what it found before it acts;
+       Inspect asks the helper and answers underneath. Inspect is the one that
+       cannot lose anything, so it is the only filled button; the two that can
+       are offered as words and ask a question first. -->
   <div class="flex flex-col gap-2">
     <h4 class={SECTION_LABEL}>What to do about it</h4>
     <div class="flex flex-wrap items-center gap-1">
@@ -218,7 +240,7 @@
             'rounded-full text-(length:--text-quiet)',
             action.destructive ? 'px-3 text-muted-foreground hover:text-foreground' : 'px-4'
           )}
-          disabled={!action.enabled || panelBusy}
+          disabled={!action.enabled || panelBusy || (action.id === 'inspect' && inspecting)}
           onclick={() => onAction(action.id)}
         >
           <Icon aria-hidden="true" />
@@ -234,6 +256,20 @@
     {#if busy}
       <p class="m-0 text-(length:--text-quiet) leading-normal text-muted-foreground">
         Starting a session…
+      </p>
+    {/if}
+
+    <!-- What the helper said, kept under the row it is about. -->
+    {#if inspecting}
+      <p class="m-0 text-(length:--text-quiet) leading-normal text-muted-foreground">Inspecting…</p>
+    {:else if inspectMessage}
+      <p
+        class={cn(
+          'm-0 text-(length:--text-body) leading-normal break-words',
+          inspectFailed ? 'text-[var(--color-bad)]' : 'text-foreground'
+        )}
+      >
+        {inspectMessage}
       </p>
     {/if}
   </div>
