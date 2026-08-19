@@ -29,6 +29,7 @@
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
+  import * as Card from '$lib/components/ui/card/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
@@ -66,6 +67,13 @@
     ownedId: string | null;
   }
   let { visible }: Props = $props();
+
+  /**
+   * The same card look the Context tab uses, so the two tabs of the right
+   * column read as one place: a sheet lifted off the panel's surface by a
+   * little light rather than by an outline.
+   */
+  const cardClass = 'gap-2 bg-foreground/8 ring-0';
 
   /** The dialog, referred to by the one method this panel calls on it. */
   let dialog = $state<{
@@ -196,10 +204,6 @@
       >
         <RefreshCw />
       </IconButton>
-      <Button size="xs" class="text-[13px]" onclick={() => dialog?.openFor(null, folder)}>
-        <Plus class="size-3.5" aria-hidden="true" />
-        Add action
-      </Button>
     {/snippet}
   </PanelHeader>
 
@@ -244,42 +248,64 @@
         {/snippet}
       </EmptyState>
     {:else}
-      <ul class="flex flex-col gap-0.5 p-2">
-        {#each rows as row (row.definition.id)}
-          <li>
-            <RunActionRow
-              {row}
-              busy={isStackBusy(row.definition.id)}
-              onRun={() => void run(row.definition)}
-              onStop={() => void stopStack(row.definition.id)}
-              onEdit={() => dialog?.openFor(row.definition)}
-              onRemove={() => (removing = row.definition)}
-              onOpenPreview={() =>
-                void openUrlInBrowser({ url: (row.definition.previewUrl ?? '').trim() })}
-            />
-          </li>
-        {/each}
-      </ul>
-    {/if}
+      <div class="flex flex-col gap-2 p-3">
+        <Card.Root size="sm" class={cardClass}>
+          <Card.Header hasAction class="items-center">
+            <Card.Title class="text-[13px] leading-tight font-semibold">Actions</Card.Title>
+            <Card.Action>
+              <Button
+                variant="ghost"
+                size="xs"
+                class="text-[13px]"
+                onclick={() => dialog?.openFor(null, folder)}
+              >
+                <Plus class="size-3.5" aria-hidden="true" />
+                Add action
+              </Button>
+            </Card.Action>
+          </Card.Header>
+          <Card.Content class="px-1">
+            <ul class="m-0 flex list-none flex-col gap-0.5 p-0">
+              {#each rows as row (row.definition.id)}
+                <li>
+                  <RunActionRow
+                    {row}
+                    busy={isStackBusy(row.definition.id)}
+                    onRun={() => void run(row.definition)}
+                    onStop={() => void stopStack(row.definition.id)}
+                    onEdit={() => dialog?.openFor(row.definition)}
+                    onRemove={() => (removing = row.definition)}
+                    onOpenPreview={() =>
+                      void openUrlInBrowser({ url: (row.definition.previewUrl ?? '').trim() })}
+                  />
+                </li>
+              {/each}
+            </ul>
+          </Card.Content>
+        </Card.Root>
 
-    {#if running.length > 0}
-      <section class="flex flex-col gap-2 border-t p-2">
-        <h3 class="px-1 text-xs leading-tight font-medium tracking-wide text-muted-foreground uppercase">
-          Running
-        </h3>
-        {#each running as row (row.definition.id)}
-          <RunningProcessRow
-            {row}
-            tail={row.ownedId ? (tails[row.ownedId] ?? []) : []}
-            busy={isStackBusy(row.definition.id)}
-            onStop={() => void stopStack(row.definition.id)}
-            onRestart={() => void restart(row)}
-            onOpenSession={() => {
-              if (row.ownedId) void selectStackSession(row.ownedId);
-            }}
-          />
-        {/each}
-      </section>
+        {#if running.length > 0}
+          <Card.Root size="sm" class={cardClass}>
+            <Card.Header>
+              <Card.Title class="text-[13px] leading-tight font-semibold">Running</Card.Title>
+            </Card.Header>
+            <Card.Content class="flex flex-col gap-2">
+              {#each running as row (row.definition.id)}
+                <RunningProcessRow
+                  {row}
+                  tail={row.ownedId ? (tails[row.ownedId] ?? []) : []}
+                  busy={isStackBusy(row.definition.id)}
+                  onStop={() => void stopStack(row.definition.id)}
+                  onRestart={() => void restart(row)}
+                  onOpenSession={() => {
+                    if (row.ownedId) void selectStackSession(row.ownedId);
+                  }}
+                />
+              {/each}
+            </Card.Content>
+          </Card.Root>
+        {/if}
+      </div>
     {/if}
   </ScrollArea>
 </div>

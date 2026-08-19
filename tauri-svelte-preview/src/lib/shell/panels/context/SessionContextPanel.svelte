@@ -24,12 +24,12 @@
 <script lang="ts">
   import { FileText, Gauge, Paperclip, SlidersHorizontal } from '@lucide/svelte';
 
+  import * as Card from '$lib/components/ui/card/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
-  import { Separator } from '$lib/components/ui/separator/index.js';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { openFileInEditor } from '$lib/shell/workbenchNavigation';
   import { listAgentConversationEventsFromTauri } from '$lib/tauriSource';
@@ -52,6 +52,14 @@
   }
 
   let { visible, root, ownedId }: Props = $props();
+
+  /**
+   * One look for all four cards: a sheet lifted off the panel's own surface by
+   * a little light rather than by an outline, the way the shell's menus and
+   * popovers are, and a tighter gap between the heading and the rows than a
+   * full-page card wants.
+   */
+  const cardClass = 'gap-2 bg-foreground/8 ring-0';
 
   const session = $derived(ownedId ? getConversationSession(ownedId) : null);
   const facts = $derived(
@@ -119,137 +127,154 @@
     </EmptyState>
   {:else}
     <ScrollArea class="min-h-0 flex-1">
-      <div class="flex flex-col gap-4 px-3 py-3">
+      <div class="flex flex-col gap-2 px-3 py-3">
         <!-- Session -->
         <section aria-labelledby="session-context-facts">
-          {@render sectionHeading('session-context-facts', 'Session', SlidersHorizontal)}
-          <dl class="mt-2 flex flex-col rounded-xl ring-1 ring-foreground/10">
-            {#each facts as item (item.label)}
-              <div
-                class="flex min-h-7 items-center gap-3 border-b px-3 py-1.5 last:border-b-0"
-              >
-                <dt class="w-24 shrink-0 text-sm text-muted-foreground">{item.label}</dt>
-                <dd
-                  class="min-w-0 flex-1 truncate text-right text-[13px] leading-tight"
-                  class:text-muted-foreground={item.missing}
-                >
-                  {item.missing ? 'not reported' : item.value}
-                </dd>
-              </div>
-            {/each}
-          </dl>
+          <Card.Root size="sm" class={cardClass}>
+            <Card.Header>
+              {@render sectionHeading('session-context-facts', 'Session', SlidersHorizontal)}
+            </Card.Header>
+            <Card.Content>
+              <dl class="flex flex-col">
+                {#each facts as item (item.label)}
+                  <div class="flex min-h-7 items-center gap-3 border-b py-1.5 last:border-b-0">
+                    <dt class="w-24 shrink-0 text-sm text-muted-foreground">{item.label}</dt>
+                    <dd
+                      class="min-w-0 flex-1 truncate text-right text-[13px] leading-tight"
+                      class:text-muted-foreground={item.missing}
+                    >
+                      {item.missing ? 'not reported' : item.value}
+                    </dd>
+                  </div>
+                {/each}
+              </dl>
+            </Card.Content>
+          </Card.Root>
         </section>
-
-        <Separator />
 
         <!-- Context usage -->
         <section aria-labelledby="session-context-usage">
-          {@render sectionHeading('session-context-usage', 'Context usage', Gauge)}
-          <div class="mt-2 flex flex-col gap-2 rounded-xl px-3 py-2.5 ring-1 ring-foreground/10">
-            <div class="flex items-baseline gap-2">
-              <span class="text-[13px] leading-tight">
-                {usage.usedTokens === null
-                  ? 'Tokens used not reported'
-                  : `${formatTokenCount(usage.usedTokens)} tokens used`}
-              </span>
-              <span class="min-w-0 flex-1 truncate text-right text-sm text-muted-foreground">
-                {usage.contextWindow === null
-                  ? 'window size not reported'
-                  : `of ${formatTokenCount(usage.contextWindow)}`}
-              </span>
-            </div>
-
-            {#if usage.percentUsed !== null}
-              <div class="flex items-center gap-2">
-                <div
-                  class="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-secondary"
-                  role="img"
-                  aria-label={`${usage.percentUsed} percent of the context window used`}
-                >
-                  <div class="h-full rounded-full bg-primary" style:width={`${usage.percentUsed}%`}></div>
-                </div>
-                <span class="shrink-0 text-sm text-muted-foreground">{usage.percentUsed}%</span>
+          <Card.Root size="sm" class={cardClass}>
+            <Card.Header>
+              {@render sectionHeading('session-context-usage', 'Context usage', Gauge)}
+            </Card.Header>
+            <Card.Content class="flex flex-col gap-2">
+              <div class="flex items-baseline gap-2">
+                <span class="text-[13px] leading-tight">
+                  {usage.usedTokens === null
+                    ? 'Tokens used not reported'
+                    : `${formatTokenCount(usage.usedTokens)} tokens used`}
+                </span>
+                <span class="min-w-0 flex-1 truncate text-right text-sm text-muted-foreground">
+                  {usage.contextWindow === null
+                    ? 'window size not reported'
+                    : `of ${formatTokenCount(usage.contextWindow)}`}
+                </span>
               </div>
-            {/if}
 
-            <div class="flex items-center gap-2 text-sm text-muted-foreground">
-              <span class="min-w-0 flex-1 truncate">
-                In: {usage.inputTokens === null
-                  ? 'not reported'
-                  : formatTokenCount(usage.inputTokens)}
-              </span>
-              <span class="min-w-0 flex-1 truncate text-right">
-                Out: {usage.outputTokens === null
-                  ? 'not reported'
-                  : formatTokenCount(usage.outputTokens)}
-              </span>
-            </div>
-          </div>
+              {#if usage.percentUsed !== null}
+                <div class="flex items-center gap-2">
+                  <div
+                    class="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-secondary"
+                    role="img"
+                    aria-label={`${usage.percentUsed} percent of the context window used`}
+                  >
+                    <div
+                      class="h-full rounded-full bg-primary"
+                      style:width={`${usage.percentUsed}%`}
+                    ></div>
+                  </div>
+                  <span class="shrink-0 text-sm text-muted-foreground">{usage.percentUsed}%</span>
+                </div>
+              {/if}
+
+              <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                <span class="min-w-0 flex-1 truncate">
+                  In: {usage.inputTokens === null
+                    ? 'not reported'
+                    : formatTokenCount(usage.inputTokens)}
+                </span>
+                <span class="min-w-0 flex-1 truncate text-right">
+                  Out: {usage.outputTokens === null
+                    ? 'not reported'
+                    : formatTokenCount(usage.outputTokens)}
+                </span>
+              </div>
+            </Card.Content>
+          </Card.Root>
         </section>
-
-        <Separator />
 
         <!-- Files touched -->
         <section aria-labelledby="session-context-files">
-          {@render sectionHeading(
-            'session-context-files',
-            'Files touched',
-            FileText,
-            filesTouched.length
-          )}
-          {#if filesTouched.length === 0}
-            <EmptyState
-              class="py-6"
-              title={filesLoaded ? 'No files yet' : 'Reading this session'}
-              body={filesLoaded
-                ? 'Files this session reads or edits are listed here, most recent first.'
-                : 'Working out which files this session has touched.'}
-            />
-          {:else}
-            <div class="mt-1 flex flex-col">
-              {#each filesTouched as touch (touch.path)}
-                <ListRow onclick={() => openTouchedFile(touch)}>
-                  <span class="min-w-0 flex-1 truncate">{fileNameOf(touch.path)}</span>
-                  {#if folderOf(touch.path)}
-                    <span class="min-w-0 max-w-[45%] truncate text-sm text-muted-foreground">
-                      {folderOf(touch.path)}
-                    </span>
-                  {/if}
-                  {#if touch.count > 1}
-                    <Chip tone="count">{touch.count}</Chip>
-                  {/if}
-                </ListRow>
-              {/each}
-            </div>
-          {/if}
+          <Card.Root size="sm" class={cardClass}>
+            <Card.Header>
+              {@render sectionHeading(
+                'session-context-files',
+                'Files touched',
+                FileText,
+                filesTouched.length
+              )}
+            </Card.Header>
+            <Card.Content class="px-1">
+              {#if filesTouched.length === 0}
+                <EmptyState
+                  class="px-2 py-2"
+                  title={filesLoaded ? 'No files yet' : 'Reading this session'}
+                  body={filesLoaded
+                    ? 'Files this session reads or edits are listed here, most recent first.'
+                    : 'Working out which files this session has touched.'}
+                />
+              {:else}
+                <div class="flex flex-col">
+                  {#each filesTouched as touch (touch.path)}
+                    <ListRow onclick={() => openTouchedFile(touch)}>
+                      <span class="min-w-0 flex-1 truncate">{fileNameOf(touch.path)}</span>
+                      {#if folderOf(touch.path)}
+                        <span class="min-w-0 max-w-[45%] truncate text-sm text-muted-foreground">
+                          {folderOf(touch.path)}
+                        </span>
+                      {/if}
+                      {#if touch.count > 1}
+                        <Chip tone="count">{touch.count}</Chip>
+                      {/if}
+                    </ListRow>
+                  {/each}
+                </div>
+              {/if}
+            </Card.Content>
+          </Card.Root>
         </section>
-
-        <Separator />
 
         <!-- Attachments -->
         <section aria-labelledby="session-context-attachments">
-          {@render sectionHeading(
-            'session-context-attachments',
-            'Attachments',
-            Paperclip,
-            attachments.length
-          )}
-          {#if attachments.length === 0}
-            <EmptyState
-              class="py-6"
-              title="Nothing attached"
-              body="Files and images added to this session's message box are listed here."
-            />
-          {:else}
-            <div class="mt-1 flex flex-col">
-              {#each attachments as attachment (attachment.id)}
-                <ListRow>
-                  <span class="min-w-0 flex-1 truncate">{attachment.name}</span>
-                  <Chip tone="neutral">{attachment.mimeType || 'type not reported'}</Chip>
-                </ListRow>
-              {/each}
-            </div>
-          {/if}
+          <Card.Root size="sm" class={cardClass}>
+            <Card.Header>
+              {@render sectionHeading(
+                'session-context-attachments',
+                'Attachments',
+                Paperclip,
+                attachments.length
+              )}
+            </Card.Header>
+            <Card.Content class="px-1">
+              {#if attachments.length === 0}
+                <EmptyState
+                  class="px-2 py-2"
+                  title="Nothing attached"
+                  body="Files and images added to this session's message box are listed here."
+                />
+              {:else}
+                <div class="flex flex-col">
+                  {#each attachments as attachment (attachment.id)}
+                    <ListRow>
+                      <span class="min-w-0 flex-1 truncate">{attachment.name}</span>
+                      <Chip tone="neutral">{attachment.mimeType || 'type not reported'}</Chip>
+                    </ListRow>
+                  {/each}
+                </div>
+              {/if}
+            </Card.Content>
+          </Card.Root>
         </section>
       </div>
     </ScrollArea>
@@ -264,7 +289,7 @@
 )}
   <div class="flex items-center gap-2">
     <span class="heading-icon flex text-muted-foreground" aria-hidden="true"><Icon /></span>
-    <h3 {id} class="min-w-0 flex-1 truncate text-sm font-medium tracking-wide text-muted-foreground">
+    <h3 {id} class="min-w-0 flex-1 truncate text-[13px] leading-tight font-semibold text-foreground">
       {label}
     </h3>
     {#if count !== null && count > 0}
