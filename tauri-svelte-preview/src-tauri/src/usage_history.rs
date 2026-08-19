@@ -112,6 +112,11 @@ pub async fn refresh_usage_history(app: AppHandle) -> Result<usize, String> {
 /// The vendor is the provider ("openai", "anthropic"), the job is the source
 /// key, and the identifier is fresh every time so nothing is ever collapsed
 /// into an earlier row.
+///
+/// The daily rollup table is left alone. Nothing reads it — every usage query
+/// aggregates `usage_events` directly — and the indexer rebuilds it wholesale
+/// on its next pass, so rebuilding it here would only put a full-table
+/// aggregate in front of every title the app writes.
 pub fn record_helper_call(
     app: &AppHandle,
     job: &str,
@@ -141,9 +146,7 @@ pub fn record_helper_call(
         source_event_id: uuid::Uuid::new_v4().to_string(),
         source_key: format!("helper/{job}"),
     };
-    let db = UsageDb::open(usage_db_path(app)?)?;
-    db.insert_events_with_cursor_deferred_rollup(&[event], None)?;
-    db.rebuild_daily_rollups()
+    UsageDb::open(usage_db_path(app)?)?.insert_events_with_cursor_deferred_rollup(&[event], None)
 }
 
 fn now_micros() -> i64 {

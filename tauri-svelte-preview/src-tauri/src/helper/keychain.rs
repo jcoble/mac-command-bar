@@ -49,10 +49,12 @@ pub fn read_key(account: &str) -> Result<Option<String>, HelperError> {
 /// Stores the key, replacing whatever was there for this vendor.
 ///
 /// The key goes on `security`'s command line because `add-generic-password`
-/// takes it no other way — its only alternative is an interactive prompt. It is
-/// therefore visible to a process list for as long as the call takes. That is
-/// the same exposure as typing it into any command, and the alternative,
-/// writing it to a file first, is worse.
+/// takes it no other way: the only alternative, leaving `-w` bare at the end,
+/// reads the terminal rather than standard input whenever there is one, so an
+/// app with no terminal cannot use it. The key is therefore visible to a
+/// process list for as long as the call takes. That is the same exposure as
+/// typing it into any command, and the alternative, writing it to a file
+/// first, is worse.
 pub fn write_key(account: &str, key: &str) -> Result<(), HelperError> {
     let output = Command::new("/usr/bin/security")
         .args([

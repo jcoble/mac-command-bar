@@ -54,11 +54,15 @@ impl HelperJob {
         }
     }
 
-    /// The ceiling on the answer. A title is a few words; an inspection answer
-    /// is a short paragraph.
+    /// The ceiling on the answer. Far above what a title needs, because on one
+    /// of the two services this number covers the model's own reasoning as
+    /// well as the words it writes: a ceiling set to the length of a title
+    /// leaves a reasoning model no room to reach one, and it stops with
+    /// nothing written. The system prompt is what keeps a title short; this
+    /// only stops a runaway.
     fn max_output(self) -> u32 {
         match self {
-            Self::Title => 32,
+            Self::Title => 256,
             Self::Inspect => 200,
         }
     }
@@ -258,23 +262,28 @@ impl HttpTransport {
     }
 }
 
+/// A failed call is a timeout when the clock ran out, and a transport error
+/// otherwise. Only the second is worth trying again.
+fn transport_error(error: reqwest::Error) -> HelperError {
+    if error.is_timeout() {
+        HelperError::Timeout
+    } else {
+        HelperError::Transport(error.to_string())
+    }
+}
+
 impl HelperTransport for HttpTransport {
     fn send(&self, request: &HelperHttpRequest) -> Result<HelperHttpResponse, HelperError> {
         let mut call = self.client.post(request.url).json(&request.body);
         for (name, value) in &request.headers {
             call = call.header(name.as_str(), value.as_str());
         }
-        let response = call.send().map_err(|error| {
-            if error.is_timeout() {
-                HelperError::Timeout
-            } else {
-                HelperError::Transport(error.to_string())
-            }
-        })?;
+        let response = call.send().map_err(transport_error)?;
         let status = response.status().as_u16();
-        let body = response
-            .text()
-            .map_err(|error| HelperError::Transport(error.to_string()))?;
+        // Reading the body is subject to the same clock as sending, so it maps
+        // the same way. Calling a timeout here a transport error would have it
+        // retried, which is exactly what the ceiling exists to prevent.
+        let body = response.text().map_err(transport_error)?;
         Ok(HelperHttpResponse { status, body })
     }
 }

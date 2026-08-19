@@ -437,8 +437,16 @@
     ).map((id) => ({ value: id, label: id }))
   );
 
+  // Every one of these talks to the app, and the app answers a refusal as a
+  // whole sentence. Letting one reject would leave the status line blank over
+  // a screen that has already moved on, so each says what happened, and the
+  // ones that changed the screen first put it back.
   async function loadHelper(): Promise<void> {
-    helper = await readHelperSettingsFromTauri();
+    try {
+      helper = await readHelperSettingsFromTauri();
+    } catch (error) {
+      helperNote = String(error);
+    }
   }
 
   /**
@@ -447,27 +455,47 @@
    */
   async function chooseHelperVendor(value: string): Promise<void> {
     if (!helper) return;
+    const before = helper;
     const vendor = value as HelperVendor;
     const models = vendor === 'anthropic' ? helper.anthropicModels : helper.openaiModels;
     const model = models[0] ?? helper.model;
     helper = { ...helper, vendor, model };
     helperNote = null;
     helperKey = '';
-    await writeHelperSettingsFromTauri({ vendor, model });
+    try {
+      await writeHelperSettingsFromTauri({ vendor, model });
+    } catch (error) {
+      helper = before;
+      helperNote = String(error);
+      return;
+    }
     await loadHelper();
   }
 
   async function chooseHelperModel(model: string): Promise<void> {
     if (!helper) return;
+    const before = helper;
     helper = { ...helper, model };
-    await writeHelperSettingsFromTauri({ vendor: helper.vendor, model });
+    try {
+      await writeHelperSettingsFromTauri({ vendor: helper.vendor, model });
+    } catch (error) {
+      helper = before;
+      helperNote = String(error);
+    }
   }
 
   /** Saving hands the key to the Keychain and forgets it here. */
   async function saveHelperKey(): Promise<void> {
     if (!helper) return;
     const removing = helperKey.trim().length === 0;
-    await setHelperKeyFromTauri(helper.vendor, helperKey);
+    try {
+      await setHelperKeyFromTauri(helper.vendor, helperKey);
+    } catch (error) {
+      // What was typed stays in the field. Whatever went wrong, retyping a key
+      // is the last thing anyone wants to be asked to do.
+      helperNote = String(error);
+      return;
+    }
     helperKey = '';
     helperNote = removing ? 'Key removed.' : 'Key saved to your Keychain.';
     await loadHelper();
@@ -476,9 +504,15 @@
   async function testHelper(): Promise<void> {
     helperTesting = true;
     helperNote = 'Asking…';
-    const result = await testHelperFromTauri();
-    helperTesting = false;
-    helperNote = result?.message ?? 'The helper model only works in the desktop app.';
+    try {
+      const result = await testHelperFromTauri();
+      helperNote = result?.message ?? 'The helper model only works in the desktop app.';
+    } catch (error) {
+      helperNote = String(error);
+    } finally {
+      // In a `finally` so a refused test does not leave the button dead.
+      helperTesting = false;
+    }
   }
 
   /** The label to show on a closed dropdown, given what is selected. */
