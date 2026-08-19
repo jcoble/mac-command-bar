@@ -42,18 +42,32 @@ only for a group heading in small caps.
 - Radii come from the shell's three-step scale: 8px (`rounded-md`), 12px
   (`rounded-lg`, the default for controls), 16px (`rounded-xl`, for panels and
   the message box). Pills use `rounded-full`.
-- Spacing is 4 / 8 / 12 / 16. Inside a control, 8px; between rows, 12px;
-  between cards or sections, 16 to 20px.
-- Depth is layering, not outlines: a raised surface plus `shadow-sm`, and
-  hairlines at low alpha. Do not add a bright border to signal state.
+- Spacing comes from six steps, named in `nextTokens.css`: `--space-1` 4px,
+  `--space-2` 8px, `--space-3` 12px, `--space-4` 16px, `--space-5` 24px,
+  `--space-6` 32px. Inside a control, 8px; between rows, 12px; between cards,
+  16px; around a whole section, 24 to 32px.
+- Text sizes for anything a person reads come from three names:
+  `--text-heading` (16px, weight `--text-heading-weight`) for the line that
+  names a card or section, `--text-body` (14px) for body copy, `--text-quiet`
+  (13px) for the metadata beside it. 11 and 12px are for small-caps group
+  labels only.
+- Depth is layering, not outlines: a raised surface plus `shadow-sm`. **A card
+  carries no outline at all** — no ring, no border. It is told apart from the
+  page by its own fill, the way it is on Spotify and in Material 3. Hairlines
+  are for sheets that float over the page (menus, dialogs, tooltips) and for
+  dividing rows inside a surface. Do not add a border to signal state.
 
 ## Every interactive control owes four things
 
 1. **A hit target of at least 24px**, 28px preferred. `Button size="xs"` is 24,
    `sm` is 28, the default is 32. A small target may grow its hit area with an
    invisible `after:absolute after:-inset-2` rather than growing visually.
-2. **A visible focus ring**: `focus-visible:ring-ring/50 focus-visible:ring-3`.
-   Never `outline: none` without one.
+2. **A visible focus state.** A button, a row or a menu item takes the ring:
+   `focus-visible:ring-ring/50 focus-visible:ring-3`. A field — anything a
+   person types into — takes its own edge instead:
+   `focus-visible:border-(color:--focus-border)`, which turns the border mint
+   without drawing a halo around the control. Never `outline: none` without
+   one of the two.
 3. **A hover state** — `hover:bg-accent/60 hover:text-foreground` for quiet
    controls; a filled control brightens instead.
 4. **A disabled state**: `disabled:opacity-50 disabled:pointer-events-none`,

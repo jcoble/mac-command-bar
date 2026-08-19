@@ -120,9 +120,9 @@
 <Card.Root
   size="sm"
   class={cn(
-    'relative shrink-0 rounded-md ring-[var(--color-border)] transition-colors [--card-spacing:0px]',
+    'relative shrink-0 rounded-md transition-colors [--card-spacing:0px]',
     'hover:bg-[var(--color-elevated)]',
-    active && 'bg-[var(--color-elevated)] ring-primary/45'
+    active && 'bg-[var(--color-elevated)]'
   )}
 >
   {#if active}

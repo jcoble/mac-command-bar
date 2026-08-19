@@ -73,7 +73,7 @@
    * column read as one place: a sheet lifted off the panel's surface by a
    * little light rather than by an outline.
    */
-  const cardClass = 'gap-2 bg-foreground/8 ring-0';
+  const cardClass = 'gap-2 bg-foreground/8';
 
   /** The dialog, referred to by the one method this panel calls on it. */
   let dialog = $state<{
