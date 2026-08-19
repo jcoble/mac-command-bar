@@ -274,3 +274,20 @@ assert.equal(
 );
 
 console.log('conversationTimeline.test.ts passed');
+
+// A sub-agent's progress report is a fact about the agent tree, not a row of
+// the transcript. Each one used to fall through as an empty "unknown" card and
+// draw a bare left border, so a turn that ran sub-agents opened onto a column
+// of blank bars.
+const childProgress = displayItemsFromConversationEvents([
+  event(1, { kind: 'assistantDelta', itemId: 'msg-1', delta: 'Splitting the work.' }),
+  event(2, { kind: 'childUpdate', childId: 'child-a', parentToolCallId: 'tool-1', label: 'rust_acp_lifecycle', state: 'running', latestActivity: 'Running' }),
+  event(3, { kind: 'childUpdate', childId: 'child-b', parentToolCallId: 'tool-1', label: 'svelte_message_flow', state: 'running', latestActivity: 'Running' }),
+  event(4, { kind: 'assistantDelta', itemId: 'msg-2', delta: 'Both are back.' })
+]);
+assert.deepEqual(childProgress.map((item) => item.kind), ['assistant', 'assistant'], 'child updates draw no row of their own');
+assert.equal(
+  conversationItemHasVisibleContent({ kind: 'unknown', itemId: 'empty-unknown', text: '', timestampMs: 5 }),
+  false,
+  'an unknown item with nothing to say draws nothing'
+);

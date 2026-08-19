@@ -780,6 +780,9 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
   const payloadKind = normalizedPayloadKind(payload);
   if (payloadKind === 'permissionRequest' || payloadKind === 'approval') return null;
   if (payloadKind === 'connection' || payloadKind === 'turn' || payloadKind === 'usage') return null;
+  // A sub-agent's progress belongs to the agent tree, which reads it from the
+  // session's children. As a transcript row it had nothing to show.
+  if (payloadKind === 'childUpdate') return null;
   if (payloadKind === 'plan') return planItemFromPayload(event, payload);
   if (payloadKind === 'toolCall' || payloadKind === 'toolCallUpdate' || payloadKind === 'tool') {
     return toolItemFromPayload(event, payload, payloadKind);
