@@ -46,6 +46,9 @@
     /** Clears the send failure. Given only where the failure is per-session
      * state that can be cleared; the draft composer has none. */
     onDismissSendError?(): void;
+    /** What this session's provider will not do. Said once, then dismissed. */
+    providerNotice?: string;
+    onDismissProviderNotice?(): void;
     pendingApproval?: AgentPermissionRequest | null;
     pendingApprovalCount?: number;
     pendingInputs?: readonly AgentUserInputRequest[];
@@ -85,6 +88,8 @@
     onDismissAttachmentError,
     sendError = '',
     onDismissSendError,
+    providerNotice = '',
+    onDismissProviderNotice,
     pendingApproval = null,
     pendingApprovalCount = 1,
     pendingInputs = [],
@@ -203,6 +208,7 @@
     if (sendError) items.push({ id: 'send-error', variant: 'error', title: 'Message not sent', description: sendError, dismissLabel: 'Dismiss send failure', onDismiss: onDismissSendError });
     if (attachmentError) items.push({ id: 'attachment-error', variant: 'error', title: 'Attachment unavailable', description: attachmentError, dismissLabel: 'Dismiss attachment failure', onDismiss: onDismissAttachmentError });
     if (configError) items.push({ id: 'config-error', variant: 'warning', title: 'Settings unavailable', description: configError });
+    if (providerNotice) items.push({ id: 'provider-notice', variant: 'info', title: providerNotice, dismissLabel: 'Dismiss provider notice', onDismiss: onDismissProviderNotice });
     return items;
   });
 

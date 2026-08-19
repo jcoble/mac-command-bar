@@ -9,6 +9,7 @@ import {
   setConversationDraft,
   setConversationConnection,
   setConversationAttachments,
+  setConversationProviderNotice,
   recordSentConversationAttachments,
   restoreSentConversationAttachments,
   setConversationSending,
@@ -641,9 +642,10 @@ export async function sendStructuredMessage(
         generation: state.generation
       })
     ) {
-      const provider: AgentConversationProvider | null = owned.agent === 'codex' || owned.agent === 'claude'
-        ? owned.agent
-        : null;
+      const provider: AgentConversationProvider | null =
+        owned.agent === 'codex' || owned.agent === 'claude' || owned.agent === 'antigravity'
+          ? owned.agent
+          : null;
       if (!provider) throw new Error('This stopped session cannot be revived as a conversation');
 
       const previousGeneration = state.generation;
@@ -695,6 +697,19 @@ export async function sendStructuredMessage(
       return;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
+    // Antigravity's adapter reads only the words of a prompt, so a screenshot
+    // sent with one arrives as nothing at all. The message still goes; the
+    // notice beside the box says what was left behind.
+    if (state.provider === 'antigravity' && state.attachments.length > 0) {
+      state.attachments.forEach(cleanupConversationAttachmentPreview);
+      setConversationAttachments(ownedId, []);
+      setConversationProviderNotice(ownedId, 'Antigravity cannot take images yet; they were left out.');
+      // A screenshot on its own leaves nothing to say, so nothing is sent.
+      if (!text.trim()) {
+        setConversationSending(ownedId, false);
+        return;
+      }
+    }
     // An unread or stale capability snapshot is not a refusal. Blocking the
     // send here left a screenshot that could never go out and no way to learn
     // why, so only a connected session's own answer refuses.

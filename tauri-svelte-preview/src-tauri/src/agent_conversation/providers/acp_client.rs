@@ -1458,6 +1458,8 @@ while IFS= read -r line; do
 	  *'"method":"initialize"'*)
 	    if [ "$fixture" = "multiplex" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true,"close":true,"multiSession":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
+	    elif [ "$fixture" = "agy" ]; then
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":{{}}}}}},"agentInfo":{{"name":"agy","version":"0.1.0"}},"authMethods":[],"protocolVersion":1}}}}\n' "$id"
 	    elif [ "${{fixture#suspend_}}" != "$fixture" ] && [ "$fixture" != "suspend_no_resume" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":{{}}}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    else
@@ -1468,6 +1470,8 @@ while IFS= read -r line; do
         session_count=$((session_count + 1))
         session_id="session-$session_count"
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s","availableCommands":[{{"name":"initial-%s"}}]}}}}\n' "$id" "$session_id" "$session_count"
+      elif [ "$fixture" = "agy" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"category":"model","currentValue":"Gemini 3.7 Flash (High)","id":"model","name":"Model","options":[{{"name":"Gemini 3.7 Flash (High)","value":"Gemini 3.7 Flash (High)"}}],"type":"select"}}],"models":{{"availableModels":[{{"modelId":"Gemini 3.7 Flash (High)","name":"Gemini 3.7 Flash (High)"}}],"currentModelId":"Gemini 3.7 Flash (High)"}},"sessionId":"agy-session"}}}}\n' "$id"
       elif [ "$fixture" = "command_capture" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","availableCommands":[{{"name":"initial","description":"Initial command","input":{{"hint":"path"}}}}]}}}}\n' "$id"
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"available_commands_update","availableCommands":[{{"name":"updated","description":"Updated command"}}]}}}}}}\n'

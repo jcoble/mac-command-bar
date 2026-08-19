@@ -5640,6 +5640,26 @@ mod tests {
         ));
     }
 
+    /// Antigravity's adapter fixes its working folder when its process starts
+    /// and never reads the folder named in `session/new`, so every session has
+    /// to keep a process of its own. It advertises no multi-session support,
+    /// and the app pools sessions onto one process only when a provider does.
+    /// Pinning the two together keeps anyone from turning pooling on later
+    /// without also teaching the adapter about per-session folders — every
+    /// pooled session would silently run in the first one's folder.
+    #[tokio::test(flavor = "current_thread")]
+    async fn antigravity_sessions_keep_a_process_each() {
+        let fixture =
+            fixture_manager_with_provider("agy", AgentConversationProvider::Antigravity, None)
+                .await;
+        let capabilities = fixture
+            .manager
+            .capabilities(&fixture.owned_id, fixture.generation)
+            .expect("capabilities");
+        assert!(!provider_is_multi_session_safe(&capabilities));
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn captures_session_commands_and_usage_without_an_active_turn() {
         let fixture = fixture_manager_with_acp_session("command_capture").await;

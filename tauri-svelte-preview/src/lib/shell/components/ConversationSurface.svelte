@@ -17,6 +17,7 @@
     setConversationDraft,
     setConversationSendError,
     setConversationMode,
+    setConversationProviderNotice,
     setConversationScrollTop,
     setConversationSelectedChild
   } from '$lib/shell/conversation/conversationStore.svelte';
@@ -168,6 +169,7 @@
   // every conversation and survived the send that fixed it.
   const attachmentError = $derived(conversation?.attachmentError ?? '');
   const sendError = $derived(conversation?.sendError ?? '');
+  const providerNotice = $derived(conversation?.providerNotice ?? '');
   let capabilityRequest = $state('');
   let configRequest = $state('');
   /** A request key whose failure has already bought its one retry. The guard
@@ -490,8 +492,10 @@
           pendingInputs={pendingInputs}
           {attachmentError}
           {sendError}
+          {providerNotice}
           onDismissAttachmentError={() => setConversationAttachmentError(active.ownedId, '')}
           onDismissSendError={() => setConversationSendError(active.ownedId, '')}
+          onDismissProviderNotice={() => setConversationProviderNotice(active.ownedId, '')}
           onDraftChange={(value) => {
             setConversationDraft(active.ownedId, value);
             persistConversationSessionDraft(active.ownedId, value);

@@ -93,7 +93,20 @@ chmod +x "$CLAUDE_WRAPPER"
 MCB_CLAUDE_AGENT_ACP_PATH="$CLAUDE_WRAPPER"
 MCB_CLAUDE_AGENT_ACP_SHA256="$(sha "$CLAUDE_WRAPPER")"
 
-AGY_ACP_BIN="$SCRIPT_DIR/../artifacts/recon/probe-agy/agy-acp/target/release/agy-acp"
+AGY_ACP_DIR="$SCRIPT_DIR/../tools/agy-acp"
+AGY_ACP_BIN="$AGY_ACP_DIR/target/release/agy-acp"
+CARGO_BIN="$(resolve cargo)"
+# The Antigravity adapter is tracked as source, so a dev launch builds it when
+# the binary is missing or older than any file it is built from. Without this a
+# change to the adapter would run as whatever was compiled last.
+if [ -n "$AGY_CLI_BIN" ] && [ -n "$CARGO_BIN" ]; then
+  if [ ! -x "$AGY_ACP_BIN" ] || [ -n "$(find "$AGY_ACP_DIR/src" -type f -newer "$AGY_ACP_BIN")" ]; then
+    echo "dev-next: building the Antigravity adapter from tools/agy-acp."
+    if ! "$CARGO_BIN" build --release --manifest-path "$AGY_ACP_DIR/Cargo.toml"; then
+      echo "dev-next: the Antigravity adapter did not build; continuing without it." >&2
+    fi
+  fi
+fi
 AGY_ADAPTER_CONFIGURED=0
 if [ -x "$AGY_ACP_BIN" ] && [ -n "$AGY_CLI_BIN" ]; then
   AGY_WRAPPER="$APP_HOME/agy-acp-wrapper.sh"

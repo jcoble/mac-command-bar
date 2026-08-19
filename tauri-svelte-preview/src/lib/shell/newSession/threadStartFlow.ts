@@ -92,7 +92,16 @@ const PROVIDER_LABELS: Record<ThreadStartProvider, string> = {
 const FALLBACK_MODELS: Record<ThreadStartProvider, readonly string[]> = {
   codex: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
   claude: ['default', 'sonnet', 'haiku', 'opus', 'claude-opus-5', 'claude-fable-5'],
-  antigravity: []
+  // Antigravity names a model by the display name its own `models` command
+  // prints, and its speed tiers are separate models rather than an effort
+  // setting. The first is the one it starts on when nothing is chosen.
+  antigravity: [
+    'Gemini 3.7 Flash (High)',
+    'Gemini 3.7 Flash (Medium)',
+    'Gemini 3.7 Flash (Low)',
+    'Gemini 3.1 Pro (High)',
+    'Gemini 3.1 Pro (Low)'
+  ]
 };
 
 const MODEL_HINTS: Record<string, string> = {
@@ -119,13 +128,15 @@ const FALLBACK_EFFORT_CHOICES: Record<ThreadStartProvider, readonly string[]> = 
 const FALLBACK_ACCESS: Record<ThreadStartProvider, string> = {
   codex: 'on-request',
   claude: 'acceptEdits',
-  antigravity: ''
+  // Antigravity has one setting and no way to change it: its adapter cannot
+  // pass a permission question on, so it runs everything without asking.
+  antigravity: 'bypassPermissions'
 };
 
 const FALLBACK_ACCESS_CHOICES: Record<ThreadStartProvider, readonly string[]> = {
   codex: ['untrusted', 'on-request', 'never'],
   claude: ['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions'],
-  antigravity: []
+  antigravity: ['bypassPermissions']
 };
 
 function providerFor(value: string): value is ThreadStartProvider {
@@ -355,7 +366,10 @@ export function buildThreadStartRequest(
     provider: state.provider,
     model: tidy(state.model) || null,
     reasoningEffort: tidy(state.effort) || null,
-    approvalPolicy: tidy(state.access) || null,
+    // Antigravity's access is a statement, not a choice: its adapter offers no
+    // approval control, and a session asked to change one refuses the message
+    // that carried the request.
+    approvalPolicy: state.provider === 'antigravity' ? null : (tidy(state.access) || null),
     projectPath: tidy(state.projectPath),
     cwd: tidy(state.cwd),
     branch: tidy(state.branch),
