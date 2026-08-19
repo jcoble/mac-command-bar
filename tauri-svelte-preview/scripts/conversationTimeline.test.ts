@@ -3,7 +3,9 @@ import {
   conversationTurnGroups,
   displayItemFromAgentItem,
   displayItemsFromConversationEvents,
+  diffLineCounts,
   formatWorkedFor,
+  latestPlan,
   type ConversationDisplayItem,
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
@@ -394,3 +396,80 @@ const blankFenceTool = displayItemFromAgentItem({
   providerMetadata: { title: '```\n\n```' }
 });
 assert.equal(blankFenceTool.summary, '', 'a fence with no content has an empty summary');
+
+// ── The plan chip reads one newest plan (latest_plan_across_turns) ───────
+// The chip above the composer shows the plan the session is working to, so it
+// needs the newest one no matter which turn produced it.
+const planAcrossTurns = typedConversationTimeline([
+  {
+    id: 'plan-first',
+    type: 'plan',
+    turnId: 'turn-1',
+    content: [],
+    providerMetadata: { title: 'Plan', steps: [{ id: 'one', title: 'Read the store', state: 'in_progress' }] }
+  },
+  {
+    id: 'plan-second',
+    type: 'plan',
+    turnId: 'turn-2',
+    content: [],
+    providerMetadata: {
+      title: 'Plan',
+      steps: [
+        { id: 'one', title: 'Read the store', state: 'completed' },
+        { id: 'two', title: 'Write the page', state: 'in_progress' }
+      ]
+    }
+  }
+]);
+assert.equal(latestPlan(planAcrossTurns)?.itemId, 'plan-second', 'the newest plan wins across turns');
+assert.equal(latestPlan(planAcrossTurns)?.steps.length, 2);
+assert.equal(latestPlan([]), null, 'a transcript with no plan has no plan');
+
+// ── Repeated plan updates draw one line (duplicate_plan_updates_collapse) ─
+// A plan update arrives without an id of its own, so every one of them lands
+// on a row of its own and an unchanged plan printed itself twice. Two updates
+// carrying the same steps are one update.
+const planSteps = [
+  { id: 'one', title: 'Read the store', state: 'completed' },
+  { id: 'two', title: 'Write the page', state: 'pending' }
+];
+const repeatedPlan = typedConversationTimeline([
+  { id: 'plan-repeat-1', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } },
+  { id: 'plan-repeat-2', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } }
+]);
+assert.deepEqual(
+  repeatedPlan.filter((item) => item.kind === 'plan').map((item) => item.itemId),
+  ['plan-repeat-1'],
+  'an unchanged plan update is dropped'
+);
+
+const movedPlan = typedConversationTimeline([
+  { id: 'plan-moved-1', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } },
+  {
+    id: 'plan-moved-2',
+    type: 'plan',
+    content: [],
+    providerMetadata: {
+      title: 'Plan',
+      steps: [
+        { id: 'one', title: 'Read the store', state: 'completed' },
+        { id: 'two', title: 'Write the page', state: 'in_progress' }
+      ]
+    }
+  }
+]);
+assert.deepEqual(
+  movedPlan.filter((item) => item.kind === 'plan').map((item) => item.itemId),
+  ['plan-moved-1', 'plan-moved-2'],
+  'a plan that moved on keeps its own line'
+);
+
+// ── A diff counts its own lines (diff_line_counts) ───────────────────────
+// The chip says how much the turn changed. The `+++`/`---` lines name the
+// file rather than change a line in it, so they are not part of the count.
+const counted = diffLineCounts(
+  'diff --git a/one.ts b/one.ts\n--- a/one.ts\n+++ b/one.ts\n@@ -1,2 +1,3 @@\n context\n+added one\n+added two\n-removed one\n'
+);
+assert.deepEqual(counted, { added: 2, removed: 1 }, 'file headers are not changed lines');
+assert.deepEqual(diffLineCounts(''), { added: 0, removed: 0 }, 'nothing changed counts as nothing');

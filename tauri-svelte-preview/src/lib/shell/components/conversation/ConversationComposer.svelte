@@ -8,6 +8,7 @@
   import X from '@lucide/svelte/icons/x';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import type { ConversationAttachment, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
+  import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import { draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
@@ -15,6 +16,7 @@
   import AttachmentLightbox from './AttachmentLightbox.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
   import ComposerConfigMenu from './ComposerConfigMenu.svelte';
+  import PlanChip, { type PlanFileChanges } from './PlanChip.svelte';
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
   import CompactComposerControlsMenu from './CompactComposerControlsMenu.svelte';
@@ -30,6 +32,12 @@
     configError?: string | null;
     commands: readonly ConversationCommand[];
     contextMeter?: ContextMeterState | null;
+    /** The plan the session is working to, drawn as a chip above the capsule.
+     * Nothing is drawn when the session has no plan. */
+    plan?: Extract<ConversationDisplayItem, { kind: 'plan' }> | null;
+    /** What the running turn has changed on disk so far, shown beside the step
+     * count. Left out when the turn has touched no files. */
+    planFileChanges?: PlanFileChanges | null;
     attachmentError?: string;
     /** Clears the attachment failure. Given only where the failure is
      * per-session state that can be cleared; the draft composer has none. */
@@ -71,6 +79,8 @@
     configError = null,
     commands,
     contextMeter = null,
+    plan = null,
+    planFileChanges = null,
     attachmentError = '',
     onDismissAttachmentError,
     sendError = '',
@@ -110,6 +120,35 @@
    * that hands the composer an attachment wants the reader typing next to it. */
   export function focus(): void {
     promptHost?.focus();
+  }
+
+  let planExpanded = $state(false);
+  /* Whether the turn on screen has actually started. A turn that has not begun
+     yet is not a turn that just ended, and without this the chip would shut
+     itself the moment it opened while the session sat idle. */
+  let planTurnRunning = false;
+
+  /** Open the plan chip. The transcript's "Plan updated" line calls this, so
+   * the plan is read in one place wherever the reader asks for it from. */
+  export function expandPlan(): void {
+    if (plan) planExpanded = true;
+  }
+
+  /* The plan is what the session is doing now, so the panel shuts when the
+     session stops doing it. */
+  $effect(() => {
+    if (sending) {
+      planTurnRunning = true;
+      return;
+    }
+    if (planTurnRunning) {
+      planTurnRunning = false;
+      planExpanded = false;
+    }
+  });
+
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && planExpanded) planExpanded = false;
   }
 
   $effect(() => {
@@ -263,12 +302,19 @@
   }
 </script>
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 <div class="composer-area" data-testid="conversation-composer-area" bind:this={composerArea}>
   {#if bannerItems.length}<ComposerBannerStack items={bannerItems} />{/if}
   <!-- A draft session's own pickers sit ABOVE the capsule, not inside it.
        They set up the session rather than the message, and three of them on
        the control row left the message nowhere to go. -->
   {#if leadingControls}<div class="leading-controls" data-testid="composer-leading-controls">{@render leadingControls()}</div>{/if}
+  {#if plan && plan.steps.length}
+    <div class="plan-chip-slot">
+      <PlanChip {plan} fileChanges={planFileChanges} expanded={planExpanded} onToggle={() => (planExpanded = !planExpanded)} />
+    </div>
+  {/if}
   <form class="composer-form" onsubmit={(event) => { event.preventDefault(); if (!composerLocked) void onSend?.(); }}>
     <div
       class:dragging
@@ -419,6 +465,9 @@
      box, or the transcript would read through beside the capsule. */
   .composer-area { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: var(--composer-fade) 0 6px; container-type: inline-size; container-name: composer; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--color-bg) 45%, transparent) calc(var(--composer-fade) * 0.55), var(--color-bg) var(--composer-fade)); }
   .composer-form { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
+  /* The chip is centred on the capsule and takes the same width, so its
+     panel opens inside the composer's own column rather than the panel's. */
+  .plan-chip-slot { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
 
   /* The box is one grid in two shapes.
      Empty, it is a single capsule line — add button, message, controls.

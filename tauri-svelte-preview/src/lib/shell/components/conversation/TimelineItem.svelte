@@ -5,7 +5,6 @@
   import UserMessageItem from './UserMessageItem.svelte';
   import AssistantMessageItem from './AssistantMessageItem.svelte';
   import ReasoningItem from './ReasoningItem.svelte';
-  import PlanItem from './PlanItem.svelte';
   import TaskListItem from './TaskListItem.svelte';
   import CommandItem from './CommandItem.svelte';
   import FileChangeItem from './FileChangeItem.svelte';
@@ -22,11 +21,14 @@
     onApprovalDecision?(requestId: string, decision: string): void;
     onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
     onFileLink?(path: string): void;
+    /** Opens the plan chip above the composer. The transcript only notes that
+     * the plan moved; the plan itself lives in one place. */
+    onPlanOpen?(): void;
   }
   // `assistantLabel` is retired: nothing in the transcript carries a role
   // heading any more. It stays accepted only so the timeline that still passes
   // it keeps type-checking; the container drops it in its own pass.
-  let { item, onApprovalDecision, onInputSubmit, onFileLink }: Props = $props();
+  let { item, onApprovalDecision, onInputSubmit, onFileLink, onPlanOpen }: Props = $props();
   const visible = $derived(conversationItemHasVisibleContent(item));
 </script>
 
@@ -35,7 +37,7 @@
     {#if item.kind === 'user'}<UserMessageItem {item} {onFileLink} />
     {:else if item.kind === 'assistant'}<AssistantMessageItem {item} {onFileLink} />
     {:else if item.kind === 'reasoning'}<ReasoningItem {item} {onFileLink} />
-    {:else if item.kind === 'plan'}<PlanItem {item} />
+    {:else if item.kind === 'plan'}<button class="plan-line" data-testid="timeline-plan-item" type="button" onclick={() => onPlanOpen?.()}>Plan updated · {item.steps.length} {item.steps.length === 1 ? 'step' : 'steps'}</button>
     {:else if item.kind === 'tasks'}<TaskListItem {item} />
     {:else if item.kind === 'command'}<CommandItem {item} {onFileLink} />
     {:else if item.kind === 'file'}<FileChangeItem {item} {onFileLink} />
@@ -73,5 +75,10 @@
   .timeline-item[data-kind='tasks']{margin-top:-8px}
   .timeline-item[data-kind='user']{margin-top:12px}
   .timeline-item:first-child{margin-top:0}
+  /* The plan is drawn once, in the chip above the composer. All the transcript
+     owes the reader is that it moved, and a way back to it. */
+  .plan-line{display:inline-flex;align-items:center;padding:0;border:0;background:transparent;color:var(--color-text-3);font:12px/1.4 inherit;cursor:pointer}
+  .plan-line:hover{color:var(--color-text-2)}
+  .plan-line:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:3px;border-radius:4px}
   .unknown-item{padding:12px;border-left:2px solid var(--color-border);color:var(--color-text-2);white-space:pre-wrap;font-size:13px}
 </style>

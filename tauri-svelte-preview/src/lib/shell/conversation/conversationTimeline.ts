@@ -637,6 +637,58 @@ export function conversationErrorText(message: string | null | undefined): strin
 }
 
 /** Merge typed provider items with legacy reducer entries without flattening them. */
+/** The plan the session is working to, or nothing when it has none.
+ *
+ * A transcript holds every plan update it was ever sent, and the chip above
+ * the composer shows one plan: the newest, whichever turn produced it. */
+export function latestPlan(
+  items: readonly ConversationDisplayItem[]
+): Extract<ConversationDisplayItem, { kind: 'plan' }> | null {
+  return items.findLast(
+    (item): item is Extract<ConversationDisplayItem, { kind: 'plan' }> => item.kind === 'plan'
+  ) ?? null;
+}
+
+/** How many lines a unified diff adds and removes.
+ *
+ * The `+++` and `---` lines name the file the hunks belong to rather than
+ * change a line in it, so they are read past. Everything else that starts
+ * with a plus or a minus is a line the change touched. */
+export function diffLineCounts(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) added += 1;
+    else if (line.startsWith('-')) removed += 1;
+  }
+  return { added, removed };
+}
+
+/** Whether two plans say the same thing: the same steps, in the same order,
+ * each in the same state. */
+function samePlanSteps(left: readonly AgentPlanStep[], right: readonly AgentPlanStep[]): boolean {
+  return left.length === right.length
+    && left.every((step, index) => step.title === right[index].title && step.state === right[index].state);
+}
+
+/** Drops a plan update that repeats the one before it.
+ *
+ * A plan update arrives with no id of its own, so each one is filed under the
+ * sequence it came in on and takes a row of its own. A provider that re-sends
+ * an unchanged plan therefore wrote the same plan into the transcript twice.
+ * The first of a run keeps its place, which holds the row still while the
+ * repeats arrive; anything that actually moved on keeps its own row. */
+function withoutRepeatedPlans(items: readonly ConversationDisplayItem[]): ConversationDisplayItem[] {
+  let previousSteps: readonly AgentPlanStep[] | null = null;
+  return items.filter((item) => {
+    if (item.kind !== 'plan') return true;
+    const repeat = previousSteps !== null && samePlanSteps(previousSteps, item.steps);
+    previousSteps = item.steps;
+    return !repeat;
+  });
+}
+
 export function typedConversationTimeline(
   items: readonly AgentItem[] = [],
   legacy: readonly ConversationTimelineEntry[] = [],
@@ -653,12 +705,14 @@ export function typedConversationTimeline(
     item.id,
     displayItemFromAgentItem(item, timestamps[item.id] ?? displayTimestamp(item, legacyEnd + index + 1))
   ));
-  const next = [...byId.values()]
-    .map((item) => {
-      const sent = item.kind === 'user' ? sentAttachments[item.itemId] : undefined;
-      return sent?.length ? { ...item, attachments: sent } : item;
-    })
-    .sort((left, right) => left.timestampMs - right.timestampMs);
+  const next = withoutRepeatedPlans(
+    [...byId.values()]
+      .map((item) => {
+        const sent = item.kind === 'user' ? sentAttachments[item.itemId] : undefined;
+        return sent?.length ? { ...item, attachments: sent } : item;
+      })
+      .sort((left, right) => left.timestampMs - right.timestampMs)
+  );
   return reuseConversationDisplayItems(next, previous);
 }
 

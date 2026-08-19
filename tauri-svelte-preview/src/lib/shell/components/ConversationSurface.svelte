@@ -47,6 +47,8 @@
     type ConversationCommand
   } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import {
+    diffLineCounts,
+    latestPlan,
     typedConversationTimeline,
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
@@ -120,6 +122,34 @@
     previousVisibleTimeline = items.sort((left, right) => left.timestampMs - right.timestampMs);
     return previousVisibleTimeline;
   });
+  const activePlan = $derived(latestPlan(visibleTimeline));
+  /* What the turn on screen has changed on disk, for the chip beside the step
+     count. A turn is what has happened since the last thing the reader asked
+     for, so the count starts at the last user message. The line counts are
+     read off the diffs the rows already carry; a row with no diff still
+     counts as a file changed. */
+  const planFileChanges = $derived.by(() => {
+    if (!activePlan) return null;
+    const paths = new Set<string>();
+    let added = 0;
+    let removed = 0;
+    for (let index = visibleTimeline.length - 1; index >= 0; index -= 1) {
+      const item = visibleTimeline[index];
+      if (item.kind === 'user') break;
+      let diff: string;
+      if (item.kind === 'file') {
+        paths.add(typeof item.metadata?.path === 'string' ? item.metadata.path : item.itemId);
+        diff = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
+      } else if (item.kind === 'tool' && item.toolKind === 'file-edit') {
+        paths.add(item.path ?? item.itemId);
+        diff = item.diff ?? '';
+      } else continue;
+      const counts = diffLineCounts(diff);
+      added += counts.added;
+      removed += counts.removed;
+    }
+    return paths.size ? { files: paths.size, added, removed } : null;
+  });
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
@@ -152,7 +182,7 @@
   let localTurnActive = $state(false);
   let localTurnStarted = $state(false);
   let composerHeight = $state(0);
-  let composer = $state<{ focus(): void } | null>(null);
+  let composer = $state<{ focus(): void; expandPlan(): void } | null>(null);
 
   /** Put the caret in the prompt box. The page calls this when a panel hands
    * the composer something — an attachment, a line of text — so the reader ends
@@ -439,6 +469,7 @@
         onApprovalDecision={onApprovalDecision}
         onInputSubmit={onInputSubmit}
         onFileLink={openConversationFile}
+        onPlanOpen={() => composer?.expandPlan()}
       />
       {#if !conversation.selectedChildId}
         <ConversationComposer
@@ -452,6 +483,8 @@
           configError={conversation.agentConfigError}
           commands={commandCatalog}
           contextMeter={contextMeter}
+          plan={activePlan}
+          planFileChanges={planFileChanges}
           pendingApproval={pendingApprovals[0] ?? null}
           pendingApprovalCount={pendingApprovals.length}
           pendingInputs={pendingInputs}
