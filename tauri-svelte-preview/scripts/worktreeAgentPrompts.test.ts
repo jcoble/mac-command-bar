@@ -2,12 +2,16 @@
  * worktreeAgentPrompts.test.ts — the Worktrees panel's three buttons, checked
  * as text rather than clicked.
  *
- * The panel no longer prints commands for a person to paste into a terminal. It
- * starts a session that does the work, and the only thing standing between a
- * button and a folder full of somebody's unfinished work is what that session is
- * told to do first. So the prompts are the safety mechanism, and this file reads
- * them: inspect before acting, explain before warning, warn before removing, and
- * never remove something risky without saying so.
+ * Two of the three start a session that does the work, and the only thing
+ * standing between such a button and a folder full of somebody's unfinished work
+ * is what that session is told to do first. So those prompts are the safety
+ * mechanism, and this file reads them: explain before warning, warn before
+ * removing, and never remove something risky without saying so.
+ *
+ * The third, Inspect, starts nothing at all any more. It hands the app's helper
+ * model a block of facts and shows the answer under the row, so what this file
+ * checks for it is that the facts are all there and that nothing in them is a
+ * command anything could run.
  */
 import assert from 'node:assert/strict';
 
@@ -19,7 +23,8 @@ import {
 import {
   describeWorktreeAgentQuestion,
   worktreeAgentActions,
-  worktreeAgentPrompt
+  worktreeAgentPrompt,
+  worktreeInspectFacts
 } from '../src/lib/shell/panels/worktrees/worktreeAgentPrompts.ts';
 
 const NOW = Date.UTC(2026, 7, 13, 18, 0, 0);
@@ -117,26 +122,42 @@ function rowFor(...worktrees: ProjectWorktree[]): WorktreeManagerRow[] {
   }
 }
 
-// ── inspect looks and explains, and does not clean up ────────────────────────
+// ── inspect hands over facts, and nothing that could be run ─────────────────
+{
+  const rows = rowFor(worktree({ isDirty: true }));
+  const row = rows.find((entry) => !entry.isPrimary);
+  assert.ok(row);
+
+  const facts = worktreeInspectFacts(row);
+  assert.equal(typeof facts, 'string', 'it answers with text and does nothing else');
+
+  assert.ok(facts.includes(`Branch: ${row.branch}`), 'the facts name the branch');
+  assert.ok(facts.includes(row.path), 'the facts name the folder');
+  assert.ok(facts.includes(`Last activity: ${row.age}`), 'the facts say when it was last touched');
+  assert.ok(facts.includes(`Sessions here: ${row.sessionsLabel}`), 'the facts say who worked here');
+  assert.ok(facts.includes('Remote:'), 'the facts say where the branch stands against its remote');
+  assert.ok(
+    facts.includes('Uncommitted changes: yes'),
+    'a folder with work that was never committed says so'
+  );
+
+  for (const command of [row.commands.audit, row.commands.backup, row.commands.cleanup]) {
+    assert.ok(!facts.includes(command), 'the facts carry nothing anything could run');
+  }
+}
+
+// ── the facts are the same shape when there is nothing to report ─────────────
 {
   const rows = rowFor(worktree());
   const row = rows.find((entry) => !entry.isPrimary);
   assert.ok(row);
 
-  const prompt = worktreeAgentPrompt('inspect', row, null);
-  const text = prompt.prompt.toLowerCase();
-  assert.ok(text.includes('inspect'), 'it says to inspect');
-  assert.ok(text.includes('explain'), 'it says to explain what was found');
-  assert.ok(text.includes('plain english'), 'it says in plain English');
+  const facts = worktreeInspectFacts(row);
+  assert.ok(facts.includes('Uncommitted changes: none'), 'a clean folder says so');
   assert.ok(
-    !prompt.prompt.includes(row.commands.cleanup),
-    'an inspection never carries the command that removes the worktree'
+    facts.includes('Remote: not read'),
+    'with no summary read, the facts say that rather than guessing at the counts'
   );
-  assert.ok(
-    !prompt.prompt.includes(row.commands.backup),
-    'an inspection never carries the command that copies work away either'
-  );
-  assert.ok(prompt.prompt.includes(row.commands.audit), 'it carries the read-only command');
 }
 
 // ── remove warns before it removes ───────────────────────────────────────────
@@ -187,7 +208,7 @@ function rowFor(...worktrees: ProjectWorktree[]): WorktreeManagerRow[] {
   const row = rows.find((entry) => !entry.isPrimary);
   assert.ok(row);
 
-  for (const action of ['inspect', 'archive-and-remove', 'remove'] as const) {
+  for (const action of ['archive-and-remove', 'remove'] as const) {
     const prompt = worktreeAgentPrompt(action, row, PRIMARY);
     assert.equal(prompt.cwd, row.path, `${action} runs in the worktree`);
     assert.ok(prompt.title.includes(row.folderName), `${action} names the folder in its title`);
@@ -195,7 +216,7 @@ function rowFor(...worktrees: ProjectWorktree[]): WorktreeManagerRow[] {
   }
 
   // With no main checkout known, the worktree is the best repository we have.
-  assert.equal(worktreeAgentPrompt('inspect', row, null).projectPath, row.path);
+  assert.equal(worktreeAgentPrompt('remove', row, null).projectPath, row.path);
 }
 
 // ── the question asked before a destructive session starts ──────────────────
@@ -203,12 +224,6 @@ function rowFor(...worktrees: ProjectWorktree[]): WorktreeManagerRow[] {
   const rows = rowFor(worktree({ isDirty: true }));
   const risky = rows.find((entry) => !entry.isPrimary);
   assert.ok(risky);
-
-  assert.equal(
-    describeWorktreeAgentQuestion('inspect', risky),
-    null,
-    'looking at a folder is not worth a dialog'
-  );
 
   for (const action of ['archive-and-remove', 'remove'] as const) {
     const question = describeWorktreeAgentQuestion(action, risky);

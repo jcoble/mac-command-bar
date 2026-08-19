@@ -758,6 +758,24 @@ export async function testHelperFromTauri(): Promise<HelperTestResult | null> {
   return invoke<HelperTestResult>('test_helper');
 }
 
+/**
+ * Ask the helper model to do one small job and give back its answer.
+ *
+ * Unlike its neighbours this cannot answer with `null`: an empty answer and a
+ * helper that is switched off would look the same to the caller. Away from the
+ * desktop app there is no helper at all, so this rejects with the sentence to
+ * show instead. The backend rejects the same way — one plain-English sentence,
+ * "No key — helper off" among them.
+ */
+export async function runHelperJobFromTauri(
+  job: 'title' | 'inspect',
+  input: string
+): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('The helper only runs in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('run_helper_job', { job, input });
+}
+
 export async function readTerminalSessionScrollbackFromTauri(
   sessionId: string
 ): Promise<string | null> {

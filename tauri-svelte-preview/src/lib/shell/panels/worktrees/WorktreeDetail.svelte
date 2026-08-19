@@ -9,11 +9,15 @@
    *
    * This used to end in three commands printed for the reader to copy into a
    * terminal themselves, because nothing in the app could be trusted to look
-   * before it deleted. The same three commands are still what happens — they
-   * are just carried now by a session that reads the folder first, says what it
-   * found, warns about anything that would be lost, and only then acts. The
-   * session shows up in the sessions list like any other, so the work is watched
-   * rather than taken on trust.
+   * before it deleted. The two removals are still those commands — they are just
+   * carried now by a session that reads the folder first, says what it found,
+   * warns about anything that would be lost, and only then acts. The session
+   * shows up in the sessions list like any other, so the work is watched rather
+   * than taken on trust.
+   *
+   * Inspect starts nothing. The panel asks the app's small helper model about
+   * the facts above and hands the answer back here, which is why it is the one
+   * action with something to show under the buttons.
    */
   import type { Component } from 'svelte';
   import Archive from '@lucide/svelte/icons/archive';
@@ -35,11 +39,27 @@
     busy: boolean;
     /** Something is happening somewhere in the panel; every button waits. */
     panelBusy: boolean;
+    /** The helper is being asked about this worktree right now. */
+    inspecting: boolean;
+    /** What the helper said about this worktree, or '' before it was asked. */
+    inspectMessage: string;
+    /** The message is why the helper could not answer, not an answer. */
+    inspectFailed: boolean;
     onAction(id: WorktreeAgentActionId): void;
     /** Focus a session that worked here. Left out, the sessions are plain text. */
     onOpenSession?: (ownedId: string) => void;
   }
-  let { row, actions, busy, panelBusy, onAction, onOpenSession }: Props = $props();
+  let {
+    row,
+    actions,
+    busy,
+    panelBusy,
+    inspecting,
+    inspectMessage,
+    inspectFailed,
+    onAction,
+    onOpenSession
+  }: Props = $props();
 
   const LANE_TONE: Record<string, 'bad' | 'attention' | 'live' | 'neutral' | 'good'> = {
     blocked: 'bad',
@@ -123,8 +143,9 @@
     </div>
   {/if}
 
-  <!-- The three things that can be done about this worktree. Each starts a
-       session that looks first and says what it found before it acts. -->
+  <!-- The three things that can be done about this worktree. The two removals
+       start a session that looks first and says what it found before it acts;
+       Inspect asks the helper and answers underneath. -->
   <div class="flex flex-col gap-1.5">
     <h4 class="m-0 text-sm leading-normal font-semibold text-muted-foreground">
       What to do about it
@@ -136,7 +157,7 @@
           size="xs"
           variant={action.destructive ? 'outline' : 'secondary'}
           class="text-[13px]"
-          disabled={!action.enabled || panelBusy}
+          disabled={!action.enabled || panelBusy || (action.id === 'inspect' && inspecting)}
           onclick={() => onAction(action.id)}
         >
           <Icon aria-hidden="true" />
@@ -152,7 +173,20 @@
     <p class="m-0 text-sm leading-normal text-muted-foreground">
       {busy
         ? 'Starting a session…'
-        : 'Each of these starts a session in this folder. It reads the worktree, explains what it found, warns about anything that would be lost, and only then does what you asked.'}
+        : 'Inspect answers here from what this panel already knows. The other two start a session in this folder: it reads the worktree, explains what it found, warns about anything that would be lost, and only then does what you asked.'}
     </p>
+
+    <!-- What the helper said, kept under the row it is about. -->
+    {#if inspecting}
+      <p class="m-0 text-sm leading-normal text-muted-foreground">Inspecting…</p>
+    {:else if inspectMessage}
+      <p
+        class="m-0 text-sm leading-normal break-words {inspectFailed
+          ? 'text-[var(--color-bad)]'
+          : 'text-muted-foreground'}"
+      >
+        {inspectMessage}
+      </p>
+    {/if}
   </div>
 </div>

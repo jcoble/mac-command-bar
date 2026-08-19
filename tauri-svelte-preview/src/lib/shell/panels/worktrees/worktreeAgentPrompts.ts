@@ -3,16 +3,21 @@
  *
  * The panel used to print three commands and ask the reader to paste them into
  * a terminal themselves. That was the safe thing to do while nothing in the app
- * could be trusted to look before it deleted. Now each button starts a session
- * in the worktree and hands it one of these prompts, so the same three commands
- * are still the substance — they are just carried by something that reads the
- * folder first and says what it found.
+ * could be trusted to look before it deleted. Now the two removal buttons start
+ * a session in the worktree and hand it one of these prompts, so the same
+ * commands are still the substance — they are just carried by something that
+ * reads the folder first and says what it found.
+ *
+ * The third button, Inspect, starts nothing. Looking at a folder does not need
+ * a whole session in it: `worktreeInspectFacts` writes down what this list
+ * already knows and the panel asks the app's own small helper model about it,
+ * which reads nothing and changes nothing.
  *
  * WHY THE PROMPT IS THE SAFETY MECHANISM: a worktree is somebody's unfinished
  * work until proven otherwise, and the proof lives on disk, not in this list.
  * The list is a snapshot that was read some seconds ago; the session reads the
- * folder as it is now. So every prompt is written in the same four steps, in
- * this order, and the order is the whole point:
+ * folder as it is now. So both removal prompts are written in the same four
+ * steps, in this order, and the order is the whole point:
  *
  *   1. look at the folder, with a command that changes nothing;
  *   2. explain in plain English what is in it;
@@ -20,9 +25,8 @@
  *      commits never pushed, a branch never merged, a lock somebody set;
  *   4. only then do the thing that was asked, and say exactly what was done.
  *
- * Inspect stops after step 3 and never reaches step 4. The two destructive
- * prompts say out loud that nothing risky may be deleted without being
- * described first. Neither of them is allowed to be quiet about a loss.
+ * Both say out loud that nothing risky may be deleted without being described
+ * first. Neither of them is allowed to be quiet about a loss.
  *
  * PURE: no runes, no DOM, no backend call. Everything comes from the row the
  * panel already built, which is what lets `scripts/worktreeAgentPrompts.test.ts`
@@ -30,8 +34,11 @@
  */
 import type { WorktreeManagerRow } from '../../worktrees/worktreeManagerRows.ts';
 
-/** The three things the panel can ask a session to do about one worktree. */
+/** The three things the panel can do about one worktree. */
 export type WorktreeAgentActionId = 'inspect' | 'archive-and-remove' | 'remove';
+
+/** The two that start a session. Inspect is answered by the helper instead. */
+export type WorktreeSessionActionId = Exclude<WorktreeAgentActionId, 'inspect'>;
 
 /** Everything needed to start the session one button starts. */
 export interface WorktreeAgentPrompt {
@@ -129,7 +136,32 @@ function knownFacts(row: WorktreeManagerRow): string {
   return lines.join('\n');
 }
 
-/** Step 1 and step 2, written the same way for all three actions. */
+/**
+ * What the helper model is told about one worktree, as plain lines.
+ *
+ * The helper cannot read anything: it sees these sentences and nothing else, so
+ * everything the answer can be based on has to be here. That also makes this
+ * the whole of what Inspect does — it returns text, starts no session, touches
+ * no folder, and runs none of the commands the other two buttons carry.
+ *
+ * "Remote: not read" is deliberate. An unread folder and a folder in step with
+ * its remote are different things, and printing "0 ahead, 0 behind" for the
+ * first would be a guess dressed up as a fact.
+ */
+export function worktreeInspectFacts(row: WorktreeManagerRow): string {
+  return [
+    'Should this git worktree be kept or removed, and what should be done with it next?',
+    '',
+    `Branch: ${row.branch}`,
+    `Folder: ${row.folderGone ? `${row.path} — not on disk any more` : row.path}`,
+    `Remote: ${row.aheadBehindLabel || 'not read'}`,
+    `Uncommitted changes: ${row.worktree.isDirty ? 'yes' : 'none'}`,
+    `Last activity: ${row.age}`,
+    `Sessions here: ${row.sessionsLabel}`
+  ].join('\n');
+}
+
+/** Step 1 and step 2, written the same way for both removals. */
 function lookAndExplain(row: WorktreeManagerRow): string {
   return [
     '1. Inspect the worktree first. This reads it and changes nothing:',
@@ -155,21 +187,6 @@ const NO_QUIET_DELETION =
   'Do not delete anything you found risky without saying so first and saying exactly what would\n' +
   'be lost. If you are unsure whether work here exists anywhere else, stop and say so instead of\n' +
   'removing it.';
-
-function inspectPrompt(row: WorktreeManagerRow): string {
-  return [
-    `Look at the git worktree at ${row.path} and report on it. Change nothing.`,
-    '',
-    'What this list believes about it, for you to confirm rather than trust:',
-    knownFacts(row),
-    '',
-    lookAndExplain(row),
-    warnAboutRisk(),
-    '4. Stop there. This is a look, not a cleanup: do not remove the worktree, do not delete any',
-    '   file, and do not run anything that changes the repository. Finish with a short plain',
-    '   English summary and, if it is safe to remove, say so and say why.'
-  ].join('\n');
-}
 
 function removalPrompt(row: WorktreeManagerRow, archiveFirst: boolean): string {
   const steps = [lookAndExplain(row), warnAboutRisk(), NO_QUIET_DELETION, ''];
@@ -252,14 +269,13 @@ function riskLines(row: WorktreeManagerRow): string[] {
 /**
  * What to ask before starting one of the two destructive sessions.
  *
- * `null` for Inspect: looking at a folder changes nothing, and a dialog in
- * front of a read is a dialog people learn to dismiss without reading.
+ * Inspect is not one of them: it starts nothing, and a dialog in front of a
+ * read is a dialog people learn to dismiss without reading.
  */
 export function describeWorktreeAgentQuestion(
-  action: WorktreeAgentActionId,
+  action: WorktreeSessionActionId,
   row: WorktreeManagerRow
-): WorktreeAgentQuestion | null {
-  if (action === 'inspect') return null;
+): WorktreeAgentQuestion {
   const archiveFirst = action === 'archive-and-remove';
 
   const lines = [
@@ -294,24 +310,18 @@ export function describeWorktreeAgentQuestion(
  * been given.
  */
 export function worktreeAgentPrompt(
-  action: WorktreeAgentActionId,
+  action: WorktreeSessionActionId,
   row: WorktreeManagerRow,
   primaryPath: string | null
 ): WorktreeAgentPrompt {
-  const titles: Record<WorktreeAgentActionId, string> = {
-    inspect: `Inspect ${row.folderName}`,
+  const titles: Record<WorktreeSessionActionId, string> = {
     'archive-and-remove': `Archive and remove ${row.folderName}`,
     remove: `Remove ${row.folderName}`
   };
 
-  const prompt =
-    action === 'inspect'
-      ? inspectPrompt(row)
-      : removalPrompt(row, action === 'archive-and-remove');
-
   return {
     title: titles[action],
-    prompt,
+    prompt: removalPrompt(row, action === 'archive-and-remove'),
     cwd: row.path,
     projectPath: (primaryPath ?? '').trim() || row.path
   };
