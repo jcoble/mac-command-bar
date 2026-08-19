@@ -20,7 +20,6 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
-  import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
@@ -30,6 +29,7 @@
   import { AGENT_ICONS } from '$lib/shell/agentIcons';
   import { registerSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
+  import SegmentedTabs from './SegmentedTabs.svelte';
   import SessionRail from './SessionRail.svelte';
   import { sessionLabel, stripCells } from '$lib/shell/sessionStrip';
   import { cn } from '$lib/utils';
@@ -82,9 +82,9 @@
   });
 
   const GROUPING_ITEMS = [
-    { value: 'none', label: 'None' },
-    { value: 'status', label: 'Status' },
-    { value: 'project', label: 'Project' }
+    { id: 'none', label: 'None' },
+    { id: 'status', label: 'Status' },
+    { id: 'project', label: 'Project' }
   ] as const;
 
   const STATUS_CONTROLS = [
@@ -255,12 +255,17 @@
               </Tooltip.Content>
             </Tooltip.Root>
 
+            <!-- The sheet keeps the shared menu surface rather than the popover
+                 colour it used to name: that colour is the same grey the rail
+                 behind it is painted in, so an open menu vanished into the
+                 column and only its hairline gave it away. Padding and the gaps
+                 between rows come from the shell's spacing steps. -->
             <DropdownMenu.Content
               align="end"
               sideOffset={7}
-              class="w-[304px]! space-y-1.5 bg-popover p-2 text-foreground ring-border"
+              class="flex w-[304px]! flex-col gap-[var(--space-3)] p-[var(--space-4)] text-foreground"
             >
-              <div class="flex min-h-8 items-center justify-between gap-3 px-1">
+              <div class="flex min-h-8 items-center justify-between gap-3">
                 <span class="text-[13px] text-foreground">Show: Projects</span>
                 <Switch
                   size="sm"
@@ -270,19 +275,17 @@
                 />
               </div>
 
-              <div class="flex flex-col gap-1.5 px-1 py-1">
+              <div class="flex flex-col gap-[var(--space-2)]">
                 <span class="text-[13px] text-foreground">Group by</span>
-                <SegmentedControl
-                  class="w-full"
-                  size="sm"
+                <SegmentedTabs
                   items={GROUPING_ITEMS}
                   value={viewOptions.groupBy}
-                  aria-label="Group My Work sessions"
-                  onValueChange={(value) => setViewOptions({ groupBy: value as MyWorkGrouping })}
+                  label="Group My Work sessions"
+                  onChange={(id) => setViewOptions({ groupBy: id as MyWorkGrouping })}
                 />
               </div>
 
-              <div class="flex min-h-8 items-center justify-between gap-3 px-1 py-1">
+              <div class="flex min-h-8 items-center justify-between gap-3">
                 <span class="text-[13px] text-foreground">Sort</span>
                 <Select.Root
                   type="single"
@@ -299,14 +302,14 @@
                 </Select.Root>
               </div>
 
-              <div class="flex flex-col gap-1.5 px-1 pt-1 pb-0.5">
+              <div class="flex flex-col gap-[var(--space-2)]">
                 <span class="text-[13px] text-foreground">Status filters</span>
                 <div class="grid grid-cols-3 gap-1" aria-label="Visible statuses">
                   {#each STATUS_CONTROLS as control (control.value)}
                     {@const StatusIcon = control.icon}
                     {@const pressed = viewOptions.visibleStatuses.includes(control.value)}
                     <Button
-                      size="xs"
+                      size="sm"
                       variant={pressed ? 'secondary' : 'ghost'}
                       class="min-w-0 gap-1 px-1 text-[13px] font-normal"
                       aria-pressed={pressed}

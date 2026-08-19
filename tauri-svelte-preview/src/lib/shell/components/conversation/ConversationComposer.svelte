@@ -436,7 +436,12 @@
        colour it without the box changing size underneath them. */
     border: 1px solid transparent;
     border-radius: var(--composer-radius-capsule);
-    background: var(--composer-surface);
+    /* A step lighter again than the sheet colour the token names. The box floats
+       on the backdrop's own near-black, where a drop shadow has nothing to fall
+       on, so the fill is the whole of what lifts it — and at the token's value
+       the difference was small enough that the capsule read as a hole rather
+       than a control. */
+    background: color-mix(in srgb, var(--color-text) 3%, var(--composer-surface));
     box-shadow: var(--shadow-md);
   }
   /* Shut, the box is as tall as the controls sitting in it and no taller, which
@@ -457,7 +462,11 @@
   .composer-box.relaxed textarea { min-height: 63px; }
   .prompt-row { display: flex; }
   textarea { width: 100%; max-height: 190px; padding: 2px 0; resize: none; border: 0; outline: 0; background: transparent; color: var(--color-text); caret-color: var(--color-accent); font: 14px/1.5 inherit; }
-  textarea::placeholder { color: var(--color-text-3); }
+  /* The prompt line is an invitation, not a label. At the tertiary text colour
+     it sat at the same weight as the settings beside it and the box read as
+     three competing pieces of writing; quieter, the capsule reads as one thing
+     with a waiting cursor in it. */
+  textarea::placeholder { color: color-mix(in srgb, var(--color-text-3) 70%, transparent); }
   /* Shut, the message shares its row with the + button and the setting pills,
      so the box is as tall as they are while the text in it is one line. The
      line was landing against the top of that box and reading as floating above
@@ -476,7 +485,11 @@
   .composer-footer { display: contents; }
   .footer-left, .footer-right { display: flex; min-width: 0; align-items: center; gap: var(--composer-row-gap); }
   .footer-left { grid-area: lead; }
-  .footer-right { grid-area: trail; justify-self: end; }
+  /* The right of the row is one cluster, not four separate controls: the pills
+     already carry their own padding, so the gap between them only has to keep
+     them from touching. The meter is the one thing there that is read rather
+     than pressed, so it keeps its own space ahead of the group. */
+  .footer-right { grid-area: trail; justify-self: end; gap: 2px; }
   .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
   .leading-controls { display: flex; width: min(820px, calc(100% - 44px)); min-width: 0; margin: 0 auto var(--composer-row-gap); align-items: center; gap: var(--composer-row-gap); }
   .wide-controls { display: flex; min-width: 0; }
@@ -493,12 +506,12 @@
   .send.stop { background: var(--color-bad); }
   .send.stop:hover:not(:disabled) { background: var(--color-bad); }
 
-  .context-remaining { flex: none; padding: var(--composer-meter-inset); border: 1px solid var(--composer-border); border-radius: var(--radius-pill); color: var(--color-text-2); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .context-remaining { flex: none; margin-inline-end: 6px; padding: var(--composer-meter-inset); border: 1px solid var(--composer-border); border-radius: var(--radius-pill); color: var(--color-text-2); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   /* The ring is the size of the icons beside it and drawn in the same quiet
      colour, warming as the window fills so the last stretch is noticed without
      being read. `pathLength` makes the circle 100 units round, so the dash is
      the percentage itself. */
-  .context-ring { display: grid; place-items: center; flex: none; width: var(--composer-control-size); height: var(--composer-control-size); color: var(--color-text-2); }
+  .context-ring { display: grid; place-items: center; flex: none; margin-inline-end: 6px; width: var(--composer-control-size); height: var(--composer-control-size); color: var(--color-text-2); }
   .context-ring svg { width: 18px; height: 18px; transform: rotate(-90deg); }
   .context-ring circle { fill: none; stroke-width: 2.2; }
   .ring-track { stroke: color-mix(in srgb, currentColor 22%, transparent); }
@@ -519,7 +532,11 @@
   .attachments figcaption small { color: var(--color-text-2); font-size: 12px; }
   .attachment-annotate { grid-column: 2; justify-self: start; border: 0; background: transparent; color: var(--color-accent); padding: 1px 0; font-size: 12px; cursor: pointer; }
   .drop-hint { grid-area: hint; margin: 0; padding: var(--composer-prompt-inset); color: var(--color-accent); font-size: 13px; }
-  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 4px auto 0; color: var(--color-text-3); font-size: 12px; }
+  /* Two things nobody needs to read twice: how to attach a file, and a number
+     the ring above already draws. It stays because it is where a newcomer finds
+     the slash menu, but at the weight of the message it was competing with the
+     one line in the box that matters. */
+  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 5px auto 0; color: color-mix(in srgb, var(--color-text-3) 78%, transparent); font-size: 11px; }
   /* The settings row is a fixed 211px — approval on the left, the model pill on
      the right — and the add button beside it needs about 80px more. Measured in
      the browser, the pair still sits unclipped in a 438px composer, so
