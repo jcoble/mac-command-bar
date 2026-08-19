@@ -907,6 +907,21 @@ export async function revealPathFromTauri(path: string): Promise<boolean> {
   return runPathCommand('reveal_path', path);
 }
 
+/**
+ * Move one path to the Finder's Trash. The file-system plugin's `remove`
+ * deletes for good, so anything a person can undo goes through here instead.
+ * Rejects when the path is outside the folders the window may change.
+ */
+export async function moveToTrashFromTauri(path: string): Promise<boolean> {
+  if (!isTauriRuntime() || !path.trim()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('move_to_trash', { path });
+  return true;
+}
+
 export async function openTerminalPathFromTauri(
   path: string,
   terminal = 'Warp'

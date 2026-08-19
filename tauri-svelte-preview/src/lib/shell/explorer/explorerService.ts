@@ -20,8 +20,9 @@
  *    took to appear.
  * 2. **No cache.** The old shell cached scans in localStorage with no size cap;
  *    on a large repository the write failed and the cache quietly stopped
- *    working. This wave scans on activation and on an explicit refresh only,
- *    which is also why the panel says the list is not watched for changes.
+ *    working. This wave scans on activation and on a refresh, and a refresh is
+ *    always someone's doing: pressing the button, or the file-system watcher
+ *    the panel keeps on the listed folder reporting that the disk moved.
  */
 import {
   cancelSourceScanFromTauri,
