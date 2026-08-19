@@ -1,6 +1,6 @@
 #!/bin/sh
 # Dev launcher for the /next shell. Registers the real ACP adapters
-# (the installed codex CLI bridge, claude-code-acp) with the provider registry via the
+# (the installed codex CLI bridge, claude-agent-acp) with the provider registry via the
 # MCB_*_ACP_PATH/SHA256 env vars that bundled_from_environment() reads.
 # Without these the registry is empty and every structured session fails
 # activation with "No trusted adapter is registered for this provider".
@@ -18,12 +18,12 @@ resolve() {
 CODEX_BIN="$(resolve codex)"
 NODE_BIN="$(resolve node)"
 CODEX_ACP_FALLBACK_BIN="$(resolve codex-acp)"
-CLAUDE_ACP_BIN="$(resolve claude-code-acp)"
+CLAUDE_ACP_BIN="$(resolve claude-agent-acp)"
 AGY_CLI_BIN="$(resolve agy)"
 
 if [ -z "$CLAUDE_ACP_BIN" ]; then
-  echo "dev-next: missing ACP adapter (claude-code-acp: 'not found')." >&2
-  echo "dev-next: install with: npm i -g @zed-industries/codex-acp @zed-industries/claude-code-acp" >&2
+  echo "dev-next: missing ACP adapter (claude-agent-acp: 'not found')." >&2
+  echo "dev-next: install with: npm i -g @agentclientprotocol/claude-agent-acp" >&2
   echo "dev-next: continuing WITHOUT structured providers - new app sessions will fail to connect." >&2
   exec pnpm exec tauri dev --config src-tauri/tauri.dev.next.conf.json "$@"
 fi
@@ -80,7 +80,7 @@ sha() {
 
 MCB_CODEX_ACP_PATH="$CODEX_WRAPPER"
 MCB_CODEX_ACP_SHA256="$(sha "$CODEX_WRAPPER")"
-# claude-code-acp refuses to start when it thinks it is nested inside another
+# claude-agent-acp refuses to start when it thinks it is nested inside another
 # Claude Code session; the dev stack is often launched from one, so the adapter
 # runs through a wrapper that scrubs the session-marker environment.
 CLAUDE_WRAPPER="$HOME/.mac-command-bar/claude-acp-wrapper.sh"

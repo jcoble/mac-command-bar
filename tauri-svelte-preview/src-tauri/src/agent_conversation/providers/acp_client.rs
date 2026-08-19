@@ -53,6 +53,11 @@ struct AcpSessionState {
     commands: Vec<AgentCommandDescriptor>,
     config: AgentConversationConfigState,
     config_protocol: ConversationConfigProtocol,
+    /// The ids of the config options the session offers ("model", "effort",
+    /// "mode"…). A setting that is one of these is changed through
+    /// session/set_config_option; the current Claude adapter offers its model
+    /// and effort only this way and has no session/set_model.
+    config_option_ids: Vec<String>,
     prompt_updates: PromptUpdateRoute,
 }
 
@@ -745,20 +750,33 @@ impl AcpClient {
         session_id: &str,
         update: &AgentConversationConfigUpdate,
     ) -> Result<AgentConversationConfigState, AgentRuntimeError> {
-        if update.reasoning_effort.is_some() {
-            return Err(AgentRuntimeError::new(
-                "unsupported-config",
-                "This ACP session does not expose a reasoning-effort control",
-            ));
+        let offered = self.require_session(session_id)?.config_option_ids;
+        let offers = |id: &str| offered.iter().any(|option| option == id);
+        if let Some(effort) = &update.reasoning_effort {
+            if !offers("effort") {
+                return Err(AgentRuntimeError::new(
+                    "unsupported-config",
+                    "This ACP session does not expose a reasoning-effort control",
+                ));
+            }
+            self.set_standard_config_option(session_id, "effort", effort)
+                .await?;
         }
         if let Some(model_id) = &update.model {
-            self.transport
-                .request(
-                    "session/set_model",
-                    json!({ "sessionId": session_id, "modelId": model_id }),
-                )
-                .await?;
-            self.update_session_config(session_id, |config| config.model = Some(model_id.clone()))?;
+            if offers("model") {
+                self.set_standard_config_option(session_id, "model", model_id)
+                    .await?;
+            } else {
+                self.transport
+                    .request(
+                        "session/set_model",
+                        json!({ "sessionId": session_id, "modelId": model_id }),
+                    )
+                    .await?;
+                self.update_session_config(session_id, |config| {
+                    config.model = Some(model_id.clone())
+                })?;
+            }
         }
         if let Some(mode_id) = &update.approval_policy {
             self.transport
@@ -772,6 +790,28 @@ impl AcpClient {
             })?;
         }
         Ok(self.require_session(session_id)?.config)
+    }
+
+    /// Changes one config option and keeps what the adapter says the session
+    /// is now. The answer carries every option with its current value, and it
+    /// is the answer that counts: the adapter resolves aliases, so what was
+    /// asked for and what was set can differ in name.
+    async fn set_standard_config_option(
+        &self,
+        session_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<(), AgentRuntimeError> {
+        let result = self
+            .transport
+            .request(
+                "session/set_config_option",
+                json!({ "sessionId": session_id, "configId": config_id, "value": value }),
+            )
+            .await?;
+        self.update_session_config(session_id, |config| {
+            apply_config_options(&result, config);
+        })
     }
 
     /// Select a model on a specific native session using its negotiated config protocol.
@@ -894,6 +934,7 @@ impl AcpClient {
                     commands: commands.clone(),
                     config: config.clone(),
                     config_protocol: protocol,
+                    config_option_ids: config_option_ids(&result),
                     prompt_updates: PromptUpdateRoute::default(),
                 },
             );
@@ -973,6 +1014,7 @@ impl AcpClient {
 struct AcpSessionSnapshot {
     config: AgentConversationConfigState,
     config_protocol: ConversationConfigProtocol,
+    config_option_ids: Vec<String>,
 }
 
 impl From<&AcpSessionState> for AcpSessionSnapshot {
@@ -981,6 +1023,7 @@ impl From<&AcpSessionState> for AcpSessionSnapshot {
         Self {
             config: state.config.clone(),
             config_protocol: state.config_protocol,
+            config_option_ids: state.config_option_ids.clone(),
         }
     }
 }
@@ -1191,6 +1234,64 @@ fn capability_at(value: &Value, path: &[&str]) -> bool {
     }
 }
 
+/// The ids of the config options a session result offers.
+fn config_option_ids(value: &Value) -> Vec<String> {
+    value
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|option| option.get("id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Reads the model, effort and mode out of a result's `configOptions`.
+///
+/// The current Claude adapter offers its model and effort as select options
+/// with a current value rather than as `models` and `_meta` fields. Anything
+/// the result already said in those forms wins; the options fill what is
+/// still empty, and a current value always names what the session is on now.
+fn apply_config_options(value: &Value, config: &mut AgentConversationConfigState) {
+    let options = value
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for option in options {
+        let current = option
+            .get("currentValue")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let values = option
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|choice| choice.get("value").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let (chosen, available) = match option.get("id").and_then(Value::as_str) {
+            Some("model") => (&mut config.model, &mut config.available_models),
+            Some("effort") => (
+                &mut config.reasoning_effort,
+                &mut config.available_efforts,
+            ),
+            Some("mode") => (
+                &mut config.approval_policy,
+                &mut config.available_approval_policies,
+            ),
+            _ => continue,
+        };
+        if current.is_some() {
+            *chosen = current;
+        }
+        if available.is_empty() {
+            *available = values;
+        }
+    }
+}
+
 fn parse_config_options(value: Option<&Value>) -> Vec<AgentConfigOption> {
     value
         .and_then(|value| serde_json::from_value(value.clone()).ok())
@@ -1303,6 +1404,7 @@ fn parse_standard_conversation_config(
             .map(str::to_string)
             .collect(),
     };
+    apply_config_options(value, &mut config);
     if provider == Some(AgentConversationProvider::Claude) {
         for model_id in CLAUDE_VERIFIED_EXTRA_MODELS {
             if !config
@@ -1372,6 +1474,8 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"usage_update","used":120,"size":4096}}}}}}\n'
       elif [ "$fixture" = "config_update_failure" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"availableEfforts":["low","medium","high","xhigh","max"]}}}}}}\n' "$id"
+      elif [ "$fixture" = "config_options" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","modes":{{"currentModeId":"auto","availableModes":[{{"id":"auto","name":"Auto"}},{{"id":"default","name":"Manual"}},{{"id":"acceptEdits","name":"Accept Edits"}}]}},"configOptions":[{{"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"auto","options":[{{"value":"auto","name":"Auto"}},{{"value":"default","name":"Manual"}},{{"value":"acceptEdits","name":"Accept Edits"}}]}},{{"id":"model","name":"Model","category":"model","type":"select","currentValue":"claude-fable-5[1m]","options":[{{"value":"default","name":"Default (recommended)"}},{{"value":"opus[1m]","name":"Opus (1M context)"}},{{"value":"claude-fable-5[1m]","name":"Fable"}},{{"value":"sonnet","name":"Sonnet"}},{{"value":"haiku","name":"Haiku"}}]}},{{"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"xhigh","options":[{{"value":"default","name":"Default"}},{{"value":"low","name":"Low"}},{{"value":"medium","name":"Medium"}},{{"value":"high","name":"High"}},{{"value":"xhigh","name":"Xhigh"}},{{"value":"max","name":"Max"}}]}}]}}}}\n' "$id"
       elif [ "$fixture" = "standard_config" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","models":{{"availableModels":[{{"modelId":"default","name":"Default (recommended)","description":"Opus 4.6 · Most capable for complex work"}},{{"modelId":"sonnet","name":"Sonnet","description":"Sonnet 4.5 · Best for everyday tasks"}},{{"modelId":"haiku","name":"Haiku","description":"Haiku 4.5 · Fastest for quick answers"}}],"currentModelId":"default"}},"modes":{{"currentModeId":"default","availableModes":[{{"id":"default","name":"Default","description":"Standard behavior, prompts for dangerous operations"}},{{"id":"acceptEdits","name":"Accept Edits","description":"Auto-accept file edit operations"}},{{"id":"plan","name":"Plan Mode","description":"Planning mode, no actual tool execution"}},{{"id":"dontAsk","name":"Dont Ask","description":"Deny operations that are not pre-approved"}},{{"id":"bypassPermissions","name":"Bypass Permissions","description":"Bypass all permission checks"}}]}}}}}}\n' "$id"
       else
@@ -1492,7 +1596,9 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
       fi ;;
 	    *'"method":"session/set_config_option"'*)
-      if [ "$fixture" = "config_update_failure" ]; then
+      if [ "$fixture" = "config_options" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"auto","options":[{{"value":"auto","name":"Auto"}},{{"value":"default","name":"Manual"}},{{"value":"acceptEdits","name":"Accept Edits"}}]}},{{"id":"model","name":"Model","category":"model","type":"select","currentValue":"sonnet","options":[{{"value":"default","name":"Default (recommended)"}},{{"value":"opus[1m]","name":"Opus (1M context)"}},{{"value":"claude-fable-5[1m]","name":"Fable"}},{{"value":"sonnet","name":"Sonnet"}},{{"value":"haiku","name":"Haiku"}}]}},{{"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"high","options":[{{"value":"default","name":"Default"}},{{"value":"low","name":"Low"}},{{"value":"medium","name":"Medium"}},{{"value":"high","name":"High"}},{{"value":"xhigh","name":"Xhigh"}},{{"value":"max","name":"Max"}}]}}]}}}}\n' "$id"
+      elif [ "$fixture" = "config_update_failure" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32002,"message":"fixture config update failed"}}}}\n' "$id"
       else
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"model":"gpt-5.6-terra","availableModels":["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],"reasoningEffort":"xhigh","availableEfforts":["low","medium","high","xhigh","max"],"approvalPolicy":"never","availableApprovalPolicies":["untrusted","on-request","never"],"configOptions":[{{"id":"model","label":"Model","category":"model","value":"new"}}]}}}}\n' "$id"
@@ -1841,6 +1947,76 @@ done"#,
         assert!(frames.contains(r#""method":"session/set_mode""#));
         assert!(frames.contains(r#""modeId":"bypassPermissions""#));
         assert!(!frames.contains("session/set_config_option"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The current Claude adapter answers session/new with `modes` and a list
+    /// of config options — the model and the effort are options with a
+    /// current value, not a `models` object — and has no session/set_model.
+    #[tokio::test(flavor = "current_thread")]
+    async fn acp_new_reads_model_and_effort_from_config_options_and_sets_them_the_same_way() {
+        let root = fixture_root();
+        let log = root.join("config-options.jsonl");
+        let mut client = AcpClient::spawn(
+            &fixture_manifest_named(&log, "config_options"),
+            &root,
+            "config-options",
+        )
+        .unwrap();
+        client
+            .initialize(AgentConversationProvider::Claude)
+            .await
+            .unwrap();
+
+        let started = client.new_session(&root).await.unwrap();
+        assert_eq!(started.config.model.as_deref(), Some("claude-fable-5[1m]"));
+        assert_eq!(
+            started.config.available_models,
+            vec![
+                "default".to_string(),
+                "opus[1m]".into(),
+                "claude-fable-5[1m]".into(),
+                "sonnet".into(),
+                "haiku".into(),
+                "opus".into(),
+                "claude-opus-5".into(),
+                "claude-fable-5".into(),
+            ]
+        );
+        assert_eq!(started.config.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(
+            started.config.available_efforts,
+            vec!["default", "low", "medium", "high", "xhigh", "max"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(started.config.approval_policy.as_deref(), Some("auto"));
+
+        let configured = client
+            .set_conversation_config_on(
+                &started.native_session_id,
+                &AgentConversationConfigUpdate {
+                    model: Some("sonnet".into()),
+                    reasoning_effort: Some("high".into()),
+                    approval_policy: Some("acceptEdits".into()),
+                },
+            )
+            .await
+            .unwrap();
+        // What the adapter says it is now, not what was asked for: the adapter
+        // resolves aliases ("opus" comes back as "opus[1m]").
+        assert_eq!(configured.model.as_deref(), Some("sonnet"));
+        assert_eq!(configured.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(configured.approval_policy.as_deref(), Some("acceptEdits"));
+
+        client.close().await.unwrap();
+        let frames = std::fs::read_to_string(&log).unwrap();
+        assert!(!frames.contains("session/set_model"), "the adapter has no session/set_model");
+        assert!(frames.contains(r#""configId":"model","value":"sonnet""#));
+        assert!(frames.contains(r#""configId":"effort","value":"high""#));
+        assert!(frames.contains(r#""method":"session/set_mode""#));
+        assert!(frames.contains(r#""modeId":"acceptEdits""#));
         std::fs::remove_dir_all(root).unwrap();
     }
 
