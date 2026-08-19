@@ -16,7 +16,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use sysinfo::{ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::State;
 
 use crate::debug_log::stderr_log;
@@ -413,18 +413,7 @@ pub async fn read_resource_sample(
         let mut system = system
             .lock()
             .map_err(|_| "Resource sampler is unavailable".to_string())?;
-        system.refresh_processes(ProcessesToUpdate::All, true);
-        let processes = system
-            .processes()
-            .values()
-            .map(|process| ObservedProcess {
-                pid: process.pid().as_u32(),
-                parent_pid: process.parent().map(|pid| pid.as_u32()),
-                name: process.name().to_string_lossy().into_owned(),
-                cpu_percent: process.cpu_usage(),
-                rss_bytes: process.memory(),
-            })
-            .collect::<Vec<_>>();
+        let processes = observe_processes(&mut system, std::process::id());
         let mut sample = build_resource_sample(
             resource_sample_timestamp_millis(),
             std::process::id(),
@@ -618,6 +607,98 @@ fn resource_sample_timestamp_millis() -> u128 {
         .as_millis()
 }
 
+/// Every process on the machine, measured the way Activity Monitor measures
+/// it and with the app's own helpers hung under the app.
+///
+/// The memory number is the physical footprint — Activity Monitor's Memory
+/// column — where the kernel will say, and the resident size where it will
+/// not (another user's process). The web view's helpers are launched by the
+/// system on the app's behalf, so their parent is launchd and a walk down
+/// from the app never meets them; the kernel still knows whose they are, and
+/// they are given the app as their parent here so the walk finds them.
+fn observe_processes(system: &mut System, app_pid: u32) -> Vec<ObservedProcess> {
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    let app_started_at = system
+        .process(Pid::from_u32(app_pid))
+        .map(|process| process.start_time())
+        .unwrap_or(0);
+    let app_responsible = responsible_pid(app_pid);
+    system
+        .processes()
+        .values()
+        .map(|process| {
+            let pid = process.pid().as_u32();
+            let name = process.name().to_string_lossy().into_owned();
+            let mut parent_pid = process.parent().map(|pid| pid.as_u32());
+            if webkit_helper_name(&name)
+                && webkit_helper_of_app(
+                    &name,
+                    responsible_pid(pid),
+                    process.start_time(),
+                    app_pid,
+                    app_responsible,
+                    app_started_at,
+                )
+            {
+                parent_pid = Some(app_pid);
+            }
+            ObservedProcess {
+                pid,
+                parent_pid,
+                name,
+                cpu_percent: process.cpu_usage(),
+                rss_bytes: mcb_core::scanners::resources::phys_footprint_bytes(pid)
+                    .unwrap_or_else(|| process.memory()),
+            }
+        })
+        .collect()
+}
+
+fn webkit_helper_name(name: &str) -> bool {
+    name.starts_with("com.apple.WebKit.")
+}
+
+/// Whether a WebKit helper was started for this app.
+///
+/// The kernel names the process each one runs on behalf of. An app opened
+/// from the Finder answers for itself and its helpers name it directly; an
+/// app started from a terminal is answered for by that terminal, and so are
+/// its helpers, so the two are compared through what answers for them. A
+/// helper older than the app was started for something else.
+fn webkit_helper_of_app(
+    name: &str,
+    responsible: Option<u32>,
+    started_at: u64,
+    app_pid: u32,
+    app_responsible: Option<u32>,
+    app_started_at: u64,
+) -> bool {
+    webkit_helper_name(name)
+        && started_at >= app_started_at
+        && responsible.is_some_and(|responsible| {
+            responsible == app_pid || Some(responsible) == app_responsible
+        })
+}
+
+/// The process the kernel holds responsible for `pid` — the app for a helper
+/// it started, the terminal for a program run from one — or `None` when it
+/// will not say.
+#[cfg(target_os = "macos")]
+fn responsible_pid(pid: u32) -> Option<u32> {
+    extern "C" {
+        fn responsibility_get_pid_responsible_for_pid(pid: libc::pid_t) -> libc::pid_t;
+    }
+    // SAFETY: the call takes a pid by value and answers with one; it touches
+    // no memory of ours.
+    let answer = unsafe { responsibility_get_pid_responsible_for_pid(pid as libc::pid_t) };
+    (answer > 0).then_some(answer as u32)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn responsible_pid(_pid: u32) -> Option<u32> {
+    None
+}
+
 fn descendant_distances(root_pid: u32, processes: &[ObservedProcess]) -> Vec<(u32, usize)> {
     let process_ids = processes
         .iter()
@@ -679,6 +760,13 @@ fn sample_process(process: &ObservedProcess) -> ResourceSampleProcess {
 fn app_part_label(process: &ObservedProcess, app_pid: u32) -> String {
     if process.pid == app_pid {
         return "Main process".to_string();
+    }
+    // The web view's helpers, named as Activity Monitor names them.
+    match process.name.as_str() {
+        "com.apple.WebKit.WebContent" => return "Web content".to_string(),
+        "com.apple.WebKit.Networking" => return "Networking".to_string(),
+        "com.apple.WebKit.GPU" => return "Graphics and Media".to_string(),
+        _ => {}
     }
     let name = process.name.to_ascii_lowercase();
     if name.contains("webview") || name.contains("webkit") || name.contains("renderer") {
@@ -1237,18 +1325,7 @@ pub async fn stop_resource_process_tree(
             let mut system = system
                 .lock()
                 .map_err(|_| "Resource sampler is unavailable".to_string())?;
-            system.refresh_processes(ProcessesToUpdate::All, true);
-            system
-                .processes()
-                .values()
-                .map(|process| ObservedProcess {
-                    pid: process.pid().as_u32(),
-                    parent_pid: process.parent().map(|pid| pid.as_u32()),
-                    name: process.name().to_string_lossy().into_owned(),
-                    cpu_percent: process.cpu_usage(),
-                    rss_bytes: process.memory(),
-                })
-                .collect::<Vec<_>>()
+            observe_processes(&mut system, std::process::id())
         };
 
         let plan = select_stop_targets(
@@ -1757,6 +1834,77 @@ mod tests {
         assert_eq!(
             select_stop_targets(10, 1, &owners, &empty, &[10]),
             Err(ResourceStopTargetError::RootGone)
+        );
+    }
+
+    /// The web view's helpers are launched by the system on the app's
+    /// behalf, so their parent is launchd and a walk down from the app never
+    /// meets them. The kernel still knows whose they are, and Activity
+    /// Monitor lists them under the app: so does this.
+    #[test]
+    fn webkit_helpers_the_kernel_says_are_ours_belong_to_the_app() {
+        // The app itself, launched from a terminal: the terminal is what the
+        // kernel holds responsible for it, and for the helpers it started.
+        assert!(webkit_helper_of_app(
+            "com.apple.WebKit.WebContent",
+            Some(500),
+            1_000,
+            100,
+            Some(500),
+            90,
+        ));
+        // Launched from the Finder, the app answers for itself.
+        assert!(webkit_helper_of_app(
+            "com.apple.WebKit.Networking",
+            Some(100),
+            1_000,
+            100,
+            Some(100),
+            90,
+        ));
+        // Another program's helper, however similar its name.
+        assert!(!webkit_helper_of_app(
+            "com.apple.WebKit.GPU",
+            Some(700),
+            1_000,
+            100,
+            Some(500),
+            90,
+        ));
+        // A helper older than the app was not started for it.
+        assert!(!webkit_helper_of_app(
+            "com.apple.WebKit.GPU",
+            Some(500),
+            80,
+            100,
+            Some(500),
+            90,
+        ));
+        // Not a WebKit helper at all.
+        assert!(!webkit_helper_of_app("node", Some(500), 1_000, 100, Some(500), 90));
+    }
+
+    #[test]
+    fn app_helpers_are_named_the_way_activity_monitor_names_them() {
+        let label = |name: &str| app_part_label(&observed(20, Some(1), name, 0.0, 1), 10);
+        assert_eq!(label("com.apple.WebKit.WebContent"), "Web content");
+        assert_eq!(label("com.apple.WebKit.Networking"), "Networking");
+        assert_eq!(label("com.apple.WebKit.GPU"), "Graphics and Media");
+    }
+
+    /// The number beside a process is the one Activity Monitor shows: the
+    /// physical footprint, not the resident size.
+    #[test]
+    fn a_process_is_measured_by_its_physical_footprint() {
+        let processes = observe_processes(&mut System::new(), std::process::id());
+        let this = processes
+            .iter()
+            .find(|process| process.pid == std::process::id())
+            .expect("the running process is observed");
+        assert_eq!(
+            Some(this.rss_bytes),
+            mcb_core::scanners::resources::phys_footprint_bytes(std::process::id()),
+            "the footprint is what is reported"
         );
     }
 

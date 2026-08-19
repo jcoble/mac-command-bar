@@ -308,7 +308,7 @@ pub fn join_resource_identities(
 /// v0 flavour of that struct since the call existed, so asking for v0 rather
 /// than "current" keeps this independent of which SDK built the binary.
 #[cfg(target_os = "macos")]
-fn phys_footprint_bytes(pid: u32) -> Option<u64> {
+pub fn phys_footprint_bytes(pid: u32) -> Option<u64> {
     #[repr(C)]
     #[derive(Default)]
     struct RusageInfoV0 {
@@ -351,7 +351,7 @@ fn phys_footprint_bytes(pid: u32) -> Option<u64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn phys_footprint_bytes(_pid: u32) -> Option<u64> {
+pub fn phys_footprint_bytes(_pid: u32) -> Option<u64> {
     None
 }
 
