@@ -107,8 +107,17 @@ const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'tasks'
 ]);
 
-function displayItemCompleted(item: ConversationDisplayItem): boolean {
-  if (typeof item.completed === 'boolean') return item.completed;
+/** Whether a row has stopped waiting on anything.
+ *
+ * Only a row that waits can say its turn is unfinished: a tool that has not
+ * returned, a sub-agent still working, a request sitting in front of the
+ * reader. Writing is not waiting. This used to read the `completed` flag on
+ * every row first, and a message is marked unfinished the moment its first
+ * chunk arrives and is never marked finished afterwards — the provider streams
+ * the text and sends nothing to say it ended. So every turn holding a reply
+ * counted as unfinished for ever, and the fold that only a finished turn draws
+ * never appeared again once a conversation had any writing in it. */
+function turnItemSettled(item: ConversationDisplayItem): boolean {
   if (item.kind === 'tool') return item.state === 'completed' || item.state === 'failed';
   if (item.kind === 'subagent') {
     return ['completed', 'complete', 'failed', 'cancelled', 'canceled', 'stopped', 'done']
@@ -127,7 +136,7 @@ function displayItemCompleted(item: ConversationDisplayItem): boolean {
   return true;
 }
 
-function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], activeTurnId: string | null): ConversationTurnGroup {
+function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], running: boolean): ConversationTurnGroup {
   let tailStart = items.length;
   while (tailStart > 0 && items[tailStart - 1].kind === 'assistant') tailStart -= 1;
   const hasFoldableWork = items.some((item) => FOLDABLE_TURN_KINDS.has(item.kind));
@@ -154,7 +163,7 @@ function turnGroup(turnId: string | null, items: readonly ConversationDisplayIte
     items,
     workItemIds,
     tailItemIds,
-    completed: turnId !== activeTurnId && items.every(displayItemCompleted),
+    completed: !running && items.every(turnItemSettled),
     elapsedMs
   };
 }
@@ -171,38 +180,45 @@ function turnGroup(turnId: string | null, items: readonly ConversationDisplayIte
  * A prompt is what starts a turn, so a user message is where a stored turn
  * begins and everything after it belongs to that turn until the next prompt.
  * The id is the first row's own id, which keeps it stable across re-renders —
- * the fold's open state is keyed by it. */
+ * the fold's open state is keyed by it.
+ *
+ * A row that carries no id of its own carries on the turn it sits in, whether
+ * that turn was named by the agent or read off a prompt. Some rows are written
+ * by this app rather than by the agent — a compaction marker is — and starting
+ * a new turn at one of those cut the turn it interrupted in half. */
 function turnIdsOf(items: readonly ConversationDisplayItem[]): (string | null)[] {
-  let storedTurnId: string | null = null;
+  let currentTurnId: string | null = null;
   return items.map((item) => {
-    if (item.turnId) return item.turnId;
-    if (item.kind === 'user' || storedTurnId === null) storedTurnId = `stored-turn:${item.itemId}`;
-    return storedTurnId;
+    if (item.turnId) currentTurnId = item.turnId;
+    else if (item.kind === 'user' || currentTurnId === null) currentTurnId = `stored-turn:${item.itemId}`;
+    return currentTurnId;
   });
 }
 
-/** Groups adjacent display rows without changing their transcript order. */
+/** Groups adjacent display rows without changing their transcript order.
+ *
+ * The turn the agent is still writing into is the newest one. It cannot be
+ * found by matching `activeTurnId` against the rows: most providers put no turn
+ * id on what they send, so the rows of a live turn carry an id read off the
+ * prompt that opened it, which is never the id the session reports. There is a
+ * turn running only while the session names one, and while one runs it is the
+ * last group. */
 export function conversationTurnGroups(
   items: readonly ConversationDisplayItem[],
   activeTurnId: string | null = null
 ): readonly ConversationTurnGroup[] {
   const turnIds = turnIdsOf(items);
-  const groups: ConversationTurnGroup[] = [];
-  let groupItems: ConversationDisplayItem[] = [];
-  let groupTurnId: string | null = null;
-  const publish = (): void => {
-    if (groupItems.length === 0) return;
-    groups.push(turnGroup(groupTurnId, groupItems, activeTurnId));
-    groupItems = [];
-  };
+  const partitions: { turnId: string | null; items: ConversationDisplayItem[] }[] = [];
   items.forEach((item, index) => {
-    const itemTurnId = turnIds[index];
-    if (groupItems.length > 0 && itemTurnId !== groupTurnId) publish();
-    groupTurnId = itemTurnId;
-    groupItems.push(item);
+    const open = partitions[partitions.length - 1];
+    if (open && turnIds[index] === open.turnId) open.items.push(item);
+    else partitions.push({ turnId: turnIds[index], items: [item] });
   });
-  publish();
-  return groups;
+  return partitions.map((partition, index) => turnGroup(
+    partition.turnId,
+    partition.items,
+    activeTurnId !== null && index === partitions.length - 1
+  ));
 }
 
 export function formatWorkedFor(elapsedMs: number): string {

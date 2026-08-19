@@ -198,6 +198,66 @@ const instant = conversationTurnGroups([
 ]);
 assert.equal(instant[0].elapsedMs, null, 'a turn that spans no time reports no elapsed time');
 
+// A streamed reply is opened and never closed: the provider sends the text in
+// chunks and no event afterwards says the message ended, so every assistant
+// row in a finished transcript still reads as unfinished. A turn is finished
+// when nothing in it is still waiting, not when every row says it stopped
+// writing.
+const streamedReply = conversationTurnGroups([
+  textItem('user', 'streamed-user', 'streamed-turn', 0),
+  toolItem('streamed-tool-a', 'streamed-turn', 60_000),
+  toolItem('streamed-tool-b', 'streamed-turn', 120_000),
+  textItem('assistant', 'streamed-answer', 'streamed-turn', 840_000, false)
+]);
+assert.equal(streamedReply.length, 1, 'a finished turn is one group');
+assert.equal(streamedReply[0].completed, true, 'a finished turn folds even though its reply still reads as streaming');
+assert.equal(streamedReply[0].elapsedMs, 840_000);
+assert.equal(formatWorkedFor(840_000), '14m 0s');
+assert.deepEqual(
+  streamedReply[0].workItemIds,
+  ['streamed-tool-a', 'streamed-tool-b'],
+  'the tool calls are what the fold hides'
+);
+assert.deepEqual(
+  streamedReply[0].tailItemIds,
+  ['streamed-user', 'streamed-answer'],
+  'the prompt and the reply stay on screen while the turn is collapsed'
+);
+
+// A compaction marker is recorded by the app rather than by the agent, so it
+// arrives without the turn id the rows around it carry. It belongs to the turn
+// it interrupts; treating it as the start of another one cut the turn in two
+// and lost the fold over both halves.
+const compacted = conversationTurnGroups([
+  textItem('user', 'compacted-user', 'compacted-turn', 0),
+  toolItem('compacted-tool-a', 'compacted-turn', 60_000),
+  { kind: 'compaction', itemId: 'compacted-marker', turnId: null, timestampMs: 120_000 },
+  toolItem('compacted-tool-b', 'compacted-turn', 180_000),
+  textItem('assistant', 'compacted-answer', 'compacted-turn', 840_000, false)
+]);
+assert.equal(compacted.length, 1, 'a compaction marker stays inside the turn it interrupts');
+assert.equal(compacted[0].completed, true, 'the turn still folds around the marker');
+assert.deepEqual(
+  compacted[0].workItemIds,
+  ['compacted-tool-a', 'compacted-tool-b'],
+  'both halves of the interrupted turn fold together'
+);
+
+// Nothing folds while the agent is still writing. Most providers put no turn id
+// on the rows they send, so the running turn cannot be found by matching ids —
+// it is the newest turn, and there is a running turn only while one is named.
+const writing = conversationTurnGroups([
+  textItem('user', 'writing-user-a', null, 0),
+  toolItem('writing-tool-a', null, 1_000),
+  textItem('assistant', 'writing-answer-a', null, 2_000, false),
+  textItem('user', 'writing-user-b', null, 3_000),
+  toolItem('writing-tool-b', null, 4_000),
+  textItem('assistant', 'writing-answer-b', null, 5_000, false)
+], 'turn-the-agent-is-writing');
+assert.equal(writing.length, 2);
+assert.equal(writing[0].completed, true, 'an earlier turn folds while a later one runs');
+assert.equal(writing[1].completed, false, 'the turn being written never folds');
+
 assert.equal(formatWorkedFor(800), '0.8s');
 assert.equal(formatWorkedFor(5_540), '5.5s');
 assert.equal(formatWorkedFor(42_100), '42s');
