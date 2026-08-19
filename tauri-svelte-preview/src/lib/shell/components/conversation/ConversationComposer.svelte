@@ -31,6 +31,9 @@
     commands: readonly ConversationCommand[];
     contextMeter?: ContextMeterState | null;
     attachmentError?: string;
+    /** Clears the attachment failure. Given only where the failure is
+     * per-session state that can be cleared; the draft composer has none. */
+    onDismissAttachmentError?(): void;
     sendError?: string;
     /** Clears the send failure. Given only where the failure is per-session
      * state that can be cleared; the draft composer has none. */
@@ -69,6 +72,7 @@
     commands,
     contextMeter = null,
     attachmentError = '',
+    onDismissAttachmentError,
     sendError = '',
     onDismissSendError,
     pendingApproval = null,
@@ -158,7 +162,7 @@
   const bannerItems = $derived.by((): ComposerBannerItem[] => {
     const items: ComposerBannerItem[] = [];
     if (sendError) items.push({ id: 'send-error', variant: 'error', title: 'Message not sent', description: sendError, dismissLabel: 'Dismiss send failure', onDismiss: onDismissSendError });
-    if (attachmentError) items.push({ id: 'attachment-error', variant: 'error', title: 'Attachment unavailable', description: attachmentError });
+    if (attachmentError) items.push({ id: 'attachment-error', variant: 'error', title: 'Attachment unavailable', description: attachmentError, dismissLabel: 'Dismiss attachment failure', onDismiss: onDismissAttachmentError });
     if (configError) items.push({ id: 'config-error', variant: 'warning', title: 'Settings unavailable', description: configError });
     return items;
   });

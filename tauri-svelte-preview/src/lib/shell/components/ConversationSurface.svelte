@@ -12,6 +12,7 @@
     failConversationAgentConfigChange,
     setConversationAgentConfigError,
     setConversationAgentConfigState,
+    setConversationAttachmentError,
     setConversationAttachments,
     setConversationDraft,
     setConversationSendError,
@@ -132,10 +133,10 @@
     contextMeterState(contextUsage.usedTokens, contextUsage.contextWindow)
   );
 
-  let attachmentError = $state('');
   // Read from the session rather than held here: this surface is mounted once
   // for the whole shell, so a failure kept in component state was shown under
   // every conversation and survived the send that fixed it.
+  const attachmentError = $derived(conversation?.attachmentError ?? '');
   const sendError = $derived(conversation?.sendError ?? '');
   let capabilityRequest = $state('');
   let configRequest = $state('');
@@ -294,9 +295,9 @@
   async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
     if (!active || !conversation || conversation.selectedChildId) return;
     const images = files.filter((file) => file.type.startsWith('image/'));
-    attachmentError = '';
+    setConversationAttachmentError(active.ownedId, '');
     if (images.length === 0) {
-      attachmentError = rejectedMessage;
+      setConversationAttachmentError(active.ownedId, rejectedMessage);
       return;
     }
     const saved = [];
@@ -305,7 +306,7 @@
       setConversationAttachments(active.ownedId, [...conversation.attachments, ...saved]);
     } catch (error) {
       await Promise.all(saved.map((attachment) => cleanupConversationAttachment(active.ownedId, attachment).catch(() => undefined)));
-      attachmentError = error instanceof Error ? error.message : String(error);
+      setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
       // Draft and existing attachments remain untouched after a failed paste.
     }
   }
@@ -316,9 +317,9 @@
     if (!found) return;
     try {
       await removeConversationAttachment(active.ownedId, found);
-      attachmentError = '';
+      setConversationAttachmentError(active.ownedId, '');
     } catch (error) {
-      attachmentError = error instanceof Error ? error.message : String(error);
+      setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -336,31 +337,35 @@
 
   function onApprovalDecision(requestId: string, optionId: string): void {
     if (!active || !optionId) return;
-    void sendPermissionResponse(active.ownedId, requestId, optionId).catch((error) => {
-      attachmentError = error instanceof Error ? error.message : String(error);
+    const ownedId = active.ownedId;
+    void sendPermissionResponse(ownedId, requestId, optionId).catch((error) => {
+      setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
     });
   }
 
   function onInputSubmit(requestId: string, values: Record<string, AgentConfigValue>, cancelled = false): void {
     if (!active) return;
-    void respondToStructuredInput(active.ownedId, { requestId, values, cancelled }).catch((error) => {
-      attachmentError = error instanceof Error ? error.message : String(error);
+    const ownedId = active.ownedId;
+    void respondToStructuredInput(ownedId, { requestId, values, cancelled }).catch((error) => {
+      setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
     });
   }
 
   function openConversationFile(path: string): void {
-    const root = (active?.cwd || active?.projectPath || '').replace(/\/+$/, '');
+    if (!active) return;
+    const root = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
     const candidate = path.trim();
     if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
-      attachmentError = 'The file link is outside the active workspace.';
+      // Nothing here resolves to a file, so there is nothing to open.
+      setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
       return;
     }
     const absolute = candidate.startsWith('/') ? candidate : `${root}/${candidate.replace(/^\.\//, '')}`;
-    if (absolute !== root && !absolute.startsWith(`${root}/`)) {
-      attachmentError = 'The file link is outside the active workspace.';
-      return;
-    }
-    requestOpenFile({ path: absolute, projectRoot: root });
+    // A link that lands outside the workspace still opens, read-only: reading a
+    // file this session does not own is safe, and refusing it left the reader
+    // with a notice and no way to see what the link pointed at.
+    const outside = absolute !== root && !absolute.startsWith(`${root}/`);
+    requestOpenFile({ path: absolute, projectRoot: root, readOnly: outside });
   }
 
   async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {
@@ -452,6 +457,7 @@
           pendingInputs={pendingInputs}
           {attachmentError}
           {sendError}
+          onDismissAttachmentError={() => setConversationAttachmentError(active.ownedId, '')}
           onDismissSendError={() => setConversationSendError(active.ownedId, '')}
           onDraftChange={(value) => {
             setConversationDraft(active.ownedId, value);

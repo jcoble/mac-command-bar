@@ -12,6 +12,9 @@ export interface OpenFileRequest {
   path: string;
   /** Workspace that owns the file, when the producer already knows it. */
   projectRoot?: string;
+  /** Open for reading only: no editing, no saving. Set by producers that know
+   * the file is not the active workspace's to change. */
+  readOnly?: boolean;
   /** 1-based line to reveal, if any. */
   line?: number;
   /** 1-based column to reveal, if any. */

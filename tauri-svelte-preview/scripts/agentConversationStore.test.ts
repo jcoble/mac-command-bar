@@ -280,6 +280,34 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   assert.equal(store.getConversationSession('owned-a').sendError, '', 'the next send clears the session it belongs to');
 }
 
+// An attachment failure belongs to its session for the same reason, and the
+// notice carries a dismiss: held on the surface it could not be cleared at all
+// and followed the reader into every other conversation.
+{
+  store.setConversationAttachmentError('owned-a', 'That file link could not be opened.');
+  assert.equal(
+    store.getConversationSession('owned-a').attachmentError,
+    'That file link could not be opened.'
+  );
+  assert.equal(
+    store.getConversationSession('owned-b').attachmentError,
+    '',
+    'an attachment failure in one session never surfaces in another'
+  );
+  store.setConversationAttachmentError('owned-a', '');
+  assert.equal(
+    store.getConversationSession('owned-a').attachmentError,
+    '',
+    'dismissing the notice clears the session it belongs to'
+  );
+}
+
+// A file link that lands outside the workspace opens read-only rather than
+// leaving a notice: reading a file the session does not own is safe, and
+// refusing it left no way to see what the link pointed at.
+assert.match(surfaceSource, /readOnly: outside/);
+assert.doesNotMatch(surfaceSource, /outside the active workspace/);
+
 // Re-ensuring a suspended session opens a new adapter incarnation that has no
 // events of its own yet, so the snapshot's history all belongs to the previous
 // one. The replayed transcript must survive and the session must still hold the

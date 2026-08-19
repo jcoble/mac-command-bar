@@ -73,6 +73,9 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
    * the surface is one component for every session, so a failure kept there
    * showed up under every conversation and outlived the one it belonged to. */
   sendError: string;
+  /** Why this session could not take on an attachment or open a file link,
+   * held beside its own draft for the same reason as `sendError`. */
+  attachmentError: string;
   mode: ConversationViewMode;
   sending: boolean;
   attachments: ConversationAttachment[];
@@ -142,6 +145,7 @@ function freshState(
     ...createConversationState(ownedId, provider),
     draft: '',
     sendError: '',
+    attachmentError: '',
     mode: 'structured',
     sending: false,
     attachments: [],
@@ -638,6 +642,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     timelineRevision: current.timelineRevision + 1,
     draft: current.draft,
     sendError: current.sendError,
+    attachmentError: current.attachmentError,
     mode: current.mode,
     sending: current.sending,
     attachments: current.attachments,
@@ -1311,6 +1316,13 @@ export function setConversationSendError(ownedId: string, message: string): void
   const current = conversationSessions[ownedId];
   if (!current || current.sendError === message) return;
   current.sendError = message;
+}
+
+/** Record or clear this session's attachment or file-link failure. */
+export function setConversationAttachmentError(ownedId: string, message: string): void {
+  const current = conversationSessions[ownedId];
+  if (!current || current.attachmentError === message) return;
+  current.attachmentError = message;
 }
 
 export function setConversationMode(ownedId: string, mode: ConversationViewMode): void {
