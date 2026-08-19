@@ -10,10 +10,14 @@
     removed: number;
   }
 
-  let { plan, fileChanges = null, expanded, onToggle }: {
+  let { plan, fileChanges = null, expanded, running, onToggle }: {
     plan: Extract<ConversationDisplayItem, { kind: 'plan' }>;
     fileChanges?: PlanFileChanges | null;
     expanded: boolean;
+    /** Whether the session is working right now. A turn cancelled with a step
+     * still marked in progress leaves that mark behind, and an idle app spun
+     * the glyph over it for as long as the plan stayed on screen. */
+    running: boolean;
     onToggle(): void;
   } = $props();
 
@@ -41,7 +45,7 @@
 </script>
 
 {#snippet stateGlyph(state: AgentPlanStep['state'])}
-  <span class="glyph" data-state={state} aria-hidden="true">
+  <span class="glyph" class:running data-state={state} aria-hidden="true">
     <svg viewBox="0 0 16 16">
       <circle class="glyph-track" cx="8" cy="8" r="6" />
       <circle class="glyph-arc" cx="8" cy="8" r="6" pathLength="100" />
@@ -158,6 +162,8 @@
     stroke-linecap: round;
     stroke-dasharray: 30 100;
     transform-origin: 50% 50%;
+  }
+  .glyph.running[data-state='in-progress'] .glyph-arc {
     animation: plan-glyph-spin 1.3s linear infinite;
   }
   .glyph[data-state='completed'] .glyph-track { fill: var(--color-accent); stroke: var(--color-accent); }
@@ -168,6 +174,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .plan-pill, .plan-panel { transition: none; }
-    .glyph[data-state='in-progress'] .glyph-arc { animation: none; }
+    .glyph.running[data-state='in-progress'] .glyph-arc { animation: none; }
   }
 </style>

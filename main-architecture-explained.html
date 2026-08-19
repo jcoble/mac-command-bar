@@ -616,7 +616,7 @@
             <span class="badge limit">What does not exist yet</span>
             <h3>Assembly-owned compaction</h3>
             <p>There is no backend summarizer, compaction table, or Assembly-owned compaction boundary in this worktree. What does exist: when the <em>provider</em> compacts its own context, the adapter reports it, Rust records a <code>contextCompaction</code> event, and the transcript shows a marker. The compaction section designs the Assembly-owned addition and marks it as proposed.</p>
-            <span class="source"><code>conversationTypes.ts:231-280,648-683</code> · <code>session_store.rs:184-223</code> · <code>manager.rs:4496-4510</code></span>
+            <span class="source"><code>conversationTypes.ts:231-280,648-683</code> · <code>session_store.rs:184-223</code> · <code>manager.rs:4521-4535</code></span>
           </article>
         </div>
       </section>
@@ -658,6 +658,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-19 · “Keep a session’s record across a live effort change”</td><td>Ensuring a session matches the effort it is on now rather than the one it was created with, so the send that follows an effort change is recognised as the same session instead of replacing it and losing its name, the name’s source, its model and its approval policy. A generation that genuinely is replaced now carries the previous one’s name and name source forward, and saving a rail row that names no effort no longer wipes the effort the session is on.</td><td>04, 06, 07, 10</td></tr>
             <tr><td>2026-08-19 · session titles from the helper after the first turn; schema v4 <code>title_source</code></td><td>A session keeps the first words of its prompt only until its first turn ends; the helper model is then asked to name it from that prompt and the reply, and the answer is saved and shown on the rail. <code>sessions.db</code> reaches version 4 with a <code>title_source</code> column recording whether a name came from the prompt, the helper, or the person, so a name typed by hand is never written over.</td><td>01, 10, 19</td></tr>
             <tr><td>2026-08-19 · “Antigravity runs as a third provider”</td><td>The Agy adapter is tracked at <code>tools/agy-acp/</code> instead of the recon artifact tree, and <code>dev-next.sh</code> builds it when it is missing or stale. An Antigravity session says once that it runs with its own permission mode, drops images before a send and says so, and offers the models <code>agy</code> itself names. A test pins that its sessions are never pooled onto one adapter process.</td><td>04, 19</td></tr>
             <tr><td>2026-08-19 · approval policy survives reactivation; validated against the running adapter</td><td>Reactivating a session asks the adapter for the approval policy the session is on, so a policy chosen mid-conversation is no longer undone when the adapter restarts; a policy change is checked against the list the running adapter reports rather than the snapshot a suspended session carries.</td><td>07</td></tr>
@@ -785,7 +786,7 @@
             <p><strong>Manifest ID:</strong> <code>claude-agent-acp</code> — <code>@agentclientprotocol/claude-agent-acp</code> 0.70.0, the version <code>CLAUDE_AGENT_ACP_VERSION</code> declares. It bundles its own Claude Code SDK and CLI; <code>CLAUDE_CODE_EXECUTABLE</code> in its environment is honoured, and an inherited <code>MAX_THINKING_TOKENS</code> is scrubbed so the adapter’s own effort option is the only way effort is set.</p>
             <p><strong>Actual launcher:</strong> the development script requires the installed command <code>claude-agent-acp</code> (no fallback to the retired <code>claude-code-acp</code>), regenerates <code>~/.mac-command-bar/claude-acp-wrapper.sh</code>, and unsets nested Claude session environment markers before launching it.</p>
             <p>Its implementation is external to this repository. Assembly treats it as an ACP agent and learns its session, image, command, and interaction capabilities during <code>initialize</code>. <code>session/new</code> answers with <code>modes</code> and <code>configOptions</code> (<code>mode</code>, <code>model</code>, <code>effort</code>, <code>agent</code>) rather than a <code>models</code> list; the client remembers the offered option ids and changes model or effort with <code>session/set_config_option</code>, whose reply carries the whole option set back. The adapter has no <code>session/set_model</code>. A new session takes whatever the adapter reports; the model and effort chosen for the conversation are then asked of it, and the reply names what the session is actually on — a request the adapter resolves to something else is shown resolved, not as typed. Effort is no longer fixed when the process starts, so it can change at any point in a conversation; the “Effort is set when the session starts” refusal is reserved for an adapter that reports no effort option at all.</p>
-            <span class="source"><code>scripts/dev-next.sh:21-90</code> · <code>capabilities.rs:11</code> · <code>providers/acp_client.rs:58-60,748-815,1238-1293</code> · <code>manager.rs:988-1016,1627-1640,4996-5022</code> · <code>providers/mod.rs:175-226</code></span>
+            <span class="source"><code>scripts/dev-next.sh:21-90</code> · <code>capabilities.rs:11</code> · <code>providers/acp_client.rs:58-60,748-815,1238-1293</code> · <code>manager.rs:1067-1100,1694-1811,5277-5319</code> · <code>providers/mod.rs:175-226</code></span>
           </article>
           <article class="provider-card">
             <span class="badge conditional">Tracked adapter, registered when agy is installed</span>
@@ -795,7 +796,7 @@
             <p><strong>What it implements:</strong> the <code>initialize</code> handshake (<code>loadSession</code> and <code>sessionCapabilities.resume</code>), <code>session/new</code>, streamed <code>agent_message_chunk</code> and <code>agent_thought_chunk</code> updates, tool calls with their inputs and outputs, <code>session/cancel</code>, <code>session/load</code> and <code>session/resume</code> against a store of its own, and a model list — all of it translated into <code>agy --output-format stream-json</code>. A model is named by the display name <code>agy models</code> prints (“Gemini 3.7 Flash (High)”), and the speed tiers are separate models rather than an effort setting, so an Antigravity session reports models and no effort control at all.</p>
             <p><strong>What it does not do:</strong> it never sends <code>session/request_permission</code>, because <code>agy</code> has no way to hand a permission question to an ACP host — which is why the wrapper skips them. An Antigravity conversation therefore says so once beside the composer rather than ever showing an approval panel. It reads only the words of a prompt, so images are dropped before a send and the same notice says they were left out. It reports no token usage and no plan updates: the Context panel names the provider that did not report a figure, and a plan is drawn only when plan steps arrive, so both are quiet absences rather than holes.</p>
             <p>Its <code>session/new</code> also ignores the folder it is handed — the adapter’s working directory is fixed when its process starts. That is correct only because every Antigravity session gets a process of its own: the adapter advertises no multi-session support, and the manager pools sessions onto one process only when a provider does. A test pins the pairing so pooling cannot be turned on without teaching the adapter about folders first.</p>
-            <span class="source"><code>scripts/dev-next.sh:96-141</code> · <code>tools/agy-acp/src/adapter.rs:35-46,238-273,487-660</code> · <code>tools/agy-acp/README.md:60-61</code> · <code>capabilities.rs:12</code> · <code>manager.rs:924,4931-4933</code> · <code>conversationStore.svelte.ts:59-67,162</code> · <code>conversationService.ts:700-712</code></span>
+            <span class="source"><code>scripts/dev-next.sh:96-141</code> · <code>tools/agy-acp/src/adapter.rs:35-46,238-273,487-660</code> · <code>tools/agy-acp/README.md:60-61</code> · <code>capabilities.rs:12</code> · <code>manager.rs:998,5213-5215</code> · <code>conversationStore.svelte.ts:59-67,162</code> · <code>conversationService.ts:712-725</code></span>
           </article>
         </div>
 
@@ -835,7 +836,7 @@
 
         <div class="callout current">
           <p><strong>Resource-saving starts at launch:</strong> a hundred suspended rows in SQLite do not mean a hundred adapter processes. Selecting a row loads its journal; the first operation that needs a provider calls <code>activate</code>.</p>
-          <span class="source"><code>main.rs:5870-5903</code> · <code>manager.rs:272-322,2700-2805</code> · <code>routes/next/+page.svelte:1395-1551</code></span>
+          <span class="source"><code>main.rs:5870-5903</code> · <code>manager.rs:272-322,2725-2830</code> · <code>routes/next/+page.svelte:1395-1551</code></span>
         </div>
       </section>
 
@@ -855,7 +856,7 @@
             <span class="badge current">Existing provider session</span>
             <h3>Load or resume by native ID</h3>
             <p>An adopted scanner record gets a new stable <code>ownedId</code> and keeps the provider’s ID as <code>nativeSessionId</code>. Structured activation selects <code>session/load</code> or <code>session/resume</code> according to the stored mode and negotiated capabilities.</p>
-            <span class="source"><code>routes/next/+page.svelte:1010-1054</code> · <code>manager.rs:749-1111</code></span>
+            <span class="source"><code>routes/next/+page.svelte:1010-1054</code> · <code>manager.rs:763-1133</code></span>
           </article>
         </div>
 
@@ -870,7 +871,7 @@
             <tr><td><code>delete</code></td><td>Behind <code>delete_agent_conversation_session</code> (the rail’s Remove): closes the conversation if it is running, forgets it in the live map, and deletes the SQLite row, which cascades events, draft, annotations, and attachment rows.</td><td>It does not touch the provider’s own transcript or native session.</td></tr>
           </tbody>
         </table>
-        <span class="source"><code>agent_conversation/mod.rs:123-144,342-347</code> · <code>manager.rs:1122-1153,2258-2285</code></span>
+        <span class="source"><code>agent_conversation/mod.rs:123-144,342-347</code> · <code>manager.rs:1144-1175,2283-2310</code></span>
 
         <div class="callout conditional">
           <p><strong>Pooling is capability-driven.</strong> A single adapter process may host multiple native sessions only if the adapter advertises that this is safe. Otherwise each active conversation gets its own sidecar. The manager never assumes multi-session safety.</p>
@@ -902,7 +903,7 @@
 
         <div class="callout current">
           <p><strong>The app sends the current prompt, not the entire transcript.</strong> The provider resumes its own native context. Assembly’s journal is the durable UI/audit copy; it is not re-uploaded as model context on every message.</p>
-          <span class="source"><code>conversationService.ts:609-752</code> · <code>manager.rs:1122-1194,2905-3014,3078-3101,3738-3972</code></span>
+          <span class="source"><code>conversationService.ts:609-752</code> · <code>manager.rs:1144-1216,2930-3039,3103-3126,3763-3997</code></span>
         </div>
       </section>
 
@@ -983,12 +984,12 @@
 
         <div class="callout current">
           <p><strong>Detach is not close.</strong> Detach releases transport/process resources but preserves the provider session for resume. Close intentionally closes the native session. Those operations must never be treated as synonyms.</p>
-          <span class="source"><code>providers/mod.rs:23-127</code> · <code>manager.rs:440-481,1888-1969,4847-4863</code></span>
+          <span class="source"><code>providers/mod.rs:23-127</code> · <code>manager.rs:440-481,1910-1991,4872-4888</code></span>
         </div>
 
         <div class="callout current">
           <p><strong>A refused send stops what it started.</strong> When <code>send_message</code> activates an adapter and the configuration or the prompt is then refused, it takes the same <code>suspend_if_quiescent</code> path, so a failed first message does not leave a provider process idling until the app quits.</p>
-          <span class="source"><code>manager.rs:1122-1153,1929-1990</code></span>
+          <span class="source"><code>manager.rs:1144-1175,1951-2012</code></span>
         </div>
       </section>
 

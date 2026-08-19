@@ -333,7 +333,7 @@ export function accessChoicesFor(
  */
 export function titleFromPrompt(prompt: string, projectPath: string): string {
   const fallback = tidy(projectPath).split('/').filter(Boolean).at(-1) || 'project';
-  return sessionTitleFromPrompt(prompt) ?? `Build in ${fallback}`;
+  return sessionTitleFromPrompt(tidy(prompt)) ?? `Build in ${fallback}`;
 }
 
 /**

@@ -114,7 +114,7 @@ assert.equal(remainingContextPercent(null, 400), null);
 // ── What the composer shows for context ──────────────────────────────────
 assert.deepEqual(
   contextMeterState(50_000, 200_000),
-  { kind: 'percent', remaining: 75, warm: false },
+  { kind: 'percent', remaining: 75, warm: false, hot: false },
   'a known context window still reports remaining percent'
 );
 assert.deepEqual(
@@ -134,13 +134,18 @@ assert.deepEqual(contextMeterState(null, null), { kind: 'unknown' }, 'nothing us
 // longer disagree about how much context is left.
 assert.deepEqual(
   contextMeterState(36598, 200000),
-  { kind: 'percent', remaining: 82, warm: false },
+  { kind: 'percent', remaining: 82, warm: false, hot: false },
   'a healthy remaining share is not warm'
 );
 assert.deepEqual(
   contextMeterState(160000, 200000),
-  { kind: 'percent', remaining: 20, warm: true },
+  { kind: 'percent', remaining: 20, warm: true, hot: false },
   'a low remaining share is warm'
+);
+assert.deepEqual(
+  contextMeterState(190000, 200000),
+  { kind: 'percent', remaining: 5, warm: true, hot: true },
+  'a nearly spent window is hot as well as warm'
 );
 assert.deepEqual(
   contextMeterState(undefined, 200000),

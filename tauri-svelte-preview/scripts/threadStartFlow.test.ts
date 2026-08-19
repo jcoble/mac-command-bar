@@ -257,6 +257,13 @@ assert.equal(
   'First line that names the work'
 );
 assert.equal(titleFromPrompt('', '/Users/me/app'), 'Build in app');
+// The backend names the session from the trimmed prompt, so a prompt that
+// opens with a blank line is named after its first real line here too. Reading
+// the untrimmed text found an empty first line and fell back to the project.
+assert.equal(
+  titleFromPrompt('\n\nName the work here\nand then details', '/Users/me/app'),
+  'Name the work here'
+);
 
 // The provisional title has to be the same string the backend writes from the
 // same prompt. The rail saves the row back seconds after the send; a title that

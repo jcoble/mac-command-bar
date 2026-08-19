@@ -821,6 +821,10 @@
     // A closed file stops holding its diagnostics; nothing can show them now.
     const { [path]: _closed, ...rest } = diagnosticsByPath;
     diagnosticsByPath = rest;
+    // The read-only mark belongs to the request that opened the file. Keeping
+    // it meant a later open of the same path arrived already locked.
+    const { [path]: _wasReadOnly, ...remaining } = readOnlyByPath;
+    readOnlyByPath = remaining;
   }
 
   function retryRead(path: string): void {

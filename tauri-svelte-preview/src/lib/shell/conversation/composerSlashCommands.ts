@@ -50,7 +50,7 @@ export function remainingContextPercent(
 }
 
 export type ContextMeterState =
-  | { kind: 'percent'; remaining: number; warm: boolean }
+  | { kind: 'percent'; remaining: number; warm: boolean; hot: boolean }
   | { kind: 'unknown' };
 
 /** Tokens as a short label: 940, 9.4k, 398k, 1.2m. */
@@ -77,7 +77,7 @@ export function contextMeterState(
   if (remaining === null || (usedTokens as number) > (contextWindow as number)) {
     return { kind: 'unknown' };
   }
-  return { kind: 'percent', remaining, warm: remaining <= 25 };
+  return { kind: 'percent', remaining, warm: remaining <= 25, hot: remaining <= 10 };
 }
 
 /** Dash length for a ring whose full circumference reads 100%: the visible

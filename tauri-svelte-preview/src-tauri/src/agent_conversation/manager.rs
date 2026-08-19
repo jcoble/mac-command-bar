@@ -697,7 +697,21 @@ impl AgentRuntimeManager {
                     .as_ref()
                     .is_none_or(|native_id| current.native_session_id.as_ref() == Some(native_id))
                 && current.native_session_mode == request.native_session_mode
-                && current.spawn_reasoning_effort == reasoning_effort
+                // An effort asked for here is matched against the one the
+                // session is on now, not the one it was created with: a change
+                // made while it was running has already written the first, and
+                // the next send carries that value back here. Comparing it
+                // against the spawn value read the same session as a different
+                // one and threw its record away. A request that names no effort
+                // asks for nothing and cannot disagree.
+                && reasoning_effort.as_ref().is_none_or(|asked_for| {
+                    current
+                        .config
+                        .reasoning_effort
+                        .as_ref()
+                        .or(current.spawn_reasoning_effort.as_ref())
+                        == Some(asked_for)
+                })
                 && current.connection.state != ConversationConnectionState::Failed
             {
                 return Ok((current.connection.clone(), None));
@@ -785,8 +799,16 @@ impl AgentRuntimeManager {
                 child_rollout_scan: None,
                 child_rollout_parent_path: None,
                 codex_children: HashMap::new(),
-                rail_meta: AgentConversationSessionMeta::default(),
-                title_source: None,
+                // A replacement generation is the same conversation, so it keeps
+                // the name it was given and where that name came from. Starting
+                // these empty wrote a blank over the stored row.
+                rail_meta: prior
+                    .as_ref()
+                    .map(|session| session.rail_meta.clone())
+                    .unwrap_or_default(),
+                title_source: prior
+                    .as_ref()
+                    .and_then(|session| session.title_source.clone()),
                 suspending: false,
             },
         );
@@ -1998,14 +2020,17 @@ impl AgentRuntimeManager {
             let session = sessions
                 .get_mut(&owned_id)
                 .ok_or_else(|| "Conversation session was not found".to_string())?;
-            session.spawn_reasoning_effort.clone_from(&request.effort);
             // The rail row this comes from is a copy that a fresh session has
             // not filled in yet, and it is saved right after the first send.
-            // Taking its empty model wrote a blank over the choice every time.
+            // Taking its empty model or effort wrote a blank over the choice
+            // every time.
             if request.model.is_some() {
                 session.config.model = request.model;
             }
-            session.config.reasoning_effort.clone_from(&request.effort);
+            if request.effort.is_some() {
+                session.spawn_reasoning_effort.clone_from(&request.effort);
+                session.config.reasoning_effort.clone_from(&request.effort);
+            }
             // Setting the value without the list left the menu showing exactly
             // one option: the picker falls back to the current value when the
             // available list is empty, so a session started with "medium" could
@@ -8626,6 +8651,147 @@ mod tests {
         assert!(
             log.contains(r#""reasoningEffort":"xhigh""#),
             "reactivation must ask for the effort the session is on now: {log}"
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// A session's record — its name, where that name came from, the model it
+    /// is on — belongs to the session, not to the effort it was started with.
+    /// Every turn ends with the adapter stopped, so the next send ensures the
+    /// session again and sends the effort it is on now. Reading that as a
+    /// request for a different session threw the record away and started over.
+    #[tokio::test(flavor = "current_thread")]
+    async fn ensure_after_a_live_effort_change_keeps_the_session_record() {
+        let fixture = fixture_manager_with_provider(
+            "suspend_live_effort_ensure",
+            AgentConversationProvider::Codex,
+            Some("high"),
+        )
+        .await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("give this session a name"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| completed_turns(&seen) == 1).await;
+        let title = stored_title(&fixture).expect("the prompt names the session");
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+
+        // A live change lands on the effort the adapter answers with, which is
+        // not the one the session was started with.
+        fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: Some("medium".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect("a live effort change");
+        let live = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("config");
+        assert_eq!(live.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(live.model.as_deref(), Some("gpt-5.6-terra"));
+
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+
+        // The next send ensures the session again, carrying the effort the
+        // composer is showing: the live one, not the spawn one.
+        let mut request = request(
+            fixture.root.to_str().unwrap(),
+            &fixture.owned_id,
+            AgentConversationProvider::Codex,
+        );
+        request.reasoning_effort = Some("xhigh".into());
+        let connection = fixture
+            .manager
+            .ensure_inner(request)
+            .expect("ensure the suspended session")
+            .0;
+
+        assert_eq!(connection.generation, fixture.generation);
+        assert_eq!(stored_title(&fixture).as_deref(), Some(title.as_str()));
+        assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+        let after = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("config after ensure");
+        assert_eq!(after.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(after.model.as_deref(), Some("gpt-5.6-terra"));
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// The rail saves a session's row back carrying its own copy of the fields,
+    /// and a rail action that is not about the effort sends none. Writing that
+    /// empty answer over the session wiped the effort it was on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn saving_the_row_back_without_an_effort_leaves_the_effort() {
+        let fixture = fixture_manager_with_provider(
+            "meta_keeps_effort",
+            AgentConversationProvider::Codex,
+            Some("medium"),
+        )
+        .await;
+        // The adapter answers the start-time effort with one of its own, so the
+        // session is on "xhigh" while it was created with "medium".
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config")
+                .reasoning_effort
+                .as_deref(),
+            Some("xhigh")
+        );
+
+        fixture
+            .manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: fixture.owned_id.clone(),
+                model: None,
+                effort: None,
+                meta: renamed_meta("Rail work"),
+            })
+            .expect("save the row back");
+
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("config after the save")
+                .reasoning_effort
+                .as_deref(),
+            Some("xhigh")
         );
 
         fixture

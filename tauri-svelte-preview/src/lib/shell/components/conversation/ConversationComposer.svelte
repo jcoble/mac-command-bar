@@ -318,7 +318,7 @@
   {#if leadingControls}<div class="leading-controls" data-testid="composer-leading-controls">{@render leadingControls()}</div>{/if}
   {#if plan && plan.steps.length}
     <div class="plan-chip-slot">
-      <PlanChip {plan} fileChanges={planFileChanges} expanded={planExpanded} onToggle={() => (planExpanded = !planExpanded)} />
+      <PlanChip {plan} fileChanges={planFileChanges} expanded={planExpanded} running={sending} onToggle={() => (planExpanded = !planExpanded)} />
     </div>
   {/if}
   <form class="composer-form" onsubmit={(event) => { event.preventDefault(); if (!composerLocked) void onSend?.(); }}>
@@ -435,7 +435,7 @@
               <span
                 class="context-ring"
                 class:context-ring-warm={contextMeter.warm}
-                class:context-ring-hot={contextMeter.remaining <= 10}
+                class:context-ring-hot={contextMeter.hot}
                 data-testid="conversation-context-remaining"
                 role="img"
                 aria-label={`${contextMeter.remaining}% context left`}
