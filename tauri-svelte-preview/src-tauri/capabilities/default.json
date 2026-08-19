@@ -12,7 +12,6 @@
     "fs:allow-exists",
     "fs:allow-mkdir",
     "fs:allow-rename",
-    "fs:allow-remove",
     "fs:allow-write-text-file",
     "fs:allow-watch",
     "fs:allow-unwatch",

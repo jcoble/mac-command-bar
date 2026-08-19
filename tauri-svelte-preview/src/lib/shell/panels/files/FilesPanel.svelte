@@ -115,6 +115,9 @@
   );
   const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
   const listedCount = $derived(filtering ? matchedRecords.length : records.length);
+  /** True once a scan has finished, which is also when the folder became a
+   * place the file-system plugin is allowed to look — see the watcher below. */
+  const listed = $derived(explorer.lastScanFinishedAt !== null);
 
   /**
    * Follow the tree's own height and scroll offset, so the rendered window
@@ -143,12 +146,19 @@
    * Only while it is in front: a build running behind a hidden panel would
    * otherwise have it re-listing the project every third of a second for
    * nothing. A burst of writes is already collapsed into one refresh by the
-   * plugin's own delay, and a refresh that arrives while the previous one is
-   * still walking the tree is dropped rather than queued.
+   * plugin's own delay, a refresh that arrives while the previous one is still
+   * walking the tree is dropped rather than queued, and an event about nothing
+   * but build output is dropped before it becomes a refresh at all.
+   *
+   * Not before the first listing has finished. The folder is only a place the
+   * plugin may look once `list_source_files` has added it to the plugin's scope
+   * (`main.rs`, `allow_workspace_root_in_fs_scope`), and `explorer.root` is set
+   * before that call rather than after — starting the watch on the root alone
+   * races the grant, and a watch refused once is never asked for again.
    */
   $effect(() => {
     const target = (explorer.root ?? '').trim();
-    if (!visible || !target || !isNativeTauriRuntime()) return;
+    if (!visible || !listed || !target || !isNativeTauriRuntime()) return;
 
     let unwatch: (() => void) | null = null;
     let abandoned = false;
@@ -157,8 +167,9 @@
         const { watch } = await import('@tauri-apps/plugin-fs');
         const stop = await watch(
           target,
-          () => {
-            if (!explorer.scanning) refresh();
+          (event) => {
+            if (explorer.scanning || isBuildOutputOnly(event.paths)) return;
+            refresh();
           },
           { recursive: true, delayMs: 300 }
         );
@@ -193,6 +204,25 @@
 
   function describeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  /**
+   * Folders the file scan never descends into, so a write inside one can never
+   * change the listed tree. These four are the ones a build or a git command
+   * writes to constantly; the scanner's own full list is `skip_dir_reason` in
+   * `src-tauri/src/main.rs` and `skipDirReason` in `src/lib/server/localSourceFs.ts`.
+   */
+  const UNLISTED_FOLDERS = ['/node_modules/', '/target/', '/.git/', '/.svelte-kit/'];
+
+  /**
+   * True when every path in a watch event sits inside one of those folders.
+   * A build writing into `target/` fires the watcher continuously, and each
+   * event would otherwise re-walk the whole project for a tree that cannot have
+   * changed. One path outside them is enough to make the event worth a refresh.
+   */
+  function isBuildOutputOnly(paths: readonly string[]): boolean {
+    if (paths.length === 0) return false;
+    return paths.every((path) => UNLISTED_FOLDERS.some((folder) => path.includes(folder)));
   }
 
   /** The folder a path sits in. */

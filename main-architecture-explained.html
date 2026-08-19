@@ -740,7 +740,7 @@
             <span class="badge current">Boundary 1</span>
             <h3>Svelte ↔ Rust</h3>
             <p>Svelte calls commands such as ensure, send, respond to approval, read snapshot, load older, save draft, and manage attachments. Rust emits <code>agent-conversation-event</code>.</p>
-            <p>Some of what crosses here is not ours. Tauri’s own plugins register commands on this same boundary, and the Files panel calls four of them directly rather than through a command of ours: <code>plugin-fs</code> to make, rename, remove and watch, <code>plugin-opener</code> to show a path in the Finder, <code>plugin-clipboard-manager</code> to copy one, and <code>plugin-dialog</code> and <code>plugin-notification</code> as before. Each is registered in the builder and each carries its own permission in <code>src-tauri/capabilities/default.json</code>.</p>
+            <p>Some of what crosses here is not ours. Tauri’s own plugins register commands on this same boundary, and the Files panel calls three of them directly rather than through a command of ours: <code>plugin-fs</code> to make, rename and watch, <code>plugin-opener</code> to show a path in the Finder, and <code>plugin-clipboard-manager</code> to copy one. <code>plugin-dialog</code> and <code>plugin-notification</code> were already registered and are called from elsewhere. Each plugin is registered in the builder and each carries its own permission in <code>src-tauri/capabilities/default.json</code>.</p>
           </article>
           <article class="card">
             <span class="badge current">Boundary 2</span>
@@ -1419,8 +1419,8 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
           <article class="card">
             <span class="badge current">Files panel</span>
             <h3>The plugins do the file work, and the Trash is the undo</h3>
-            <p>Making, renaming, removing and watching a path is <code>plugin-fs</code>; showing one in the Finder is <code>plugin-opener</code>; copying one is <code>plugin-clipboard-manager</code>. Which folders those may touch cannot be written into the capability file, because a workspace root is chosen while the app is running, so <code>list_source_files</code> adds each root it is asked to list to the plugin’s scope (<code>fs_scope().allow_directory(root, true)</code>): the panel can only change a folder it has already listed. Delete is the one thing the plugins cannot do properly — <code>plugin-fs</code>’s <code>remove</code> deletes for good — so it calls <code>move_to_trash</code>, one command of ours that refuses any path the scope does not already cover and hands the rest to the Finder’s Trash.</p>
-            <span class="source"><code>src-tauri/src/main.rs:623-640,764-790</code> · <code>src/lib/shell/panels/files/FilesPanel.svelte</code></span>
+            <p>Making, renaming and watching a path is <code>plugin-fs</code>; showing one in the Finder is <code>plugin-opener</code>; copying one is <code>plugin-clipboard-manager</code>. Which folders those may touch cannot be written into the capability file, because a workspace root is chosen while the app is running, so <code>list_source_files</code> adds each root it is asked to list to the plugin’s scope (<code>fs_scope().allow_directory(root, true)</code>): the panel can only change a folder it has already listed. Delete is the one thing the plugins cannot do properly — <code>plugin-fs</code>’s <code>remove</code> deletes for good — so it calls <code>move_to_trash</code>, one command of ours that refuses any path the scope does not already cover and hands the rest to the Finder’s Trash.</p>
+            <span class="source"><code>src-tauri/src/main.rs:624-641,785-811</code> · <code>src/lib/shell/panels/files/FilesPanel.svelte</code></span>
           </article>
         </div>
       </section>

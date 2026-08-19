@@ -2,9 +2,11 @@
  * explorerService.ts — the file explorer's ONLY backend path.
  *
  * One job: ask the backend for the list of source files under a project root
- * and put the answer in `explorerStore`. Imperative by rule — every call is made
- * from a user action (opening the panel, pressing Refresh), never from an
- * `$effect`, and every call is counted with `countInvoke` immediately before it.
+ * and put the answer in `explorerStore`. Imperative by rule — every call comes
+ * from something that happened, never from a render: a user action (opening the
+ * panel, pressing Refresh) or the file watcher the Files panel keeps on the
+ * listed folder saying the disk moved. Nothing here is called because a value
+ * was read. Every call is counted with `countInvoke` immediately before it.
  *
  * Nothing here runs until `activate(root)` is called. That is the constitution's
  * "nothing loads at launch": opening the shell must add zero backend calls from
