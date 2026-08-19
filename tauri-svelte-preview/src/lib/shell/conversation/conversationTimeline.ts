@@ -652,13 +652,19 @@ export function latestPlan(
 /** How many lines a unified diff adds and removes.
  *
  * The `+++` and `---` lines name the file the hunks belong to rather than
- * change a line in it, so they are read past. Everything else that starts
- * with a plus or a minus is a line the change touched. */
+ * change a line in it, so they are read past. They only appear ahead of the
+ * first hunk: once one has started, a line of three dashes is a removed line
+ * that began with a comment marker, and skipping it lost the change. */
 export function diffLineCounts(diff: string): { added: number; removed: number } {
   let added = 0;
   let removed = 0;
+  let seenHunk = false;
   for (const line of diff.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('@@')) {
+      seenHunk = true;
+      continue;
+    }
+    if (!seenHunk && (line.startsWith('+++') || line.startsWith('---'))) continue;
     if (line.startsWith('+')) added += 1;
     else if (line.startsWith('-')) removed += 1;
   }

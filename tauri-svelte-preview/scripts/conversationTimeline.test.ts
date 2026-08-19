@@ -473,3 +473,10 @@ const counted = diffLineCounts(
 );
 assert.deepEqual(counted, { added: 2, removed: 1 }, 'file headers are not changed lines');
 assert.deepEqual(diffLineCounts(''), { added: 0, removed: 0 }, 'nothing changed counts as nothing');
+// A file header only appears before the first hunk. Inside a hunk, a line of
+// three dashes is a removed line that started with a comment marker.
+assert.deepEqual(
+  diffLineCounts('--- a/notes.sql\n+++ b/notes.sql\n@@ -1,2 +1,2 @@\n--- note\n+++ more\n'),
+  { added: 1, removed: 1 },
+  'dashes inside a hunk are changed lines, not headers'
+);
