@@ -1680,24 +1680,46 @@ impl AgentRuntimeManager {
         let runtime = self
             .runtime_or_activate(&request.owned_id, request.generation)
             .await?;
-        // What a session offers is the running adapter's answer, and the
-        // activation above has just refreshed it. Judging the request any
-        // earlier weighs it against the snapshot an adapter that is no longer
-        // running left behind, which refuses a choice the live one offers.
-        {
-            let sessions = self
-                .sessions
+        let applied = async {
+            // What a session offers is the running adapter's answer, and the
+            // activation above has just refreshed it. Judging the request any
+            // earlier weighs it against the snapshot an adapter that is no
+            // longer running left behind, which refuses a choice the live one
+            // offers.
+            {
+                let sessions = self
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = current_session(&sessions, &request.owned_id, request.generation)?;
+                validate_conversation_config_update(&session.config, &update)?;
+            }
+            runtime
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session(&sessions, &request.owned_id, request.generation)?;
-            validate_conversation_config_update(&session.config, &update)?;
+                .await
+                .set_conversation_config_on(&native_session_id, &update)
+                .await
+                .map_err(|error| error.to_string())
         }
-        let config = runtime
-            .lock()
-            .await
-            .set_conversation_config_on(&native_session_id, &update)
-            .await
-            .map_err(|error| error.to_string())?;
+        .await;
+        // Asking the adapter meant starting one, and a refused change gives it
+        // no turn to run: the teardown that keeps process trees from lingering
+        // runs when a turn ends, and this session never began one.
+        let config = match applied {
+            Ok(config) => config,
+            Err(error) => {
+                if let Err(suspend_error) = self
+                    .suspend_if_quiescent(&request.owned_id, request.generation)
+                    .await
+                {
+                    let owned_id = &request.owned_id;
+                    crate::debug_log::stderr_log!(
+                        "{owned_id}: could not stop the adapter after a refused settings change: {suspend_error}"
+                    );
+                }
+                return Err(error);
+            }
+        };
         let mut sessions = self
             .sessions
             .lock()
@@ -8327,6 +8349,44 @@ mod tests {
             .close(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    /// Judging a settings change against the running adapter means an adapter
+    /// is started to ask. When the change is then refused it has no turn to
+    /// run and nothing else would ever stop it, so the refusal has to put the
+    /// session back at rest itself.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_refused_config_change_does_not_leave_an_adapter_running() {
+        let fixture = fixture_manager_with_acp_session("suspend_refused_config").await;
+        assert!(fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("suspend"));
+
+        let refused = fixture
+            .manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: None,
+                approval_policy: Some("acceptedits".into()),
+            })
+            .await
+            .expect_err("a policy the adapter does not offer is refused");
+        assert!(
+            refused.contains("approval policy"),
+            "the refusal names what was wrong: {refused}"
+        );
+        assert!(
+            fixture
+                .manager
+                .session_is_suspended(&fixture.owned_id, fixture.generation),
+            "a settings change that was refused leaves the session at rest"
+        );
+
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
