@@ -54,12 +54,12 @@ const CATCH_UP_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
 const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
-const CLAUDE_SESSION_EFFORTS: [(&str, &str); 4] = [
-    ("low", "4000"),
-    ("medium", "12000"),
-    ("high", "32000"),
-    ("max", "63999"),
-];
+/// The efforts a Claude conversation can offer before it has an adapter.
+///
+/// A new conversation picks its effort before anything is running, so the
+/// picker needs something to show. Once the adapter has a session it reports
+/// its own effort control, and that report replaces this list.
+const CLAUDE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "max"];
 
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
 
@@ -141,6 +141,10 @@ pub struct ManagedAgentSession {
     ordered_events: Option<UnboundedSender<OrderedSessionEvent>>,
     cwd: String,
     spawn_reasoning_effort: Option<String>,
+    /// Whether the running adapter reported an effort control of its own.
+    /// When it did, the effort can be changed at any time; when it did not,
+    /// the session keeps the effort it was started with.
+    adapter_offers_effort: bool,
     config: AgentConversationConfigState,
     connection: AgentConversationConnection,
     store: Arc<SessionStore>,
@@ -725,6 +729,7 @@ impl AgentRuntimeManager {
                 ordered_events: None,
                 cwd,
                 spawn_reasoning_effort: reasoning_effort,
+                adapter_offers_effort: false,
                 config: connection.config.clone(),
                 connection: connection.clone(),
                 store: Arc::clone(&self.store),
@@ -766,6 +771,7 @@ impl AgentRuntimeManager {
             native_session_id,
             native_session_mode,
             reasoning_effort,
+            requested_model,
             was_suspended,
         ) = {
             let mut sessions = self
@@ -797,6 +803,7 @@ impl AgentRuntimeManager {
                 session.native_session_id.clone(),
                 session.native_session_mode,
                 session.spawn_reasoning_effort.clone(),
+                session.config.model.clone(),
                 session.state == AgentRuntimeState::Suspended,
             )
         };
@@ -860,7 +867,7 @@ impl AgentRuntimeManager {
                 )
             } else {
                 let manifest = self.providers.manifest(provider)?;
-                let environment = session_spawn_environment(provider, reasoning_effort.as_deref());
+                let environment = session_spawn_environment(provider);
                 let mut adapter = AcpRuntimeAdapter::with_environment(
                     manifest,
                     format!("provider:{}", provider_id(provider)),
@@ -978,24 +985,37 @@ impl AgentRuntimeManager {
                 return Err(error.to_string());
             }
         };
-        if provider == AgentConversationProvider::Claude {
-            started.config = claude_session_config(started.config, reasoning_effort.as_deref());
-        } else if let Some(reasoning_effort) = reasoning_effort {
-            let update = AgentConversationConfigUpdate {
-                reasoning_effort: Some(reasoning_effort),
-                ..AgentConversationConfigUpdate::default()
-            };
+        // The model and effort chosen for this conversation are asked of the
+        // adapter now that it has a session, and its answer is what the session
+        // reports from here on. Only what differs is sent: a session that
+        // already starts on the wanted settings needs no call, and a request
+        // the adapter resolves to something else must not be reported as if it
+        // had been honoured.
+        let requested = AgentConversationConfigUpdate {
+            model: requested_model
+                .filter(|model| Some(model.as_str()) != started.config.model.as_deref()),
+            reasoning_effort: reasoning_effort.clone().filter(|effort| {
+                Some(effort.as_str()) != started.config.reasoning_effort.as_deref()
+            }),
+            approval_policy: None,
+        };
+        if requested != AgentConversationConfigUpdate::default() {
             match runtime
                 .lock()
                 .await
-                .set_conversation_config_on(&started.native_session_id, &update)
+                .set_conversation_config_on(&started.native_session_id, &requested)
                 .await
             {
                 Ok(config) => started.config = config,
                 Err(error) => crate::debug_log::stderr_log!(
-                    "{owned_id}: session-start effort was not applied: {error}"
+                    "{owned_id}: the settings chosen for this session were not applied: {error}"
                 ),
             }
+        }
+        // An adapter that named an effort control owns the effort from now on.
+        let adapter_offers_effort = !started.config.available_efforts.is_empty();
+        if provider == AgentConversationProvider::Claude {
+            started.config = claude_session_config(started.config, reasoning_effort.as_deref());
         }
         if let Some(expected_native_session_id) = expected_native_session_id {
             if started.native_session_id != expected_native_session_id {
@@ -1031,18 +1051,8 @@ impl AgentRuntimeManager {
         }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
-        // Starting the adapter refreshes what the provider offers, but it must
-        // not discard what the person already chose. Claude reports its model
-        // as "default" whatever was picked, so a plain assignment loses the
-        // choice on every turn that had to start the process again. Their pick
-        // wins wherever the provider still offers it.
-        let chosen_model = session.config.model.clone();
+        session.adapter_offers_effort = adapter_offers_effort;
         session.config = started.config;
-        if let Some(model) = chosen_model {
-            if session.config.available_models.contains(&model) {
-                session.config.model = Some(model);
-            }
-        }
         session.connection.config = session.config.clone();
         let restoring_terminal_transition = session.owner
             == AgentExecutionOwner::TransitioningToStructured
@@ -1614,12 +1624,13 @@ impl AgentRuntimeManager {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
             let started = session.native_session_id.is_some();
-            // Claude fixes its thinking budget when the process starts, so a
-            // live session cannot be re-pointed. Before the start there is
-            // nothing to re-point, and that is when the choice is made.
+            // An adapter that named no effort control has no way to be
+            // re-pointed: it took its effort when its session was created and
+            // only a new session can carry a different one.
             if started
                 && session.provider == AgentConversationProvider::Claude
                 && update.reasoning_effort.is_some()
+                && !session.adapter_offers_effort
             {
                 return Err(
                     "Effort is set when the session starts. Start a new session to change it."
@@ -2865,6 +2876,7 @@ fn recovered_session_from_row(
         ordered_events: None,
         cwd: row.cwd,
         spawn_reasoning_effort: row.effort,
+        adapter_offers_effort: false,
         config: stored.config,
         connection,
         store: Arc::clone(store),
@@ -4973,9 +4985,7 @@ fn normalized_session_start_effort(
         return Ok(None);
     };
     if provider != AgentConversationProvider::Claude
-        || CLAUDE_SESSION_EFFORTS
-            .iter()
-            .any(|(effort, _)| *effort == value)
+        || CLAUDE_SESSION_EFFORTS.iter().any(|effort| *effort == value)
     {
         Ok(Some(value))
     } else {
@@ -4983,31 +4993,30 @@ fn normalized_session_start_effort(
     }
 }
 
-fn session_spawn_environment(
-    provider: AgentConversationProvider,
-    reasoning_effort: Option<&str>,
-) -> SidecarEnvironment {
+/// How hard a session thinks is the adapter's own setting, asked for through
+/// its effort control. An inherited thinking budget would speak over it, so the
+/// adapter is started without one.
+fn session_spawn_environment(provider: AgentConversationProvider) -> SidecarEnvironment {
     if provider != AgentConversationProvider::Claude {
         return SidecarEnvironment::default();
     }
-    let mut environment = SidecarEnvironment::default().remove(MAX_THINKING_TOKENS_ENV);
-    if let Some((_, tokens)) = CLAUDE_SESSION_EFFORTS
-        .iter()
-        .find(|(effort, _)| Some(*effort) == reasoning_effort)
-    {
-        environment = environment.set(MAX_THINKING_TOKENS_ENV, *tokens);
-    }
-    environment
+    SidecarEnvironment::default().remove(MAX_THINKING_TOKENS_ENV)
 }
 
+/// Fills in the effort a Claude conversation shows while it has no adapter to
+/// ask. An adapter that reports an effort control of its own has already said
+/// what the session is on, and that answer is left alone.
 fn claude_session_config(
     mut config: AgentConversationConfigState,
     reasoning_effort: Option<&str>,
 ) -> AgentConversationConfigState {
+    if !config.available_efforts.is_empty() {
+        return config;
+    }
     config.reasoning_effort = reasoning_effort.map(str::to_string);
     config.available_efforts = CLAUDE_SESSION_EFFORTS
         .iter()
-        .map(|(effort, _)| (*effort).to_string())
+        .map(|effort| (*effort).to_string())
         .collect();
     config
 }
@@ -7910,11 +7919,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn effort_chosen_before_the_adapter_starts_is_kept_and_used_at_spawn() {
+    async fn choices_made_before_the_adapter_starts_are_asked_of_it_when_it_starts() {
         // A session picks its model and effort before anything is running: the
         // adapter only starts when the first turn is sent. The choice has to
-        // survive that gap, or the composer reverts it and the turn spawns with
-        // the provider's default.
+        // survive that gap and be asked of the adapter once there is one, or
+        // the composer reverts it and the turn runs on the provider's default.
         let root = temp_root();
         let log = root.join("claude_preselect.jsonl");
         let manifest =
@@ -7955,38 +7964,121 @@ mod tests {
             .expect("activate");
         let spawn_log = fs::read_to_string(&log).expect("Claude spawn log");
         assert!(
-            spawn_log.contains("MAX_THINKING_TOKENS=32000"),
-            "the effort chosen before the start must reach the adapter: {spawn_log}"
+            spawn_log.contains(r#""model":"gpt-5.6-luna""#),
+            "the model chosen before the start must reach the adapter: {spawn_log}"
         );
+        assert!(
+            spawn_log.contains("MAX_THINKING_TOKENS=<unset>"),
+            "nothing in the environment decides how hard a session thinks: {spawn_log}"
+        );
+        // The adapter answers with the session it actually has, and that answer
+        // is what the conversation reports. This fixture resolves the request to
+        // a different model, and the different model is what is shown.
         let after_start = manager.conversation_config(&owned_id).expect("config");
-        assert_eq!(after_start.reasoning_effort.as_deref(), Some("high"));
-        // Starting the adapter must not throw the choice away. The provider
-        // reports its own view of the session — the fixture says the model is
-        // "gpt-5.6-sol", and Claude says "default" — neither is what was picked.
-        assert_eq!(after_start.model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(after_start.model.as_deref(), Some("gpt-5.6-terra"));
 
         manager.close(&owned_id, connection.generation).await.unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// The adapter resolves what it is asked for, so the model a session ends
+    /// up on and the model that was requested can differ. What the session
+    /// reports afterwards is the adapter's answer, never the request.
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_medium_effort_is_injected_at_spawn_and_exposed_as_session_config() {
-        let fixture = fixture_manager_with_provider(
-            "claude_medium_effort",
+    async fn acp_new_reports_the_model_the_adapter_chose_not_the_one_requested() {
+        let root = temp_root();
+        let log = root.join("config_options.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "config_options",
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let owned_id = "owned-config_options_model".to_string();
+        let ensure_request = request(
+            root.to_str().unwrap(),
+            &owned_id,
             AgentConversationProvider::Claude,
-            Some("medium"),
+        );
+        let connection = manager.ensure_inner(ensure_request).expect("ensure").0;
+
+        // Picked before anything is running, which is when a new conversation's
+        // model is chosen.
+        manager
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: owned_id.clone(),
+                generation: connection.generation,
+                model: Some("haiku".into()),
+                reasoning_effort: None,
+                approval_policy: None,
+            })
+            .await
+            .expect("a model chosen before the adapter starts is kept");
+
+        manager
+            .activate(&owned_id, connection.generation)
+            .await
+            .expect("activate");
+
+        let frames = fs::read_to_string(&log).expect("fixture request log");
+        assert!(
+            frames.contains(r#""configId":"model","value":"haiku""#),
+            "the chosen model must be asked of the adapter: {frames}"
+        );
+        // The fixture's session starts on one model, is asked for "haiku", and
+        // answers "sonnet". The answer is what the session is on.
+        let config = manager.conversation_config(&owned_id).expect("config");
+        assert_eq!(config.model.as_deref(), Some("sonnet"));
+
+        manager.close(&owned_id, connection.generation).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An adapter that offers an effort control can be re-pointed at any time:
+    /// the change goes to the adapter, the session reports what the adapter
+    /// says it is now, and nothing in the process environment has a say.
+    #[tokio::test(flavor = "current_thread")]
+    async fn effort_changes_live_when_the_adapter_offers_it() {
+        let fixture = fixture_manager_with_provider(
+            "config_options",
+            AgentConversationProvider::Claude,
+            None,
         )
         .await;
 
-        let log = fs::read_to_string(fixture.root.join("claude_medium_effort.jsonl"))
-            .expect("Claude spawn log");
-        assert!(log.contains("MAX_THINKING_TOKENS=12000"));
-        let config = fixture
+        let configured = fixture
             .manager
-            .conversation_config(&fixture.owned_id)
-            .expect("Claude config");
-        assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
-        assert_eq!(config.available_efforts, ["low", "medium", "high", "max"]);
+            .set_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                model: None,
+                reasoning_effort: Some("high".into()),
+                approval_policy: None,
+            })
+            .await
+            .expect("an adapter with an effort control takes a live change");
+        assert_eq!(configured.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            fixture
+                .manager
+                .conversation_config(&fixture.owned_id)
+                .expect("stored config")
+                .reasoning_effort
+                .as_deref(),
+            Some("high")
+        );
+
+        let frames = fs::read_to_string(fixture.root.join("config_options.jsonl"))
+            .expect("fixture request log");
+        assert!(
+            frames.contains(r#""configId":"effort","value":"high""#),
+            "the effort change must go to the adapter: {frames}"
+        );
+        assert!(
+            frames.contains("MAX_THINKING_TOKENS=<unset>"),
+            "the thinking budget must not be decided by the environment: {frames}"
+        );
 
         fixture
             .manager
@@ -7997,21 +8089,64 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn claude_default_effort_removes_spawn_env_and_rejects_live_changes() {
+    async fn effort_chosen_for_a_new_session_is_asked_of_the_adapter() {
         let fixture = fixture_manager_with_provider(
-            "claude_default_effort",
+            "config_options",
+            AgentConversationProvider::Claude,
+            Some("medium"),
+        )
+        .await;
+
+        let log = fs::read_to_string(fixture.root.join("config_options.jsonl"))
+            .expect("Claude spawn log");
+        assert!(
+            log.contains(r#""configId":"effort","value":"medium""#),
+            "the effort the session was started with must be asked of the adapter: {log}"
+        );
+        assert!(
+            log.contains("MAX_THINKING_TOKENS=<unset>"),
+            "nothing in the environment decides how hard a session thinks: {log}"
+        );
+        let config = fixture
+            .manager
+            .conversation_config(&fixture.owned_id)
+            .expect("Claude config");
+        // The adapter answers "high", and the answer is what the session is on.
+        assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            config.available_efforts,
+            ["default", "low", "medium", "high", "xhigh", "max"]
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_adapter_with_no_effort_control_refuses_a_live_effort_change() {
+        let fixture = fixture_manager_with_provider(
+            "standard_config",
             AgentConversationProvider::Claude,
             None,
         )
         .await;
 
-        let log = fs::read_to_string(fixture.root.join("claude_default_effort.jsonl"))
+        let log = fs::read_to_string(fixture.root.join("standard_config.jsonl"))
             .expect("Claude spawn log");
-        assert!(log.contains("MAX_THINKING_TOKENS=<unset>"));
+        assert!(
+            log.contains("MAX_THINKING_TOKENS=<unset>"),
+            "nothing in the environment decides how hard a session thinks: {log}"
+        );
         let config = fixture
             .manager
             .conversation_config(&fixture.owned_id)
             .expect("Claude config");
+        // This adapter named no effort control, so the conversation still shows
+        // the efforts it can offer before a session exists.
         assert_eq!(config.reasoning_effort, None);
         assert_eq!(config.available_efforts, ["low", "medium", "high", "max"]);
 
@@ -8025,7 +8160,7 @@ mod tests {
                 approval_policy: None,
             })
             .await
-            .expect_err("Claude effort cannot change after spawn");
+            .expect_err("an adapter with no effort control cannot be re-pointed");
         assert_eq!(
             error,
             "Effort is set when the session starts. Start a new session to change it."
