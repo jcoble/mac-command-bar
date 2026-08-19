@@ -21,7 +21,7 @@ fi
 sha() { shasum -a 256 "$1" | awk '{print $1}'; }
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-AGY_ACP_BIN="$SCRIPT_DIR/../artifacts/recon/probe-agy/agy-acp/target/release/agy-acp"
+AGY_ACP_BIN="$SCRIPT_DIR/../tools/agy-acp/target/release/agy-acp"
 AGY_CLI_BIN="$(command -v agy 2>/dev/null || true)"
 
 MCB_CODEX_ACP_PATH="$CODEX_WRAPPER"

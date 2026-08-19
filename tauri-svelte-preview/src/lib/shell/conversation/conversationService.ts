@@ -701,7 +701,9 @@ export async function sendStructuredMessage(
     // sent with one arrives as nothing at all. The message still goes; the
     // notice beside the box says what was left behind.
     if (state.provider === 'antigravity' && state.attachments.length > 0) {
-      state.attachments.forEach(cleanupConversationAttachmentPreview);
+      await Promise.all(
+        state.attachments.map((attachment) => cleanupConversationAttachment(ownedId, attachment))
+      );
       setConversationAttachments(ownedId, []);
       setConversationProviderNotice(ownedId, 'Antigravity cannot take images yet; they were left out.');
       // A screenshot on its own leaves nothing to say, so nothing is sent.
