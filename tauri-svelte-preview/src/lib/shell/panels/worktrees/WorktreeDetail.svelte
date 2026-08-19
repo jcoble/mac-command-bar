@@ -14,9 +14,17 @@
    * found, warns about anything that would be lost, and only then acts. The
    * session shows up in the sessions list like any other, so the work is watched
    * rather than taken on trust.
+   *
+   * What is on screen at rest is the short answer: the labelled facts, the one
+   * sentence saying what this worktree needs, and the three things that can be
+   * done about it. The paragraphs behind that answer — why it says what it
+   * says, what to check first, and what pressing a button actually starts — sit
+   * behind "Why", because a reader who already knows was reading past them
+   * every single time a row was opened.
    */
   import type { Component } from 'svelte';
   import Archive from '@lucide/svelte/icons/archive';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ScanSearch from '@lucide/svelte/icons/scan-search';
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
@@ -24,6 +32,7 @@
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { exactLocalTime } from '$lib/shell/relativeTime';
   import { worktreeFacts, type WorktreeManagerRow } from '$lib/shell/worktrees/worktreeManagerRows';
+  import { cn } from '$lib/utils';
 
   import type { WorktreeAgentAction, WorktreeAgentActionId } from './worktreeAgentPrompts.ts';
 
@@ -56,49 +65,120 @@
   };
 
   const facts = $derived(worktreeFacts(row));
+
+  /** The paragraphs behind the verdict are open. Closed again when the row is. */
+  let whyOpen = $state(false);
+
+  /** The two lines of section label, so they cannot drift apart. */
+  const SECTION_LABEL =
+    'm-0 text-(length:--text-quiet) leading-normal font-semibold text-muted-foreground';
+
+  /**
+   * A folder path, shortened from the middle so both ends survive: the repo the
+   * worktree belongs to is at the front and the folder's own name is at the
+   * back, and it is the stretch between them nobody reads. The whole path is on
+   * the element's title, so hovering still gives the real thing.
+   */
+  function shortenPath(value: string): string {
+    const budget = 42;
+    if (value.length <= budget) return value;
+    const head = Math.ceil((budget - 1) / 2);
+    const tail = budget - 1 - head;
+    return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
+  }
 </script>
 
-<div class="flex flex-col gap-3">
-  <!-- The plain facts, one labelled line each. Anything unknown is absent. -->
-  <dl class="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
-    {#each facts as fact (fact.label)}
-      <dt class="m-0 text-sm leading-normal text-muted-foreground">{fact.label}</dt>
-      <dd
-        class="m-0 min-w-0 text-sm leading-normal break-words text-foreground"
-        title={fact.stamp ? exactLocalTime(fact.stamp) : undefined}
+<div class="flex flex-col gap-4">
+  <!-- The plain facts, one labelled line each, on a hairline the eye can run
+       along. The 8px between label and value is the label's own padding rather
+       than a grid gap, so that hairline is unbroken. Anything unknown is
+       absent. -->
+  <dl class="m-0 grid grid-cols-[auto_minmax(0,1fr)]">
+    {#each facts as fact, index (fact.label)}
+      {@const ruled = index < facts.length - 1 && 'border-b border-border'}
+      {@const isPath = fact.label === 'Folder'}
+      <dt
+        class={cn(
+          'm-0 flex items-center py-2 pr-(--space-2) text-(length:--text-quiet) leading-normal text-muted-foreground',
+          ruled
+        )}
       >
-        {fact.value}
+        {fact.label}
+      </dt>
+      <dd
+        class={cn(
+          'm-0 flex min-w-0 items-center justify-end py-2 text-(length:--text-body) leading-normal text-foreground',
+          ruled
+        )}
+        title={isPath ? fact.value : fact.stamp ? exactLocalTime(fact.stamp) : undefined}
+      >
+        <span class="truncate">{isPath ? shortenPath(fact.value) : fact.value}</span>
       </dd>
     {/each}
   </dl>
 
-  <!-- The verdict: what to do, why, and what to check first. -->
-  <div class="flex flex-col gap-1.5">
-    <div class="flex flex-wrap items-center gap-1.5">
-      <Chip tone={LANE_TONE[row.lane.tone] ?? 'neutral'}>{row.lane.label}</Chip>
-      <span class="text-[13px] leading-normal text-foreground">{row.lane.detail}</span>
+  <!-- The verdict: one sentence, with the reasoning a click away. -->
+  <div class="flex flex-col gap-2">
+    <div class="flex items-start gap-2">
+      <Chip
+        tone={LANE_TONE[row.lane.tone] ?? 'neutral'}
+        class="mt-px h-6 px-2.5 text-(length:--text-quiet) font-normal"
+      >
+        {row.lane.label}
+      </Chip>
+      <p class="m-0 min-w-0 flex-1 text-(length:--text-body) leading-snug text-foreground">
+        {row.lane.detail}
+      </p>
     </div>
-    <p class="m-0 text-sm leading-normal text-muted-foreground">
-      {row.safety.reason}. {row.safety.recommendation}
-    </p>
-    {#if row.safety.decisionChecklist.length > 0}
-      <ul class="m-0 flex list-none flex-col gap-0.5 p-0">
-        {#each row.safety.decisionChecklist as item, index (index)}
-          <li class="flex gap-1.5 text-sm leading-normal text-muted-foreground">
-            <span aria-hidden="true">•</span>
-            <span>{item}</span>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+
+    <div class="flex flex-col">
+      <button
+        type="button"
+        class="flex w-fit items-center gap-1 rounded-lg py-1 text-(length:--text-quiet)
+               leading-normal text-muted-foreground transition-colors outline-none
+               hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+        aria-expanded={whyOpen}
+        onclick={() => (whyOpen = !whyOpen)}
+      >
+        <ChevronRight
+          class={cn('size-3.5 transition-transform', whyOpen && 'rotate-90')}
+          aria-hidden="true"
+        />
+        Why
+      </button>
+      {#if whyOpen}
+        <div class="flex flex-col gap-2 pt-1 pl-(--space-5)">
+          <p class="m-0 text-(length:--text-quiet) leading-normal text-muted-foreground">
+            {row.safety.reason}. {row.safety.recommendation}
+          </p>
+          {#if row.safety.decisionChecklist.length > 0}
+            <ul class="m-0 flex list-none flex-col gap-1 p-0">
+              {#each row.safety.decisionChecklist as item, index (index)}
+                <li
+                  class="flex gap-2 text-(length:--text-quiet) leading-normal text-muted-foreground"
+                >
+                  <span aria-hidden="true">•</span>
+                  <span>{item}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <p class="m-0 text-(length:--text-quiet) leading-normal text-muted-foreground">
+            Each of the buttons below starts a session in this folder. It reads the
+            worktree, explains what it found, warns about anything that would be lost,
+            and only then does what you asked.
+          </p>
+        </div>
+      {/if}
+    </div>
   </div>
 
   <!-- Who has worked in this folder. Named, because "2 sessions" is not enough
        to decide whether removing the folder would interrupt anybody. -->
   {#if row.sessions.length > 0}
-    <div class="flex flex-col gap-1">
-      <h4 class="m-0 text-sm leading-normal font-semibold text-muted-foreground">Sessions here</h4>
-      <ul class="m-0 flex min-w-0 list-none flex-wrap gap-1 p-0">
+    <div class="flex flex-col gap-2">
+      <h4 class={SECTION_LABEL}>Sessions here</h4>
+      <ul class="m-0 flex min-w-0 list-none flex-wrap gap-1.5 p-0">
         {#each row.sessions as link (link.ownedId)}
           {@const label = `${link.title.trim() || 'Untitled session'}${
             link.isRunning ? ' · running' : ''
@@ -106,9 +186,9 @@
           <li class="min-w-0 max-w-full">
             {#if onOpenSession}
               <Button
-                size="xs"
+                size="sm"
                 variant="secondary"
-                class="max-w-full min-w-0 text-sm"
+                class="max-w-full min-w-0 rounded-full text-(length:--text-quiet)"
                 title={label}
                 onclick={() => onOpenSession?.(link.ownedId)}
               >
@@ -124,18 +204,20 @@
   {/if}
 
   <!-- The three things that can be done about this worktree. Each starts a
-       session that looks first and says what it found before it acts. -->
-  <div class="flex flex-col gap-1.5">
-    <h4 class="m-0 text-sm leading-normal font-semibold text-muted-foreground">
-      What to do about it
-    </h4>
-    <div class="flex flex-wrap gap-1.5">
+       session that looks first and says what it found before it acts.
+       Looking is the one that is safe, so it is the only filled button; the two
+       that can lose work are offered as words and ask a question first. -->
+  <div class="flex flex-col gap-2">
+    <h4 class={SECTION_LABEL}>What to do about it</h4>
+    <div class="flex flex-wrap items-center gap-1">
       {#each actions as action (action.id)}
         {@const Icon = ICONS[action.id]}
         <Button
-          size="xs"
-          variant={action.destructive ? 'outline' : 'secondary'}
-          class="text-[13px]"
+          variant={action.destructive ? 'ghost' : 'default'}
+          class={cn(
+            'rounded-full text-(length:--text-quiet)',
+            action.destructive ? 'px-3 text-muted-foreground hover:text-foreground' : 'px-4'
+          )}
           disabled={!action.enabled || panelBusy}
           onclick={() => onAction(action.id)}
         >
@@ -145,14 +227,14 @@
       {/each}
     </div>
     {#if actions.some((action) => !action.enabled)}
-      <p class="m-0 text-sm leading-normal text-muted-foreground">
+      <p class="m-0 text-(length:--text-quiet) leading-normal text-muted-foreground">
         {actions.find((action) => !action.enabled)?.disabledReason}
       </p>
     {/if}
-    <p class="m-0 text-sm leading-normal text-muted-foreground">
-      {busy
-        ? 'Starting a session…'
-        : 'Each of these starts a session in this folder. It reads the worktree, explains what it found, warns about anything that would be lost, and only then does what you asked.'}
-    </p>
+    {#if busy}
+      <p class="m-0 text-(length:--text-quiet) leading-normal text-muted-foreground">
+        Starting a session…
+      </p>
+    {/if}
   </div>
 </div>

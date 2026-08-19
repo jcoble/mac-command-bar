@@ -11,10 +11,14 @@
    * sessions live in the open body, where there is room to label them — on the
    * closed row they used to wrap into an unreadable stack in a narrow panel.
    *
-   * The row is a kit `ListRow`, so its hover cluster, its sizing and its focus
-   * ring are the same ones every other panel's rows have. The actions are the
-   * same three the open body offers as words; a person who already knows which
-   * one they want should not have to open the row to reach it.
+   * The row is a kit `ListRow`, so its hover cluster and its focus ring are the
+   * same ones every other panel's rows have. Its inset and its text size are
+   * set at the foot of this file: the list carries a branch name, its status
+   * words and its actions on one line, so it takes the shell's body size and a
+   * card's inset rather than the dense sizing a plain file list wants. The
+   * actions are the same three the open body offers as words; a person who
+   * already knows which one they want should not have to open the row to reach
+   * it.
    */
   import Archive from '@lucide/svelte/icons/archive';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -68,6 +72,21 @@
     detail
   }: Props = $props();
 
+  /**
+   * Every chip on a row, at the size the rest of the shell reads at. The kit's
+   * own `text-sm` lands at 10.5px here, because this app sets the root font to
+   * 14px and the kit's sizes are in rem — which is most of why these rows read
+   * as smaller than they look in the source.
+   */
+  const CHIP = 'h-6 px-2 text-(length:--text-quiet) font-normal';
+
+  /**
+   * A chip that names the folder rather than warning about it. It reads as
+   * quiet metadata beside the branch, which leaves the coloured chips as the
+   * only thing on the row asking for attention.
+   */
+  const QUIET_CHIP = `${CHIP} bg-foreground/8 text-muted-foreground`;
+
   /** A chip says how loudly it means it; the kit says which colour that is. */
   const CHIP_TONE: Record<WorktreeChipTone, 'bad' | 'attention' | 'neutral'> = {
     danger: 'bad',
@@ -98,43 +117,35 @@
   }
 </script>
 
-<li
-  class={cn(
-    'rounded-lg ring-1 ring-transparent transition-colors',
-    expanded && 'bg-secondary/60 ring-border'
-  )}
->
-  <ListRow
-    selected={expanded}
-    actionsLabel="Worktree actions"
-    onclick={onToggle}
-    class="min-h-8"
-  >
+<li class={cn('worktree-row rounded-xl transition-colors', expanded && 'bg-foreground/8')}>
+  <ListRow selected={expanded} actionsLabel="Worktree actions" onclick={onToggle}>
     <ChevronRight
       class={cn(
-        'size-3.5 shrink-0 text-muted-foreground transition-transform',
+        'size-4 shrink-0 text-muted-foreground transition-transform',
         expanded && 'rotate-90'
       )}
       aria-hidden="true"
     />
-    <FolderGit2 class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+    <FolderGit2 class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
     <!-- The branch keeps a readable minimum; the chips beside it give way first. -->
     <span class="min-w-16 flex-1 truncate font-medium" title={row.path}>{row.branch}</span>
     <!-- The chips shrink as a group and clip, so a row with a lot to say still
          ends at the panel edge instead of pushing past it. -->
-    <span class="flex min-w-0 shrink items-center gap-1 overflow-hidden">
+    <span class="flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
       {#if row.isPrimary}
-        <Chip>main checkout</Chip>
+        <Chip class={QUIET_CHIP}>main checkout</Chip>
       {/if}
       {#if row.taskId}
-        <Chip>{row.taskId}</Chip>
+        <Chip class={QUIET_CHIP}>{row.taskId}</Chip>
       {/if}
       {#each row.chips as chip (chip.id)}
-        <Chip tone={CHIP_TONE[chip.tone]}>{chip.short}</Chip>
+        <Chip tone={CHIP_TONE[chip.tone]} class={CHIP}>{chip.short}</Chip>
       {/each}
     </span>
     {#if busy}
-      <span class="shrink-0 text-sm leading-tight text-muted-foreground">Starting…</span>
+      <span class="shrink-0 text-(length:--text-quiet) leading-tight text-muted-foreground">
+        Starting…
+      </span>
     {/if}
 
     {#snippet actions()}
@@ -162,8 +173,22 @@
   </ListRow>
 
   {#if expanded && detail}
-    <div class="border-t border-border px-3 py-2">
+    <div class="border-t border-border px-(--space-4) pt-(--space-3) pb-(--space-4)">
       {@render detail()}
     </div>
   {/if}
 </li>
+
+<style>
+  /* The kit's row is sized for a dense file list. A worktree row is the thing
+     a decision is made about, so it takes the shell's body size and the same
+     12 by 16 inset the cards use, and its hover cluster moves in to match. */
+  .worktree-row :global([data-slot='list-row'] > button) {
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-body);
+  }
+  .worktree-row :global([data-slot='hover-actions']) {
+    right: var(--space-3);
+  }
+</style>
