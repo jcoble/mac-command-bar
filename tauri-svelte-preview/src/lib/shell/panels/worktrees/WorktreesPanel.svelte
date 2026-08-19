@@ -167,9 +167,8 @@
   }
 </script>
 
-<div class="worktrees-panel flex h-full w-full min-w-0 flex-col text-foreground">
+<div class="flex h-full w-full min-w-0 flex-col text-foreground">
   <PanelHeader
-    class="gap-1.5 px-(--space-4) pt-(--space-3) pb-(--space-2)"
     title={worktreeManager.projectName || 'Worktrees'}
     count={worktreeManager.activated ? rows.length : null}
   >
@@ -275,19 +274,6 @@
     </ScrollArea>
   {/if}
 </div>
-
-<style>
-  /* The panel's own name is a heading, not another line of metadata. The kit's
-     header is shared with every other panel, so the size is stated here rather
-     than moved for all of them at once. */
-  .worktrees-panel :global([data-slot='panel-header'] h2) {
-    font-size: var(--text-heading);
-    font-weight: var(--text-heading-weight);
-  }
-  .worktrees-panel :global([data-slot='panel-header'] p) {
-    font-size: var(--text-quiet);
-  }
-</style>
 
 <ConfirmWorktreeDialog
   {question}
