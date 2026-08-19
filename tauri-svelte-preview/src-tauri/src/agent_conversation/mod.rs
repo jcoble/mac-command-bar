@@ -131,21 +131,13 @@ pub async fn send_agent_conversation_message(
         // attached here rather than inside the content block conversion.
         prompt.attachment_ids = request.attachment_ids;
         manager
-            .activate(&request.owned_id, request.generation)
-            .await?;
-        if request.model.is_some() || request.approval_policy.is_some() {
-            manager
-                .set_conversation_config(SetAgentConversationConfigRequest {
-                    owned_id: request.owned_id.clone(),
-                    generation: request.generation,
-                    model: request.model,
-                    reasoning_effort: None,
-                    approval_policy: request.approval_policy,
-                })
-                .await?;
-        }
-        manager
-            .prompt(&request.owned_id, request.generation, prompt)
+            .send_message(
+                &request.owned_id,
+                request.generation,
+                prompt,
+                request.model,
+                request.approval_policy,
+            )
             .await
     }
     .await;

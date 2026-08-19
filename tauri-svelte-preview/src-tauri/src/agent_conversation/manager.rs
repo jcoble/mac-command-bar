@@ -1111,6 +1111,47 @@ impl AgentRuntimeManager {
         Ok(connection)
     }
 
+    /// Sends one message: the adapter is started if it is not running, the
+    /// choices that came with the message are applied, and the prompt goes out.
+    ///
+    /// A message that is refused before its prompt — a model or approval
+    /// policy the provider does not offer — leaves the session at rest. The
+    /// adapter that activation just started has no turn to run, and nothing
+    /// else would ever stop it: the teardown that keeps process trees from
+    /// lingering runs when a turn ends, and this turn never began.
+    pub async fn send_message(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        input: AgentPrompt,
+        model: Option<String>,
+        approval_policy: Option<String>,
+    ) -> Result<(), String> {
+        self.activate(owned_id, generation).await?;
+        let sent = async {
+            if model.is_some() || approval_policy.is_some() {
+                self.set_conversation_config(SetAgentConversationConfigRequest {
+                    owned_id: owned_id.to_string(),
+                    generation,
+                    model,
+                    reasoning_effort: None,
+                    approval_policy,
+                })
+                .await?;
+            }
+            self.prompt(owned_id, generation, input).await
+        }
+        .await;
+        if sent.is_err() {
+            if let Err(error) = self.suspend_if_quiescent(owned_id, generation).await {
+                crate::debug_log::stderr_log!(
+                    "{owned_id}: could not stop the adapter after a refused send: {error}"
+                );
+            }
+        }
+        sent
+    }
+
     pub async fn prompt(
         &self,
         owned_id: &str,
@@ -8190,6 +8231,86 @@ mod tests {
             0,
             "the adapter process outlived the warm that was supposed to stop it"
         );
+
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_send_refused_before_its_prompt_leaves_no_process_behind() {
+        // The first message of a new session carries the choices made in the
+        // start pane. When one of them is refused, the adapter that activation
+        // just started stayed up with no turn to run and nothing to stop it —
+        // a Claude session that failed this way kept five processes alive
+        // until the app quit.
+        let fixture = fixture_manager_with_acp_session("suspend_refused_send").await;
+        let (runtime, pool_key) = {
+            let sessions = fixture
+                .manager
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = sessions.get(&fixture.owned_id).expect("activated session");
+            (
+                session.runtime.clone().expect("a running adapter"),
+                session.pool_key.clone().expect("a pooled adapter"),
+            )
+        };
+        let adapter_pid = runtime
+            .lock()
+            .await
+            .process_id()
+            .expect("the adapter runs in a process of its own");
+        drop(runtime);
+
+        let refused = fixture
+            .manager
+            .send_message(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("hello"),
+                None,
+                Some("acceptedits".into()),
+            )
+            .await
+            .expect_err("a policy the provider does not offer is refused");
+        assert!(
+            refused.contains("approval policy"),
+            "the refusal names what was wrong: {refused}"
+        );
+
+        assert!(
+            fixture
+                .manager
+                .session_is_suspended(&fixture.owned_id, fixture.generation),
+            "a send that never went out leaves the session at rest"
+        );
+        assert!(
+            !fixture.manager.adapter_pools.lock().await.contains_key(&pool_key),
+            "the adapter pool entry was torn down"
+        );
+        let reaped = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(adapter_pid as i32, 0) } == 0 && Instant::now() < reaped {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_ne!(
+            unsafe { libc::kill(adapter_pid as i32, 0) },
+            0,
+            "the adapter process outlived the send that was refused"
+        );
+
+        // The refusal cost nothing: the next send, with a policy the provider
+        // offers, starts the adapter again and goes out.
+        fixture
+            .manager
+            .send_message(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("hello again"),
+                None,
+                Some("never".into()),
+            )
+            .await
+            .expect("a valid send after a refused one");
 
         fs::remove_dir_all(fixture.root).unwrap();
     }
