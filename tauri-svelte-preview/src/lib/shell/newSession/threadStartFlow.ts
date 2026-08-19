@@ -81,9 +81,17 @@ const PROVIDER_LABELS: Record<ThreadStartProvider, string> = {
   antigravity: 'Antigravity'
 };
 
+/**
+ * What each provider is known to offer, for a draft with no session to ask.
+ *
+ * The lists a running session reports win whenever there is one. These are
+ * the ids the providers actually take — Claude's adapter names its models
+ * `sonnet`/`opus`/`haiku` and its access levels `acceptEdits`, not the
+ * spellings a draft once made up and had refused at the first send.
+ */
 const FALLBACK_MODELS: Record<ThreadStartProvider, readonly string[]> = {
   codex: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
-  claude: ['claude-sonnet', 'claude-opus', 'claude-haiku'],
+  claude: ['default', 'sonnet', 'haiku', 'opus', 'claude-opus-5', 'claude-fable-5'],
   antigravity: []
 };
 
@@ -91,9 +99,9 @@ const MODEL_HINTS: Record<string, string> = {
   'gpt-5.6-luna': 'balanced build work',
   'gpt-5.6-sol': 'deep review',
   'gpt-5.6-terra': 'fast iteration',
-  'claude-opus': 'complex work',
-  'claude-sonnet': 'everyday tasks',
-  'claude-haiku': 'quick lookups'
+  opus: 'complex work',
+  sonnet: 'everyday tasks',
+  haiku: 'quick lookups'
 };
 
 const FALLBACK_EFFORTS: Record<ThreadStartProvider, string> = {
@@ -102,10 +110,22 @@ const FALLBACK_EFFORTS: Record<ThreadStartProvider, string> = {
   antigravity: ''
 };
 
+const FALLBACK_EFFORT_CHOICES: Record<ThreadStartProvider, readonly string[]> = {
+  codex: ['low', 'medium', 'high', 'xhigh', 'max'],
+  claude: ['low', 'medium', 'high', 'max'],
+  antigravity: []
+};
+
 const FALLBACK_ACCESS: Record<ThreadStartProvider, string> = {
   codex: 'on-request',
-  claude: 'acceptedits',
+  claude: 'acceptEdits',
   antigravity: ''
+};
+
+const FALLBACK_ACCESS_CHOICES: Record<ThreadStartProvider, readonly string[]> = {
+  codex: ['untrusted', 'on-request', 'never'],
+  claude: ['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions'],
+  antigravity: []
 };
 
 function providerFor(value: string): value is ThreadStartProvider {
@@ -193,9 +213,11 @@ export function groupProviderModels(
     const snapshots = configs.filter((config) => config.provider === provider);
     const advertised = new Set(snapshots.flatMap((config) => unique(config.availableModels)));
     const availabilityKnown = advertised.size > 0;
-    const models = configured.length
+    // A remembered choice with no session behind it is one model, not a list:
+    // the known list goes with it until a session reports its own.
+    const models = availabilityKnown
       ? unique([current ?? '', ...configured])
-      : [...FALLBACK_MODELS[provider]];
+      : unique([current ?? '', ...configured, ...FALLBACK_MODELS[provider]]);
     return {
       provider,
       label: PROVIDER_LABELS[provider],
@@ -249,11 +271,12 @@ export function defaultThreadStartState(input: {
     prompt: '',
     provider,
     model: firstConfiguredModel(provider, configs),
-    effort: tidy(config?.reasoningEffort)
-      || unique(config?.availableEfforts ?? [])[0]
+    // A remembered value the provider does not know — a spelling an earlier
+    // build made up, or another provider's — is not offered back: it would be
+    // refused at the first send and start nothing.
+    effort: choiceAmong(config?.reasoningEffort, effortChoicesFor(provider, configs))
       || FALLBACK_EFFORTS[provider],
-    access: tidy(config?.approvalPolicy)
-      || unique(config?.availableApprovalPolicies ?? [])[0]
+    access: choiceAmong(config?.approvalPolicy, accessChoicesFor(provider, configs))
       || FALLBACK_ACCESS[provider],
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
@@ -262,13 +285,19 @@ export function defaultThreadStartState(input: {
   };
 }
 
+/** `value` when it is one of `choices`, else nothing. */
+function choiceAmong(value: string | null | undefined, choices: readonly string[]): string {
+  const wanted = tidy(value);
+  return wanted && choices.includes(wanted) ? wanted : '';
+}
+
 export function effortChoicesFor(
   provider: ThreadStartProvider,
   configs: readonly ThreadStartProviderConfig[]
 ): string[] {
   const config = configForProvider(provider, configs);
   const available = unique(config?.availableEfforts ?? []);
-  return available.length ? available : FALLBACK_EFFORTS[provider] ? [FALLBACK_EFFORTS[provider]] : [];
+  return available.length ? available : [...FALLBACK_EFFORT_CHOICES[provider]];
 }
 
 export function accessChoicesFor(
@@ -277,7 +306,7 @@ export function accessChoicesFor(
 ): string[] {
   const config = configForProvider(provider, configs);
   const available = unique(config?.availableApprovalPolicies ?? []);
-  return available.length ? available : FALLBACK_ACCESS[provider] ? [FALLBACK_ACCESS[provider]] : [];
+  return available.length ? available : [...FALLBACK_ACCESS_CHOICES[provider]];
 }
 
 /** The first line becomes the rail title, trimmed to the row's readable width. */

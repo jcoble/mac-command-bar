@@ -867,6 +867,10 @@
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
     const selected = rail.owned.find((session) => session.ownedId === ownedId);
+    // The strip along the bottom reports the last thing that went wrong. Left
+    // up, a start that failed in one session was still being reported while
+    // the reader worked in another; moving on is what puts it down.
+    if (switching) rail.error = null;
     setActiveOwned(ownedId);
     // Save the session being left BEFORE anything points the panels elsewhere.
     // Gated the same way as the restore below: during start-up the panels are

@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 
 import {
+  accessChoicesFor,
   buildThreadStartRequest,
   canSelectThreadStartGitRef,
   defaultThreadStartState,
   deriveThreadStartProjects,
+  effortChoicesFor,
   filterThreadStartGitRefs,
   groupProviderModels,
   titleFromPrompt,
@@ -67,7 +69,7 @@ const providerConfigs = [
     ...providerConfigs,
     { ...providerConfigs[0], model: 'gpt-5.6-next', availableModels: ['gpt-5.6-luna'] }
   ]);
-  assert.deepEqual(groups.map((group) => group.provider), ['codex', 'claude']);
+  assert.deepEqual(groups.map((group) => group.provider), ['codex', 'claude', 'antigravity']);
   assert.deepEqual(groups[0].models.map((model) => model.id), [
     'gpt-5.6-next',
     'gpt-5.6-luna',
@@ -81,6 +83,59 @@ const providerConfigs = [
     /Unavailable/
   );
   assert.equal(groups[0].models.find((model) => model.id === 'gpt-5.6-luna')?.available, true);
+}
+
+// A wiped store has no session to ask. The draft still offers each provider's
+// known models, efforts and access levels — in the ids the provider takes.
+// 'acceptedits' was once sent to Claude in place of 'acceptEdits', was refused,
+// and started nothing; and a remembered model must not become the whole list.
+{
+  const remembered = [
+    {
+      provider: 'claude',
+      model: 'haiku',
+      availableModels: [],
+      reasoningEffort: null,
+      availableEfforts: [],
+      approvalPolicy: null,
+      availableApprovalPolicies: []
+    }
+  ];
+  const claude = groupProviderModels(remembered).find((group) => group.provider === 'claude');
+  const ids = claude?.models.map((model) => model.id) ?? [];
+  assert.equal(ids[0], 'haiku');
+  assert.ok(ids.includes('opus'));
+  assert.ok(ids.includes('claude-fable-5'));
+  assert.ok(claude?.models.every((model) => model.available));
+  assert.deepEqual(effortChoicesFor('claude', remembered), ['low', 'medium', 'high', 'max']);
+  assert.deepEqual(accessChoicesFor('claude', remembered), [
+    'default',
+    'acceptEdits',
+    'plan',
+    'dontAsk',
+    'bypassPermissions'
+  ]);
+  const state = defaultThreadStartState({
+    projectPath: '/Users/me/dev/work/edi',
+    cwd: '/Users/me/dev/work/edi',
+    branch: 'main',
+    provider: 'claude',
+    providerConfigs: remembered
+  });
+  assert.equal(state.model, 'haiku');
+  assert.equal(state.access, 'acceptEdits');
+  // The spelling an earlier build remembered is not offered back either.
+  const stale = defaultThreadStartState({
+    projectPath: '/Users/me/dev/work/edi',
+    cwd: '/Users/me/dev/work/edi',
+    branch: 'main',
+    provider: 'claude',
+    providerConfigs: [{ ...remembered[0], approvalPolicy: 'acceptedits', reasoningEffort: 'xhigh' }]
+  });
+  assert.equal(stale.access, 'acceptEdits');
+  assert.equal(stale.effort, 'medium');
+  assert.deepEqual(accessChoicesFor('codex', []), ['untrusted', 'on-request', 'never']);
+  assert.deepEqual(effortChoicesFor('codex', []), ['low', 'medium', 'high', 'xhigh', 'max']);
 }
 
 // Opening a thread is a draft only; the pure default is already usable once a
