@@ -409,7 +409,13 @@
 </div>
 
 <style>
-  .composer-area { position: absolute; left: 50%; bottom: 0; z-index: 2; width: min(100%, 900px); transform: translateX(-50%); padding: 12px 0 6px; container-type: inline-size; container-name: composer; background: linear-gradient(transparent, var(--color-bg) 22%, var(--color-bg)); }
+  /* The backdrop runs the full width of the panel so the transcript dissolves
+     into it everywhere, not only behind the box. The box keeps its own width
+     and stays centred. The whole reserved space above the box is the ramp, and
+     the ramp holds off before it converges, so lines thin out over the length
+     of it instead of meeting an edge. It is opaque by the time it reaches the
+     box, or the transcript would read through beside the capsule. */
+  .composer-area { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: var(--composer-fade) 0 6px; container-type: inline-size; container-name: composer; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--color-bg) 45%, transparent) calc(var(--composer-fade) * 0.55), var(--color-bg) var(--composer-fade)); }
   .composer-form { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
 
   /* The box is one grid in two shapes.
@@ -438,7 +444,7 @@
      A floor gives it presence without changing the shape. */
   .composer-box:not(.relaxed) { min-height: 70px; }
   .composer-box.relaxed { grid-template-areas: 'panels panels panels' 'prompt prompt prompt' 'lead . trail' 'hint hint hint'; border-radius: var(--composer-radius-relaxed); }
-  .composer-box:focus-within { box-shadow: var(--shadow-lg); }
+  .composer-box:focus-within { border-color: var(--composer-border-focus); box-shadow: var(--shadow-lg); }
   .composer-box.dragging { border-color: var(--color-accent); background: var(--composer-surface-drop); }
   .composer-box.locked { border-color: var(--composer-border-locked); }
   .composer-panels { grid-area: panels; }

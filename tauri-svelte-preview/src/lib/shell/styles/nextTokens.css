@@ -179,6 +179,10 @@
   --composer-radius-capsule: var(--radius-pill);
   --composer-radius-relaxed: 24px;
   --composer-inset: 9px;
+  /* How far the transcript takes to dissolve into the bar. The composer area
+     reserves exactly this much room above the box and spends all of it on the
+     ramp, so the fade is long and soft rather than a cut at the bar's edge. */
+  --composer-fade: 72px;
   --composer-prompt-inset: 4px 8px 2px;
   --composer-prompt-inset-capsule: 0 6px;
   --composer-row-gap: 6px;
