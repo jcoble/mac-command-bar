@@ -251,7 +251,7 @@
       <label class="block">
         <span class="mb-1 block text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-3)]">Title</span>
         <input
-          class="w-full rounded-[7px] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-3)] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-60"
+          class="w-full rounded-[7px] border border-transparent bg-[var(--color-bg)] px-2.5 py-2 text-[13px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-3)] focus-visible:border-(color:--focus-border) disabled:opacity-60"
           value={model.title}
           oninput={updateTitle}
           placeholder="Pull request title"
@@ -262,7 +262,7 @@
       <label class="block">
         <span class="mb-1 block text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-3)]">Description</span>
         <textarea
-          class="min-h-[104px] w-full resize-y rounded-[7px] bg-[var(--color-bg)] px-2.5 py-2 text-[13px] leading-[18px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-3)] focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-60"
+          class="min-h-[104px] w-full resize-y rounded-[7px] border border-transparent bg-[var(--color-bg)] px-2.5 py-2 text-[13px] leading-[18px] text-[var(--color-text)] outline-none placeholder:text-[var(--color-text-3)] focus-visible:border-(color:--focus-border) disabled:opacity-60"
           value={model.description}
           oninput={updateDescription}
           placeholder="What changed and how it was checked"

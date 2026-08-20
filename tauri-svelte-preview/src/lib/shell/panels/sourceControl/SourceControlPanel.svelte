@@ -367,10 +367,10 @@
               placeholder="Message. Press Command-Enter to commit."
               disabled={!canChange}
               onkeydown={commitOnShortcut}
-              class="dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50
+              class="dark:bg-input/30 border-input focus-visible:border-(color:--focus-border)
                      w-full min-w-0 resize-y rounded-lg border bg-transparent px-2.5 py-1.5 text-[13px]
                      leading-snug outline-none transition-colors placeholder:text-muted-foreground
-                     focus-visible:ring-3 disabled:pointer-events-none disabled:opacity-50"
+                     disabled:pointer-events-none disabled:opacity-50"
             ></textarea>
           </label>
 

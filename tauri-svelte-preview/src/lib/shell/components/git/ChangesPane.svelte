@@ -393,8 +393,8 @@
                  bg-[color-mix(in_srgb,var(--color-bg)_62%,var(--color-surface))]
                  px-2 py-1.5 text-[13px] leading-[18px]
                  text-[var(--color-text)] placeholder:text-[var(--color-text-3)]
-                 focus-visible:border-[var(--color-accent)] focus-visible:ring-3
-                 focus-visible:ring-ring/50 outline-none disabled:opacity-60"
+                 focus-visible:border-(color:--focus-border)
+                 outline-none disabled:opacity-60"
           rows="2"
           placeholder="Message (⌘Enter commits on '{branch}', ⇧⌘Enter stages everything first)"
           aria-label="Commit message"

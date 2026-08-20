@@ -173,6 +173,14 @@ textarea,
   box-shadow: var(--focus-ring);
 }
 
+/* A field is the exception, and only inside the /next shell: it says it has
+   focus by turning its own border mint (`--focus-border`) rather than by
+   drawing a ring around itself. The ring above still carries buttons, rows
+   and menu items, which have no edge of their own to change. */
+:root.next-shell-document :is(input, textarea):focus-visible {
+  box-shadow: none;
+}
+
 /* Never strip focus styling for users without :focus-visible support. */
 :focus:not(:focus-visible) {
   outline: none;

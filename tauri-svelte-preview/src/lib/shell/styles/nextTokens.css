@@ -82,6 +82,11 @@
   --color-focus: rgba(110, 216, 190, 0.42);
   --color-focus-solid: #6ed8be;
 
+  /* A field says it has focus with its own edge, not with a halo drawn
+     around it: the border colour goes mint and nothing moves or grows.
+     Buttons and rows keep the ring above — they have no edge to change. */
+  --focus-border: color-mix(in srgb, var(--color-accent) 60%, transparent);
+
   /* Interaction surfaces are opaque so text contrast is deterministic. */
   --color-selected: #263734;
   --color-selected-border: #5cb29b;
@@ -136,6 +141,27 @@
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-pill: 999px;
+
+  /* Spacing — the six steps every panel measures itself in. 4 is the gap
+     inside a control, 8 between a label and its value, 12 between rows, 16
+     between cards, and 24 / 32 for the air that separates whole sections.
+     Anything that needs a number reaches for one of these rather than
+     inventing a value. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Type — three sizes carry everything a person reads: the heading that
+     names a card or a section, the body copy under it, and the quieter
+     line of metadata beside that. The old 11 and 12px sizes stay for
+     small-caps group labels only. */
+  --text-heading: 16px;
+  --text-heading-weight: 600;
+  --text-body: 14px;
+  --text-quiet: 13px;
 
   /* ------------------------------------------------------------------
    * Menu sheets — one look for every menu the shell opens from a control:

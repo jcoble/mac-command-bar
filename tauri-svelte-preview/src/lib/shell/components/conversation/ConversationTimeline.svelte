@@ -20,8 +20,8 @@
     type ConversationSendAnchorRequest
   } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
-  import { animateWhenVisible } from '$lib/shell/elementVisibility.ts';
   import TimelineItem from './TimelineItem.svelte';
+  import WorkingSpinner from './WorkingSpinner.svelte';
 
   interface Props {
     items: readonly ConversationDisplayItem[];
@@ -621,7 +621,7 @@
                 <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
                 {#if showWorking && item.itemId === anchoredUserItemId}
                   <div class="working-row" data-testid="conversation-working-indicator" role="status">
-                    <span class="working-dot" use:animateWhenVisible aria-hidden="true"></span>
+                    <WorkingSpinner seed={group.turnId ?? item.itemId} />
                     <span>Working…</span>
                   </div>
                 {/if}
@@ -689,7 +689,6 @@
   .turn-fold-chevron.open{transform:rotate(90deg)}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{display:flex;align-items:center;gap:8px;min-height:20px;color:var(--color-text-3);font-size:13px}
-  .working-dot{width:6px;height:6px;border-radius:999px;background:currentColor}
   .active-turn-tail{position:absolute;top:0;left:0;width:100%;pointer-events:none}
   /* A disc under the middle of the transcript, holding one arrow. It sits over
      the column it scrolls rather than off in the corner, and it says what it
@@ -697,9 +696,5 @@
   .jump-latest{position:absolute;left:50%;bottom:calc(var(--composer-height) + 16px);display:grid;place-items:center;width:32px;height:32px;padding:0;transform:translateX(-50%);border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);box-shadow:var(--shadow-sm);cursor:pointer}
   .jump-latest:hover{background:var(--color-hover)}
   .jump-latest:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
-  /* The working dot pulses only while a reader can see it. A transcript scrolled
-     back to an older turn would otherwise keep animating a dot nobody is
-     looking at, and an off-screen animation costs the same as an on-screen one. */
-  @keyframes working-pulse{0%,100%{opacity:.38;transform:scale(.82)}50%{opacity:1;transform:scale(1)}}
-  @media (prefers-reduced-motion:no-preference){.turn-fold-chevron{transition:transform .14s ease}.jump-latest{transition:background .14s ease,box-shadow .14s ease}.working-dot{animation:working-pulse 1.1s ease-in-out infinite;animation-play-state:var(--motion-state,running)}}
+  @media (prefers-reduced-motion:no-preference){.turn-fold-chevron{transition:transform .14s ease}.jump-latest{transition:background .14s ease,box-shadow .14s ease}}
 </style>

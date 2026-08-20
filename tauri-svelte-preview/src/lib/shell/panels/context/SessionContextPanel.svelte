@@ -61,7 +61,7 @@
    * popovers are, and a tighter gap between the heading and the rows than a
    * full-page card wants.
    */
-  const cardClass = 'gap-2 bg-foreground/8 ring-0';
+  const cardClass = 'gap-2 bg-foreground/8';
 
   const session = $derived(ownedId ? getConversationSession(ownedId) : null);
   const facts = $derived(
