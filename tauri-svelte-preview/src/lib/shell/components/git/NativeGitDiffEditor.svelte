@@ -100,7 +100,13 @@
         '$lib/shell/editor/csharpLanguageClient'
       );
       await prepareNativeCsharpEditorServices(root);
-      await import('@codingame/monaco-vscode-standalone-languages');
+      // The standalone Monarch languages exist only for the degraded run with
+      // no real services: registered beside them, Monarch tokenizers race the
+      // TextMate grammars and crash asking for the standalone theme service.
+      const { monacoVscodeApiIsInitialized } = await import('$lib/shell/editor/monacoWorkers');
+      if (!monacoVscodeApiIsInitialized()) {
+        await import('@codingame/monaco-vscode-standalone-languages');
+      }
       const loaded = await import('monaco-editor/esm/vs/editor/editor.api');
       if (disposed) return;
       monacoApi = loaded;
