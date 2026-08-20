@@ -47,7 +47,7 @@ mod usage_remote;
 mod usage_sources;
 mod workflow;
 
-const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
+const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 10_000;
 const MAX_SOURCE_LIST_LIMIT: usize = 25_000;
 const DEFAULT_SOURCE_SEARCH_LIMIT: usize = 50;
