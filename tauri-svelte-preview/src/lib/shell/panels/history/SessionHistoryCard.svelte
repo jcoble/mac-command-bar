@@ -2,36 +2,48 @@
   /**
    * SessionHistoryCard.svelte — one past session in the History panel.
    *
-   * At rest a card is two lines: what the session was called, and one line of
-   * facts about it. Everything else is behind hover or the expand control, so a
-   * project with forty sessions in it can still be read down.
+   * Every card draws the same zones in the same order, whether the scan found
+   * a model, a folder, turns, agents or none of them: the row that names the
+   * session, five labelled facts, the turns it kept, the agents it ran, what
+   * can be done about it, and one line saying why. A value the scan did not
+   * have is an em dash in the muted colour and its zone stays where it was —
+   * a card that drops a block reads as a different design rather than as the
+   * same card with less in it, which is why forty sessions used to look like
+   * forty different layouts.
    *
-   * The card decides nothing. Which actions a session supports, and what to say
-   * about the ones it does not, comes from `sessionHistoryActions`; running them
-   * belongs to the panel, which owns the service and the confirm dialog. That
-   * split is what lets the roster be tested without a browser.
+   * The card decides nothing. Which actions a session supports, and what to
+   * say about the ones it does not, comes from `sessionHistoryActions`;
+   * running them belongs to the panel, which owns the service and the confirm
+   * dialog. That split is what lets the roster be tested without a browser.
    */
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ChevronUp from '@lucide/svelte/icons/chevron-up';
   import Copy from '@lucide/svelte/icons/copy';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
-  import MessageSquare from '@lucide/svelte/icons/message-square';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
   import Play from '@lucide/svelte/icons/play';
-  import TextCursorInput from '@lucide/svelte/icons/text-cursor-input';
-  import Users from '@lucide/svelte/icons/users';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import type { Component } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
+  import { Card } from '$lib/components/ui/card/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
+  import * as Collapsible from '$lib/components/ui/collapsible/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { HoverActionButton } from '$lib/components/ui/hover-actions/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
+  import { Separator } from '$lib/components/ui/separator/index.js';
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import { normalizeProvider } from '$lib/shell/ownedSessions.ts';
   import { exactLocalTime, formatLastActivity } from '$lib/shell/relativeTime.ts';
-  import type { SessionLibraryRecord } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
+  import type {
+    SessionLibraryRecord,
+    SessionLibraryTurn
+  } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
   import { cn } from '$lib/utils.js';
 
   import {
@@ -62,9 +74,21 @@
     $props();
 
   let menuOpen = $state(false);
+  /** The turns are behind a disclosure and start closed, the way "Why" does. */
+  let turnsOpen = $state(false);
+
+  /** What an unknown value reads as, everywhere on the card. */
+  const DASH = '—';
+
+  /** The two lines of small-caps section label, so they cannot drift apart. */
+  const SECTION_LABEL =
+    'm-0 text-xs leading-normal font-semibold tracking-wide uppercase text-muted-foreground';
+
+  /** A quiet sentence: the closing line, and every "nothing here" line. */
+  const QUIET_LINE = 'm-0 text-(length:--text-quiet) leading-normal text-muted-foreground';
 
   const actions = $derived(sessionHistoryActions(record));
-  const byId = $derived(new Map(actions.map((action) => [action.id, action])));
+  const byId = $derived(new Map(actions.map((item) => [item.id, item])));
 
   function action(id: SessionHistoryActionId): SessionHistoryAction {
     // Every id in the union is in the roster, so this only guards a typo.
@@ -77,13 +101,90 @@
   const ProviderIcon = $derived(AGENT_ICONS[agent.agent]);
   const providerName = $derived(agentDisplayName(agent.agent, agent.viaCmux));
   const age = $derived(formatLastActivity(record.updatedAt, now));
-  const messageLabel = $derived(
-    record.messageCount && record.messageCount > 0 ? `${record.messageCount} msgs` : ''
+  const modelLabel = $derived(record.model?.trim() || DASH);
+  const turnsLabel = $derived(
+    record.messageCount && record.messageCount > 0 ? String(record.messageCount) : DASH
   );
-  const subagentLabel = $derived(
-    record.subagents.length > 0 ? `${record.subagents.length} subagents` : ''
-  );
-  const userTurns = $derived(record.latestTurns.filter((turn) => turn.text.trim().length > 0));
+
+  /**
+   * A folder path, shortened from the middle so both ends survive: the repo is
+   * at the front and the folder's own name is at the back, and it is the
+   * stretch between them nobody reads. The whole path stays on the title.
+   */
+  function shortenPath(value: string): string {
+    const budget = 42;
+    if (value.length <= budget) return value;
+    const head = Math.ceil((budget - 1) / 2);
+    const tail = budget - 1 - head;
+    return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
+  }
+
+  /** The five labelled facts, in this order on every card, dash when unknown. */
+  const facts = $derived.by(() => {
+    const folder = record.canonicalCwd.trim();
+    return [
+      {
+        label: 'Folder',
+        value: folder ? shortenPath(folder) : DASH,
+        title: folder || undefined
+      },
+      {
+        label: 'Last activity',
+        value: age || DASH,
+        title: record.updatedAt ? exactLocalTime(record.updatedAt) : undefined
+      },
+      { label: 'Model', value: modelLabel, title: record.model ?? undefined },
+      { label: 'Turns', value: turnsLabel, title: undefined },
+      {
+        label: 'Subagents',
+        value: record.subagents.length > 0 ? String(record.subagents.length) : DASH,
+        title: undefined
+      }
+    ];
+  });
+
+  /**
+   * Everything the scan kept of the conversation, in order: the first prompt,
+   * then the window of latest turns behind it. The first prompt is dropped
+   * when the window already opens with it, so it is never shown twice.
+   */
+  const turns = $derived.by(() => {
+    const first = record.firstPrompt?.trim() ?? '';
+    const list: SessionLibraryTurn[] = first ? [{ speaker: 'user', text: first }] : [];
+    for (const turn of record.latestTurns) {
+      const text = turn.text.trim();
+      if (!text || text === first) continue;
+      list.push({ speaker: turn.speaker, text });
+    }
+    return list;
+  });
+
+  /** The first turn and the last two. Fewer than four means all of them. */
+  const shownTurns = $derived(turns.length < 4 ? turns : [turns[0], ...turns.slice(-2)]);
+  /** How many sit between the first turn and the final pair. */
+  const elidedTurns = $derived(turns.length < 4 ? 0 : turns.length - 3);
+
+  /** The four actions offered as words, in the order a person reads them. */
+  const CLUSTER: readonly { id: SessionHistoryActionId; icon: Component }[] = [
+    { id: 'resume-assembly', icon: Play },
+    { id: 'view-log', icon: FileCode2 },
+    { id: 'open-working-directory', icon: FolderOpen },
+    { id: 'delete', icon: Trash2 }
+  ];
+
+  /**
+   * One sentence at the foot of every card. It says why a button is off when
+   * one is, and otherwise says what this card is not showing — so the line is
+   * always there and always about this session.
+   */
+  const closingLine = $derived.by(() => {
+    const off = CLUSTER.map((item) => action(item.id)).find(
+      (item) => !item.enabled && item.disabledReason
+    );
+    if (off?.disabledReason) return off.disabledReason;
+    if (turns.length === 0) return 'No turns were stored for this session.';
+    return `Started with ${providerName}. Everything the scan kept is shown above.`;
+  });
 
   function run(id: SessionHistoryActionId): void {
     if (!action(id).enabled) return;
@@ -92,173 +193,207 @@
 </script>
 
 <article
-  class={cn('session-card border-b px-1 py-1.5 last:border-b-0', menuOpen && 'menu-open')}
+  class="session-card px-(--space-2) pt-(--space-4) last:pb-(--space-4)"
   data-testid="session-history-card"
 >
-  <ListRow
-    onclick={onToggle}
-    selected={expanded}
-    actionsLabel="Session actions"
-    class="pr-24"
+  <!-- A card is told apart from the panel by its own fill and a shadow. It
+       carries no outline: a border here would be signalling state, which the
+       kit reserves for sheets that float over the page. -->
+  <Card
+    class={cn(
+      'gap-(--space-3) border-0 bg-foreground/5 py-(--space-2) shadow-sm',
+      expanded && 'bg-foreground/10',
+      menuOpen && 'menu-open'
+    )}
   >
-    <span class="min-w-0 flex-1 truncate font-medium">{title}</span>
-    {#snippet actions()}
-      <HoverActionButton
-        label={action('resume-assembly').enabled
-          ? 'Resume as Assembly Session'
-          : (action('resume-assembly').disabledReason ?? 'Resume as Assembly Session')}
-        tone="primary"
-        disabled={!action('resume-assembly').enabled}
-        onclick={() => run('resume-assembly')}
-      >
-        <Play />
-      </HoverActionButton>
-      <HoverActionButton label={expanded ? 'Hide details' : 'Show details'} onclick={onToggle}>
-        {#if expanded}<ChevronUp />{:else}<ChevronDown />{/if}
-      </HoverActionButton>
+    <!-- The row that names the session: one line, always one line. The name
+         gives way before the chips do, and the chips never wrap. -->
+    <ListRow onclick={onToggle} selected={expanded} actionsLabel="Session actions" class="pr-24">
+      <ChevronRight
+        class={cn(
+          'size-4 shrink-0 text-muted-foreground transition-transform',
+          expanded && 'rotate-90'
+        )}
+        aria-hidden="true"
+      />
+      <ProviderIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span class="min-w-16 flex-1 truncate font-medium" title={title}>{title}</span>
+      <span class="flex min-w-0 shrink items-center gap-(--space-1) overflow-hidden">
+        <Chip class="h-6 max-w-32 px-2 font-normal" data-testid="session-history-model">
+          <span class="truncate" title={record.model ?? 'No model was recorded.'}>{modelLabel}</span>
+        </Chip>
+        <Chip tone="count" class="h-6 px-2 font-normal">{turnsLabel}</Chip>
+      </span>
 
-      <DropdownMenu.Root bind:open={menuOpen}>
-        <DropdownMenu.Trigger>
-          {#snippet child({ props })}
-            <IconButton
-              {...props}
-              label="More actions"
-              side="bottom"
-              class="rounded-md bg-transparent text-[var(--color-text)] shadow-none
-                     hover:bg-accent/60 hover:text-foreground"
-            >
-              <Ellipsis />
-            </IconButton>
-          {/snippet}
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Content class="w-56" align="end">
-          {#each menuActions as item (item.id)}
-            <DropdownMenu.Item
-              disabled={!item.enabled}
-              title={item.disabledReason ?? undefined}
-              class={item.destructive ? 'text-[var(--color-bad)]' : undefined}
-              onSelect={() => run(item.id)}
-            >
-              {item.label}
-            </DropdownMenu.Item>
-          {/each}
-        </DropdownMenu.Content>
-      </DropdownMenu.Root>
-    {/snippet}
-  </ListRow>
-
-  <p class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 px-2 pt-0.5 text-sm text-muted-foreground">
-    <ProviderIcon class="size-3.5 shrink-0" aria-hidden="true" />
-    <span class="shrink-0">{providerName}</span>
-    {#if messageLabel}<Chip tone="count">{messageLabel}</Chip>{/if}
-    {#if subagentLabel}<Chip tone="count">{subagentLabel}</Chip>{/if}
-    {#if age}<span class="shrink-0" title={exactLocalTime(record.updatedAt)}>{age}</span>{/if}
-    {#if record.model}<span class="min-w-0 truncate">{record.model}</span>{/if}
-  </p>
-
-  {#if !expanded && excerpt}
-    <p class="truncate px-2 pt-0.5 text-sm text-muted-foreground">{excerpt}</p>
-  {/if}
-
-  {#if expanded}
-    <div class="flex flex-col gap-3 px-2 pt-2 pb-1">
-      <div class="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant="secondary"
+      {#snippet actions()}
+        <HoverActionButton
+          label={action('resume-assembly').enabled
+            ? 'Resume as Assembly Session'
+            : (action('resume-assembly').disabledReason ?? 'Resume as Assembly Session')}
+          tone="primary"
           disabled={!action('resume-assembly').enabled}
-          title={action('resume-assembly').disabledReason ?? undefined}
           onclick={() => run('resume-assembly')}
         >
-          <Play aria-hidden="true" />
-          Resume as Assembly Session
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={!action('view-log').enabled}
-          title={action('view-log').disabledReason ?? undefined}
-          onclick={() => run('view-log')}
-        >
-          <FileCode2 aria-hidden="true" />
-          View Log
-        </Button>
+          <Play />
+        </HoverActionButton>
+        <HoverActionButton label={expanded ? 'Hide details' : 'Show details'} onclick={onToggle}>
+          {#if expanded}<ChevronUp />{:else}<ChevronDown />{/if}
+        </HoverActionButton>
+
+        <DropdownMenu.Root bind:open={menuOpen}>
+          <DropdownMenu.Trigger>
+            {#snippet child({ props })}
+              <IconButton
+                {...props}
+                label="More actions"
+                side="bottom"
+                class="rounded-md bg-transparent text-[var(--color-text)] shadow-none
+                       hover:bg-accent/60 hover:text-foreground"
+              >
+                <Ellipsis />
+              </IconButton>
+            {/snippet}
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content class="w-56" align="end">
+            {#each menuActions as item (item.id)}
+              <DropdownMenu.Item
+                disabled={!item.enabled}
+                title={item.disabledReason ?? undefined}
+                class={item.destructive ? 'text-[var(--color-bad)]' : undefined}
+                onSelect={() => run(item.id)}
+              >
+                {item.label}
+              </DropdownMenu.Item>
+            {/each}
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+      {/snippet}
+    </ListRow>
+
+    {#if !expanded}
+      <p class="truncate px-(--space-3) text-(length:--text-quiet) text-muted-foreground">
+        {excerpt || DASH}
+      </p>
+    {/if}
+
+    <!-- The body is written into the page only while the card is open. A
+         history tab that keeps every session's transcript mounted is what used
+         to freeze the shell, so this stays a real removal rather than a hidden
+         subtree. -->
+    {#if expanded}
+      <!-- The plain facts, one labelled line each, on a hairline the eye can
+           run along. Every row is here on every card; a value the scan did not
+           have is a dash rather than a missing line. -->
+      <dl class="m-0 grid grid-cols-[auto_minmax(0,1fr)] px-(--space-3)">
+        {#each facts as fact, index (fact.label)}
+          {@const ruled = index < facts.length - 1 && 'border-b border-border'}
+          {@const unknown = fact.value === DASH}
+          <dt
+            class={cn(
+              'm-0 flex items-center py-(--space-2) pr-(--space-2) text-(length:--text-quiet) leading-normal text-muted-foreground',
+              ruled
+            )}
+          >
+            {fact.label}
+          </dt>
+          <dd
+            class={cn(
+              'm-0 flex min-w-0 items-center justify-end py-(--space-2) text-(length:--text-body) leading-normal',
+              unknown ? 'text-muted-foreground' : 'text-foreground',
+              ruled
+            )}
+            title={fact.title}
+          >
+            <span class="truncate">{fact.value}</span>
+          </dd>
+        {/each}
+      </dl>
+
+      <!-- The conversation, behind a disclosure: the first turn, then the last
+           two. The block is here even when the scan kept nothing, because a
+           card that sometimes has a turns section and sometimes does not is
+           the thing this rebuild exists to end. -->
+      <div class="flex flex-col px-(--space-3)">
+        <Collapsible.Root bind:open={turnsOpen}>
+          <Collapsible.Trigger
+            class="flex w-fit items-center gap-1 rounded-lg py-(--space-1)
+                   text-(length:--text-quiet) leading-normal text-muted-foreground
+                   transition-colors outline-none hover:text-foreground
+                   focus-visible:ring-3 focus-visible:ring-ring/50"
+          >
+            <ChevronRight
+              class={cn('size-3.5 transition-transform', turnsOpen && 'rotate-90')}
+              aria-hidden="true"
+            />
+            Turns ({turns.length})
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <div class="flex flex-col gap-(--space-2) pt-(--space-2)">
+              {#if turns.length === 0}
+                <p class={QUIET_LINE}>No turns were stored for this session.</p>
+              {:else}
+                {#each shownTurns as turn, index (index)}
+                  {#if index === 1 && elidedTurns > 0}
+                    <p class={QUIET_LINE}>… {elidedTurns} earlier turns</p>
+                  {/if}
+                  <!--
+                    Each turn scrolls inside its own box. An agent's last answer
+                    runs to thousands of characters, and letting one of them
+                    grow to its full height pushed the next session off the
+                    panel entirely.
+                  -->
+                  <div class="turn-block overflow-hidden rounded-lg bg-background">
+                    <div
+                      class="flex items-center gap-(--space-2) border-b px-(--space-2) py-1"
+                      class:speaker-user={turn.speaker === 'user'}
+                      class:speaker-agent={turn.speaker !== 'user'}
+                    >
+                      <p class="m-0 flex-1 text-xs font-semibold tracking-wide uppercase">
+                        {turn.speaker === 'user' ? 'You' : 'Agent'}
+                      </p>
+                      <IconButton
+                        label="Copy this turn"
+                        size="xs"
+                        onclick={() => onCopyText(turn.text)}
+                      >
+                        <Copy />
+                      </IconButton>
+                    </div>
+                    <ScrollArea>
+                      <p
+                        class="m-0 px-(--space-2) py-(--space-2) text-(length:--text-quiet)
+                               leading-relaxed whitespace-pre-wrap text-foreground"
+                      >
+                        {turn.text}
+                      </p>
+                    </ScrollArea>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+          </Collapsible.Content>
+        </Collapsible.Root>
       </div>
 
-      {#if record.firstPrompt}
-        <section class="flex flex-col gap-1">
-          <h3 class="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            <TextCursorInput class="size-3" aria-hidden="true" />
-            First prompt
-          </h3>
-          <div class="rounded-lg border bg-background p-2">
-            <div class="flex items-start gap-2">
-              <ScrollArea class="first-prompt min-w-0 flex-1">
-                <p class="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">
-                  {record.firstPrompt}
-                </p>
-              </ScrollArea>
-              <Button
-                size="xs"
-                variant="ghost"
-                onclick={() => onCopyText(record.firstPrompt ?? '')}
-              >
-                <Copy aria-hidden="true" />
-                Copy
-              </Button>
-            </div>
-          </div>
-        </section>
-      {/if}
-
-      {#if userTurns.length > 0}
-        <section class="flex flex-col gap-2">
-          <h3 class="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            <MessageSquare class="size-3" aria-hidden="true" />
-            Latest turns
-          </h3>
-          {#each userTurns as turn, index (index)}
-            <!--
-              Each turn scrolls inside its own box. An agent's last answer runs
-              to thousands of characters, and letting one of them grow to its
-              full height pushed the next session off the panel entirely — the
-              two turns are here to be compared, so both have to stay on screen.
-            -->
-            <div class="turn-block overflow-hidden rounded-lg border bg-background">
-              <p
-                class="flex items-center gap-1.5 border-b px-2 py-1 text-[11px] font-semibold
-                       tracking-wide uppercase"
-                class:speaker-user={turn.speaker === 'user'}
-                class:speaker-agent={turn.speaker !== 'user'}
-              >
-                {turn.speaker === 'user' ? 'You' : 'Agent'}
-              </p>
-              <ScrollArea>
-                <p class="px-2 py-1.5 text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">
-                  {turn.text}
-                </p>
-              </ScrollArea>
-            </div>
-          {/each}
-        </section>
-      {/if}
-
-      {#if record.subagents.length > 0}
-        <section class="flex flex-col gap-1">
-          <h3 class="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            <Users class="size-3" aria-hidden="true" />
-            Subagents ({record.subagents.length})
-          </h3>
+      <!-- Who the session ran for itself. Named, because "2 subagents" in the
+           facts above is not enough to open one of their transcripts. -->
+      <section class="flex flex-col gap-(--space-2) px-(--space-3)">
+        <h3 class={SECTION_LABEL}>Agents this session ran</h3>
+        {#if record.subagents.length === 0}
+          <p class={QUIET_LINE}>No agents were recorded for this session.</p>
+        {:else}
           {#each record.subagents as subagent, index (index)}
             <ListRow class="bg-background" actionsLabel="Agent actions">
               <span class="min-w-0 flex-1 truncate">{subagent.name}</span>
-              {#if subagent.kind}<Chip>{subagent.kind}</Chip>{/if}
+              {#if subagent.kind}<Chip class="h-6 px-2 font-normal">{subagent.kind}</Chip>{/if}
               {#if subagent.messageCount}
-                <span class="shrink-0 text-sm text-muted-foreground">{subagent.messageCount} msgs</span>
+                <Chip tone="count" class="h-6 px-2 font-normal">{subagent.messageCount}</Chip>
               {/if}
               {#snippet actions()}
                 <HoverActionButton
-                  label={subagent.logPath ? 'View log' : 'No transcript file was found for this agent.'}
+                  label={subagent.logPath
+                    ? 'View log'
+                    : 'No transcript file was found for this agent.'}
                   tone="info"
                   disabled={!subagent.logPath}
                   onclick={() => subagent.logPath && onOpenLog(subagent.logPath)}
@@ -268,13 +403,60 @@
               {/snippet}
             </ListRow>
           {/each}
-        </section>
-      {/if}
-    </div>
-  {/if}
+        {/if}
+      </section>
+
+      <Separator />
+
+      <!-- What can be done about this session. Resume is the one filled
+           button; the rest are offered as words. An action that is not backed
+           by something real is switched off and dimmed rather than removed,
+           and the line underneath says which one and why. -->
+      <section class="flex flex-col gap-(--space-2) px-(--space-3)">
+        <h3 class={SECTION_LABEL}>What you can do</h3>
+        <div class="flex flex-wrap items-center gap-(--space-1)">
+          {#each CLUSTER as item (item.id)}
+            {@const entry = action(item.id)}
+            {@const Icon = item.icon}
+            <Button
+              variant={item.id === 'resume-assembly' ? 'default' : 'ghost'}
+              class={cn(
+                'rounded-full text-(length:--text-quiet)',
+                item.id === 'resume-assembly'
+                  ? 'px-4'
+                  : 'px-3 text-muted-foreground hover:text-foreground',
+                entry.destructive && 'hover:text-[var(--color-bad)]'
+              )}
+              disabled={!entry.enabled}
+              title={entry.disabledReason ?? undefined}
+              onclick={() => run(item.id)}
+            >
+              <Icon aria-hidden="true" />
+              {entry.label}
+            </Button>
+          {/each}
+        </div>
+        <p class={QUIET_LINE}>{closingLine}</p>
+      </section>
+    {/if}
+  </Card>
 </article>
 
 <style>
+  /*
+    The kit's row is sized for a dense file list. A session row is the thing a
+    decision is made about, so it takes the shell's body size and the same
+    12 by 16 inset the cards use, and its hover cluster moves in to match.
+  */
+  .session-card :global([data-slot='list-row'] > button) {
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-body);
+  }
+  .session-card :global([data-slot='hover-actions']) {
+    right: var(--space-3);
+  }
+
   /*
     While the more-actions menu is open the pointer is over the menu, not the
     row, so the row's hover cluster would fade out and take its own trigger with
@@ -318,16 +500,7 @@
     it.
   */
   .turn-block :global([data-slot='scroll-area-viewport']) {
-    /* The viewport ships as `height: 100%`, and its parent has no height of its
-       own, so it measured zero and there was nothing to scroll. Letting it size
-       to the turn and capping it there is what gives the scrollbar something to
-       do. */
     height: auto;
     max-height: 11rem;
-  }
-
-  :global(.first-prompt) :global([data-slot='scroll-area-viewport']) {
-    height: auto;
-    max-height: 10rem;
   }
 </style>

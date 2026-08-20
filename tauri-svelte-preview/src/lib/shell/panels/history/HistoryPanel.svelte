@@ -26,6 +26,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import {
     buildSessionHistoryViewModel,
     createSessionHistoryCollapseState,
@@ -372,7 +373,7 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col">
+<div class="history-panel flex h-full min-h-0 flex-col">
   <PanelHeader title="History" count={summaryViewModel.totalCount}>
     {#snippet actions()}
       <IconButton
@@ -429,7 +430,10 @@
        state (search, open groups, paging) lives above and survives; reopening
        the tab rebuilds the cards from it instantly. -->
   {#if visible}
-  <ScrollArea class="min-h-0 flex-1">
+  <!-- The kit's scroll area ships as `type="hover"`, which leaves a reader who
+       is not already pointing at the list with no sign that there is more of
+       it. This one keeps its bar on screen. -->
+  <ScrollArea type="always" class="min-h-0 flex-1">
     {#if summaryViewModel.projects.length === 0}
       <EmptyState
         title={query ? 'Nothing matches that search' : 'No past sessions yet'}
@@ -460,7 +464,7 @@
               />
               <span class="min-w-0 flex-1 truncate">{project.name}</span>
               {#if loadingProjectKey === project.key}
-                <span class="history-spinner" aria-label="Loading sessions"></span>
+                <WorkingSpinner seed={project.key} size={12} />
               {/if}
               <Chip tone="count">{project.count}</Chip>
             </Collapsible.Trigger>
@@ -481,7 +485,7 @@
                  in once per level it is nested, against a rail — without it a
                  worktree heading and the sessions of the worktree above it
                  shared a left edge and the tree read as one flat list. -->
-            <div class={loadedProject.singleCheckout ? '' : 'history-nest'}>
+            <div class="history-nest">
               {#each loadedProject.worktrees as worktree (worktree.key)}
                 {@const worktreeOpen =
                   loadedProject.singleCheckout
@@ -581,34 +585,17 @@
     unbroken between a heading and the cards under it.
   */
   .history-nest {
-    margin-left: 0.875rem;
-    padding-left: 0.375rem;
+    margin-left: var(--space-3);
+    padding-left: var(--space-2);
     border-left: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
   }
 
   /*
-    The only turning thing in the panel, and it exists only while a project is
-    actually being read — the element is removed the moment that finishes, so
-    nothing spins at rest.
+    The kit's scroll thumb is a 7% hairline, which on this surface is a
+    scrollbar nobody can see. The bar is the only thing telling a reader that a
+    project has more sessions below the fold, so it is drawn to be read.
   */
-  .history-spinner {
-    flex: none;
-    width: 11px;
-    height: 11px;
-    border: 1.5px solid color-mix(in srgb, var(--color-text) 22%, transparent);
-    border-top-color: color-mix(in srgb, var(--color-text) 62%, transparent);
-    border-radius: 50%;
-    animation: history-spin 700ms linear infinite;
-  }
-
-  @keyframes history-spin {
-    to { transform: rotate(360deg); }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .history-spinner {
-      animation: none;
-      border-top-color: color-mix(in srgb, var(--color-text) 22%, transparent);
-    }
+  .history-panel :global([data-slot='scroll-area-thumb']) {
+    background: color-mix(in srgb, var(--color-text) 24%, transparent);
   }
 </style>
