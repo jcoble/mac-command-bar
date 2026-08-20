@@ -24,5 +24,5 @@
      conversation is gone, and nothing more than that. */
   .compaction{display:flex;align-items:center;gap:10px;padding:2px 0}
   .rule{flex:1;height:1px;background:var(--color-border)}
-  .label{color:var(--color-text-3);font-size:11px;letter-spacing:.04em;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .label{color:var(--color-text-3);font-size:12px;letter-spacing:.04em;white-space:nowrap;font-variant-numeric:tabular-nums}
 </style>

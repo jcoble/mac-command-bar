@@ -640,7 +640,7 @@
      the ring above already draws. It stays because it is where a newcomer finds
      the slash menu, but at the weight of the message it was competing with the
      one line in the box that matters. */
-  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 5px auto 0; color: color-mix(in srgb, var(--color-text-3) 78%, transparent); font-size: 11px; }
+  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 5px auto 0; color: color-mix(in srgb, var(--color-text-3) 78%, transparent); font-size: 12px; }
   /* The settings row is a fixed 211px — approval on the left, the model pill on
      the right — and the add button beside it needs about 80px more. Measured in
      the browser, the pair still sits unclipped in a 438px composer, so
