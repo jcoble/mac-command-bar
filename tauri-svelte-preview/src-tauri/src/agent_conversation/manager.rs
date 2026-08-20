@@ -5203,13 +5203,29 @@ fn tool_details(update: &Value) -> ToolDetails {
                         diff.push(patch);
                     }
                 } else if let Some(text) = text_from_value(block) {
-                    output.push(text);
+                    match patch_in_text(&text) {
+                        Some(patch) => {
+                            if path.is_none() {
+                                path = patch_target_path(&text);
+                            }
+                            diff.push(patch);
+                        }
+                        None => output.push(text),
+                    }
                 }
             }
         }
         Some(content) => {
             if let Some(text) = text_from_value(content) {
-                output.push(text);
+                match patch_in_text(&text) {
+                    Some(patch) => {
+                        if path.is_none() {
+                            path = patch_target_path(&text);
+                        }
+                        diff.push(patch);
+                    }
+                    None => output.push(text),
+                }
             }
         }
         None => {}
@@ -5234,6 +5250,61 @@ fn tool_details(update: &Value) -> ToolDetails {
         path,
         diff: (!diff.is_empty()).then(|| diff.join("\n")),
     }
+}
+
+/// The patch inside a tool's text output, when the text is one.
+///
+/// Not every provider sends a file change the way the protocol describes it.
+/// Codex's apply-file-changes call hands over a whole `git diff` as ordinary
+/// text, which used to be drawn as tool output: a wall of raw `+` and `-`
+/// lines with no gutters, no colour and no fold, in the middle of a
+/// conversation. It is a diff, so it should be read as one.
+///
+/// Only the hunks are kept. The `diff --git`, `index` and `---`/`+++` lines
+/// name the file, which the row already shows in its own header, and passing
+/// them on would draw them as context lines inside the change.
+fn patch_in_text(text: &str) -> Option<String> {
+    let mut lines = text.lines();
+    let first = lines.find(|line| !line.trim().is_empty())?;
+    let named = first.starts_with("diff --git ");
+    // A bare patch with no `diff --git` header still has to be a whole one:
+    // both file lines and at least one hunk, or any prose quoting a `---` rule
+    // would be swallowed.
+    let bare = first.starts_with("--- ")
+        && text.lines().any(|line| line.starts_with("+++ "))
+        && text.lines().any(|line| line.starts_with("@@ "));
+    if !named && !bare {
+        return None;
+    }
+    let hunks: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("@@ "))
+        .collect();
+    (!hunks.is_empty()).then(|| hunks.join("\n"))
+}
+
+/// The file a text patch changes, read from its header.
+///
+/// The `+++` side names it, except for a deletion, where that side is
+/// `/dev/null` and the `---` side is the file that went away. Both carry
+/// git's `a/` and `b/` prefixes.
+fn patch_target_path(text: &str) -> Option<String> {
+    let named = |line: &str, marker: &str| -> Option<String> {
+        let rest = line.strip_prefix(marker)?.trim();
+        if rest == "/dev/null" {
+            return None;
+        }
+        let rest = rest.split('\t').next().unwrap_or(rest);
+        Some(
+            rest.strip_prefix("a/")
+                .or_else(|| rest.strip_prefix("b/"))
+                .unwrap_or(rest)
+                .to_owned(),
+        )
+    };
+    text.lines()
+        .find_map(|line| named(line, "+++ "))
+        .or_else(|| text.lines().find_map(|line| named(line, "--- ")))
 }
 
 /// A unified diff of one whole-file replacement.
@@ -5457,6 +5528,60 @@ mod tests {
     use crate::agent_conversation::handoff::{
         AgentConversationHistoryBoundary, AgentConversationProcessTreeAssertion,
     };
+
+    /// A provider that hands over a whole `git diff` as text still gets a
+    /// file-change row rather than a wall of raw patch lines.
+    #[test]
+    fn a_patch_sent_as_text_is_read_as_a_change() {
+        let patch = "diff --git a/src/app.ts b/src/app.ts\n\
+                     index 1111111..2222222 100644\n\
+                     --- a/src/app.ts\n\
+                     +++ b/src/app.ts\n\
+                     @@ -1,2 +1,2 @@\n\
+                     -let total = 1;\n\
+                     +let total = 2;\n\
+                      export { total };";
+        let details = tool_details(&json!({
+            "content": [{ "type": "content", "content": { "type": "text", "text": patch } }]
+        }));
+        let diff = details.diff.expect("the patch should be read as a change");
+        assert!(diff.starts_with("@@ -1,2 +1,2 @@"), "hunks only, got: {diff}");
+        assert!(!diff.contains("diff --git"), "the git header should be dropped");
+        assert!(!diff.contains("index 1111111"), "the index line should be dropped");
+        assert_eq!(details.path.as_deref(), Some("src/app.ts"));
+        assert!(details.output.is_none(), "a patch is not also tool output");
+    }
+
+    /// A deletion names its file on the side that is not `/dev/null`.
+    #[test]
+    fn a_deletion_is_named_by_the_file_that_went_away() {
+        let patch = "diff --git a/old.txt b/old.txt\n\
+                     --- a/old.txt\n\
+                     +++ /dev/null\n\
+                     @@ -1 +0,0 @@\n\
+                     -gone";
+        let details = tool_details(&json!({
+            "content": [{ "type": "content", "content": { "type": "text", "text": patch } }]
+        }));
+        assert_eq!(details.path.as_deref(), Some("old.txt"));
+    }
+
+    /// Ordinary output stays output. Prose that happens to quote a rule of
+    /// dashes, or a command that printed one, must not become a file change.
+    #[test]
+    fn ordinary_output_is_not_mistaken_for_a_patch() {
+        for text in [
+            "Building...\n--- done ---\nok",
+            "--- a/only-a-header",
+            "@@ a hunk with no file lines @@",
+            "",
+        ] {
+            let details = tool_details(&json!({
+                "content": [{ "type": "content", "content": { "type": "text", "text": text } }]
+            }));
+            assert!(details.diff.is_none(), "{text:?} should not read as a change");
+        }
+    }
 
     fn request(
         root: &str,

@@ -4,7 +4,7 @@
   import WrapText from '@lucide/svelte/icons/wrap-text';
   import {
     highlightCode,
-    monacoLanguageForFence,
+    fenceLanguage,
     plainHighlightedLines,
     type HighlightedLine
   } from './codeHighlight.ts';
@@ -17,22 +17,22 @@
 
   let { value, info = '' }: Props = $props();
 
-  const language = $derived(monacoLanguageForFence(info));
+  const language = $derived(fenceLanguage(info));
   /** The fence's info string names the block; it is one token or nothing. */
   const label = $derived(info.trim() || 'code');
   /** Long lines scroll sideways until someone asks for them to wrap. */
   let wrapped = $state(false);
-  /** Uncolored until the editor answers, so the code is readable immediately. */
-  const plainLines = $derived(plainHighlightedLines(value));
-  let coloredLines = $state<HighlightedLine[] | null>(null);
-  const lines = $derived(coloredLines ?? plainLines);
   let copied = $state(false);
   let host = $state<HTMLDivElement | null>(null);
   let onScreen = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Plain until the block is worth scanning, so the code is readable at once. */
+  const lines = $derived(
+    onScreen ? highlightCode(value, language) : plainHighlightedLines(value)
+  );
 
-  // The editor loads for the first code block a person can actually see. A
-  // transcript scrolled past a hundred prose messages never pays for it.
+  // A block is only scanned once a person can actually see it. A transcript
+  // scrolled past a hundred prose messages never pays for the ones above.
   $effect(() => {
     if (!host || onScreen) return;
     if (typeof IntersectionObserver === 'undefined') {
@@ -47,20 +47,6 @@
     }, { rootMargin: '400px' });
     observer.observe(host);
     return () => observer.disconnect();
-  });
-
-  $effect(() => {
-    const source = value;
-    const languageId = language;
-    if (!onScreen) return;
-    let cancelled = false;
-    coloredLines = null;
-    void highlightCode(source, languageId).then((next) => {
-      if (!cancelled) coloredLines = next;
-    });
-    return () => {
-      cancelled = true;
-    };
   });
 
   $effect(() => () => {

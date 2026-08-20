@@ -81,12 +81,23 @@ export type ConversationDisplayItem = (
       timestampMs: number;
     }
   | { kind: 'input'; itemId: string; requestId: string; title: string; description?: string; fields: AgentUserInputField[]; timestampMs: number }
+  | { kind: 'fileEdits'; itemId: string; edits: readonly ConversationFileEdit[]; timestampMs: number }
   | { kind: 'compaction'; itemId: string; trigger?: string; preTokens?: number; postTokens?: number; timestampMs: number }
   | { kind: 'unknown'; itemId: string; text: string; timestampMs: number; metadata?: Record<string, AgentConfigValue> }
 ) & {
   readonly turnId?: string | null;
   readonly completed?: boolean;
 };
+
+/** One file a turn changed, as the grouped row lists it. */
+export interface ConversationFileEdit {
+  /** The row this edit was folded out of, so the group keys by something stable. */
+  readonly itemId: string;
+  readonly path: string;
+  readonly diff: string;
+  readonly added: number;
+  readonly removed: number;
+}
 
 export interface ConversationTurnGroup {
   readonly turnId: string | null;
@@ -99,6 +110,7 @@ export interface ConversationTurnGroup {
 
 const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'reasoning',
+  'fileEdits',
   'tool',
   'command',
   'file',
@@ -195,6 +207,76 @@ function turnIdsOf(items: readonly ConversationDisplayItem[]): (string | null)[]
   });
 }
 
+/** The file change a row carries, or null when the row is not one.
+ *
+ * Two rows can be a file change: the dedicated `file` row, which keeps the
+ * path and the patch in its metadata, and a tool call that reported a patch
+ * alongside whatever else it did. */
+function fileEditOf(item: ConversationDisplayItem): ConversationFileEdit | null {
+  const read = (path: unknown, diff: unknown): ConversationFileEdit | null => {
+    if (typeof path !== 'string' || typeof diff !== 'string') return null;
+    if (!path.trim() || !diff.trim()) return null;
+    return { itemId: item.itemId, path, diff, ...diffLineCounts(diff) };
+  };
+  if (item.kind === 'file') return read(item.metadata?.path, item.metadata?.diff ?? item.text);
+  // A tool call that also printed something did more than change the file, and
+  // folding it away would take that output with it. Only a call whose whole
+  // result is the patch belongs in the group.
+  if (item.kind === 'tool' && (!item.output || item.output === item.diff)) {
+    return read(item.path, item.diff);
+  }
+  return null;
+}
+
+/** Collapse each run of neighbouring file changes into one row.
+ *
+ * A turn that touches nine files used to draw nine cards, each with its own
+ * heading and its own fold, and the reader had to scroll past all of them to
+ * reach what the agent said next. One row naming the files, with the counts
+ * beside them, says the same thing in nine lines and opens onto the same
+ * diffs.
+ *
+ * Runs, not the whole turn: edits separated by a command or a message are
+ * separate pieces of work and stay separate groups, which is also what keeps
+ * the transcript in the order things happened. */
+export function foldFileEdits(
+  items: readonly ConversationDisplayItem[]
+): readonly ConversationDisplayItem[] {
+  const folded: ConversationDisplayItem[] = [];
+  let run: ConversationFileEdit[] = [];
+  let runTurnId: string | null | undefined;
+  let runTimestampMs = 0;
+
+  const closeRun = (): void => {
+    if (!run.length) return;
+    folded.push({
+      kind: 'fileEdits',
+      itemId: `file-edits:${run[0].itemId}`,
+      edits: run,
+      timestampMs: runTimestampMs,
+      turnId: runTurnId,
+      completed: true
+    });
+    run = [];
+  };
+
+  for (const item of items) {
+    const edit = fileEditOf(item);
+    if (!edit) {
+      closeRun();
+      folded.push(item);
+      continue;
+    }
+    if (!run.length) {
+      runTurnId = item.turnId;
+      runTimestampMs = item.timestampMs;
+    }
+    run.push(edit);
+  }
+  closeRun();
+  return folded;
+}
+
 /** Groups adjacent display rows without changing their transcript order.
  *
  * The turn the agent is still writing into is the newest one. It cannot be
@@ -216,7 +298,7 @@ export function conversationTurnGroups(
   });
   return partitions.map((partition, index) => turnGroup(
     partition.turnId,
-    partition.items,
+    foldFileEdits(partition.items),
     activeTurnId !== null && index === partitions.length - 1
   ));
 }

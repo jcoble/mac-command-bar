@@ -573,7 +573,10 @@
 
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
   {#if loadingOlder}
-    <p class="older-loading" data-testid="conversation-older-loading" role="status">Loading earlier messages</p>
+    <p class="older-loading" data-testid="conversation-older-loading" role="status">
+      <span class="older-spinner" aria-hidden="true"></span>
+      Loading earlier messages
+    </p>
   {/if}
   <div
     class="timeline-scroll"
@@ -649,7 +652,15 @@
   /* Laid over the top of the transcript rather than placed in it: a row in the
      scroll flow would change its height while a page is arriving, and the
      scroll position is being corrected against exactly that height. */
-  .older-loading{position:absolute;top:calc(var(--center-head-height) + 4px);left:0;right:0;z-index:2;margin:0;text-align:center;font-size:11px;color:var(--color-text-2);pointer-events:none}
+  /* A pill rather than a line of small grey text: reaching the top of a long
+     transcript takes several reads, and the reader has to be able to tell the
+     difference between one running and nothing happening. */
+  .older-loading{position:absolute;top:calc(var(--center-head-height) + 6px);left:0;right:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;font-size:12px;color:var(--color-text-2);pointer-events:none}
+  /* The turn is the only animation in the app that repeats, and it exists only
+     while a read is actually running — the element is removed when it ends. */
+  .older-spinner{width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--color-text-3) 45%,transparent);border-top-color:var(--color-text-2);border-radius:50%;animation:older-spin 700ms linear infinite}
+  @keyframes older-spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
   /* scrollbar-width/-color are set here rather than on the shell root: they are
      inherited, and declaring them globally turns every overlay scrollbar in the
      app into a permanent one, including horizontal bars nobody asked for. Code

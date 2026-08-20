@@ -464,8 +464,14 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
 
 /** How much older history one scroll to the top reads, in bytes of stored
  * event. The same unit the transcript is read off disk in, and the same unit
- * the timeline already guesses a row's height in. */
-const OLDER_PAGE_BYTES = 256 * 1024;
+ * the timeline already guesses a row's height in.
+ *
+ * A page keeps the reader where they were, so reaching the start of a long
+ * session costs one scroll gesture per page. At a quarter of a megabyte a ten
+ * megabyte conversation took forty of them. The rows are virtualized, so a
+ * bigger page costs a longer read and no more drawing; what it buys is a
+ * quarter as many waits. */
+const OLDER_PAGE_BYTES = 1024 * 1024;
 
 /**
  * Reads the page of stored events just older than the transcript and puts it in

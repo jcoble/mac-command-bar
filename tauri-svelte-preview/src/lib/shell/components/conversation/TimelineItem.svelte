@@ -8,6 +8,7 @@
   import TaskListItem from './TaskListItem.svelte';
   import CommandItem from './CommandItem.svelte';
   import FileChangeItem from './FileChangeItem.svelte';
+  import FileEditsItem from './FileEditsItem.svelte';
   import ToolItem from './ToolItem.svelte';
   import SubagentSection from './SubagentSection.svelte';
   import ApprovalItem from './ApprovalItem.svelte';
@@ -41,6 +42,7 @@
     {:else if item.kind === 'tasks'}<TaskListItem {item} />
     {:else if item.kind === 'command'}<CommandItem {item} {onFileLink} />
     {:else if item.kind === 'file'}<FileChangeItem {item} {onFileLink} />
+    {:else if item.kind === 'fileEdits'}<FileEditsItem {item} {onFileLink} />
     {:else if item.kind === 'tool'}<ToolItem {item} {onFileLink} />
     {:else if item.kind === 'subagent'}<SubagentSection {item} />
     {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />

@@ -4,6 +4,7 @@ import {
   displayItemFromAgentItem,
   displayItemsFromConversationEvents,
   diffLineCounts,
+  foldFileEdits,
   formatWorkedFor,
   latestPlan,
   turnFileChanges,
@@ -587,3 +588,79 @@ assert.equal(
   false,
   'an unmeasured message is not folded'
 );
+
+
+// --- Grouping the files a turn edited ---------------------------------------
+{
+  const at = (itemId: string, extra: Record<string, unknown>): ConversationDisplayItem =>
+    ({ itemId, timestampMs: 1, ...extra }) as ConversationDisplayItem;
+
+  const edit = (itemId: string, path: string, diff: string): ConversationDisplayItem =>
+    at(itemId, { kind: 'file', text: diff, metadata: { path, diff } });
+
+  const patch = '@@ -1,1 +1,2 @@\n-old\n+new\n+extra';
+
+  // Neighbouring edits become one row that keeps them in order, with counts.
+  {
+    const folded = foldFileEdits([edit('a', 'src/a.ts', patch), edit('b', 'src/b.ts', patch)]);
+    assert.equal(folded.length, 1, 'two neighbouring edits are one row');
+    const group = folded[0];
+    assert.equal(group.kind, 'fileEdits');
+    if (group.kind !== 'fileEdits') throw new Error('unreachable');
+    assert.deepEqual(group.edits.map((one) => one.path), ['src/a.ts', 'src/b.ts']);
+    assert.deepEqual(group.edits.map((one) => one.added), [2, 2]);
+    assert.deepEqual(group.edits.map((one) => one.removed), [1, 1]);
+  }
+
+  // Edits split by other work stay separate groups, in transcript order.
+  {
+    const folded = foldFileEdits([
+      edit('a', 'src/a.ts', patch),
+      at('cmd', { kind: 'command', text: 'npm test' }),
+      edit('b', 'src/b.ts', patch)
+    ]);
+    assert.deepEqual(
+      folded.map((one) => one.kind),
+      ['fileEdits', 'command', 'fileEdits'],
+      'a command between edits opens a second group'
+    );
+  }
+
+  // A single edit is still grouped, so the transcript reads the same either way.
+  assert.equal(foldFileEdits([edit('a', 'src/a.ts', patch)])[0].kind, 'fileEdits');
+
+  // A tool call that also printed output did more than edit, and is left alone.
+  {
+    const noisy = at('t', {
+      kind: 'tool',
+      title: 'apply',
+      toolKind: 'file-edit',
+      state: 'completed',
+      path: 'src/a.ts',
+      diff: patch,
+      output: 'applied 1 hunk'
+    });
+    assert.deepEqual(foldFileEdits([noisy]).map((one) => one.kind), ['tool']);
+  }
+
+  // A tool call whose whole result is the patch is grouped like a file row.
+  {
+    const quiet = at('t', {
+      kind: 'tool',
+      title: 'apply',
+      toolKind: 'file-edit',
+      state: 'completed',
+      path: 'src/a.ts',
+      diff: patch
+    });
+    assert.deepEqual(foldFileEdits([quiet]).map((one) => one.kind), ['fileEdits']);
+  }
+
+  // Nothing to fold leaves the list exactly as it was.
+  {
+    const plain = [at('m', { kind: 'assistant', text: 'done' })];
+    assert.deepEqual(foldFileEdits(plain), plain);
+  }
+}
+
+console.log('conversationTimeline: file-edit grouping passed');

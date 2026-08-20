@@ -2,7 +2,7 @@
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { highlightCode, monacoLanguageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
+  import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
 
   let { item, onFileLink }: {
     item: Extract<ConversationDisplayItem, { kind: 'file' }>;
@@ -65,23 +65,15 @@
   /* The code in the diff, coloured in the file's language. The one-character
      mark at the front of each row is not code, so it is set aside for the
      colouring and drawn back in front. Plain until the editor answers. */
-  const language = $derived(monacoLanguageForPath(path));
+  const language = $derived(languageForPath(path));
   const bareLines = $derived(allRows.map((row) => row.text.slice(1)));
-  let coloredLines = $state<HighlightedLine[] | null>(null);
-  $effect(() => {
+  // Every span list here is paired with a diff row, so a scan that does not
+  // come back one-for-one is discarded rather than shifting the colours.
+  const rowSpans = $derived.by(() => {
     const source = bareLines.join('\n');
-    const languageId = language;
-    let cancelled = false;
-    coloredLines = null;
-    if (languageId === 'plaintext' || !source) return;
-    void highlightCode(source, languageId).then((next) => {
-      if (!cancelled && next.length === bareLines.length) coloredLines = next;
-    });
-    return () => {
-      cancelled = true;
-    };
+    const scanned = highlightCode(source, language);
+    return scanned.length === bareLines.length ? scanned : plainHighlightedLines(source);
   });
-  const rowSpans = $derived(coloredLines ?? plainHighlightedLines(bareLines.join('\n')));
 
   const foldable = $derived(allRows.length > DIFF_FOLD_OVER_LINES);
   let diffOpen = $state(false);

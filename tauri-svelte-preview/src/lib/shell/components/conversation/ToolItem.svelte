@@ -11,7 +11,7 @@
   import X from '@lucide/svelte/icons/x';
   import FileChangeItem from './FileChangeItem.svelte';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { highlightCode, monacoLanguageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
+  import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
 
   let { item, onFileLink }: {
     item: Extract<ConversationDisplayItem, { kind: 'tool' }>;
@@ -39,22 +39,8 @@
   /* Output that is a file — what Read hands back, what Edit shows — is
      coloured in the file's language. A command's output is whatever it
      printed and stays as printed. Plain until the editor answers. */
-  const language = $derived(monacoLanguageForPath(item.path));
-  let coloredLines = $state<HighlightedLine[] | null>(null);
-  $effect(() => {
-    const source = shownOutput;
-    const languageId = language;
-    let cancelled = false;
-    coloredLines = null;
-    if (languageId === 'plaintext' || !source) return;
-    void highlightCode(source, languageId).then((next) => {
-      if (!cancelled) coloredLines = next;
-    });
-    return () => {
-      cancelled = true;
-    };
-  });
-  const shownLines = $derived(coloredLines ?? plainHighlightedLines(shownOutput));
+  const language = $derived(languageForPath(item.path));
+  const shownLines = $derived(highlightCode(shownOutput, language));
   /* The summary is already the row's preview line, so only real payload —
      output or a diff — earns a body worth opening. */
   const expandable = $derived(!!(output || item.diff));

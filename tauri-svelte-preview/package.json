@@ -110,7 +110,7 @@
     "test:resource-disk-view-model": "node --experimental-strip-types scripts/resourceDiskViewModel.test.mjs",
     "test:usage-view-model": "node --experimental-strip-types scripts/usageViewModel.test.mjs",
     "test:space-view-model": "node --experimental-strip-types scripts/spaceViewModel.test.mjs",
-    "test:code-highlight": "node --experimental-strip-types scripts/codeHighlight.test.mjs",
+    "test:code-highlight": "node --experimental-strip-types scripts/codeHighlight.test.ts",
     "test:markdown-preview": "node --experimental-strip-types scripts/markdownPreview.test.mjs"
   },
   "dependencies": {
