@@ -11,6 +11,30 @@ import {
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
+import {
+  decideConversationScroll,
+  initialConversationScrollAnchorState
+} from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
+
+const sentAnchor = decideConversationScroll(initialConversationScrollAnchorState, {
+  type: 'send',
+  previousUserItemId: 'user-before-send',
+  reducedMotion: false
+});
+const waitingAnchor = decideConversationScroll(sentAnchor.state, {
+  type: 'user-items-changed',
+  userItemIds: ['user-before-send']
+});
+assert.equal(waitingAnchor.action.type, 'none', 'the anchor waits until the sent user item exists');
+const readyAnchor = decideConversationScroll(waitingAnchor.state, {
+  type: 'user-items-changed',
+  userItemIds: ['user-before-send', 'user-after-send']
+});
+assert.deepEqual(
+  readyAnchor.action,
+  { type: 'anchor-user', itemId: 'user-after-send', motion: 'smooth', offsetPx: 12 },
+  'the first user item after send becomes the one scroll target'
+);
 
 const typed = typedConversationTimeline([
   { id: 'assistant-1', type: 'assistant-message', content: [{ channel: 'assistant', text: 'Answer' }] },

@@ -356,6 +356,23 @@
     return host ? latestWritingScrollTop() - host.scrollTop : 0;
   }
 
+  function anchorUser(itemId: string, motion: ConversationScrollMotion, offsetPx: number, framesLeft = 8): void {
+    const top = itemTop(itemId, offsetPx);
+    if (top !== null) {
+      animateTo(top, motion, itemId, offsetPx);
+      return;
+    }
+    if (framesLeft === 0) return finishAnimation();
+    if (framesLeft === 8) {
+      const rowIndex = renderedGroups.findIndex((group) => group.items.some((item) => item.itemId === itemId));
+      if (rowIndex >= 0) $virtualizer.scrollToIndex(rowIndex, { align: 'start' });
+    }
+    animationFrame = requestAnimationFrame(() => {
+      animationFrame = null;
+      anchorUser(itemId, motion, offsetPx, framesLeft - 1);
+    });
+  }
+
   function perform(action: ConversationScrollAction): void {
     if (!host || action.type === 'none') return;
     if (action.type === 'cancel-programmatic-scroll') return cancelProgrammaticScroll();
@@ -364,8 +381,7 @@
       return;
     }
     anchoredUserItemId = action.itemId;
-    const top = itemTop(action.itemId, action.offsetPx);
-    if (top !== null) animateTo(top, action.motion, action.itemId, action.offsetPx);
+    anchorUser(action.itemId, action.motion, action.offsetPx);
   }
 
   /*
