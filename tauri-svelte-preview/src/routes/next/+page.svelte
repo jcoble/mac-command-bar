@@ -1705,6 +1705,7 @@
        Except while a session's files are being put back — that is not a request for anything, and
        it must not drag the user off the terminal they were watching. -->
   <EditorPanel
+    sessionKey={rail.activeOwnedId}
     showing={centerTab === 'editor'}
     onCloseAllEditors={clearAllEditorWorkspaceRecords}
     onFileOpened={() => {

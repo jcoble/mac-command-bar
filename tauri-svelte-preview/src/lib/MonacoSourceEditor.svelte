@@ -1440,6 +1440,7 @@
 
 		const load = (async () => {
 			const externalPreview = await onExternalPreviewLookup?.(target);
+			if (componentDestroyed) return null;
 			if (!externalPreview) return null;
 			// A peer request may have created the model while we awaited the read.
 			const raced = monaco.editor.getModel(uri);

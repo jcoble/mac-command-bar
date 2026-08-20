@@ -115,6 +115,7 @@
    * `ensureCodeEditor`.
    */
   interface Props {
+    sessionKey: string | null;
     /** Called when an open-file request has become a real open, so the shell can
      * bring this panel's tab to the front. The panel itself stays unaware of the
      * tab area — it just says a file arrived. */
@@ -130,7 +131,7 @@
     /** Clears every session's saved editor strip after this panel closes its live tabs. */
     onCloseAllEditors?: () => void;
   }
-  let { onFileOpened, showing = false, onStartWorkspaceCommand, onCloseAllEditors }: Props = $props();
+  let { sessionKey, onFileOpened, showing = false, onStartWorkspaceCommand, onCloseAllEditors }: Props = $props();
 
   type CodeEditorComponent = typeof MonacoSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
@@ -1041,25 +1042,30 @@
         />
       {:else if activeFile?.preview}
         {#if CodeEditor}
-          <CodeEditor
-            bind:this={codeEditor}
-            {...sourceIntelligence.callbacks}
-            onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
-            preview={activeFile.preview}
-            content={activeFile.draftContent ?? activeFile.preview.content}
-            editable={!activeFileReadOnly}
-            loading={activeFile.loading}
-            targetLine={activeFile.targetLine}
-            targetLineRequestId={activeFile.targetLineRequestId}
-            externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
-            nativeCsharpLanguageClient={nativeCsharpActive}
-            onExternalNavigation={navigateToExternalSource}
-            onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
-            onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
-            onContentChange={updateActiveDraft}
-            onSaveRequest={() => void saveActiveFile()}
-            onSymbolsChange={handleSymbolsChange}
-          />
+          <!-- Leaving a session unmounts this Monaco child, whose teardown disposes every model
+               and listener it owns. Returning mounts a fresh child that repaints from the
+               session's saved record. -->
+          {#key sessionKey}
+            <CodeEditor
+              bind:this={codeEditor}
+              {...sourceIntelligence.callbacks}
+              onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
+              preview={activeFile.preview}
+              content={activeFile.draftContent ?? activeFile.preview.content}
+              editable={!activeFileReadOnly}
+              loading={activeFile.loading}
+              targetLine={activeFile.targetLine}
+              targetLineRequestId={activeFile.targetLineRequestId}
+              externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
+              nativeCsharpLanguageClient={nativeCsharpActive}
+              onExternalNavigation={navigateToExternalSource}
+              onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
+              onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
+              onContentChange={updateActiveDraft}
+              onSaveRequest={() => void saveActiveFile()}
+              onSymbolsChange={handleSymbolsChange}
+            />
+          {/key}
         {:else}
           <p class="canvas-message">Starting the code editor…</p>
         {/if}
