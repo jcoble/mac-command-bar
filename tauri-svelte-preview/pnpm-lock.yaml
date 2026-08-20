@@ -80,6 +80,9 @@ importers:
       '@codingame/monaco-vscode-rust-default-extension':
         specifier: 25.1.2
         version: 25.1.2
+      '@codingame/monaco-vscode-scm-service-override':
+        specifier: 25.1.2
+        version: 25.1.2
       '@codingame/monaco-vscode-shellscript-default-extension':
         specifier: 25.1.2
         version: 25.1.2
@@ -102,6 +105,9 @@ importers:
         specifier: 25.1.2
         version: 25.1.2
       '@codingame/monaco-vscode-typescript-basics-default-extension':
+        specifier: 25.1.2
+        version: 25.1.2
+      '@codingame/monaco-vscode-views-service-override':
         specifier: 25.1.2
         version: 25.1.2
       '@codingame/monaco-vscode-xml-default-extension':
@@ -420,6 +426,9 @@ packages:
 
   '@codingame/monaco-vscode-rust-default-extension@25.1.2':
     resolution: {integrity: sha512-7FOdXtd2hqleG11OCcvjbpb2sweb8n0c+uPlg2gIyJrvuPdyX7+W2fgJQm+DtmfQN2+/LNeYz9EOxjBC43kL0w==}
+
+  '@codingame/monaco-vscode-scm-service-override@25.1.2':
+    resolution: {integrity: sha512-w8344/v0y1O4IV7HJMWtikjSWSaP+1u4vPoB9jlrb6gcPg1jhIAG+AeNd9aoAsGteptF1zvCHeCUIDeHCiOsKw==}
 
   '@codingame/monaco-vscode-shellscript-default-extension@25.1.2':
     resolution: {integrity: sha512-e916e5j5v+EDyAQL6kTvw1vrvG87M5VU4jM3LxkjIbf4rptNbvdeFeQJkNxHM6fquxusdJv5ufdfFO1xaFpwFw==}
@@ -1750,6 +1759,10 @@ snapshots:
       '@codingame/monaco-vscode-api': 25.1.2
 
   '@codingame/monaco-vscode-rust-default-extension@25.1.2':
+    dependencies:
+      '@codingame/monaco-vscode-api': 25.1.2
+
+  '@codingame/monaco-vscode-scm-service-override@25.1.2':
     dependencies:
       '@codingame/monaco-vscode-api': 25.1.2
 
