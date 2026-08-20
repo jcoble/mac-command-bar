@@ -339,6 +339,11 @@ async function startScenario(threadId, turnId, text) {
     await richScenario(threadId, turnId);
     return;
   }
+  if (scenario === "usage") {
+    await writer.write({"method":"thread/tokenUsage/updated","params":{"threadId":"01a01d99-911a-75c3-90af-bfcc3217a2d9","turnId":"01a01d99-917d-7f43-b67a-f53bc4385351","tokenUsage":{"total":{"totalTokens":29427,"inputTokens":29422,"cachedInputTokens":6912,"cacheWriteInputTokens":0,"outputTokens":5,"reasoningOutputTokens":0},"last":{"totalTokens":29427,"inputTokens":29422,"cachedInputTokens":6912,"cacheWriteInputTokens":0,"outputTokens":5,"reasoningOutputTokens":0},"modelContextWindow":237500}},"emittedAtMs":1787203002168});
+    await complete(threadId, turnId);
+    return;
+  }
   if (scenario === "image") {
     await notification("item/agentMessage/delta", {
       threadId,
@@ -440,7 +445,9 @@ async function handleMessage(message) {
       });
       break;
     case "thread/start": {
-      const threadId = `mock-thread-${nextThread++}`;
+      const threadId = scenario === "usage"
+        ? "01a01d99-911a-75c3-90af-bfcc3217a2d9"
+        : `mock-thread-${nextThread++}`;
       await response(message.id, {
         thread: { id: threadId },
         model: "gpt-5.6-sol",
@@ -462,7 +469,9 @@ async function handleMessage(message) {
       });
       break;
     case "turn/start": {
-      const turnId = `mock-turn-${nextTurn++}`;
+      const turnId = scenario === "usage"
+        ? "01a01d99-917d-7f43-b67a-f53bc4385351"
+        : `mock-turn-${nextTurn++}`;
       activeTurn = { threadId: message.params.threadId, turnId };
       lastInput = message.params?.input ?? [];
       await response(message.id, {

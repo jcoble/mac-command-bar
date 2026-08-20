@@ -422,6 +422,28 @@ tests.push([
 ]);
 
 tests.push([
+  "token usage notification emits an ACP usage update",
+  async () => {
+    await withSession("usage", async (peer, session) => {
+      const prompt = await peer.request("session/prompt", {
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "Reply with the single word OK" }],
+      });
+      assert.equal(prompt.stopReason, "end_turn");
+      assert.deepEqual(updatesOf(peer, "usage_update"), [
+        {
+          sessionUpdate: "usage_update",
+          usedTokens: 29427,
+          contextWindow: 237500,
+          inputTokens: 29422,
+          outputTokens: 5,
+        },
+      ]);
+    });
+  },
+]);
+
+tests.push([
   "session configuration is discovered, stored, applied to turn/start, and echoed by load/resume",
   async () => {
     const mock = createConfigMock();
