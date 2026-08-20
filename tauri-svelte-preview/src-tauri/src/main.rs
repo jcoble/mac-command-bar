@@ -1705,6 +1705,13 @@ async fn list_project_git_refs(root: String) -> Result<Vec<ProjectGitRef>, Strin
 }
 
 #[tauri::command]
+async fn init_project_repository(root: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || init_project_repository_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Repository creation task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn remove_project_worktree(
     root: String,
     path: String,
@@ -3603,6 +3610,41 @@ fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGitRef>, Strin
         .map(|worktree| (worktree.branch, worktree.path))
         .collect::<Vec<_>>();
     Ok(classify_project_git_refs(refs, current.trim(), &checkouts))
+}
+
+fn init_project_repository_sync(root: PathBuf) -> Result<(), String> {
+    if root.to_string_lossy().trim().is_empty() {
+        return Err("Choose a project folder first.".to_string());
+    }
+    if !root.exists() {
+        return Err("That project folder does not exist.".to_string());
+    }
+    if !root.is_dir() {
+        return Err("That project path is not a folder.".to_string());
+    }
+    if root.join(".git").exists() {
+        return Ok(());
+    }
+
+    let init = Command::new("git")
+        .current_dir(&root)
+        .args(["init", "-b", "main"])
+        .output()
+        .map_err(|error| format!("Git could not be started: {error}"))?;
+    if !init.status.success() {
+        return Err(String::from_utf8_lossy(&init.stderr).into_owned());
+    }
+
+    let commit = Command::new("git")
+        .current_dir(&root)
+        .args(["commit", "--allow-empty", "-m", "Initial commit"])
+        .output()
+        .map_err(|error| format!("Git could not be started: {error}"))?;
+    if !commit.status.success() {
+        return Err(String::from_utf8_lossy(&commit.stderr).into_owned());
+    }
+
+    Ok(())
 }
 
 /// `force = false` is the everyday remove: it refuses anything that would lose work.
@@ -6071,6 +6113,7 @@ fn main() {
             list_project_worktrees,
             list_repository_checkouts,
             list_project_git_refs,
+            init_project_repository,
             remove_project_worktree,
             archive_project_worktree,
             list_git_repository_summaries,
@@ -6233,6 +6276,42 @@ mod tests {
         assert_eq!(classified.len(), 500);
         assert!(classified[0].is_default);
         assert!(classified[0].is_current);
+    }
+
+    #[test]
+    fn a_plain_folder_becomes_a_repository_on_main() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
+
+        assert!(root.join(".git").exists());
+        assert_eq!(
+            git_text_for_test(&root, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "main"
+        );
+        assert_eq!(
+            git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
+            "1"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_existing_repository_is_left_alone() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
+        init_project_repository_sync(root.clone()).unwrap();
+
+        assert_eq!(
+            git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
+            "1"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -9304,5 +9383,50 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn git_text_for_test(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("could not run git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn with_test_git_identity<T>(action: impl FnOnce() -> T) -> T {
+        static GIT_TEMPLATE_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = GIT_TEMPLATE_LOCK.lock().unwrap();
+        let template = unique_temp_root();
+        std::fs::create_dir_all(&template).unwrap();
+        for (key, value) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.invalid"),
+        ] {
+            let output = Command::new("git")
+                .args(["config", "--file"])
+                .arg(template.join("config"))
+                .args([key, value])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+
+        let previous = std::env::var_os("GIT_TEMPLATE_DIR");
+        std::env::set_var("GIT_TEMPLATE_DIR", &template);
+        let result = action();
+        if let Some(previous) = previous {
+            std::env::set_var("GIT_TEMPLATE_DIR", previous);
+        } else {
+            std::env::remove_var("GIT_TEMPLATE_DIR");
+        }
+        std::fs::remove_dir_all(template).unwrap();
+        result
     }
 }
