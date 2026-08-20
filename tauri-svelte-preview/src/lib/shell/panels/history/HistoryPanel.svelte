@@ -39,6 +39,10 @@
     type SessionHistoryWorktreeGroup
   } from '$lib/shell/history/sessionHistoryViewModel.ts';
   import {
+    sessionHistoryLoadOutcome,
+    type SessionHistoryLoadOutcome
+  } from '$lib/shell/history/sessionHistoryLoad.ts';
+  import {
     buildSessionLibrary,
     type SessionLibraryRecord
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
@@ -95,6 +99,7 @@
 
   const summaryRecords = $derived(visible ? buildSessionLibrary(rail.owned, rail.available) : []);
   let loadedRecords = $state<SessionLibraryRecord[]>([]);
+  let loadOutcome = $state<SessionHistoryLoadOutcome | null>(null);
   /** The project whose sessions are being read, so the row can say it is working.
    *  Opening one reads every session record it holds, which on a large project
    *  is seconds of nothing happening otherwise. */
@@ -128,6 +133,7 @@
     loadVersion += 1;
     host.service.release();
     loadedRecords = [];
+    loadOutcome = null;
     checkouts = {};
     collapseState = createSessionHistoryCollapseState();
   }
@@ -137,6 +143,7 @@
     loadVersion += 1;
     host.service.release();
     loadedRecords = [];
+    loadOutcome = null;
     checkouts = {};
     collapseState = createSessionHistoryCollapseState();
     expandedKey = null;
@@ -149,34 +156,49 @@
     return () => clearInterval(timer);
   });
 
-  async function toggleProject(project: SessionHistoryProjectGroup): Promise<void> {
-    const closing = isSessionHistoryGroupOpen(collapseState, 'project', project.key);
+  async function toggleProject(
+    project: SessionHistoryProjectGroup,
+    reload = false
+  ): Promise<void> {
+    const closing = !reload
+      && isSessionHistoryGroupOpen(collapseState, 'project', project.key);
     const version = ++loadVersion;
-    host.service.release();
     loadedRecords = [];
+    loadOutcome = null;
     checkouts = {};
     collapseState = createSessionHistoryCollapseState();
     loadingProjectKey = null;
     if (closing) return;
 
-    collapseState = toggleSessionHistoryGroup(collapseState, 'project', project.key);
-    loadingProjectKey = project.key;
     const keys = new Set(project.worktrees.flatMap((worktree) =>
       worktree.rows.map((row) => row.record.key)
     ));
+    collapseState = toggleSessionHistoryGroup(collapseState, 'project', project.key);
+    loadingProjectKey = project.key;
+    const heldRecords = host.service.records.filter((record) => keys.has(record.key));
+    const fullyHeld = heldRecords.length === keys.size;
+    if (!fullyHeld) host.service.release(keys);
+
     try {
-      const [, nextCheckouts] = await Promise.all([
-        host.service.refresh(keys),
+      const [refreshed, nextCheckouts] = await Promise.allSettled([
+        fullyHeld ? Promise.resolve(heldRecords) : host.service.refresh(keys),
         listRepositoryCheckoutsFromTauri([project.path])
       ]);
       if (!visible || version !== loadVersion) {
-        host.service.release();
+        if (!fullyHeld) host.service.release(keys);
         return;
       }
-      loadedRecords = [...host.service.records];
-      checkouts = nextCheckouts ?? {};
-    } catch (error) {
-      console.error('[history] could not load project', error);
+      const outcome = sessionHistoryLoadOutcome({
+        requestedKeys: keys,
+        refreshed,
+        checkouts: nextCheckouts
+      });
+      loadOutcome = outcome;
+      loadedRecords = [...outcome.records];
+      checkouts = outcome.checkouts;
+      if (refreshed.status === 'rejected') {
+        console.error('[history] could not load project', refreshed.reason);
+      }
     } finally {
       // Cleared whatever happened, and only for the read still in front: a
       // slow project answering after the reader has opened another one must
@@ -445,6 +467,14 @@
           </h2>
 
           <Collapsible.Content>
+            {#if loadOutcome?.state === 'failed'}
+              <div class="flex items-center justify-between gap-2 px-3 py-2 text-sm text-muted-foreground">
+                <span>Could not load sessions.</span>
+                <Button size="sm" variant="ghost" onclick={() => void toggleProject(project, true)}>
+                  Retry
+                </Button>
+              </div>
+            {:else}
             {#if loadedProject}
             <!-- One checkout means no second heading to sit under, so its
                  sessions stay at the project's own depth. Everything else steps
@@ -484,6 +514,22 @@
                 {/if}
               {/each}
             </div>
+            {/if}
+            {#if loadOutcome?.state === 'incomplete'}
+              <div class="flex items-center justify-between gap-2 px-3 py-2 text-sm text-muted-foreground">
+                <span>Still finding sessions — {loadOutcome.missingKeys.length} not loaded yet</span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onclick={async () => {
+                    await host.rescan?.();
+                    await toggleProject(project, true);
+                  }}
+                >
+                  Retry
+                </Button>
+              </div>
+            {/if}
             {/if}
           </Collapsible.Content>
         </Collapsible.Root>
