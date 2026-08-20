@@ -2623,6 +2623,9 @@
 		} catch (error) {
 			console.error("Could not start code services", error);
 		}
+		if (!vscodeServicesReady) {
+			console.warn("[code-services] editor building without services; initialized=", monacoVscodeApiIsInitialized());
+		}
 		if (!vscodeServicesReady && !sessionStorage.getItem("mcb-code-services-failure")) {
 			sessionStorage.setItem("mcb-code-services-failure", "1");
 			showEditorNotice("Code services failed to start; highlighting is basic until the app restarts");

@@ -36,10 +36,18 @@ export function ensureVscodeServices(
   if (!startServices && config) {
     startServices = retryRejectedStart(async () => {
       if (servicesInitialized) {
+        console.error("[code-services] refusing restart: vendor container already partly initialized");
         throw new Error("Code services are partly initialized and cannot be restarted safely.");
       }
+      console.info("[code-services] start starting");
       await new MonacoVscodeApiWrapper(config).start();
+      console.info("[code-services] start finished");
     });
+  }
+  if (!startServices) {
+    console.warn(
+      "[code-services] waited before any start was registered (no config yet); resolving as not-ready"
+    );
   }
   return startServices?.() ?? Promise.resolve();
 }
