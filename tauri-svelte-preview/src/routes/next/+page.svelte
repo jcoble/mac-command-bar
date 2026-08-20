@@ -1469,6 +1469,11 @@
       extensionApiProbeObservation = observation;
     });
     disposers.push(stopExtensionApiProbeObservations);
+    void import('$lib/shell/editor/csharpLanguageClient').then(({ startVscodeServicesEagerly }) => {
+      startVscodeServicesEagerly();
+    }).catch((error) => {
+      console.error('[code-services] eager boot import failed', error);
+    });
     void startConversationEvents();
     // Honour where the reader last put the Problems list. The frame and the
     // tool column both mount before this runs, so both have handed over their

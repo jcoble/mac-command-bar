@@ -30,7 +30,7 @@
 		configureMonacoWorkers,
 		monacoVscodeApiIsInitialized,
 	} from "$lib/shell/editor/monacoWorkers";
-	import { ensureVscodeServices } from "$lib/shell/editor/vscodeServices";
+	import { ensureVscodeServices, waitForVscodeServices } from "$lib/shell/editor/vscodeServices";
 	import { touchTabModelLru } from "$lib/shell/editor/editorStoreOps";
 	import {
 		editorStartFailureMessage,
@@ -2614,17 +2614,21 @@
 		// built on that answer does not open: creating it asks the markdown
 		// renderer service to take a code-block renderer, and the stand-in that
 		// stands in for the real service until the start finishes refuses. This
-		// returns immediately once they are up, and immediately when nothing has
-		// started them, so the only case it changes is the one that was failing.
+		// returns immediately once they are up. When no start exists yet, it gives
+		// the shell's eager boot up to ten seconds to register and finish one.
 		let vscodeServicesReady = false;
 		try {
 			await ensureVscodeServices();
 			vscodeServicesReady = monacoVscodeApiIsInitialized();
+			if (!vscodeServicesReady) {
+				vscodeServicesReady = await waitForVscodeServices(10_000);
+			}
 		} catch (error) {
 			console.error("Could not start code services", error);
 		}
 		if (!vscodeServicesReady) {
 			console.warn("[code-services] editor building without services; initialized=", monacoVscodeApiIsInitialized());
+			console.warn("[code-services] fallback engaged after wait timeout");
 		}
 		if (!vscodeServicesReady && !sessionStorage.getItem("mcb-code-services-failure")) {
 			sessionStorage.setItem("mcb-code-services-failure", "1");

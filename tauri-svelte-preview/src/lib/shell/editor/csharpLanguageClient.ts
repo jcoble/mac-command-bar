@@ -93,6 +93,7 @@ const browserWorkspaceRoots = new Set<string>();
 const browserWorkspaceFileSystem = new RegisteredFileSystemProvider(true);
 let browserWorkspaceOverlayRegistered = false;
 let vscodeThemeApplierRegistered = false;
+let eagerStartRequested = false;
 
 function vscodeEditorConfiguration() {
   const theme = currentTheme();
@@ -422,6 +423,19 @@ export async function prepareNativeCsharpEditorServices(
   root: string
 ): Promise<void> {
   await ensureApi(normalizedPath(root));
+}
+
+/** Start the page-global VS Code services before any session can build an editor. */
+export function startVscodeServicesEagerly(): void {
+  if (eagerStartRequested) return;
+  eagerStartRequested = true;
+  void (async () => {
+    const knownRoot = browserWorkspaceRoots.values().next().value;
+    const root = knownRoot ?? await (await import("@tauri-apps/api/path")).homeDir();
+    await ensureApi(normalizedPath(root));
+  })().catch((error) => {
+    console.error("[code-services] eager start failed", error);
+  });
 }
 
 async function evictColdRootIfNeeded(): Promise<void> {

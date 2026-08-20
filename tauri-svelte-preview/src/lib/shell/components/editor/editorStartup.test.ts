@@ -19,6 +19,7 @@ import test from 'node:test';
 import {
   editorStartFailureMessage,
   retryRejectedStart,
+  waitForRegisteredStart,
   waitForConnectedHost,
   EDITOR_START_LIMIT_MS
 } from './editorStartup.ts';
@@ -129,4 +130,30 @@ test('a resolved services start stays cached', async () => {
   await Promise.all([start(), start()]);
   await start();
   assert.equal(attempts, 1);
+});
+
+test('waitReturnsTrueWhenAStartRegistersAndFinishes', async () => {
+  let start: (() => Promise<void>) | null = null;
+  let finished = false;
+  const waiting = waitForRegisteredStart(100, () => start);
+
+  setTimeout(() => {
+    start = async () => {
+      finished = true;
+    };
+  }, 0);
+
+  assert.equal(await waiting, true);
+  assert.equal(finished, true);
+});
+
+test('waitReturnsFalseAfterTimeoutWithNoStart', async () => {
+  assert.equal(await waitForRegisteredStart(5, () => null), false);
+});
+
+test('waitReturnsFalseWhenStartRejects', async () => {
+  const start = async () => {
+    throw new Error('services start failed');
+  };
+  assert.equal(await waitForRegisteredStart(100, () => start), false);
 });

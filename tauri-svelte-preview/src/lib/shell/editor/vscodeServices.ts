@@ -3,7 +3,10 @@ import {
   type MonacoVscodeApiConfig,
 } from "monaco-languageclient/vscodeApiWrapper";
 import { servicesInitialized } from "@codingame/monaco-vscode-api/lifecycle";
-import { retryRejectedStart } from "$lib/shell/components/editor/editorStartup";
+import {
+  retryRejectedStart,
+  waitForRegisteredStart,
+} from "$lib/shell/components/editor/editorStartup";
 
 let startServices: (() => Promise<void>) | null = null;
 
@@ -50,4 +53,10 @@ export function ensureVscodeServices(
     );
   }
   return startServices?.() ?? Promise.resolve();
+}
+
+/** Wait for the shell's configured services start instead of initializing standalone services. */
+export async function waitForVscodeServices(timeoutMs: number): Promise<boolean> {
+  const finished = await waitForRegisteredStart(timeoutMs, () => startServices);
+  return finished && servicesInitialized;
 }
