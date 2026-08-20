@@ -6,6 +6,7 @@ import {
   diffLineCounts,
   formatWorkedFor,
   latestPlan,
+  turnFileChanges,
   type ConversationDisplayItem,
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
@@ -52,6 +53,29 @@ const completedTool = displayItemsFromConversationEvents([
 assert.equal(completedTool.length, 1, 'tool_call_update advances the existing row instead of adding JSON output');
 assert.equal(completedTool[0].state, 'completed');
 assert.equal(completedTool[0].output, 'PASS conversation timeline\n');
+
+const classifiedTools = [
+  { kind: 'command', title: 'rg --files', expected: 'command' },
+  { kind: 'command', title: 'git diff HEAD', expected: 'command' },
+  { kind: 'file_change', title: 'Edit', expected: 'file-edit' }
+];
+for (const [index, testCase] of classifiedTools.entries()) {
+  const [item] = displayItemsFromConversationEvents([
+    event(20 + index, { kind: 'toolCall', toolCallId: `classified-${index}`, title: testCase.title, toolKind: testCase.kind })
+  ]);
+  assert.equal(item.toolKind, testCase.expected, `${testCase.kind} ignores title text`);
+}
+
+const objectTitle = displayItemsFromConversationEvents([
+  event(24, { kind: 'toolCall', toolCallId: 'object-title', title: { path: 'src/readable.ts' }, toolKind: 'command' })
+])[0];
+assert.equal(objectTitle.title, 'src/readable.ts', 'an object title uses its readable path');
+
+const editWithoutDiff = displayItemsFromConversationEvents([
+  event(25, { kind: 'toolCall', toolCallId: 'edit-no-diff', title: 'Edit', toolKind: 'file_change', output: 'whole file contents' })
+])[0];
+assert.equal(editWithoutDiff.diff, undefined, 'an edit without a diff does not show output as a patch');
+assert.equal(editWithoutDiff.output, undefined, 'an edit without a diff has no dumped body');
 
 const reasoning = displayItemsFromConversationEvents([
   event(1, { kind: 'agentThoughtChunk', turnId: 'turn-1', messageId: 'reasoning-1', content: { type: 'text', text: 'Inspecting ' } }),
@@ -425,6 +449,16 @@ const planAcrossTurns = typedConversationTimeline([
 assert.equal(latestPlan(planAcrossTurns)?.itemId, 'plan-second', 'the newest plan wins across turns');
 assert.equal(latestPlan(planAcrossTurns)?.steps.length, 2);
 assert.equal(latestPlan([]), null, 'a transcript with no plan has no plan');
+
+const noPlanFileChanges = turnFileChanges([
+  textItem('user', 'no-plan-user', 'no-plan-turn', 1),
+  {
+    kind: 'tool', itemId: 'no-plan-edit', turnId: 'no-plan-turn', title: 'Edited a file',
+    toolKind: 'file-edit', state: 'completed', path: 'src/changed.ts',
+    diff: '@@ -1 +1 @@\n-old\n+new', timestampMs: 2
+  }
+]);
+assert.deepEqual(noPlanFileChanges, { files: 1, added: 1, removed: 1 }, 'file changes produce chip data without a plan');
 
 // ── Repeated plan updates draw one line (duplicate_plan_updates_collapse) ─
 // A plan update arrives without an id of its own, so every one of them lands

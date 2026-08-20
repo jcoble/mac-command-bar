@@ -32,8 +32,7 @@
     configError?: string | null;
     commands: readonly ConversationCommand[];
     contextMeter?: ContextMeterState | null;
-    /** The plan the session is working to, drawn as a chip above the capsule.
-     * Nothing is drawn when the session has no plan. */
+    /** The plan the session is working to, drawn as a chip above the capsule. */
     plan?: Extract<ConversationDisplayItem, { kind: 'plan' }> | null;
     /** What the running turn has changed on disk so far, shown beside the step
      * count. Left out when the turn has touched no files. */
@@ -316,7 +315,7 @@
        They set up the session rather than the message, and three of them on
        the control row left the message nowhere to go. -->
   {#if leadingControls}<div class="leading-controls" data-testid="composer-leading-controls">{@render leadingControls()}</div>{/if}
-  {#if plan && plan.steps.length}
+  {#if (plan && plan.steps.length) || planFileChanges}
     <div class="plan-chip-slot">
       <PlanChip {plan} fileChanges={planFileChanges} expanded={planExpanded} running={sending} onToggle={() => (planExpanded = !planExpanded)} />
     </div>
