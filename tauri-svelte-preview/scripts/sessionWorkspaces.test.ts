@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   captureWorkspace,
+  clearWorkspaceEditorTabs,
   diffPathFor,
   emptyRetainedWorkspaces,
   OPEN_PATHS_CAP,
@@ -27,6 +28,24 @@ function storageStub(initial = {}, { refuseWrites = false } = {}) {
     },
     removeItem: (key) => items.delete(key)
   };
+}
+
+// Close All Editors empties every session's saved tabs without dropping its other workspace state.
+{
+  const snapshot = captureWorkspace({
+    openFiles: openFiles('/repo/a.ts'),
+    activePath: '/repo/a.ts',
+    selectedPath: '/repo/selected.ts',
+    scrollTop: 18
+  });
+  const all = { 'owned-1': snapshot, 'owned-2': snapshot };
+  const cleared = clearWorkspaceEditorTabs(all);
+  assert.deepEqual(Object.values(cleared).map(({ openPaths, activePath }) => ({ openPaths, activePath })), [
+    { openPaths: [], activePath: null },
+    { openPaths: [], activePath: null }
+  ]);
+  assert.equal(cleared['owned-1'].selectedPath, '/repo/selected.ts');
+  assert.equal(all['owned-1'].openPaths.length, 1, 'the input is untouched');
 }
 
 /** Editor entries with only the field the capture reads. */

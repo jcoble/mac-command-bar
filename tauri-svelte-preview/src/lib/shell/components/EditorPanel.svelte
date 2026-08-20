@@ -71,6 +71,7 @@
     editorState,
     markEditorFileLoading,
     openEditorFile,
+    resetEditorState,
     revealEditorLine,
     setActiveEditorFile,
     setEditorFileDraft,
@@ -79,7 +80,7 @@
     setEditorFileSaving,
     setEditorSymbols
   } from '$lib/shell/editor/editorStore.svelte';
-  import { needsRead } from '$lib/shell/editor/editorStoreOps';
+  import { modelPathToDisposeOnClose, needsRead } from '$lib/shell/editor/editorStoreOps';
   import {
     sourceIntelligence,
     type SourceInlayHintRequest
@@ -126,11 +127,14 @@
     onStartWorkspaceCommand?: (
       request: WorkspaceCommandSessionRequest
     ) => Promise<string | null>;
+    /** Clears every session's saved editor strip after this panel closes its live tabs. */
+    onCloseAllEditors?: () => void;
   }
-  let { onFileOpened, showing = false, onStartWorkspaceCommand }: Props = $props();
+  let { onFileOpened, showing = false, onStartWorkspaceCommand, onCloseAllEditors }: Props = $props();
 
   type CodeEditorComponent = typeof MonacoSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
+  let codeEditor: { disposeTabModel(path: string): boolean; disposeAllTabModels(): void } | null = null;
   let editorLoadError = $state<string | null>(null);
   let loadingEditorComponent = false;
   let nativeCsharpRoot = $state<string | null>(null);
@@ -815,7 +819,9 @@
   }
 
   function closeOpenFileAt(path: string): void {
+    const disposePath = modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
+    if (disposePath) codeEditor?.disposeTabModel(disposePath);
     sourceIntelligence.releasePreview(path);
     syncIntelligenceWithActiveFile();
     // Whatever is in front now may be a different language, with a different
@@ -828,6 +834,15 @@
     // it meant a later open of the same path arrived already locked.
     const { [path]: _wasReadOnly, ...remaining } = readOnlyByPath;
     readOnlyByPath = remaining;
+  }
+
+  function closeAllOpenEditors(): void {
+    for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
+    codeEditor?.disposeAllTabModels();
+    resetEditorState();
+    diagnosticsByPath = {};
+    readOnlyByPath = {};
+    onCloseAllEditors?.();
   }
 
   function retryRead(path: string): void {
@@ -981,6 +996,9 @@
            language-server chip and switch sit in the strip along the top of the
            shell, in `LanguageIntelligenceControls.svelte`. -->
       <div class="editor-controls">
+        <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
+          <X class="size-3.5" aria-hidden="true" />
+        </IconButton>
         <!-- Markdown reads two ways, so the file says which one it is on. Source
              is the ordinary editor; Preview is the same document rendered. -->
         {#if activeFileIsMarkdown}
@@ -1023,6 +1041,7 @@
       {:else if activeFile?.preview}
         {#if CodeEditor}
           <CodeEditor
+            bind:this={codeEditor}
             {...sourceIntelligence.callbacks}
             onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
             preview={activeFile.preview}
@@ -1141,17 +1160,17 @@
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    /* No visible bar, the same as the right panel's tab strip. A `thin` bar is
-       still a bar that CLAIMS HEIGHT on a Mac set to show scrollbars always:
-       once the tabs overflowed, the row grew by those pixels and everything
-       positioned against its stated height landed inside it instead of below.
-       Chrome's overlay bars hide that, which is why it survived a browser
-       check. Scrolling by wheel and drag is unaffected. */
-    scrollbar-width: none;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
   }
 
   .file-strip::-webkit-scrollbar {
-    display: none;
+    height: 4px;
+  }
+
+  .file-strip::-webkit-scrollbar-thumb {
+    border-radius: 2px;
+    background: var(--color-border-strong);
   }
 
   .file-chip {

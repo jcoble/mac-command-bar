@@ -144,6 +144,7 @@
   } from '$lib/shell/ownedSessions';
   import {
     captureWorkspace,
+    clearWorkspaceEditorTabs,
     diffPathFor,
     emptyRetainedWorkspaces,
     planWorkspaceRestore,
@@ -797,6 +798,12 @@
         center: frameControls?.captureCenterLayout() ?? null
       })
     };
+    writeWorkspaces(window.localStorage, workspaces);
+  }
+
+  function clearAllEditorWorkspaceRecords(): void {
+    workspaces = clearWorkspaceEditorTabs(workspaces);
+    retainedTabs = emptyRetainedWorkspaces();
     writeWorkspaces(window.localStorage, workspaces);
   }
 
@@ -1683,6 +1690,7 @@
        it must not drag the user off the terminal they were watching. -->
   <EditorPanel
     showing={centerTab === 'editor'}
+    onCloseAllEditors={clearAllEditorWorkspaceRecords}
     onFileOpened={() => {
       if (!restoringWorkspace) selectCenterTab('editor');
     }}
