@@ -77,6 +77,7 @@
   let follow = $state(true);
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
   let animationFrame: number | null = null;
+  let hydrationFrame: number | null = null;
   let seenAnchorRequest = '';
   let anchoredUserItemId = $state<string | null>(null);
   let viewportHeight = $state(0);
@@ -396,9 +397,6 @@
 
   function requestOlderHistory(): void {
     if (!host || !hasOlder || loadingOlder || !onLoadOlder) return;
-    // A session opens by scrolling to its newest turn. Reading backwards is the
-    // reader's move, not something an opening animation asks for.
-    if (scrollState.openingToLatest) return;
     // One viewport of warning, so the page arrives before the reader hits the top.
     if (host.scrollTop > Math.max(viewportHeight, 1)) return;
     prependAnchor = {
@@ -408,6 +406,33 @@
     };
     onLoadOlder();
   }
+
+  // A restored page can mount with estimates that make its bounded tail look
+  // shorter than the viewport. Give those rows the same bounded frame window
+  // used by send anchoring, then let the normal scroll-position gate backfill.
+  function hydrateVisibleWindow(framesLeft = 8): void {
+    hydrationFrame = null;
+    if (!host || !list || renderedItems.length === 0) return;
+    for (const row of list.querySelectorAll<HTMLDivElement>('.turn-row')) {
+      $virtualizer.measureElement(row);
+    }
+    requestOlderHistory();
+    if (framesLeft === 0 || loadingOlder || !hasOlder) return;
+    hydrationFrame = requestAnimationFrame(() => hydrateVisibleWindow(framesLeft - 1));
+  }
+
+  let hydratedRevision = -1;
+  let hydratedWindowId = '';
+  $effect(() => {
+    const revision = timelineRevision;
+    const windowId = renderWindowId;
+    if (!host || renderedGroups.length === 0) return;
+    if (revision === hydratedRevision && windowId === hydratedWindowId) return;
+    hydratedRevision = revision;
+    hydratedWindowId = windowId;
+    if (hydrationFrame !== null) cancelAnimationFrame(hydrationFrame);
+    hydrationFrame = requestAnimationFrame(() => hydrateVisibleWindow());
+  });
 
   $effect(() => {
     const firstItemId = renderedItems[0]?.itemId ?? '';
@@ -540,6 +565,7 @@
         node.removeEventListener('touchstart', handleUserInput);
         window.removeEventListener('keydown', handleKeydown);
         cancelProgrammaticScroll();
+        if (hydrationFrame !== null) cancelAnimationFrame(hydrationFrame);
       }
     };
   }
