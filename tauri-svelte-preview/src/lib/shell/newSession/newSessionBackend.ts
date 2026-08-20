@@ -164,3 +164,24 @@ export async function listGitRefs(root: string): Promise<BackendAnswer<ProjectGi
     };
   }
 }
+
+export async function initProjectRepository(root: string): Promise<BackendAnswer<null>> {
+  const trimmed = root.trim();
+  if (!trimmed) {
+    return { status: 'failed', message: 'Choose a project folder first.' };
+  }
+  if (!isNativeTauriRuntime()) {
+    return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
+  }
+  try {
+    countInvoke('init_project_repository');
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('init_project_repository', { root: trimmed });
+    return { status: 'ok', value: null };
+  } catch (error) {
+    return {
+      status: 'failed',
+      message: `The repository could not be created: ${describeError(error)}`
+    };
+  }
+}

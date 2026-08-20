@@ -52,6 +52,7 @@
     type ThreadStartRequest
   } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
+    initProjectRepository,
     listGitRefs,
     pickProjectFolder,
     type BackendAnswer,
@@ -195,7 +196,7 @@
 
   async function send(): Promise<void> {
     if (submitting) return;
-    const request = buildThreadStartRequest(draft);
+    let request = buildThreadStartRequest(draft);
     if (!request) {
       submitError = problems[0]?.message ?? 'This draft is not ready to send.';
       return;
@@ -203,6 +204,19 @@
     submitting = true;
     submitError = '';
     try {
+      if (!draft.branchesAvailable) {
+        const made = await initProjectRepository(draft.projectPath);
+        if (made.status !== 'ok') {
+          submitError = made.message;
+          return;
+        }
+        await loadRefs(draft.projectPath);
+        request = buildThreadStartRequest(draft);
+        if (!request) {
+          submitError = problems[0]?.message ?? 'This draft is not ready to send.';
+          return;
+        }
+      }
       await onSend(request);
     } catch (error) {
       submitError = error instanceof Error ? error.message : String(error);
@@ -374,7 +388,11 @@
     <p>Start the conversation below.</p>
     {#if refsMessage}
       <p class="draft-warning" data-testid="draft-session-refs-note">
-        <span>{refsMessage}</span>
+        <span>
+          {refsMessage}{!draft.branchesAvailable
+            ? ' Starting here will create a git repository on main.'
+            : ''}
+        </span>
         <button
           class="draft-warning-dismiss"
           type="button"
