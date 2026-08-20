@@ -34,6 +34,7 @@
 	import { touchTabModelLru } from "$lib/shell/editor/editorStoreOps";
 	import {
 		editorStartFailureMessage,
+		standaloneLanguageImportsFor,
 		waitForConnectedHost,
 		EDITOR_START_LIMIT_MS,
 	} from "$lib/shell/components/editor/editorStartup";
@@ -2634,13 +2635,18 @@
 			sessionStorage.setItem("mcb-code-services-failure", "1");
 			showEditorNotice("Code services failed to start; highlighting is basic until the app restarts");
 		}
+		const standaloneImports = standaloneLanguageImportsFor(vscodeServicesReady);
 		const [monaco, _standaloneLanguages, _jsonLanguage, typeScriptLanguage] = await Promise.all([
 			import("monaco-editor/esm/vs/editor/editor.api"),
-			vscodeServicesReady
-				? Promise.resolve(null)
-				: import("@codingame/monaco-vscode-standalone-languages"),
-			import("@codingame/monaco-vscode-standalone-json-language-features"),
-			import("@codingame/monaco-vscode-standalone-typescript-language-features"),
+			standaloneImports.includes("@codingame/monaco-vscode-standalone-languages")
+				? import("@codingame/monaco-vscode-standalone-languages")
+				: Promise.resolve(null),
+			standaloneImports.includes("@codingame/monaco-vscode-standalone-json-language-features")
+				? import("@codingame/monaco-vscode-standalone-json-language-features")
+				: Promise.resolve(null),
+			standaloneImports.includes("@codingame/monaco-vscode-standalone-typescript-language-features")
+				? import("@codingame/monaco-vscode-standalone-typescript-language-features")
+				: Promise.resolve(null),
 		]);
 		if (
 			componentDestroyed ||

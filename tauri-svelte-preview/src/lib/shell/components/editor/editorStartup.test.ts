@@ -19,10 +19,23 @@ import test from 'node:test';
 import {
   editorStartFailureMessage,
   retryRejectedStart,
+  standaloneLanguageImportsFor,
   waitForRegisteredStart,
   waitForConnectedHost,
   EDITOR_START_LIMIT_MS
 } from './editorStartup.ts';
+
+test('healthyServicesImportNothingStandalone', () => {
+  assert.deepEqual(standaloneLanguageImportsFor(true), []);
+});
+
+test('degradedRunImportsStandaloneFallback', () => {
+  assert.deepEqual(standaloneLanguageImportsFor(false), [
+    '@codingame/monaco-vscode-standalone-languages',
+    '@codingame/monaco-vscode-standalone-json-language-features',
+    '@codingame/monaco-vscode-standalone-typescript-language-features'
+  ]);
+});
 
 /** A host that joins the document on a given frame. */
 function hostConnectingOnFrame(target: number) {
