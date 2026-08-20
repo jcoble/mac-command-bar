@@ -17,7 +17,7 @@
     <img {src} alt={name} loading="lazy" decoding="async" />
   </Dialog.Trigger>
   <Dialog.Content
-    class="w-auto max-w-[calc(100vw-48px)] bg-transparent p-0 shadow-none ring-0"
+    class="w-auto max-w-[calc(100vw-48px)] bg-transparent p-0 shadow-none ring-0 sm:max-w-[calc(100vw-48px)]"
     showCloseButton={false}
   >
     <Dialog.Title class="sr-only">{name}</Dialog.Title>
