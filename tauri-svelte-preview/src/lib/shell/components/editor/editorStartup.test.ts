@@ -18,6 +18,7 @@ import test from 'node:test';
 
 import {
   editorStartFailureMessage,
+  retryRejectedStart,
   waitForConnectedHost,
   EDITOR_START_LIMIT_MS
 } from './editorStartup.ts';
@@ -105,4 +106,27 @@ test('with no file known the sentence still stands on its own', () => {
 
 test('the time limit is a real bound, so the bars always end', () => {
   assert.ok(EDITOR_START_LIMIT_MS > 0 && Number.isFinite(EDITOR_START_LIMIT_MS));
+});
+
+test('a rejected services start is retried', async () => {
+  let attempts = 0;
+  const start = retryRejectedStart(async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('first start failed');
+  });
+
+  await assert.rejects(start(), /first start failed/);
+  await start();
+  assert.equal(attempts, 2);
+});
+
+test('a resolved services start stays cached', async () => {
+  let attempts = 0;
+  const start = retryRejectedStart(async () => {
+    attempts += 1;
+  });
+
+  await Promise.all([start(), start()]);
+  await start();
+  assert.equal(attempts, 1);
 });

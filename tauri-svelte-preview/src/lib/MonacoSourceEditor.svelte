@@ -2616,9 +2616,17 @@
 		// stands in for the real service until the start finishes refuses. This
 		// returns immediately once they are up, and immediately when nothing has
 		// started them, so the only case it changes is the one that was failing.
-		await ensureVscodeServices();
-
-		const vscodeServicesReady = monacoVscodeApiIsInitialized();
+		let vscodeServicesReady = false;
+		try {
+			await ensureVscodeServices();
+			vscodeServicesReady = monacoVscodeApiIsInitialized();
+		} catch (error) {
+			console.error("Could not start code services", error);
+		}
+		if (!vscodeServicesReady && !sessionStorage.getItem("mcb-code-services-failure")) {
+			sessionStorage.setItem("mcb-code-services-failure", "1");
+			showEditorNotice("Code services failed to start; highlighting is basic until the app restarts");
+		}
 		const [monaco, _standaloneLanguages, _jsonLanguage, typeScriptLanguage] = await Promise.all([
 			import("monaco-editor/esm/vs/editor/editor.api"),
 			vscodeServicesReady

@@ -458,17 +458,18 @@
     loadingEditorComponent = true;
     try {
       const root = editorState.projectRoot;
+      // Monaco's standalone imports initialize the one-shot service container.
+      // Wait until its first start can receive the real, path-bearing root.
+      if (!root) return;
       let native: typeof import('$lib/shell/editor/csharpLanguageClient') | null = null;
-      if (root) {
-        try {
-          const editorServices = await import('$lib/shell/editor/csharpLanguageClient');
-          // Preparing the editor services starts no server — it is what lets
-          // Monaco open a file at all — so it runs in both modes.
-          await editorServices.prepareNativeCsharpEditorServices(root);
-          if (isNativeTauriRuntime()) native = editorServices;
-        } catch (error) {
-          console.error('Could not prepare Monaco editor services', error);
-        }
+      try {
+        const editorServices = await import('$lib/shell/editor/csharpLanguageClient');
+        // Preparing the editor services starts no server — it is what lets
+        // Monaco open a file at all — so it runs in both modes.
+        await editorServices.prepareNativeCsharpEditorServices(root);
+        if (isNativeTauriRuntime()) native = editorServices;
+      } catch (error) {
+        console.error('Could not prepare Monaco editor services', error);
       }
       if (!CodeEditor) {
         const module = await import('$lib/MonacoSourceEditor.svelte');

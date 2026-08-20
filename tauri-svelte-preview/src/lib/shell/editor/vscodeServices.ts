@@ -2,8 +2,10 @@ import {
   MonacoVscodeApiWrapper,
   type MonacoVscodeApiConfig,
 } from "monaco-languageclient/vscodeApiWrapper";
+import { servicesInitialized } from "@codingame/monaco-vscode-api/lifecycle";
+import { retryRejectedStart } from "$lib/shell/components/editor/editorStartup";
 
-let startingServices: Promise<void> | null = null;
+let startServices: (() => Promise<void>) | null = null;
 
 /**
  * The one place the VS Code service layer is started, and the one promise
@@ -21,9 +23,9 @@ let startingServices: Promise<void> | null = null;
  * The wrapper cannot enforce this on its own. Asked to start while another
  * start is still running it returns immediately, having done nothing, which
  * tells the second caller the services are ready while they are still on their
- * way. So the start is kept here instead, and it is kept for good: once a
- * start has begun the wrapper refuses every later one, so a failed start
- * cannot be retried and must be reported rather than quietly repeated.
+ * way. So a successful start is kept here, while a rejected one is cleared for
+ * one safe retry. If the vendor container was partly initialized first, retry
+ * is refused here instead of calling its one-shot initializer again.
  *
  * Pass the configuration to start the services; call it with nothing to wait
  * for whatever start is already under way.
@@ -31,8 +33,13 @@ let startingServices: Promise<void> | null = null;
 export function ensureVscodeServices(
   config?: MonacoVscodeApiConfig
 ): Promise<void> {
-  if (!startingServices && config) {
-    startingServices = new MonacoVscodeApiWrapper(config).start();
+  if (!startServices && config) {
+    startServices = retryRejectedStart(async () => {
+      if (servicesInitialized) {
+        throw new Error("Code services are partly initialized and cannot be restarted safely.");
+      }
+      await new MonacoVscodeApiWrapper(config).start();
+    });
   }
-  return startingServices ?? Promise.resolve();
+  return startServices?.() ?? Promise.resolve();
 }

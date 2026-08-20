@@ -21,6 +21,20 @@
 /** How long the editor gets to appear before the reader is told it did not. */
 export const EDITOR_START_LIMIT_MS = 15_000;
 
+/** Cache a successful start, but let the next caller retry a rejected one. */
+export function retryRejectedStart(start: () => Promise<void>): () => Promise<void> {
+  let cached: Promise<void> | null = null;
+  return () => {
+    if (!cached) {
+      cached = start().catch((error) => {
+        cached = null;
+        throw error;
+      });
+    }
+    return cached;
+  };
+}
+
 export interface ConnectedHostWait {
   /** Is the element the editor will be built into back in the document? */
   isConnected(): boolean;
