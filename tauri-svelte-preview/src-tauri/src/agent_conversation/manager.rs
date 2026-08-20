@@ -1222,7 +1222,7 @@ impl AgentRuntimeManager {
         self.activate(owned_id, generation).await?;
         let sent = async {
             if model.is_some() || approval_policy.is_some() {
-                self.set_conversation_config(SetAgentConversationConfigRequest {
+                self.apply_conversation_config(SetAgentConversationConfigRequest {
                     owned_id: owned_id.to_string(),
                     generation,
                     model,
@@ -1695,6 +1695,27 @@ impl AgentRuntimeManager {
         &self,
         request: SetAgentConversationConfigRequest,
     ) -> Result<AgentConversationConfigState, String> {
+        let owned_id = request.owned_id.clone();
+        let generation = request.generation;
+        let config = self.apply_conversation_config(request).await?;
+        // An accepted change ends the same way a refused one does: the adapter
+        // was started only to be asked, no turn is running, and the teardown
+        // that keeps process trees from lingering runs when a turn ends. A
+        // send applies its settings through apply_conversation_config instead,
+        // because its prompt is about to need the adapter it just started. A
+        // session that is mid-turn is left alone — quiescence is the guard.
+        if let Err(suspend_error) = self.suspend_if_quiescent(&owned_id, generation).await {
+            crate::debug_log::stderr_log!(
+                "{owned_id}: could not stop the adapter after a settings change: {suspend_error}"
+            );
+        }
+        Ok(config)
+    }
+
+    async fn apply_conversation_config(
+        &self,
+        request: SetAgentConversationConfigRequest,
+    ) -> Result<AgentConversationConfigState, String> {
         let update = AgentConversationConfigUpdate {
             model: normalized_optional_id(request.model),
             reasoning_effort: normalized_optional_id(request.reasoning_effort),
@@ -1790,23 +1811,27 @@ impl AgentRuntimeManager {
                 return Err(error);
             }
         };
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
-        // Claude's efforts are ours, not the provider's: standard ACP has no
-        // such field, so the reply to any config change comes back with the
-        // list empty. Assigning it whole erased the efforts every time the
-        // model was changed, and the picker then offered only the current one.
-        let config = if session.provider == AgentConversationProvider::Claude {
-            claude_session_config(config, session.spawn_reasoning_effort.as_deref())
-        } else {
+        let config = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session =
+                lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+            // Claude's efforts are ours, not the provider's: standard ACP has no
+            // such field, so the reply to any config change comes back with the
+            // list empty. Assigning it whole erased the efforts every time the
+            // model was changed, and the picker then offered only the current one.
+            let config = if session.provider == AgentConversationProvider::Claude {
+                claude_session_config(config, session.spawn_reasoning_effort.as_deref())
+            } else {
+                config
+            };
+            session.config = config.clone();
+            session.connection.config = config.clone();
+            persist_session(session)?;
             config
         };
-        session.config = config.clone();
-        session.connection.config = config.clone();
-        persist_session(session)?;
         Ok(config)
     }
 
@@ -8635,11 +8660,16 @@ mod tests {
             Some("xhigh")
         );
 
-        assert!(fixture
+        // The settings change already put the session to rest; asking again
+        // is a no-op. What matters is the state, not who got there first.
+        fixture
             .manager
             .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
-            .expect("suspend"));
+            .expect("suspend");
+        assert!(fixture
+            .manager
+            .session_is_suspended(&fixture.owned_id, fixture.generation));
         fixture
             .manager
             .activate(&fixture.owned_id, fixture.generation)
@@ -8713,11 +8743,16 @@ mod tests {
         assert_eq!(live.reasoning_effort.as_deref(), Some("xhigh"));
         assert_eq!(live.model.as_deref(), Some("gpt-5.6-terra"));
 
-        assert!(fixture
+        // The settings change already put the session to rest; asking again
+        // is a no-op. What matters is the state, not who got there first.
+        fixture
             .manager
             .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
-            .expect("suspend"));
+            .expect("suspend");
+        assert!(fixture
+            .manager
+            .session_is_suspended(&fixture.owned_id, fixture.generation));
 
         // The next send ensures the session again, carrying the effort the
         // composer is showing: the live one, not the spawn one.
@@ -8838,11 +8873,16 @@ mod tests {
             Some("never")
         );
 
-        assert!(fixture
+        // The settings change already put the session to rest; asking again
+        // is a no-op. What matters is the state, not who got there first.
+        fixture
             .manager
             .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
-            .expect("suspend"));
+            .expect("suspend");
+        assert!(fixture
+            .manager
+            .session_is_suspended(&fixture.owned_id, fixture.generation));
         fixture
             .manager
             .activate(&fixture.owned_id, fixture.generation)
@@ -9205,7 +9245,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn config_change_wakes_a_suspended_session() {
+    async fn config_change_on_a_suspended_session_leaves_no_process_behind() {
         let fixture = fixture_manager_with_acp_session("suspend_config_wake").await;
         assert!(fixture
             .manager
@@ -9230,7 +9270,8 @@ mod tests {
             .snapshot(&fixture.owned_id)
             .unwrap()
             .unwrap();
-        assert!(!snapshot.suspended);
+        assert!(snapshot.suspended);
+        assert!(fixture.manager.resource_roots().is_empty());
 
         fixture
             .manager
