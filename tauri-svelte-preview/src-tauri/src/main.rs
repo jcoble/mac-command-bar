@@ -2244,7 +2244,7 @@ fn collect_source_files(
 fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
     let path_ref = path.as_path();
     let metadata = std::fs::metadata(path_ref)
-        .map_err(|error| format!("Could not read source metadata: {error}"))?;
+        .map_err(|error| format!("Could not read {}: {error}", path_ref.display()))?;
     if !metadata.is_file() {
         return Err("Source path is not a file".to_string());
     }
@@ -2285,7 +2285,7 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
 fn write_source_file_sync(path: PathBuf, content: String) -> Result<SourcePreview, String> {
     let path_ref = path.as_path();
     let metadata = std::fs::metadata(path_ref)
-        .map_err(|error| format!("Could not read source metadata: {error}"))?;
+        .map_err(|error| format!("Could not read {}: {error}", path_ref.display()))?;
     if !metadata.is_file() {
         return Err("Source path is not a file".to_string());
     }
@@ -2887,7 +2887,7 @@ fn source_file_action_command(
     action: SourceFileAction,
 ) -> Result<SourceFileActionCommand, String> {
     let metadata = std::fs::metadata(path)
-        .map_err(|error| format!("Could not read source metadata: {error}"))?;
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
     if !metadata.is_file() {
         return Err("Source path is not a file".to_string());
     }

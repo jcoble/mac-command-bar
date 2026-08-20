@@ -55,7 +55,10 @@
   } from '$lib/shell/conversation/conversationTimeline.ts';
   import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
-  import { requestOpenFile } from '$lib/shell/openFileBus.ts';
+  import {
+    requestOpenFile,
+    resolveConversationFilePath
+  } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
@@ -366,14 +369,14 @@
 
   function openConversationFile(path: string): void {
     if (!active) return;
-    const root = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
+    const root = active.cwd.replace(/\/+$/, '');
     const candidate = path.trim();
     if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
       // Nothing here resolves to a file, so there is nothing to open.
       setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
       return;
     }
-    const absolute = candidate.startsWith('/') ? candidate : `${root}/${candidate.replace(/^\.\//, '')}`;
+    const absolute = resolveConversationFilePath(candidate, root);
     // A link that lands outside the workspace still opens, read-only: reading a
     // file this session does not own is safe, and refusing it left the reader
     // with a notice and no way to see what the link pointed at.

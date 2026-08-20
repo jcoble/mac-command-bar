@@ -169,6 +169,9 @@
   let destroyed = false;
 
   const activeFile = $derived(activeEditorFile());
+  const activeFileMissing = $derived(
+    Boolean(activeFile?.error && /(?:os error 2|No such file)/i.test(activeFile.error))
+  );
   /**
    * Files opened for reading only, keyed by path. A file link in a conversation
    * that points outside the workspace opens this way: the reader can see what
@@ -997,6 +1000,8 @@
     <div class="editor-canvas">
       {#if editorLoadError}
         <p class="canvas-message error">{editorLoadError}</p>
+      {:else if activeFile?.error && activeFileMissing}
+        <p class="canvas-message">File no longer exists at {activeFile.path}</p>
       {:else if activeFile?.error}
         <div class="canvas-message error">
           <p>{activeFile.error}</p>
