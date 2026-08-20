@@ -16,8 +16,8 @@
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
 
-/** The three surfaces the center pane's corner tabs switch between. */
-export type CenterTabId = 'session' | 'editor' | 'diff';
+/** The four surfaces the center pane's corner tabs switch between. */
+export type CenterTabId = 'session' | 'editor' | 'diff' | 'git-history';
 
 /** The eight panels the right column's icon strip switches between. */
 export type RightTabId =
@@ -30,7 +30,12 @@ export type RightTabId =
   | 'browser'
   | 'history';
 
-export const CENTER_TAB_IDS: readonly CenterTabId[] = ['session', 'editor', 'diff'];
+export const CENTER_TAB_IDS: readonly CenterTabId[] = [
+  'session',
+  'editor',
+  'diff',
+  'git-history'
+];
 
 export const RIGHT_TAB_IDS: readonly RightTabId[] = [
   'files',

@@ -29,6 +29,7 @@
       session: Snippet;
       editor: Snippet;
       diff: Snippet;
+      gitHistory: Snippet;
     };
     /** The small tabs in the center pane's upper-right corner. */
     centerTabs: Snippet;
@@ -85,6 +86,7 @@
   let sessionSlot: HTMLElement;
   let editorSlot: HTMLElement;
   let diffSlot: HTMLElement;
+  let gitHistorySlot: HTMLElement;
 
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
@@ -122,7 +124,8 @@
             title: 'Diff',
             element: diffSlot,
             renderer: 'onlyWhenVisible'
-          }
+          },
+          { id: 'git-history', title: 'Git History', element: gitHistorySlot }
         ],
         onPanelLayout: (id) => {
           if (id === 'session') onSessionPanelLayout?.();
@@ -180,6 +183,7 @@
   <div class="slot" bind:this={sessionSlot}>{@render center.session()}</div>
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
   <div class="slot" bind:this={diffSlot}>{@render center.diff()}</div>
+  <div class="slot" bind:this={gitHistorySlot}>{@render center.gitHistory()}</div>
 </div>
 
 <style>

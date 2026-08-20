@@ -28,6 +28,7 @@
   import DockPanel from '$lib/shell/components/DockPanel.svelte';
   import EditorPanel from '$lib/shell/components/EditorPanel.svelte';
   import GitDiffView from '$lib/shell/components/GitDiffView.svelte';
+  import GitHistoryView from '$lib/shell/components/git/GitHistoryView.svelte';
   import SessionsColumn from '$lib/shell/components/SessionsColumn.svelte';
   import ShellFrame from '$lib/shell/components/ShellFrame.svelte';
   import UtilityStrip from '$lib/shell/components/UtilityStrip.svelte';
@@ -331,7 +332,12 @@
   }
 
   function isCenterTabId(value: string): value is CenterTabId {
-    return value === 'session' || value === 'editor' || value === 'diff';
+    return (
+      value === 'session' ||
+      value === 'editor' ||
+      value === 'diff' ||
+      value === 'git-history'
+    );
   }
 
   /** Show a center surface. The dock owns which panel is active, so the tab
@@ -339,6 +345,11 @@
   function applyCenterTab(id: CenterTabId): void {
     centerTab = id;
     frameControls?.showCenterPanel(id);
+    // The Git History surface reads the same repository source control does, so
+    // it asks for the same load rather than owning a second one. Looking away
+    // is not reported: the panel in the right column owns that answer, and a
+    // centre tab switch must not switch it off underneath it.
+    if (id === 'git-history') shellPanels.sourceControlVisible(true);
   }
 
   /** A center tab the user clicked: shown, and remembered for this session. */
@@ -1709,6 +1720,10 @@
      instead of a column. -->
 {#snippet diffArea()}<GitDiffView showing={centerTab === 'diff'} />{/snippet}
 
+<!-- The whole commit history as a table, given the width of the middle. It reads
+     `gitPanel` itself and takes no props, the same way the diff above does. -->
+{#snippet gitHistoryArea()}<GitHistoryView />{/snippet}
+
 <!-- The webview's own right-click menu runs a native tracking loop that stalls
      the whole window for seconds, which reads as a freeze. Surfaces with a menu
      of their own already prevent the default; this catches everywhere else.
@@ -1732,7 +1747,8 @@
     center={{
       session: sessionArea,
       editor: editorArea,
-      diff: diffArea
+      diff: diffArea,
+      gitHistory: gitHistoryArea
     }}
     onSessionPanelLayout={scheduleRefit}
     onCenterPanelShown={handleCenterPanelShown}
