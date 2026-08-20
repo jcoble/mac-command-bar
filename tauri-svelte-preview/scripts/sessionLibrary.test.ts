@@ -172,6 +172,30 @@ function available(id, cwd, extra = {}) {
   assert.deepEqual(actions, [`open:${rows[0].key}`, `resume:${rows[0].key}`]);
 }
 
+// History holds only the rows belonging to projects the reader opened. Closing
+// one project releases its rows; closing the panel releases every held row.
+{
+  const first = available('first', '/repo/first', { projectRoot: '/repo' });
+  const firstSibling = available('first-sibling', '/repo/second', { projectRoot: '/repo' });
+  const second = available('second', '/other/second', { projectRoot: '/other' });
+  const allRows = buildSessionLibrary([], [first, firstSibling, second]);
+  const firstKeys = new Set(allRows.slice(0, 2).map((row) => row.key));
+  const secondKeys = new Set([allRows[2].key]);
+  const service = createSessionLibraryService({
+    listProviderSessions: async () => [first, firstSibling, second]
+  });
+
+  assert.equal(service.records.length, 0);
+  await service.refresh(firstKeys);
+  assert.deepEqual(service.records.map((row) => row.key), [...firstKeys]);
+  await service.refresh(secondKeys);
+  assert.deepEqual(new Set(service.records.map((row) => row.key)), new Set([...firstKeys, ...secondKeys]));
+  service.release(firstKeys);
+  assert.deepEqual(service.records.map((row) => row.key), [...secondKeys]);
+  service.release();
+  assert.equal(service.records.length, 0);
+}
+
 // Center/right placement is one runtime host lease over the same service/store;
 // construction and movement never call the provider adapter or create a second
 // lease while the first host is live.

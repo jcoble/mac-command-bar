@@ -434,7 +434,13 @@
   const sessionLibraryService = createSessionLibraryService(
     {
       getOwnedSessions: () => rail.owned,
-      getAvailableSessions: () => rail.available
+      listProviderSessions: async () => {
+        try {
+          return (await listAgentSessionsFromTauri()) ?? (await listAgentSessionsFromLocalBridge()) ?? [];
+        } catch {
+          return (await listAgentSessionsFromLocalBridge()) ?? [];
+        }
+      }
     },
     {
       onOpen: async (record: SessionLibraryRecord) => {
