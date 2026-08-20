@@ -45,10 +45,14 @@
 <header
   data-slot="panel-header"
   data-testid={dataTestId}
-  class={cn('flex flex-col gap-1 px-3 py-2', className)}
+  class={cn('flex flex-col gap-(--space-1) px-(--space-4) pt-(--space-3) pb-(--space-2)', className)}
 >
   <div class="flex min-h-7 min-w-0 items-center gap-2">
-    <h2 class="min-w-0 flex-1 truncate text-[13px] leading-tight font-medium text-foreground">
+    <!-- The panel's name is a heading, so it takes the shell's heading size and
+         weight rather than the metadata size the rows under it use. -->
+    <h2
+      class="min-w-0 flex-1 truncate text-(length:--text-heading) leading-tight font-(--text-heading-weight) text-foreground"
+    >
       {title}
     </h2>
     {#if count !== null}
@@ -61,7 +65,7 @@
     {/if}
   </div>
   {#if children}
-    <p class="min-w-0 truncate text-sm leading-tight text-muted-foreground">
+    <p class="min-w-0 truncate text-(length:--text-quiet) leading-tight text-muted-foreground">
       {@render children()}
     </p>
   {/if}

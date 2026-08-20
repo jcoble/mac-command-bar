@@ -214,7 +214,7 @@
           placeholder={'NODE_ENV=development\nPORT=5173'}
           class="w-full resize-y rounded-md border border-input bg-background px-2 py-1.5
                  font-mono text-[13px] leading-[1.5] text-foreground outline-none
-                 focus-visible:ring-3 focus-visible:ring-ring/50"
+                 transition-colors focus-visible:border-(color:--focus-border)"
         ></textarea>
         <p class="text-sm leading-[1.5] text-[var(--color-text-3)]">
           One <span class="font-mono">NAME=value</span> per line. Leave it empty if the command

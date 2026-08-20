@@ -100,6 +100,24 @@
     return 'text-[var(--color-attention)]';
   });
 
+  /**
+   * What the row says about the change, when there is anything left to say.
+   *
+   * The letter at the head of the row already names the state, and the section
+   * the row sits under names it a second time, so printing the word as well put
+   * "untracked" three times on one line and made a wall of the right edge. The
+   * word earns its place only where the letter cannot carry the whole answer:
+   * a file staged one way and changed another has two states and one letter.
+   * The full description stays in the row's title for a hover.
+   */
+  const changeWord = $derived.by(() => {
+    const { indexStatus, worktreeStatus } = file;
+    if (indexStatus && worktreeStatus && indexStatus !== worktreeStatus) {
+      return `${indexStatus} + ${worktreeStatus}`;
+    }
+    return file.badge === '' ? describeGitFileChange(file) : '';
+  });
+
   function copy(text: string): void {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     void navigator.clipboard.writeText(text);
@@ -148,9 +166,11 @@
                so "modified" was reading straight through the glyphs. The word
                steps aside the moment the row is hovered or focused, the way
                a worktree row's age does; the buttons take its place. -->
-          <span class="shrink-0 text-sm text-muted-foreground transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
-            {describeGitFileChange(file)}
-          </span>
+          {#if changeWord !== ''}
+            <span class="shrink-0 text-sm text-muted-foreground transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
+              {changeWord}
+            </span>
+          {/if}
 
           {#snippet actions()}
             {#if stageDirection === 'stage' && stageAction}

@@ -20,6 +20,7 @@
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { HoverActionButton, HoverActions } from '$lib/components/ui/hover-actions/index.js';
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { modelLabel } from '$lib/shell/conversation/agentConfigLabels.ts';
   import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
@@ -470,7 +471,7 @@
               <span data-testid="worktree-agent-title" class="session-title">{label}</span>
               <span data-testid="worktree-agent-age" class="age">
                 {#if showWorkingIndicator}
-                  <span class="spinner" aria-hidden="true"></span>
+                  <WorkingSpinner seed={session.activeTurnId ?? session.ownedId} size={12} />
                 {/if}
                 <span class="age-text">{ageText ?? ''}</span>
               </span>
@@ -811,6 +812,7 @@
     flex: 0 0 auto;
     align-items: center;
     justify-content: flex-end;
+    gap: 6px;
     padding-left: 8px;
     color: var(--color-text-3);
     font-family: var(--font-mono);
@@ -838,23 +840,9 @@
 
   .row[data-presence='working'] .age { color: var(--color-text-2); }
 
-  /* The working indicator, immediately left of the time it belongs to. The
-     buttons step around it rather than over it — see the gutter above — so a
+  /* Exactly the working indicator's footprint: 12px and the 6px that separates
+     it from the time. It paints nothing — it only stops the buttons here, so a
      session that is running says so whether or not the pointer is on the row. */
-  .spinner {
-    flex: 0 0 auto;
-    box-sizing: border-box;
-    margin-right: 6px;
-    width: 12px;
-    height: 12px;
-    border: 2px solid color-mix(in srgb, var(--color-live) 30%, var(--color-surface));
-    border-top-color: var(--color-live);
-    border-radius: 50%;
-    background: var(--color-surface);
-  }
-
-  /* Exactly the spinner's footprint: 12px and the 6px that separates it from
-     the time. It paints nothing — it only stops the buttons here. */
   .spinner-gap {
     flex: 0 0 auto;
     width: 18px;

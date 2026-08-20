@@ -254,16 +254,18 @@
       {#snippet icon()}<FolderGit2 aria-hidden="true" />{/snippet}
     </EmptyState>
   {:else if worktreeManager.error}
-    <div class="flex flex-col items-start gap-1.5 px-3 py-3">
-      <p class="m-0 text-[13px] leading-normal text-[var(--color-bad)]">{worktreeManager.error}</p>
+    <div class="flex flex-col items-start gap-2 px-(--space-4) py-(--space-3)">
+      <p class="m-0 text-(length:--text-body) leading-normal text-[var(--color-bad)]">
+        {worktreeManager.error}
+      </p>
       <IconButton label="Try reading the worktrees again" onclick={() => void refresh()}>
         <RefreshCw aria-hidden="true" />
       </IconButton>
     </div>
   {:else}
-    <div class="shrink-0 px-3 py-2">
+    <div class="shrink-0 px-(--space-4) pb-(--space-3)">
       <Input
-        class="h-7 text-[13px]"
+        class="h-9 px-3 text-(length:--text-body)"
         placeholder="Filter by branch, task, or folder"
         autocomplete="off"
         spellcheck="false"
@@ -272,17 +274,17 @@
     </div>
 
     {#if worktreeManager.actionError || startError}
-      <p class="m-0 px-3 pb-1.5 text-sm leading-normal text-[var(--color-bad)]">
+      <p class="m-0 px-(--space-4) pb-(--space-3) text-(length:--text-quiet) leading-normal text-[var(--color-bad)]">
         {worktreeManager.actionError || startError}
       </p>
     {:else if worktreeManager.actionMessage || startedMessage}
-      <p class="m-0 px-3 pb-1.5 text-sm leading-normal text-muted-foreground">
+      <p class="m-0 px-(--space-4) pb-(--space-3) text-(length:--text-quiet) leading-normal text-muted-foreground">
         {worktreeManager.actionMessage || startedMessage}
       </p>
     {/if}
 
     <ScrollArea class="min-h-0 flex-1">
-      <div class="px-2 pb-2">
+      <div class="px-(--space-3) pb-(--space-4)">
         {#if rows.length === 0}
           <EmptyState
             title={worktreeManager.loading ? 'Looking for worktrees…' : 'Only the main checkout'}
@@ -293,7 +295,7 @@
             {#snippet icon()}<FolderGit2 aria-hidden="true" />{/snippet}
           </EmptyState>
         {:else}
-          <ul class="m-0 flex list-none flex-col gap-0.5 p-0">
+          <ul class="m-0 flex list-none flex-col gap-1 p-0">
             {#each shown as row (row.path)}
               {@const agentActions = actionsFor(row)}
               <WorktreeRow
@@ -323,7 +325,7 @@
             {/each}
           </ul>
           {#if hiddenByFilter > 0}
-            <p class="m-0 px-1 pt-1.5 text-sm leading-normal text-muted-foreground">
+            <p class="m-0 px-(--space-2) pt-(--space-3) text-(length:--text-quiet) leading-normal text-muted-foreground">
               {hiddenByFilter}
               {hiddenByFilter === 1 ? 'worktree is' : 'worktrees are'} hidden by the filter.
             </p>
