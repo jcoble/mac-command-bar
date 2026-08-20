@@ -19,7 +19,12 @@ import '@codingame/monaco-vscode-javascript-default-extension';
 import '@codingame/monaco-vscode-json-default-extension';
 import '@codingame/monaco-vscode-make-default-extension';
 import '@codingame/monaco-vscode-markdown-basics-default-extension';
-import '@codingame/monaco-vscode-npm-default-extension';
+// The npm default extension is deliberately absent: it is the one bundled
+// extension that contributes a VIEW ("NPM Scripts", into the Explorer
+// container), and with the views service on and no Explorer registered yet,
+// processing that contribution throws at every start. What it otherwise
+// carries - grammar for .npmignore and .npmrc, npm task wiring - is nothing
+// this app uses. When Explorer lands, adding it back is one import.
 import '@codingame/monaco-vscode-php-default-extension';
 import '@codingame/monaco-vscode-powershell-default-extension';
 import '@codingame/monaco-vscode-python-default-extension';

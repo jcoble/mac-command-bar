@@ -132,7 +132,6 @@
     "@codingame/monaco-vscode-keybindings-service-override": "25.1.2",
     "@codingame/monaco-vscode-make-default-extension": "25.1.2",
     "@codingame/monaco-vscode-markdown-basics-default-extension": "25.1.2",
-    "@codingame/monaco-vscode-npm-default-extension": "25.1.2",
     "@codingame/monaco-vscode-php-default-extension": "25.1.2",
     "@codingame/monaco-vscode-powershell-default-extension": "25.1.2",
     "@codingame/monaco-vscode-python-default-extension": "25.1.2",

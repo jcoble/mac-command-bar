@@ -59,9 +59,6 @@ importers:
       '@codingame/monaco-vscode-markdown-basics-default-extension':
         specifier: 25.1.2
         version: 25.1.2
-      '@codingame/monaco-vscode-npm-default-extension':
-        specifier: 25.1.2
-        version: 25.1.2
       '@codingame/monaco-vscode-php-default-extension':
         specifier: 25.1.2
         version: 25.1.2
@@ -402,9 +399,6 @@ packages:
 
   '@codingame/monaco-vscode-monarch-service-override@25.1.2':
     resolution: {integrity: sha512-akyNHOJQRS7YHyk6kf0Encnkt+shlR+bIB84UJRUHFgSeF8s5gkDkQuFJph0YeUDWJWat+yBLUSZx2nHomdbHQ==}
-
-  '@codingame/monaco-vscode-npm-default-extension@25.1.2':
-    resolution: {integrity: sha512-xAPWnp/rnrBP2Jl0CtSTfmESSGT5n6vZL3JKK67VgLLOTntNEAXsopGtifTu8UatX+3pklDMK8yWl8EMq1p+CQ==}
 
   '@codingame/monaco-vscode-php-default-extension@25.1.2':
     resolution: {integrity: sha512-YhM9ZeN5uRUPOjUu+1fV+sQEbUWBSAzcoBUmoOYVVxHqB3HdvMDNfDN8CynbijI3ZulJgYUQQc1/eD0pxoeO7Q==}
@@ -1727,10 +1721,6 @@ snapshots:
       '@codingame/monaco-vscode-api': 25.1.2
 
   '@codingame/monaco-vscode-monarch-service-override@25.1.2':
-    dependencies:
-      '@codingame/monaco-vscode-api': 25.1.2
-
-  '@codingame/monaco-vscode-npm-default-extension@25.1.2':
     dependencies:
       '@codingame/monaco-vscode-api': 25.1.2
 
