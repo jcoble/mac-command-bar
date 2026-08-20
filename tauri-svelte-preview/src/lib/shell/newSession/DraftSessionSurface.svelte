@@ -143,11 +143,15 @@
     const first = gitRefs.find((ref) => ref.isCurrent)
       ?? gitRefs.find((ref) => ref.checkoutPath)
       ?? null;
-    updateDraft({ cwd: first?.checkoutPath ?? projectPath, branch: first?.name ?? '' });
+    updateDraft({
+      cwd: first?.checkoutPath ?? projectPath,
+      branch: first?.name ?? '',
+      branchesAvailable: gitRefs.length > 0
+    });
   }
 
   function selectProject(path: string): void {
-    updateDraft({ projectPath: path, cwd: path, branch: '' });
+    updateDraft({ projectPath: path, cwd: path, branch: '', branchesAvailable: false });
     gitRefs = [];
     refSearch = '';
     void loadRefs(path);
@@ -368,7 +372,19 @@
 
   <div class="draft-transcript" data-testid="draft-session-transcript">
     <p>Start the conversation below.</p>
-    {#if refsMessage}<p class="draft-warning" data-testid="draft-session-refs-note">{refsMessage}</p>{/if}
+    {#if refsMessage}
+      <p class="draft-warning" data-testid="draft-session-refs-note">
+        <span>{refsMessage}</span>
+        <button
+          class="draft-warning-dismiss"
+          type="button"
+          aria-label="Dismiss"
+          onclick={() => (refsMessage = null)}
+        >
+          <X aria-hidden="true" class="size-3" />
+        </button>
+      </p>
+    {/if}
   </div>
 
   <ConversationComposer
@@ -429,7 +445,40 @@
   }
 
   .draft-transcript p { margin: 0; font-size: 13px; }
-  .draft-warning { color: var(--color-attention); }
+  .draft-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    color: var(--color-attention);
+  }
+
+  /* Every notice the reader is shown has to be closable, or it sits on the
+     surface for the rest of the draft with nothing to do about it. */
+  .draft-warning-dismiss {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.7;
+    cursor: pointer;
+  }
+
+  .draft-warning-dismiss:hover {
+    opacity: 1;
+    background: color-mix(in srgb, var(--color-hover) 70%, transparent);
+  }
+
+  .draft-warning-dismiss:focus-visible {
+    outline: 2px solid var(--color-focus-solid);
+    outline-offset: 1px;
+  }
 
   :global(.draft-control) {
     max-width: 200px;

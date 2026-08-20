@@ -288,3 +288,30 @@ assert.equal(
 }
 
 console.log('threadStartFlow.test.ts passed');
+
+// --- A project with no branches is not a dead end ----------------------------
+{
+  const empty = defaultThreadStartState({ projectPath: '/tmp/brand-new' });
+  const draft = { ...empty, prompt: 'Build me a todo list', branch: '', branchesAvailable: false };
+
+  assert.deepEqual(
+    validateThreadStart(draft).map((problem) => problem.field),
+    [],
+    'an empty folder starts without a branch: the agent makes the repository'
+  );
+  assert.ok(buildThreadStartRequest(draft), 'and the request is assembled');
+
+  // A project that does have branches still has to have one chosen.
+  assert.deepEqual(
+    validateThreadStart({ ...draft, branchesAvailable: true }).map((problem) => problem.field),
+    ['branch'],
+    'a project with branches still needs one picked'
+  );
+  assert.deepEqual(
+    validateThreadStart({ ...draft, branchesAvailable: true, branch: 'main' }),
+    [],
+    'and is satisfied once it is'
+  );
+}
+
+console.log('threadStartFlow: a branchless project can start');

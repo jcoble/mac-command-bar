@@ -48,6 +48,33 @@ fi
 
 export MCB_ALLOW_KEYCHAIN_CREDENTIALS=1
 
+# The checkout the dev server on 5177 is serving from, or nothing.
+serving_dir() {
+  port_pid="$(lsof -ti tcp:5177 2>/dev/null | head -1)" || return 0
+  [ -n "${port_pid:-}" ] || return 0
+  lsof -a -d cwd -p "$port_pid" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1
+}
+
+APP_DIR_REAL="$(CDPATH= cd -- "$APP_DIR" && pwd -P)"
+SERVING="$(serving_dir || true)"
+
+# A dev server is found by port, and every checkout's vite answers on the same
+# one. A server left running from another worktree therefore satisfies the
+# "is one up?" check and quietly serves ITS frontend to THIS binary — which
+# reads as "none of my changes did anything", with nothing on screen to say so.
+# A whole morning went into that once. Refuse instead.
+if [ -n "$SERVING" ]; then
+  SERVING_REAL="$(CDPATH= cd -- "$SERVING" 2>/dev/null && pwd -P)" || SERVING_REAL="$SERVING"
+  if [ "$SERVING_REAL" != "$APP_DIR_REAL" ]; then
+    echo "run-stable-next: port 5177 is already served from a different checkout." >&2
+    echo "  serving: $SERVING_REAL" >&2
+    echo "  wanted:  $APP_DIR_REAL" >&2
+    echo "run-stable-next: stop it first, then run this again:" >&2
+    echo "  kill \$(lsof -ti tcp:5177)" >&2
+    exit 1
+  fi
+fi
+
 # The debug binary loads its pages from the dev server, so one has to be up.
 # Started here rather than by the binary, and left running afterwards.
 if ! curl -s -o /dev/null --max-time 2 http://127.0.0.1:5177/next; then

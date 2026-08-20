@@ -95,6 +95,10 @@
 
   const summaryRecords = $derived(visible ? buildSessionLibrary(rail.owned, rail.available) : []);
   let loadedRecords = $state<SessionLibraryRecord[]>([]);
+  /** The project whose sessions are being read, so the row can say it is working.
+   *  Opening one reads every session record it holds, which on a large project
+   *  is seconds of nothing happening otherwise. */
+  let loadingProjectKey = $state<string | null>(null);
   let loadVersion = 0;
 
   /**
@@ -152,9 +156,11 @@
     loadedRecords = [];
     checkouts = {};
     collapseState = createSessionHistoryCollapseState();
+    loadingProjectKey = null;
     if (closing) return;
 
     collapseState = toggleSessionHistoryGroup(collapseState, 'project', project.key);
+    loadingProjectKey = project.key;
     const keys = new Set(project.worktrees.flatMap((worktree) =>
       worktree.rows.map((row) => row.record.key)
     ));
@@ -171,6 +177,11 @@
       checkouts = nextCheckouts ?? {};
     } catch (error) {
       console.error('[history] could not load project', error);
+    } finally {
+      // Cleared whatever happened, and only for the read still in front: a
+      // slow project answering after the reader has opened another one must
+      // not take that one's spinner away with it.
+      if (version === loadVersion) loadingProjectKey = null;
     }
   }
 
@@ -426,6 +437,9 @@
                 aria-hidden="true"
               />
               <span class="min-w-0 flex-1 truncate">{project.name}</span>
+              {#if loadingProjectKey === project.key}
+                <span class="history-spinner" aria-label="Loading sessions"></span>
+              {/if}
               <Chip tone="count">{project.count}</Chip>
             </Collapsible.Trigger>
           </h2>
@@ -524,5 +538,31 @@
     margin-left: 0.875rem;
     padding-left: 0.375rem;
     border-left: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
+  }
+
+  /*
+    The only turning thing in the panel, and it exists only while a project is
+    actually being read — the element is removed the moment that finishes, so
+    nothing spins at rest.
+  */
+  .history-spinner {
+    flex: none;
+    width: 11px;
+    height: 11px;
+    border: 1.5px solid color-mix(in srgb, var(--color-text) 22%, transparent);
+    border-top-color: color-mix(in srgb, var(--color-text) 62%, transparent);
+    border-radius: 50%;
+    animation: history-spin 700ms linear infinite;
+  }
+
+  @keyframes history-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .history-spinner {
+      animation: none;
+      border-top-color: color-mix(in srgb, var(--color-text) 22%, transparent);
+    }
   }
 </style>

@@ -44,6 +44,9 @@ export type ThreadStartPickerState = {
   projectPath: string;
   cwd: string;
   branch: string;
+  /** Does this project have any branch to choose? A folder with no repository
+   * behind it, and a repository with no commit yet, both have none. */
+  branchesAvailable: boolean;
   createNewWorktree: boolean;
 };
 
@@ -294,6 +297,7 @@ export function defaultThreadStartState(input: {
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
     branch: tidy(input.branch),
+    branchesAvailable: false,
     createNewWorktree: false
   };
 }
@@ -352,7 +356,12 @@ export function validateThreadStart(state: ThreadStartPickerState): ThreadStartP
   if (!tidy(state.cwd).startsWith('/')) {
     problems.push({ field: 'branch', message: 'Choose an existing checkout first.' });
   }
-  if (!tidy(state.branch)) {
+  // Only when there is one to choose. A brand new project is an empty folder:
+  // no repository, so no branch, and asking for one is a door with no handle —
+  // the reader cannot satisfy it and cannot get past it. The agent makes the
+  // repository itself and lands on its default branch, which is what the
+  // folder being empty means in the first place.
+  if (state.branchesAvailable && !tidy(state.branch)) {
     problems.push({ field: 'branch', message: 'Choose an existing branch first.' });
   }
   if (state.createNewWorktree) {
