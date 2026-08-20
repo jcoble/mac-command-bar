@@ -229,6 +229,25 @@ export function formatWorkedFor(elapsedMs: number): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+/** How many lines of a sent message the transcript shows before folding it. */
+export const USER_MESSAGE_FOLD_LINES = 10;
+
+/** Whether a sent message is long enough to be worth folding.
+ *
+ * Measured in lines — the height of the text over the height of one line —
+ * rather than in characters, so the answer is the same however wide the column
+ * happens to be and whatever the message is made of. A pixel over the limit is
+ * a rounded-off line rather than an extra one, so the last line has a pixel of
+ * room before anything folds. */
+export function userMessageOverflowsFold(
+  contentHeightPx: number,
+  lineHeightPx: number,
+  maxLines: number = USER_MESSAGE_FOLD_LINES
+): boolean {
+  if (!Number.isFinite(contentHeightPx) || !(lineHeightPx > 0)) return false;
+  return contentHeightPx > maxLines * lineHeightPx + 1;
+}
+
 /*
  * There is no render window here any more, and adding one back is a decision,
  * not a tidy-up.

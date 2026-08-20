@@ -7,6 +7,8 @@ import {
   formatWorkedFor,
   latestPlan,
   turnFileChanges,
+  USER_MESSAGE_FOLD_LINES,
+  userMessageOverflowsFold,
   type ConversationDisplayItem,
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
@@ -547,4 +549,41 @@ assert.deepEqual(
   diffLineCounts('--- a/notes.sql\n+++ b/notes.sql\n@@ -1,2 +1,2 @@\n--- note\n+++ more\n'),
   { added: 1, removed: 1 },
   'dashes inside a hunk are changed lines, not headers'
+);
+
+// ── A long sent message folds (user_message_fold) ────────────────────────
+// The transcript shows the first ten lines of a message and offers the rest.
+// Measured in lines — the height of the text over the height of one line — so
+// the answer is the same whatever width the column happens to be.
+const bodyLine = 22.68;
+assert.equal(USER_MESSAGE_FOLD_LINES, 10, 'ten lines is what a sent message shows before folding');
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 10, bodyLine),
+  false,
+  'a message that fits in ten lines is left alone'
+);
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 10 + 0.4, bodyLine),
+  false,
+  'a fraction of a pixel over ten lines is rounding, not an eleventh line'
+);
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 11, bodyLine),
+  true,
+  'a message past ten lines folds'
+);
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 40, bodyLine, 20),
+  true,
+  'the line limit can be asked for explicitly'
+);
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 40, 0),
+  false,
+  'nothing is folded before a line height is known'
+);
+assert.equal(
+  userMessageOverflowsFold(Number.NaN, bodyLine),
+  false,
+  'an unmeasured message is not folded'
 );

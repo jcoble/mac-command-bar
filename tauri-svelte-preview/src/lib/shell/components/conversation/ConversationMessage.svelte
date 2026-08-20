@@ -1,5 +1,8 @@
 <script lang="ts">
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
+  import { Button } from '$lib/components/ui/button/index.js';
+  import { userMessageOverflowsFold } from '$lib/shell/conversation/conversationTimeline.ts';
   import { parseSafeMarkdown, type SafeInlinePart, type SafeMarkdownBlock } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import CodeBlock from './CodeBlock.svelte';
 
@@ -13,6 +16,32 @@
 
   let { text, role, itemId = 'message', completed = true, onFileLink }: Props = $props();
   const blocks = $derived(parseSafeMarkdown(text));
+
+  /* A pasted log or a long brief is worth keeping, but not worth scrolling
+     past every time the conversation is reopened. A sent message shows its
+     first ten lines and offers the rest; a reply is never folded, because the
+     reply is the thing being read. */
+  let bodyHost = $state<HTMLElement | null>(null);
+  let expanded = $state(false);
+  let folded = $state(false);
+
+  $effect(() => {
+    const host = bodyHost;
+    if (role !== 'user' || !host) return;
+    void blocks;
+    const measure = (): void => {
+      folded = userMessageOverflowsFold(
+        host.scrollHeight,
+        Number.parseFloat(getComputedStyle(host).lineHeight)
+      );
+    };
+    measure();
+    // The message rewraps as the column changes width, so what was nine lines
+    // becomes eleven without a word of it changing.
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  });
 </script>
 
 <article
@@ -22,9 +51,29 @@
   class:assistant={role === 'assistant'}
   class:streaming={!completed}
 >
-  <div class="turn-body" data-testid="conversation-message-body">
+  <div
+    class="turn-body"
+    class:folded={folded && !expanded}
+    data-testid="conversation-message-body"
+    bind:this={bodyHost}
+  >
     {#each blocks as block, blockIndex}{@render node(block, blockIndex === 0)}{/each}
   </div>
+  {#if folded}
+    <div class="fold-row">
+      <Button
+        variant="ghost"
+        size="sm"
+        class="text-[13px] text-muted-foreground"
+        data-testid="conversation-message-fold"
+        aria-expanded={expanded}
+        onclick={() => (expanded = !expanded)}
+      >
+        <span class="fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={13} strokeWidth={1.8} /></span>
+        {expanded ? 'Show less' : 'Show more'}
+      </Button>
+    </div>
+  {/if}
 </article>
 
 <!-- Blocks nest: a list item can hold a list, a quote can hold anything. This
@@ -105,6 +154,15 @@
   /* Tinted, not outlined. The border made a two-word span read as a button,
      which was loudest exactly where inline code is most common: table cells. */
   .inline-code{padding:1.5px 5px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.35 var(--font-mono)}
+
+  /* Ten lines at the body's own size and leading. The text under the cut is
+     still there and still selectable; the fade says there is more without
+     drawing a second edge inside the bubble. */
+  .turn-body.folded{max-height:calc(10 * 1.62em);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent)}
+  .fold-row{display:flex;margin-top:6px}
+  .fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
+  .fold-chevron.open{transform:rotate(90deg)}
+  @media (prefers-reduced-motion:no-preference){.fold-chevron{transition:transform .14s ease}}
 
   .user{width:fit-content;max-width:80%;margin-left:auto;padding:10px 14px;border-radius:16px;background:var(--color-elevated)}
 

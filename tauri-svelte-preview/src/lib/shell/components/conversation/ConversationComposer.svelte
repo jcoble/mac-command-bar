@@ -199,15 +199,19 @@
     Boolean(hasSendableContent || sending || composerLocked || dragging)
   );
   /**
-   * Open is a one-way door. Sending a message empties the draft, which used to
-   * shut the box on the way — so the first thing a conversation did after
-   * accepting a message was shrink the place you type it, and the next line
-   * you wrote opened it again. Every editor of this kind holds its size once
-   * you have used it, and so does this one.
+   * The box holds the height its message needed while that message is being
+   * written: clearing the text by hand, or backspacing to nothing on the way
+   * to rewording it, leaves the box where it was rather than snapping shut
+   * under the cursor. Sending is the one thing that puts it back — the message
+   * has gone, so the box goes back to the line it starts as.
+   *
+   * Only content latches it. A turn in flight, an approval and a drag all open
+   * the box through `opening` for as long as they last, and none of them is a
+   * reason for it to stay open afterwards.
    */
   let hasOpened = $state(false);
   $effect(() => {
-    if (opening) hasOpened = true;
+    if (hasSendableContent) hasOpened = true;
   });
   const relaxed = $derived(opening || hasOpened);
   const bannerItems = $derived.by((): ComposerBannerItem[] => {
@@ -265,8 +269,15 @@
     }
     if (event.key === 'Enter' && !event.shiftKey && !composerLocked) {
       event.preventDefault();
-      void onSend?.();
+      submitPrompt();
     }
+  }
+
+  /** Hand the message off and let the box return to its resting height. */
+  function submitPrompt(): void {
+    if (composerLocked) return;
+    hasOpened = false;
+    void onSend?.();
   }
 
   function changeDraft(value: string): void {
@@ -328,7 +339,7 @@
       <PlanChip {plan} fileChanges={planFileChanges} expanded={planExpanded} running={sending} onToggle={() => (planExpanded = !planExpanded)} />
     </div>
   {/if}
-  <form class="composer-form" onsubmit={(event) => { event.preventDefault(); if (!composerLocked) void onSend?.(); }}>
+  <form class="composer-form" onsubmit={(event) => { event.preventDefault(); submitPrompt(); }}>
     <div
       class:dragging
       class:relaxed
