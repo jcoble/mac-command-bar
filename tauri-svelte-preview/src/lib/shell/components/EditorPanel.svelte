@@ -134,7 +134,12 @@
 
   type CodeEditorComponent = typeof MonacoSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
-  let codeEditor: { disposeTabModel(path: string): boolean; disposeAllTabModels(): void } | null = null;
+  let codeEditor: {
+    captureViewStates(paths: readonly string[]): Record<string, object>;
+    disposeTabModel(path: string): boolean;
+    disposeAllTabModels(): void;
+    releaseSessionResources(): void;
+  } | null = null;
   let editorLoadError = $state<string | null>(null);
   let loadingEditorComponent = false;
   let nativeCsharpRoot = $state<string | null>(null);
@@ -144,6 +149,8 @@
 
   /** Paths whose read is in flight, so a double click cannot read twice. */
   const readsInFlight = new Set<string>();
+  let sessionResourceGeneration = 0;
+  let restoredViewStates = $state<Record<string, object>>({});
   /** Projects whose language server has already been pointed at the project. */
   const warmedProjectRoots = new Set<string>();
 
@@ -360,10 +367,11 @@
   async function loadDiagnosticsForActiveFile(): Promise<void> {
     const path = editorState.activePath;
     if (!path) return;
+    const generation = sessionResourceGeneration;
     const diagnostics = await sourceIntelligence.loadActiveFileDiagnostics();
     // Superseded: the user moved on while this was in flight, so this answer is
     // about a file that is no longer on screen.
-    if (destroyed || editorState.activePath !== path) return;
+    if (destroyed || generation !== sessionResourceGeneration || editorState.activePath !== path) return;
     diagnosticsByPath = { ...diagnosticsByPath, [path]: diagnostics };
   }
 
@@ -703,6 +711,7 @@
   /** EXPLICIT IO: read one file and show it. */
   async function readFileIntoEditor(record: SourceRecord): Promise<void> {
     if (readsInFlight.has(record.path)) return;
+    const generation = sessionResourceGeneration;
     readsInFlight.add(record.path);
     markEditorFileLoading(record.path);
     if (record.language !== 'csharp' || !isNativeTauriRuntime()) {
@@ -718,18 +727,18 @@
       // path, language and size back out of it onto the preview it returns.
       countInvoke('read_source_file');
       const preview = await readSourceFromTauri(record);
-      if (destroyed || !editorFileFor(record.path)) return;
+      if (destroyed || generation !== sessionResourceGeneration || !editorFileFor(record.path)) return;
       if (preview) {
         setEditorFilePreview(record.path, preview);
       } else {
         setEditorFileError(record.path, 'This file could not be read from here.');
       }
     } catch (error) {
-      if (!destroyed && editorFileFor(record.path)) {
+      if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
         setEditorFileError(record.path, `Could not read this file: ${describeError(error)}`);
       }
     } finally {
-      readsInFlight.delete(record.path);
+      if (generation === sessionResourceGeneration) readsInFlight.delete(record.path);
       syncIntelligenceWithActiveFile();
       void refreshEditorIntelligenceForActiveFile();
     }
@@ -844,6 +853,43 @@
     diagnosticsByPath = {};
     readOnlyByPath = {};
     onCloseAllEditors?.();
+  }
+
+  export function captureViewStates(paths: readonly string[]): Record<string, object> {
+    return codeEditor?.captureViewStates(paths) ?? {};
+  }
+
+  export function restoreViewStates(
+    files: readonly { path: string; viewState?: object }[]
+  ): void {
+    const next: Record<string, object> = {};
+    for (const file of files) {
+      if (file.viewState) next[file.path] = file.viewState;
+    }
+    restoredViewStates = next;
+  }
+
+  function consumeRestoredViewState(path: string): void {
+    delete restoredViewStates[path];
+  }
+
+  export function releaseSessionResources(paths: readonly string[]): void {
+    sessionResourceGeneration += 1;
+    if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
+    diagnosticsTimer = null;
+    codeEditor?.releaseSessionResources();
+    for (const path of paths) {
+      readsInFlight.delete(path);
+      sourceIntelligence.releasePreview(path);
+    }
+    const departing = new Set(paths);
+    diagnosticsByPath = Object.fromEntries(
+      Object.entries(diagnosticsByPath).filter(([path]) => !departing.has(path))
+    );
+    readOnlyByPath = Object.fromEntries(
+      Object.entries(readOnlyByPath).filter(([path]) => !departing.has(path))
+    );
+    restoredViewStates = {};
   }
 
   function retryRead(path: string): void {
@@ -1053,10 +1099,12 @@
             targetLineRequestId={activeFile.targetLineRequestId}
             externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
             nativeCsharpLanguageClient={nativeCsharpActive}
+            {restoredViewStates}
             onExternalNavigation={navigateToExternalSource}
             onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
             onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
             onContentChange={updateActiveDraft}
+            onRestoredViewStateConsumed={consumeRestoredViewState}
             onSaveRequest={() => void saveActiveFile()}
             onSymbolsChange={handleSymbolsChange}
           />

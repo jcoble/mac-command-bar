@@ -234,11 +234,13 @@
 		};
 		externalDiagnostics?: SourceDiagnostic[];
 		nativeCsharpLanguageClient?: boolean;
+		restoredViewStates?: Record<string, object>;
 		loading?: boolean;
 		targetLine?: number | null;
 		targetLineRequestId?: number;
 		intelligenceCommand?: SourceEditorIntelligenceCommand | null;
 		onContentChange?: (content: string) => void;
+		onRestoredViewStateConsumed?: (path: string) => void;
 		onCodeActionLookup?: SourceEditorCodeActionLookup;
 		onCodeLensAnchorLookup?: SourceEditorCodeLensAnchorLookup;
 		onCommandPaletteRequest?: () => void;
@@ -285,11 +287,13 @@
 		appearanceOverride,
 		externalDiagnostics = [],
 		nativeCsharpLanguageClient = false,
+		restoredViewStates = {},
 		loading = false,
 		targetLine = null,
 		targetLineRequestId = 0,
 		intelligenceCommand = null,
 		onContentChange,
+		onRestoredViewStateConsumed,
 		onCodeActionLookup,
 		onCodeLensAnchorLookup,
 		onCommandPaletteRequest,
@@ -381,6 +385,8 @@
 	let reconciledNativeCsharpMode: boolean | null = null;
 	const ownedModels = new Set<Monaco.editor.ITextModel>();
 	const inFlightTargetModels = new Map<string, Promise<Monaco.editor.ITextModel | null>>();
+	const sessionViewStates = new Map<string, Monaco.editor.ICodeEditorViewState>();
+	let sessionResourceGeneration = 0;
 	// Bounded LRU of lazily-materialized EXTERNAL target models (design-monaco.md
 	// §4.4). Most-recent path last. Only models created on-demand by the lazy
 	// resolver / opener live here — never the currently-edited model. We cap growth
@@ -1405,6 +1411,42 @@
 		for (const path of [...tabModelLruPaths]) disposeTabModel(path, true);
 	}
 
+	function rememberCurrentViewState() {
+		if (!editor || !currentPath || editor.getModel() !== tabModelFor(currentPath)) return;
+		const state = editor.saveViewState();
+		if (state) sessionViewStates.set(currentPath, state);
+	}
+
+	export function captureViewStates(paths: readonly string[]): Record<string, object> {
+		rememberCurrentViewState();
+		const captured: Record<string, object> = {};
+		for (const path of paths) {
+			const state = sessionViewStates.get(path);
+			const model = tabModelFor(path);
+			if (state && model && !model.isDisposed()) captured[path] = state;
+		}
+		return captured;
+	}
+
+	export function releaseSessionResources() {
+		sessionResourceGeneration += 1;
+		if (editor?.getModel()) editor.setModel(null);
+		disposeAllTabModels();
+		forgetCodeLensRows(true);
+		for (const model of ownedModels) {
+			if (!model.isDisposed()) model.dispose();
+		}
+		ownedModels.clear();
+		externalTargetModelLru.clear();
+		tabModelLruPaths = [];
+		savedTabModelValues.clear();
+		inFlightTargetModels.clear();
+		sessionViewStates.clear();
+		currentPath = "";
+		currentTargetLine = null;
+		currentTargetLineRequestId = -1;
+	}
+
 	function touchTabModel(path: string, model: Monaco.editor.ITextModel, savedContent: string) {
 		savedTabModelValues.set(path, savedContent);
 		externalTargetModelLru.delete(path);
@@ -1425,6 +1467,7 @@
 	// one read. This is invoked lazily — per navigated jump target and per expanded
 	// peek file group — never eagerly across a whole result set.
 	async function ensureSourceTargetModel(monaco: typeof Monaco, target: SourceRecord) {
+		const generation = sessionResourceGeneration;
 		const uri = monaco.Uri.file(target.path);
 		const existing = monaco.editor.getModel(uri);
 		if (existing) {
@@ -1440,7 +1483,7 @@
 
 		const load = (async () => {
 			const externalPreview = await onExternalPreviewLookup?.(target);
-			if (!externalPreview) return null;
+			if (!externalPreview || generation !== sessionResourceGeneration) return null;
 			// A peer request may have created the model while we awaited the read.
 			const raced = monaco.editor.getModel(uri);
 			if (raced) {
@@ -1456,7 +1499,7 @@
 			touchExternalTargetModel(target.path, model);
 			return model;
 		})().finally(() => {
-			inFlightTargetModels.delete(target.path);
+			if (inFlightTargetModels.get(target.path) === load) inFlightTargetModels.delete(target.path);
 		});
 
 		inFlightTargetModels.set(target.path, load);
@@ -1929,7 +1972,9 @@
 			readOnly: !editable,
 		});
 
+		const pathChanged = currentPath !== preview.path;
 		if (editor.getModel() !== model) {
+			rememberCurrentViewState();
 			editor.setModel(model);
 		}
 		touchTabModel(preview.path, model, preview.content);
@@ -1938,7 +1983,6 @@
 		publishDiagnostics();
 		publishSymbols();
 
-		const pathChanged = currentPath !== preview.path;
 		const targetLineChanged =
 			currentTargetLine !== targetLine || currentTargetLineRequestId !== targetLineRequestId;
 		if (targetLine && (pathChanged || targetLineChanged)) {
@@ -1954,9 +1998,16 @@
 			currentPath = preview.path;
 			currentTargetLine = null;
 			currentTargetLineRequestId = targetLineRequestId;
-			editor.setScrollTop(0);
-			editor.setScrollLeft(0);
-			editor.setPosition({ lineNumber: 1, column: 1 });
+			const restored = restoredViewStates[preview.path] ?? sessionViewStates.get(preview.path);
+			if (restored) {
+				editor.restoreViewState(restored as Monaco.editor.ICodeEditorViewState);
+				if (restoredViewStates[preview.path]) onRestoredViewStateConsumed?.(preview.path);
+			}
+			else {
+				editor.setScrollTop(0);
+				editor.setScrollLeft(0);
+				editor.setPosition({ lineNumber: 1, column: 1 });
+			}
 			return;
 		}
 
@@ -3015,18 +3066,10 @@
 			const model = editor?.getModel();
 			if (model) monacoApi.editor.setModelMarkers(model, "mcb-lsp", []);
 		}
-		editor?.dispose();
 		reconciledNativeCsharpMode = null;
 		externalWorkspaceEditCommandId = "";
-		forgetCodeLensRows(true);
-		for (const model of ownedModels) {
-			model.dispose();
-		}
-		ownedModels.clear();
-		externalTargetModelLru.clear();
-		tabModelLruPaths = [];
-		savedTabModelValues.clear();
-		inFlightTargetModels.clear();
+		releaseSessionResources();
+		editor?.dispose();
 	});
 </script>
 

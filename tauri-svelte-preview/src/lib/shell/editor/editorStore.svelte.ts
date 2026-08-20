@@ -20,11 +20,13 @@ import {
   activePathAfterClose,
   closeOpenFile,
   findOpenFile,
+  openEditorFileFromRecord,
   patchOpenFile,
   revealLineInOpenFile,
   upsertOpenFile,
   type OpenEditorFile
 } from './editorStoreOps.ts';
+import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 export type { OpenEditorFile } from './editorStoreOps.ts';
 
@@ -112,10 +114,11 @@ export function markEditorFileLoading(path: string): void {
 
 /** A read finished: store the contents. */
 export function setEditorFilePreview(path: string, preview: SourcePreview): void {
+  const retainedDraft = editorFileFor(path)?.draftContent ?? null;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     preview,
-    draftContent: preview.content,
-    dirty: false,
+    draftContent: retainedDraft ?? preview.content,
+    dirty: retainedDraft !== null && retainedDraft !== preview.content,
     saving: false,
     loading: false,
     error: null
@@ -156,16 +159,16 @@ export function setEditorSymbols(symbols: SourceSymbol[]): void {
 }
 
 /**
- * Put a session's tabs back exactly as it left them, contents and all.
- *
- * The counterpart of {@link resetEditorState}, and the reason switching to a
- * session you were on a minute ago does not read its files off disk again: the
- * page held those entries while you were away and hands the same ones back. No
- * file is on screen yet — the page asks for that one through the open-file bus,
- * so the same path runs whether the tab was held or has to be read.
+ * Put a session's lightweight tab descriptors back without reading a file.
  */
-export function restoreEditorFiles(files: OpenEditorFile[]): void {
-  editorState.openFiles = files;
+export function restoreEditorFiles(
+  files: readonly { path: string; draftContent?: string }[]
+): void {
+  editorState.openFiles = files.map((file) => ({
+    ...openEditorFileFromRecord(sourceRecordFromPath(editorState.projectRoot, file.path)),
+    draftContent: file.draftContent ?? null,
+    dirty: file.draftContent !== undefined
+  }));
   editorState.activePath = null;
   editorState.symbols = [];
 }

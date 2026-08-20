@@ -83,8 +83,7 @@
   import {
     editorState,
     resetEditorState,
-    restoreEditorFiles,
-    type OpenEditorFile
+    restoreEditorFiles
   } from '$lib/shell/editor/editorStore.svelte';
   import {
     setCsharpLanguageServerEnabled,
@@ -147,14 +146,10 @@
     captureWorkspace,
     clearWorkspaceEditorTabs,
     diffPathFor,
-    emptyRetainedWorkspaces,
     planWorkspaceRestore,
     pruneWorkspaces,
     readWorkspaces,
-    retainTabs,
-    takeRetainedTabs,
     writeWorkspaces,
-    type RetainedWorkspaces,
     type SessionWorkspaceSnapshot
   } from '$lib/shell/sessionWorkspaces';
   import { readSessionsCollapsed, writeSessionsCollapsed } from '$lib/shell/sessionStrip';
@@ -239,6 +234,11 @@
     setDockPresent(present: boolean): void;
     setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
     regionWidth(id: ShellRegionId): number | null;
+  } | null = null;
+  let editorPanel: {
+    captureViewStates(paths: readonly string[]): Record<string, object>;
+    restoreViewStates(files: readonly { path: string; viewState?: object }[]): void;
+    releaseSessionResources(paths: readonly string[]): void;
   } | null = null;
   /** Which panel the right column is showing, and which surface the center
    * pane is on. The PAGE owns both, because both are remembered per session and
@@ -771,21 +771,6 @@
     if (rail.activeOwnedId === null) await selectOwned(ownedId);
   }
 
-  /**
-   * The editor tabs the last few sessions left behind, contents and all.
-   *
-   * The stored record beside it is only a list of paths, so putting a session
-   * back used to mean reading every one of its files off disk again — including
-   * the file the reader had been looking at seconds earlier. Holding the tabs
-   * themselves is what makes going back to a session free. Only the last three
-   * sessions are held, so the memory this costs has a ceiling; the fourth reads
-   * its files again, exactly as every session used to.
-   *
-   * Not persisted, and it must not be: file contents are far too big for the
-   * browser's storage, and a reload has to read from disk anyway.
-   */
-  let retainedTabs: RetainedWorkspaces<OpenEditorFile> = emptyRetainedWorkspaces();
-
   function conversationProviderFor(ownedId: string): AgentConversationProvider | null {
     const agent = rail.owned.find((session) => session.ownedId === ownedId)?.agent;
     return agent === 'codex' || agent === 'claude' || agent === 'antigravity' ? agent : null;
@@ -794,17 +779,15 @@
   /** Remember the editor tabs and file tree this session is leaving behind.
    * Stored straight away: a reload can come at any moment, and the write is a
    * few hundred bytes. */
-  function snapshotWorkspace(ownedId: string): void {
-    // The tabs themselves are held here rather than in the stored record: same
-    // moment, same session, but this half stays in memory. A session leaving an
-    // empty editor holds nothing, so its place goes to one that has files.
-    retainedTabs = retainTabs(retainedTabs, ownedId, editorState.openFiles);
+  function snapshotWorkspace(ownedId: string): boolean {
+    const openPaths = editorState.openFiles.map((file) => file.path);
     writeBrowserSessionSnapshot(ownedId, { browser: captureBrowserState() });
     workspaces = {
       ...workspaces,
       [ownedId]: captureWorkspace({
         openFiles: editorState.openFiles,
         activePath: editorState.activePath,
+        viewStates: editorPanel?.captureViewStates(openPaths),
         selectedPath: explorer.selectedPath,
         scrollTop: explorer.scrollTop,
         diffPath: gitPanel.selectedPath || null,
@@ -813,24 +796,20 @@
         center: frameControls?.captureCenterLayout() ?? null
       })
     };
-    writeWorkspaces(window.localStorage, workspaces);
+    return writeWorkspaces(window.localStorage, workspaces);
   }
 
   function clearAllEditorWorkspaceRecords(): void {
     workspaces = clearWorkspaceEditorTabs(workspaces);
-    retainedTabs = emptyRetainedWorkspaces();
     writeWorkspaces(window.localStorage, workspaces);
   }
 
   /**
    * Put back the editor tabs and file tree this session had.
    *
-   * A tab still held from the last time this session was on screen goes back as
-   * it is — the file is already in memory, so nothing is read. Any other file
-   * the record names goes back through the same "open this file" request the
-   * explorer uses, in strip order. Either way the file that was showing is asked
-   * for last, so it is the one left in front and the panel points its lookups at
-   * it; asking for a file that is already open costs nothing but that.
+   * The strip is rebuilt from lightweight descriptors without reading files.
+   * Only the active path goes through the open-file request immediately; the
+   * other tabs read from disk when selected.
    *
    * The tree's state is assigned directly, AFTER `sessionPicked` has pointed the
    * explorer at the project: listing the same folder again does nothing, and a
@@ -866,20 +845,18 @@
       }
     }
     if (snapshot?.center) frameControls?.restoreCenterLayout(snapshot.center);
-    const taken = takeRetainedTabs(retainedTabs, ownedId);
-    retainedTabs = taken.retained;
-    const plan = planWorkspaceRestore(snapshot ?? null, taken.tabs);
+    const plan = planWorkspaceRestore(snapshot ?? null);
     // Every restore starts from THIS session's tabs and no others. A session
     // that has never had a file open starts from an empty editor, and that
     // emptiness is the whole point: it is the other session's tabs not being
     // there.
-    if (plan.restoredTabs) restoreEditorFiles(plan.restoredTabs);
+    editorPanel?.restoreViewStates(plan.openFiles);
+    if (plan.openFiles.length > 0) restoreEditorFiles(plan.openFiles);
     else resetEditorState();
 
     restoringWorkspace = true;
     try {
-      for (const path of plan.pathsToOpen) requestOpenFile({ path });
-      if (plan.activePath) requestOpenFile({ path: plan.activePath });
+      if (plan.eagerPath) requestOpenFile({ path: plan.eagerPath });
     } finally {
       restoringWorkspace = false;
     }
@@ -898,6 +875,7 @@
     const previous = rail.activeOwnedId;
     const switching = previous !== ownedId;
     const selected = rail.owned.find((session) => session.ownedId === ownedId);
+    let workspaceWriteSucceeded = true;
     // The strip along the bottom reports the last thing that went wrong. Left
     // up, a start that failed in one session was still being reported while
     // the reader worked in another; moving on is what puts it down.
@@ -910,7 +888,7 @@
     // scan runs — including the close button, which switches sessions too).
     if (switching && previous !== null) {
       await flushConversationSessionDraft(previous).catch(() => undefined);
-      if (shellPanels.loadsAllowed()) snapshotWorkspace(previous);
+      if (shellPanels.loadsAllowed()) workspaceWriteSucceeded = snapshotWorkspace(previous);
     }
     if (switching && previous !== null) stopConversationTerminalProjection(previous);
     if (switching && selected) {
@@ -926,6 +904,10 @@
     // stored record back here would throw away every file opened since the last
     // switch, which is the opposite of what a click on your own row means.
     if (switching) {
+      // Departing models must be gone before replay can create the arriving session's model.
+      if (previous !== null && workspaceWriteSucceeded) {
+        editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
+      }
       restoreWorkspace(ownedId);
       // Both columns go back to the tabs this session was left on. After the
       // workspace restore, which may have brought the editor forward for a file
@@ -1709,6 +1691,7 @@
        Except while a session's files are being put back — that is not a request for anything, and
        it must not drag the user off the terminal they were watching. -->
   <EditorPanel
+    bind:this={editorPanel}
     showing={centerTab === 'editor'}
     onCloseAllEditors={clearAllEditorWorkspaceRecords}
     onFileOpened={() => {
