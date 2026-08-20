@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>History panel rebuild — spec</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36;
+    --text: #e6e9ef; --quiet: #9aa4b6; --accent: #7aa2f7;
+    --good: #7ee787; --bad: #ff7b72; --warn: #e3b341;
+    font-size: 16px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 24px 96px;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 20px; margin: 44px 0 12px; padding-top: 20px;
+    border-top: 1px solid var(--line); letter-spacing: -0.01em;
+  }
+  h3 { font-size: 16px; margin: 26px 0 8px; color: var(--accent); }
+  p, li { color: var(--text); }
+  .lede { color: var(--quiet); font-size: 17px; margin: 0 0 8px; }
+  code {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 13px;
+    background: #1e232d; border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 14px 16px; overflow-x: auto;
+    font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--quiet); font-weight: 600; font-size: 13px; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 16px 0; }
+  .box.warn { border-left: 3px solid var(--warn); }
+  .box.bad { border-left: 3px solid var(--bad); }
+  .box.good { border-left: 3px solid var(--good); }
+  .box h3 { margin-top: 0; color: var(--text); }
+  .tag {
+    display: inline-block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 4px; border: 1px solid var(--line); color: var(--quiet);
+  }
+  .file { color: var(--accent); font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 13px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  .checklist { list-style: none; padding-left: 0; }
+  .checklist li::before { content: "☐ "; color: var(--quiet); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>History panel rebuild</h1>
+<p class="lede">Fix why a project sometimes opens to nothing, then rebuild the card in the Worktrees tab's styling idiom. 2026-08-20.</p>
+
+<div class="box bad">
+<h3>Do the load path first</h3>
+<p>The panel intermittently renders an expanded project with zero sessions — the owner reports the same project, <code>AssemblyTest2</code>, showing everything on some opens and nothing on others. That is three bugs in the load path, not the card. Restyling on top of a loader that sometimes returns nothing would only produce better-looking empty states.</p>
+</div>
+
+<h2>1. The three load-path bugs</h2>
+
+<h3>Bug A — the key filter fails silently</h3>
+<p><span class="file">sessionLibraryService.ts:120-128</span></p>
+<pre><code>async refresh(keys?: ReadonlySet&lt;string&gt;): Promise&lt;SessionLibraryRecord[]&gt; {
+  const owned = source.getOwnedSessions?.() ?? [];
+  const current = source.getAvailableSessions?.() ?? [];
+  const provider = source.listProviderSessions ? await source.listProviderSessions() : [];
+  const records = buildSessionLibrary(owned, [...current, ...provider]);
+  const selected = keys ? records.filter((record) =&gt; keys.has(record.key)) : records;</code></pre>
+<p><code>refresh(keys)</code> rebuilds the entire library from three sources, then keeps only the records whose keys were asked for. When the scan has not caught up — <code>getAvailableSessions()</code> stale, or <code>listProviderSessions()</code> still warming — <code>selected</code> is empty. Nothing throws. The project expands to a blank list and the reader is told nothing. Whether a project is full or empty depends on whether the scan finished before the click.</p>
+
+<h3>Bug B — one failure erases everything</h3>
+<p><span class="file">HistoryPanel.svelte:168-171</span></p>
+<pre><code>const [, nextCheckouts] = await Promise.all([
+  host.service.refresh(keys),
+  listRepositoryCheckoutsFromTauri([project.path])
+]);</code></pre>
+<p><code>Promise.all</code> rejects if either side rejects. A git checkout lookup failing — busy repository, index lock, a worktree that moved — discards session records that loaded perfectly well. It lands in a <code>catch</code> at <span class="file">:177-179</span> that only writes <code>console.error</code>, leaving <code>loadedRecords</code> at the <code>[]</code> set on entry.</p>
+
+<h3>Bug C — the shared cache is wiped on every click</h3>
+<p><span class="file">HistoryPanel.svelte:155</span> calls <code>host.service.release()</code> with no argument, which is <code>held.clear()</code> at <span class="file">sessionLibraryService.ts:130-133</span> — the whole store, across every project. An in-flight load belonging to the project just closed can clear the one being opened.</p>
+
+<div class="box warn">
+<h3>Why it is also slow</h3>
+<p>Every expand rebuilds the whole session library across all projects and providers, then throws away all but one project's keys — immediately after clearing the cache that would have made the second open free. The spinner added on 2026-08-20 reports the wait honestly; it does not shorten it.</p>
+</div>
+
+<h2>2. Task one — the load path</h2>
+
+<h3>Files</h3>
+<table>
+<tr><th>Action</th><th>Path</th></tr>
+<tr><td>Create</td><td><span class="file">src/lib/shell/history/sessionHistoryLoad.ts</span></td></tr>
+<tr><td>Create</td><td><span class="file">scripts/sessionHistoryLoad.test.ts</span></td></tr>
+<tr><td>Modify</td><td><span class="file">src/lib/shell/panels/history/HistoryPanel.svelte:152-186</span></td></tr>
+<tr><td>Modify</td><td><span class="file">package.json</span> — one test script entry</td></tr>
+</table>
+
+<h3>Contract — the new pure module</h3>
+<p>The decision about what a load produced is pure arithmetic over three inputs, so it lives outside the component and is tested in plain Node, the same shape as <span class="file">sessionHistoryViewModel.ts</span> and <span class="file">panels/files/fileTreeModel.ts</span>.</p>
+<pre><code>/** What a project's load produced, and whether the reader can trust it. */
+export type SessionHistoryLoadState = 'ready' | 'incomplete' | 'failed';
+
+export interface SessionHistoryLoadOutcome {
+  records: readonly SessionLibraryRecord[];
+  checkouts: RepositoryCheckouts;
+  state: SessionHistoryLoadState;
+  /** Keys the view model listed that the scan could not produce. */
+  missingKeys: readonly string[];
+}
+
+export function sessionHistoryLoadOutcome(input: {
+  requestedKeys: ReadonlySet&lt;string&gt;;
+  refreshed: PromiseSettledResult&lt;readonly SessionLibraryRecord[]&gt;;
+  checkouts: PromiseSettledResult&lt;RepositoryCheckouts | null&gt;;
+}): SessionHistoryLoadOutcome;</code></pre>
+
+<p>The rules, in full:</p>
+<ul>
+  <li><code>refreshed</code> rejected → <code>state: 'failed'</code>, no records. This is the only failed case; a checkout failure never is.</li>
+  <li><code>refreshed</code> fulfilled and every requested key present → <code>state: 'ready'</code>.</li>
+  <li><code>refreshed</code> fulfilled but some requested keys absent → <code>state: 'incomplete'</code>, with the records that did arrive and <code>missingKeys</code> naming the rest. This is Bug A made visible instead of silent.</li>
+  <li><code>checkouts</code> rejected → <code>checkouts: {}</code> and the state is unchanged. Sessions render without checkout decoration rather than not at all.</li>
+</ul>
+
+<h3>Changes in the panel</h3>
+<ol>
+  <li><b>Scope the release.</b> <span class="file">:155</span> — <code>host.service.release()</code> becomes <code>host.service.release(keys)</code>, moved below the point where <code>keys</code> is computed. Other projects' records survive.</li>
+  <li><b>Settle, do not race.</b> <span class="file">:168-171</span> — <code>Promise.all</code> becomes <code>Promise.allSettled</code>, and the two results go through <code>sessionHistoryLoadOutcome</code>.</li>
+  <li><b>Serve from cache when it is already held.</b> Before calling <code>refresh</code>, if every key in <code>keys</code> is already present in <code>host.service.records</code>, use those and skip the provider scan entirely. This is what makes reopening a project instant.</li>
+  <li><b>Say what happened.</b> Hold the outcome state in <code>$state</code>. On <code>'failed'</code>, render an error row with a retry that calls <code>toggleProject</code> again. On <code>'incomplete'</code>, render one quiet line under the loaded cards reading <code>Still finding sessions — <i>N</i> not loaded yet</code> with a retry that calls <code>host.rescan?.()</code> then reloads. Never leave an expanded project silently blank.</li>
+</ol>
+
+<div class="box">
+<h3>Not in scope</h3>
+<p>Do not change <code>refresh</code>'s signature or behaviour in <span class="file">sessionLibraryService.ts</span> — the sessions rail shares it. Do not add a caching layer, a request queue, or a retry policy. The cache already exists; use it.</p>
+</div>
+
+<h3>Tests to write first</h3>
+<p>Create <span class="file">scripts/sessionHistoryLoad.test.ts</span>. Four cases, all against the pure function, no DOM:</p>
+<ol>
+  <li><code>a_failed_checkout_lookup_still_yields_the_sessions</code> — checkouts rejected, refresh fulfilled with two records: state <code>'ready'</code>, both records present, <code>checkouts</code> an empty object.</li>
+  <li><code>a_scan_that_is_behind_reports_what_is_missing</code> — two keys requested, one record returned: state <code>'incomplete'</code>, <code>missingKeys</code> holds exactly the absent key.</li>
+  <li><code>a_failed_refresh_is_the_only_failure</code> — refresh rejected, checkouts fulfilled: state <code>'failed'</code>, no records.</li>
+  <li><code>everything_present_is_ready</code> — both fulfilled, all keys covered: state <code>'ready'</code>, <code>missingKeys</code> empty.</li>
+</ol>
+<p>Register it in <code>package.json</code> as <code>"test:session-history-load": "node --experimental-strip-types scripts/sessionHistoryLoad.test.ts"</code>, placed next to the other history entries.</p>
+
+<h2>3. Task two — the card, in the Worktrees idiom</h2>
+
+<h3>Why cards differ today</h3>
+<p><span class="file">SessionHistoryCard.svelte:153-256</span> is eight independent optional guards — <code>messageLabel</code>, <code>subagentLabel</code>, <code>age</code>, <code>record.model</code>, <code>excerpt</code>, <code>record.firstPrompt</code>, <code>userTurns</code>, <code>record.subagents</code>. Each is present or absent on its own, nothing reserves space, and nothing has a fallback. The cards are not variations on one design; they are every combination of eight switches.</p>
+
+<div class="box bad">
+<h3>Every control comes from the kit</h3>
+<p><span class="file">src/lib/components/ui/DESIGN.md</span> is the binding authority for this task — read it before touching a style. Nothing in this rebuild is hand-rolled markup with bespoke CSS. If a job has a component in the kit, that component is used; if it does not, the answer is a plain <code>rounded-xl</code> surface with kit primitives inside, not a new one-off.</p>
+</div>
+
+<h3>Components this card is built from</h3>
+<table>
+<tr><th>Job</th><th>Component</th></tr>
+<tr><td>The card surface</td><td><code>Card</code> — no outline at all: fill plus <code>shadow-sm</code>. A border to signal state is a defect.</td></tr>
+<tr><td>The session row</td><td><code>ListRow</code>, with <code>class="group"</code> so hover actions can reveal</td></tr>
+<tr><td>Expand / collapse, and the turns disclosure</td><td><code>Collapsible</code> with <code>CollapsibleTrigger</code> and <code>CollapsibleContent</code></td></tr>
+<tr><td>Model, message count, subagent count</td><td><code>Chip</code></td></tr>
+<tr><td>Resume, Open, Fork</td><td><code>Button</code> — <code>default</code> for Resume only, <code>ghost</code> for the rest</td></tr>
+<tr><td>Icon-only actions</td><td><code>IconButton</code> — it makes the label mandatory and shows it as a tooltip</td></tr>
+<tr><td>Row actions on hover</td><td><code>HoverActions</code> with <code>HoverActionButton</code>, <code>tone="primary"</code> for session actions</td></tr>
+<tr><td>Right-click on a card</td><td><code>ContextMenu</code>, trigger attached to that card only</td></tr>
+<tr><td>Archive and Delete confirmation</td><td><code>AlertDialog</code></td></tr>
+<tr><td>Dividing label rows</td><td><code>Separator</code>, or <code>border-b</code> between rows inside the surface</td></tr>
+<tr><td>A project with no sessions</td><td><code>EmptyState</code></td></tr>
+<tr><td>Loading</td><td><code>WorkingSpinner</code></td></tr>
+</table>
+
+<h3>Type and spacing — make it bigger than it is now</h3>
+<p>The owner's words are "things spaced and big enough font". The panel currently crowds 11 and 12px text into tight rows. The kit's scale, from <span class="file">DESIGN.md</span>, is what fixes it:</p>
+<ul>
+  <li><code>--text-heading</code> 16px at <code>--text-heading-weight</code> — the session name.</li>
+  <li><code>--text-body</code> 14px — every label and every value. This is the body size and it is what the card should read at.</li>
+  <li><code>--text-quiet</code> 13px — metadata beside a value, and the closing line. <b>13px is the floor for anything a person reads as content.</b></li>
+  <li>11 and 12px are for small-caps group labels only. Nowhere else in this card.</li>
+</ul>
+<p>Spacing follows the kit's own guidance rather than being chosen per element: <b>8px inside a control, 12px between rows, 16px between cards, 24 to 32px around the whole section.</b> Written as <code>--space-2</code>, <code>--space-3</code>, <code>--space-4</code>, <code>--space-5</code>/<code>--space-6</code>. No raw pixel values.</p>
+
+<h3>The skeleton rule</h3>
+<p><span class="file">SessionHistoryCard.svelte:153-256</span> is eight independent optional guards — <code>messageLabel</code>, <code>subagentLabel</code>, <code>age</code>, <code>record.model</code>, <code>excerpt</code>, <code>record.firstPrompt</code>, <code>userTurns</code>, <code>record.subagents</code>. Each is present or absent on its own, nothing reserves space, and nothing has a fallback. The cards are not variations on one design; they are every combination of eight switches. That is the whole of "a lot of them don't look like this".</p>
+<p>The rule that replaces it: <b>a card renders the same zones every time, and absent data reads as absent rather than as a different layout.</b> Every label row is always present; an unknown value is an em dash in the muted colour. No zone is ever removed.</p>
+
+<h3>The card, zone by zone</h3>
+<ol>
+  <li><b>Collapsed row</b> — chevron, session name at <code>--text-heading</code>, then chips for model and message count pushed to the right edge. The name truncates with an ellipsis; chips never wrap. Hover reveals <code>HoverActions</code>.</li>
+  <li><b>Label and value rows</b>, inline — a two-column grid so values align down the whole card, not a flex row per line. Label left in <code>--text-quiet</code> and the muted colour, value right in <code>--text-body</code>. The rows are fixed: <i>Folder</i>, <i>Last activity</i>, <i>Model</i>, <i>Turns</i>, <i>Subagents</i>. Paths truncate from the middle, everything else from the end.</li>
+  <li><b>The turns accordion</b> — a <code>Collapsible</code>, closed by default, in the place the Worktrees tab puts its <code>&gt; Why</code> disclosure. See the rule below for what goes inside it.</li>
+  <li><b>Section heading</b> — a small-caps quiet label above the action cluster, the way the Worktrees tab writes <i>What to do about it</i>.</li>
+  <li><b>Action cluster</b> — <i>Resume</i> as the one <code>default</code> Button with a leading icon, then <i>Open</i>, <i>Fork</i>, <i>Archive</i>, <i>Delete</i> as <code>ghost</code>. An unavailable action is <code>disabled</code> and visibly dimmed, never hidden, and says why.</li>
+  <li><b>Closing line</b> — one quiet sentence at the bottom explaining the state, e.g. why an action is off or that no preview was stored.</li>
+</ol>
+
+<div class="box good">
+<h3>What goes in the turns accordion</h3>
+<p>The owner's rule: <b>the first turn, then the last two turns.</b> That is the whole content — not the full transcript, and not a variable number that depends on what the scanner happened to capture.</p>
+<ul>
+  <li>Fewer than four turns available: show them all, in order, with no elision.</li>
+  <li>Four or more: first turn, then a quiet <code>… N earlier turns</code> line, then the final two.</li>
+  <li>No turns at all: the accordion still renders, and its content is the quiet line <code>No turns were stored for this session</code>. It does not vanish.</li>
+</ul>
+<p>That last point also settles the owner's separate complaint that turns show sometimes and not others. The block is always there; only its contents change.</p>
+</div>
+
+<h3>The CSS override pattern</h3>
+<p>Sizing a kit component happens through its <code>data-slot</code>, the way <span class="file">panels/worktrees/WorktreeRow.svelte</span> does it — never by restyling the component itself:</p>
+<pre><code>.history-row :global([data-slot='list-row'] &gt; button) {
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-body);
+}
+.history-row :global([data-slot='hover-actions']) {
+  right: var(--space-3);
+}</code></pre>
+<p>Colours are never named. Use the shadcn slots — <code>bg-card</code>, <code>text-muted-foreground</code>, <code>border-input</code>, <code>ring-ring</code> — which <span class="file">styles/next.css</span> already points at the shell's tokens. The two exceptions <span class="file">DESIGN.md</span> allows are <code>var(--color-text-2)</code> and <code>var(--color-text-3)</code>, for text tiers only.</p>
+<p>Every interactive element owes the four things the kit requires: a hit target of at least 24px, a visible focus state (<code>focus-visible:ring-ring/50 focus-visible:ring-3</code>), a hover state, and a disabled state (<code>disabled:opacity-50 disabled:pointer-events-none</code>) that still explains itself.</p>
+
+<h3>Indentation</h3>
+<p><span class="file">HistoryPanel.svelte:454</span> reads <code>class={loadedProject.singleCheckout ? '' : 'history-nest'}</code>, so single-checkout projects get no indent at all — the owner's "it's supposed to indent in some". Apply <code>.history-nest</code> unconditionally, and express its inset with tokens rather than the current <code>margin-left: 0.875rem; padding-left: 0.375rem</code> at <span class="file">:537-541</span>: <code>margin-left: var(--space-3); padding-left: var(--space-2)</code>, keeping the existing left border.</p>
+
+<h3>Scrollbar</h3>
+<p>The container at <span class="file">HistoryPanel.svelte:410</span> is <code>&lt;ScrollArea class="min-h-0 flex-1"&gt;</code>. It renders a scrollbar component but the panel passes no <code>scrollbarYClasses</code>, so it never opts into visible styling and the reader is left on the mouse wheel. Pass a visible vertical scrollbar. <b>Confirm the component's default in the running app before choosing the class</b> — this is the one claim in this spec taken from the symptom rather than proven from the code.</p>
+
+<h3>Delete the duplicate spinner</h3>
+<p><span class="file">HistoryPanel.svelte</span> carries a hand-rolled <code>.history-spinner</code> with a <code>@keyframes history-spin</code>. <span class="file">components/conversation/WorkingSpinner.svelte</span> now exists and does the same job. The repo's one-way-only rule means the hand-rolled one dies in this change; use <code>WorkingSpinner</code>. Its loop must stay tied to a real load and stop when the load ends — an animation at rest is a defect in this repo.</p>
+
+<h2>4. Verification</h2>
+<pre><code>cd /Users/blackcolours/dev/work/worktrees/mac-command-bar/tsk-808-assembly-wave/tauri-svelte-preview
+
+node --experimental-strip-types scripts/sessionHistoryLoad.test.ts
+npx tsc --noEmit
+pnpm run check:svelte</code></pre>
+<p>Passing means: the four named tests print pass; <code>tsc</code> prints nothing; and the svelte gate's last lines read <code>Files the /next shell owns: 0 error(s)</code>.</p>
+<p>Then in the running app, headless, viewport 1710x990 verified with an <code>innerWidth</code> eval: expand a project with many sessions, confirm a visible scrollbar, consistent card shape across sessions with and without previews, and consistent indentation. Screenshot it. Expand the same project a second time and confirm it returns without a scan.</p>
+
+<h2>5. Done means</h2>
+<ul class="checklist">
+  <li>Expanding a project never renders silently blank — it is loaded, loading, incomplete with a count, or failed with a retry.</li>
+  <li>A failing checkout lookup no longer erases session records.</li>
+  <li>Opening project B does not clear project A's held records.</li>
+  <li>Reopening a project already held does no provider scan.</li>
+  <li>Every card renders the same three zones regardless of which optional fields arrived.</li>
+  <li>Indentation applies to single-checkout projects too.</li>
+  <li>The scroll container shows a scrollbar.</li>
+  <li><code>.history-spinner</code> and <code>@keyframes history-spin</code> are gone; <code>WorkingSpinner</code> is used.</li>
+  <li>All spacing and type values are tokens; nothing below 12px.</li>
+  <li>The four tests, <code>tsc</code>, and the svelte gate all pass.</li>
+</ul>
+
+<h3>Expected diff size</h3>
+<table>
+<tr><th>File</th><th>Lines</th></tr>
+<tr><td><span class="file">sessionHistoryLoad.ts</span> (new)</td><td>~60</td></tr>
+<tr><td><span class="file">scripts/sessionHistoryLoad.test.ts</span> (new)</td><td>~90</td></tr>
+<tr><td><span class="file">HistoryPanel.svelte</span></td><td>~80 changed</td></tr>
+<tr><td><span class="file">SessionHistoryCard.svelte</span></td><td>~120 changed</td></tr>
+<tr><td><span class="file">package.json</span></td><td>1</td></tr>
+<tr><td><b>Total</b></td><td><b>~350</b></td></tr>
+</table>
+<p>Needing roughly twice that, or a file this spec does not name, means stop and send back a one-paragraph proposal instead of building it.</p>
+
+<h2>6. Rules that bind this change</h2>
+<div class="box">
+<h3>Scope discipline</h3>
+<ul>
+  <li><b>KISS</b> — the smallest diff that makes the named tests and behaviours pass. Where two designs work, ship the one with fewer moving parts.</li>
+  <li><b>YAGNI</b> — no code for hypothetical futures. "This will make it easier to add X later" is a reason to reject a change unless X is in this spec.</li>
+  <li>Unless named here, each of these is a defect: a new interface or base class, a new config option or flag, a compatibility shim or fallback path, a factory around one call site, a drive-by refactor of surrounding code, or a retry/caching/validation layer this spec did not ask for.</li>
+  <li>One problem per change. "While I was here" edits are rejected in review.</li>
+</ul>
+</div>
+<div class="box">
+<h3>Project rules</h3>
+<ul>
+  <li>Never write a CSS <code>:has()</code> selector, and never a Tailwind <code>has-[...]</code> variant. Put the state on the element that owns it.</li>
+  <li>No UI regression tests — nothing asserting on component structure, layout, panels, menus, colours or contrast. The four tests named here are logic tests over a pure function, which is what this repo still wants.</li>
+  <li>Animation must end. A loop is allowed only while real work is happening and must stop when it finishes or goes offscreen.</li>
+  <li>TypeScript only. No new <code>.js</code> or <code>.mjs</code> files. <code>any</code> is a last resort.</li>
+  <li>Browser testing is headless only, viewport 1710x990, verified with an <code>innerWidth</code> eval. Whoever opens a browser session shuts down its whole process tree and says so.</li>
+  <li>Never run <code>git reset --hard</code>. Read the diff of any file before restoring it.</li>
+  <li>Commit messages end <code>Committed-by: &lt;name&gt;</code>. No co-author trailer, ever.</li>
+  <li>This change alters no Tauri command, event, table or lifecycle rule, so its commit carries the line <code>Architecture: unchanged</code>.</li>
+  <li>If a required command fails, stop and report the exact error verbatim. Never substitute or invent a result.</li>
+</ul>
+</div>
+
+</main>
+</body>
+</html>
