@@ -41,6 +41,9 @@
     writeMyWorkViewOptions,
     type MyWorkGrouping,
     type MyWorkSort,
+    type MyWorkSortDirection,
+    NATURAL_SORT_DIRECTION,
+    myWorkSortDirectionLabel,
     type MyWorkStatus,
     type MyWorkViewOptions
   } from './myWorkViewOptions';
@@ -298,6 +301,36 @@
                   <Select.Content>
                     <Select.Item value="recent" label="Recent activity" />
                     <Select.Item value="name" label="Name" />
+                  </Select.Content>
+                </Select.Root>
+              </div>
+
+              <div class="flex min-h-8 items-center justify-between gap-3">
+                <span class="text-[13px] text-foreground">Direction</span>
+                <Select.Root
+                  type="single"
+                  value={viewOptions.sortDirection}
+                  onValueChange={(value) =>
+                    setViewOptions({ sortDirection: value as MyWorkSortDirection })}
+                >
+                  <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort direction">
+                    {myWorkSortDirectionLabel(viewOptions.sortBy, viewOptions.sortDirection)}
+                  </Select.Trigger>
+                  <Select.Content>
+                    <Select.Item
+                      value={NATURAL_SORT_DIRECTION[viewOptions.sortBy]}
+                      label={myWorkSortDirectionLabel(
+                        viewOptions.sortBy,
+                        NATURAL_SORT_DIRECTION[viewOptions.sortBy]
+                      )}
+                    />
+                    <Select.Item
+                      value={NATURAL_SORT_DIRECTION[viewOptions.sortBy] === 'desc' ? 'asc' : 'desc'}
+                      label={myWorkSortDirectionLabel(
+                        viewOptions.sortBy,
+                        NATURAL_SORT_DIRECTION[viewOptions.sortBy] === 'desc' ? 'asc' : 'desc'
+                      )}
+                    />
                   </Select.Content>
                 </Select.Root>
               </div>

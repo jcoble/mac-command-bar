@@ -206,8 +206,11 @@
       menuOpen && 'menu-open'
     )}
   >
-    <!-- The row that names the session: one line, always one line. The name
-         gives way before the chips do, and the chips never wrap. -->
+    <!-- The row that names the session. The title is what the reader scans
+         for, so it is the one thing that never gives way: it takes the row
+         and wraps to a second line before anything is allowed to hide it.
+         Chips are context, not identity - one with nothing to say is left
+         out here entirely (the facts grid below is where absence is shown). -->
     <ListRow onclick={onToggle} selected={expanded} actionsLabel="Session actions" class="pr-24">
       <ChevronRight
         class={cn(
@@ -217,12 +220,18 @@
         aria-hidden="true"
       />
       <ProviderIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span class="min-w-16 flex-1 truncate font-medium" title={title}>{title}</span>
-      <span class="flex min-w-0 shrink items-center gap-(--space-1) overflow-hidden">
-        <Chip class="h-6 max-w-32 px-2 font-normal" data-testid="session-history-model">
-          <span class="truncate" title={record.model ?? 'No model was recorded.'}>{modelLabel}</span>
-        </Chip>
-        <Chip tone="count" class="h-6 px-2 font-normal">{turnsLabel}</Chip>
+      <span class="line-clamp-2 min-w-0 flex-1 font-medium leading-snug break-words" title={title}
+        >{title}</span
+      >
+      <span class="flex shrink-0 items-center gap-(--space-1)">
+        {#if record.model?.trim()}
+          <Chip class="h-6 max-w-32 px-2 font-normal" data-testid="session-history-model">
+            <span class="truncate" title={record.model}>{modelLabel}</span>
+          </Chip>
+        {/if}
+        {#if turnsLabel !== DASH}
+          <Chip tone="count" class="h-6 px-2 font-normal">{turnsLabel}</Chip>
+        {/if}
       </span>
 
       {#snippet actions()}
