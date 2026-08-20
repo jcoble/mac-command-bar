@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
+use super::broker_status::{status_for, AgentWorkStatus, WorkflowBrokerEvent};
 use super::handoff::{
     AgentConversationHandoffDirection, AgentConversationHandoffMode, AgentConversationHandoffPhase,
     AgentConversationHandoffReceipt, AgentConversationHandoffRequest,
@@ -74,6 +75,7 @@ const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 const CLAUDE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "max"];
 
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
+pub type BrokerEmitter = std::sync::Arc<dyn Fn(WorkflowBrokerEvent) + Send + Sync>;
 
 /// Asks the helper model to name one session from its first exchange. Set once
 /// at launch; with none set the helper is not involved and a session keeps the
@@ -305,6 +307,8 @@ pub struct AgentRuntimeManager {
     sessions: Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
     providers: Arc<ProviderRegistry>,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
+    broker_emitter: Arc<Mutex<Option<BrokerEmitter>>>,
+    broker_statuses: Arc<Mutex<HashMap<String, AgentWorkStatus>>>,
     namer: Arc<Mutex<Option<SessionNamer>>>,
     renamed_listener: Arc<Mutex<Option<SessionRenamedListener>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
@@ -348,6 +352,8 @@ impl AgentRuntimeManager {
             sessions: Arc::new(Mutex::new(sessions)),
             providers: Arc::new(providers),
             emitter: Arc::new(Mutex::new(None)),
+            broker_emitter: Arc::new(Mutex::new(None)),
+            broker_statuses: Arc::new(Mutex::new(HashMap::new())),
             namer: Arc::new(Mutex::new(None)),
             renamed_listener: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -556,6 +562,86 @@ impl AgentRuntimeManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *current = Some(emitter);
+    }
+
+    pub fn set_broker_emitter(&self, emitter: BrokerEmitter) {
+        let mut current = self
+            .broker_emitter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = Some(emitter);
+    }
+
+    fn sync_broker_status(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        runtime_error: bool,
+    ) -> Result<(), String> {
+        let (turn_active, awaiting_permission_or_input, session_closed) = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session(&sessions, owned_id, generation)?;
+            (
+                session.active_turn_id.is_some(),
+                !session.permission_requests.is_empty() || !session.user_input_requests.is_empty(),
+                session.state == AgentRuntimeState::Closed,
+            )
+        };
+        let Some((group_id, _, orchestrator, _)) = self
+            .store
+            .list_open_groups()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|(_, _, _, members)| members.iter().any(|member| member == owned_id))
+        else {
+            return Ok(());
+        };
+        let decision_pending = self
+            .store
+            .pending_for(&group_id, owned_id)
+            .map_err(|error| error.to_string())?
+            .iter()
+            .any(|envelope| envelope.kind == mcb_core::broker::MessageKind::DecisionRequest);
+        let status = status_for(
+            turn_active,
+            awaiting_permission_or_input,
+            decision_pending,
+            runtime_error,
+            session_closed,
+        );
+        let mut statuses = self
+            .broker_statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if statuses.get(owned_id) == Some(&status) {
+            return Ok(());
+        }
+        let envelope = self
+            .store
+            .append_message(
+                &group_id,
+                owned_id,
+                orchestrator.as_deref().unwrap_or("orchestrator"),
+                mcb_core::broker::MessageKind::Status,
+                status.as_str(),
+            )
+            .map_err(|error| error.to_string())?;
+        statuses.insert(owned_id.to_string(), status);
+        let callback = self
+            .broker_emitter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(callback) = callback {
+            callback(WorkflowBrokerEvent {
+                group_id,
+                envelope: envelope.into(),
+            });
+        }
+        Ok(())
     }
 
     pub fn set_session_namer(&self, namer: SessionNamer) {
@@ -3594,6 +3680,7 @@ async fn pump_inbound(
         let emitter = Arc::clone(&manager.emitter);
         match inbound {
             AcpInbound::SessionUpdate(params) => {
+                let runtime_error = raw_update_failed(&params);
                 let reached_quiescence = 'update: {
                     let mut sessions = sessions
                         .lock()
@@ -3676,6 +3763,10 @@ async fn pump_inbound(
                     }
                     reached_quiescence
                 };
+                if let Err(error) = manager.sync_broker_status(&owned_id, generation, runtime_error)
+                {
+                    crate::debug_log::stderr_log!("Could not publish broker status: {error}");
+                }
                 if reached_quiescence {
                     if let Err(error) = manager.suspend_if_quiescent(&owned_id, generation).await {
                         crate::debug_log::stderr_log!(
@@ -3986,6 +4077,15 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
     terminal && session_is_quiescent(session)
 }
 
+fn raw_update_failed(params: &Value) -> bool {
+    let update = params.get("update").unwrap_or(params);
+    update
+        .get("status")
+        .or_else(|| update.get("state"))
+        .and_then(Value::as_str)
+        == Some("failed")
+}
+
 async fn run_child_rollout_scan(
     sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
@@ -4223,6 +4323,7 @@ async fn handle_ordered_session_event(
                 .as_ref()
                 .err()
                 .map(|error| (error.code.to_string(), error.message.clone()));
+            let runtime_error = error_details.is_some();
             // The same reading of the result that decides the turn payload
             // below. A turn that was interrupted or that failed has nothing
             // worth naming a session after.
@@ -4366,6 +4467,9 @@ async fn handle_ordered_session_event(
             // hundreds of megabytes between turns.
             if let Err(error) = manager.suspend_if_quiescent(owned_id, generation).await {
                 crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
+            }
+            if let Err(error) = manager.sync_broker_status(owned_id, generation, runtime_error) {
+                crate::debug_log::stderr_log!("Could not publish broker status: {error}");
             }
             true
         }

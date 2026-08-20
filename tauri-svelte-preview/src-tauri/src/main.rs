@@ -5962,6 +5962,10 @@ fn main() {
             agent_runtime.set_emitter(Arc::new(move |event| {
                 let _ = handle.emit("agent-conversation-event", event);
             }));
+            let handle = app.handle().clone();
+            agent_runtime.set_broker_emitter(Arc::new(move |event| {
+                let _ = handle.emit("workflow-broker-event", event);
+            }));
             // Names a session from its first exchange. The manager decides
             // when a name is wanted and saves the answer; this is the call
             // itself, and the listener below puts the saved name on the rail.

@@ -1,6 +1,7 @@
 //! Synchronous Tauri commands run on the UI thread, so storage-backed commands are async to keep the interface responsive.
 
 mod attachments;
+mod broker_status;
 pub mod capabilities;
 pub mod handoff;
 mod legacy_import;
