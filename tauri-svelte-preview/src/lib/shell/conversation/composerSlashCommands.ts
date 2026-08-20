@@ -50,8 +50,31 @@ export function remainingContextPercent(
 }
 
 export type ContextMeterState =
-  | { kind: 'percent'; remaining: number; warm: boolean; hot: boolean }
+  | {
+      kind: 'percent';
+      /** Share of the window still free, rounded. The hint line reads this. */
+      remaining: number;
+      /** Share of the window spent, rounded. Always 100 - remaining. */
+      used: number;
+      /** What the ring paints, with the small-usage floor applied. */
+      arc: number;
+      warm: boolean;
+      hot: boolean;
+      usedTokens: number;
+      contextWindow: number;
+      /** Null when the adapter did not report the split. */
+      inputTokens: number | null;
+      outputTokens: number | null;
+    }
   | { kind: 'unknown' };
+
+/**
+ * The smallest arc the ring will paint for a window that has been touched at
+ * all. A true 0.5% arc is a couple of pixels of stroke and reads as a ring
+ * that has stopped working, so everything between nothing and the floor
+ * paints the same sliver. Above the floor the arc is the honest share.
+ */
+export const MIN_VISIBLE_ARC_PERCENT = 10;
 
 /** Tokens as a short label: 940, 9.4k, 398k, 1.2m. */
 export function formatContextTokens(value: number): string {
@@ -71,13 +94,68 @@ export function formatContextTokens(value: number): string {
  */
 export function contextMeterState(
   usedTokens: number | null | undefined,
-  contextWindow: number | null | undefined
+  contextWindow: number | null | undefined,
+  tokens?: { inputTokens?: number | null; outputTokens?: number | null }
 ): ContextMeterState {
   const remaining = remainingContextPercent(usedTokens, contextWindow);
   if (remaining === null || (usedTokens as number) > (contextWindow as number)) {
     return { kind: 'unknown' };
   }
-  return { kind: 'percent', remaining, warm: remaining <= 25, hot: remaining <= 10 };
+  const spent = usedTokens as number;
+  const window = contextWindow as number;
+  const used = 100 - remaining;
+  // The floor is decided on the unrounded share: a session 0.1% of the way
+  // through rounds to 0% used and would otherwise paint nothing.
+  const exactUsed = Math.max(0, Math.min(100, (spent / window) * 100));
+  const arc = exactUsed <= 0 ? 0 : Math.max(MIN_VISIBLE_ARC_PERCENT, exactUsed);
+  return {
+    kind: 'percent',
+    remaining,
+    used,
+    arc,
+    warm: remaining <= 25,
+    hot: remaining <= 10,
+    usedTokens: spent,
+    contextWindow: window,
+    inputTokens: Number.isFinite(tokens?.inputTokens) ? (tokens?.inputTokens as number) : null,
+    outputTokens: Number.isFinite(tokens?.outputTokens) ? (tokens?.outputTokens as number) : null
+  };
+}
+
+export interface ContextMeterPopoverRow {
+  label: string;
+  value: string;
+}
+
+export interface ContextMeterPopoverView {
+  /** "51,285 of 1,000,000 (5%)" */
+  headline: string;
+  rows: ContextMeterPopoverRow[];
+}
+
+/** Full numbers with thousands separators: 51285 -> "51,285". */
+function exactTokens(value: number): string {
+  return Math.round(value).toLocaleString('en-US');
+}
+
+/**
+ * What the ring's popup says. Null when there is no percentage to show, so the
+ * ring and its popup appear and disappear together. A field the adapter never
+ * sent names the provider rather than showing a zero it did not report.
+ */
+export function contextMeterPopover(
+  meter: ContextMeterState,
+  providerName: string
+): ContextMeterPopoverView | null {
+  if (meter.kind !== 'percent') return null;
+  const absent = `not reported by ${providerName}`;
+  return {
+    headline: `${exactTokens(meter.usedTokens)} of ${exactTokens(meter.contextWindow)} (${meter.used}%)`,
+    rows: [
+      { label: 'In', value: meter.inputTokens === null ? absent : exactTokens(meter.inputTokens) },
+      { label: 'Out', value: meter.outputTokens === null ? absent : exactTokens(meter.outputTokens) }
+    ]
+  };
 }
 
 /** Dash length for a ring whose full circumference reads 100%: the visible

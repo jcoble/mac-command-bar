@@ -11,7 +11,7 @@
   }
 
   let { plan, fileChanges = null, expanded, running, onToggle }: {
-    plan: Extract<ConversationDisplayItem, { kind: 'plan' }>;
+    plan: Extract<ConversationDisplayItem, { kind: 'plan' }> | null;
     fileChanges?: PlanFileChanges | null;
     expanded: boolean;
     /** Whether the session is working right now. A turn cancelled with a step
@@ -27,6 +27,7 @@
      is one; before anything has started that is the first step still pending,
      and once every step is done the plan sits on its last one. */
   const currentStep = $derived.by(() => {
+    if (!plan) return 0;
     const running = plan.steps.findIndex((step) => step.state === 'in-progress');
     if (running >= 0) return running + 1;
     const pending = plan.steps.findIndex((step) => step.state === 'pending');
@@ -34,7 +35,7 @@
     return plan.steps.length;
   });
   const currentState = $derived<AgentPlanStep['state']>(
-    plan.steps[currentStep - 1]?.state ?? 'pending'
+    plan?.steps[currentStep - 1]?.state ?? 'pending'
   );
   const fileLabel = $derived(
     fileChanges && fileChanges.files > 0
@@ -54,7 +55,7 @@
 {/snippet}
 
 <div class="plan-chip" data-testid="conversation-plan-chip">
-  <div class="plan-panel" class:open={expanded} id={panelId} data-testid="conversation-plan-panel">
+  {#if plan}<div class="plan-panel" class:open={expanded} id={panelId} data-testid="conversation-plan-panel">
     <ol>
       {#each plan.steps as step (step.id)}
         <li data-state={step.state}>
@@ -63,19 +64,21 @@
         </li>
       {/each}
     </ol>
-  </div>
+  </div>{/if}
   <button
     class="plan-pill"
     type="button"
     data-testid="conversation-plan-pill"
-    aria-expanded={expanded}
-    aria-controls={panelId}
-    onclick={onToggle}
+    aria-expanded={plan ? expanded : undefined}
+    aria-controls={plan ? panelId : undefined}
+    onclick={() => { if (plan) onToggle(); }}
   >
-    {@render stateGlyph(currentState)}
-    <span class="plan-step">Step {currentStep} / {plan.steps.length}</span>
+    {#if plan}
+      {@render stateGlyph(currentState)}
+      <span class="plan-step">Step {currentStep} / {plan.steps.length}</span>
+    {/if}
     {#if fileLabel}
-      <span class="plan-dot" aria-hidden="true">·</span>
+      {#if plan}<span class="plan-dot" aria-hidden="true">·</span>{/if}
       <span class="plan-files">{fileLabel}</span>
       {#if showLineCounts && fileChanges}
         <span class="plan-added">+{fileChanges.added}</span>

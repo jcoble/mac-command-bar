@@ -26,6 +26,12 @@ type Listener = (request: OpenFileRequest) => void;
 const listeners = new Set<Listener>();
 let pending: OpenFileRequest | null = null;
 
+export function resolveConversationFilePath(path: string, sessionCwd: string): string {
+  const candidate = path.trim();
+  if (candidate.startsWith('/') || candidate.startsWith('~')) return candidate;
+  return `${sessionCwd.replace(/\/+$/, '')}/${candidate.replace(/^\.\//, '')}`;
+}
+
 export function requestOpenFile(request: OpenFileRequest): void {
   if (listeners.size === 0) {
     pending = request;

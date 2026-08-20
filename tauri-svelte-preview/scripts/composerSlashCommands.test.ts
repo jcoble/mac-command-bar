@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict';
 import {
+  contextMeterPopover,
   contextMeterState,
   draftAfterSlashCommand,
   formatContextTokens,
@@ -111,10 +112,21 @@ assert.equal(remainingContextPercent(-1, 400), 100, 'negative usage clamps to th
 assert.equal(remainingContextPercent(1, 0), null, 'an absent context window hides the indicator');
 assert.equal(remainingContextPercent(null, 400), null);
 
-// ── What the composer shows for context ──────────────────────────────────
+// ── What the composer shows for context ──────────────────────
 assert.deepEqual(
   contextMeterState(50_000, 200_000),
-  { kind: 'percent', remaining: 75, warm: false, hot: false },
+  {
+    kind: 'percent',
+    remaining: 75,
+    used: 25,
+    arc: 25,
+    warm: false,
+    hot: false,
+    usedTokens: 50_000,
+    contextWindow: 200_000,
+    inputTokens: null,
+    outputTokens: null
+  },
   'a known context window still reports remaining percent'
 );
 assert.deepEqual(
@@ -129,29 +141,73 @@ assert.deepEqual(
 );
 assert.deepEqual(contextMeterState(null, null), { kind: 'unknown' }, 'nothing usable renders nothing');
 
+/** The percent branch of the meter, or a failed assertion. */
+function meter(usedTokens: number, contextWindow: number, tokens?: { inputTokens?: number | null; outputTokens?: number | null }) {
+  const state = contextMeterState(usedTokens, contextWindow, tokens);
+  assert.equal(state.kind, 'percent');
+  if (state.kind !== 'percent') throw new Error('unreachable');
+  return state;
+}
+
+// ── In and out tokens ride along when the adapter reports them ───────
+const withInOut = meter(51_285, 1_000_000, { inputTokens: 48_000, outputTokens: 3_285 });
+assert.equal(withInOut.usedTokens, 51_285);
+assert.equal(withInOut.contextWindow, 1_000_000);
+assert.equal(withInOut.inputTokens, 48_000);
+assert.equal(withInOut.outputTokens, 3_285);
+assert.equal(withInOut.used, 5, 'the headline percent is the used share');
+
 // ── One-source context meter: ring and text agree (ring_and_text_agree) ──
 // The ring and the hint text both read this one object, so they can no
 // longer disagree about how much context is left.
-assert.deepEqual(
-  contextMeterState(36598, 200000),
-  { kind: 'percent', remaining: 82, warm: false, hot: false },
-  'a healthy remaining share is not warm'
-);
-assert.deepEqual(
-  contextMeterState(160000, 200000),
-  { kind: 'percent', remaining: 20, warm: true, hot: false },
-  'a low remaining share is warm'
-);
-assert.deepEqual(
-  contextMeterState(190000, 200000),
-  { kind: 'percent', remaining: 5, warm: true, hot: true },
-  'a nearly spent window is hot as well as warm'
-);
+assert.equal(meter(36598, 200000).remaining, 82, 'a healthy remaining share is not warm');
+assert.equal(meter(36598, 200000).warm, false);
+assert.equal(meter(160000, 200000).warm, true, 'a low remaining share is warm');
+assert.equal(meter(160000, 200000).hot, false);
+assert.equal(meter(190000, 200000).hot, true, 'a nearly spent window is hot as well as warm');
 assert.deepEqual(
   contextMeterState(undefined, 200000),
   { kind: 'unknown' },
   'missing usage renders nothing'
 );
+
+// ── The arc keeps small usage visible ─────────────────────
+// The arc paints what has been used. A ring that paints nothing until a
+// tenth of the window is gone reads as broken, so anything above zero and
+// under the floor paints the same small sliver, and true proportion takes
+// over from there.
+assert.equal(meter(0, 200_000).arc, 0, 'an untouched window paints no arc');
+assert.equal(meter(200, 200_000).arc, 10, '0.1% of the window still paints the sliver');
+assert.equal(meter(10_000, 200_000).arc, 10, '5% paints the sliver, not 5%');
+assert.equal(meter(20_000, 200_000).arc, 10, 'the floor and the true share meet at 10%');
+assert.equal(meter(100_000, 200_000).arc, 50, 'above the floor the arc is the true share');
+assert.equal(meter(200_000, 200_000).arc, 100, 'a spent window paints the whole ring');
+
+// ── What the meter's popup says ───────────────────────
+assert.equal(contextMeterPopover({ kind: 'unknown' }, 'Codex'), null, 'nothing to show without a percentage');
+assert.deepEqual(
+  contextMeterPopover(contextMeterState(51_285, 1_000_000, { inputTokens: 48_000, outputTokens: 3_285 }), 'Codex'),
+  {
+    headline: '51,285 of 1,000,000 (5%)',
+    rows: [
+      { label: 'In', value: '48,000' },
+      { label: 'Out', value: '3,285' }
+    ]
+  },
+  'the popup spells out the exact numbers'
+);
+assert.deepEqual(
+  contextMeterPopover(contextMeterState(50_000, 200_000), 'Claude'),
+  {
+    headline: '50,000 of 200,000 (25%)',
+    rows: [
+      { label: 'In', value: 'not reported by Claude' },
+      { label: 'Out', value: 'not reported by Claude' }
+    ]
+  },
+  'an absent field names the provider that did not send it'
+);
+
 assert.equal(ringDash(82, 100), 82, 'the ring fills to the remaining share of its circumference');
 assert.equal(ringDash(20, 100), 20);
 assert.equal(ringDash(0, 100), 0, 'an empty ring at zero remaining');

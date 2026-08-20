@@ -34,6 +34,7 @@
     isSessionHistoryGroupOpen,
     resetSessionHistoryWindowOnFilterChange,
     toggleSessionHistoryGroup,
+    type SessionHistoryProjectGroup,
     type SessionHistoryRow,
     type SessionHistoryWorktreeGroup
   } from '$lib/shell/history/sessionHistoryViewModel.ts';
@@ -92,7 +93,9 @@
   /** Redrawn only while the panel is on screen, so ages do not go stale in it. */
   let now = $state(new Date());
 
-  const records = $derived(buildSessionLibrary(rail.owned, rail.available));
+  const summaryRecords = $derived(visible ? buildSessionLibrary(rail.owned, rail.available) : []);
+  let loadedRecords = $state<SessionLibraryRecord[]>([]);
+  let loadVersion = 0;
 
   /**
    * The checkouts each repository still has, asked of git once the sessions have
@@ -105,53 +108,35 @@
    */
   let checkouts = $state<Record<string, RepositoryCheckout[]>>({});
 
-  /**
-   * The repositories to ask about, as one string.
-   *
-   * A string and not the array it came from, because asking git costs a process
-   * per repository — around forty of them here. The rail rebuilds its records
-   * whenever anything about a session changes, which hands back a fresh array
-   * every time even when it holds exactly the same repositories, and an effect
-   * watching the array would re-run on each of those and fork forty more
-   * processes for an answer it already had. A string compares by value, so the
-   * work happens when the set of repositories genuinely changes and not before.
-   */
-  const projectRootKey = $derived(
-    [
-      ...new Set(
-        records
-          .map((record) => record.projectRoot)
-          .filter((root): root is string => Boolean(root))
-      )
-    ]
-      .toSorted()
-      .join('\n')
+  /** Lightweight rail summaries build only the top-level project headers. */
+  const summaryViewModel = $derived(
+    buildSessionHistoryViewModel(summaryRecords, { query, windowState })
   );
-
-  $effect(() => {
-    if (!visible) return;
-    const key = projectRootKey;
-    if (!key) return;
-    let cancelled = false;
-    void listRepositoryCheckoutsFromTauri(key.split('\n'))
-      .then((result) => {
-        if (!cancelled && result) checkouts = result;
-      })
-      .catch((error) => console.error('[history] could not list checkouts', error));
-    return () => {
-      cancelled = true;
-    };
-  });
-
-  const viewModel = $derived(
-    buildSessionHistoryViewModel(records, { query, windowState, checkouts })
-  );
+  const loadedProjects = $derived(new Map(
+    buildSessionHistoryViewModel(loadedRecords, { query, windowState, checkouts })
+      .projects.map((project) => [project.key, project])
+  ));
 
   /** A new search starts every checkout back at its first page of cards. */
   function search(value: string): void {
     query = value;
     windowState = resetSessionHistoryWindowOnFilterChange(windowState, { query });
+    loadVersion += 1;
+    host.service.release();
+    loadedRecords = [];
+    checkouts = {};
+    collapseState = createSessionHistoryCollapseState();
   }
+
+  $effect(() => {
+    if (visible) return;
+    loadVersion += 1;
+    host.service.release();
+    loadedRecords = [];
+    checkouts = {};
+    collapseState = createSessionHistoryCollapseState();
+    expandedKey = null;
+  });
 
   $effect(() => {
     if (!visible) return;
@@ -160,8 +145,37 @@
     return () => clearInterval(timer);
   });
 
-  function toggleGroup(level: 'project' | 'worktree', key: string): void {
-    collapseState = toggleSessionHistoryGroup(collapseState, level, key);
+  async function toggleProject(project: SessionHistoryProjectGroup): Promise<void> {
+    const closing = isSessionHistoryGroupOpen(collapseState, 'project', project.key);
+    const version = ++loadVersion;
+    host.service.release();
+    loadedRecords = [];
+    checkouts = {};
+    collapseState = createSessionHistoryCollapseState();
+    if (closing) return;
+
+    collapseState = toggleSessionHistoryGroup(collapseState, 'project', project.key);
+    const keys = new Set(project.worktrees.flatMap((worktree) =>
+      worktree.rows.map((row) => row.record.key)
+    ));
+    try {
+      const [, nextCheckouts] = await Promise.all([
+        host.service.refresh(keys),
+        listRepositoryCheckoutsFromTauri([project.path])
+      ]);
+      if (!visible || version !== loadVersion) {
+        host.service.release();
+        return;
+      }
+      loadedRecords = [...host.service.records];
+      checkouts = nextCheckouts ?? {};
+    } catch (error) {
+      console.error('[history] could not load project', error);
+    }
+  }
+
+  function toggleWorktree(key: string): void {
+    collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
   }
 
   function showOlder(worktreeKey: string): void {
@@ -326,7 +340,7 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-  <PanelHeader title="History" count={viewModel.totalCount}>
+  <PanelHeader title="History" count={summaryViewModel.totalCount}>
     {#snippet actions()}
       <IconButton
         label="Look for sessions again"
@@ -383,7 +397,7 @@
        the tab rebuilds the cards from it instantly. -->
   {#if visible}
   <ScrollArea class="min-h-0 flex-1">
-    {#if viewModel.projects.length === 0}
+    {#if summaryViewModel.projects.length === 0}
       <EmptyState
         title={query ? 'Nothing matches that search' : 'No past sessions yet'}
         body={query
@@ -396,10 +410,10 @@
       <!-- Groups start collapsed and open one click at a time — mounting every
            card at once is what used to freeze the app. A search is the
            exception: its results are already few, so they all show. -->
-      {#each viewModel.projects as project (project.key)}
-        {@const searching = query.trim().length > 0}
-        {@const open = searching || isSessionHistoryGroupOpen(collapseState, 'project', project.key)}
-        <Collapsible.Root {open} onOpenChange={() => toggleGroup('project', project.key)}>
+      {#each summaryViewModel.projects as project (project.key)}
+        {@const open = isSessionHistoryGroupOpen(collapseState, 'project', project.key)}
+        {@const loadedProject = loadedProjects.get(project.key)}
+        <Collapsible.Root {open} onOpenChange={() => void toggleProject(project)}>
           <h2 class="sticky top-0 z-10 bg-card">
             <Collapsible.Trigger
               class="flex min-h-7 w-full items-center gap-2 px-3 py-1.5 text-left
@@ -417,23 +431,23 @@
           </h2>
 
           <Collapsible.Content>
+            {#if loadedProject}
             <!-- One checkout means no second heading to sit under, so its
                  sessions stay at the project's own depth. Everything else steps
                  in once per level it is nested, against a rail — without it a
                  worktree heading and the sessions of the worktree above it
                  shared a left edge and the tree read as one flat list. -->
-            <div class={project.singleCheckout ? '' : 'history-nest'}>
-              {#each project.worktrees as worktree (worktree.key)}
+            <div class={loadedProject.singleCheckout ? '' : 'history-nest'}>
+              {#each loadedProject.worktrees as worktree (worktree.key)}
                 {@const worktreeOpen =
-                  project.singleCheckout
-                  || searching
+                  loadedProject.singleCheckout
                   || isSessionHistoryGroupOpen(collapseState, 'worktree', worktree.key)}
-                {#if project.singleCheckout}
+                {#if loadedProject.singleCheckout}
                   {@render sessionRows(worktree)}
                 {:else}
                   <Collapsible.Root
                     open={worktreeOpen}
-                    onOpenChange={() => toggleGroup('worktree', worktree.key)}
+                    onOpenChange={() => toggleWorktree(worktree.key)}
                   >
                     <Collapsible.Trigger
                       class="flex min-h-6 w-full items-center gap-2 py-1 pr-3 pl-2 text-left text-sm
@@ -456,6 +470,7 @@
                 {/if}
               {/each}
             </div>
+            {/if}
           </Collapsible.Content>
         </Collapsible.Root>
       {/each}

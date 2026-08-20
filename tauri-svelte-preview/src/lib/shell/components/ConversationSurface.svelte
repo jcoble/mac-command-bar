@@ -48,14 +48,21 @@
     type ConversationCommand
   } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import {
-    diffLineCounts,
     latestPlan,
+    turnFileChanges,
     typedConversationTimeline,
     type ConversationDisplayItem
   } from '$lib/shell/conversation/conversationTimeline.ts';
   import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
-  import { requestOpenFile } from '$lib/shell/openFileBus.ts';
+  import {
+    requestOpenFile,
+    resolveConversationFilePath
+  } from '$lib/shell/openFileBus.ts';
+  import {
+    normalizeConversationFileHref,
+    splitConversationFileReference
+  } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
@@ -124,32 +131,13 @@
     return previousVisibleTimeline;
   });
   const activePlan = $derived(latestPlan(visibleTimeline));
-  /* What the turn on screen has changed on disk, for the chip beside the step
-     count. A turn is what has happened since the last thing the reader asked
+  /* What the turn on screen has changed on disk, for the footer chip. A turn
+     is what has happened since the last thing the reader asked
      for, so the count starts at the last user message. The line counts are
      read off the diffs the rows already carry; a row with no diff still
      counts as a file changed. */
   const planFileChanges = $derived.by(() => {
-    if (!activePlan) return null;
-    const paths = new Set<string>();
-    let added = 0;
-    let removed = 0;
-    for (let index = visibleTimeline.length - 1; index >= 0; index -= 1) {
-      const item = visibleTimeline[index];
-      if (item.kind === 'user') break;
-      let diff: string;
-      if (item.kind === 'file') {
-        paths.add(typeof item.metadata?.path === 'string' ? item.metadata.path : item.itemId);
-        diff = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
-      } else if (item.kind === 'tool' && item.toolKind === 'file-edit') {
-        paths.add(item.path ?? item.itemId);
-        diff = item.diff ?? '';
-      } else continue;
-      const counts = diffLineCounts(diff);
-      added += counts.added;
-      removed += counts.removed;
-    }
-    return paths.size ? { files: paths.size, added, removed } : null;
+    return turnFileChanges(visibleTimeline);
   });
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
@@ -161,7 +149,10 @@
     sessionContextUsage(conversation?.metadata ?? null, conversation?.usage)
   );
   const contextMeter = $derived(
-    contextMeterState(contextUsage.usedTokens, contextUsage.contextWindow)
+    contextMeterState(contextUsage.usedTokens, contextUsage.contextWindow, {
+      inputTokens: contextUsage.inputTokens,
+      outputTokens: contextUsage.outputTokens
+    })
   );
 
   // Read from the session rather than held here: this surface is mounted once
@@ -383,21 +374,22 @@
     });
   }
 
-  function openConversationFile(path: string): void {
+  function openConversationFile(reference: string): void {
     if (!active) return;
     const root = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
-    const candidate = path.trim();
+    const { path, line } = splitConversationFileReference(reference);
+    const candidate = normalizeConversationFileHref(path);
     if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
       // Nothing here resolves to a file, so there is nothing to open.
       setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
       return;
     }
-    const absolute = candidate.startsWith('/') ? candidate : `${root}/${candidate.replace(/^\.\//, '')}`;
+    const absolute = resolveConversationFilePath(candidate, root);
     // A link that lands outside the workspace still opens, read-only: reading a
     // file this session does not own is safe, and refusing it left the reader
     // with a notice and no way to see what the link pointed at.
     const outside = absolute !== root && !absolute.startsWith(`${root}/`);
-    requestOpenFile({ path: absolute, projectRoot: root, readOnly: outside });
+    requestOpenFile({ path: absolute, projectRoot: root, readOnly: outside, line });
   }
 
   async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {

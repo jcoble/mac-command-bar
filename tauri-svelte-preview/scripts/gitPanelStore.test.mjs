@@ -545,4 +545,174 @@ function makeBackend(overrides = {}) {
   }
 }
 
+// ── the panel's three sections, its remote actions and its scope picker ──────
+{
+  const sections = await import(
+    '../src/lib/shell/panels/sourceControl/sourceControlSections.ts'
+  );
+  const panelActions = await import(
+    '../src/lib/shell/panels/sourceControl/sourceControlPanelActions.ts'
+  );
+
+  const file = (relativePath, indexStatus, worktreeStatus, badge) => ({
+    relativePath,
+    indexStatus,
+    worktreeStatus,
+    status: worktreeStatus || indexStatus,
+    badge
+  });
+
+  // A file staged and then edited again is in two places at once, and the panel
+  // says so rather than picking one — that is what git itself reports.
+  const bothWays = file('src/both.ts', 'modified', 'modified', 'M');
+  const stagedOnly = file('src/staged.ts', 'modified', '', 'M');
+  const changedOnly = file('src/changed.ts', '', 'modified', 'M');
+  const untracked = file('src/new.ts', '?', '?', '?');
+
+  const split = sections.sourceControlSections({
+    branch: 'main',
+    ahead: 0,
+    behind: 0,
+    hasUpstream: true,
+    files: [changedOnly, untracked, bothWays, stagedOnly]
+  });
+
+  assert.deepEqual(
+    split.map((section) => section.id),
+    ['staged', 'changed', 'untracked'],
+    'the panel draws staged, then changed, then untracked'
+  );
+  assert.deepEqual(
+    split.map((section) => section.label),
+    ['Staged', 'Changes', 'Untracked'],
+    'each section is named the way git names it'
+  );
+  assert.deepEqual(
+    split[0].files.map((entry) => entry.relativePath),
+    ['src/both.ts', 'src/staged.ts'],
+    'staged holds everything with work in the index, sorted by path'
+  );
+  assert.deepEqual(
+    split[1].files.map((entry) => entry.relativePath),
+    ['src/both.ts', 'src/changed.ts'],
+    'changed holds tracked files with unstaged work, including the one in both'
+  );
+  assert.deepEqual(
+    split[2].files.map((entry) => entry.relativePath),
+    ['src/new.ts'],
+    'untracked holds only files git does not know about'
+  );
+
+  const empty = sections.sourceControlSections(null);
+  assert.deepEqual(
+    empty.map((section) => section.files.length),
+    [0, 0, 0],
+    'no status at all still draws the three empty sections'
+  );
+
+  // Pull and push: off with a reason, never off in silence.
+  const remoteContext = (over = {}) => ({
+    canWrite: true,
+    readOnlyReason: 'This page can read the repository but not change it.',
+    busy: false,
+    ...over
+  });
+  const withUpstream = { branch: 'main', ahead: 1, behind: 2, hasUpstream: true, files: [] };
+  const noUpstream = { branch: 'work', ahead: 0, behind: 0, hasUpstream: false, files: [] };
+
+  const ready = panelActions.sourceControlRemoteActions(withUpstream, '/repo', remoteContext());
+  assert.deepEqual(
+    ready.map((action) => action.id),
+    ['fetch', 'pull', 'push'],
+    'the more-actions menu offers fetch, pull and push in that order'
+  );
+  assert.ok(
+    ready.every((action) => action.enabled && action.disabledReason === null),
+    'a writable repository with an upstream can run all three'
+  );
+
+  const detached = panelActions.sourceControlRemoteActions(noUpstream, '/repo', remoteContext());
+  assert.ok(
+    detached.every((action) => !action.enabled),
+    'no upstream means none of the three can run'
+  );
+  for (const action of detached) {
+    assert.match(
+      action.disabledReason ?? '',
+      /upstream/i,
+      `${action.id} says the branch has no upstream`
+    );
+  }
+
+  const rootless = panelActions.sourceControlRemoteActions(withUpstream, '  ', remoteContext());
+  assert.ok(
+    rootless.every((action) => !action.enabled && action.disabledReason !== null),
+    'with no repository folder every remote action is off with a reason'
+  );
+
+  const readOnly = panelActions.sourceControlRemoteActions(
+    withUpstream,
+    '/repo',
+    remoteContext({ canWrite: false })
+  );
+  assert.equal(
+    readOnly[1].disabledReason,
+    'This page can read the repository but not change it.',
+    'a page that cannot write repeats the panel words'
+  );
+
+  const working = panelActions.sourceControlRemoteActions(
+    withUpstream,
+    '/repo',
+    remoteContext({ busy: true })
+  );
+  assert.ok(
+    working.every((action) => !action.enabled),
+    'nothing else starts while a source-control action is running'
+  );
+
+  // The scope picker: the session folder first, then the other checkouts.
+  const worktrees = [
+    { path: '/repo', branch: 'main' },
+    { path: '/work/tsk-1', branch: 'tsk-1-thing' },
+    { path: '/work/tsk-2', branch: '' }
+  ];
+  const options = panelActions.sourceControlScopeOptions('/repo', worktrees);
+  assert.deepEqual(
+    options.map((option) => option.path),
+    ['/repo', '/work/tsk-1', '/work/tsk-2'],
+    'the session folder leads and is never listed twice'
+  );
+  assert.match(options[0].label, /session/i, 'the first option says it is the session folder');
+  assert.equal(options[1].label, 'tsk-1 — tsk-1-thing', 'a checkout shows its folder and branch');
+  assert.equal(options[2].label, 'tsk-2', 'a checkout with no branch name shows just the folder');
+
+  assert.deepEqual(
+    panelActions.sourceControlScopeOptions('', worktrees).map((option) => option.path),
+    ['/repo', '/work/tsk-1', '/work/tsk-2'],
+    'with no session folder there is nothing to lead with, only the checkouts'
+  );
+
+  assert.equal(
+    panelActions.isSourceControlScopeReadOnly('/repo', '/repo'),
+    false,
+    'the session folder itself is the writable scope'
+  );
+  assert.equal(
+    panelActions.isSourceControlScopeReadOnly('/repo', ''),
+    false,
+    'no choice made yet means the session folder'
+  );
+  assert.equal(
+    panelActions.isSourceControlScopeReadOnly('/repo', '/work/tsk-1'),
+    true,
+    'another checkout is read-only'
+  );
+  assert.match(
+    panelActions.describeSourceControlScope('/work/tsk-1'),
+    /^Viewing \/work\/tsk-1 \(read-only\)$/,
+    'the note names the folder being read'
+  );
+}
+
 console.log('gitPanelStore: all tests passed');

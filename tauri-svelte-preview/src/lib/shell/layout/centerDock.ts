@@ -66,7 +66,7 @@ export interface CenterDockSnapshot {
 
 const COMPONENT = 'center-panel';
 const PERSIST_DEBOUNCE_MS = 250;
-export const CENTER_PANEL_IDS = ['session', 'editor', 'diff'] as const;
+export const CENTER_PANEL_IDS = ['session', 'editor', 'diff', 'git-history'] as const;
 export type CenterPanelId = (typeof CENTER_PANEL_IDS)[number];
 
 export function isCenterPanelId(id: string): id is CenterPanelId {

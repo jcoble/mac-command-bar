@@ -900,6 +900,19 @@ async function handleAppNotification(message) {
     return;
   }
 
+  if (message.method === "thread/tokenUsage/updated") {
+    const prompt = promptForEvent(params);
+    if (!prompt) return;
+    await emitSessionUpdate(prompt, {
+      sessionUpdate: "usage_update",
+      usedTokens: params.tokenUsage?.total?.totalTokens,
+      contextWindow: params.tokenUsage?.modelContextWindow,
+      inputTokens: params.tokenUsage?.last?.inputTokens,
+      outputTokens: params.tokenUsage?.last?.outputTokens,
+    });
+    return;
+  }
+
   // The agent threw away the older part of the thread to make room. Codex
   // reports no context occupancy at all, so this notification is the only sign
   // a compaction happened; without it the transcript has a silent gap.

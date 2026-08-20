@@ -384,6 +384,18 @@ export function pruneWorkspaces(
   return kept;
 }
 
+/** Close every saved editor strip while preserving the rest of each workspace. */
+export function clearWorkspaceEditorTabs(
+  all: Record<string, SessionWorkspaceSnapshot>
+): Record<string, SessionWorkspaceSnapshot> {
+  return Object.fromEntries(
+    Object.entries(all).map(([ownedId, snapshot]) => [
+      ownedId,
+      { ...snapshot, openPaths: [], activePath: null }
+    ])
+  );
+}
+
 /* ---------------------------------------------------------------------------
  * Tabs held in memory, so switching back to a session does not read its files
  * off disk all over again.

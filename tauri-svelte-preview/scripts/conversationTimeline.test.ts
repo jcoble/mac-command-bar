@@ -6,10 +6,37 @@ import {
   diffLineCounts,
   formatWorkedFor,
   latestPlan,
+  turnFileChanges,
+  USER_MESSAGE_FOLD_LINES,
+  userMessageOverflowsFold,
   type ConversationDisplayItem,
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
+import {
+  decideConversationScroll,
+  initialConversationScrollAnchorState
+} from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
+
+const sentAnchor = decideConversationScroll(initialConversationScrollAnchorState, {
+  type: 'send',
+  previousUserItemId: 'user-before-send',
+  reducedMotion: false
+});
+const waitingAnchor = decideConversationScroll(sentAnchor.state, {
+  type: 'user-items-changed',
+  userItemIds: ['user-before-send']
+});
+assert.equal(waitingAnchor.action.type, 'none', 'the anchor waits until the sent user item exists');
+const readyAnchor = decideConversationScroll(waitingAnchor.state, {
+  type: 'user-items-changed',
+  userItemIds: ['user-before-send', 'user-after-send']
+});
+assert.deepEqual(
+  readyAnchor.action,
+  { type: 'anchor-user', itemId: 'user-after-send', motion: 'smooth', offsetPx: 12 },
+  'the first user item after send becomes the one scroll target'
+);
 
 const typed = typedConversationTimeline([
   { id: 'assistant-1', type: 'assistant-message', content: [{ channel: 'assistant', text: 'Answer' }] },
@@ -21,6 +48,15 @@ assert.deepEqual(typed.map((item) => item.kind), ['user', 'assistant', 'tool', '
 assert.equal(displayItemFromAgentItem({ id: 'reason-1', type: 'reasoning', content: [{ channel: 'reasoning', text: 'Think' }] }, 2).kind, 'reasoning');
 assert.equal(conversationItemHasVisibleContent({ kind: 'assistant', itemId: 'empty-assistant', text: '  ', completed: false, timestampMs: 2 }), false);
 assert.equal(conversationItemHasVisibleContent({ kind: 'reasoning', itemId: 'empty-reasoning', text: '', completed: false, timestampMs: 3 }), false);
+assert.equal(conversationItemHasVisibleContent({
+  kind: 'user',
+  itemId: 'image-only-user',
+  text: '',
+  completed: true,
+  timestampMs: 4,
+  attachments: [{ id: 'image-1', name: 'image.png', mimeType: 'image/png', path: '/image.png', previewUrl: 'asset://image.png' }]
+}), true, 'a user message with only an attachment remains visible');
+assert.equal(conversationItemHasVisibleContent({ kind: 'user', itemId: 'empty-user', text: '', completed: true, timestampMs: 5 }), false, 'a truly empty user message stays hidden');
 
 const event = (sequence, payload, timestampMs = sequence) => ({
   ownedId: 'owned-rich',
@@ -52,6 +88,29 @@ const completedTool = displayItemsFromConversationEvents([
 assert.equal(completedTool.length, 1, 'tool_call_update advances the existing row instead of adding JSON output');
 assert.equal(completedTool[0].state, 'completed');
 assert.equal(completedTool[0].output, 'PASS conversation timeline\n');
+
+const classifiedTools = [
+  { kind: 'command', title: 'rg --files', expected: 'command' },
+  { kind: 'command', title: 'git diff HEAD', expected: 'command' },
+  { kind: 'file_change', title: 'Edit', expected: 'file-edit' }
+];
+for (const [index, testCase] of classifiedTools.entries()) {
+  const [item] = displayItemsFromConversationEvents([
+    event(20 + index, { kind: 'toolCall', toolCallId: `classified-${index}`, title: testCase.title, toolKind: testCase.kind })
+  ]);
+  assert.equal(item.toolKind, testCase.expected, `${testCase.kind} ignores title text`);
+}
+
+const objectTitle = displayItemsFromConversationEvents([
+  event(24, { kind: 'toolCall', toolCallId: 'object-title', title: { path: 'src/readable.ts' }, toolKind: 'command' })
+])[0];
+assert.equal(objectTitle.title, 'src/readable.ts', 'an object title uses its readable path');
+
+const editWithoutDiff = displayItemsFromConversationEvents([
+  event(25, { kind: 'toolCall', toolCallId: 'edit-no-diff', title: 'Edit', toolKind: 'file_change', output: 'whole file contents' })
+])[0];
+assert.equal(editWithoutDiff.diff, undefined, 'an edit without a diff does not show output as a patch');
+assert.equal(editWithoutDiff.output, undefined, 'an edit without a diff has no dumped body');
 
 const reasoning = displayItemsFromConversationEvents([
   event(1, { kind: 'agentThoughtChunk', turnId: 'turn-1', messageId: 'reasoning-1', content: { type: 'text', text: 'Inspecting ' } }),
@@ -386,8 +445,8 @@ const fencedTitleTool = displayItemFromAgentItem({
   content: [],
   providerMetadata: { title: 'Tool ```console\nls -la\n```' }
 });
-assert.equal(fencedTitleTool.title, 'Tool', 'the title drops the fenced block');
-assert.equal(fencedTitleTool.summary, 'ls -la', 'the summary is the first fenced line, fences and language tag stripped');
+assert.equal(fencedTitleTool.title, 'ls -la', 'the title is the first fenced line, without fence text');
+assert.equal(fencedTitleTool.summary, undefined, 'the fenced line is not repeated beneath the title');
 
 const blankFenceTool = displayItemFromAgentItem({
   id: 'tool-blank-fence',
@@ -395,7 +454,8 @@ const blankFenceTool = displayItemFromAgentItem({
   content: [],
   providerMetadata: { title: '```\n\n```' }
 });
-assert.equal(blankFenceTool.summary, '', 'a fence with no content has an empty summary');
+assert.equal(blankFenceTool.title, 'Tool', 'an empty fence falls back to a plain title');
+assert.equal(blankFenceTool.summary, undefined, 'an empty fence is not rendered as summary text');
 
 // ── The plan chip reads one newest plan (latest_plan_across_turns) ───────
 // The chip above the composer shows the plan the session is working to, so it
@@ -425,6 +485,16 @@ const planAcrossTurns = typedConversationTimeline([
 assert.equal(latestPlan(planAcrossTurns)?.itemId, 'plan-second', 'the newest plan wins across turns');
 assert.equal(latestPlan(planAcrossTurns)?.steps.length, 2);
 assert.equal(latestPlan([]), null, 'a transcript with no plan has no plan');
+
+const noPlanFileChanges = turnFileChanges([
+  textItem('user', 'no-plan-user', 'no-plan-turn', 1),
+  {
+    kind: 'tool', itemId: 'no-plan-edit', turnId: 'no-plan-turn', title: 'Edited a file',
+    toolKind: 'file-edit', state: 'completed', path: 'src/changed.ts',
+    diff: '@@ -1 +1 @@\n-old\n+new', timestampMs: 2
+  }
+]);
+assert.deepEqual(noPlanFileChanges, { files: 1, added: 1, removed: 1 }, 'file changes produce chip data without a plan');
 
 // ── Repeated plan updates draw one line (duplicate_plan_updates_collapse) ─
 // A plan update arrives without an id of its own, so every one of them lands
@@ -479,4 +549,41 @@ assert.deepEqual(
   diffLineCounts('--- a/notes.sql\n+++ b/notes.sql\n@@ -1,2 +1,2 @@\n--- note\n+++ more\n'),
   { added: 1, removed: 1 },
   'dashes inside a hunk are changed lines, not headers'
+);
+
+// ── A long sent message folds (user_message_fold) ────────────────────────
+// The transcript shows the first ten lines of a message and offers the rest.
+// Measured in lines — the height of the text over the height of one line — so
+// the answer is the same whatever width the column happens to be.
+const bodyLine = 22.68;
+assert.equal(USER_MESSAGE_FOLD_LINES, 10, 'ten lines is what a sent message shows before folding');
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 10, bodyLine),
+  false,
+  'a message that fits in ten lines is left alone'
+);
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 10 + 0.4, bodyLine),
+  false,
+  'a fraction of a pixel over ten lines is rounding, not an eleventh line'
+);
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 11, bodyLine),
+  true,
+  'a message past ten lines folds'
+);
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 40, bodyLine, 20),
+  true,
+  'the line limit can be asked for explicitly'
+);
+assert.equal(
+  userMessageOverflowsFold(bodyLine * 40, 0),
+  false,
+  'nothing is folded before a line height is known'
+);
+assert.equal(
+  userMessageOverflowsFold(Number.NaN, bodyLine),
+  false,
+  'an unmeasured message is not folded'
 );

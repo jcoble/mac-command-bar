@@ -31,6 +31,7 @@
 		monacoVscodeApiIsInitialized,
 	} from "$lib/shell/editor/monacoWorkers";
 	import { ensureVscodeServices } from "$lib/shell/editor/vscodeServices";
+	import { touchTabModelLru } from "$lib/shell/editor/editorStoreOps";
 	import {
 		editorStartFailureMessage,
 		waitForConnectedHost,
@@ -388,6 +389,8 @@
 	// `ownedModels`.
 	const EXTERNAL_TARGET_MODEL_LRU_CAP = 24;
 	const externalTargetModelLru = new Map<string, Monaco.editor.ITextModel>();
+	let tabModelLruPaths: string[] = [];
+	const savedTabModelValues = new Map<string, string>();
 	// The standalone text-model resolver we shim for lazy materialization. Saved so
 	// we can restore the original on destroy and delegate the wrap-as-reference work.
 	type ModelReference<T> = {
@@ -1380,6 +1383,41 @@
 		}
 	}
 
+	function tabModelFor(path: string) {
+		return monacoApi?.editor.getModel(monacoApi.Uri.file(path)) ?? null;
+	}
+
+	export function disposeTabModel(path: string, force = false): boolean {
+		const model = tabModelFor(path);
+		const saved = savedTabModelValues.get(path);
+		if (!model || (!force && saved !== undefined && model.getValue() !== saved)) return false;
+		if (editor?.getModel() === model) editor.setModel(null);
+		tabModelLruPaths = tabModelLruPaths.filter((entry) => entry !== path);
+		externalTargetModelLru.delete(path);
+		savedTabModelValues.delete(path);
+		ownedModels.delete(model);
+		if (!model.isDisposed()) model.dispose();
+		return true;
+	}
+
+	export function disposeAllTabModels() {
+		for (const path of [...tabModelLruPaths]) disposeTabModel(path, true);
+	}
+
+	function touchTabModel(path: string, model: Monaco.editor.ITextModel, savedContent: string) {
+		savedTabModelValues.set(path, savedContent);
+		externalTargetModelLru.delete(path);
+		const dirtyPaths = new Set(
+			tabModelLruPaths.filter((entry) => {
+				const candidate = tabModelFor(entry);
+				return candidate?.getValue() !== savedTabModelValues.get(entry);
+			})
+		);
+		const next = touchTabModelLru(tabModelLruPaths, path, dirtyPaths);
+		tabModelLruPaths = next.keptPaths;
+		for (const evictedPath of next.evictedPaths) disposeTabModel(evictedPath, true);
+	}
+
 	// On-miss body for the lazy resolver (Task A2): create exactly one external target
 	// model on demand from A1's memoized `onExternalPreviewLookup`. Kept single (NOT a
 	// bulk fan-out) and de-duped in-flight so def+ref providers firing together share
@@ -1859,11 +1897,16 @@
 			model = null;
 		}
 
+		const retainedDraft = Boolean(
+			model && savedTabModelValues.has(preview.path) && model.getValue() !== savedTabModelValues.get(preview.path)
+		);
 		if (!model) {
 			model = monacoApi.editor.createModel(nextContent, language, uri);
 			ownedModels.add(model);
 		} else {
-			if (model.getValue() !== nextContent) {
+			if (retainedDraft) {
+				onContentChange?.(model.getValue());
+			} else if (model.getValue() !== nextContent) {
 				setModelValue(model, nextContent);
 				// The file itself changed under us — re-read from disk, or written.
 				// Both the symbols in it and how many places use them can have
@@ -1888,6 +1931,7 @@
 		if (editor.getModel() !== model) {
 			editor.setModel(model);
 		}
+		touchTabModel(preview.path, model, preview.content);
 
 		applyExternalDiagnostics(model);
 		publishDiagnostics();
@@ -2572,9 +2616,17 @@
 		// stands in for the real service until the start finishes refuses. This
 		// returns immediately once they are up, and immediately when nothing has
 		// started them, so the only case it changes is the one that was failing.
-		await ensureVscodeServices();
-
-		const vscodeServicesReady = monacoVscodeApiIsInitialized();
+		let vscodeServicesReady = false;
+		try {
+			await ensureVscodeServices();
+			vscodeServicesReady = monacoVscodeApiIsInitialized();
+		} catch (error) {
+			console.error("Could not start code services", error);
+		}
+		if (!vscodeServicesReady && !sessionStorage.getItem("mcb-code-services-failure")) {
+			sessionStorage.setItem("mcb-code-services-failure", "1");
+			showEditorNotice("Code services failed to start; highlighting is basic until the app restarts");
+		}
 		const [monaco, _standaloneLanguages, _jsonLanguage, typeScriptLanguage] = await Promise.all([
 			import("monaco-editor/esm/vs/editor/editor.api"),
 			vscodeServicesReady
@@ -2959,6 +3011,8 @@
 		}
 		ownedModels.clear();
 		externalTargetModelLru.clear();
+		tabModelLruPaths = [];
+		savedTabModelValues.clear();
 		inFlightTargetModels.clear();
 	});
 </script>

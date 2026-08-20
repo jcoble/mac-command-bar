@@ -221,4 +221,64 @@ function makeService() {
   );
 }
 
+// ── pull and push, and the read-only scope the panel can point at ───────────
+{
+  const { backend, state, git } = makeService();
+  await settle();
+
+  backend.calls.length = 0;
+  await git.runRemoteAction('pull');
+  await git.runRemoteAction('push');
+  assert.deepEqual(
+    backend.calls.filter(([name]) => name === 'pull' || name === 'push'),
+    [
+      ['pull', '/repo'],
+      ['push', '/repo']
+    ],
+    'pull and push each reach the backend once, for the folder the panel is on'
+  );
+  assert.equal(state.actionStatus, 'Pushed', 'the panel repeats what git said');
+  assert.equal(state.actionBusy, '', 'nothing is left marked busy afterwards');
+}
+
+{
+  // A failing push keeps git's own words: the panel shows this text unchanged.
+  const backend = makeBackend();
+  backend.push = async () => {
+    throw new Error('fatal: could not read Username for https://github.com');
+  };
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+  git.activate('/repo');
+  await settle();
+
+  await git.runRemoteAction('push');
+  assert.equal(
+    state.actionError,
+    'fatal: could not read Username for https://github.com',
+    'the failure text is git’s, word for word'
+  );
+  assert.equal(state.actionBusy, '');
+}
+
+{
+  // The scope picker re-points the panel by activating another checkout; every
+  // read after that names that folder, and nothing about the old one lingers.
+  const { backend, state, git } = makeService();
+  await settle();
+
+  backend.calls.length = 0;
+  git.activate('/work/tsk-1');
+  await settle();
+  assert.equal(state.root, '/work/tsk-1', 'the panel now reads the chosen checkout');
+  assert.equal(state.selectedPath, '', 'the old folder’s selected file does not follow');
+
+  await git.stagePaths(['src/a.ts']);
+  assert.deepEqual(
+    backend.calls.filter(([name]) => name === 'stage'),
+    [['stage', '/work/tsk-1', ['src/a.ts']]],
+    'root-parameterised commands go to the chosen checkout, not the session folder'
+  );
+}
+
 console.log('gitWorkingTreeActions tests passed');

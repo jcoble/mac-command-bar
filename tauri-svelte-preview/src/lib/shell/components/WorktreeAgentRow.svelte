@@ -6,9 +6,9 @@
    * through props. Hover only reveals controls that are already in the page and
    * a read-only detail card; nothing about hover moves the title or the branch.
    *
-   * Motion is deliberate: the working indicator spins only while this row is
-   * genuinely working AND on screen, and the elapsed clock is the rail's one
-   * shared interval rather than a timer per row.
+   * The working indicator is static and only shown while this row is genuinely
+   * working and on screen; the elapsed clock is the rail's one shared interval
+   * rather than a timer per row.
    */
   import { onDestroy } from 'svelte';
 
@@ -159,12 +159,14 @@
   const activity = $derived(formatActivity(session.lastActivity));
   const usage = $derived(formatUsage(conversation?.metadata.usedTokens, conversation?.usage));
 
-  // ── The age, and the one bit of motion in the rail ─────────────────────────
+  // ── The age, and the working indicator in the rail ─────────────────────────
   let rowElement = $state<HTMLLIElement | null>(null);
   let onScreen = $state(true);
   let nowMs = $state(Date.now());
 
   const isWorking = $derived(presence === 'working');
+  /** Show the working indicator only for a row a person can actually see. */
+  const showWorkingIndicator = $derived(isWorking && onScreen);
 
   /**
    * How old this session is, counted from when it started rather than from the
@@ -468,7 +470,7 @@
             <span class="line line-title">
               <span data-testid="worktree-agent-title" class="session-title">{label}</span>
               <span data-testid="worktree-agent-age" class="age">
-                {#if isWorking}
+                {#if showWorkingIndicator}
                   <WorkingSpinner seed={session.activeTurnId ?? session.ownedId} size={12} />
                 {/if}
                 <span class="age-text">{ageText ?? ''}</span>
@@ -921,8 +923,8 @@
   }
 
   /* Interaction motion: every one of these ends. The row's fill and the time in
-     its corner answer a pointer or a selection and then stop; only the working
-     spinner loops, and only while a real turn is running on screen. */
+     its corner answer a pointer or a selection and then stop; the working
+     indicator remains static. */
   @media (prefers-reduced-motion: no-preference) {
     .age-text,
     .idle-label,

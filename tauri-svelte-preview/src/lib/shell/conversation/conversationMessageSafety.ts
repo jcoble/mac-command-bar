@@ -48,6 +48,23 @@ const SCHEME_PREFIX = /^[a-z][a-z0-9+.-]*:/i;
 
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
+const FILE_SCHEME_PREFIX = /^file:/i;
+
+/** Turn file URI spellings into the same paths used by bare file links. */
+export function normalizeConversationFileHref(value: string): string {
+  const href = value.trim();
+  if (!FILE_SCHEME_PREFIX.test(href)) return href;
+  return href.replace(/^file:\/\//i, '').replace(/^file:/i, '');
+}
+
+/** Separate the supported editor line suffixes from a file path. */
+export function splitConversationFileReference(value: string): { path: string; line?: number } {
+  const reference = value.trim();
+  const suffix = /(?:#L?|:)([1-9]\d*)$/i.exec(reference);
+  if (!suffix) return { path: reference };
+  return { path: reference.slice(0, suffix.index), line: Number(suffix[1]) };
+}
+
 /** Return a URL only when it is safe to put in an href attribute. */
 export function sanitizeConversationHref(value: string): string | null {
   const href = value.trim();
@@ -94,6 +111,10 @@ function partText(part: SafeInlinePart): string {
 }
 
 function linkPart(href: string, parts: SafeInlinePart[]): SafeInlinePart {
+  if (FILE_SCHEME_PREFIX.test(href.trim())) {
+    const path = filePath(normalizeConversationFileHref(href));
+    return path ? { kind: 'file-link', path, parts } : text(parts.map(partText).join(''));
+  }
   const safe = sanitizeConversationHref(href);
   if (safe) return { kind: 'link', href: safe, parts };
   const path = filePath(href);

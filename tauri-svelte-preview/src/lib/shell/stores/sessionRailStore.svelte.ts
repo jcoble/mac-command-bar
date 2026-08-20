@@ -65,5 +65,8 @@ export function setActiveOwned(ownedId: string | null): void {
 }
 
 export function setAvailable(sessions: AgentSession[]): void {
-  rail.available = sessions;
+  // The rail needs resumable-session identity and row metadata, not the full
+  // turns History shows after a project is expanded. Keeping those turns here
+  // made closing History release nothing because the rail still owned them.
+  rail.available = sessions.map((session) => ({ ...session, latestTurns: undefined }));
 }

@@ -131,6 +131,30 @@ export function closeOpenFile(
   return files.filter((file) => file.path !== path);
 }
 
+/** A clean closed tab can release its Monaco model; a draft cannot. */
+export function modelPathToDisposeOnClose(
+  file: Pick<OpenEditorFile, 'path' | 'dirty'> | null
+): string | null {
+  return file && !file.dirty ? file.path : null;
+}
+
+/** Move a tab model to MRU and identify clean models beyond the shared cap. */
+export function touchTabModelLru(
+  leastRecentFirst: readonly string[],
+  path: string,
+  dirtyPaths: ReadonlySet<string>,
+  cap = 24
+): { keptPaths: string[]; evictedPaths: string[] } {
+  const keptPaths = [...leastRecentFirst.filter((entry) => entry !== path), path];
+  const evictedPaths: string[] = [];
+  while (keptPaths.length > cap) {
+    const index = keptPaths.findIndex((entry) => entry !== path && !dirtyPaths.has(entry));
+    if (index < 0) break;
+    evictedPaths.push(...keptPaths.splice(index, 1));
+  }
+  return { keptPaths, evictedPaths };
+}
+
 /**
  * Which file is shown after `closedPath` is closed. `files` is the strip as it
  * stands BEFORE the close, so position is still known. Closing an inactive file

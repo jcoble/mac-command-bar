@@ -10,10 +10,12 @@ import {
   closeOpenFile,
   findOpenFile,
   isFileOpen,
+  modelPathToDisposeOnClose,
   needsRead,
   openEditorFileFromRecord,
   patchOpenFile,
   revealLineInOpenFile,
+  touchTabModelLru,
   upsertOpenFile
 } from '../src/lib/shell/editor/editorStoreOps.ts';
 
@@ -149,6 +151,24 @@ const stripOf = (...names) => names.reduce((files, name) => upsertOpenFile(files
   const files = stripOf('a.ts');
   assert.equal(activePathAfterClose(files, '/p/src/a.ts', '/p/src/gone.ts'), null);
   assert.equal(isFileOpen(files, '/p/src/gone.ts'), false);
+}
+
+// Closing releases only clean tab models; an unsaved draft stays live.
+{
+  const clean = openEditorFileFromRecord(recordFor('clean.ts'));
+  const dirty = { ...openEditorFileFromRecord(recordFor('dirty.ts')), dirty: true };
+  assert.equal(modelPathToDisposeOnClose(clean), '/p/src/clean.ts');
+  assert.equal(modelPathToDisposeOnClose(dirty), null);
+}
+
+// The 25th live tab model evicts the oldest clean one; dirty models are protected.
+{
+  const paths = Array.from({ length: 24 }, (_, index) => `/p/src/${index}.ts`);
+  assert.deepEqual(touchTabModelLru(paths, '/p/src/24.ts', new Set()).evictedPaths, ['/p/src/0.ts']);
+  assert.deepEqual(
+    touchTabModelLru(paths, '/p/src/24.ts', new Set(['/p/src/0.ts'])).evictedPaths,
+    ['/p/src/1.ts']
+  );
 }
 
 console.log('editorStore tests passed');

@@ -192,3 +192,212 @@ assert.deepEqual(viewModel.summary, {
   mergeCommitCount: 1,
   taskCount: 4
 });
+
+// ── the center-lane Git History view: repo picker, filters, uncommitted row ──
+// These cover `src/lib/shell/git/gitHistoryFilters.ts`, which is everything the
+// center view decides before it draws anything. The view itself only turns the
+// answers below into rows, so a wrong answer here is a wrong screen there.
+
+// The filters read the changed-file grouping out of `gitPanelStore.svelte.ts`,
+// which calls `$state(...)` at module scope. The Svelte compiler normally
+// rewrites that; Node runs it as plain JavaScript, so give `$state(v)` its
+// plain-value meaning first — the same one-line stand-in
+// `gitHistoryPaging.test.mjs` uses.
+globalThis.$state = (value) => value;
+
+const {
+  EMPTY_GIT_HISTORY_FILTER,
+  filterGitHistoryRows,
+  gitHistoryAuthors,
+  gitHistoryBranches,
+  gitHistoryBranchScope,
+  gitHistoryRepositoryOptions,
+  gitHistoryUncommittedRow,
+  isGitHistoryFilterActive
+} = await import('../src/lib/shell/git/gitHistoryFilters.ts');
+
+/** A tiny history with two lines of work that come back together at `merge`.
+ *
+ *   merge   (HEAD -> main, origin/main)   parents: mainTip, sideTip
+ *   sideTip (feature/graph)               parents: base
+ *   mainTip (tag: v1.0)                   parents: base
+ *   base                                  parents: (none)
+ */
+const historyEntries = [
+  {
+    shortSha: 'aaaaaaa',
+    sha: 'aaaaaaa1111111111111111111111111111111',
+    subject: 'Merge the graph work into main',
+    author: 'Ada',
+    committedAt: '2026-08-19T10:00:00Z',
+    refs: 'HEAD -> main, origin/main',
+    parentShas: ['bbbbbbb2222222222222222222222222222222', 'ccccccc3333333333333333333333333333333'],
+    parentCount: 2,
+    taskID: null,
+    taskSource: null
+  },
+  {
+    shortSha: 'ccccccc',
+    sha: 'ccccccc3333333333333333333333333333333',
+    subject: 'Draw the lanes',
+    author: 'Grace',
+    committedAt: '2026-08-18T10:00:00Z',
+    refs: 'feature/graph',
+    parentShas: ['ddddddd4444444444444444444444444444444'],
+    parentCount: 1,
+    taskID: null,
+    taskSource: null
+  },
+  {
+    shortSha: 'bbbbbbb',
+    sha: 'bbbbbbb2222222222222222222222222222222',
+    subject: 'Release notes',
+    author: 'Ada',
+    committedAt: '2026-08-17T10:00:00Z',
+    refs: 'tag: v1.0',
+    parentShas: ['ddddddd4444444444444444444444444444444'],
+    parentCount: 1,
+    taskID: null,
+    taskSource: null
+  },
+  {
+    shortSha: 'ddddddd',
+    sha: 'ddddddd4444444444444444444444444444444',
+    subject: 'First commit',
+    author: 'Grace',
+    committedAt: '2026-08-16T10:00:00Z',
+    refs: '',
+    parentShas: [],
+    parentCount: 0,
+    taskID: null,
+    taskSource: null
+  }
+];
+
+const historyRows = buildGitCommitGraphRows(historyEntries);
+const shas = (rows) => rows.map((row) => row.shortSha);
+
+// The author list is what the Author picker offers: every author once, in a
+// settled order, so the picker does not reshuffle when a page of older commits
+// arrives.
+assert.deepEqual(gitHistoryAuthors(historyRows), ['Ada', 'Grace']);
+
+// The branch list offers local and remote names, never tags — a tag is not
+// something you can filter a line of history by.
+assert.deepEqual(gitHistoryBranches(historyRows), ['feature/graph', 'main', 'origin/main']);
+
+// Branch scope is reachability inside the commits that are LOADED: the feature
+// branch's tip and everything it descends from, and nothing from the other line.
+assert.deepEqual(
+  [...gitHistoryBranchScope(historyRows, 'feature/graph')].sort(),
+  [
+    'ccccccc3333333333333333333333333333333',
+    'ddddddd4444444444444444444444444444444'
+  ],
+  'a branch shows its own tip and its ancestors, not its siblings'
+);
+assert.equal(
+  gitHistoryBranchScope(historyRows, ''),
+  null,
+  'no branch chosen means no scoping at all, which is not the same as an empty scope'
+);
+assert.deepEqual(
+  [...gitHistoryBranchScope(historyRows, 'nothing-like-this')],
+  [],
+  'a branch none of the loaded commits carries scopes the list to nothing'
+);
+
+// "All" is the resting state and changes nothing.
+assert.deepEqual(
+  shas(filterGitHistoryRows(historyRows, EMPTY_GIT_HISTORY_FILTER)),
+  ['aaaaaaa', 'ccccccc', 'bbbbbbb', 'ddddddd']
+);
+assert.equal(isGitHistoryFilterActive(EMPTY_GIT_HISTORY_FILTER), false);
+
+assert.deepEqual(
+  shas(filterGitHistoryRows(historyRows, { branch: 'main', author: '', search: '' })),
+  ['aaaaaaa', 'ccccccc', 'bbbbbbb', 'ddddddd'],
+  'main reaches everything here, because the merge brought the other line in'
+);
+assert.deepEqual(
+  shas(filterGitHistoryRows(historyRows, { branch: 'feature/graph', author: '', search: '' })),
+  ['ccccccc', 'ddddddd']
+);
+assert.deepEqual(
+  shas(filterGitHistoryRows(historyRows, { branch: '', author: 'Ada', search: '' })),
+  ['aaaaaaa', 'bbbbbbb']
+);
+assert.deepEqual(
+  shas(filterGitHistoryRows(historyRows, { branch: '', author: '', search: 'lanes' })),
+  ['ccccccc'],
+  'the search box reads the subject'
+);
+assert.deepEqual(
+  shas(filterGitHistoryRows(historyRows, { branch: '', author: '', search: 'BBBBBBB' })),
+  ['aaaaaaa', 'bbbbbbb'],
+  'searching a hash is case-blind, and finds the commit AND the merge that names it as a parent'
+);
+assert.deepEqual(
+  shas(filterGitHistoryRows(historyRows, { branch: 'feature/graph', author: 'Grace', search: 'first' })),
+  ['ddddddd'],
+  'the three filters narrow together'
+);
+assert.equal(isGitHistoryFilterActive({ branch: '', author: '', search: '  ' }), false);
+assert.equal(isGitHistoryFilterActive({ branch: 'main', author: '', search: '' }), true);
+
+// ── the "Uncommitted Changes" row ────────────────────────────────────────────
+const dirtyStatus = {
+  branch: 'main',
+  ahead: 0,
+  behind: 0,
+  hasUpstream: true,
+  files: [
+    { relativePath: 'a.ts', status: 'modified', badge: 'M', indexStatus: 'modified', worktreeStatus: '' },
+    { relativePath: 'b.ts', status: 'modified', badge: 'M', indexStatus: '', worktreeStatus: 'modified' },
+    { relativePath: 'c.ts', status: 'untracked', badge: '?', indexStatus: '?', worktreeStatus: '?' }
+  ]
+};
+
+const uncommitted = gitHistoryUncommittedRow(dirtyStatus, EMPTY_GIT_HISTORY_FILTER);
+assert.equal(uncommitted.changedCount, 3);
+assert.equal(uncommitted.countLabel, '3 files');
+assert.equal(uncommitted.detail, 'Staged 1 · Changed 1 · New files 1');
+assert.equal(
+  gitHistoryUncommittedRow(null, EMPTY_GIT_HISTORY_FILTER),
+  null,
+  'no status read yet means no row — never an invented clean one'
+);
+assert.equal(
+  gitHistoryUncommittedRow({ ...dirtyStatus, files: [] }, EMPTY_GIT_HISTORY_FILTER),
+  null,
+  'a clean working copy has no row'
+);
+assert.equal(
+  gitHistoryUncommittedRow(dirtyStatus, { branch: '', author: 'Ada', search: '' }),
+  null,
+  'work that is not committed yet has no author or hash to match, so a filter hides it'
+);
+assert.equal(
+  gitHistoryUncommittedRow(dirtyStatus, { branch: 'main', author: '', search: '' }).changedCount,
+  3,
+  'a branch filter keeps it: uncommitted work is on whichever branch is checked out'
+);
+
+// ── the repository picker ────────────────────────────────────────────────────
+const repoOptions = gitHistoryRepositoryOptions('/repo/mac-command-bar', [
+  { repo: 'mac-command-bar', path: '/repo/mac-command-bar', branch: 'main' },
+  { repo: 'mac-command-bar', path: '/repo/worktrees/tsk-935', branch: 'tsk-935-w22' },
+  { repo: 'mac-command-bar', path: '/repo/mac-command-bar', branch: 'main' }
+]);
+assert.deepEqual(repoOptions, [
+  { path: '/repo/mac-command-bar', label: 'mac-command-bar', branch: 'main' },
+  { path: '/repo/worktrees/tsk-935', label: 'tsk-935', branch: 'tsk-935-w22' }
+]);
+assert.deepEqual(
+  gitHistoryRepositoryOptions('/repo/only-this-one', []),
+  [{ path: '/repo/only-this-one', label: 'only-this-one', branch: '' }],
+  'the folder in front is always offered, even before any worktree has been read'
+);
+assert.deepEqual(gitHistoryRepositoryOptions(null, []), []);
+
+console.log('gitGraphViewModel: history filters, uncommitted row and repository picker passed');

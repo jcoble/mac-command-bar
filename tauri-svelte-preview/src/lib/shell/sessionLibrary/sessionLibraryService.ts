@@ -34,7 +34,9 @@ export interface SessionLibrarySource {
 }
 
 export interface SessionLibraryService {
-  refresh(): Promise<SessionLibraryRecord[]>;
+  readonly records: readonly SessionLibraryRecord[];
+  refresh(keys?: ReadonlySet<string>): Promise<SessionLibraryRecord[]>;
+  release(keys?: ReadonlySet<string>): void;
   resume(record: SessionLibraryRecord): Promise<void>;
   open(record: SessionLibraryRecord): Promise<void>;
   fork(record: SessionLibraryRecord): Promise<void>;
@@ -110,12 +112,24 @@ export function createSessionLibraryService(
   source: SessionLibrarySource = {},
   handlers: SessionLibraryActionHandlers = {}
 ): SessionLibraryService {
+  const held = new Map<string, SessionLibraryRecord>();
   return {
-    async refresh(): Promise<SessionLibraryRecord[]> {
+    get records(): readonly SessionLibraryRecord[] {
+      return [...held.values()];
+    },
+    async refresh(keys?: ReadonlySet<string>): Promise<SessionLibraryRecord[]> {
       const owned = source.getOwnedSessions?.() ?? [];
       const current = source.getAvailableSessions?.() ?? [];
       const provider = source.listProviderSessions ? await source.listProviderSessions() : [];
-      return buildSessionLibrary(owned, [...current, ...provider]);
+      const records = buildSessionLibrary(owned, [...current, ...provider]);
+      const selected = keys ? records.filter((record) => keys.has(record.key)) : records;
+      if (!keys) held.clear();
+      for (const record of selected) held.set(record.key, record);
+      return selected;
+    },
+    release(keys?: ReadonlySet<string>): void {
+      if (!keys) held.clear();
+      else for (const key of keys) held.delete(key);
     },
     resume: (record) => run(handlers.onResume, record),
     open: (record) => run(handlers.onOpen, record),

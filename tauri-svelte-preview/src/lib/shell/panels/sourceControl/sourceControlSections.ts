@@ -1,22 +1,27 @@
 /**
- * sourceControlSections.ts — how the panel splits the working copy into the two
- * lists it draws, and the counts beside its title.
+ * sourceControlSections.ts — how the panel splits the working copy into the
+ * three lists it draws, and the counts beside its title.
  *
  * The backend already decides what each file's state is (`badge`, `indexStatus`,
  * `worktreeStatus`), so nothing here reads git output. It sorts and groups, and
  * that is all — which is why both functions are pure over the status value and
  * can be checked without a browser.
  *
- * The panel shows Untracked and Changed rather than the older staged/unstaged
- * split: staging is a single "Stage All" press in this version, so a per-file
- * staged column would be a distinction nobody can act on.
+ * Staged, Changes and Untracked, in that order — the order a commit is put
+ * together in. A file that was staged and then edited again appears in both
+ * Staged and Changes, because that is what git reports about it and picking
+ * one of the two would hide half of what is there.
  */
 
 import type { ProjectGitFileStatus, ProjectGitStatus } from '../../../tauriSource.ts';
-import { isGitFileUntracked } from '../../git/gitPanelStore.svelte.ts';
+import {
+  hasGitFileUnstagedChanges,
+  isGitFileStaged,
+  isGitFileUntracked
+} from '../../git/gitPanelStore.svelte.ts';
 
 export interface SourceControlSection {
-  id: 'untracked' | 'changed';
+  id: 'staged' | 'changed' | 'untracked';
   label: string;
   files: ProjectGitFileStatus[];
 }
@@ -32,19 +37,26 @@ function byPath(left: ProjectGitFileStatus, right: ProjectGitFileStatus): number
   return left.relativePath.localeCompare(right.relativePath);
 }
 
-/** Untracked files first, then everything else, each sorted by relativePath. */
+/** The three sections, each sorted by relativePath. */
 export function sourceControlSections(status: ProjectGitStatus | null): SourceControlSection[] {
   const files = status?.files ?? [];
   return [
     {
-      id: 'untracked',
-      label: 'Untracked',
-      files: files.filter(isGitFileUntracked).sort(byPath)
+      id: 'staged',
+      label: 'Staged',
+      files: files.filter(isGitFileStaged).sort(byPath)
     },
     {
       id: 'changed',
-      label: 'Changed',
-      files: files.filter((file) => !isGitFileUntracked(file)).sort(byPath)
+      label: 'Changes',
+      files: files
+        .filter((file) => !isGitFileUntracked(file) && hasGitFileUnstagedChanges(file))
+        .sort(byPath)
+    },
+    {
+      id: 'untracked',
+      label: 'Untracked',
+      files: files.filter(isGitFileUntracked).sort(byPath)
     }
   ];
 }

@@ -229,6 +229,25 @@ export function formatWorkedFor(elapsedMs: number): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
+/** How many lines of a sent message the transcript shows before folding it. */
+export const USER_MESSAGE_FOLD_LINES = 10;
+
+/** Whether a sent message is long enough to be worth folding.
+ *
+ * Measured in lines — the height of the text over the height of one line —
+ * rather than in characters, so the answer is the same however wide the column
+ * happens to be and whatever the message is made of. A pixel over the limit is
+ * a rounded-off line rather than an extra one, so the last line has a pixel of
+ * room before anything folds. */
+export function userMessageOverflowsFold(
+  contentHeightPx: number,
+  lineHeightPx: number,
+  maxLines: number = USER_MESSAGE_FOLD_LINES
+): boolean {
+  if (!Number.isFinite(contentHeightPx) || !(lineHeightPx > 0)) return false;
+  return contentHeightPx > maxLines * lineHeightPx + 1;
+}
+
 /*
  * There is no render window here any more, and adding one back is a decision,
  * not a tidy-up.
@@ -264,7 +283,9 @@ function metadataRecord(value: unknown): Record<string, AgentConfigValue> | unde
 }
 
 function stringOf(value: unknown, fallback = ''): string {
-  return typeof value === 'string' ? value : fallback;
+  if (typeof value === 'string') return value;
+  const path = recordOf(value)?.path;
+  return typeof path === 'string' ? path : fallback;
 }
 
 /** A token count from metadata, or nothing when the provider did not say. */
@@ -388,8 +409,8 @@ function kindFor(item: AgentItem): ConversationDisplayItem['kind'] {
   }
 }
 
-function toolKindOf(value: unknown, title = ''): ConversationToolKind {
-  const normalized = `${stringOf(value)} ${title}`.trim().toLowerCase().replaceAll('_', '-');
+function toolKindOf(value: unknown, name = ''): ConversationToolKind {
+  const normalized = stringOf(value).trim().toLowerCase().replaceAll('_', '-');
   if (/file|edit|patch|diff|write/.test(normalized)) return 'file-edit';
   // The web is checked before searching in general, so a web search is drawn
   // with a globe and a local one with a magnifier. Both are searches; only one
@@ -398,6 +419,13 @@ function toolKindOf(value: unknown, title = ''): ConversationToolKind {
   if (/search|grep|find|query/.test(normalized)) return 'search';
   if (/fetch|read|view|open|http|mcp|web/.test(normalized)) return 'fetch';
   if (/command|execute|terminal|shell|run/.test(normalized)) return 'command';
+  if (!normalized) {
+    const inferred = name.toLowerCase();
+    if (/web/.test(inferred)) return 'fetch';
+    if (/search|grep|find|query/.test(inferred)) return 'search';
+    if (/fetch|read|view|open|http|mcp/.test(inferred)) return 'fetch';
+    if (/command|execute|terminal|shell|run/.test(inferred)) return 'command';
+  }
   return 'tool';
 }
 
@@ -470,18 +498,20 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     const rawTitle = stringOf(metadata?.title, stringOf(metadata?.name, item.type));
     // A raw title sometimes has a fenced block stuffed into it instead of a
     // separate summary; when it does, the fence is the row's one-line
-    // preview and the title keeps only the plain text ahead of it.
+    // title, with the fence itself discarded.
     const fenceIndex = rawTitle.indexOf('```');
-    const title = fenceIndex < 0 ? rawTitle : rawTitle.slice(0, fenceIndex).trim() || 'Tool';
-    const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : toolSummaryLine(rawTitle);
-    const output = textOf(item.content) || stringOf(metadata?.output);
-    const diff = stringOf(metadata?.diff, item.type === 'file-change' ? output : '');
+    const fencedSummary = fenceIndex < 0 ? '' : toolSummaryLine(rawTitle);
+    const title = fenceIndex < 0 ? rawTitle : fencedSummary || rawTitle.slice(0, fenceIndex).trim() || 'Tool';
+    const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : undefined;
+    const toolKind = toolKindOf(metadata?.toolKind ?? item.type, title);
+    const output = toolKind === 'file-edit' ? '' : textOf(item.content) || stringOf(metadata?.output);
+    const diff = stringOf(metadata?.diff);
     return {
       kind,
       itemId: item.id,
       turnId,
       title,
-      toolKind: toolKindOf(metadata?.toolKind ?? item.type, title),
+      toolKind,
       state: toolStateOf(metadata?.state ?? metadata?.status),
       output: output || undefined,
       diff: diff || undefined,
@@ -671,6 +701,31 @@ export function diffLineCounts(diff: string): { added: number; removed: number }
   return { added, removed };
 }
 
+/** File totals for the current turn, whether or not the provider supplied a plan. */
+export function turnFileChanges(
+  items: readonly ConversationDisplayItem[]
+): { files: number; added: number; removed: number } | null {
+  const paths = new Set<string>();
+  let added = 0;
+  let removed = 0;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind === 'user') break;
+    let diff: string;
+    if (item.kind === 'file') {
+      paths.add(typeof item.metadata?.path === 'string' ? item.metadata.path : item.itemId);
+      diff = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
+    } else if (item.kind === 'tool' && item.toolKind === 'file-edit') {
+      paths.add(item.path ?? item.itemId);
+      diff = item.diff ?? '';
+    } else continue;
+    const counts = diffLineCounts(diff);
+    added += counts.added;
+    removed += counts.removed;
+  }
+  return paths.size ? { files: paths.size, added, removed } : null;
+}
+
 /** Whether two plans say the same thing: the same steps, in the same order,
  * each in the same state. */
 function samePlanSteps(left: readonly AgentPlanStep[], right: readonly AgentPlanStep[]): boolean {
@@ -834,9 +889,8 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
   const rawKind = stringOf(payload.toolKind, stringOf(payload.category, stringOf(payload.type)));
   const toolKind = toolKindOf(rawKind, name);
   const title = givenTitle || plainToolTitle(toolKind, name);
-  const diff = stringOf(payload.diff)
-    || firstNestedString(payload.content, ['diff', 'patch'])
-    || (toolKind === 'file-edit' ? contentText : '');
+  const diff = stringOf(payload.diff) || firstNestedString(payload.content, ['diff', 'patch']);
+  const output = toolKind === 'file-edit' ? '' : contentText;
   const path = stringOf(payload.path)
     || firstNestedString(payload.locations, ['path', 'uri'])
     || firstNestedString(payload.content, ['path', 'uri']);
@@ -845,7 +899,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
     id: eventIdentity(event, payload, 'tool'),
     type: 'mcp-tool',
     turnId: 'turnId' in event ? event.turnId : stringOf(payload.turnId) || undefined,
-    content: contentText ? [{ channel: 'command-output', text: contentText }] : [],
+    content: output ? [{ channel: 'command-output', text: output }] : [],
     providerMetadata: eventMetadata(event, payload, {
       title,
       name: title,
@@ -853,7 +907,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
       state: status,
       status,
       summary: stringOf(payload.summary) || undefined,
-      output: contentText || undefined,
+      output: output || undefined,
       diff: diff || undefined,
       path: path || undefined,
       completed: toolStateOf(status) === 'completed'

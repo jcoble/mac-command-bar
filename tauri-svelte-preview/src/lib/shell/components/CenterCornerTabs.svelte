@@ -29,6 +29,7 @@
   import { onDestroy } from 'svelte';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import GitCompareArrows from '@lucide/svelte/icons/git-compare-arrows';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
 
   import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
@@ -44,7 +45,8 @@
   const TABS: ReadonlyArray<{ id: CenterTabId; label: string; icon: typeof FileCode2 }> = [
     { id: 'session', label: 'Session', icon: MessagesSquare },
     { id: 'editor', label: 'Editor', icon: FileCode2 },
-    { id: 'diff', label: 'Diff', icon: GitCompareArrows }
+    { id: 'diff', label: 'Diff', icon: GitCompareArrows },
+    { id: 'git-history', label: 'Git History', icon: GitBranch }
   ];
 
   /** Long enough to read the pill that just filled, short enough that the group

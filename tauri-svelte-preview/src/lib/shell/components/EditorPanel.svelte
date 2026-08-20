@@ -71,6 +71,7 @@
     editorState,
     markEditorFileLoading,
     openEditorFile,
+    resetEditorState,
     revealEditorLine,
     setActiveEditorFile,
     setEditorFileDraft,
@@ -79,7 +80,7 @@
     setEditorFileSaving,
     setEditorSymbols
   } from '$lib/shell/editor/editorStore.svelte';
-  import { needsRead } from '$lib/shell/editor/editorStoreOps';
+  import { modelPathToDisposeOnClose, needsRead } from '$lib/shell/editor/editorStoreOps';
   import {
     sourceIntelligence,
     type SourceInlayHintRequest
@@ -126,11 +127,14 @@
     onStartWorkspaceCommand?: (
       request: WorkspaceCommandSessionRequest
     ) => Promise<string | null>;
+    /** Clears every session's saved editor strip after this panel closes its live tabs. */
+    onCloseAllEditors?: () => void;
   }
-  let { onFileOpened, showing = false, onStartWorkspaceCommand }: Props = $props();
+  let { onFileOpened, showing = false, onStartWorkspaceCommand, onCloseAllEditors }: Props = $props();
 
   type CodeEditorComponent = typeof MonacoSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
+  let codeEditor: { disposeTabModel(path: string): boolean; disposeAllTabModels(): void } | null = null;
   let editorLoadError = $state<string | null>(null);
   let loadingEditorComponent = false;
   let nativeCsharpRoot = $state<string | null>(null);
@@ -169,6 +173,9 @@
   let destroyed = false;
 
   const activeFile = $derived(activeEditorFile());
+  const activeFileMissing = $derived(
+    Boolean(activeFile?.error && /(?:os error 2|No such file)/i.test(activeFile.error))
+  );
   /**
    * Files opened for reading only, keyed by path. A file link in a conversation
    * that points outside the workspace opens this way: the reader can see what
@@ -451,17 +458,18 @@
     loadingEditorComponent = true;
     try {
       const root = editorState.projectRoot;
+      // Monaco's standalone imports initialize the one-shot service container.
+      // Wait until its first start can receive the real, path-bearing root.
+      if (!root) return;
       let native: typeof import('$lib/shell/editor/csharpLanguageClient') | null = null;
-      if (root) {
-        try {
-          const editorServices = await import('$lib/shell/editor/csharpLanguageClient');
-          // Preparing the editor services starts no server — it is what lets
-          // Monaco open a file at all — so it runs in both modes.
-          await editorServices.prepareNativeCsharpEditorServices(root);
-          if (isNativeTauriRuntime()) native = editorServices;
-        } catch (error) {
-          console.error('Could not prepare Monaco editor services', error);
-        }
+      try {
+        const editorServices = await import('$lib/shell/editor/csharpLanguageClient');
+        // Preparing the editor services starts no server — it is what lets
+        // Monaco open a file at all — so it runs in both modes.
+        await editorServices.prepareNativeCsharpEditorServices(root);
+        if (isNativeTauriRuntime()) native = editorServices;
+      } catch (error) {
+        console.error('Could not prepare Monaco editor services', error);
       }
       if (!CodeEditor) {
         const module = await import('$lib/MonacoSourceEditor.svelte');
@@ -812,7 +820,9 @@
   }
 
   function closeOpenFileAt(path: string): void {
+    const disposePath = modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
+    if (disposePath) codeEditor?.disposeTabModel(disposePath);
     sourceIntelligence.releasePreview(path);
     syncIntelligenceWithActiveFile();
     // Whatever is in front now may be a different language, with a different
@@ -825,6 +835,15 @@
     // it meant a later open of the same path arrived already locked.
     const { [path]: _wasReadOnly, ...remaining } = readOnlyByPath;
     readOnlyByPath = remaining;
+  }
+
+  function closeAllOpenEditors(): void {
+    for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
+    codeEditor?.disposeAllTabModels();
+    resetEditorState();
+    diagnosticsByPath = {};
+    readOnlyByPath = {};
+    onCloseAllEditors?.();
   }
 
   function retryRead(path: string): void {
@@ -978,6 +997,9 @@
            language-server chip and switch sit in the strip along the top of the
            shell, in `LanguageIntelligenceControls.svelte`. -->
       <div class="editor-controls">
+        <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
+          <X class="size-3.5" aria-hidden="true" />
+        </IconButton>
         <!-- Markdown reads two ways, so the file says which one it is on. Source
              is the ordinary editor; Preview is the same document rendered. -->
         {#if activeFileIsMarkdown}
@@ -997,6 +1019,8 @@
     <div class="editor-canvas">
       {#if editorLoadError}
         <p class="canvas-message error">{editorLoadError}</p>
+      {:else if activeFile?.error && activeFileMissing}
+        <p class="canvas-message">File no longer exists at {activeFile.path}</p>
       {:else if activeFile?.error}
         <div class="canvas-message error">
           <p>{activeFile.error}</p>
@@ -1018,6 +1042,7 @@
       {:else if activeFile?.preview}
         {#if CodeEditor}
           <CodeEditor
+            bind:this={codeEditor}
             {...sourceIntelligence.callbacks}
             onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
             preview={activeFile.preview}
@@ -1136,17 +1161,17 @@
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    /* No visible bar, the same as the right panel's tab strip. A `thin` bar is
-       still a bar that CLAIMS HEIGHT on a Mac set to show scrollbars always:
-       once the tabs overflowed, the row grew by those pixels and everything
-       positioned against its stated height landed inside it instead of below.
-       Chrome's overlay bars hide that, which is why it survived a browser
-       check. Scrolling by wheel and drag is unaffected. */
-    scrollbar-width: none;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
   }
 
   .file-strip::-webkit-scrollbar {
-    display: none;
+    height: 4px;
+  }
+
+  .file-strip::-webkit-scrollbar-thumb {
+    border-radius: 2px;
+    background: var(--color-border-strong);
   }
 
   .file-chip {
