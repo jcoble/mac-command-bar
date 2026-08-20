@@ -20,11 +20,11 @@
  *    only the result (what the old shell did before commit cd2f525) left a
  *    second full walk running in parallel and doubled the time the first list
  *    took to appear.
- * 2. **No cache.** The old shell cached scans in localStorage with no size cap;
- *    on a large repository the write failed and the cache quietly stopped
- *    working. This wave scans on activation and on a refresh, and a refresh is
- *    always someone's doing: pressing the button, or the file-system watcher
- *    the panel keeps on the listed folder reporting that the disk moved.
+ * 2. **No persisted cache.** The old shell cached scans in localStorage with no
+ *    size cap; on a large repository the write failed and the cache quietly
+ *    stopped working. This wave reuses the in-memory project source index when
+ *    switching projects. Refresh always scans because it is someone's doing:
+ *    pressing the button, or the file-system watcher reporting a disk change.
  */
 import {
   cancelSourceScanFromTauri,
@@ -36,6 +36,7 @@ import {
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
   forgetProjectSourceRecords,
+  projectSourceRecords,
   setProjectSourceRecords
 } from '../projectSourceIndex.ts';
 import {
@@ -121,14 +122,30 @@ export async function scanRoot(root: string): Promise<void> {
  *
  * Idempotent — calling it again with the same root does nothing, so wiring it
  * to "every time this tab becomes active" is safe. A different root clears the
- * previous project's tree and scans afresh. A root whose last scan failed is
- * retried, so re-opening the panel is a way to try again.
+ * previous project's tree and restores its in-memory index when available. A
+ * root whose last scan failed is retried, so re-opening the panel tries again.
  */
 export function activate(root: string): void {
   const target = root.trim();
   if (!target) return;
   if (explorer.activated && explorer.root === target && explorer.error === null) return;
-  if (explorer.root !== target) resetExplorer();
+  if (explorer.root !== target) {
+    const cachedRecords = projectSourceRecords(target);
+    resetExplorer();
+    if (cachedRecords.length > 0) {
+      const supersededScanId = explorer.activeScanId;
+      if (supersededScanId) cancelScan(supersededScanId);
+      scanGeneration += 1;
+      beginScan(target, '');
+      applyScanResult(
+        [...cachedRecords],
+        EXPLORER_SCAN_LIMIT,
+        cachedRecords.length >= EXPLORER_SCAN_LIMIT
+      );
+      endScan();
+      return;
+    }
+  }
   void scanRoot(target);
 }
 

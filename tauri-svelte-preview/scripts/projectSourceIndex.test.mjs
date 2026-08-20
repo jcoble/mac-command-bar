@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   forgetAllProjectSourceRecords,
@@ -62,3 +63,44 @@ assert.match(
   /resolveSemanticReferences\(preview, request, root\)[\s\S]*indexedReferences\(symbolName\)/,
   'a cold or unavailable language server must still fall back to the shared index'
 );
+
+test('activate_serves_cached_root_without_rescan', async () => {
+  const rune = (value) => value;
+  rune.raw = (value) => value;
+  globalThis.$state = rune;
+  globalThis.window = {};
+
+  const recordsByRoot = new Map([
+    ['/root-a', [{ ...record, path: '/root-a/a.ts', relativePath: 'a.ts', fileName: 'a.ts' }]],
+    ['/root-b', [{ ...record, path: '/root-b/b.ts', relativePath: 'b.ts', fileName: 'b.ts' }]]
+  ]);
+  const scannedRoots = [];
+  globalThis.fetch = async (_url, options) => {
+    const { root } = JSON.parse(options.body);
+    scannedRoots.push(root);
+    return new Response(
+      JSON.stringify({ records: recordsByRoot.get(root), limit: 10_000, truncated: false }),
+      { headers: { 'content-type': 'application/json' } }
+    );
+  };
+
+  forgetAllProjectSourceRecords();
+  const { activate } = await import('../src/lib/shell/explorer/explorerService.ts');
+  const { explorer, explorerRecords } = await import(
+    '../src/lib/shell/explorer/explorerStore.svelte.ts'
+  );
+  const waitForScan = async () => {
+    while (explorer.scanning) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  activate('/root-a');
+  await waitForScan();
+  activate('/root-b');
+  await waitForScan();
+  activate('/root-a');
+  await waitForScan();
+
+  assert.deepEqual(scannedRoots, ['/root-a', '/root-b']);
+  assert.equal(explorer.root, '/root-a');
+  assert.deepEqual(explorerRecords(), recordsByRoot.get('/root-a'));
+});
