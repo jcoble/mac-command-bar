@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Event kinds where only the newest row still means anything.
 ///
@@ -20,6 +20,13 @@ const SCHEMA_VERSION: i64 = 5;
 /// stored as deltas, so deleting them would delete half the conversation. Those
 /// are worth merging one day, which is a rewrite rather than a delete.
 const SUPERSEDED_BY_NEWER: [&str; 2] = ["usage.updated", "session.config.updated"];
+
+/// Tool updates cannot join `SUPERSEDED_BY_NEWER` because they share one event
+/// kind and must instead be superseded per item within each session.
+const TOOL_ITEM_COLUMN_SCHEMA: &str = "ALTER TABLE events ADD COLUMN item_id TEXT
+    GENERATED ALWAYS AS (json_extract(payload, '$.payload.itemId')) VIRTUAL;";
+const TOOL_ITEM_INDEX_SCHEMA: &str =
+    "CREATE INDEX IF NOT EXISTS events_item_idx ON events(owned_id, kind, item_id, seq);";
 
 /// The attachment index, created by both the first-run schema and the upgrade
 /// from version one. The row names the file and the application names the root,
@@ -259,6 +266,7 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
+                add_tool_item_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -282,6 +290,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not create the attachment table", error)
                     })?;
+                add_tool_item_schema(&transaction)?;
                 // A version one database has the same superseded rows a version
                 // two one does, and goes straight to the current version, so it
                 // is cleared here rather than falling through to that upgrade.
@@ -305,6 +314,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the event cleanup", error)
                     })?;
+                add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
                 add_title_source_column(&transaction)?;
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
@@ -326,6 +336,8 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the title source upgrade", error)
                     })?;
                 add_title_source_column(&transaction)?;
+                add_tool_item_schema(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
@@ -347,6 +359,8 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
+                add_tool_item_schema(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -354,6 +368,23 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the broker upgrade", error)
+                })?;
+            }
+            5 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the tool event upgrade", error)
+                    })?;
+                add_tool_item_schema(&transaction)?;
+                clear_superseded_events(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the tool event upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -491,6 +522,22 @@ impl SessionStore {
                 )
                 .map_err(|error| {
                     StoreError::sqlite("could not drop the superseded events", error)
+                })?;
+        }
+        if row.kind == "item.updated" {
+            transaction
+                .execute(
+                    "DELETE FROM events
+                     WHERE owned_id = ?
+                       AND kind = 'item.updated'
+                       AND item_id = json_extract(?, '$.payload.itemId')
+                       AND json_extract(payload, '$.payload.kind') = 'tool'
+                       AND json_extract(?, '$.payload.kind') = 'tool'
+                       AND seq < ?",
+                    params![row.owned_id, row.payload_json, row.payload_json, row.seq],
+                )
+                .map_err(|error| {
+                    StoreError::sqlite("could not drop the superseded tool updates", error)
                 })?;
         }
         let updated = transaction
@@ -894,7 +941,45 @@ fn clear_superseded_events(connection: &Connection) -> Result<()> {
             )
             .map_err(|error| StoreError::sqlite("could not clear the superseded events", error))?;
     }
+    connection
+        .execute(
+            "DELETE FROM events
+             WHERE kind = 'item.updated'
+               AND json_extract(payload, '$.payload.kind') = 'tool'
+               AND seq < (
+                   SELECT MAX(newest.seq)
+                   FROM events AS newest
+                   WHERE newest.owned_id = events.owned_id
+                     AND newest.kind = events.kind
+                     AND newest.item_id = events.item_id
+                     AND json_extract(newest.payload, '$.payload.kind') = 'tool'
+               )",
+            [],
+        )
+        .map_err(|error| {
+            StoreError::sqlite("could not clear the superseded tool updates", error)
+        })?;
     Ok(())
+}
+
+fn add_tool_item_schema(connection: &Connection) -> Result<()> {
+    let has_item_id: bool = connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM pragma_table_xinfo('events') WHERE name = 'item_id'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| StoreError::sqlite("could not inspect the event columns", error))?;
+    if !has_item_id {
+        connection
+            .execute_batch(TOOL_ITEM_COLUMN_SCHEMA)
+            .map_err(|error| StoreError::sqlite("could not add the tool item column", error))?;
+    }
+    connection
+        .execute_batch(TOOL_ITEM_INDEX_SCHEMA)
+        .map_err(|error| StoreError::sqlite("could not add the tool item index", error))
 }
 
 /// Writes every persisted session field on the caller's connection or transaction.
@@ -1181,6 +1266,171 @@ mod tests {
             kind: kind.to_owned(),
             ..fixture_event(owned_id, seq)
         }
+    }
+
+    fn tool_event(owned_id: &str, seq: i64, kind: &str, item_id: &str, status: &str) -> EventRow {
+        EventRow {
+            payload_json: format!(
+                r#"{{"payload":{{"kind":"tool","itemId":"{item_id}","status":"{status}"}}}}"#
+            ),
+            ..fixture_event_of_kind(owned_id, seq, kind)
+        }
+    }
+
+    #[test]
+    fn a_tool_update_replaces_the_one_before_it() {
+        let (_directory, _path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        for (seq, status) in [(1, "started"), (2, "running"), (3, "finished")] {
+            store
+                .append_event(&tool_event("session-a", seq, "item.updated", "tool-a", status))
+                .expect("append tool update");
+        }
+        store
+            .append_event(&tool_event(
+                "session-a",
+                4,
+                "item.updated",
+                "tool-b",
+                "started",
+            ))
+            .expect("append other tool update");
+
+        let events = store
+            .list_events("session-a", i64::MIN, 100)
+            .expect("list events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq, 3);
+        assert!(events[0].payload_json.contains(r#""status":"finished""#));
+    }
+
+    #[test]
+    fn a_tool_update_leaves_other_items_alone() {
+        let (_directory, _path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        for event in [
+            tool_event("session-a", 1, "item.updated", "tool-a", "started"),
+            tool_event("session-a", 2, "item.updated", "tool-b", "started"),
+            tool_event("session-a", 3, "item.updated", "tool-a", "finished"),
+            tool_event("session-a", 4, "item.updated", "tool-b", "finished"),
+        ] {
+            store.append_event(&event).expect("append tool update");
+        }
+
+        let events = store
+            .list_events("session-a", i64::MIN, 100)
+            .expect("list events");
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [3, 4]);
+    }
+
+    #[test]
+    fn streamed_words_are_never_superseded() {
+        let (_directory, _path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        for seq in 1..=20 {
+            store
+                .append_event(&fixture_event_of_kind("session-a", seq, "content.delta"))
+                .expect("append delta");
+        }
+        assert_eq!(
+            store
+                .list_events("session-a", i64::MIN, 100)
+                .expect("list events")
+                .len(),
+            20
+        );
+    }
+
+    #[test]
+    fn a_finished_tool_keeps_its_completion() {
+        let (_directory, _path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        store
+            .append_event(&tool_event(
+                "session-a",
+                1,
+                "item.updated",
+                "tool-a",
+                "running",
+            ))
+            .expect("append tool update");
+        store
+            .append_event(&tool_event(
+                "session-a",
+                2,
+                "item.completed",
+                "tool-a",
+                "finished",
+            ))
+            .expect("append tool completion");
+
+        let events = store
+            .list_events("session-a", i64::MIN, 100)
+            .expect("list events");
+        assert_eq!(events.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>(), ["item.updated", "item.completed"]);
+    }
+
+    #[test]
+    fn an_upgraded_database_loses_only_the_duplicates() {
+        let directory = TempDir::new().expect("create temporary directory");
+        let path = directory.path().join("sessions.db");
+        let connection = Connection::open(&path).expect("create version five database");
+        connection
+            .execute_batch(
+                "CREATE TABLE events (
+                    owned_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    turn_id TEXT,
+                    kind TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY (owned_id, seq)
+                );
+                PRAGMA user_version = 5;",
+            )
+            .expect("create version five schema");
+        for (seq, status) in [(1, "started"), (2, "running"), (3, "finished")] {
+            connection
+                .execute(
+                    "INSERT INTO events VALUES (?, ?, NULL, 'item.updated', ?, ?)",
+                    rusqlite::params![
+                        "session-a",
+                        seq,
+                        tool_event("session-a", seq, "item.updated", "tool-a", status)
+                            .payload_json,
+                        10_000 + seq
+                    ],
+                )
+                .expect("insert duplicate tool update");
+        }
+        connection
+            .execute(
+                "INSERT INTO events VALUES ('session-a', 4, NULL, 'message', '{}', 10004)",
+                [],
+            )
+            .expect("insert message");
+        drop(connection);
+
+        let store = SessionStore::open(&path).expect("upgrade database");
+        let events = store
+            .list_events("session-a", i64::MIN, 100)
+            .expect("list upgraded events");
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [3, 4]);
+        drop(store);
+
+        let connection = Connection::open(&path).expect("inspect upgraded database");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read schema version");
+        assert_eq!(version, 6);
     }
 
     #[test]
