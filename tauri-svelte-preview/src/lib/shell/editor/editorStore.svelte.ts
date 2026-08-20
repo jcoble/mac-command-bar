@@ -129,6 +129,9 @@ export function setEditorFilePreview(path: string, preview: SourcePreview): void
 export function setEditorFileDraft(path: string, content: string): void {
   const file = editorFileFor(path);
   if (!file?.preview) return;
+  // An unchanged draft must not touch state: the editor republishes its
+  // content from inside an effect, and a no-op write here loops that effect.
+  if (file.draftContent === content) return;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     draftContent: content,
     dirty: content !== file.preview.content

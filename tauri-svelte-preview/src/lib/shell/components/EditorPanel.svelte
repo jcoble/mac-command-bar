@@ -261,6 +261,12 @@
    */
   let diagnosticsByPath = $state<Record<string, SourceDiagnostic[]>>({});
   /**
+   * The one empty answer, reused. The fallback below must keep a stable
+   * identity: a fresh `[]` per template evaluation reads as a changed prop
+   * to the editor's effect and can spin it in a loop.
+   */
+  const NO_DIAGNOSTICS: SourceDiagnostic[] = [];
+  /**
    * How long to wait before asking a second time, in milliseconds.
    *
    * LOAD-BEARING. The language server answers a file it has only just opened
@@ -1097,7 +1103,7 @@
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}
-            externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
+            externalDiagnostics={diagnosticsByPath[activeFile.path] ?? NO_DIAGNOSTICS}
             nativeCsharpLanguageClient={nativeCsharpActive}
             {restoredViewStates}
             onExternalNavigation={navigateToExternalSource}
