@@ -8,10 +8,11 @@
    * three ways of changing this one file and the four ways of getting at it
    * outside this panel.
    *
-   * The two actions worth a press without opening a menu — stage or unstage,
-   * and discard — also sit in the row's hover cluster, because putting a commit
-   * together is per file work: a working copy usually holds two or three
-   * unrelated changes and "Stage All" can only make one commit out of them.
+   * The three actions worth a press without opening a menu — stage or unstage,
+   * discard, and open the file in the editor — also sit in the row's hover
+   * cluster, because putting a commit together is per file work: a working copy
+   * usually holds two or three unrelated changes and "Stage All" can only make
+   * one commit out of them, and reading a change usually means opening it.
    *
    * NOTHING IS THROWN AWAY FROM HERE. Discard hands the request up to the panel,
    * which asks first; this row never reaches the service for it.
@@ -19,6 +20,7 @@
   import { HoverActionButton } from '$lib/components/ui/hover-actions/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+  import FileSymlink from '@lucide/svelte/icons/file-symlink';
   import Minus from '@lucide/svelte/icons/minus';
   import Plus from '@lucide/svelte/icons/plus';
   import Undo2 from '@lucide/svelte/icons/undo-2';
@@ -76,6 +78,7 @@
   const stageAction = $derived(actionById('stage'));
   const unstageAction = $derived(actionById('unstage'));
   const discardAction = $derived(actionById('discard'));
+  const openAction = $derived(actionById('open-in-editor'));
 
   /**
    * The hover cluster shows the one staging direction this file has left to go.
@@ -174,6 +177,15 @@
                 onclick={() => run('discard')}
               >
                 <Undo2 aria-hidden="true" />
+              </HoverActionButton>
+            {/if}
+            {#if openAction}
+              <HoverActionButton
+                label={hint(openAction)}
+                disabled={!openAction.enabled}
+                onclick={() => run('open-in-editor')}
+              >
+                <FileSymlink aria-hidden="true" />
               </HoverActionButton>
             {/if}
           {/snippet}
