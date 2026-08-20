@@ -26,7 +26,7 @@ export interface SessionLibraryActionHandlers {
 
 export interface SessionLibrarySource {
   /** Explicit provider ACP `session/list` adapter; not called at construction. */
-  listProviderSessions?(): Promise<AgentSession[]>;
+  listProviderSessions?(projectPath?: string): Promise<AgentSession[]>;
   /** Existing rail authority, read only when refresh is explicitly requested. */
   getOwnedSessions?(): readonly OwnedSession[];
   /** Existing scanner/rail authority, read only when refresh is explicitly requested. */
@@ -35,7 +35,10 @@ export interface SessionLibrarySource {
 
 export interface SessionLibraryService {
   readonly records: readonly SessionLibraryRecord[];
-  refresh(keys?: ReadonlySet<string>): Promise<SessionLibraryRecord[]>;
+  refresh(
+    keys?: ReadonlySet<string>,
+    scope?: { projectPath: string }
+  ): Promise<SessionLibraryRecord[]>;
   release(keys?: ReadonlySet<string>): void;
   resume(record: SessionLibraryRecord): Promise<void>;
   open(record: SessionLibraryRecord): Promise<void>;
@@ -117,10 +120,15 @@ export function createSessionLibraryService(
     get records(): readonly SessionLibraryRecord[] {
       return [...held.values()];
     },
-    async refresh(keys?: ReadonlySet<string>): Promise<SessionLibraryRecord[]> {
+    async refresh(
+      keys?: ReadonlySet<string>,
+      scope?: { projectPath: string }
+    ): Promise<SessionLibraryRecord[]> {
       const owned = source.getOwnedSessions?.() ?? [];
       const current = source.getAvailableSessions?.() ?? [];
-      const provider = source.listProviderSessions ? await source.listProviderSessions() : [];
+      const provider = source.listProviderSessions
+        ? await source.listProviderSessions(scope?.projectPath)
+        : [];
       const records = buildSessionLibrary(owned, [...current, ...provider]);
       const selected = keys ? records.filter((record) => keys.has(record.key)) : records;
       if (!keys) held.clear();

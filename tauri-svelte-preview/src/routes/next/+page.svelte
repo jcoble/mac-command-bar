@@ -193,6 +193,7 @@
     isNativeTauriRuntime,
     deleteAgentConversationSessionFromTauri,
     listAgentConversationSessionsFromTauri,
+    listAgentSessionsForProjectFromTauri,
     listAgentSessionsFromTauri,
     openMainDevtoolsFromTauri,
     updateAgentConversationSessionMetaFromTauri,
@@ -446,9 +447,12 @@
   const sessionLibraryService = createSessionLibraryService(
     {
       getOwnedSessions: () => rail.owned,
-      listProviderSessions: async () => {
+      listProviderSessions: async (projectPath?: string) => {
         try {
-          return (await listAgentSessionsFromTauri()) ?? (await listAgentSessionsFromLocalBridge()) ?? [];
+          const nativeSessions = projectPath
+            ? await listAgentSessionsForProjectFromTauri(projectPath)
+            : await listAgentSessionsFromTauri();
+          return nativeSessions ?? (await listAgentSessionsFromLocalBridge()) ?? [];
         } catch {
           return (await listAgentSessionsFromLocalBridge()) ?? [];
         }

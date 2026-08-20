@@ -1356,6 +1356,17 @@ export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | nul
   return invoke<AgentSession[]>('list_agent_sessions');
 }
 
+export async function listAgentSessionsForProjectFromTauri(
+  path: string
+): Promise<AgentSession[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentSession[]>('list_agent_sessions_for_project', { projectPath: path });
+}
+
 /** One checkout of a repository: its own folder, or one of its worktrees. */
 export type RepositoryCheckout = {
   path: string;

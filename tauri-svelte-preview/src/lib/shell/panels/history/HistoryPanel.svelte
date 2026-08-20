@@ -182,7 +182,9 @@
 
     try {
       const [refreshed, nextCheckouts] = await Promise.allSettled([
-        fullyHeld ? Promise.resolve(heldRecords) : host.service.refresh(keys),
+        fullyHeld
+          ? Promise.resolve(heldRecords)
+          : host.service.refresh(keys, { projectPath: project.path }),
         listRepositoryCheckoutsFromTauri([project.path])
       ]);
       if (!visible || version !== loadVersion) {

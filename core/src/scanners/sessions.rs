@@ -389,7 +389,20 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
         return Vec::new();
     };
 
+    scan_sessions_from_home(&home, None)
+}
+
+pub fn scan_sessions_for_project(project_root: &str) -> Vec<AgentSessionRecord> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+
+    scan_sessions_from_home(&home, Some(project_root))
+}
+
+fn scan_sessions_from_home(home: &Path, project_root: Option<&str>) -> Vec<AgentSessionRecord> {
     let mut records = Vec::new();
+    let mut project_roots = HashMap::new();
 
     // Sort the rollout files into "the user started this" and "Codex spawned
     // this for itself" in one pass, keeping the ids of the second kind. Dropping
@@ -400,10 +413,14 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     let mut codex_files = Vec::new();
     let mut codex_subagent_ids = HashSet::new();
     for file in jsonl_files(&home.join(".codex/sessions")) {
-        match codex_rollout_thread_marker(&file) {
+        let (marker, cwd) = codex_rollout_head_meta(&file);
+        match marker {
             Some(marker) if marker.spawned_by_codex => codex_subagent_ids.extend(marker.id),
             // No marker, or nothing readable: keep the file. Older Codex builds
             // predate the field, and losing a session is the worse mistake.
+            _ if project_root.is_some_and(|root| {
+                !codex_cwd_matches_project(cwd.as_deref(), root, &mut project_roots)
+            }) => {}
             _ => codex_files.push(file),
         }
     }
@@ -473,28 +490,47 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
     let cmux_term = home.join(".cmuxterm");
     for (agent, file) in cmux_hook_session_files(&cmux_term) {
         if let Ok(contents) = fs::read_to_string(file) {
-            records.extend(parse_cmux_hook_sessions_json(&agent, &contents));
+            let mut parsed = parse_cmux_hook_sessions_json(&agent, &contents);
+            if let Some(root) = project_root {
+                parsed.retain(|record| record_matches_project(record, root, &mut project_roots));
+            }
+            records.extend(parsed);
         }
     }
 
     let claude_projects = home.join(".claude/projects");
-    let mut files = jsonl_files(&claude_projects);
+    let mut files: Vec<(PathBuf, String)> = match project_root {
+        Some(root) => claude_project_dirs_for_root(&claude_projects, root)
+            .into_iter()
+            .flat_map(|(directory, project_path)| {
+                jsonl_files(&directory)
+                    .into_iter()
+                    .map(move |file| (file, project_path.clone()))
+            })
+            .collect(),
+        None => jsonl_files(&claude_projects)
+            .into_iter()
+            .map(|file| {
+                let project_path = file
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str())
+                    .and_then(decode_claude_project_dir)
+                    .unwrap_or_default();
+                (file, project_path)
+            })
+            .collect(),
+    };
     // Drop subagent transcripts and helper runs BEFORE the file budget is
     // applied: they outnumber real sessions on a busy machine and would
     // otherwise evict them.
-    files.retain(|file| !is_claude_subagent_transcript_path(file));
-    files.retain(|file| !claude_transcript_file_is_agent_launched(file));
-    files.sort_by(|a, b| modified_time(b).cmp(&modified_time(a)));
-    for file in files.into_iter().take(CLAUDE_SESSION_FILE_LIMIT) {
-        let project_path = file
-            .parent()
-            .and_then(|parent| parent.file_name())
-            .and_then(|name| name.to_str())
-            .and_then(decode_claude_project_dir)
-            .unwrap_or_default();
+    files.retain(|(file, _)| !is_claude_subagent_transcript_path(file));
+    files.retain(|(file, _)| !claude_transcript_file_is_agent_launched(file));
+    files.sort_by(|(a, _), (b, _)| modified_time(b).cmp(&modified_time(a)));
+    for (file, project_path) in files.into_iter().take(CLAUDE_SESSION_FILE_LIMIT) {
         if let Ok(contents) = read_tail_utf8(&file, CLAUDE_SESSION_TAIL_BYTES) {
             records.extend(with_log_path(
-                parse_claude_jsonl(&contents, &project_path),
+                parse_claude_jsonl(&contents, project_path.as_str()),
                 &file,
             ));
         }
@@ -502,9 +538,15 @@ pub fn scan_sessions() -> Vec<AgentSessionRecord> {
 
     records = merge_agent_session_records(records);
     records.retain(session_said_something);
+    if let Some(root) = project_root {
+        // A record with no project identity belongs only in the unscoped
+        // "Other" listing, never in a scoped project's results.
+        records.retain(|record| record_matches_project(record, root, &mut project_roots));
+    }
     records.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
     records.truncate(AGENT_SESSION_RESULT_LIMIT);
-    with_derived_agent_session_metadata(records)
+    records = with_derived_agent_session_metadata(records);
+    records
 }
 
 /// Whether a scanned session holds a conversation at all.
@@ -877,27 +919,78 @@ pub struct CodexThreadMarker {
 /// Read from a bounded head, so the scan can sort the files before it spends
 /// its read budget on them.
 fn codex_rollout_thread_marker(path: &Path) -> Option<CodexThreadMarker> {
-    let head = read_head_utf8(path, CODEX_SESSION_META_PROBE_BYTES).ok()?;
-    codex_rollout_head_thread_marker(&head)
+    codex_rollout_head_meta(path).0
+}
+
+fn codex_rollout_head_meta(path: &Path) -> (Option<CodexThreadMarker>, Option<String>) {
+    let Ok(head) = read_head_utf8(path, CODEX_SESSION_META_PROBE_BYTES) else {
+        return (None, None);
+    };
+    codex_rollout_head_metadata(&head)
 }
 
 /// `None` when the head holds no readable metadata record — a truncated line, a
 /// file that opens with something else, an empty file. The caller keeps those.
 pub fn codex_rollout_head_thread_marker(head: &str) -> Option<CodexThreadMarker> {
-    let line = head.lines().next()?;
-    let value = serde_json::from_str::<Value>(line).ok()?;
+    codex_rollout_head_metadata(head).0
+}
+
+fn codex_rollout_head_metadata(head: &str) -> (Option<CodexThreadMarker>, Option<String>) {
+    let Some(line) = head.lines().next() else {
+        return (None, None);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return (None, None);
+    };
     if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-        return None;
+        return (None, None);
     }
 
-    let payload = value.get("payload")?;
-    Some(CodexThreadMarker {
+    let Some(payload) = value.get("payload") else {
+        return (None, None);
+    };
+    let marker = CodexThreadMarker {
         id: payload
             .get("id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
         spawned_by_codex: is_codex_background_thread(payload),
-    })
+    };
+    let cwd = payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    (Some(marker), cwd)
+}
+
+fn codex_cwd_matches_project(
+    cwd: Option<&str>,
+    project_root: &str,
+    roots: &mut HashMap<String, Option<String>>,
+) -> bool {
+    let Some(cwd) = cwd else {
+        return true;
+    };
+
+    let resolved = roots
+        .entry(cwd.to_string())
+        .or_insert_with(|| {
+            git_project_root(Path::new(cwd)).map(|root| root.to_string_lossy().into_owned())
+        })
+        .as_deref()
+        .unwrap_or(cwd);
+    resolved == project_root
+}
+
+fn record_matches_project(
+    record: &AgentSessionRecord,
+    project_root: &str,
+    roots: &mut HashMap<String, Option<String>>,
+) -> bool {
+    record
+        .project_path
+        .as_deref()
+        .is_some_and(|path| codex_cwd_matches_project(Some(path), project_root, roots))
 }
 
 pub fn codex_rollout_head_is_subagent_thread(head: &str) -> bool {
@@ -2116,6 +2209,33 @@ pub fn decode_claude_project_dir_with_users_root(name: &str, users_root: &Path) 
     Some(path.display().to_string())
 }
 
+fn claude_project_dirs_for_root(
+    projects_root: &Path,
+    project_root: &str,
+) -> Vec<(PathBuf, String)> {
+    let Ok(entries) = fs::read_dir(projects_root) else {
+        return Vec::new();
+    };
+    let mut directories = entries
+        .flatten()
+        .filter_map(|entry| {
+            let directory = entry.path();
+            if !directory.is_dir() {
+                return None;
+            }
+            let decoded = directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(decode_claude_project_dir)?;
+            let resolved =
+                git_project_root(Path::new(&decoded)).unwrap_or_else(|| PathBuf::from(&decoded));
+            (resolved.to_string_lossy().as_ref() == project_root).then_some((directory, decoded))
+        })
+        .collect::<Vec<_>>();
+    directories.sort_by(|(left, _), (right, _)| left.cmp(right));
+    directories
+}
+
 fn shell_quote(value: &str) -> String {
     if value.is_empty() {
         return "''".to_string();
@@ -2126,6 +2246,108 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_claude_session(home: &Path, directory: &str, id: &str, cwd: &str) {
+        let project_dir = home.join(".claude/projects").join(directory);
+        fs::create_dir_all(&project_dir).expect("create project fixture");
+        let transcript = format!(
+            "{}\n{}",
+            format_args!(
+                r#"{{"type":"user","isSidechain":false,"sessionId":"{id}","cwd":"{cwd}","timestamp":"2026-08-20T09:00:00Z","message":{{"role":"user","content":"Open this project"}}}}"#
+            ),
+            format_args!(
+                r#"{{"type":"assistant","isSidechain":false,"sessionId":"{id}","timestamp":"2026-08-20T09:01:00Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Project opened."}}]}}}}"#
+            )
+        );
+        fs::write(project_dir.join(format!("{id}.jsonl")), transcript)
+            .expect("write session fixture");
+    }
+
+    #[test]
+    fn scan_for_project_returns_only_matching_records() {
+        let home = tempfile::tempdir().expect("temp home");
+        write_claude_session(
+            home.path(),
+            "-Users-fixture-matching",
+            "matching-session",
+            "/Users/fixture/matching",
+        );
+        write_claude_session(
+            home.path(),
+            "-Users-fixture-other",
+            "other-session",
+            "/Users/fixture/other",
+        );
+
+        let records = scan_sessions_from_home(home.path(), Some("/Users/fixture/matching"));
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "matching-session");
+        assert_eq!(
+            records[0].project_path.as_deref(),
+            Some("/Users/fixture/matching")
+        );
+    }
+
+    #[test]
+    fn claude_project_dirs_filter_to_requested_root() {
+        let projects = tempfile::tempdir().expect("temp projects");
+        let matching = projects.path().join("-Users-fixture-matching");
+        let other = projects.path().join("-Users-fixture-other");
+        fs::create_dir_all(&matching).expect("create matching fixture");
+        fs::create_dir_all(&other).expect("create other fixture");
+
+        let directories = claude_project_dirs_for_root(projects.path(), "/Users/fixture/matching");
+
+        assert_eq!(
+            directories,
+            vec![(matching, "/Users/fixture/matching".to_string())]
+        );
+    }
+
+    #[test]
+    fn codex_head_cwd_filters_rollouts_before_window_reads() {
+        let home = tempfile::tempdir().expect("temp home");
+        let sessions = home.path().join(".codex/sessions");
+        fs::create_dir_all(&sessions).expect("create sessions fixture");
+
+        let matching_id = "019fa964-0000-0000-0000-000000000001";
+        let matching = format!(
+            "{}\n{}\n{}",
+            format_args!(
+                r#"{{"timestamp":"2026-08-20T09:00:00Z","type":"session_meta","payload":{{"id":"{matching_id}","cwd":"/Users/fixture/matching","thread_source":"user","source":"cli"}}}}"#
+            ),
+            r#"{"timestamp":"2026-08-20T09:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Open the matching project."}]}}"#,
+            r#"{"timestamp":"2026-08-20T09:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Matching project opened."}]}}"#
+        );
+        fs::write(
+            sessions.join(format!("rollout-2026-08-20T09-00-00-{matching_id}.jsonl")),
+            matching,
+        )
+        .expect("write matching rollout fixture");
+
+        let other_id = "019fa964-0000-0000-0000-000000000002";
+        let other = format!(
+            "{}\n{}\n{}\n{}",
+            format_args!(
+                r#"{{"timestamp":"2026-08-20T10:00:00Z","type":"session_meta","payload":{{"id":"{other_id}","cwd":"/Users/fixture/other","thread_source":"user","source":"cli"}}}}"#
+            ),
+            r#"{"timestamp":"2026-08-20T10:00:01Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"pwd\",\"workdir\":\"/Users/fixture/matching\"}"}}"#,
+            r#"{"timestamp":"2026-08-20T10:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"This body points at matching."}]}}"#,
+            r#"{"timestamp":"2026-08-20T10:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The head must win."}]}}"#
+        );
+        fs::write(
+            sessions.join(format!("rollout-2026-08-20T10-00-00-{other_id}.jsonl")),
+            other,
+        )
+        .expect("write non-matching rollout fixture");
+
+        let records = scan_sessions_from_home(home.path(), Some("/Users/fixture/matching"));
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, matching_id);
+        assert!(!records.iter().any(|record| record.id == other_id));
+    }
 
     fn session(title: &str, project_path: Option<&str>) -> AgentSessionRecord {
         AgentSessionRecord {

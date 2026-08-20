@@ -15,7 +15,9 @@ use mcb_core::reference_counts::{
     normalized_reference_count_symbols, ReferenceCountFile, ReferenceCountPlan,
     MAX_REFERENCE_SCAN_BYTES,
 };
-use mcb_core::scanners::sessions::{scan_sessions, AgentSessionRecord};
+use mcb_core::scanners::sessions::{
+    scan_sessions, scan_sessions_for_project, AgentSessionRecord,
+};
 use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 use orchestration::{
     list_orchestration_runs_sync, record_orchestration_event_sync, OrchestrationEvent,
@@ -1750,6 +1752,15 @@ async fn list_git_repository_summaries(
 #[tauri::command]
 async fn list_agent_sessions() -> Result<Vec<AgentSessionRecord>, String> {
     tauri::async_runtime::spawn_blocking(scan_sessions)
+        .await
+        .map_err(|error| format!("Agent session scan task failed: {error}"))
+}
+
+#[tauri::command]
+async fn list_agent_sessions_for_project(
+    project_path: String,
+) -> Result<Vec<AgentSessionRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_sessions_for_project(&project_path))
         .await
         .map_err(|error| format!("Agent session scan task failed: {error}"))
 }
@@ -6118,6 +6129,7 @@ fn main() {
             archive_project_worktree,
             list_git_repository_summaries,
             list_agent_sessions,
+            list_agent_sessions_for_project,
             list_runtime_contexts,
             list_playwright_sessions,
             kill_playwright_session,
