@@ -6,6 +6,7 @@ import {
   type RegisterExtensionResult
 } from '@codingame/monaco-vscode-api/extensions';
 
+import './languageContributions';
 import houstonThemeUrl from './houston/houston.json?url';
 import svelteLanguageConfigurationUrl from './svelte/language-configuration.json?url';
 import svelteStartTagConfigurationUrl from './svelte/language-configuration-start-tag.json?url';
