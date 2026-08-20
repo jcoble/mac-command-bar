@@ -518,6 +518,12 @@
     width: 100%;
     padding: 0 10px 0 0;
     text-align: left;
+    /* Hundreds of these can be loaded, each carrying an SVG graph cell and a
+       handful of chips. Skipping layout and paint for the ones off screen is
+       what keeps a deep history from taxing the webview; 24px is ROW_HEIGHT,
+       so the scrollbar's arithmetic does not change. */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 24px;
   }
 
   .head-row {
