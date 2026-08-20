@@ -11,7 +11,10 @@
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
-  import { draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { contextMeterPopover, draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { agentDisplayName } from '$lib/shell/agentIcons.ts';
+  import type { AgentKind } from '$lib/shell/ownedSessions.ts';
+  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
   import AttachmentLightbox from './AttachmentLightbox.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
@@ -171,6 +174,11 @@
     activeIndex,
     dismissed: dismissedDraft === inputDraft
   }));
+  /* The exact numbers behind the ring, named for the provider that reported
+     them so an absent figure reads as that provider's silence. */
+  const meterPopover = $derived(
+    contextMeter ? contextMeterPopover(contextMeter, agentDisplayName(provider as AgentKind)) : null
+  );
   const composerLocked = $derived(Boolean(pendingApproval || pendingInputs.length));
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
   /**
@@ -424,23 +432,44 @@
             </DropdownMenu.Root>
           </div>
           <div class="footer-right">
-            <!-- How full the context window is, as a ring: the arc is what
-                 remains, so a fresh session shows a full circle and a session
-                 near its limit shows one nearly empty. The number is in the
-                 title and the hint line below; the ring is for the glance.
-                 Nothing is shown when the usage isn't trustworthy enough to
-                 turn into a percentage. -->
-            {#if contextMeter?.kind === 'percent'}
-              <span
-                class="context-ring"
-                class:context-ring-warm={contextMeter.warm}
-                class:context-ring-hot={contextMeter.hot}
-                data-testid="conversation-context-remaining"
-                role="img"
-                aria-label={`${contextMeter.remaining}% context left`}
-                title={`${contextMeter.remaining}% context left`}
-                style={`--remaining:${ringDash(contextMeter.remaining, 100)}`}
-              ><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="ring-track" cx="10" cy="10" r="7.5" /><circle class="ring-fill" cx="10" cy="10" r="7.5" pathLength="100" /></svg></span>
+            <!-- How full the context window is, as a ring: the arc is what has
+                 been used, so a fresh session shows an empty circle and a
+                 session near its limit shows a full one. A window barely
+                 touched still paints a small sliver rather than nothing. The
+                 exact numbers are one hover away and the remaining percent is
+                 in the hint line below; the ring is for the glance. Nothing is
+                 shown when the usage isn't trustworthy enough to turn into a
+                 percentage. -->
+            {#if contextMeter?.kind === 'percent' && meterPopover}
+              <Tooltip.Provider delayDuration={0}>
+                <Tooltip.Root>
+                  <Tooltip.Trigger>
+                    {#snippet child({ props })}
+                      <span
+                        {...props}
+                        class="context-ring"
+                        class:context-ring-warm={contextMeter.warm}
+                        class:context-ring-hot={contextMeter.hot}
+                        data-testid="conversation-context-remaining"
+                        role="img"
+                        aria-label={`${contextMeter.remaining}% context left`}
+                        style={`--arc:${ringDash(contextMeter.arc, 100)}`}
+                      ><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="ring-track" cx="10" cy="10" r="7.5" /><circle class="ring-fill" cx="10" cy="10" r="7.5" pathLength="100" /></svg></span>
+                    {/snippet}
+                  </Tooltip.Trigger>
+                  <Tooltip.Content side="top" sideOffset={6} class="p-0!">
+                    <span class="context-popover" data-testid="conversation-context-popover">
+                      <span class="context-popover-headline">{meterPopover.headline}</span>
+                      {#each meterPopover.rows as row (row.label)}
+                        <span class="context-popover-row">
+                          <span class="context-popover-label">{row.label}</span>
+                          <span class="context-popover-value">{row.value}</span>
+                        </span>
+                      {/each}
+                    </span>
+                  </Tooltip.Content>
+                </Tooltip.Root>
+              </Tooltip.Provider>
             {/if}
             <div class="wide-controls"><ComposerConfigMenu {provider} state={configState} pending={pendingConfig} error={configError} onChange={onConfigChange} /></div>
             <div class="compact-controls"><CompactComposerControlsMenu {provider} state={configState} pending={pendingConfig} onChange={onConfigChange} /></div>
@@ -558,7 +587,14 @@
   .context-ring svg { width: 18px; height: 18px; transform: rotate(-90deg); }
   .context-ring circle { fill: none; stroke-width: 2.2; }
   .ring-track { stroke: color-mix(in srgb, currentColor 22%, transparent); }
-  .ring-fill { stroke: currentColor; stroke-linecap: round; stroke-dasharray: var(--remaining) 100; }
+  .ring-fill { stroke: currentColor; stroke-linecap: round; stroke-dasharray: var(--arc) 100; }
+  /* The popup the ring opens on hover. It says the numbers the ring can only
+     gesture at, in the shell's own type sizes rather than the tooltip's. */
+  .context-popover { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); text-align: left; }
+  .context-popover-headline { color: var(--color-text); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .context-popover-row { display: flex; justify-content: space-between; gap: var(--space-4); white-space: nowrap; }
+  .context-popover-label { color: var(--color-text-3); font-size: 12px; }
+  .context-popover-value { color: var(--color-text-2); font-size: 12px; font-variant-numeric: tabular-nums; }
   .context-ring-warm { color: var(--color-attention); }
   .context-ring-hot { color: var(--color-bad); }
   .menu-row-copy { display: flex; min-width: 0; flex-direction: column; gap: var(--menu-row-description-gap); }

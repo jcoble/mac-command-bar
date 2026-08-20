@@ -149,7 +149,10 @@
     sessionContextUsage(conversation?.metadata ?? null, conversation?.usage)
   );
   const contextMeter = $derived(
-    contextMeterState(contextUsage.usedTokens, contextUsage.contextWindow)
+    contextMeterState(contextUsage.usedTokens, contextUsage.contextWindow, {
+      inputTokens: contextUsage.inputTokens,
+      outputTokens: contextUsage.outputTokens
+    })
   );
 
   // Read from the session rather than held here: this surface is mounted once
