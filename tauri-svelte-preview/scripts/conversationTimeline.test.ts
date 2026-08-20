@@ -410,8 +410,8 @@ const fencedTitleTool = displayItemFromAgentItem({
   content: [],
   providerMetadata: { title: 'Tool ```console\nls -la\n```' }
 });
-assert.equal(fencedTitleTool.title, 'Tool', 'the title drops the fenced block');
-assert.equal(fencedTitleTool.summary, 'ls -la', 'the summary is the first fenced line, fences and language tag stripped');
+assert.equal(fencedTitleTool.title, 'ls -la', 'the title is the first fenced line, without fence text');
+assert.equal(fencedTitleTool.summary, undefined, 'the fenced line is not repeated beneath the title');
 
 const blankFenceTool = displayItemFromAgentItem({
   id: 'tool-blank-fence',
@@ -419,7 +419,8 @@ const blankFenceTool = displayItemFromAgentItem({
   content: [],
   providerMetadata: { title: '```\n\n```' }
 });
-assert.equal(blankFenceTool.summary, '', 'a fence with no content has an empty summary');
+assert.equal(blankFenceTool.title, 'Tool', 'an empty fence falls back to a plain title');
+assert.equal(blankFenceTool.summary, undefined, 'an empty fence is not rendered as summary text');
 
 // ── The plan chip reads one newest plan (latest_plan_across_turns) ───────
 // The chip above the composer shows the plan the session is working to, so it

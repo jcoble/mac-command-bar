@@ -479,10 +479,11 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     const rawTitle = stringOf(metadata?.title, stringOf(metadata?.name, item.type));
     // A raw title sometimes has a fenced block stuffed into it instead of a
     // separate summary; when it does, the fence is the row's one-line
-    // preview and the title keeps only the plain text ahead of it.
+    // title, with the fence itself discarded.
     const fenceIndex = rawTitle.indexOf('```');
-    const title = fenceIndex < 0 ? rawTitle : rawTitle.slice(0, fenceIndex).trim() || 'Tool';
-    const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : toolSummaryLine(rawTitle);
+    const fencedSummary = fenceIndex < 0 ? '' : toolSummaryLine(rawTitle);
+    const title = fenceIndex < 0 ? rawTitle : fencedSummary || rawTitle.slice(0, fenceIndex).trim() || 'Tool';
+    const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : undefined;
     const toolKind = toolKindOf(metadata?.toolKind ?? item.type, title);
     const output = toolKind === 'file-edit' ? '' : textOf(item.content) || stringOf(metadata?.output);
     const diff = stringOf(metadata?.diff);

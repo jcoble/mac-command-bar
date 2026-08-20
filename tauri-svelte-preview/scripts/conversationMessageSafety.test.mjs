@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import {
+  normalizeConversationFileHref,
   parseSafeMarkdown,
   sanitizeConversationHref,
-  sanitizeConversationMarkdown
+  sanitizeConversationMarkdown,
+  splitConversationFileReference
 } from '../src/lib/shell/conversation/conversationMessageSafety.ts';
 
 const source = '# Answer\n\nHere is **safe** [documentation](https://example.test/docs).\n\n```ts\nconst value = 1;';
@@ -28,6 +30,14 @@ assert.deepEqual(tasks[0].items[0].blocks, []);
 assert.equal(tasks[0].items[0].parts.map((part) => part.value).join(''), 'shipped');
 const fileLink = parseSafeMarkdown('[source](src/main.ts)');
 assert.equal(fileLink[0].parts[0].kind, 'file-link');
+assert.equal(normalizeConversationFileHref('file:///Users/me/main.ts'), '/Users/me/main.ts');
+assert.equal(normalizeConversationFileHref('file://host/share/main.ts'), 'host/share/main.ts');
+assert.equal(normalizeConversationFileHref('file:/Users/me/main.ts'), '/Users/me/main.ts');
+assert.equal(parseSafeMarkdown('[source](file:///Users/me/main.ts)')[0].parts[0].path, '/Users/me/main.ts');
+assert.deepEqual(splitConversationFileReference('src/main.ts#L42'), { path: 'src/main.ts', line: 42 });
+assert.deepEqual(splitConversationFileReference('src/main.ts#42'), { path: 'src/main.ts', line: 42 });
+assert.deepEqual(splitConversationFileReference('src/main.ts:42'), { path: 'src/main.ts', line: 42 });
+assert.deepEqual(splitConversationFileReference('src/main.ts'), { path: 'src/main.ts' });
 
 
 // What the hand-written scanner could not read. Each of these arrived as raw

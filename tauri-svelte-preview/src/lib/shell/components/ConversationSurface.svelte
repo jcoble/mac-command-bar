@@ -59,6 +59,10 @@
     requestOpenFile,
     resolveConversationFilePath
   } from '$lib/shell/openFileBus.ts';
+  import {
+    normalizeConversationFileHref,
+    splitConversationFileReference
+  } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
@@ -367,10 +371,11 @@
     });
   }
 
-  function openConversationFile(path: string): void {
+  function openConversationFile(reference: string): void {
     if (!active) return;
-    const root = active.cwd.replace(/\/+$/, '');
-    const candidate = path.trim();
+    const root = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
+    const { path, line } = splitConversationFileReference(reference);
+    const candidate = normalizeConversationFileHref(path);
     if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
       // Nothing here resolves to a file, so there is nothing to open.
       setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
@@ -381,7 +386,7 @@
     // file this session does not own is safe, and refusing it left the reader
     // with a notice and no way to see what the link pointed at.
     const outside = absolute !== root && !absolute.startsWith(`${root}/`);
-    requestOpenFile({ path: absolute, projectRoot: root, readOnly: outside });
+    requestOpenFile({ path: absolute, projectRoot: root, readOnly: outside, line });
   }
 
   async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {
