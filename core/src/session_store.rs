@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// Event kinds where only the newest row still means anything.
 ///
@@ -35,6 +35,27 @@ const ATTACHMENTS_SCHEMA: &str = "CREATE TABLE attachments (
 );
 CREATE INDEX attachments_owned_id_idx ON attachments(owned_id, file_name);";
 
+const BROKER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS workflow_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    orchestrator_owned_id TEXT,
+    created_at_ms INTEGER NOT NULL,
+    closed_at_ms INTEGER
+);
+CREATE TABLE IF NOT EXISTS workflow_messages (
+    id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL REFERENCES workflow_groups(id),
+    from_agent TEXT NOT NULL,
+    to_agent TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    receipt TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_messages_group
+    ON workflow_messages(group_id, created_at_ms);";
+
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 #[derive(Debug)]
@@ -44,14 +65,14 @@ pub struct StoreError {
 }
 
 impl StoreError {
-    fn sqlite(context: &'static str, source: rusqlite::Error) -> Self {
+    pub(crate) fn sqlite(context: &'static str, source: rusqlite::Error) -> Self {
         Self {
             context,
             source: Some(source),
         }
     }
 
-    fn message(context: &'static str) -> Self {
+    pub(crate) fn message(context: &'static str) -> Self {
         Self {
             context,
             source: None,
@@ -235,6 +256,9 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not create the attachment table", error)
                     })?;
+                transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the broker tables", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -263,6 +287,9 @@ impl SessionStore {
                 // is cleared here rather than falling through to that upgrade.
                 clear_superseded_events(&transaction)?;
                 add_title_source_column(&transaction)?;
+                transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the broker tables", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -280,6 +307,9 @@ impl SessionStore {
                     })?;
                 clear_superseded_events(&transaction)?;
                 add_title_source_column(&transaction)?;
+                transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the broker tables", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -296,6 +326,9 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the title source upgrade", error)
                     })?;
                 add_title_source_column(&transaction)?;
+                transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the broker tables", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -303,6 +336,24 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the title source upgrade", error)
+                })?;
+            }
+            4 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the broker upgrade", error)
+                    })?;
+                transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the broker tables", error)
+                })?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the broker upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -816,7 +867,7 @@ impl SessionStore {
         Ok(())
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
         self.connection
             .lock()
             .map_err(|_| StoreError::message("the session database lock is unavailable"))
@@ -1250,7 +1301,7 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read schema version");
-        assert_eq!(version, 4);
+        assert_eq!(version, super::SCHEMA_VERSION);
         let columns: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'title_source'",
@@ -1259,6 +1310,18 @@ mod tests {
             )
             .expect("read the session columns");
         assert_eq!(columns, 1);
+    }
+
+    #[test]
+    fn broker_tables_exist_after_migration() {
+        let store = SessionStore::open_in_memory().expect("open in-memory session store");
+        let connection = store.connection.lock().expect("lock session store");
+        connection
+            .prepare("SELECT id FROM workflow_groups")
+            .expect("prepare workflow groups query");
+        connection
+            .prepare("SELECT receipt FROM workflow_messages")
+            .expect("prepare workflow messages query");
     }
 
     fn open_temp_store() -> (TempDir, std::path::PathBuf, SessionStore) {

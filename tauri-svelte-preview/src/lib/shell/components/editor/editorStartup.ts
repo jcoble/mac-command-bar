@@ -21,6 +21,17 @@
 /** How long the editor gets to appear before the reader is told it did not. */
 export const EDITOR_START_LIMIT_MS = 15_000;
 
+/** Standalone language registrations are only the fallback for failed VS Code services. */
+export function standaloneLanguageImportsFor(servicesReady: boolean): string[] {
+  return servicesReady
+    ? []
+    : [
+        '@codingame/monaco-vscode-standalone-languages',
+        '@codingame/monaco-vscode-standalone-json-language-features',
+        '@codingame/monaco-vscode-standalone-typescript-language-features'
+      ];
+}
+
 /** Cache a successful start, but let the next caller retry a rejected one. */
 export function retryRejectedStart(start: () => Promise<void>): () => Promise<void> {
   let cached: Promise<void> | null = null;

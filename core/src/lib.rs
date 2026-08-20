@@ -1,3 +1,4 @@
+pub mod broker;
 pub mod crypto;
 pub mod dispatcher;
 pub mod protocol;
