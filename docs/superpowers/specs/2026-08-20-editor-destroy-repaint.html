@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Editor destroy and repaint on session switch — spec</title>
+<style>body{margin:0 auto;max-width:860px;padding:40px 24px;background:#0f1115;color:#e6e9ef;font:15px/1.6 -apple-system,system-ui,sans-serif}h1{font-size:26px}h2{font-size:19px;border-top:1px solid #262b36;padding-top:18px;margin-top:36px}code{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:#1e232d;border:1px solid #262b36;border-radius:4px;padding:1px 5px}pre{background:#171a21;border:1px solid #262b36;border-left:3px solid #7aa2f7;border-radius:6px;padding:12px 14px;overflow-x:auto;font-size:13px}.file{color:#7aa2f7;font-family:ui-monospace,Menlo,monospace;font-size:13px}.box{background:#171a21;border:1px solid #262b36;border-left:3px solid #e3b341;border-radius:8px;padding:14px 16px;margin:14px 0}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid #262b36}</style>
+</head><body>
+
+<h1>Switching sessions destroys the editor; returning repaints it</h1>
+<p>2026-08-20. Owner's design: on leaving a session, save the editor's state and tear the surface down; on returning, repaint it from that session's saved state. Today the Monaco editor is one long-lived instance that is re-pointed (<span class="file">src/routes/next/+page.svelte:837</span> <code>restoreWorkspace</code>), so nothing is ever actually destroyed — which is also how global damage (the Monarch grammar poisoning) survived every switch. The in-memory retained-tabs cache must survive: it is what makes switching back cheap (<span class="file">src/lib/shell/sessionWorkspaces.ts:1-23</span>).</p>
+
+<div class="box"><b>The design, from recon with receipts:</b> remount ONLY <code>MonacoSourceEditor</code> (the Monaco child), not <code>EditorPanel</code>. The child's own teardown already disposes everything it owns — editor instance, owned open-tab models, the external-target LRU, providers, observers, listeners (<span class="file">MonacoSourceEditor.svelte:2950-3029</span>, disposal of owned models verified at <span class="file">:3018-3029</span>). <code>EditorPanel</code> keeps its bus, status and language-bar subscriptions (<span class="file">EditorPanel.svelte:924-955</span>), so no open-file request is parked. Dirty drafts live in the store (<code>draftContent</code>, <span class="file">editorStoreOps.ts:18-35</span>), not in Monaco, so a remount cannot lose an unsaved edit. The one-shot VS Code services (<span class="file">csharpLanguageClient.ts:362-422</span>) are global and are NOT re-initialised — the fresh child only awaits the already-resolved service promise.</div>
+
+<h2>1. The changes</h2>
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><span class="file">src/routes/next/+page.svelte:1707</span></td><td>Pass a new prop to <code>&lt;EditorPanel&gt;</code>: <code>sessionKey={rail.activeOwnedId}</code>.</td></tr>
+<tr><td><span class="file">src/lib/shell/components/EditorPanel.svelte</span></td><td>Accept <code>sessionKey: string | null</code> in its props. At the <code>&lt;CodeEditor</code> render site (<span class="file">:1044</span>), wrap the component — and ONLY the component, not the surrounding chrome — in <code>{#key sessionKey}</code>. Add a comment saying why in plain English: leaving a session unmounts the Monaco child, whose teardown disposes every model and listener it owns; returning mounts a fresh one that repaints from the session's saved record.</td></tr>
+<tr><td><span class="file">src/lib/MonacoSourceEditor.svelte:1427-1463</span></td><td>Close the recon's named race: the external-lookup path can resolve AFTER teardown and create a model into a dead editor because its <code>await</code> has no destroyed check. After each <code>await</code> in that path, bail out when the component is destroyed (the component already tracks its destroyed flag for other paths — use the same one).</td></tr>
+</table>
+
+<h2>2. What must NOT change</h2>
+<ul>
+<li><code>retainTabs</code> / <code>takeRetainedTabs</code> and the whole retained-tabs mechanism (<span class="file">sessionWorkspaces.ts</span>) — untouched. The page still snapshots on leave and replays on return (<span class="file">+page.svelte:793-812, 867-879</span>); this spec only makes the surface those replays land on a FRESH one.</li>
+<li><code>ensureApi</code> / service bootstrap — untouched. If the fresh child triggers a second services start, that is a defect in the change, not something to shim around.</li>
+<li>The old shell (<span class="file">src/routes/+page.svelte</span>) — untouched.</li>
+<li>No new store, no lifecycle manager, no abstraction. The whole feature is a prop, a <code>{#key}</code>, and a destroyed-guard.</li>
+</ul>
+
+<h2>3. Verification</h2>
+<pre>cd tauri-svelte-preview
+npx tsc --noEmit
+pnpm run check:svelte
+node --experimental-strip-types src/lib/shell/components/editor/editorStartup.test.ts
+node --experimental-strip-types scripts/sessionHistoryLoad.test.ts</pre>
+<p>Passing: tsc silent; the gate ends <code>Files the /next shell owns: 0 error(s)</code>; both test files pass. The behavioural half — switch away, switch back, tabs and the active file return, unsaved edits survive, memory drops on leave — is verified by the controller and the owner in the running app; write NO UI test for it.</p>
+
+<h2>4. Size · rules</h2>
+<p>Expected diff: ~10 lines in EditorPanel, 1 line in the page, ~10 lines of guard in MonacoSourceEditor, plus comments. More than roughly 60 total means stop and propose. KISS/YAGNI bind. One problem per lane; no drive-by refactors; no CSS <code>:has()</code>; TypeScript only; plain-English comments; never mention Claude or Codex in code.</p>
+
+</body></html>
