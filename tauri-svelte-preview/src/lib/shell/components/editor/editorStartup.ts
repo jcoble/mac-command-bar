@@ -14,8 +14,8 @@
  *  2. `editorStartFailureMessage` — the plain sentence for the two ways
  *     starting can end badly: something threw, or nothing happened in time.
  *
- * PURE: no DOM, no Svelte, no timers of its own. The caller supplies the
- * frame wait and the questions about its own element.
+ * PURE: no DOM and no Svelte. The connected-host caller supplies frame waits;
+ * the services-start wait owns only its short, bounded polling timer.
  */
 
 /** How long the editor gets to appear before the reader is told it did not. */
@@ -33,6 +33,28 @@ export function retryRejectedStart(start: () => Promise<void>): () => Promise<vo
     }
     return cached;
   };
+}
+
+/** Wait briefly for a start function to be registered, then await that start. */
+export async function waitForRegisteredStart(
+  timeoutMs: number,
+  readStart: () => (() => Promise<void>) | null
+): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    const start = readStart();
+    if (start) {
+      try {
+        await start();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(25, remaining)));
+  }
 }
 
 export interface ConnectedHostWait {
