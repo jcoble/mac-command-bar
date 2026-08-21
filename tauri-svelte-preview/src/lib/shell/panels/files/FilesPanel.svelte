@@ -508,7 +508,9 @@
         searchText={explorer.query}
         sortCallback={sortTreeNodes}
         shouldToggleOnNodeClick={false}
+        shouldUseInternalSearchIndex={false}
         useFlatRendering={true}
+        progressiveRender={false}
         virtualScroll={true}
         virtualRowHeight={28}
         virtualOverscan={6}
