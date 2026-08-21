@@ -1,3 +1,9 @@
+<script module lang="ts">
+  // EXPERIMENT: true renders every turn in document flow for the memory A/B.
+  // Flip to false to restore the existing TanStack virtualizer path below.
+  const PLAIN_RENDER = false;
+</script>
+
 <script lang="ts">
   import { tick } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
@@ -136,19 +142,25 @@
 
   let rowEstimates: number[] = [];
   $effect(() => {
+    if (PLAIN_RENDER) return;
     rowEstimates = renderedGroups.map(rowHeightEstimate);
   });
 
-  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: 0,
-    getScrollElement: () => host,
-    estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
-    overscan: 6
-  });
+  // EXPERIMENT: the cast leaves the virtual store untouched and unsubscribed
+  // while plain rendering is enabled; the false branch is the original setup.
+  const virtualizer = PLAIN_RENDER
+    ? (undefined as never)
+    : createVirtualizer<HTMLDivElement, HTMLDivElement>({
+        count: 0,
+        getScrollElement: () => host,
+        estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
+        overscan: 6
+      });
 
   let appliedRowCount = -1;
   let appliedHost: HTMLDivElement | null = null;
   $effect(() => {
+    if (PLAIN_RENDER) return;
     // Guarded because setOptions publishes the store, and this effect reads it:
     // without the guard the two would drive each other in a loop.
     const count = renderedGroups.length;
@@ -364,7 +376,7 @@
       return;
     }
     if (framesLeft === 0) return finishAnimation();
-    if (framesLeft === 8) {
+    if (!PLAIN_RENDER && framesLeft === 8) {
       const rowIndex = renderedGroups.findIndex((group) => group.items.some((item) => item.itemId === itemId));
       if (rowIndex >= 0) $virtualizer.scrollToIndex(rowIndex, { align: 'start' });
     }
@@ -412,6 +424,7 @@
   // used by send anchoring, then let the normal scroll-position gate backfill.
   function hydrateVisibleWindow(framesLeft = 8): void {
     hydrationFrame = null;
+    if (PLAIN_RENDER) return;
     if (!host || !list || renderedItems.length === 0) return;
     for (const row of list.querySelectorAll<HTMLDivElement>('.turn-row')) {
       $virtualizer.measureElement(row);
@@ -424,6 +437,7 @@
   let hydratedRevision = -1;
   let hydratedWindowId = '';
   $effect(() => {
+    if (PLAIN_RENDER) return;
     const revision = timelineRevision;
     const windowId = renderWindowId;
     if (!host || renderedGroups.length === 0) return;
@@ -588,21 +602,18 @@
     {#if renderedItems.length === 0}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     <div
       class="timeline-list"
+      class:plain-render={PLAIN_RENDER}
       data-testid="conversation-timeline-list"
       bind:this={list}
-      style={`height:${$virtualizer.getTotalSize() + (showActiveTurnTail ? viewportHeight : 0)}px`}
+      style={PLAIN_RENDER ? undefined : `height:${$virtualizer.getTotalSize() + (showActiveTurnTail ? viewportHeight : 0)}px`}
     >
-      {#each $virtualizer.getVirtualItems() as row (row.key)}
-        {@const group = renderedGroups[row.index]}
-        {#if group}
+      {#if PLAIN_RENDER}
+        <!-- EXPERIMENT: TanStack's default row key is the row index. Keep that
+             key while mounting every group, and keep itemId keys unchanged. -->
+        {#each renderedGroups as group, rowIndex (rowIndex)}
           {@const expanded = turnExpanded(group)}
           {@const firstWorkItemId = group.workItemIds[0]}
-          <div
-            class="turn-row"
-            data-index={row.index}
-            use:measureRow
-            style={`transform:translateY(${row.start}px)`}
-          >
+          <div class="turn-row" data-index={rowIndex}>
             {#each group.items as item (item.itemId)}
               {@const workItem = group.workItemIds.includes(item.itemId)}
               {#if group.turnId !== null && item.itemId === firstWorkItemId && group.completed}
@@ -628,8 +639,47 @@
               {/if}
             {/each}
           </div>
-        {/if}
-      {/each}
+        {/each}
+      {:else}
+        {#each $virtualizer.getVirtualItems() as row (row.key)}
+          {@const group = renderedGroups[row.index]}
+          {#if group}
+            {@const expanded = turnExpanded(group)}
+            {@const firstWorkItemId = group.workItemIds[0]}
+            <div
+              class="turn-row"
+              data-index={row.index}
+              use:measureRow
+              style={`transform:translateY(${row.start}px)`}
+            >
+              {#each group.items as item (item.itemId)}
+                {@const workItem = group.workItemIds.includes(item.itemId)}
+                {#if group.turnId !== null && item.itemId === firstWorkItemId && group.completed}
+                  <button
+                    class="turn-fold"
+                    data-testid="conversation-turn-fold"
+                    type="button"
+                    aria-expanded={expanded}
+                    onclick={() => toggleTurn(group)}
+                  >
+                    <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
+                    <span class="turn-fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
+                  </button>
+                {/if}
+                {#if !workItem || expanded}
+                  <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
+                  {#if showWorking && item.itemId === anchoredUserItemId}
+                    <div class="working-row" data-testid="conversation-working-indicator" role="status">
+                      <WorkingSpinner seed={group.turnId ?? item.itemId} />
+                      <span>Working…</span>
+                    </div>
+                  {/if}
+                {/if}
+              {/each}
+            </div>
+          {/if}
+        {/each}
+      {/if}
       {#if showActiveTurnTail}
         <!-- Inside the list and directly after the last row, which is where it
              sat before the transcript was virtualized. Outside it, this became a
@@ -638,7 +688,9 @@
         <div
           class="active-turn-tail"
           bind:this={tail}
-          style={`transform:translateY(${$virtualizer.getTotalSize()}px);height:${viewportHeight}px`}
+          style={PLAIN_RENDER
+            ? `height:${viewportHeight}px`
+            : `transform:translateY(${$virtualizer.getTotalSize()}px);height:${viewportHeight}px`}
           aria-hidden="true"
         ></div>
       {/if}
@@ -682,6 +734,8 @@
      above it, which is not how a conversation reads. */
   .timeline-list{position:relative;flex:none;width:min(820px,100%);min-height:1px;margin:0 auto}
   .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:16px;width:100%;padding-bottom:16px}
+  /* EXPERIMENT: normal flow replaces absolute virtual rows for the memory A/B. */
+  .timeline-list.plain-render .turn-row{position:relative}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
   .turn-fold:hover{color:var(--color-text)}
   .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
@@ -690,6 +744,7 @@
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{display:flex;align-items:center;gap:8px;min-height:20px;color:var(--color-text-3);font-size:13px}
   .active-turn-tail{position:absolute;top:0;left:0;width:100%;pointer-events:none}
+  .timeline-list.plain-render .active-turn-tail{position:relative}
   /* A disc under the middle of the transcript, holding one arrow. It sits over
      the column it scrolls rather than off in the corner, and it says what it
      does by pointing, so it stays out of the reading it is offering to move. */

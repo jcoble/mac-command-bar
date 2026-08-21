@@ -42,31 +42,28 @@
 <div class="right-panel">
   <RightPanelTabs {activeId} {onSelect} />
 
+  <!-- EXPERIMENT (2026-08-20): natural-lifecycle build — only the active
+       panel is mounted; switching tabs destroys the old one and creates the
+       new one. The always-mounted CSS show/hide stack is bypassed. -->
   <div class="panel-bodies">
-    <div class="panel-body" class:showing={activeId === 'files'}>
-      <FilesPanel visible={activeId === 'files'} {root} {ownedId} />
-    </div>
-    <div class="panel-body" class:showing={activeId === 'source-control'}>
-      <SourceControlPanel visible={activeId === 'source-control'} {root} {ownedId} />
-    </div>
-    <div class="panel-body" class:showing={activeId === 'worktrees'}>
-      <WorktreesPanel visible={activeId === 'worktrees'} {root} {ownedId} />
-    </div>
-    <div class="panel-body" class:showing={activeId === 'run'}>
-      <RunPanel visible={activeId === 'run'} {root} {ownedId} />
-    </div>
-    <div class="panel-body" class:showing={activeId === 'context'}>
-      <SessionContextPanel visible={activeId === 'context'} {root} {ownedId} />
-    </div>
-    <div class="panel-body" class:showing={activeId === 'agents'}>
-      <AgentsPanel visible={activeId === 'agents'} {root} {ownedId} />
-    </div>
-    <div class="panel-body" class:showing={activeId === 'browser'}>
-      <BrowserPanel visible={activeId === 'browser'} {root} {ownedId} />
-    </div>
-    <div class="panel-body" class:showing={activeId === 'history'}>
-      <HistoryPanel visible={activeId === 'history'} {root} {ownedId} />
-    </div>
+    {#if activeId === 'files'}
+      <!-- EXPERIMENT (2026-08-20): file tree off for memory profiling. -->
+      <div class="panel-body showing"></div>
+    {:else if activeId === 'source-control'}
+      <div class="panel-body showing"><SourceControlPanel visible={true} {root} {ownedId} /></div>
+    {:else if activeId === 'worktrees'}
+      <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
+    {:else if activeId === 'run'}
+      <div class="panel-body showing"><RunPanel visible={true} {root} {ownedId} /></div>
+    {:else if activeId === 'context'}
+      <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
+    {:else if activeId === 'agents'}
+      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
+    {:else if activeId === 'browser'}
+      <div class="panel-body showing"><BrowserPanel visible={true} {root} {ownedId} /></div>
+    {:else if activeId === 'history'}
+      <div class="panel-body showing"><HistoryPanel visible={true} {root} {ownedId} /></div>
+    {/if}
   </div>
 </div>
 

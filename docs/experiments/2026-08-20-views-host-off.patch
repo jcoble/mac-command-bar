@@ -1,0 +1,30 @@
+diff --git a/tauri-svelte-preview/src/lib/shell/editor/csharpLanguageClient.ts b/tauri-svelte-preview/src/lib/shell/editor/csharpLanguageClient.ts
+index 9f1804f..6040195 100644
+--- a/tauri-svelte-preview/src/lib/shell/editor/csharpLanguageClient.ts
++++ b/tauri-svelte-preview/src/lib/shell/editor/csharpLanguageClient.ts
+@@ -9,7 +9,6 @@ import getFileServiceOverride, {
+   registerFileSystemOverlay,
+ } from "@codingame/monaco-vscode-files-service-override";
+ import getKeybindingsServiceOverride from "@codingame/monaco-vscode-keybindings-service-override";
+-import getScmServiceOverride from "@codingame/monaco-vscode-scm-service-override";
+ import {
+   LanguageClientWrapper,
+   type LanguageClientConfig,
+@@ -371,16 +370,10 @@ async function ensureApi(root: string): Promise<void> {
+       const workspaceUri = vscode.Uri.file(root);
+       const config: MonacoVscodeApiConfig = {
+         $type: "extended",
+-        // VS Code's own views - Source Control, Explorer - only lay out inside an
+-        // element carrying the `monaco-workbench` class, because every height rule
+-        // they depend on is scoped to it. Handing the host `document.body` is what
+-        // puts that class somewhere our panes can sit under; attaching a view to a
+-        // sibling instead leaves it correctly populated and zero pixels tall.
+-        viewsConfig: { $type: "ViewsService", htmlContainer: document.body },
++        viewsConfig: { $type: "EditorService" },
+         serviceOverrides: {
+           ...getFileServiceOverride(),
+           ...getKeybindingsServiceOverride(),
+-          ...getScmServiceOverride(),
+         },
+         logLevel: LogLevel.Info,
+         workspaceConfig: {

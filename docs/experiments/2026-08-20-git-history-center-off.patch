@@ -1,0 +1,16 @@
+diff --git a/tauri-svelte-preview/src/routes/next/+page.svelte b/tauri-svelte-preview/src/routes/next/+page.svelte
+index c2e3314..6045d49 100644
+--- a/tauri-svelte-preview/src/routes/next/+page.svelte
++++ b/tauri-svelte-preview/src/routes/next/+page.svelte
+@@ -1731,7 +1731,10 @@
+ 
+ <!-- The whole commit history as a table, given the width of the middle. It reads
+      `gitPanel` itself and takes no props, the same way the diff above does. -->
+-{#snippet gitHistoryArea()}<GitHistoryView />{/snippet}
++<!-- EXPERIMENT 2026-08-20: Git History center view off for a memory A/B.
++     Restore the GitHistoryView line to re-enable. -->
++{#snippet gitHistoryArea()}<div></div>{/snippet}
++<!-- {#snippet gitHistoryArea()}<GitHistoryView />{/snippet} -->
+ 
+ <!-- The webview's own right-click menu runs a native tracking loop that stalls
+      the whole window for seconds, which reads as a freeze. Surfaces with a menu
