@@ -7,6 +7,7 @@ import {
   findSourceReferenceTargets,
   findSourceSearchMatches,
   previewFromContent,
+  type SourceDirectoryEntry,
   type SourceDefinitionTarget,
   type SourcePreview,
   type SourceRecord,
@@ -1084,6 +1085,40 @@ export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise
     truncated,
     stats
   };
+}
+
+export async function listLocalSourceDirectory(
+  rootPath: string,
+  directoryPath: string
+): Promise<SourceDirectoryEntry[]> {
+  const root = normalizeRootPath(rootPath);
+  const directory = normalizeRootPath(directoryPath);
+  const relative = path.relative(root, directory);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Source directory is outside the project root');
+  }
+
+  const directoryStats = await stat(directory).catch((error: unknown) => {
+    throw new Error(`Could not read source directory metadata: ${errorMessage(error)}`);
+  });
+  if (!directoryStats.isDirectory()) throw new Error('Source path is not a directory');
+
+  const entries = await readdir(directory, { withFileTypes: true });
+  return entries
+    .filter((entry) => {
+      if (entry.isSymbolicLink()) return false;
+      if (entry.isDirectory()) return skipDirReason(entry.name) === null;
+      return entry.isFile() && isSourceFile(path.join(directory, entry.name));
+    })
+    .map((entry) => ({
+      path: path.join(directory, entry.name),
+      name: entry.name,
+      isDirectory: entry.isDirectory()
+    }))
+    .sort((left, right) => {
+      if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+      return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
 }
 
 export async function readLocalSourceFile(filePath: string): Promise<SourcePreview> {

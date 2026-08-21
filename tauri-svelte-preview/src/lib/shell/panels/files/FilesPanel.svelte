@@ -22,10 +22,9 @@
    * `openFileInEditor`, which puts the request on the bus and brings the editor
    * forward in one go.
    *
-   * The tree maths lives in `fileTreeModel.ts` (pure, tested), and which items
-   * a row's menu carries in `filesPanelActions.ts` (pure, tested). The scan
-   * itself belongs to `explorerService`, which the shell activates when a
-   * session is picked; this panel asks it to run again and to stop.
+   * The root listing contains only top-level entries. Opening a folder asks for
+   * only that folder's immediate children; closing it releases those rows.
+   * `fileTreeModel.ts` then windows the visible flattened list.
    */
   import FolderTree from '@lucide/svelte/icons/folder-tree';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
@@ -39,14 +38,16 @@
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import {
-    EXPLORER_SCAN_LIMIT,
+    loadDirectory,
     refresh,
+    refreshChangedPath,
     scanRoot,
-    stopScan
+    stopScan,
+    unloadDirectory
   } from '$lib/shell/explorer/explorerService';
   import {
     explorer,
-    explorerRecords,
+    explorerNodes,
     selectPath,
     setQuery,
     setScrollTop,
@@ -54,13 +55,12 @@
   } from '$lib/shell/explorer/explorerStore.svelte';
   import { projectRootLabel } from '$lib/shell/explorer/explorerTree';
   import { openFileInEditor } from '$lib/shell/workbenchNavigation';
-  import { filterSourceRecords } from '$lib/sourceData';
   import { isNativeTauriRuntime, moveToTrashFromTauri } from '$lib/tauriSource';
 
   import FileTreeRow from './FileTreeRow.svelte';
   import {
     allDirectoryPaths,
-    fileTreeNodesFromRecords,
+    filterFileTreeNodes,
     toggleDirectory,
     visibleFileTreeNodes,
     windowFileTreeNodes,
@@ -100,12 +100,9 @@
   /** Why the last action did not happen. Cleared by the next one. */
   let actionError = $state<string | null>(null);
 
-  const records = $derived(explorerRecords());
+  const loadedNodes = $derived(explorerNodes());
   const filtering = $derived(explorer.query.trim().length > 0);
-  const matchedRecords = $derived(filterSourceRecords(records, explorer.query));
-  const nodes = $derived(
-    fileTreeNodesFromRecords(matchedRecords, { rootPath: explorer.root ?? '' })
-  );
+  const nodes = $derived(filterFileTreeNodes(loadedNodes, explorer.query));
   /** Filtering opens everything: a match six folders down should be visible
    * without any clicking. */
   const openFolders = $derived(filtering ? allDirectoryPaths(nodes) : expanded);
@@ -114,10 +111,16 @@
     windowFileTreeNodes(rows, explorer.scrollTop, explorer.viewportHeight)
   );
   const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
-  const listedCount = $derived(filtering ? matchedRecords.length : records.length);
+  const listedCount = $derived(nodes.length);
   /** True once a scan has finished, which is also when the folder became a
    * place the file-system plugin is allowed to look — see the watcher below. */
   const listed = $derived(explorer.lastScanFinishedAt !== null);
+
+  $effect(() => {
+    root;
+    expanded = new Set();
+    pending = null;
+  });
 
   /**
    * Follow the tree's own height and scroll offset, so the rendered window
@@ -144,14 +147,12 @@
    * program writes turns up without anyone pressing Refresh.
    *
    * Only while it is in front: a build running behind a hidden panel would
-   * otherwise have it re-listing the project every third of a second for
-   * nothing. A burst of writes is already collapsed into one refresh by the
-   * plugin's own delay, a refresh that arrives while the previous one is still
-   * walking the tree is dropped rather than queued, and an event about nothing
-   * but build output is dropped before it becomes a refresh at all.
+   * otherwise have it re-listing loaded directories every third of a second
+   * for nothing. A burst of writes is collapsed by the plugin's delay, and an
+   * event about nothing but build output is dropped before it becomes a read.
    *
    * Not before the first listing has finished. The folder is only a place the
-   * plugin may look once `list_source_files` has added it to the plugin's scope
+   * plugin may look once `list_source_directory` has added it to the plugin's scope
    * (`main.rs`, `allow_workspace_root_in_fs_scope`), and `explorer.root` is set
    * before that call rather than after — starting the watch on the root alone
    * races the grant, and a watch refused once is never asked for again.
@@ -169,7 +170,7 @@
           target,
           (event) => {
             if (explorer.scanning || isBuildOutputOnly(event.paths)) return;
-            refresh();
+            for (const path of event.paths) refreshChangedPath(path);
           },
           { recursive: true, delayMs: 300 }
         );
@@ -207,7 +208,7 @@
   }
 
   /**
-   * Folders the file scan never descends into, so a write inside one can never
+   * Folders the directory reader never exposes, so a write inside one can never
    * change the listed tree. These four are the ones a build or a git command
    * writes to constantly; the scanner's own full list is `skip_dir_reason` in
    * `src-tauri/src/main.rs` and `skipDirReason` in `src/lib/server/localSourceFs.ts`.
@@ -217,7 +218,7 @@
   /**
    * True when every path in a watch event sits inside one of those folders.
    * A build writing into `target/` fires the watcher continuously, and each
-   * event would otherwise re-walk the whole project for a tree that cannot have
+   * event would otherwise re-read a directory for a tree that cannot have
    * changed. One path outside them is enough to make the event worth a refresh.
    */
   function isBuildOutputOnly(paths: readonly string[]): boolean {
@@ -250,7 +251,10 @@
       void runNamelessAction(node, id);
       return;
     }
-    if (id !== 'rename' && !expanded.has(node.path)) expanded = toggleDirectory(expanded, node);
+    if (id !== 'rename' && !expanded.has(node.path)) {
+      expanded = toggleDirectory(expanded, node);
+      void loadDirectory(node.path, node.depth + 1);
+    }
     pending = { kind: id, path: node.path };
     pendingName = id === 'rename' ? node.name : '';
   }
@@ -310,7 +314,17 @@
   /** A folder opens and closes; a file is opened in the center Editor tab. */
   function onRowClick(node: FileTreeNode): void {
     if (node.isDirectory) {
-      expanded = toggleDirectory(expanded, node);
+      if (expanded.has(node.path)) {
+        unloadDirectory(node.path);
+        expanded = new Set(
+          [...expanded].filter(
+            (path) => path !== node.path && !path.startsWith(`${node.path}/`)
+          )
+        );
+      } else {
+        expanded = toggleDirectory(expanded, node);
+        void loadDirectory(node.path, node.depth + 1);
+      }
       return;
     }
     selectPath(node.path);
@@ -326,7 +340,7 @@
         <Input
           type="search"
           class="h-7 w-32"
-          placeholder="Filter"
+          placeholder="Filter loaded"
           aria-label="Filter files"
           value={explorer.query}
           oninput={onFilterInput}
@@ -356,7 +370,7 @@
     >
       {#snippet icon()}<FolderTree />{/snippet}
     </EmptyState>
-  {:else if explorer.error}
+  {:else if explorer.error && loadedNodes.length === 0}
     <EmptyState title="Could not list the files" body={explorer.error}>
       {#snippet icon()}<TriangleAlert />{/snippet}
       {#snippet actions()}
@@ -369,25 +383,22 @@
         </Button>
       {/snippet}
     </EmptyState>
-  {:else if explorer.scanning && records.length === 0}
-    <EmptyState title="Listing files…" body="Reading this project's folders.">
+  {:else if explorer.scanning && loadedNodes.length === 0}
+    <EmptyState title="Listing files…" body="Reading this project's top-level entries.">
       {#snippet icon()}<FolderTree />{/snippet}
     </EmptyState>
   {:else if rows.length === 0}
     <EmptyState
       title={filtering ? 'Nothing matches that filter' : 'No source files here'}
       body={filtering
-        ? 'Clear the filter to see the whole tree.'
+        ? 'Clear the filter to see the loaded folders.'
         : 'This folder has no files the app can open, or it could not be read.'}
     >
       {#snippet icon()}<FolderTree />{/snippet}
     </EmptyState>
   {:else}
-    {#if explorer.truncated}
-      <p class="border-b px-3 py-2 text-sm leading-snug text-muted-foreground">
-        Showing the first {(explorer.limit || EXPLORER_SCAN_LIMIT).toLocaleString()} files — this project
-        has more.
-      </p>
+    {#if explorer.error}
+      <p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{explorer.error}</p>
     {/if}
     {#if actionError}
       <p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{actionError}</p>
@@ -437,4 +448,3 @@
     />
   </div>
 {/snippet}
-

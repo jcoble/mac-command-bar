@@ -3,6 +3,7 @@ import type {
   SourceCodeAction,
   SourceDiagnostic,
   SourceCompletionItem,
+  SourceDirectoryEntry,
   SourceDefinitionTarget,
   SourceDocumentHighlight,
   SourceInlayHint,
@@ -561,6 +562,18 @@ export async function listSourceFilesFromTauri(
     query: query.trim() || null,
     scanId
   });
+}
+
+export async function listSourceDirectoryFromTauri(
+  root: string,
+  directory: string
+): Promise<SourceDirectoryEntry[] | null> {
+  if (!isTauriRuntime()) {
+    return postLocalSourceBridge<SourceDirectoryEntry[]>('list-directory', { root, directory });
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceDirectoryEntry[]>('list_source_directory', { root, directory });
 }
 
 export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean> {

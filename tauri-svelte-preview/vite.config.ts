@@ -9,6 +9,7 @@ import {
   countLocalSourceReferences,
   findLocalSourceDefinitions,
   findLocalSourceReferences,
+  listLocalSourceDirectory,
   readLocalSourceFile,
   scanLocalAgentSessions,
   scanLocalSourceFiles,
@@ -140,6 +141,16 @@ function createLocalSourceBridgeMiddleware() {
               query: stringOrNull(body.query),
               limit: numberOrNull(body.limit),
             })
+          );
+          break;
+        case "/__mcb/source/list-directory":
+          sendJSON(
+            response,
+            200,
+            await listLocalSourceDirectory(
+              String(body.root ?? ""),
+              String(body.directory ?? "")
+            )
           );
           break;
         case "/__mcb/source/read":

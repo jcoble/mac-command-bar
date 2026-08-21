@@ -14,6 +14,12 @@ export type SourceRecord = {
   byteCount: number;
 };
 
+export type SourceDirectoryEntry = {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+};
+
 export type SourcePreview = SourceRecord & {
   content: string;
   lineCount: number;

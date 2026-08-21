@@ -86,6 +86,14 @@ struct SourceRecord {
     byte_count: u64,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceDirectoryEntry {
+    path: String,
+    name: String,
+    is_directory: bool,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceScanResult {
@@ -672,6 +680,20 @@ async fn list_source_files(
     }
 
     result
+}
+
+#[tauri::command]
+async fn list_source_directory(
+    app: tauri::AppHandle,
+    root: String,
+    directory: String,
+) -> Result<Vec<SourceDirectoryEntry>, String> {
+    allow_workspace_root_in_fs_scope(&app, &root);
+    tauri::async_runtime::spawn_blocking(move || {
+        list_source_directory_sync(PathBuf::from(root), PathBuf::from(directory))
+    })
+    .await
+    .map_err(|error| format!("Source directory task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2094,6 +2116,52 @@ fn list_source_files_sync_with_cancellation(
         truncated,
         stats,
     })
+}
+
+fn list_source_directory_sync(
+    root: PathBuf,
+    directory: PathBuf,
+) -> Result<Vec<SourceDirectoryEntry>, String> {
+    let canonical_root = std::fs::canonicalize(&root)
+        .map_err(|error| format!("Could not read source root metadata: {error}"))?;
+    let canonical_directory = std::fs::canonicalize(&directory)
+        .map_err(|error| format!("Could not read source directory metadata: {error}"))?;
+    if !canonical_directory.starts_with(&canonical_root) {
+        return Err("Source directory is outside the project root".to_string());
+    }
+    if !canonical_directory.is_dir() {
+        return Err("Source path is not a directory".to_string());
+    }
+
+    let mut entries = std::fs::read_dir(&directory)
+        .map_err(|error| format!("Could not read source directory: {error}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if file_type.is_symlink() {
+                return None;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_directory = file_type.is_dir();
+            if (is_directory && skip_dir_reason(&name).is_some())
+                || (!is_directory && (!file_type.is_file() || !is_source_file(&entry.path())))
+            {
+                return None;
+            }
+            Some(SourceDirectoryEntry {
+                path: entry.path().display().to_string(),
+                name,
+                is_directory,
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        right
+            .is_directory
+            .cmp(&left.is_directory)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    Ok(entries)
 }
 
 fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
@@ -6050,6 +6118,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             read_backend_capabilities,
             list_source_files,
+            list_source_directory,
             cancel_source_scan,
             validate_project_root,
             read_source_file,
