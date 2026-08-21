@@ -486,34 +486,14 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     if (!folder || !path) return;
 
     activate(folder);
-    // When the panel is already on this repository the file list is likely
-    // loaded; going through selectFile keeps the deleted-file wording. On a
-    // fresh activation the status read is still in flight, so the diff is read
-    // directly rather than after it lands.
+    // A remembered diff can outlive the file or the change it described. Get
+    // current status before touching the path so a stale session snapshot is
+    // cleared instead of surfacing the backend's missing-file error.
+    if (!state.status) await refreshStatus();
+    if (state.root !== folder) return;
     const known = (state.status?.files ?? []).find((file) => file.relativePath === path);
     if (known) return selectFile(known);
-
-    state.selectedPath = path;
-    state.selectedDiff = null;
-    state.diffError = '';
-
-    const id = diffGuard.next();
-    state.diffLoading = true;
-    try {
-      const diff = await backend.readDiff(folder, absolutePathWithin(folder, path));
-      if (!stillCurrent(diffGuard, id, folder)) return;
-      if (!diff) {
-        state.desktopOnly = true;
-        state.diffError = DESKTOP_ONLY_MESSAGE;
-        return;
-      }
-      state.selectedDiff = diff;
-    } catch (error) {
-      if (!stillCurrent(diffGuard, id, folder)) return;
-      state.diffError = describeError(error, 'Could not read the changes for this file.');
-    } finally {
-      if (stillCurrent(diffGuard, id, folder)) state.diffLoading = false;
-    }
+    clearSelection();
   }
 
   /** Re-read the diff on screen after an action changed the working tree. */
