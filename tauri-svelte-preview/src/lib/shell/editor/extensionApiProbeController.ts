@@ -219,7 +219,12 @@ export async function createExtensionApiProbeTerminal(
     throw new Error('The extension API probe terminal cwd is outside the active root.');
   }
   const lease = await runtime.terminalService.createProbe(owned, runtime.terminalHost);
-  requireCurrent(request);
+  try {
+    requireCurrent(request);
+  } catch (error) {
+    await lease?.dispose();
+    throw error;
+  }
   if (!lease) throw new Error('The extension API probe terminal could not be created.');
   terminalLease = lease;
   return { ownedId: lease.ownedId, generation: lease.generation };
@@ -275,7 +280,12 @@ export async function acquireExtensionApiProbeScm(
     generation: current.generation,
     root: current.activeRoot
   });
-  requireCurrent(request);
+  try {
+    requireCurrent(request);
+  } catch (error) {
+    lease?.dispose();
+    throw error;
+  }
   scmLease = lease;
   return lease
     ? { ownedId: lease.ownedId, generation: lease.generation, root: lease.root }

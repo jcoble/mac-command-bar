@@ -565,6 +565,7 @@ export function createSourceIntelligence(): SourceIntelligence {
   }
 
   const waitingSpots = new Map<string, WaitingSpot>();
+  const semanticRetryTimers = new Set<ReturnType<typeof setTimeout> | number>();
   /** Exact semantic targets retained by the count that produced the number. */
   const rememberedSemanticTargets = new Map<string, SourceReferenceTarget[]>();
   /** One in-flight semantic answer shared by the margin and a Peek click. */
@@ -600,15 +601,18 @@ export function createSourceIntelligence(): SourceIntelligence {
             semanticCountRetryLimit + 1
           })`
         );
+        let retryTimer: ReturnType<typeof setTimeout> | number;
         const askAgain = () => {
+          semanticRetryTimers.delete(retryTimer);
           if (waitingSpots.get(key) !== spot) return;
           semanticScheduler.request([key]);
         };
         if (typeof window === 'undefined') {
-          setTimeout(askAgain, retryDelayMs);
+          retryTimer = setTimeout(askAgain, retryDelayMs);
         } else {
-          window.setTimeout(askAgain, retryDelayMs);
+          retryTimer = window.setTimeout(askAgain, retryDelayMs);
         }
+        semanticRetryTimers.add(retryTimer);
         return;
       }
 
@@ -946,6 +950,8 @@ export function createSourceIntelligence(): SourceIntelligence {
    */
   function stopCountingForTheOldFile(): void {
     semanticScheduler.clear();
+    for (const timer of semanticRetryTimers) clearTimeout(timer as ReturnType<typeof setTimeout>);
+    semanticRetryTimers.clear();
     heldUntilServerIsReady = [];
     const abandoned = [...waitingSpots.values()];
     waitingSpots.clear();
