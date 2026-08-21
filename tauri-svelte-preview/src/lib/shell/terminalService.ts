@@ -3,15 +3,14 @@
  *
  * Everything that touches a PTY goes through here: ONE backend output listener
  * for the whole app (not one per view), one `ownedId -> ptySessionId` map, and
- * one manager instance holding the live views.
+ * one manager instance holding the active view.
  *
  * Two rules this module exists to enforce:
  *
  * 1. **Exactly one listener.** The old shell registered a listener per terminal,
  *    so output was written N times and every re-open leaked another
- *    subscription. Here `attach()` is idempotent and routes by sessionId through
- *    `manager.feedSession`, which writes to the view REGARDLESS of visibility —
- *    that is what keeps background conversations live.
+ *    subscription. Here `attach()` is idempotent. Inactive output stays in the
+ *    backend scrollback ring; only the active session has an xterm view to feed.
  * 2. **`dispose()` never kills a PTY.** The old shell's
  *    `disposeEmbeddedTerminal` closed the backend session on teardown, so a
  *    dev-server reload murdered every running agent. Teardown here only
@@ -118,18 +117,24 @@ export type TerminalService = {
    * so the view is built and then marked terminated.
    *
    * `size` is the PTY's REAL geometry, straight off the backend's
-   * `TerminalSessionInfo`. Pass it: on a reload only ONE view is visible, and
-   * every other host is `display: none`, so `fit()` cannot measure and the view
-   * would sit at xterm's 80x24 default while the scrollback it is about to
-   * replay was wrapped at the PTY's true width. The size is applied BEFORE the
-   * hydrating write, and it also seeds the resize gatekeeper so the first
-   * `show()` of an unchanged-size view costs no backend call at all.
+   * `TerminalSessionInfo`. Pass it: a new host begins at `display: none`, so
+   * `fit()` cannot measure before the manager shows it and the view would sit at
+   * xterm's 80x24 default while its scrollback was wrapped at the PTY's true
+   * width. The size is applied BEFORE the hydrating write, and it also seeds the
+   * resize gatekeeper so the first `show()` costs no redundant backend call.
    */
   adoptExisting(
     owned: OwnedSession,
     host: HTMLElement,
     size?: { cols: number; rows: number } | null
   ): Promise<boolean>;
+  /** Remember a surviving PTY without allocating an xterm view for it. */
+  trackExisting(
+    owned: OwnedSession,
+    size?: { cols: number; rows: number } | null
+  ): boolean;
+  /** Drop one xterm view while leaving its PTY and routing metadata intact. */
+  releaseView(ownedId: string): void;
   createProbe(owned: OwnedSession, host: HTMLElement): Promise<OwnedTerminalProbe | null>;
   /** Make one owned session's terminal the visible one. */
   show(ownedId: string): void;
@@ -578,9 +583,9 @@ export function createTerminalService(opts: {
     attaching = (async () => {
       const stop = await backend.listen((payload: TerminalOutputPayload): void => {
         if (payload.data) {
-          // Feed FIRST, including on the terminating payload, so the last bytes
-          // an agent printed are not lost. The manager writes to hidden views
-          // too — that is what keeps background sessions live.
+          // Feed FIRST, including on the terminating payload, so the active
+          // view gets the last bytes an agent printed. An inactive session has
+          // no view here; its backend scrollback ring remains the authority.
           manager.feedSession(payload.sessionId, payload.data);
         }
         if (!payload.terminated) {
@@ -655,6 +660,10 @@ export function createTerminalService(opts: {
     // Seed the gatekeeper with the size the backend actually opened the PTY at,
     // so a fit that agrees with it sends nothing.
     lastSizeByPty.set(info.sessionId, `${info.cols}x${info.rows}`);
+    // The reader may have selected another session while the backend was
+    // starting. Keep the new PTY mapped, but never pin an xterm to a host Svelte
+    // has already removed; selecting this session later hydrates it normally.
+    if (host.isConnected === false) return info.sessionId;
     ensureViewFor(owned.ownedId, { host, size: { cols: info.cols, rows: info.rows } });
     // Bind immediately: output for this sessionId starts arriving on the shared
     // listener the moment the process spawns, and an unbound session is dropped.
@@ -686,6 +695,9 @@ export function createTerminalService(opts: {
         : null;
 
     const scrollback = await backend.readScrollback(ptyId);
+    // Session selection can change while that read is in flight. The PTY stays
+    // tracked by `trackExisting`; only the stale frontend allocation is skipped.
+    if (host.isConnected === false) return false;
     if (scrollback) {
       // Only the tail: the ring is 16 MB, the view keeps 20000 lines.
       scrollbackCache.set(ptyId, replayTail(scrollback));
@@ -720,6 +732,25 @@ export function createTerminalService(opts: {
       scheduleRepaintNudge(ptyId, usableSize.cols, usableSize.rows);
     }
     return true;
+  }
+
+  function trackExisting(
+    owned: OwnedSession,
+    size?: { cols: number; rows: number } | null
+  ): boolean {
+    const ptyId = owned.ptySessionId;
+    if (!ptyId) return false;
+    setPty(owned.ownedId, ptyId);
+    if (size && size.cols > 0 && size.rows > 0) {
+      lastSizeByPty.set(ptyId, `${Math.trunc(size.cols)}x${Math.trunc(size.rows)}`);
+    }
+    return true;
+  }
+
+  function releaseView(ownedId: string): void {
+    const ptyId = ptyByOwned.get(ownedId);
+    if (ptyId) cancelRepaintNudge(ptyId);
+    manager.closeView(ownedId);
   }
 
   async function createProbe(
@@ -881,6 +912,8 @@ export function createTerminalService(opts: {
     attach,
     startOwned,
     adoptExisting,
+    trackExisting,
+    releaseView,
     createProbe,
     show,
     refit,

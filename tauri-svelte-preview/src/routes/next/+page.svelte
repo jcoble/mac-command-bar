@@ -51,6 +51,7 @@
 		loadConversationForRead,
 		loadConversationSessionDraft,
 		prepareConversationHandoff,
+		releaseConversationForRead,
 		rollbackConversationHandoff,
 		sendStructuredMessage,
 		startConversationEvents,
@@ -184,8 +185,6 @@
 
 	/** Hosts mount before the service finishes async init: parked here, drained later. */
 	const pendingHosts = new Map<string, HTMLElement>();
-	/** Owned ids whose surviving PTY still needs `adoptExisting` once its host mounts. */
-	const awaitingReattach = new Set<string>();
 	/** Sessions with a restart already under way. Added before the first await, so
 	 * a second click on "Start again" cannot get past it while the first click is
 	 * still waiting on the backend — two starts for one row would leave two agents
@@ -696,13 +695,9 @@
 		}
 	}
 
-	/** Park a freshly mounted host, and re-attach immediately if one is owed. */
+	/** Park the active session's freshly mounted terminal host. */
 	function registerHost(ownedId: string, host: HTMLElement): void {
 		pendingHosts.set(ownedId, host);
-		// Fire-and-forget, but never unhandled: this path has no awaiting caller.
-		void reattachIfPending(ownedId).catch((error) => {
-			if (!disposed) rail.error = `re-attach failed: ${describeError(error)}`;
-		});
 	}
 
 	/** Wait for TerminalSurface to mount the host for `ownedId`.
@@ -728,23 +723,6 @@
 			if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 8));
 		}
 		return mounted();
-	}
-
-	/** Re-attach one reload survivor; `awaitingReattach` guards double-adopting. */
-	async function reattachIfPending(ownedId: string): Promise<void> {
-		if (!service || disposed || !awaitingReattach.has(ownedId)) return;
-		awaitingReattach.delete(ownedId);
-		const host = pendingHosts.get(ownedId);
-		const session = rail.owned.find((entry) => entry.ownedId === ownedId);
-		if (!host || !session) return;
-		const size = session.ptySessionId ? (livePtySizes.get(session.ptySessionId) ?? null) : null;
-		const attached = await service.adoptExisting(session, host, size);
-		if (!attached) {
-			updateOwnedSession(ownedId, { state: "exited", ptySessionId: null });
-			await persistOwnedMetadata(ownedId);
-			return;
-		}
-		if (rail.activeOwnedId === null) await selectOwned(ownedId);
 	}
 
 	function conversationProviderFor(ownedId: string): AgentConversationProvider | null {
@@ -848,12 +826,11 @@
 		const previous = rail.activeOwnedId;
 		const switching = previous !== ownedId;
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
-		let workspaceWriteSucceeded = true;
+		let workspaceCaptured = previous === null || !switching;
 		// The strip along the bottom reports the last thing that went wrong. Left
 		// up, a start that failed in one session was still being reported while
 		// the reader worked in another; moving on is what puts it down.
 		if (switching) rail.error = null;
-		setActiveOwned(ownedId);
 		// Save the session being left BEFORE anything points the panels elsewhere.
 		// Gated the same way as the restore below: during start-up the panels are
 		// still empty, and saving that emptiness would overwrite the tabs the
@@ -861,17 +838,19 @@
 		// scan runs — including the close button, which switches sessions too).
 		if (switching && previous !== null) {
 			await flushConversationSessionDraft(previous).catch(() => undefined);
-			// EXPERIMENT (2026-08-20): natural-lifecycle build — no workspace
-			// snapshot on the way out; the center is destroyed and re-initialized
-			// per switch instead of captured and replayed.
-			// if (shellPanels.loadsAllowed()) workspaceWriteSucceeded = snapshotWorkspace(previous);
+			workspaceCaptured = shellPanels.loadsAllowed();
+			if (workspaceCaptured) snapshotWorkspace(previous);
 		}
-		if (switching && previous !== null) stopConversationTerminalProjection(previous);
+		if (switching && previous !== null) {
+			stopConversationTerminalProjection(previous);
+			service?.releaseView(previous);
+			if (workspaceCaptured) releaseConversationForRead(previous);
+		}
+		setActiveOwned(ownedId);
 		if (switching && selected) {
 			const root = selected.cwd.trim() || (selected.projectPath ?? "").trim();
 			if (root) await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root });
 		}
-		service?.show(ownedId);
 		// Point the file tree, the context cards and any tab the user has already
 		// opened at this session's project. Ignored while start-up is still
 		// re-attaching sessions, so a reload still loads nothing on its own.
@@ -879,12 +858,9 @@
 		// Clicking the session you are already on changes nothing. Putting the
 		// stored record back here would throw away every file opened since the last
 		// switch, which is the opposite of what a click on your own row means.
-		// EXPERIMENT (2026-08-20): natural-lifecycle build — no editor release,
-		// no workspace replay, no tab restore. Svelte destroy/re-init does the
-		// cleanup; sessions open fresh.
-		if (switching && false) {
+		if (switching) {
 			// Departing models must be gone before replay can create the arriving session's model.
-			if (previous !== null && workspaceWriteSucceeded) {
+			if (previous !== null && workspaceCaptured) {
 				editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
 			}
 			restoreWorkspace(ownedId);
@@ -893,6 +869,21 @@
 			// it re-opened — the session's own remembered tab wins.
 			restoreTabsFor(ownedId);
 		}
+		if (switching && selected?.ptySessionId && service) {
+			const host = await hostFor(ownedId);
+			if (!host) {
+				rail.error = `no terminal host for "${selected.title}"`;
+			} else {
+				const size = livePtySizes.get(selected.ptySessionId) ?? null;
+				try {
+					await service.adoptExisting(selected, host, size);
+					service.show(ownedId);
+				} catch (error) {
+					rail.error = `re-attach failed for "${selected.title}": ${describeError(error)}`;
+				}
+			}
+		}
+		if (!switching) service?.show(ownedId);
 		const provider = conversationProviderFor(ownedId);
 		if (selected && provider) {
 			ensureConversationSession(ownedId, provider);
@@ -1022,6 +1013,7 @@
 			nativeSessionMode: "load",
 		});
 		await persistOwnedMetadata(owned.ownedId);
+		await selectOwned(owned.ownedId);
 		const host = await hostFor(owned.ownedId);
 		if (!host) {
 			rail.error = `no terminal host for "${owned.title}"`;
@@ -1132,6 +1124,7 @@
 			resumeCommand: request.script,
 		};
 		addOwnedSession(owned);
+		await selectOwned(owned.ownedId);
 		const host = await hostFor(owned.ownedId);
 		if (!host) return null;
 		const ptySessionId = await service.startOwned(owned, host, { runCommandDirectly: true });
@@ -1242,7 +1235,6 @@
 			// to reach it. A refusal here is not worth stopping for or reporting: it
 			// means the backend could not tidy away something that is already dead,
 			// and the session is about to get a working terminal regardless.
-			awaitingReattach.delete(ownedId);
 			const closed = await service.closeOwned(ownedId, session.ptySessionId);
 			successor = closed?.successor ?? null;
 
@@ -1253,6 +1245,7 @@
 			// a process that no longer exists.
 			updateOwnedSession(ownedId, { state: "live", ptySessionId: null });
 			await persistOwnedMetadata(ownedId);
+			await selectOwned(ownedId);
 
 			const host = await hostFor(ownedId);
 			if (!host) {
@@ -1330,9 +1323,6 @@
 	 */
 	async function closeTerminal(ownedId: string): Promise<void> {
 		const session = rail.owned.find((entry) => entry.ownedId === ownedId);
-		// The row is staying, so its host stays mounted and stays claimed; only the
-		// re-attach that is now pointless is dropped.
-		awaitingReattach.delete(ownedId);
 		const result = await service?.closeOwned(ownedId, session?.ptySessionId ?? null);
 		if (result?.error) {
 			rail.error = `close failed for "${session?.title ?? ownedId}": ${describeError(result.error)}`;
@@ -1369,8 +1359,8 @@
 		// store, a removed session came back every time the app opened.
 		await deleteAgentConversationSessionFromTauri(ownedId);
 		pendingHosts.delete(ownedId);
-		awaitingReattach.delete(ownedId);
 		removeOwnedSession(ownedId);
+		releaseConversationForRead(ownedId);
 		removeConversationSession(ownedId);
 		stopConversationTerminalProjection(ownedId);
 		// A removed row takes its stack tag with it, rather than leaving one
@@ -1506,9 +1496,13 @@
 					...reattachable,
 					...owned.filter((entry) => entry.state === "exited" && entry.ptySessionId),
 				];
-				// Claim them BEFORE the hosts mount, or `registerHost` races past.
-				for (const session of attachable) awaitingReattach.add(session.ownedId);
 				hydrateOwned(owned);
+				// Keep every PTY routable for exit/close events without creating its
+				// xterm view. Only the selected survivor is hydrated below.
+				for (const session of attachable) {
+					const size = session.ptySessionId ? (livePtySizes.get(session.ptySessionId) ?? null) : null;
+					service.trackExisting(session, size);
+				}
 				// The per-session tabs and tree state, read once. Sessions that did not
 				// survive the reconcile take their records with them.
 				workspaces = pruneWorkspaces(
@@ -1516,22 +1510,13 @@
 					owned.map((entry) => entry.ownedId),
 				);
 				writeWorkspaces(window.localStorage, workspaces);
-				// One survivor's failure must cost neither the others their re-attach nor
-				// the Resume group its scan: collect, keep going, report once.
-				const failed: string[] = [];
-				for (const session of attachable) {
-					await hostFor(session.ownedId);
-					try {
-						await reattachIfPending(session.ownedId);
-					} catch (error) {
-						failed.push(`"${session.title}" (${describeError(error)})`);
-					}
-				}
-				// scanRail CLEARS rail.error, so both reports go after it.
+				const initial = attachable[0] ?? null;
+				if (initial) await selectOwned(initial.ownedId);
+				const activationError = rail.error;
 				await scanRail();
-				if (failed.length > 0 && !disposed) {
+				if (activationError) {
 					const prefix = rail.error ? `${rail.error}; ` : "";
-					rail.error = `${prefix}could not re-attach ${failed.join(", ")}`;
+					rail.error = `${prefix}${activationError}`;
 				}
 			} catch (error) {
 				if (!disposed) rail.error = `shell start-up failed: ${describeError(error)}`;
@@ -1573,7 +1558,6 @@
 			service = null;
 			void disposeExtensionApiProbeRuntime().finally(() => serviceToDispose?.dispose());
 			pendingHosts.clear();
-			awaitingReattach.clear();
 			livePtySizes.clear();
 			// The theme painted inline colors onto <html>, above the scoping that
 			// keeps the old shell on its own palette. Leaving this page takes them
@@ -1631,13 +1615,9 @@
        that runs when the panel is shown does nothing. The surface says when a
        host appears, changes size, or the terminal font lands. -->
 	<!-- A draft is LAYERED over the conversation rather than replacing it: the
-       terminal hosts of every live session live inside this component, and
-       unmounting it to show a draft would take them down with it. -->
+       active terminal host lives inside this component, and unmounting it to
+       show a draft would take the running session off screen. -->
 	<div class="session-area">
-		<!-- EXPERIMENT (2026-08-20): natural-lifecycle build — the center is
-         destroyed and re-created per switch; xterm views survive in the
-         module-level terminal manager and re-attach to the new host. -->
-		<!-- {#key rail.activeOwnedId} -->
 		<ConversationSurface
 			bind:this={conversationSurface}
 			owned={rail.owned}
@@ -1649,7 +1629,6 @@
 			onForkNativeCli={forkNativeCli}
 			onReturnToStructured={returnToStructured}
 		/>
-		<!-- {/key} -->
 		{#if draftOpen}
 			<DraftSessionSurface
 				sessionRoots={deriveThreadStartProjects(rail.owned.map((session) => session.projectPath ?? session.cwd)).map(
@@ -1669,12 +1648,9 @@
 	<!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight.
        Except while a session's files are being put back — that is not a request for anything, and
        it must not drag the user off the terminal they were watching. -->
-	<!-- EXPERIMENT (2026-08-20): natural-lifecycle build — mounted only while
-       the Editor tab is at the front. -->
-	<!-- {#if centerTab === 'editor'} -->
 	<EditorPanel
 		bind:this={editorPanel}
-		showing={true}
+		showing={centerTab === "editor"}
 		onCloseAllEditors={clearAllEditorWorkspaceRecords}
 		onFileOpened={() => {
 			if (!restoringWorkspace) selectCenterTab("editor");
@@ -1687,7 +1663,6 @@
 				title: request.title,
 			})}
 	/>
-	<!-- {/if} -->
 {/snippet}
 <!-- The changes to whichever file source control has selected. `GitDiffView`
      reads that selection itself and takes no props, so it can simply live here

@@ -38,6 +38,7 @@
     "test:owned-sessions": "node --experimental-strip-types scripts/ownedSessions.test.ts",
     "test:rail-backend-cutover": "node --experimental-strip-types scripts/railBackendCutover.test.ts",
     "test:next-terminal-service": "node --experimental-strip-types scripts/nextTerminalService.test.mjs",
+    "test:terminal-view-lifecycle": "node --experimental-strip-types scripts/terminalViewLifecycle.test.ts",
     "test:layout-storage": "node --experimental-strip-types scripts/layoutStorage.test.mjs",
     "test:workbench-navigation": "node --experimental-strip-types scripts/workbenchNavigation.test.ts",
     "test:source-markdown-preview": "node --experimental-strip-types scripts/sourceMarkdownPreview.test.mjs",

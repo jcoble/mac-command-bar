@@ -1,14 +1,10 @@
 <script lang="ts">
   /**
-   * TerminalSurface.svelte — the stack of xterm hosts for the /next shell.
+   * TerminalSurface.svelte — the active xterm host for the /next shell.
    *
-   * ONE rule, and it is the whole reason this component is separate: a host is
-   * NEVER wrapped in `{#if active}`. Every owned session with a (possibly
-   * pending) PTY keeps a mounted host for the entire life of the page, and
-   * visibility is toggled by the terminal manager through `view.setVisible()`
-   * (which sets `display` on the host). Gating the markup instead would destroy
-   * the xterm DOM on every switch — the old shell's "my agent restarted when I
-   * clicked away" bug, in new clothes.
+   * Only the active session owns a host and an xterm view. Switching sessions
+   * destroys that frontend view while the PTY keeps running in the desktop
+   * backend; returning rebuilds the view from the backend scrollback ring.
    *
    * The component does no IO and holds no state: it hands each host element to
    * the page through `registerHost` exactly once, on mount.
@@ -41,12 +37,8 @@
 
   let { owned, activeOwnedId, registerHost, onHostLayout }: Props = $props();
 
-  /**
-   * An exited session keeps its host only while its PTY id is still around
-   * (so its final scrollback stays readable); once that is gone there is
-   * nothing to render.
-   */
-  const hosted = $derived(owned.filter((session) => session.state !== 'exited' || session.ptySessionId));
+  const active = $derived(owned.find((session) => session.ownedId === activeOwnedId) ?? null);
+  const hosted = $derived(active && (active.state !== 'exited' || active.ptySessionId) ? active : null);
 
   /**
    * How many animation frames to keep re-measuring for after a terminal appears.
@@ -129,23 +121,16 @@
 </script>
 
 <div class="surface">
-  {#each hosted as session (session.ownedId)}
-    <!--
-      Hosts start HIDDEN (inline `display: none`) and only the manager turns one
-      on, via `view.setVisible(true)` -> `host.style.display = 'block'`. Two bugs
-      this closes: a view created while another one is already active is never
-      told to hide (so its `inset: 0` host would cover the active terminal), and
-      a host that never gets a view at all (an exited session whose PTY died
-      while the app was closed) would sit on top as a transparent click-blocker.
-      The attribute is static, so Svelte never re-applies it over the manager.
-    -->
-    <div
-      class="term-host"
-      style="display: none"
-      data-owned-id={session.ownedId}
-      use:host={session.ownedId}
-    ></div>
-  {/each}
+  {#if hosted}
+    {#key hosted.ownedId}
+      <div
+        class="term-host"
+        style="display: none"
+        data-owned-id={hosted.ownedId}
+        use:host={hosted.ownedId}
+      ></div>
+    {/key}
+  {/if}
 
   <!--
     The second case is the one that matters: a session whose terminal was closed
@@ -159,7 +144,7 @@
       <p>No session selected.</p>
       <p class="hint">Pick a session in the rail, or resume one to start a terminal.</p>
     </div>
-  {:else if !hosted.some((session) => session.ownedId === activeOwnedId)}
+  {:else if !hosted}
     <div class="surface-empty">
       <p>This session’s terminal is closed.</p>
       <p class="hint">The transcript is still on disk; the session stays on your list.</p>

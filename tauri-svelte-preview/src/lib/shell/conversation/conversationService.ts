@@ -5,7 +5,9 @@ import {
   applyAgentConversationSnapshot,
   applyChildConversationTranscript,
   ensureConversationSession,
+  evictConversationSession,
   getConversationSession,
+  recordAgentConversationPresenceEvent,
   setConversationDraft,
   setConversationConnection,
   setConversationAttachments,
@@ -74,6 +76,7 @@ let conversationEventsDisposed = false;
 const resyncing = new Map<string, Promise<void>>();
 const ensuring = new Map<string, { signature: string; work: Promise<AgentConversationConnection | null> }>();
 const terminalProjections = new Map<string, string>();
+const readVersions = new Map<string, number>();
 const ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY = 'acpLiveConversationEvents';
 const sessionDraftPersistence = new ConversationDraftPersistence(
   {
@@ -172,6 +175,22 @@ export async function saveConversationClipboardImage(
 /** Revoke only URLs owned by this surface; the managed path never goes through the DOM. */
 export function cleanupConversationAttachmentPreview(attachment: ConversationAttachment): void {
   if (attachment.previewUrl.startsWith('blob:')) URL.revokeObjectURL(attachment.previewUrl);
+}
+
+/** Drop frontend-only conversation data after its workspace has been saved. */
+export function releaseConversationForRead(ownedId: string): void {
+  readVersions.set(ownedId, (readVersions.get(ownedId) ?? 0) + 1);
+  const state = getConversationSession(ownedId);
+  if (!state) return;
+  const previewUrls = new Set([
+    ...state.attachments,
+    ...state.unclaimedSentAttachments,
+    ...Object.values(state.sentAttachments).flat()
+  ].map((attachment) => attachment.previewUrl));
+  for (const previewUrl of previewUrls) {
+    if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+  }
+  evictConversationSession(ownedId);
 }
 
 async function hydrateAttachmentBytes(attachment: AttachmentWithBytes): Promise<AttachmentWithBytes> {
@@ -442,9 +461,11 @@ async function resyncConversation(ownedId: string): Promise<void> {
   const existing = resyncing.get(ownedId);
   if (existing) return existing;
   const work = (async () => {
+    const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
+    readVersions.set(ownedId, readVersion);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
-      if (!snapshot) return;
+      if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
       const sequenceBeforeApply = getConversationSession(ownedId)?.lastSequence ?? 0;
       applyAgentConversationSnapshot(snapshot);
       void hydrateSentConversationAttachments(ownedId, snapshot.events);
@@ -456,8 +477,10 @@ async function resyncConversation(ownedId: string): Promise<void> {
 }
 
 export async function loadConversationForRead(ownedId: string): Promise<void> {
+  const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
+  readVersions.set(ownedId, readVersion);
   const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
-  if (!snapshot) return;
+  if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
   applyAgentConversationSnapshot(snapshot);
   void hydrateSentConversationAttachments(ownedId, snapshot.events);
 }
@@ -536,7 +559,9 @@ export async function startConversationEvents(): Promise<void> {
   if (conversationEventsSetup) return conversationEventsSetup;
   conversationEventsSetup = (async () => {
     const stop = await listen<AgentConversationEvent>('agent-conversation-event', ({ payload }) => {
-      applyAgentConversationEvent(payload);
+      const active = rail.activeOwnedId === payload.ownedId;
+      if (active) applyAgentConversationEvent(payload);
+      else recordAgentConversationPresenceEvent(payload);
       if (
         payload.payload.kind === 'userMessage'
         && typeof payload.payload.text === 'string'
@@ -547,10 +572,10 @@ export async function startConversationEvents(): Promise<void> {
           if (title) updateOwnedSession(payload.ownedId, { title });
         }
       }
-      if (getConversationSession(payload.ownedId)?.desynchronized) {
+      if (active && getConversationSession(payload.ownedId)?.desynchronized) {
         void resyncConversation(payload.ownedId);
       }
-      if (shouldClearConversationSending(payload)) {
+      if (active && shouldClearConversationSending(payload)) {
         setConversationSending(payload.ownedId, false);
       }
     });

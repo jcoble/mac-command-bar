@@ -4,11 +4,9 @@
    *
    * Two rows: the icon tab strip along the top and one panel body filling the
    * rest. The Resources/Usage strip now runs the full width of the window as
-   * the shell's status bar, so it no longer lives here. Exactly one panel
-   * is on screen at a time, but every one of the eight stays MOUNTED for the
-   * whole session — switching tabs only changes which is displayed. Nothing is
-   * torn down, so a scroll position, a typed filter or a half-expanded tree
-   * survives being looked away from.
+   * the shell's status bar, so it no longer lives here. Exactly one panel is
+   * mounted at a time; panel stores keep durable state while component-owned
+   * observers and DOM leave WebKit as soon as the tab is closed.
    *
    * No backend IO and no state of its own beyond the layout. Which tab is open
    * is decided by the page (it is remembered per session) and handed in; every
@@ -42,13 +40,9 @@
 <div class="right-panel">
   <RightPanelTabs {activeId} {onSelect} />
 
-  <!-- EXPERIMENT (2026-08-20): natural-lifecycle build — only the active
-       panel is mounted; switching tabs destroys the old one and creates the
-       new one. The always-mounted CSS show/hide stack is bypassed. -->
   <div class="panel-bodies">
     {#if activeId === 'files'}
-      <!-- EXPERIMENT (2026-08-20): file tree off for memory profiling. -->
-      <div class="panel-body showing"></div>
+      <div class="panel-body showing"><FilesPanel visible={true} {root} {ownedId} /></div>
     {:else if activeId === 'source-control'}
       <div class="panel-body showing"><SourceControlPanel visible={true} {root} {ownedId} /></div>
     {:else if activeId === 'worktrees'}

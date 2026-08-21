@@ -263,6 +263,11 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   return true;
 }
 
+/** Update rail attention for an inactive session without retaining its transcript. */
+export function recordAgentConversationPresenceEvent(event: AgentConversationEvent): void {
+  recordConversationPresenceEvent(displayEventFrom(event));
+}
+
 function timelineIndex(current: ConversationWorkspaceState): Map<string, number> {
   let index = timelineIndexBySession.get(current);
   if (!index) {
@@ -1430,7 +1435,17 @@ export function restoreConversationWorkspace(
   return current;
 }
 
-export function removeConversationSession(ownedId: string): void {
+/** Release one materialized transcript while preserving its lightweight rail presence. */
+export function evictConversationSession(ownedId: string): void {
+  const current = conversationSessions[ownedId];
+  if (!current) return;
+  timelineIndexBySession.delete(current);
+  agentItemIndexBySession.delete(current);
+  activeReasoningBySession.delete(current);
   delete conversationSessions[ownedId];
+}
+
+export function removeConversationSession(ownedId: string): void {
+  evictConversationSession(ownedId);
   clearSessionPresence(ownedId);
 }

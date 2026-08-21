@@ -897,6 +897,23 @@ store.removeConversationSession('owned-a');
 assert.equal(store.getConversationSession('owned-a'), null);
 assert.ok(store.getConversationSession('owned-b'));
 
+// Leaving a session releases its materialized transcript, while later
+// background events update only the lightweight rail-presence record.
+{
+  const ownedId = 'owned-evicted';
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 1_000,
+    payload: { kind: 'userMessage', itemId: 'large-row', text: 'materialized', completed: true }
+  });
+  store.evictConversationSession(ownedId);
+  store.recordAgentConversationPresenceEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 1_010,
+    payload: { kind: 'turn', turnId: 'background-turn', state: 'started' }
+  });
+  assert.equal(store.getConversationSession(ownedId), null);
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, 'background-turn');
+}
+
 // Scrolling up loads the page of stored events just older than what is on
 // screen. The older rows have to land in front of the ones already there,
 // keeping one ascending transcript, and an item that straddles the page
