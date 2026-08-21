@@ -3,7 +3,7 @@
  *
  * The decision of *when* a panel may load lives in `panelActivation.ts` (pure,
  * tested), including the panels that load only while the user can see them,
- * starting with source control. This file is the small amount of glue
+ * starting with files and source control. This file is the small amount of glue
  * that names the real loaders and reads the current project out of the rail. No
  * backend call is made here: every function below hands off to a lane's own
  * service, which is where the calls are counted.

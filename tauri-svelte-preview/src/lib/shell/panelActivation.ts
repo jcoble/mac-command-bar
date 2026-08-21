@@ -32,10 +32,10 @@
  * rebuild the same answer. So each panel remembers the folder it was last
  * loaded for, and a pick that does not change it loads nothing.
  *
- * Three panels are neither a tab nor always on screen: **source control**, the
- * **worktree manager** and the **stacks pane**. All three live in the tool
- * column on the right, as three of the views its icon strip switches between,
- * and the shell opens on none of them. So all three follow the same principle
+ * Four panels are neither a tab nor always on screen: the **file tree**,
+ * **source control**, the **worktree manager** and the **stacks pane**. All four
+ * live in the tool column on the right, as views its icon strip switches
+ * between, and the shell opens on none of them. So all four follow the same principle
  * by a third route — they load when you can actually see them.
  * Picking a session loads one only while it is in view, and opening one loads it
  * if a session is already picked. Out of view they cost nothing; in view they
@@ -92,6 +92,8 @@ export interface PanelActivation {
   panelShown(id: string): void;
   /** The user picked a session in the rail. */
   sessionPicked(): void;
+  /** Files came into view, or went out of it. Same contract as source control. */
+  filesVisible(visible: boolean): void;
   /** Source control came into view, or went out of it. Report where it stands
    * now; the tool column reports it once at start-up too, so this is never
    * guesswork. */
@@ -126,6 +128,10 @@ export function createPanelActivation(
   let panelLoadsAllowed = false;
   let sessionLoadsAllowed = false;
   let sessionPanelsShown = false;
+  /** Can the user see the file tree right now? */
+  let filesInView = false;
+  /** The folder the file tree was last loaded for. */
+  let filesLoadedFor: string | null = null;
   /** Can the user see source control right now? */
   let sourceControlInView = false;
   /** The folder source control was last loaded for, or `null` if it never has
@@ -153,6 +159,14 @@ export function createPanelActivation(
     panelLoadedFor.set(id, root);
     if (id === 'editor') activators.editor(root || null);
     else if (id === 'browser') activators.browser();
+  };
+
+  /** Point the file tree at this folder. There is nothing to list without one. */
+  const loadFiles = (selection: ProjectSelection): void => {
+    const root = selection.root.trim();
+    if (!root) return;
+    filesLoadedFor = root;
+    activators.explorer(root);
   };
 
   /** Point source control at this folder. A session with no folder still calls
@@ -185,18 +199,12 @@ export function createPanelActivation(
     activators.problems(root || null);
   };
 
-  /** The panels that come with the session the user just picked: the file tree,
-   * plus every view-gated panel that is in view AND is not already showing this
+  /** Load each view-gated panel that is in view and is not already showing this
    * folder — the same "coming back to it is not a reason to read it again" rule
-   * the visibility reports below have always used.
-   *
-   * The file tree is the exception, and deliberately: its own service already
-   * refuses to re-list a folder it is showing, and it is also the one that
-   * retries after a scan that failed. Refusing the call here would take that
-   * retry away and give nothing back. */
+   * the visibility reports below have always used. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    if (root) activators.explorer(root);
+    if (filesInView && filesLoadedFor !== root) loadFiles(selection);
     if (sourceControlInView && gitLoadedFor !== root) loadSourceControl(selection);
     if (worktreesInView && worktreesLoadedFor !== root) loadWorktrees(selection);
     if (stacksInView && stacksLoadedFor !== root) loadStacks(selection);
@@ -245,6 +253,14 @@ export function createPanelActivation(
       }
     },
 
+    filesVisible(visible: boolean): void {
+      filesInView = visible;
+      if (!visible || !sessionPanelsShown) return;
+      const selection = readSelection();
+      if (filesLoadedFor === selection.root.trim()) return;
+      loadFiles(selection);
+    },
+
     sourceControlVisible(visible: boolean): void {
       sourceControlInView = visible;
       // Looking away loads nothing, and neither does looking at it before a
@@ -287,7 +303,7 @@ export function createPanelActivation(
       // on screen: one the dock put back at launch is on screen without having
       // loaded anything.
       const loaded = [...panelLoadedFor.keys()];
-      if (sessionPanelsShown) loaded.push('explorer');
+      if (filesLoadedFor !== null) loaded.push('explorer');
       if (gitLoadedFor !== null) loaded.push('git');
       if (worktreesLoadedFor !== null) loaded.push('worktrees');
       if (stacksLoadedFor !== null) loaded.push('stacks');

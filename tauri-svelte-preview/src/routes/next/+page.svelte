@@ -362,13 +362,14 @@
   /**
    * Show a right panel, and say so.
    *
-   * Three of the eight read something project-scoped, and all three follow the
+   * Four of the eight read something project-scoped, and all four follow the
    * same rule they always have: they load only while the user can see them.
    * "Visible" here means simply "this is the open tab" — the column no longer
    * has folding panes, so there is no second half to the question.
    */
   function applyRightTab(id: RightTabId): void {
     rightTab = id;
+    shellPanels.filesVisible(id === 'files');
     shellPanels.sourceControlVisible(id === 'source-control');
     shellPanels.worktreesVisible(id === 'worktrees');
     shellPanels.stacksVisible(id === 'run');
