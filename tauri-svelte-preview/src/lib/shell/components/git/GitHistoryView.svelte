@@ -26,6 +26,7 @@
    * same call the panel itself makes — and picking a row only reads.
    */
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import X from '@lucide/svelte/icons/x';
 
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
@@ -234,6 +235,16 @@
         {/each}
       </Select.Content>
     </Select.Root>
+
+    {#if gitPanel.historyPath}
+      <span class="history-path" title={gitPanel.historyPath}>{gitPanel.historyPath}</span>
+      <IconButton
+        label="Show all repository history"
+        onclick={() => void gitService.clearHistoryPath()}
+      >
+        <X />
+      </IconButton>
+    {/if}
 
     <Select.Root
       type="single"
@@ -500,6 +511,18 @@
     line-height: 16px;
     color: var(--color-text-3);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .history-path {
+    max-width: 260px;
+    overflow: hidden;
+    padding: 3px 7px;
+    border: 1px solid var(--color-border);
+    border-radius: 5px;
+    color: var(--color-text-2);
+    font-size: 12px;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 

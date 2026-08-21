@@ -149,7 +149,8 @@ function createLocalSourceBridgeMiddleware() {
             200,
             await listLocalSourceDirectory(
               String(body.root ?? ""),
-              String(body.directory ?? "")
+              String(body.directory ?? ""),
+              Boolean(body.includeExcluded)
             )
           );
           break;

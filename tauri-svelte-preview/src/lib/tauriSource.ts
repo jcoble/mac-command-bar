@@ -566,14 +566,23 @@ export async function listSourceFilesFromTauri(
 
 export async function listSourceDirectoryFromTauri(
   root: string,
-  directory: string
+  directory: string,
+  includeExcluded = false
 ): Promise<SourceDirectoryEntry[] | null> {
   if (!isTauriRuntime()) {
-    return postLocalSourceBridge<SourceDirectoryEntry[]>('list-directory', { root, directory });
+    return postLocalSourceBridge<SourceDirectoryEntry[]>('list-directory', {
+      root,
+      directory,
+      includeExcluded
+    });
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<SourceDirectoryEntry[]>('list_source_directory', { root, directory });
+  return invoke<SourceDirectoryEntry[]>('list_source_directory', {
+    root,
+    directory,
+    includeExcluded
+  });
 }
 
 export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean> {
@@ -1304,14 +1313,15 @@ export async function readPullRequestStatusFromTauri(
 
 export async function readGitCommitHistoryFromTauri(
   root: string,
-  limit = 24
+  limit = 24,
+  relativePath: string | null = null
 ): Promise<GitCommitHistoryEntry[] | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<GitCommitHistoryEntry[]>('read_git_commit_history', { root, limit });
+  return invoke<GitCommitHistoryEntry[]>('read_git_commit_history', { root, limit, relativePath });
 }
 
 export async function listProjectWorktreesFromTauri(

@@ -235,8 +235,8 @@ export function bridgeGitBackend(): GitBackend {
     readStatus: (root) => postGitBridge<ProjectGitStatus>('status', { root }),
     readDiff: (root, absolutePath) =>
       postGitBridge<SourceGitDiff>('file-diff', { root, path: absolutePath }),
-    readHistory: (root, limit) =>
-      postGitBridge<GitCommitHistoryEntry[]>('history', { root, limit }),
+    readHistory: (root, limit, relativePath) =>
+      postGitBridge<GitCommitHistoryEntry[]>('history', { root, limit, relativePath }),
     stage: refuse,
     unstage: refuse,
     commit: refuse,

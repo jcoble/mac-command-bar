@@ -18,6 +18,7 @@ export type SourceDirectoryEntry = {
   path: string;
   name: string;
   isDirectory: boolean;
+  excluded: boolean;
 };
 
 export type SourcePreview = SourceRecord & {

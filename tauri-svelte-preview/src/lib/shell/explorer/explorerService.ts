@@ -58,7 +58,7 @@ export async function loadDirectory(directory: string, depth: number): Promise<b
 
   try {
     countInvoke(isNativeTauriRuntime() ? 'list_source_directory' : 'bridge:list-source-directory');
-    const entries = await listSourceDirectoryFromTauri(root, directory);
+    const entries = await listSourceDirectoryFromTauri(root, directory, explorer.includeExcluded);
     if (
       directoryRequests.get(directory) !== requestId ||
       explorer.root !== root

@@ -171,6 +171,7 @@
     "@codingame/monaco-vscode-views-service-override": "25.1.2",
     "@codingame/monaco-vscode-xml-default-extension": "25.1.2",
     "@codingame/monaco-vscode-yaml-default-extension": "25.1.2",
+    "@keenmate/svelte-treeview": "^4.8.0",
     "@lezer/highlight": "1.2.3",
     "@lucide/svelte": "^1.17.0",
     "@tanstack/svelte-virtual": "3.13.35",

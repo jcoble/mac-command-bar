@@ -21,6 +21,7 @@ export const explorer = $state<{
   scrollTop: number;
   viewportHeight: number;
   selectedPath: string | null;
+  includeExcluded: boolean;
   scanning: boolean;
   error: string | null;
   lastScanFinishedAt: number | null;
@@ -31,6 +32,7 @@ export const explorer = $state<{
   scrollTop: 0,
   viewportHeight: 0,
   selectedPath: null,
+  includeExcluded: false,
   scanning: false,
   error: null,
   lastScanFinishedAt: null
@@ -63,6 +65,7 @@ export function resetExplorer(): void {
   explorer.query = '';
   explorer.scrollTop = 0;
   explorer.selectedPath = null;
+  explorer.includeExcluded = false;
   explorer.scanning = false;
   explorer.error = null;
   explorer.lastScanFinishedAt = null;
@@ -102,7 +105,7 @@ export function applyDirectoryResult(
       parentPath: directory,
       depth,
       childCount: previous?.isDirectory === entry.isDirectory ? previous.childCount : 0,
-      ignored: false
+      ignored: entry.excluded
     };
   });
   treeNodes = [...retained, ...children].map((node) =>
@@ -161,4 +164,8 @@ export function setViewportHeight(viewportHeight: number): void {
 
 export function selectPath(path: string | null): void {
   explorer.selectedPath = path;
+}
+
+export function setIncludeExcluded(includeExcluded: boolean): void {
+  explorer.includeExcluded = includeExcluded;
 }

@@ -1,31 +1,11 @@
 <script lang="ts">
-  /**
-   * FilesPanel.svelte — the Files tab of the right column.
-   *
-   * The file tree of the active session's checkout. Folders open and close,
-   * clicking a file opens it in the center Editor tab, and a filter box narrows
-   * the list. Right-clicking a row offers the six things a person does to a
-   * path: make a file or folder inside it, rename it, move it to the Trash,
-   * show it in the Finder, or copy where it is.
-   *
-   * Those six go through Tauri's own plugins rather than commands of ours —
-   * `plugin-fs` for the three that change the disk, `plugin-opener` for the
-   * Finder and `plugin-clipboard-manager` for the path. The one exception is
-   * Delete: `plugin-fs` only deletes for good, so it calls `move_to_trash`,
-   * which puts the path somewhere it can be fetched back from.
-   *
-   * While a folder is listed it is also watched, so a file another program
-   * writes shows up here without anyone pressing anything.
-   *
-   * This panel is a PRODUCER on `openFileBus` and never subscribes to it — a
-   * listener here would swallow the request the editor is waiting for. It calls
-   * `openFileInEditor`, which puts the request on the bus and brings the editor
-   * forward in one go.
-   *
-   * The root listing contains only top-level entries. Opening a folder asks for
-   * only that folder's immediate children; closing it releases those rows.
-   * `fileTreeModel.ts` then windows the visible flattened list.
-   */
+  import { Tree, type ContextMenuItem, type LTreeNode } from '@keenmate/svelte-treeview';
+  import ArrowDownAZ from '@lucide/svelte/icons/arrow-down-a-z';
+  import ArrowUpZA from '@lucide/svelte/icons/arrow-up-z-a';
+  import Eye from '@lucide/svelte/icons/eye';
+  import EyeOff from '@lucide/svelte/icons/eye-off';
+  import Folder from '@lucide/svelte/icons/folder';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
   import FolderTree from '@lucide/svelte/icons/folder-tree';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Square from '@lucide/svelte/icons/square';
@@ -36,7 +16,7 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
-  import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
+  import FileIcon from '$lib/shell/components/explorer/FileIcon.svelte';
   import {
     loadDirectory,
     refresh,
@@ -49,114 +29,78 @@
     explorer,
     explorerNodes,
     selectPath,
-    setQuery,
-    setScrollTop,
-    setViewportHeight
+    setIncludeExcluded,
+    setQuery
   } from '$lib/shell/explorer/explorerStore.svelte';
+  import type { ExplorerTreeNode } from '$lib/shell/explorer/explorerStore.svelte';
   import { projectRootLabel } from '$lib/shell/explorer/explorerTree';
-  import { openFileInEditor } from '$lib/shell/workbenchNavigation';
+  import { gitService } from '$lib/shell/git/gitService';
+  import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation';
   import { isNativeTauriRuntime, moveToTrashFromTauri } from '$lib/tauriSource';
 
-  import FileTreeRow from './FileTreeRow.svelte';
-  import {
-    allDirectoryPaths,
-    filterFileTreeNodes,
-    toggleDirectory,
-    visibleFileTreeNodes,
-    windowFileTreeNodes,
-    type FileTreeNode
-  } from './fileTreeModel.ts';
-  import type { FilesPanelActionId } from './filesPanelActions.ts';
-
   interface Props {
-    /** True while this panel's tab is the selected one. */
     visible: boolean;
-    /** The active session's working folder, or '' when nothing is selected. */
     root: string;
-    /** The active session's ownedId, or null. */
     ownedId: string | null;
   }
+
+  type PendingEntry = {
+    kind: 'rename' | 'new-file' | 'new-folder';
+    path: string;
+  };
+
+  type FileClipboard = {
+    operation: 'cut' | 'copy';
+    path: string;
+    name: string;
+    isDirectory: boolean;
+  };
+
+  type TreeItem = ExplorerTreeNode & {
+    treePath: string;
+    treeParentPath: string;
+    relativePath: string;
+    hasChildren: boolean;
+    expanded: boolean;
+    selected: boolean;
+  };
+
   let { visible, root }: Props = $props();
-
-  /**
-   * Which folders are open, by absolute path. Component state on purpose: an
-   * open tree is a place in a session, not a setting, and v1 does not carry it
-   * across a reload.
-   */
-  let expanded = $state<Set<string>>(new Set());
-  /** The scrolling element inside the kit's ScrollArea, once it exists. */
-  let viewport = $state<HTMLElement | null>(null);
-
-  /**
-   * The three actions that need a name before they can run. Renaming puts the
-   * field where the row was; making something new puts it under the folder it
-   * will land in, which is where a person is already looking.
-   */
-  let pending = $state<{ kind: 'rename' | 'new-file' | 'new-folder'; path: string } | null>(null);
-  /** What has been typed into that field so far. */
+  let expanded = $state.raw<Set<string>>(new Set());
+  let treeData = $state.raw<TreeItem[]>([]);
+  let sortDirection = $state<'ascending' | 'descending'>('ascending');
+  let pending = $state<PendingEntry | null>(null);
   let pendingName = $state('');
-  /** The field itself, so it can take the keyboard as soon as it appears. */
-  let entryField = $state<HTMLElement | null>(null);
-  /** Why the last action did not happen. Cleared by the next one. */
+  let entryField = $state<HTMLInputElement | null>(null);
   let actionError = $state<string | null>(null);
+  let fileClipboard = $state.raw<FileClipboard | null>(null);
 
   const loadedNodes = $derived(explorerNodes());
-  const filtering = $derived(explorer.query.trim().length > 0);
-  const nodes = $derived(filterFileTreeNodes(loadedNodes, explorer.query));
-  /** Filtering opens everything: a match six folders down should be visible
-   * without any clicking. */
-  const openFolders = $derived(filtering ? allDirectoryPaths(nodes) : expanded);
-  const rows = $derived(visibleFileTreeNodes(nodes, openFolders));
-  const renderWindow = $derived(
-    windowFileTreeNodes(rows, explorer.scrollTop, explorer.viewportHeight)
-  );
   const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
-  const listedCount = $derived(nodes.length);
-  /** True once a scan has finished, which is also when the folder became a
-   * place the file-system plugin is allowed to look — see the watcher below. */
+  const listedCount = $derived(loadedNodes.length);
   const listed = $derived(explorer.lastScanFinishedAt !== null);
+
+  $effect(() => {
+    const projectRoot = (explorer.root ?? root).replace(/\/+$/, '');
+    sortDirection;
+    treeData = loadedNodes.map((node) => ({
+      ...node,
+      treePath: relativePath(projectRoot, node.path),
+      treeParentPath: node.parentPath === projectRoot ? '' : relativePath(projectRoot, node.parentPath),
+      relativePath: relativePath(projectRoot, node.path),
+      hasChildren: node.isDirectory,
+      expanded: expanded.has(node.path),
+      selected: node.path === explorer.selectedPath
+    }));
+  });
 
   $effect(() => {
     root;
     expanded = new Set();
     pending = null;
+    fileClipboard = null;
   });
 
-  /**
-   * Follow the tree's own height and scroll offset, so the rendered window
-   * matches what is on screen. Only while this tab is in front: a hidden panel
-   * measures zero, which is not a measurement (`setViewportHeight` drops it),
-   * and there is nothing to follow while nobody can see it.
-   */
-  $effect(() => {
-    const node = viewport;
-    if (!node || !visible) return;
-    const onScroll = () => setScrollTop(node.scrollTop);
-    const observer = new ResizeObserver(() => setViewportHeight(node.clientHeight));
-    node.addEventListener('scroll', onScroll, { passive: true });
-    observer.observe(node);
-    setViewportHeight(node.clientHeight);
-    return () => {
-      node.removeEventListener('scroll', onScroll);
-      observer.disconnect();
-    };
-  });
-
-  /**
-   * Watch the listed folder while this tab is in front, so a file another
-   * program writes turns up without anyone pressing Refresh.
-   *
-   * Only while it is in front: a build running behind a hidden panel would
-   * otherwise have it re-listing loaded directories every third of a second
-   * for nothing. A burst of writes is collapsed by the plugin's delay, and an
-   * event about nothing but build output is dropped before it becomes a read.
-   *
-   * Not before the first listing has finished. The folder is only a place the
-   * plugin may look once `list_source_directory` has added it to the plugin's scope
-   * (`main.rs`, `allow_workspace_root_in_fs_scope`), and `explorer.root` is set
-   * before that call rather than after — starting the watch on the root alone
-   * races the grant, and a watch refused once is never asked for again.
-   */
   $effect(() => {
     const target = (explorer.root ?? '').trim();
     if (!visible || !listed || !target || !isNativeTauriRuntime()) return;
@@ -177,7 +121,7 @@
         if (abandoned) stop();
         else unwatch = stop;
       } catch {
-        // Watching is a convenience. Without it the header's Refresh still works.
+        // Refresh remains available when the watcher cannot be started.
       }
     })();
 
@@ -188,55 +132,99 @@
     };
   });
 
-  /** The name field takes the keyboard the moment it appears. */
   $effect(() => {
     const field = entryField;
     if (!field) return;
     field.focus();
-    // Renaming starts with the old name in the field, and a name being changed
-    // is usually being replaced rather than edited.
-    if (field instanceof HTMLInputElement) field.select();
+    field.select();
   });
 
-  function onFilterInput(event: Event & { currentTarget: HTMLInputElement }): void {
-    setQuery(event.currentTarget.value);
-    if (viewport) viewport.scrollTop = 0;
+  const UNLISTED_FOLDERS = ['/node_modules/', '/target/', '/.git/', '/.svelte-kit/'];
+
+  function relativePath(projectRoot: string, path: string): string {
+    const prefix = `${projectRoot}/`;
+    return path.startsWith(prefix) ? path.slice(prefix.length) : path.replace(/^\/+/, '');
+  }
+
+  function parentOf(path: string): string {
+    const cut = path.lastIndexOf('/');
+    return cut < 0 ? '' : path.slice(0, cut);
   }
 
   function describeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
 
-  /**
-   * Folders the directory reader never exposes, so a write inside one can never
-   * change the listed tree. These four are the ones a build or a git command
-   * writes to constantly; the scanner's own full list is `skip_dir_reason` in
-   * `src-tauri/src/main.rs` and `skipDirReason` in `src/lib/server/localSourceFs.ts`.
-   */
-  const UNLISTED_FOLDERS = ['/node_modules/', '/target/', '/.git/', '/.svelte-kit/'];
-
-  /**
-   * True when every path in a watch event sits inside one of those folders.
-   * A build writing into `target/` fires the watcher continuously, and each
-   * event would otherwise re-read a directory for a tree that cannot have
-   * changed. One path outside them is enough to make the event worth a refresh.
-   */
   function isBuildOutputOnly(paths: readonly string[]): boolean {
-    if (paths.length === 0) return false;
-    return paths.every((path) => UNLISTED_FOLDERS.some((folder) => path.includes(folder)));
+    return paths.length > 0 && paths.every((path) => UNLISTED_FOLDERS.some((part) => path.includes(part)));
   }
 
-  /** The folder a path sits in. */
-  function parentOf(path: string): string {
-    const cut = path.lastIndexOf('/');
-    return cut < 0 ? '' : path.slice(0, cut);
+  function onFilterInput(event: Event & { currentTarget: HTMLInputElement }): void {
+    setQuery(event.currentTarget.value);
   }
 
-  /**
-   * True when nothing is at `target` yet. Both `rename` and `writeTextFile`
-   * would go through whatever is already there, and a new file quietly emptying
-   * an old one is the kind of loss nobody notices until much later.
-   */
+  function compareTreeNodes(left: LTreeNode<TreeItem>, right: LTreeNode<TreeItem>): number {
+    const leftLevel = left.level ?? 0;
+    const rightLevel = right.level ?? 0;
+    if (leftLevel !== rightLevel) return leftLevel - rightLevel;
+    const parentOrder = String(left.parentPath ?? '').localeCompare(String(right.parentPath ?? ''));
+    if (parentOrder !== 0) return parentOrder;
+    const leftDirectory = left.data?.isDirectory ?? false;
+    const rightDirectory = right.data?.isDirectory ?? false;
+    if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
+    const nameOrder = (left.data?.name ?? '').localeCompare(right.data?.name ?? '', undefined, {
+      numeric: true,
+      sensitivity: 'base'
+    });
+    return sortDirection === 'ascending' ? nameOrder : -nameOrder;
+  }
+
+  function sortTreeNodes(items: LTreeNode<TreeItem>[]): LTreeNode<TreeItem>[] {
+    return items.sort(compareTreeNodes);
+  }
+
+  function collapsePath(path: string): void {
+    unloadDirectory(path);
+    expanded = new Set(
+      [...expanded].filter((candidate) => candidate !== path && !candidate.startsWith(`${path}/`))
+    );
+  }
+
+  function onTreeNodeClicked(treeNode: LTreeNode<TreeItem>): void {
+    const node = treeNode.data;
+    if (!node) return;
+    if (node.isDirectory) {
+      if (expanded.has(node.path)) collapsePath(node.path);
+      else {
+        expanded = new Set([...expanded, node.path]);
+        void loadDirectory(node.path, node.depth + 1);
+      }
+      return;
+    }
+
+    selectPath(node.path);
+    const projectRoot = (explorer.root ?? root).trim();
+    openFileInEditor({ path: node.path, projectRoot: projectRoot || undefined });
+  }
+
+  function onTreeWrapperPointerDown(event: PointerEvent): void {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest('.ltree-toggle-icon')) return;
+    const row = target.closest<HTMLElement>('[data-tree-path]');
+    const node = treeData.find((item) => item.treePath === row?.dataset.treePath);
+    if (node) onTreeNodeClicked({ data: node } as LTreeNode<TreeItem>);
+  }
+
+  function beginEntry(node: TreeItem, kind: PendingEntry['kind']): void {
+    actionError = null;
+    if (kind !== 'rename' && !expanded.has(node.path)) {
+      expanded = new Set([...expanded, node.path]);
+      void loadDirectory(node.path, node.depth + 1);
+    }
+    pending = { kind, path: node.path };
+    pendingName = kind === 'rename' ? node.name : '';
+  }
+
   async function isFree(target: string): Promise<boolean> {
     const { exists } = await import('@tauri-apps/plugin-fs');
     if (!(await exists(target))) return true;
@@ -244,41 +232,6 @@
     return false;
   }
 
-  /** One menu item. The three that need a name open the field instead. */
-  function onRowAction(node: FileTreeNode, id: FilesPanelActionId): void {
-    actionError = null;
-    if (id === 'copy-path' || id === 'reveal-in-finder' || id === 'delete') {
-      void runNamelessAction(node, id);
-      return;
-    }
-    if (id !== 'rename' && !expanded.has(node.path)) {
-      expanded = toggleDirectory(expanded, node);
-      void loadDirectory(node.path, node.depth + 1);
-    }
-    pending = { kind: id, path: node.path };
-    pendingName = id === 'rename' ? node.name : '';
-  }
-
-  async function runNamelessAction(
-    node: FileTreeNode,
-    id: 'copy-path' | 'reveal-in-finder' | 'delete'
-  ): Promise<void> {
-    try {
-      if (id === 'copy-path') {
-        const { writeText } = await import('@tauri-apps/plugin-clipboard-manager');
-        await writeText(node.path);
-      } else if (id === 'reveal-in-finder') {
-        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
-        await revealItemInDir(node.path);
-      } else {
-        await moveToTrashFromTauri(node.path);
-      }
-    } catch (error) {
-      actionError = describeError(error);
-    }
-  }
-
-  /** Put the typed name on disk. An empty name means the person changed their mind. */
   async function commitEntry(): Promise<void> {
     const entry = pending;
     const name = pendingName.trim();
@@ -289,12 +242,17 @@
       const fs = await import('@tauri-apps/plugin-fs');
       if (entry.kind === 'rename') {
         const target = `${parentOf(entry.path)}/${name}`;
-        if (target !== entry.path && (await isFree(target))) await fs.rename(entry.path, target);
+        if (target !== entry.path && (await isFree(target))) {
+          await fs.rename(entry.path, target);
+          collapsePath(entry.path);
+          refreshChangedPath(target);
+        }
       } else {
         const target = `${entry.path}/${name}`;
         if (!(await isFree(target))) return;
         if (entry.kind === 'new-folder') await fs.mkdir(target);
         else await fs.writeTextFile(target, '');
+        refreshChangedPath(target);
       }
     } catch (error) {
       actionError = describeError(error);
@@ -311,45 +269,169 @@
     }
   }
 
-  /** A folder opens and closes; a file is opened in the center Editor tab. */
-  function onRowClick(node: FileTreeNode): void {
-    if (node.isDirectory) {
-      if (expanded.has(node.path)) {
-        unloadDirectory(node.path);
-        expanded = new Set(
-          [...expanded].filter(
-            (path) => path !== node.path && !path.startsWith(`${node.path}/`)
-          )
-        );
-      } else {
-        expanded = toggleDirectory(expanded, node);
-        void loadDirectory(node.path, node.depth + 1);
-      }
-      return;
+  async function copyDirectory(source: string, target: string): Promise<void> {
+    const fs = await import('@tauri-apps/plugin-fs');
+    await fs.mkdir(target);
+    for (const entry of await fs.readDir(source)) {
+      if (entry.isSymlink) continue;
+      const childSource = `${source}/${entry.name}`;
+      const childTarget = `${target}/${entry.name}`;
+      if (entry.isDirectory) await copyDirectory(childSource, childTarget);
+      else if (entry.isFile) await fs.copyFile(childSource, childTarget);
     }
-    selectPath(node.path);
-    const projectRoot = (explorer.root ?? root ?? '').trim();
-    openFileInEditor({ path: node.path, projectRoot: projectRoot || undefined });
+  }
+
+  async function pasteInto(node: TreeItem): Promise<void> {
+    const entry = fileClipboard;
+    if (!entry || !node.isDirectory) return;
+    const target = `${node.path}/${entry.name}`;
+    if (!(await isFree(target))) return;
+
+    const fs = await import('@tauri-apps/plugin-fs');
+    if (entry.operation === 'cut') {
+      await fs.rename(entry.path, target);
+      collapsePath(entry.path);
+      fileClipboard = null;
+    } else if (entry.isDirectory) {
+      await copyDirectory(entry.path, target);
+    } else {
+      await fs.copyFile(entry.path, target);
+    }
+    refreshChangedPath(target);
+  }
+
+  async function openFileHistory(node: TreeItem): Promise<void> {
+    const projectRoot = (explorer.root ?? root).trim();
+    if (!projectRoot) return;
+    showCenterTab('git-history');
+    await gitService.showFileHistory(projectRoot, node.relativePath);
+  }
+
+  async function toggleExcludedFiles(): Promise<void> {
+    const include = !explorer.includeExcluded;
+    if (!include) {
+      for (const node of loadedNodes.filter((candidate) => candidate.ignored)) collapsePath(node.path);
+    }
+    setIncludeExcluded(include);
+    refresh();
+  }
+
+  async function runAction(node: TreeItem, id: string): Promise<void> {
+    actionError = null;
+    try {
+      if (id === 'new-file' || id === 'new-folder' || id === 'rename') {
+        beginEntry(node, id);
+      } else if (id === 'copy-path') {
+        const { writeText } = await import('@tauri-apps/plugin-clipboard-manager');
+        await writeText(node.path);
+      } else if (id === 'reveal-in-finder') {
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        await revealItemInDir(node.path);
+      } else if (id === 'delete') {
+        await moveToTrashFromTauri(node.path);
+        collapsePath(node.path);
+        refreshChangedPath(node.path);
+      } else if (id === 'cut' || id === 'copy') {
+        fileClipboard = {
+          operation: id,
+          path: node.path,
+          name: node.name,
+          isDirectory: node.isDirectory
+        };
+      } else if (id === 'paste') {
+        await pasteInto(node);
+      } else if (id === 'open-timeline' || id === 'git-file-history') {
+        await openFileHistory(node);
+      } else if (id === 'toggle-excluded') {
+        await toggleExcludedFiles();
+      }
+    } catch (error) {
+      actionError = describeError(error);
+    }
+  }
+
+  function menuAction(
+    node: TreeItem,
+    closeMenu: () => void,
+    title: string,
+    id: string,
+    className?: string,
+    isDisabled = false
+  ): ContextMenuItem {
+    return {
+      title,
+      className,
+      isDisabled,
+      callback: async () => {
+        closeMenu();
+        await runAction(node, id);
+      }
+    };
+  }
+
+  function contextMenuFor(
+    treeNode: LTreeNode<TreeItem>,
+    closeMenu: () => void
+  ): ContextMenuItem[] {
+    const node = treeNode.data;
+    if (!node) return [];
+    return [
+      ...(node.isDirectory
+        ? [
+            menuAction(node, closeMenu, 'New File', 'new-file'),
+            menuAction(node, closeMenu, 'New Folder', 'new-folder'),
+            menuAction(node, closeMenu, 'Paste', 'paste', undefined, !fileClipboard),
+            { title: '', isDivider: true, callback: () => undefined }
+          ]
+        : []),
+      menuAction(node, closeMenu, 'Open Timeline', 'open-timeline'),
+      menuAction(node, closeMenu, 'Git: View File History', 'git-file-history'),
+      { title: '', isDivider: true, callback: () => undefined },
+      menuAction(node, closeMenu, 'Cut', 'cut'),
+      menuAction(node, closeMenu, 'Copy', 'copy'),
+      menuAction(node, closeMenu, 'Copy Path', 'copy-path'),
+      { title: '', isDivider: true, callback: () => undefined },
+      menuAction(node, closeMenu, 'Rename', 'rename'),
+      menuAction(node, closeMenu, 'Delete', 'delete', 'danger'),
+      { title: '', isDivider: true, callback: () => undefined },
+      menuAction(node, closeMenu, 'Reveal in Finder', 'reveal-in-finder'),
+      menuAction(
+        node,
+        closeMenu,
+        explorer.includeExcluded ? 'Hide Excluded Files' : 'Show Excluded Files',
+        'toggle-excluded'
+      )
+    ];
   }
 </script>
 
-<div class="flex h-full min-h-0 w-full flex-col text-foreground">
+<div class="files-panel flex h-full min-h-0 w-full flex-col text-foreground">
   <PanelHeader title="Files" count={explorer.activated ? listedCount : null}>
     {#snippet actions()}
       {#if explorer.activated}
         <Input
           type="search"
           class="h-7 w-32"
-          placeholder="Filter loaded"
-          aria-label="Filter files"
+          placeholder="Search loaded"
+          aria-label="Search loaded files"
           value={explorer.query}
           oninput={onFilterInput}
         />
+        <IconButton
+          label={sortDirection === 'ascending' ? 'Sort Z to A' : 'Sort A to Z'}
+          onclick={() => (sortDirection = sortDirection === 'ascending' ? 'descending' : 'ascending')}
+        >
+          {#if sortDirection === 'ascending'}<ArrowDownAZ />{:else}<ArrowUpZA />{/if}
+        </IconButton>
+        <IconButton
+          label={explorer.includeExcluded ? 'Hide excluded files' : 'Show excluded files'}
+          onclick={() => void toggleExcludedFiles()}
+        >
+          {#if explorer.includeExcluded}<EyeOff />{:else}<Eye />{/if}
+        </IconButton>
       {/if}
       {#if explorer.scanning}
-        <IconButton label="Stop listing files" onclick={() => stopScan()}>
-          <Square />
-        </IconButton>
+        <IconButton label="Stop listing files" onclick={() => stopScan()}><Square /></IconButton>
       {:else}
         <IconButton
           label="List this project's files again"
@@ -364,21 +446,14 @@
   </PanelHeader>
 
   {#if !explorer.activated}
-    <EmptyState
-      title="No session selected"
-      body="Pick a session and the files in its checkout appear here."
-    >
+    <EmptyState title="No session selected" body="Pick a session and its files appear here.">
       {#snippet icon()}<FolderTree />{/snippet}
     </EmptyState>
   {:else if explorer.error && loadedNodes.length === 0}
     <EmptyState title="Could not list the files" body={explorer.error}>
       {#snippet icon()}<TriangleAlert />{/snippet}
       {#snippet actions()}
-        <Button
-          size="sm"
-          variant="secondary"
-          onclick={() => explorer.root && void scanRoot(explorer.root)}
-        >
+        <Button size="sm" variant="secondary" onclick={() => explorer.root && void scanRoot(explorer.root)}>
           Try again
         </Button>
       {/snippet}
@@ -387,13 +462,8 @@
     <EmptyState title="Listing files…" body="Reading this project's top-level entries.">
       {#snippet icon()}<FolderTree />{/snippet}
     </EmptyState>
-  {:else if rows.length === 0}
-    <EmptyState
-      title={filtering ? 'Nothing matches that filter' : 'No source files here'}
-      body={filtering
-        ? 'Clear the filter to see the loaded folders.'
-        : 'This folder has no files the app can open, or it could not be read.'}
-    >
+  {:else if loadedNodes.length === 0}
+    <EmptyState title="No source files here" body="This folder has no files the app can open.">
       {#snippet icon()}<FolderTree />{/snippet}
     </EmptyState>
   {:else}
@@ -403,48 +473,115 @@
     {#if actionError}
       <p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{actionError}</p>
     {/if}
-    <ScrollArea class="min-h-0 flex-1" bind:viewportRef={viewport}>
-      <div class="flex flex-col px-2 pb-2" aria-label="Project files">
-        <div aria-hidden="true" style={`height: ${renderWindow.topSpacerHeight}px`}></div>
-        {#each renderWindow.nodes as node (node.path)}
-          {#if pending?.kind === 'rename' && pending.path === node.path}
-            {@render nameEntry(node.depth, `Rename ${node.name}`)}
-          {:else}
-            <FileTreeRow
-              {node}
-              expanded={openFolders.has(node.path)}
-              selected={!node.isDirectory && node.path === explorer.selectedPath}
-              onclick={onRowClick}
-              onaction={onRowAction}
-            />
-            {#if pending && pending.kind !== 'rename' && pending.path === node.path}
-              {@render nameEntry(
-                node.depth + 1,
-                pending.kind === 'new-folder' ? 'New folder name' : 'New file name'
-              )}
-            {/if}
-          {/if}
-        {/each}
-        <div aria-hidden="true" style={`height: ${renderWindow.bottomSpacerHeight}px`}></div>
+    {#if pending}
+      <div class="entry-bar">
+        <Input
+          class="h-6 w-full"
+          aria-label={pending.kind === 'rename' ? 'Rename path' : 'New path name'}
+          placeholder={pending.kind === 'new-folder' ? 'New folder name' : 'New file name'}
+          bind:ref={entryField}
+          bind:value={pendingName}
+          onkeydown={onEntryKeydown}
+          onblur={() => void commitEntry()}
+        />
       </div>
-    </ScrollArea>
+    {/if}
+    <div
+      class="tree-host"
+      role="tree"
+      tabindex="0"
+      aria-label="Project files"
+      onpointerdown={onTreeWrapperPointerDown}
+    >
+      <Tree
+        data={treeData}
+        treeId="project-files"
+        treePathSeparator="/"
+        idMember="path"
+        pathMember="treePath"
+        parentPathMember="treeParentPath"
+        hasChildrenMember="hasChildren"
+        isExpandedMember="expanded"
+        isSelectedMember="selected"
+        displayValueMember="name"
+        searchValueMember="relativePath"
+        searchText={explorer.query}
+        sortCallback={sortTreeNodes}
+        shouldToggleOnNodeClick={false}
+        shouldUseInternalSearchIndex={true}
+        indexerBatchSize={25}
+        indexerTimeout={50}
+        useFlatRendering={true}
+        progressiveRender={true}
+        initialBatchSize={20}
+        maxBatchSize={500}
+        virtualScroll={true}
+        virtualRowHeight={28}
+        virtualOverscan={6}
+        virtualContainerHeight="100%"
+        dragDropMode="none"
+        expandLevel={0}
+        selectedNodeClass="mcb-tree-selected"
+        expandIconClass="mcb-tree-expand"
+        collapseIconClass="mcb-tree-collapse"
+        leafIconClass="mcb-tree-leaf"
+        onNodeClicked={onTreeNodeClicked}
+        contextMenuCallback={contextMenuFor}
+      >
+        {#snippet nodeTemplate(treeNode: LTreeNode<TreeItem>)}
+          {@const node = treeNode.data}
+          {#if node}
+            <span class="tree-row" class:excluded={node.ignored} title={node.path}>
+              <span class="tree-file-icon" aria-hidden="true">
+                {#if node.isDirectory}
+                  {#if expanded.has(node.path)}
+                    <FolderOpen size={14} strokeWidth={1.75} />
+                  {:else}
+                    <Folder size={14} strokeWidth={1.75} />
+                  {/if}
+                {:else}
+                  <FileIcon fileName={node.name} size={14} />
+                {/if}
+              </span>
+              <span class="tree-name">{node.name}</span>
+              {#if fileClipboard?.path === node.path}
+                <span class="clipboard-mark">{fileClipboard.operation}</span>
+              {/if}
+            </span>
+          {/if}
+        {/snippet}
+        {#snippet noDataFound()}
+          <p class="tree-empty">Nothing matches that search.</p>
+        {/snippet}
+      </Tree>
+    </div>
   {/if}
 </div>
 
-<!-- The name field stands where the row it belongs to would, so a new file
-     appears to be typed straight into the tree. A row's own label sits 54px in
-     from the row's edge once its padding, indent, chevron and icon are counted,
-     and the field carries 9px of its own, so this leaves 45. -->
-{#snippet nameEntry(depth: number, label: string)}
-  <div class="flex h-7 shrink-0 items-center" style={`padding-left: ${depth * 12 + 45}px`}>
-    <Input
-      class="h-6 w-full"
-      aria-label={label}
-      placeholder={label}
-      bind:ref={entryField}
-      bind:value={pendingName}
-      onkeydown={onEntryKeydown}
-      onblur={() => void commitEntry()}
-    />
-  </div>
-{/snippet}
+<style>
+  .tree-host{--tree-node-indent-per-level:12px;min-height:0;flex:1;overflow:hidden;padding:0 4px 4px}
+  .entry-bar{padding:4px 8px;border-bottom:1px solid var(--color-border)}
+  .tree-row{display:flex;align-items:center;min-width:0;width:100%;gap:6px;color:var(--color-text)}
+  .tree-row.excluded{opacity:.55}
+  .tree-file-icon{display:flex;flex:0 0 14px;align-items:center;justify-content:center;color:var(--color-text-3)}
+  .tree-name{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .clipboard-mark{flex:none;color:var(--color-text-3);font-size:12px;text-transform:uppercase}
+  .tree-empty{padding:16px 10px;color:var(--color-text-3);text-align:center}
+
+  :global(.files-panel .ltree-tree){position:relative;font:inherit;color:inherit;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
+  :global(.files-panel .ltree-node){position:relative;height:28px;font:inherit}
+  :global(.files-panel .ltree-node-row){display:flex;height:28px;align-items:center;min-width:0}
+  :global(.files-panel .ltree-toggle-icon){display:flex;width:16px;height:28px;flex:0 0 16px;align-items:center;justify-content:center;color:var(--color-text-3);font-size:13px;cursor:pointer}
+  :global(.files-panel .mcb-tree-expand::before){content:'›'}
+  :global(.files-panel .mcb-tree-collapse::before){content:'⌄'}
+  :global(.files-panel .mcb-tree-leaf::before){content:''}
+  :global(.files-panel .ltree-node-content){display:flex;height:28px;min-width:0;flex:1;align-items:center;padding:0 6px;border-radius:4px;user-select:none;cursor:pointer}
+  :global(.files-panel .ltree-node-content:hover){background:var(--color-surface-hover)}
+  :global(.files-panel .ltree-node-content.mcb-tree-selected){background:color-mix(in srgb,var(--color-accent) 18%,transparent)}
+  :global(.ltree-context-menu){position:fixed;z-index:1000;min-width:220px;padding:4px;border:1px solid var(--color-border);border-radius:7px;background:var(--color-surface);box-shadow:0 12px 32px rgba(0,0,0,.38);color:var(--color-text)}
+  :global(.ltree-context-menu-item){display:flex;align-items:center;min-height:28px;padding:4px 8px;border-radius:4px;font-size:12px;cursor:pointer}
+  :global(.ltree-context-menu-item:hover){background:var(--color-surface-hover)}
+  :global(.ltree-context-menu-item.danger){color:var(--color-bad)}
+  :global(.ltree-context-menu-item-disabled){opacity:.45;pointer-events:none}
+  :global(.ltree-context-menu-divider){height:1px;margin:4px;background:var(--color-border)}
+</style>

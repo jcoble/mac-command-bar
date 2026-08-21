@@ -109,7 +109,11 @@ export interface GitBackend {
   listStashes(root: string): Promise<GitStashEntry[] | null>;
   amend(root: string, message: string): Promise<GitActionResult | null>;
   readDiff(root: string, absolutePath: string): Promise<SourceGitDiff | null>;
-  readHistory(root: string, limit: number): Promise<GitCommitHistoryEntry[] | null>;
+  readHistory(
+    root: string,
+    limit: number,
+    relativePath?: string | null
+  ): Promise<GitCommitHistoryEntry[] | null>;
   stage(root: string, paths: string[]): Promise<GitActionResult | null>;
   unstage(root: string, paths: string[]): Promise<GitActionResult | null>;
   commit(root: string, message: string): Promise<GitActionResult | null>;
@@ -168,9 +172,9 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
       count('read_source_git_diff');
       return readSourceGitDiffFromTauri(root, absolutePath);
     },
-    readHistory(root, limit) {
+    readHistory(root, limit, relativePath) {
       count('read_git_commit_history');
-      return readGitCommitHistoryFromTauri(root, limit);
+      return readGitCommitHistoryFromTauri(root, limit, relativePath);
     },
     stage(root, paths) {
       count('stage_git_paths');
@@ -251,6 +255,10 @@ export interface GitService {
   refreshHistory(): Promise<void>;
   /** Ask for another page of older commits. Does nothing once the list is whole. */
   loadMoreHistory(): Promise<void>;
+  /** Show only commits which touched one repository-relative file. */
+  showFileHistory(root: string, relativePath: string): Promise<void>;
+  /** Return the history surface to the repository's complete history. */
+  clearHistoryPath(): Promise<void>;
   /** Show this file's diff. */
   selectFile(file: ProjectGitFileStatus): Promise<void>;
   /**
@@ -376,7 +384,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyError = '';
 
     try {
-      const history = await backend.readHistory(root, limit);
+      const history = await backend.readHistory(root, limit, state.historyPath || null);
       if (!stillCurrent(historyGuard, id, root)) return;
       if (!history) {
         markDesktopOnly();
@@ -424,6 +432,24 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
 
   async function refresh(): Promise<void> {
     await Promise.all([refreshStatus(), refreshHistory()]);
+  }
+
+  async function showFileHistory(root: string, relativePath: string): Promise<void> {
+    const targetRoot = root.trim();
+    const targetPath = relativePath.trim();
+    if (!targetRoot || !targetPath) return;
+    if (state.root !== targetRoot) resetGitPanelState(state, targetRoot);
+    state.activated = true;
+    state.historyPath = targetPath;
+    state.historyRequested = 0;
+    await loadHistory(COMMIT_HISTORY_LIMIT, false);
+  }
+
+  async function clearHistoryPath(): Promise<void> {
+    if (!state.historyPath) return;
+    state.historyPath = '';
+    state.historyRequested = 0;
+    await loadHistory(COMMIT_HISTORY_LIMIT, false);
   }
 
   async function selectFile(file: ProjectGitFileStatus): Promise<void> {
@@ -565,6 +591,8 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     refreshStatus,
     refreshHistory,
     loadMoreHistory,
+    showFileHistory,
+    clearHistoryPath,
     selectFile,
     showStoredDiff,
     clearSelection,

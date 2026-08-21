@@ -1089,7 +1089,8 @@ export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise
 
 export async function listLocalSourceDirectory(
   rootPath: string,
-  directoryPath: string
+  directoryPath: string,
+  includeExcluded = false
 ): Promise<SourceDirectoryEntry[]> {
   const root = normalizeRootPath(rootPath);
   const directory = normalizeRootPath(directoryPath);
@@ -1107,13 +1108,14 @@ export async function listLocalSourceDirectory(
   return entries
     .filter((entry) => {
       if (entry.isSymbolicLink()) return false;
-      if (entry.isDirectory()) return skipDirReason(entry.name) === null;
+      if (entry.isDirectory()) return includeExcluded || skipDirReason(entry.name) === null;
       return entry.isFile() && isSourceFile(path.join(directory, entry.name));
     })
     .map((entry) => ({
       path: path.join(directory, entry.name),
       name: entry.name,
-      isDirectory: entry.isDirectory()
+      isDirectory: entry.isDirectory(),
+      excluded: entry.isDirectory() && skipDirReason(entry.name) !== null
     }))
     .sort((left, right) => {
       if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;

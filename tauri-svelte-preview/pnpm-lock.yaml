@@ -175,6 +175,9 @@ importers:
       '@codingame/monaco-vscode-yaml-default-extension':
         specifier: 25.1.2
         version: 25.1.2
+      '@keenmate/svelte-treeview':
+        specifier: ^4.8.0
+        version: 4.8.0(svelte@5.56.3)
       '@lezer/highlight':
         specifier: 1.2.3
         version: 1.2.3
@@ -654,6 +657,11 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@keenmate/svelte-treeview@4.8.0':
+    resolution: {integrity: sha512-e8U9x9DwvRnoJP2NP9JEfwgnazq34zBuYc6q1LfNoAQuNWL1mE7nnyDyNFTXVt3aMhUVmWqhTCHuSOWLm0v7Kw==}
+    peerDependencies:
+      svelte: ^5.0.0
 
   '@lezer/common@1.5.2':
     resolution: {integrity: sha512-sxQE460fPZyU3sdc8lafxiPwJHBzZRy/udNFynGQky1SePYBdhkBl1kOagA9uT3pxR8K09bOrmTUqA9wb/PjSQ==}
@@ -1233,6 +1241,9 @@ packages:
     peerDependenciesMeta:
       picomatch:
         optional: true
+
+  flexsearch@0.8.212:
+    resolution: {integrity: sha512-wSyJr1GUWoOOIISRu+X2IXiOcVfg9qqBRyCPRUdLMIGJqPzMo+jMRlvE83t14v1j0dRMEaBbER/adQjp6Du2pw==}
 
   font-finder@1.1.0:
     resolution: {integrity: sha512-wpCL2uIbi6GurJbU7ZlQ3nGd61Ho+dSU6U83/xJT5UPFfN35EeCW/rOtS+5k+IuEZu2SYmHzDIPL9eA5tSYRAw==}
@@ -2248,6 +2259,12 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
+  '@keenmate/svelte-treeview@4.8.0(svelte@5.56.3)':
+    dependencies:
+      svelte: 5.56.3
+    optionalDependencies:
+      flexsearch: 0.8.212
+
   '@lezer/common@1.5.2': {}
 
   '@lezer/cpp@1.1.6':
@@ -2744,6 +2761,9 @@ snapshots:
   fdir@6.5.0(picomatch@4.0.4):
     optionalDependencies:
       picomatch: 4.0.4
+
+  flexsearch@0.8.212:
+    optional: true
 
   font-finder@1.1.0:
     dependencies:

@@ -92,6 +92,7 @@ struct SourceDirectoryEntry {
     path: String,
     name: String,
     is_directory: bool,
+    excluded: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -687,10 +688,15 @@ async fn list_source_directory(
     app: tauri::AppHandle,
     root: String,
     directory: String,
+    include_excluded: Option<bool>,
 ) -> Result<Vec<SourceDirectoryEntry>, String> {
     allow_workspace_root_in_fs_scope(&app, &root);
     tauri::async_runtime::spawn_blocking(move || {
-        list_source_directory_sync(PathBuf::from(root), PathBuf::from(directory))
+        list_source_directory_sync(
+            PathBuf::from(root),
+            PathBuf::from(directory),
+            include_excluded.unwrap_or(false),
+        )
     })
     .await
     .map_err(|error| format!("Source directory task failed: {error}"))?
@@ -1565,9 +1571,10 @@ async fn push_git_repository(root: String) -> Result<GitActionResult, String> {
 async fn read_git_commit_history(
     root: String,
     limit: Option<usize>,
+    relative_path: Option<String>,
 ) -> Result<Vec<GitCommitHistoryEntry>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        read_git_commit_history_sync(PathBuf::from(root), limit)
+        read_git_commit_history_sync(PathBuf::from(root), limit, relative_path)
     })
     .await
     .map_err(|error| format!("Git history task failed: {error}"))?
@@ -2121,6 +2128,7 @@ fn list_source_files_sync_with_cancellation(
 fn list_source_directory_sync(
     root: PathBuf,
     directory: PathBuf,
+    include_excluded: bool,
 ) -> Result<Vec<SourceDirectoryEntry>, String> {
     let canonical_root = std::fs::canonicalize(&root)
         .map_err(|error| format!("Could not read source root metadata: {error}"))?;
@@ -2143,7 +2151,8 @@ fn list_source_directory_sync(
             }
             let name = entry.file_name().to_string_lossy().to_string();
             let is_directory = file_type.is_dir();
-            if (is_directory && skip_dir_reason(&name).is_some())
+            let excluded = is_directory && skip_dir_reason(&name).is_some();
+            if (excluded && !include_excluded)
                 || (!is_directory && (!file_type.is_file() || !is_source_file(&entry.path())))
             {
                 return None;
@@ -2152,6 +2161,7 @@ fn list_source_directory_sync(
                 path: entry.path().display().to_string(),
                 name,
                 is_directory,
+                excluded,
             })
         })
         .collect::<Vec<_>>();
@@ -3241,6 +3251,7 @@ fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
 fn read_git_commit_history_sync(
     root: PathBuf,
     limit: Option<usize>,
+    relative_path: Option<String>,
 ) -> Result<Vec<GitCommitHistoryEntry>, String> {
     validate_git_root(&root)?;
 
@@ -3248,16 +3259,21 @@ fn read_git_commit_history_sync(
         .unwrap_or(DEFAULT_GIT_HISTORY_LIMIT)
         .clamp(1, MAX_GIT_HISTORY_LIMIT);
     let limit_arg = format!("-n{limit}");
-    let history_output = run_git_text(
-        &root,
-        &[
-            "log",
-            "--decorate=short",
-            "--date=iso-strict",
-            "--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D%x1f%P",
-            limit_arg.as_str(),
-        ],
-    );
+    let base_args = [
+        "log",
+        "--decorate=short",
+        "--date=iso-strict",
+        "--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D%x1f%P",
+        limit_arg.as_str(),
+    ];
+    let history_output = if let Some(relative_path) = relative_path {
+        let paths = validate_git_relative_paths(&[relative_path])?;
+        let mut file_args = base_args.to_vec();
+        file_args.push("--follow");
+        run_git_with_paths(&root, &file_args, &paths)
+    } else {
+        run_git_text(&root, &base_args)
+    };
 
     match history_output {
         Ok(output) => parse_git_commit_history(&output),
@@ -7774,7 +7790,7 @@ mod tests {
         std::fs::write(root.join("README.md"), "history\n").unwrap();
         run_git_for_test(&root, &["commit", "-am", "history panel"]);
 
-        let history = read_git_commit_history_sync(root.clone(), Some(4)).unwrap();
+        let history = read_git_commit_history_sync(root.clone(), Some(4), None).unwrap();
 
         assert_eq!(history.len(), 4);
         assert_eq!(history[0].subject, "history panel");
@@ -9405,7 +9421,7 @@ mod tests {
         run_git_for_test(&root, &["add", "-A"]);
         run_git_for_test(&root, &["commit", "-m", "second"]);
 
-        let history = read_git_commit_history_sync(root.clone(), Some(1)).unwrap();
+        let history = read_git_commit_history_sync(root.clone(), Some(1), None).unwrap();
         let sha = history[0].sha.clone();
 
         let mut files = read_git_commit_files_sync(root.clone(), sha.clone()).unwrap();

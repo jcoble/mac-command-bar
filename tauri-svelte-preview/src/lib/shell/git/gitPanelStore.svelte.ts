@@ -60,6 +60,8 @@ export interface GitPanelState {
 
   // ── commit history ────────────────────────────────────────────────────────
   history: GitCommitHistoryEntry[];
+  /** Repository-relative file whose commits are shown, or '' for all commits. */
+  historyPath: string;
   historyLoading: boolean;
   historyError: string;
   /** How many commits the last history read asked the app for. 0 before any read.
@@ -106,6 +108,7 @@ export function createGitPanelState(): GitPanelState {
     statusLoading: false,
     statusError: '',
     history: [],
+    historyPath: '',
     historyLoading: false,
     historyError: '',
     historyRequested: 0,

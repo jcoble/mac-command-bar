@@ -447,7 +447,8 @@ export async function readGitStatus(root: string): Promise<GitBridgeStatus> {
 /** Mirrors `read_git_commit_history`. */
 export async function readGitCommitHistory(
   root: string,
-  limit?: number | null
+  limit?: number | null,
+  relativePath?: string | null
 ): Promise<GitBridgeCommit[]> {
   const folder = await repositoryTop(root);
   const wanted = Math.min(
@@ -456,13 +457,15 @@ export async function readGitCommitHistory(
   );
 
   try {
-    const output = await runGit(folder, [
+    const args = [
       'log',
       '--decorate=short',
       '--date=iso-strict',
       '--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D%x1f%P',
       `-n${wanted}`
-    ]);
+    ];
+    if (relativePath?.trim()) args.push('--follow', '--', relativePath.trim());
+    const output = await runGit(folder, args);
     return parseGitCommitHistory(output);
   } catch (error) {
     // A brand-new repository has no commits yet. That is an empty list, not a
@@ -623,7 +626,11 @@ export async function handleGitBridgeRequest(
         return {
           handled: true,
           statusCode: 200,
-          body: await readGitCommitHistory(text(body.root), numberOrNull(body.limit))
+          body: await readGitCommitHistory(
+            text(body.root),
+            numberOrNull(body.limit),
+            text(body.relativePath) || null
+          )
         };
       case 'commit-files':
         return {
