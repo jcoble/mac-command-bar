@@ -6,7 +6,7 @@
  * backend read wrapper needs. `readSourceFromTauri` re-overlays
  * `relativePath` / `language` / `byteCount` from the record it is handed, so
  * the record must always be built FIRST — otherwise the preview comes back
- * with the wrong language and Monaco highlights it as plain text.
+ * with the wrong language and the editor highlights it as plain text.
  *
  * Ported from the old shell's `sourceRecordFromRestoredPath`
  * (`src/routes/+page.svelte:6769`). Behaviour is unchanged, with two

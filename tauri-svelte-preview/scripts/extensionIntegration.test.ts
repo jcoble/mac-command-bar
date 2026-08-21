@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const read = (path: string): string => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
 const catalog = read('src/lib/shell/extensions/extensionCatalog.ts');
 const runtime = read('src/lib/shell/extensions/extensionRuntime.ts');
@@ -10,8 +10,6 @@ const csharp = read('src/lib/shell/editor/csharpLanguageClient.ts');
 const probeBridge = read('src/lib/shell/editor/extensionApiProbeBridge.ts');
 const probeController = read('src/lib/shell/editor/extensionApiProbeController.ts');
 const scm = read('src/lib/shell/extensions/rustGitScmProvider.ts');
-const diffView = read('src/lib/shell/components/GitDiffView.svelte');
-const nativeDiff = read('src/lib/shell/components/git/NativeGitDiffEditor.svelte');
 const houston = JSON.parse(read('src/lib/shell/extensions/houston/houston.json'));
 
 assert.match(catalog, /astro-build\.houston/);
@@ -81,10 +79,4 @@ assert.match(scm, /activeStatus = snapshot\.status/);
 assert.match(scm, /rustGitScmProbeGroups/);
 assert.match(scm, /activeProbeOwners\.clear\(\)/);
 
-assert.match(diffView, /<NativeGitDiffEditor/);
-assert.match(nativeDiff, /createDiffEditor/);
-assert.match(nativeDiff, /Uri\.file\(absolutePath\(\)\)/);
-assert.match(nativeDiff, /mcb-git=original/);
-assert.match(nativeDiff, /mcb-git=modified/);
-
-console.log('extensionIntegration.test.mjs: all checks passed');
+console.log('extensionIntegration.test.ts: all checks passed');

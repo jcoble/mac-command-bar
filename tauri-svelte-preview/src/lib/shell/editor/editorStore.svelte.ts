@@ -165,14 +165,17 @@ export function setEditorSymbols(symbols: SourceSymbol[]): void {
  * Put a session's lightweight tab descriptors back without reading a file.
  */
 export function restoreEditorFiles(
-  files: readonly { path: string; draftContent?: string }[]
+  files: readonly { path: string; draftContent?: string }[],
+  activePath: string | null = null
 ): void {
   editorState.openFiles = files.map((file) => ({
     ...openEditorFileFromRecord(sourceRecordFromPath(editorState.projectRoot, file.path)),
     draftContent: file.draftContent ?? null,
     dirty: file.draftContent !== undefined
   }));
-  editorState.activePath = null;
+  editorState.activePath = editorState.openFiles.some((file) => file.path === activePath)
+    ? activePath
+    : null;
   editorState.symbols = [];
 }
 

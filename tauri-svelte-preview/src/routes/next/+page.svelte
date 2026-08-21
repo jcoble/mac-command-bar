@@ -117,7 +117,6 @@
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartProviderConfig, ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow.ts";
 	import { deriveThreadStartProjects } from "$lib/shell/newSession/threadStartFlow.ts";
-	import { requestOpenFile } from "$lib/shell/openFileBus";
 	import {
 		adoptAgentSession,
 		createFreshSession,
@@ -200,12 +199,6 @@
 	 * each for the whole shell, so this is what keeps two sessions in the same
 	 * repository from overwriting each other's tabs. */
 	let workspaces: Record<string, SessionWorkspaceSnapshot> = {};
-	/** True only while `restoreWorkspace` is replaying a session's files. The
-	 * editor asks to come to the front for every file opened, which is right for a
-	 * click and wrong here: switching session must not pull the user off the
-	 * terminal they were watching. */
-	let restoringWorkspace = false;
-
 	let service: ReturnType<typeof createTerminalService> | null = null;
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
 	let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
@@ -805,15 +798,8 @@
 		// emptiness is the whole point: it is the other session's tabs not being
 		// there.
 		editorPanel?.restoreViewStates(plan.openFiles);
-		if (plan.openFiles.length > 0) restoreEditorFiles(plan.openFiles);
+		if (plan.openFiles.length > 0) restoreEditorFiles(plan.openFiles, plan.activePath);
 		else resetEditorState();
-
-		restoringWorkspace = true;
-		try {
-			if (plan.eagerPath) requestOpenFile({ path: plan.eagerPath });
-		} finally {
-			restoringWorkspace = false;
-		}
 		if (!snapshot) return;
 		selectPath(snapshot.selectedPath);
 		setScrollTop(snapshot.scrollTop);
@@ -1418,13 +1404,6 @@
 			extensionApiProbeObservation = observation;
 		});
 		disposers.push(stopExtensionApiProbeObservations);
-		void import("$lib/shell/editor/csharpLanguageClient")
-			.then(({ startVscodeServicesEagerly }) => {
-				startVscodeServicesEagerly();
-			})
-			.catch((error) => {
-				console.error("[code-services] eager boot import failed", error);
-			});
 		void startConversationEvents();
 		// Honour where the reader last put the Problems list. The frame and the
 		// tool column both mount before this runs, so both have handed over their
@@ -1645,23 +1624,14 @@
 	</div>
 {/snippet}
 {#snippet editorArea()}
-	<!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight.
-       Except while a session's files are being put back — that is not a request for anything, and
-       it must not drag the user off the terminal they were watching. -->
+	<!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight. -->
 	<EditorPanel
 		bind:this={editorPanel}
 		showing={centerTab === "editor"}
 		onCloseAllEditors={clearAllEditorWorkspaceRecords}
 		onFileOpened={() => {
-			if (!restoringWorkspace) selectCenterTab("editor");
+			selectCenterTab("editor");
 		}}
-		onStartWorkspaceCommand={(request) =>
-			onStartStack({
-				stackId: request.id,
-				cwd: request.cwd,
-				script: request.script,
-				title: request.title,
-			})}
 	/>
 {/snippet}
 <!-- The changes to whichever file source control has selected. `GitDiffView`

@@ -459,9 +459,7 @@ export function clearWorkspaceEditorTabs(
 export interface WorkspaceRestorePlan {
   /** Lightweight tab descriptors to rebuild synchronously. */
   openFiles: ({ path: string } & SessionWorkspaceFileState)[];
-  /** The only file read immediately. Other descriptors load when clicked. */
-  eagerPath: string | null;
-  /** The file to leave in front, or null when there is nothing to show. */
+  /** The file to mark active without reading it, or null when there is nothing to show. */
   activePath: string | null;
 }
 
@@ -481,7 +479,6 @@ export function planWorkspaceRestore(
     : openFiles.at(-1)?.path ?? null;
   return {
     openFiles,
-    eagerPath: activePath,
     activePath
   };
 }

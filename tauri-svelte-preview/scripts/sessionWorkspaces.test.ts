@@ -122,7 +122,7 @@ test('capture_reports_refused_write', () => {
   assert.equal(writeWorkspaces(storage, { session: snapshot }), false);
 });
 
-test('restore_plan_marks_only_active_path_for_eager_read', () => {
+test('restore_plan_marks_the_active_path_without_file_contents', () => {
   const snapshot = captureWorkspace({
     openFiles: openFiles('/repo/a.ts', '/repo/b.ts', '/repo/c.ts'),
     activePath: '/repo/b.ts',
@@ -136,7 +136,7 @@ test('restore_plan_marks_only_active_path_for_eager_read', () => {
     { path: '/repo/b.ts' },
     { path: '/repo/c.ts' }
   ]);
-  assert.equal(plan.eagerPath, '/repo/b.ts');
+  assert.equal(plan.activePath, '/repo/b.ts');
 });
 
 // A capture is exactly what was on screen: the strip in order, the file showing,

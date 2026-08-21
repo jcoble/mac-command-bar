@@ -8,24 +8,29 @@
    * `gitService`, which the panel and the integrator drive. Nothing is loaded or
    * measured while hidden, so it is safe inside a parked (display:none) host.
    *
-   * Text files use Monaco's real diff editor with full bounded models supplied
+   * Text files use CodeMirror's merge view with full bounded models supplied
    * by Rust. The unified-text renderer stays only as a fallback for an older
    * backend or a file whose full models are intentionally unavailable — and for
-   * a diff that is loaded but not in front, because starting Monaco's diff
-   * editor starts the VS Code service container with it.
+   * a diff that is loaded but not in front, because no editor should mount for
+   * a comparison nobody is looking at.
    */
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { parseUnifiedDiff, summarizeParsedDiff } from '$lib/shell/git/parseUnifiedDiff';
-  import NativeGitDiffEditor from '$lib/shell/components/git/NativeGitDiffEditor.svelte';
+  import type CodeMirrorGitDiffEditor from '$lib/shell/components/git/CodeMirrorGitDiffEditor.svelte';
   import { requestOpenFile } from '$lib/shell/openFileBus';
 
   interface Props {
     /** Whether the Diff tab is the center tab in front. A session that
-     * remembered a diff has it put back at launch, and Monaco must not start
+     * remembered a diff has it put back at launch, and CodeMirror must not start
      * for a comparison nobody is looking at. */
     showing?: boolean;
   }
   let { showing = false }: Props = $props();
+
+  type DiffEditorComponent = typeof CodeMirrorGitDiffEditor;
+  let DiffEditor = $state<DiffEditorComponent | null>(null);
+  let diffEditorLoadError = $state<string | null>(null);
+  let loadingDiffEditor = false;
 
   /** Long diffs are trimmed so one huge file cannot stall the panel. */
   const MAX_RENDERED_LINES = 2000;
@@ -44,6 +49,23 @@
     parsed ? parsed.hunks.reduce((total, hunk) => total + hunk.lines.length, 0) : 0
   );
   const trimmed = $derived(renderedLineCount > MAX_RENDERED_LINES);
+
+  async function ensureDiffEditor(): Promise<void> {
+    if (DiffEditor || loadingDiffEditor) return;
+    loadingDiffEditor = true;
+    diffEditorLoadError = null;
+    try {
+      DiffEditor = (await import('$lib/shell/components/git/CodeMirrorGitDiffEditor.svelte')).default;
+    } catch (error) {
+      diffEditorLoadError = error instanceof Error ? error.message : String(error);
+    } finally {
+      loadingDiffEditor = false;
+    }
+  }
+
+  $effect(() => {
+    if (showing && hasNativeModels) void ensureDiffEditor();
+  });
 
   /** Hunks cut down to the render cap, in order. */
   const sections = $derived.by(() => {
@@ -119,13 +141,19 @@
       <p class="notice">This file has no line changes compared with the last commit.</p>
     {:else if showing && hasNativeModels && diff && gitPanel.root}
       <div class="native-body">
-        <NativeGitDiffEditor
-          root={gitPanel.root}
-          relativePath={diff.relativePath}
-          originalContent={diff.originalContent ?? ''}
-          modifiedContent={diff.modifiedContent ?? ''}
-          onOpenLine={openAtLine}
-        />
+        {#if DiffEditor}
+          <DiffEditor
+            root={gitPanel.root}
+            relativePath={diff.relativePath}
+            originalContent={diff.originalContent ?? ''}
+            modifiedContent={diff.modifiedContent ?? ''}
+            onOpenLine={openAtLine}
+          />
+        {:else if diffEditorLoadError}
+          <p class="notice error">Could not start the diff editor: {diffEditorLoadError}</p>
+        {:else}
+          <p class="notice">Starting the diff editor…</p>
+        {/if}
       </div>
     {:else}
       <div class="body">

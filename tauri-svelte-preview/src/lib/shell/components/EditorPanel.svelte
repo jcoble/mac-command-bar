@@ -5,15 +5,14 @@
    * Thin by construction. It owns three things and nothing else:
    *  1. the strip of open files,
    *  2. reading a file when one is requested, and
-   *  3. handing `MonacoSourceEditor` the lookup callbacks from
+   *  3. handing `CodeMirrorSourceEditor` the lookup callbacks from
    *     `sourceIntelligence`.
    *
    * Rules it exists to keep:
-   *  - **One editor, ever.** Monaco registers its providers for the whole
-   *    page, so a second editor anywhere would quietly take over every
-   *    lookup. Switching files swaps the file INSIDE this one editor.
+   *  - **One editor, ever.** Switching files swaps the document inside one
+   *    CodeMirror view, so inactive tabs hold only their saved text and view state.
    *  - **Nothing loads at start-up.** The panel subscribes to open-file
-   *    requests when it mounts (free, no backend), and Monaco itself is only
+   *    requests when it mounts (free, no backend), and CodeMirror itself is only
    *    downloaded once a file is on screen in front of the reader — not merely
    *    in the strip, because putting a session's files back fills the strip out
    *    of sight. The language server is warmed on the first file opened per
@@ -95,12 +94,7 @@
     warmSourceLspForRootFromTauri,
     writeSourceToTauri
   } from '$lib/tauriSource';
-  import {
-    dotnetWorkspaceSessionRequest,
-    type DotnetWorkspaceAction,
-    type WorkspaceCommandSessionRequest
-  } from '$lib/workspaceCodeLens';
-  import type MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
+  import type CodeMirrorSourceEditor from '$lib/CodeMirrorSourceEditor.svelte';
   import type {
     SourceDiagnostic,
     SourceInlayHint,
@@ -123,29 +117,21 @@
      * back opens them out of sight, and the code editor is far too expensive to
      * start for a file nobody is looking at. */
     showing?: boolean;
-    /** Start a fixed workspace command as an ordinary owned terminal session. */
-    onStartWorkspaceCommand?: (
-      request: WorkspaceCommandSessionRequest
-    ) => Promise<string | null>;
     /** Clears every session's saved editor strip after this panel closes its live tabs. */
     onCloseAllEditors?: () => void;
   }
-  let { onFileOpened, showing = false, onStartWorkspaceCommand, onCloseAllEditors }: Props = $props();
+  let { onFileOpened, showing = false, onCloseAllEditors }: Props = $props();
 
-  type CodeEditorComponent = typeof MonacoSourceEditor;
+  type CodeEditorComponent = typeof CodeMirrorSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
-  let codeEditor: {
+  let codeEditor = $state<{
     captureViewStates(paths: readonly string[]): Record<string, object>;
     disposeTabModel(path: string): boolean;
     disposeAllTabModels(): void;
     releaseSessionResources(): void;
-  } | null = null;
+  } | null>(null);
   let editorLoadError = $state<string | null>(null);
   let loadingEditorComponent = false;
-  let nativeCsharpRoot = $state<string | null>(null);
-  let nativeCsharpPath = $state<string | null>(null);
-  let stopNativeCsharpActions: (() => void) | null = null;
-  let stopNativeCsharpDiagnostics: (() => void) | null = null;
 
   /** Paths whose read is in flight, so a double click cannot read twice. */
   const readsInFlight = new Set<string>();
@@ -247,12 +233,6 @@
     if (!path) return;
     markdownViewByPath = { ...markdownViewByPath, [path]: view };
   }
-
-  const nativeCsharpActive = $derived(
-    activeFile?.language === 'csharp' &&
-      nativeCsharpRoot === editorState.projectRoot &&
-      nativeCsharpPath === activeFile.path
-  );
 
   /**
    * What the language server says is wrong, per file. Kept per file rather than
@@ -472,87 +452,17 @@
     loadingEditorComponent = true;
     try {
       const root = editorState.projectRoot;
-      // Monaco's standalone imports initialize the one-shot service container.
-      // Wait until its first start can receive the real, path-bearing root.
+      // Wait until the first editor can receive the real, path-bearing root.
       if (!root) return;
-      let native: typeof import('$lib/shell/editor/csharpLanguageClient') | null = null;
-      try {
-        const editorServices = await import('$lib/shell/editor/csharpLanguageClient');
-        // Preparing the editor services starts no server — it is what lets
-        // Monaco open a file at all — so it runs in both modes.
-        await editorServices.prepareNativeCsharpEditorServices(root);
-        if (isNativeTauriRuntime()) native = editorServices;
-      } catch (error) {
-        console.error('Could not prepare Monaco editor services', error);
-      }
       if (!CodeEditor) {
-        const module = await import('$lib/MonacoSourceEditor.svelte');
+        const module = await import('$lib/CodeMirrorSourceEditor.svelte');
         if (!destroyed) CodeEditor = module.default;
-      }
-      // Roslyn project loading is deliberately not on the file-rendering path.
-      // The editor appears as soon as Monaco is ready; native CodeLens cuts over
-      // only after this background attachment has opened the real document.
-      if (native && activeFileLanguage() === 'csharp' && editorState.activePath) {
-        void ensureNativeCsharpForActiveFile(editorState.activePath, native).catch((error) => {
-          console.error('Could not attach the native C# document', error);
-        });
       }
     } catch (error) {
       if (!destroyed) editorLoadError = `Could not start the code editor: ${describeError(error)}`;
     } finally {
       loadingEditorComponent = false;
     }
-  }
-
-  async function ensureNativeCsharpForActiveFile(
-    path = editorState.activePath,
-    loadedNative?: typeof import('$lib/shell/editor/csharpLanguageClient')
-  ): Promise<void> {
-    const root = editorState.projectRoot;
-    const entry = path ? editorFileFor(path) : null;
-    if (
-      !root ||
-      !path ||
-      entry?.language !== 'csharp' ||
-      !isNativeTauriRuntime() ||
-      (nativeCsharpRoot === root && nativeCsharpPath === path)
-    ) {
-      return;
-    }
-    // Attaching the document is what brings Roslyn up. In read mode the file is
-    // shown with colouring and nothing is started.
-    await applySavedModeForProject(root);
-    if (destroyed || !languageIntelligenceOn(languageIntelligenceChoices, root)) return;
-    const native = loadedNative ?? (await import('$lib/shell/editor/csharpLanguageClient'));
-    const ensured = await native.ensureNativeCsharpDocument(root, path);
-    if (
-      destroyed ||
-      editorState.projectRoot !== root ||
-      editorState.activePath !== path ||
-      activeFileLanguage() !== 'csharp'
-    ) {
-      return;
-    }
-    nativeCsharpRoot = ensured.root;
-    nativeCsharpPath = ensured.path;
-    stopNativeCsharpActions?.();
-    stopNativeCsharpActions = native.setNativeCsharpDocumentActions({
-      build: (documentUri) => runDotnetWorkspaceAction('build', documentUri),
-      test: (documentUri) => runDotnetWorkspaceAction('test', documentUri)
-    });
-    stopNativeCsharpDiagnostics?.();
-    stopNativeCsharpDiagnostics = native.subscribeNativeCsharpDiagnostics((diagnostics) => {
-      if (destroyed || editorState.projectRoot !== root) return;
-      const next = { ...diagnosticsByPath };
-      for (const path of Object.keys(next)) {
-        if (path.endsWith('.cs')) delete next[path];
-      }
-      for (const diagnostic of diagnostics) {
-        const current = next[diagnostic.path] ?? [];
-        next[diagnostic.path] = [...current, diagnostic];
-      }
-      diagnosticsByPath = next;
-    });
   }
 
   /**
@@ -614,32 +524,15 @@
   /**
    * Turn language intelligence on or off for the project on screen.
    *
-   * Off closes this project's language client first — that is what sends the
-   * server its goodbye — and then asks the desktop app to stop the process and
-   * reclaim its memory. On records the choice and starts the server for the
-   * file already open, saying so — including when there is no server to start.
+   * Off asks the desktop app to stop the process and reclaim its memory. On
+   * records the choice and starts the server for the file already open, saying
+   * so — including when there is no server to start.
    */
   async function switchLanguageIntelligence(enabled: boolean): Promise<void> {
     const root = editorState.projectRoot;
     if (!root || languageIntelligenceBusy) return;
     languageIntelligenceBusy = true;
     try {
-      if (!enabled && isNativeTauriRuntime()) {
-        try {
-          const native = await import('$lib/shell/editor/csharpLanguageClient');
-          await native.stopNativeCsharpLanguageClient(root);
-        } catch {
-          // No client to close, or it could not be closed cleanly. The desktop
-          // app stops the process either way.
-        }
-        nativeCsharpRoot = null;
-        nativeCsharpPath = null;
-        stopNativeCsharpActions?.();
-        stopNativeCsharpActions = null;
-        stopNativeCsharpDiagnostics?.();
-        stopNativeCsharpDiagnostics = null;
-      }
-
       // Remembered first, so the switch keeps its position even if the desktop
       // app is an older build that cannot act on it.
       languageIntelligenceChoices = withLanguageIntelligenceChoice(
@@ -678,14 +571,6 @@
         await warmLanguageServer(root);
         if (destroyed) return;
         void ensureCodeEditor();
-        // C# comes up through its own client, and a failure there is the reader's
-        // to see: the switch is on, so an empty editor with no explanation is the
-        // one thing this must not do.
-        await ensureNativeCsharpForActiveFile().catch((error) => {
-          if (!destroyed) {
-            languageIntelligenceNote = `The C# language server could not be started: ${describeError(error)}`;
-          }
-        });
       }
       if (!destroyed) void refreshEditorIntelligenceForActiveFile();
     } catch (error) {
@@ -720,14 +605,7 @@
     const generation = sessionResourceGeneration;
     readsInFlight.add(record.path);
     markEditorFileLoading(record.path);
-    if (record.language !== 'csharp' || !isNativeTauriRuntime()) {
-      void warmLanguageServer(editorState.projectRoot);
-    } else {
-      // C# warms through its own client, but the saved choice still has to
-      // reach the desktop app before anything asks it for an endpoint.
-      const root = editorState.projectRoot;
-      if (root) void applySavedModeForProject(root);
-    }
+    void warmLanguageServer(editorState.projectRoot);
     try {
       // The record has to be built first: the read wrapper copies the relative
       // path, language and size back out of it onto the preview it returns.
@@ -902,7 +780,7 @@
     void readFileIntoEditor(recordForPath(path));
   }
 
-  /** Monaco followed a definition or a reference into another file. */
+  /** The code editor followed a definition or a reference into another file. */
   function navigateToExternalSource(request: {
     path: string;
     line: number;
@@ -915,43 +793,19 @@
     setEditorSymbols(symbols);
   }
 
-  async function runDotnetWorkspaceAction(
-    action: DotnetWorkspaceAction,
-    documentUri?: string
-  ): Promise<void> {
-    const root = editorState.projectRoot;
-    if (!root) throw new Error('No workspace is active.');
-    if (documentUri) {
-      const documentPath = decodeURIComponent(new URL(documentUri).pathname);
-      const normalizedRoot = root.replaceAll('\\', '/').replace(/\/+$/, '');
-      const normalizedDocument = documentPath.replaceAll('\\', '/');
-      if (
-        normalizedDocument !== normalizedRoot &&
-        !normalizedDocument.startsWith(`${normalizedRoot}/`)
-      ) {
-        throw new Error('The CodeLens document is outside the active workspace.');
-      }
-    }
-    if (!onStartWorkspaceCommand) {
-      throw new Error('The shell has not wired workspace commands to terminal sessions.');
-    }
-
-    const ownedId = await onStartWorkspaceCommand(dotnetWorkspaceSessionRequest(action, root));
-    if (!ownedId) throw new Error(`No terminal opened for .NET ${action}.`);
-  }
-
   /**
    * Fetch and start the code editor for the file on screen.
    *
    * This is the only route to `ensureCodeEditor` other than the language switch,
    * and it is deliberately tied to the panel being in front rather than to a
-   * file arriving in the strip. Starting the editor means starting Monaco and
-   * the VS Code service container with it, which is seconds of work in the
-   * desktop app's webview — putting a session's files back used to pay all of it
-   * at launch, out of sight, with every click dead while it ran.
+   * file arriving in the strip. Even the lightweight editor is kept off the
+   * startup path when a restored file is not visible.
    */
   $effect(() => {
-    if (showing && editorState.activePath) void ensureCodeEditor();
+    if (!showing || !editorState.activePath) return;
+    const entry = activeEditorFile();
+    if (entry && needsRead(entry)) void readFileIntoEditor(recordForPath(entry.path));
+    void ensureCodeEditor();
   });
 
   /**
@@ -997,8 +851,6 @@
       if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
       diagnosticsTimer = null;
       stopStatusUpdates?.();
-      stopNativeCsharpActions?.();
-      stopNativeCsharpDiagnostics?.();
       // Anything still waiting on the server has nowhere to go now.
       languageServerGate.releaseAll();
       // With no panel there is nothing truthful to show in the top strip.
@@ -1104,11 +956,8 @@
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}
             externalDiagnostics={diagnosticsByPath[activeFile.path] ?? NO_DIAGNOSTICS}
-            nativeCsharpLanguageClient={nativeCsharpActive}
             {restoredViewStates}
             onExternalNavigation={navigateToExternalSource}
-            onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
-            onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
             onContentChange={updateActiveDraft}
             onRestoredViewStateConsumed={consumeRestoredViewState}
             onSaveRequest={() => void saveActiveFile()}

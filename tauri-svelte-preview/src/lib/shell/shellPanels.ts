@@ -27,36 +27,6 @@ import { rail } from "./stores/sessionRailStore.svelte.ts";
 import { activate as activateWorktrees } from "./worktrees/worktreeManagerService.ts";
 import type { WorktreeSessionInput } from "./worktrees/worktreeManagerRows.ts";
 import { activateBrowser } from "./browser/browserStore.svelte.ts";
-import { isNativeTauriRuntime } from "$lib/tauriSource.ts";
-import {
-  languageIntelligenceOn,
-  readLanguageIntelligenceChoices,
-} from "./editor/languageIntelligenceMode.ts";
-
-function warmNativeCsharpOnWorkspaceSelection(root: string | null): void {
-  const selectedRoot = root?.trim();
-  if (!selectedRoot || !isNativeTauriRuntime()) return;
-  // Read mode is the default, so selecting a project starts nothing. Only a
-  // project whose language-intelligence switch is on gets its server warmed —
-  // the desktop app refuses either way, but there is no reason to ask.
-  if (
-    !languageIntelligenceOn(
-      readLanguageIntelligenceChoices(
-        typeof localStorage === "undefined" ? null : localStorage
-      ),
-      selectedRoot
-    )
-  ) {
-    return;
-  }
-  void import("./editor/csharpLanguageClient.ts")
-    .then(({ ensureNativeCsharpLanguageClient }) =>
-      ensureNativeCsharpLanguageClient(selectedRoot)
-    )
-    .catch(() => {
-      // Observational warming: editor status reports any actionable failure.
-    });
-}
 
 /** Last folder of a path, for naming a project. */
 function folderName(path: string): string {
@@ -121,10 +91,7 @@ export function refreshProblemsForSelection(): void {
 
 export const shellPanels = createPanelActivation(
   {
-    editor: (root) => {
-      activateEditor(root);
-      warmNativeCsharpOnWorkspaceSelection(root);
-    },
+    editor: (root) => activateEditor(root),
     git: (root) => gitService.activate(root),
     browser: () => activateBrowser(),
     explorer: (root) => activateExplorer(root),

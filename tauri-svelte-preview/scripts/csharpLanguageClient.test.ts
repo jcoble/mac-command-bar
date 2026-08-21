@@ -10,15 +10,6 @@ const fileSystem = await readFile(
   'utf8'
 );
 const editor = await readFile(new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url), 'utf8');
-const panel = await readFile(
-  new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
-  'utf8'
-);
-const shellPanels = await readFile(
-  new URL('../src/lib/shell/shellPanels.ts', import.meta.url),
-  'utf8'
-);
-
 assert.match(client, /new vscode\.RelativePattern\(workspaceFolder, ["']\*\*\/\*\.cs["']\)/);
 assert.match(client, /provideCodeLenses:[\s\S]*withinRoot\(document\.uri\)/);
 assert.match(client, /handleDiagnostics:[\s\S]*withinRoot\(uri\)/);
@@ -43,12 +34,6 @@ assert.match(fileSystem, /async writeFile\(resource: URI, content: Uint8Array/);
 assert.match(fileSystem, /writeSourceToTauri\(current, decoder\.decode\(content\)\)/);
 
 assert.match(editor, /language !== "csharp"/);
-assert.match(panel, /nativeCsharpLanguageClient=\{nativeCsharpActive\}/);
-assert.doesNotMatch(
-  panel,
-  /\{#key\s+nativeCsharpActive\}/,
-  'native C# readiness must update the existing Monaco editor instead of remounting it'
-);
 assert.match(
   editor,
   /function reconcileLanguageProviderOwnership\(monaco: typeof Monaco, nativeMode: boolean\)/,
@@ -77,7 +62,4 @@ assert.equal(
   'native mode should have exactly one reactive reconciliation call'
 );
 assert.doesNotMatch(reconcileBody, /editor\?\.dispose\(|model\.dispose\(|ownedModels/);
-assert.match(panel, /runDotnetWorkspaceAction\('build', documentUri\)/);
-assert.match(shellPanels, /warmNativeCsharpOnWorkspaceSelection\(root\)/);
-
 console.log('csharpLanguageClient contract tests passed');

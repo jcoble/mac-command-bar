@@ -11,12 +11,10 @@
  * ordinary-looking edit would break in silence:
  *
  *  1. Every path that can start a language server is behind the project's
- *     switch — warming, and attaching the C# document.
- *  2. Turning the switch off closes the language client before asking the
- *     desktop app to stop the process, so the server gets its goodbye.
- *  3. The switch is the kit's `Switch`, not a hand-rolled control, and it lives
+ *     switch.
+ *  2. The switch is the kit's `Switch`, not a hand-rolled control, and it lives
  *     with the centre pane's pill tabs.
- *  4. A diff hunk opens the real file at that line.
+ *  3. A diff hunk opens the real file at that line.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -26,11 +24,8 @@ import path from 'node:path';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const panelSource = readFileSync(path.join(here, '..', 'EditorPanel.svelte'), 'utf8');
+const pageSource = readFileSync(path.join(here, '..', '..', '..', '..', 'routes', 'next', '+page.svelte'), 'utf8');
 const diffSource = readFileSync(path.join(here, '..', 'GitDiffView.svelte'), 'utf8');
-const nativeDiffSource = readFileSync(
-  path.join(here, '..', 'git', 'NativeGitDiffEditor.svelte'),
-  'utf8'
-);
 const controlsSource = readFileSync(
   path.join(here, '..', 'LanguageIntelligenceControls.svelte'),
   'utf8'
@@ -53,32 +48,6 @@ test('warming a project is behind that project switch', () => {
   );
 });
 
-test('attaching the C# document is behind the same switch', () => {
-  const attach = panelSource.slice(
-    panelSource.indexOf('async function ensureNativeCsharpForActiveFile'),
-    panelSource.indexOf('function applySavedModeForProject')
-  );
-  assert.ok(attach.length > 0, 'ensureNativeCsharpForActiveFile must still exist');
-  assert.match(attach, /languageIntelligenceOn\(languageIntelligenceChoices, root\)/);
-  assert.ok(
-    attach.indexOf('languageIntelligenceOn') < attach.indexOf('ensureNativeCsharpDocument'),
-    'Roslyn must not be reached for a project in read mode'
-  );
-});
-
-test('turning the switch off says goodbye before stopping the process', () => {
-  const off = panelSource.slice(
-    panelSource.indexOf('async function switchLanguageIntelligence'),
-    panelSource.indexOf('/** Keep the lookup service pointed')
-  );
-  assert.ok(off.length > 0, 'switchLanguageIntelligence must still exist');
-  assert.ok(
-    off.indexOf('stopNativeCsharpLanguageClient') <
-      off.indexOf('setWorkspaceLanguageIntelligenceFromTauri'),
-    'the language client is closed first; the desktop app stopping the process is the backstop'
-  );
-});
-
 test('turning the switch on asks for the open file language server', () => {
   const on = panelSource.slice(
     panelSource.indexOf('async function switchLanguageIntelligence'),
@@ -88,24 +57,6 @@ test('turning the switch on asks for the open file language server', () => {
     on,
     /setWorkspaceLanguageIntelligenceFromTauri\(\s*root,\s*enabled,\s*enabled \? activeFileLanguage\(\) : null\s*\)/,
     'the language of the file on screen is what the desktop app starts a server for'
-  );
-});
-
-test('turning the switch on lifts the Settings veto on C#', () => {
-  const on = panelSource.slice(
-    panelSource.indexOf('async function switchLanguageIntelligence'),
-    panelSource.indexOf('/** Keep the lookup service pointed')
-  );
-  assert.ok(
-    on.indexOf('setCsharpLanguageServerEnabled(true)') > -1 &&
-      on.indexOf('setCsharpLanguageServerEnabled(true)') <
-        on.indexOf('setWorkspaceLanguageIntelligenceFromTauri'),
-    'the veto is lifted before anything is asked to start, or the start is refused'
-  );
-  assert.match(
-    on,
-    /settings\.intelligence\.csharpLanguageServer = true/,
-    'the setting is written back, so the launch restore stops pushing the same off again'
   );
 });
 
@@ -119,16 +70,6 @@ test('a language server that will not start reaches the switch tooltip', () => {
     /catch \(error\)[\s\S]*?languageIntelligenceNote =/,
     'a failed warm must say why instead of being discarded'
   );
-
-  const on = panelSource.slice(
-    panelSource.indexOf('async function switchLanguageIntelligence'),
-    panelSource.indexOf('/** Keep the lookup service pointed')
-  );
-  assert.match(
-    on,
-    /ensureNativeCsharpForActiveFile\(\)\.catch\(\(error\) => \{[\s\S]*?languageIntelligenceNote =/,
-    'a C# client that cannot start must say why instead of being discarded'
-  );
 });
 
 test('only one project is restored at launch', () => {
@@ -136,6 +77,24 @@ test('only one project is restored at launch', () => {
   assert.ok(
     !panelSource.includes('Object.keys(languageIntelligenceChoices)'),
     'restoring every remembered project would wake servers nobody asked for'
+  );
+});
+
+test('session restore leaves hidden editor files unhydrated', () => {
+  const restore = pageSource.slice(
+    pageSource.indexOf('function restoreWorkspace'),
+    pageSource.indexOf('async function selectOwned')
+  );
+  assert.match(restore, /restoreEditorFiles\(plan\.openFiles, plan\.activePath\)/);
+  assert.doesNotMatch(restore, /requestOpenFile/);
+
+  const visibleEditor = panelSource.slice(
+    panelSource.indexOf('Fetch and start the code editor'),
+    panelSource.indexOf('Keep the top strip')
+  );
+  assert.ok(
+    visibleEditor.indexOf('!showing') < visibleEditor.indexOf('readFileIntoEditor'),
+    'the active file must not be read until its editor is on screen'
   );
 });
 
@@ -180,9 +139,4 @@ test('a diff hunk opens the file in the editor at its line', () => {
     /onOpenLine=\{openAtLine\}/,
     'the real diff editor must offer the same jump as the plain fallback'
   );
-});
-
-test('the diff editor opens a line on a double click, never a single one', () => {
-  assert.match(nativeDiffSource, /event\.event\.detail < 2/);
-  assert.match(nativeDiffSource, /openLineListener\?\.dispose\(\)/);
 });

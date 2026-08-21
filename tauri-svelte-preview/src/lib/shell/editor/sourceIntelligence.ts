@@ -1,9 +1,9 @@
 /**
- * sourceIntelligence.ts — everything Monaco asks the machine for.
+ * sourceIntelligence.ts — everything the source editor asks the machine for.
  *
- * `MonacoSourceEditor.svelte` knows how to draw code and how to run a peek
- * window, but it knows nothing about this project: every lookup arrives as a
- * callback prop. This module is the other half — it owns the small amount of
+ * The editor knows how to draw code, but it knows nothing about this project:
+ * every lookup arrives as a callback prop. This module is the other half — it
+ * owns the small amount of
  * context a lookup needs (project root, the file on screen, that file's
  * current text, the scanned file list) and answers each callback.
  *
@@ -121,7 +121,7 @@ export const semanticReferenceCountMaxInFlight = 4;
 /** Most completion items one lookup will return. */
 export const maxSourceCompletionResults = 50;
 /**
- * Monaco resolves margin counts one symbol at a time, as each one scrolls into
+ * The editor resolves margin counts one symbol at a time, as each one scrolls into
  * view. Instead of asking the backend per symbol, the first request opens a
  * window this long and every count asked for during it travels in one request.
  */
@@ -198,9 +198,9 @@ export function countingReadinessForStatus(
   return 'no-server';
 }
 
-// ── The shapes Monaco hands us ────────────────────────────────────────────────
+// ── The shapes the editor hands us ───────────────────────────────────────────
 
-/** What Monaco knows about the spot the user is asking about. */
+/** What the editor knows about the spot the user is asking about. */
 export interface SourceLookupRequest {
   symbolName: string;
   /** 1-based. */
@@ -216,7 +216,7 @@ export interface SourceLookupRequest {
   filePath?: string;
 }
 
-/** The visible range Monaco wants inline hints for. */
+/** The visible range the editor wants inline hints for. */
 export interface SourceInlayHintRequest {
   startLine: number;
   startColumn: number;
@@ -224,7 +224,7 @@ export interface SourceInlayHintRequest {
   endColumn: number;
 }
 
-/** The callback set handed straight to `MonacoSourceEditor` as props. */
+/** The callback set handed straight to the source editor as props. */
 export interface SourceIntelligenceCallbacks {
   onDefinitionLookup(request: SourceLookupRequest): Promise<SourceDefinitionTarget[]>;
   onReferenceLookup(request: SourceLookupRequest): Promise<SourceReferenceTarget[]>;
