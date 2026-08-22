@@ -85,7 +85,7 @@ impl SessionStore {
         orchestrator: Option<&str>,
         member_owned_ids: &[String],
     ) -> Result<String> {
-        let mut connection = self.lock()?;
+        let mut connection = self.lock_write()?;
         let transaction = db(
             "could not begin the workflow group write",
             connection.transaction_with_behavior(TransactionBehavior::Immediate),
@@ -136,7 +136,7 @@ impl SessionStore {
         kind: MessageKind,
         body: &str,
     ) -> Result<Envelope> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         let id = new_id(&connection)?;
         let created_at_ms = now_ms()?;
         db(
@@ -172,7 +172,7 @@ impl SessionStore {
     }
 
     pub fn set_receipt(&self, message_id: &str, receipt: Receipt) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         let changed = db(
             "could not update the workflow receipt",
             connection.execute(

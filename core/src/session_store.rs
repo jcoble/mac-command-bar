@@ -1,7 +1,7 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
@@ -9,8 +9,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 const SCHEMA_VERSION: i64 = 10;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
-static SESSION_STORE_ACTIVE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
-static SESSION_STORE_OPERATIONS: AtomicU64 = AtomicU64::new(0);
+static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
+static SESSION_STORE_ACTIVE_WRITES: AtomicUsize = AtomicUsize::new(0);
 
 const DURABLE_UI_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS session_workspaces (
     owned_id TEXT PRIMARY KEY REFERENCES sessions(owned_id) ON DELETE CASCADE,
@@ -215,16 +215,23 @@ pub fn session_store_open_handles() -> usize {
     SESSION_STORE_OPEN_HANDLES.load(Ordering::Relaxed)
 }
 
-pub fn session_store_active_operations() -> usize {
-    SESSION_STORE_ACTIVE_OPERATIONS.load(Ordering::Relaxed)
+pub fn session_store_active_reads() -> usize {
+    SESSION_STORE_ACTIVE_READS.load(Ordering::Relaxed)
 }
 
-pub fn session_store_operations() -> u64 {
-    SESSION_STORE_OPERATIONS.load(Ordering::Relaxed)
+pub fn session_store_active_writes() -> usize {
+    SESSION_STORE_ACTIVE_WRITES.load(Ordering::Relaxed)
+}
+
+#[derive(Clone, Copy)]
+enum SessionStoreOperation {
+    Read,
+    Write,
 }
 
 pub(crate) struct SessionStoreConnection<'a> {
     connection: MutexGuard<'a, Connection>,
+    operation: SessionStoreOperation,
 }
 
 impl Deref for SessionStoreConnection<'_> {
@@ -243,7 +250,14 @@ impl DerefMut for SessionStoreConnection<'_> {
 
 impl Drop for SessionStoreConnection<'_> {
     fn drop(&mut self) {
-        SESSION_STORE_ACTIVE_OPERATIONS.fetch_sub(1, Ordering::Relaxed);
+        match self.operation {
+            SessionStoreOperation::Read => {
+                SESSION_STORE_ACTIVE_READS.fetch_sub(1, Ordering::Relaxed);
+            }
+            SessionStoreOperation::Write => {
+                SESSION_STORE_ACTIVE_WRITES.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -613,7 +627,7 @@ impl SessionStore {
     }
 
     pub fn upsert_session(&self, row: &SessionRow) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         upsert_session_on(&connection, row)?;
         Ok(())
     }
@@ -634,7 +648,7 @@ impl SessionStore {
         session: &SessionRow,
         event: Option<&EventRow>,
     ) -> Result<()> {
-        let mut connection = self.lock()?;
+        let mut connection = self.lock_write()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -669,7 +683,7 @@ impl SessionStore {
         session: &SessionRow,
         event: Option<&EventRow>,
     ) -> Result<()> {
-        let mut connection = self.lock()?;
+        let mut connection = self.lock_write()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -747,7 +761,7 @@ impl SessionStore {
     }
 
     pub fn delete_session(&self, owned_id: &str) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         connection
             .execute("DELETE FROM sessions WHERE owned_id = ?", [owned_id])
             .map_err(|error| StoreError::sqlite("could not delete the session", error))?;
@@ -755,7 +769,7 @@ impl SessionStore {
     }
 
     pub fn upsert_workspace_snapshot(&self, owned_id: &str, snapshot_json: &str) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         let changed = connection
             .execute(
                 "INSERT INTO session_workspaces (owned_id, snapshot_json, updated_at)
@@ -788,7 +802,7 @@ impl SessionStore {
     }
 
     pub fn delete_workspace_snapshot(&self, owned_id: &str) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         connection
             .execute("DELETE FROM session_workspaces WHERE owned_id = ?", [owned_id])
             .map_err(|error| StoreError::sqlite("could not delete the session workspace", error))?;
@@ -796,7 +810,7 @@ impl SessionStore {
     }
 
     pub fn clear_workspace_editor_tabs(&self) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         connection
             .execute(
                 "UPDATE session_workspaces
@@ -816,7 +830,7 @@ impl SessionStore {
     }
 
     pub fn clear_workspace_selected_tabs(&self) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         connection
             .execute(
                 "UPDATE session_workspaces
@@ -833,7 +847,7 @@ impl SessionStore {
     }
 
     pub fn upsert_app_setting(&self, setting_key: &str, value_json: &str) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         connection
             .execute(
                 "INSERT INTO app_settings (setting_key, value_json, updated_at)
@@ -860,12 +874,12 @@ impl SessionStore {
     }
 
     pub fn append_orchestration_event(&self, row: &OrchestrationEventRow) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         insert_orchestration_event_on(&connection, row)
     }
 
     pub fn import_orchestration_events(&self, rows: &[OrchestrationEventRow]) -> Result<()> {
-        let mut connection = self.lock()?;
+        let mut connection = self.lock_write()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -957,7 +971,7 @@ impl SessionStore {
     }
 
     pub fn append_event(&self, row: &EventRow) -> Result<()> {
-        let mut connection = self.lock()?;
+        let mut connection = self.lock_write()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| StoreError::sqlite("could not begin the event write", error))?;
@@ -1263,7 +1277,7 @@ impl SessionStore {
     }
 
     pub fn enforce_event_cap(&self, owned_id: &str, keep: u32) -> Result<u64> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         let deleted = connection
             .execute(
                 "DELETE FROM events
@@ -1283,7 +1297,7 @@ impl SessionStore {
     }
 
     pub fn set_draft(&self, owned_id: &str, text: &str) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         let changed = connection
             .execute(
                 "INSERT INTO drafts (owned_id, text, updated_at)
@@ -1317,7 +1331,7 @@ impl SessionStore {
     }
 
     pub fn clear_draft(&self, owned_id: &str) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         connection
             .execute("DELETE FROM drafts WHERE owned_id = ?", [owned_id])
             .map_err(|error| StoreError::sqlite("could not clear the draft", error))?;
@@ -1331,7 +1345,7 @@ impl SessionStore {
         rect_json: &str,
         note: &str,
     ) -> Result<i64> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         let changed = connection
             .execute(
                 "INSERT INTO annotations (owned_id, url, rect, note, created_at)
@@ -1367,7 +1381,7 @@ impl SessionStore {
     }
 
     pub fn delete_annotation(&self, id: i64) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         connection
             .execute("DELETE FROM annotations WHERE id = ?", [id])
             .map_err(|error| StoreError::sqlite("could not delete the annotation", error))?;
@@ -1379,7 +1393,7 @@ impl SessionStore {
     /// The insert reads the owner from `sessions`, so an attachment for a session
     /// that is not stored fails with a plain reason instead of a foreign key error.
     pub fn add_attachment(&self, row: &AttachmentRow) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         let changed = connection
             .execute(
                 "INSERT INTO attachments (
@@ -1438,7 +1452,7 @@ impl SessionStore {
         byte_length: i64,
         relative_path: &str,
     ) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         let changed = connection
             .execute(
                 "UPDATE attachments
@@ -1456,7 +1470,7 @@ impl SessionStore {
     }
 
     pub fn delete_attachment(&self, id: &str) -> Result<()> {
-        let connection = self.lock()?;
+        let connection = self.lock_write()?;
         connection
             .execute("DELETE FROM attachments WHERE id = ?", [id])
             .map_err(|error| StoreError::sqlite("could not delete the attachment", error))?;
@@ -1464,13 +1478,33 @@ impl SessionStore {
     }
 
     pub(crate) fn lock(&self) -> Result<SessionStoreConnection<'_>> {
+        self.lock_operation(SessionStoreOperation::Read)
+    }
+
+    pub(crate) fn lock_write(&self) -> Result<SessionStoreConnection<'_>> {
+        self.lock_operation(SessionStoreOperation::Write)
+    }
+
+    fn lock_operation(
+        &self,
+        operation: SessionStoreOperation,
+    ) -> Result<SessionStoreConnection<'_>> {
         let connection = self
             .connection
             .lock()
             .map_err(|_| StoreError::message("the session database lock is unavailable"))?;
-        SESSION_STORE_ACTIVE_OPERATIONS.fetch_add(1, Ordering::Relaxed);
-        SESSION_STORE_OPERATIONS.fetch_add(1, Ordering::Relaxed);
-        Ok(SessionStoreConnection { connection })
+        match operation {
+            SessionStoreOperation::Read => {
+                SESSION_STORE_ACTIVE_READS.fetch_add(1, Ordering::Relaxed);
+            }
+            SessionStoreOperation::Write => {
+                SESSION_STORE_ACTIVE_WRITES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(SessionStoreConnection {
+            connection,
+            operation,
+        })
     }
 }
 

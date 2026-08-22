@@ -67,8 +67,8 @@ pub struct ResourceDiagnostics {
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseResourceDiagnostics {
     pub session_store_open_handles: usize,
-    pub session_store_active_operations: usize,
-    pub session_store_operations: u64,
+    pub session_store_active_reads: usize,
+    pub session_store_active_writes: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -509,9 +509,8 @@ fn resource_diagnostics(
         conversations: agent_runtime.resource_diagnostics()?,
         database: DatabaseResourceDiagnostics {
             session_store_open_handles: mcb_core::session_store::session_store_open_handles(),
-            session_store_active_operations:
-                mcb_core::session_store::session_store_active_operations(),
-            session_store_operations: mcb_core::session_store::session_store_operations(),
+            session_store_active_reads: mcb_core::session_store::session_store_active_reads(),
+            session_store_active_writes: mcb_core::session_store::session_store_active_writes(),
         },
         terminals: TerminalResourceDiagnostics {
             live_sessions: live_terminal_sessions.len(),

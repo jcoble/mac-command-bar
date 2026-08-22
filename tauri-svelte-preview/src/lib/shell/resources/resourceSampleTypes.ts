@@ -38,8 +38,8 @@ export type ResourceDiagnostics = {
   };
   database: {
     sessionStoreOpenHandles: number;
-    sessionStoreActiveOperations: number;
-    sessionStoreOperations: number;
+    sessionStoreActiveReads: number;
+    sessionStoreActiveWrites: number;
   };
   terminals: {
     liveSessions: number;
