@@ -64,7 +64,8 @@ const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
     "svelte",
 ];
 
-/// Whether the C# language server may run at all.
+/// Whether each language server may run. The map is process-local, while its
+/// compact snapshot is owned by the existing SQLite app-settings row.
 ///
 /// It is the most expensive thing this app starts — around 800MB of memory once
 /// it has loaded a large solution — and a reader who is not writing C# right now
@@ -76,11 +77,71 @@ const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
 /// Process-wide rather than kept on the registry because the readiness report
 /// ([`read_source_lsp_status_sync`]) has no registry to ask, and a report that
 /// said "ready" for a server the reader has switched off would be a lie.
-static CSHARP_LANGUAGE_SERVER_ENABLED: AtomicBool = AtomicBool::new(true);
+static LANGUAGE_SERVER_SETTINGS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+
+fn language_server_settings() -> &'static Mutex<HashMap<String, bool>> {
+    LANGUAGE_SERVER_SETTINGS.get_or_init(|| Mutex::new(HashMap::from([
+        ("csharp".to_string(), true),
+        ("typescript".to_string(), true),
+        ("rust".to_string(), true),
+    ])))
+}
+
+fn language_server_key(language_id: &str) -> Option<&'static str> {
+    match language_id.trim().to_ascii_lowercase().as_str() {
+        "csharp" | "c#" => Some("csharp"),
+        "typescript" | "tsx" | "javascript" | "jsx" => Some("typescript"),
+        "rust" => Some("rust"),
+        _ => None,
+    }
+}
+
+pub(crate) fn language_server_enabled(language_id: &str) -> bool {
+    language_server_key(language_id)
+        .and_then(|key| locked(language_server_settings()).get(key).copied())
+        .unwrap_or(true)
+}
+
+pub(crate) fn set_language_server_enabled(
+    language_id: &str,
+    enabled: bool,
+) -> Result<bool, String> {
+    let key = language_server_key(language_id)
+        .ok_or_else(|| format!("Unsupported language server: {language_id}"))?;
+    let mut settings = locked(language_server_settings());
+    Ok(settings.insert(key.to_string(), enabled).unwrap_or(true) != enabled)
+}
+
+pub(crate) fn restore_language_server_settings(value: &str) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(value)
+        .map_err(|error| format!("Language server settings are invalid: {error}"))?;
+    let Some(object) = parsed.as_object() else {
+        return Err("Language server settings must be an object".to_string());
+    };
+    if let Some(enabled) = object.get("enabled").and_then(Value::as_bool) {
+        set_language_servers_enabled(enabled);
+    }
+    if let Some(servers) = object.get("servers").and_then(Value::as_object) {
+        for (language, value) in servers {
+            if let Some(enabled) = value.as_bool() {
+                let _ = set_language_server_enabled(language, enabled);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn language_server_settings_snapshot() -> Value {
+    let servers = locked(language_server_settings()).clone();
+    json!({
+        "enabled": language_servers_enabled(),
+        "servers": servers,
+    })
+}
 
 /// Is the C# language server allowed to run?
 pub(crate) fn csharp_language_server_enabled() -> bool {
-    CSHARP_LANGUAGE_SERVER_ENABLED.load(Ordering::Relaxed)
+    language_server_enabled("csharp")
 }
 
 /// Whether ANY language server may run. One switch over all of them, in
@@ -109,7 +170,7 @@ pub(crate) fn set_language_servers_enabled(enabled: bool) -> bool {
 /// separate so the flag can be set before the registry exists (at startup, from
 /// the reader's saved setting) without needing one.
 pub(crate) fn set_csharp_language_server_enabled(enabled: bool) -> bool {
-    let changed = CSHARP_LANGUAGE_SERVER_ENABLED.swap(enabled, Ordering::Relaxed) != enabled;
+    let changed = set_language_server_enabled("csharp", enabled).unwrap_or(false);
     if changed {
         let (state, detail) = if enabled {
             (
@@ -267,7 +328,7 @@ pub(crate) enum LanguageServerStart {
 
 /// May a server for this language be started or reused right now?
 fn language_server_allowed(language_id: &str) -> bool {
-    language_servers_enabled() && (language_id != "csharp" || csharp_language_server_enabled())
+    language_servers_enabled() && language_server_enabled(language_id)
 }
 
 /// C# is owned by the VS Code-compatible Monaco language client in the desktop app.

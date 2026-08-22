@@ -408,6 +408,15 @@ struct LanguageServersToggleResult {
     message: String,
 }
 
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LanguageServerToggleResult {
+    language: String,
+    enabled: bool,
+    stopped_servers: usize,
+    message: String,
+}
+
 /// Whether one workspace is in full mode, and what the editor should say.
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1055,6 +1064,17 @@ async fn mark_native_csharp_language_client_ready(
     registry.mark_native_csharp_client_ready(&root)
 }
 
+const LANGUAGE_SERVER_SETTINGS_KEY: &str = "workbench.languageServers";
+
+fn persist_language_server_settings(
+    manager: &agent_conversation::manager::AgentRuntimeManager,
+) -> Result<(), String> {
+    manager.write_app_setting(
+        LANGUAGE_SERVER_SETTINGS_KEY,
+        &lsp::language_server_settings_snapshot().to_string(),
+    )
+}
+
 /// Turn the C# language server off or on, and stop it now if it is running.
 ///
 /// The reader's setting drives this. Call it with what the setting says when
@@ -1064,11 +1084,14 @@ async fn mark_native_csharp_language_client_ready(
 #[tauri::command]
 async fn set_csharp_language_server_enabled(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
     enabled: bool,
 ) -> Result<CsharpLanguageServerToggleResult, String> {
     let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let changed = lsp::set_csharp_language_server_enabled(enabled);
+        persist_language_server_settings(&manager)?;
         let stopped_servers = if enabled {
             0
         } else {
@@ -1092,11 +1115,14 @@ async fn set_csharp_language_server_enabled(
 #[tauri::command]
 async fn set_language_servers_enabled(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
     enabled: bool,
 ) -> Result<LanguageServersToggleResult, String> {
     let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let changed = lsp::set_language_servers_enabled(enabled);
+        persist_language_server_settings(&manager)?;
         let stopped_servers = if enabled {
             0
         } else {
@@ -1110,6 +1136,49 @@ async fn set_language_servers_enabled(
     })
     .await
     .map_err(|error| format!("Language servers switch task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_language_server_enabled(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
+    language: String,
+    enabled: bool,
+) -> Result<LanguageServerToggleResult, String> {
+    let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let language = language.trim().to_ascii_lowercase();
+        let changed = lsp::set_language_server_enabled(&language, enabled)?;
+        persist_language_server_settings(&manager)?;
+        let stop_languages: &[&str] = match language.as_str() {
+            "typescript" | "tsx" | "javascript" | "jsx" =>
+                &["typescript", "tsx", "javascript", "jsx"],
+            "csharp" | "c#" => &["csharp"],
+            "rust" => &["rust"],
+            _ => &[],
+        };
+        let mut stopped_servers = 0;
+        if !enabled {
+            for language in stop_languages {
+                stopped_servers += registry.stop_servers_for_language(language)?;
+            }
+        }
+        Ok(LanguageServerToggleResult {
+            language: language.clone(),
+            enabled,
+            stopped_servers,
+            message: if !enabled && stopped_servers > 0 {
+                format!("The {language} language server is off and has been stopped.")
+            } else if changed {
+                format!("The {language} language server is {}.", if enabled { "on" } else { "off" })
+            } else {
+                format!("The {language} language server was already {}.", if enabled { "on" } else { "off" })
+            },
+        })
+    })
+    .await
+    .map_err(|error| format!("Language server switch task failed: {error}"))?
 }
 
 /// What full mode is doing for one workspace right now.
@@ -6323,6 +6392,9 @@ fn main() {
                     })?,
                 &session_db_path,
             )?;
+            if let Some(settings) = agent_runtime.read_app_setting(LANGUAGE_SERVER_SETTINGS_KEY)? {
+                lsp::restore_language_server_settings(&settings)?;
+            }
             import_legacy_orchestration_events(agent_runtime.store())?;
             // Validate the store-backed list and its runtime overlay before any
             // frontend activation can observe the manager.
@@ -6403,6 +6475,7 @@ fn main() {
             mark_native_csharp_language_client_ready,
             set_csharp_language_server_enabled,
             set_language_servers_enabled,
+            set_language_server_enabled,
             read_workspace_language_intelligence,
             set_workspace_language_intelligence,
             find_source_lsp_definitions,
