@@ -1539,7 +1539,8 @@ pub async fn open_browser_tab_external(
 
 impl BrowserProfile {
     fn new(requested_id: Option<&str>) -> Self {
-        let store_identifier = *Uuid::new_v4().as_bytes();
+        // Every recreated view shares the application's one durable website data store.
+        let store_identifier = *b"mcb-browser-main";
         Self {
             id: requested_id
                 .map(ToOwned::to_owned)
