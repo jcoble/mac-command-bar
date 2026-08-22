@@ -524,11 +524,12 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     if (!folder || !path) return;
 
     activate(folder);
+    const id = diffGuard.next();
     // A remembered diff can outlive the file or the change it described. Get
     // current status before touching the path so a stale session snapshot is
     // cleared instead of surfacing the backend's missing-file error.
     if (!state.status) await refreshStatus();
-    if (state.root !== folder) return;
+    if (!stillCurrent(diffGuard, id, folder)) return;
     const known = (state.status?.files ?? []).find((file) => file.relativePath === path);
     if (known) return selectFile(known);
     clearSelection();

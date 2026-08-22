@@ -333,6 +333,8 @@ async function backendCanCountReferences(): Promise<boolean> {
  */
 export function createSourceIntelligence(): SourceIntelligence {
   let projectRoot: string | null = null;
+  let projectRootGeneration = 0;
+  let externalPreviewGeneration = 0;
   let activePreview: SourcePreview | null = null;
   let draftContent = '';
   /**
@@ -1060,10 +1062,13 @@ export function createSourceIntelligence(): SourceIntelligence {
    * from memory when it can, and reads from disk at most once per file.
    */
   async function loadExternalPreview(record: SourceRecord): Promise<SourcePreview | null> {
+    const requestRoot = projectRoot;
+    const generation = projectRootGeneration;
+    const previewGeneration = externalPreviewGeneration;
     const sourceRecord = sourceRecordFromPath(
-      projectRoot,
+      requestRoot,
       record.path,
-      projectSourceRecords(projectRoot)
+      projectSourceRecords(requestRoot)
     );
 
     if (activePreview?.path === sourceRecord.path) {
@@ -1078,6 +1083,11 @@ export function createSourceIntelligence(): SourceIntelligence {
 
     countInvoke('read_source_file');
     const preview = await readSourceFromTauri(sourceRecord).catch(() => null);
+    if (
+      generation !== projectRootGeneration
+      || previewGeneration !== externalPreviewGeneration
+      || projectRoot !== requestRoot
+    ) return null;
     if (preview) externalPreviewCache.set(sourceRecord.path, preview);
     return preview;
   }
@@ -1224,6 +1234,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       const normalized =
         nextProjectRoot && nextProjectRoot.trim().length > 0 ? nextProjectRoot : null;
       if (normalized === projectRoot) return;
+      projectRootGeneration += 1;
       projectRoot = normalized;
       // The old project's live answers belong to the view that just left it.
       // Stop that work and release those answers before pointing at the new root.
@@ -1239,13 +1250,16 @@ export function createSourceIntelligence(): SourceIntelligence {
       draftContent = content;
     },
     invalidatePreview(path: string): void {
+      externalPreviewGeneration += 1;
       externalPreviewCache.delete(path);
       forgetFileReferenceCounts(path);
     },
     releasePreview(path: string): void {
+      externalPreviewGeneration += 1;
       externalPreviewCache.delete(path);
     },
     invalidateAllPreviews(): void {
+      externalPreviewGeneration += 1;
       externalPreviewCache.clear();
       forgetReferenceCounts();
     },

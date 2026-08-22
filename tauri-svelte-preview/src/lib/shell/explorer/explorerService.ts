@@ -150,10 +150,11 @@ export async function scanRoot(root: string): Promise<void> {
   resetExplorer();
   forgetAllProjectSourceRecords();
   beginScan(target);
+  const generation = explorerScanGeneration();
   try {
     await loadDirectory(target, 0);
   } finally {
-    if (explorer.root === target) endScan();
+    if (explorer.root === target && explorerScanGeneration() === generation) endScan();
   }
 }
 

@@ -721,14 +721,17 @@
     const file = activeEditorFile();
     if (!file?.preview || !file.dirty || file.saving) return;
     if (readOnlyByPath[file.path]) return;
+    const generation = sessionResourceGeneration;
     const content = file.draftContent ?? file.preview.content;
     setEditorFileSaving(file.path, true);
     try {
       const saved = await writeSourceToTauri(recordForPath(file.path), content);
       if (!saved) throw new Error('The file could not be written from here.');
-      if (!destroyed && editorFileFor(file.path)) setEditorFilePreview(file.path, saved);
+      if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
+        setEditorFilePreview(file.path, saved);
+      }
     } catch (error) {
-      if (!destroyed && editorFileFor(file.path)) {
+      if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
         setEditorFileSaving(file.path, false);
         setEditorFileError(file.path, `Could not save this file: ${describeError(error)}`);
       }

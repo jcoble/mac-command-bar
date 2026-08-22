@@ -14,7 +14,10 @@
  * is in.
  */
 import { isTauriRuntime } from '../../tauriSource.ts';
-import { trackTauriListener } from '../resourceDiagnostics.svelte.ts';
+import {
+  trackTauriListener,
+  trackTauriSubscriber
+} from '../resourceDiagnostics.svelte.ts';
 import type { BrowserRect } from './browserTypes.ts';
 
 export const BROWSER_ELEMENT_SELECTED_EVENT = 'browser-element-selected';
@@ -41,6 +44,13 @@ export interface BrowserElementSelectedEvent {
 
 export type UnsubscribeFromBrowserElements = () => void;
 
+const browserElementSubscribers = new Set<
+  (event: BrowserElementSelectedEvent) => void
+>();
+let browserElementUnlisten: (() => void) | null = null;
+let browserElementSetup: Promise<void> | null = null;
+let browserElementGeneration = 0;
+
 /**
  * Subscribe to picked elements. The returned promise resolves once the
  * subscription is live; call what it answers with to stop listening.
@@ -49,12 +59,43 @@ export async function listenToBrowserElementSelected(
   handler: (event: BrowserElementSelectedEvent) => void
 ): Promise<UnsubscribeFromBrowserElements> {
   if (!isTauriRuntime()) return () => undefined;
-  const { listen } = await import('@tauri-apps/api/event');
-  const stop = await listen<BrowserElementSelectedEvent>(
-    BROWSER_ELEMENT_SELECTED_EVENT,
-    (event) => {
-      handler(event.payload);
+  browserElementSubscribers.add(handler);
+  await ensureBrowserElementListener();
+  return trackTauriSubscriber(() => {
+    browserElementSubscribers.delete(handler);
+    if (browserElementSubscribers.size === 0) stopBrowserElementListener();
+  });
+}
+
+function ensureBrowserElementListener(): Promise<void> {
+  if (!isTauriRuntime() || browserElementUnlisten) return Promise.resolve();
+  if (browserElementSetup) return browserElementSetup;
+
+  const generation = browserElementGeneration;
+  const setup = (async () => {
+    const { listen } = await import('@tauri-apps/api/event');
+    const stopNative = await listen<BrowserElementSelectedEvent>(
+      BROWSER_ELEMENT_SELECTED_EVENT,
+      (event) => {
+        for (const subscriber of browserElementSubscribers) subscriber(event.payload);
+      }
+    );
+    const stop = trackTauriListener(stopNative);
+    if (generation !== browserElementGeneration || browserElementSubscribers.size === 0) {
+      stop();
+      return;
     }
-  );
-  return trackTauriListener(stop);
+    browserElementUnlisten = stop;
+  })().catch(() => undefined).finally(() => {
+    if (browserElementSetup === setup) browserElementSetup = null;
+  });
+  browserElementSetup = setup;
+  return setup;
+}
+
+function stopBrowserElementListener(): void {
+  browserElementGeneration += 1;
+  browserElementUnlisten?.();
+  browserElementUnlisten = null;
+  browserElementSetup = null;
 }

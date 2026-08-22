@@ -93,6 +93,7 @@
   let searchLoading = $state(false);
   let searchError = $state<string | null>(null);
   let searchGeneration = 0;
+  let revealGeneration = 0;
   let activeSearchScanId: string | null = null;
   let notifiedUnavailableRoot = '';
 
@@ -138,6 +139,7 @@
 
   $effect(() => {
     root;
+    revealGeneration += 1;
     expanded = new Set();
     pending = null;
     fileClipboard = null;
@@ -310,9 +312,10 @@
   async function onSearchResultClicked(node: TreeItem): Promise<void> {
     const projectRoot = canonicalPath(explorer.root ?? root);
     if (!projectRoot) return;
+    const generation = ++revealGeneration;
     searchText = '';
     const ancestors = await revealExplorerPath(node.path);
-    if (canonicalPath(explorer.root ?? root) !== projectRoot) return;
+    if (generation !== revealGeneration || canonicalPath(explorer.root ?? root) !== projectRoot) return;
     expanded = new Set([...expanded, ...ancestors]);
     selectPath(node.path);
     if (!node.isDirectory) {

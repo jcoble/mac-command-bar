@@ -201,6 +201,7 @@
 
 	let activeWorkspaceSnapshot: SessionWorkspaceSnapshot | null = null;
 	let workspaceRestoreGeneration = 0;
+	let sessionSelectionGeneration = 0;
 	let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let workspaceWriteQueue: Promise<void> = Promise.resolve();
 	let workspaceAutosaveEnabled = false;
@@ -935,6 +936,8 @@
 	}
 
 	async function selectOwned(ownedId: string, propagateStructuredFailure = false): Promise<void> {
+		const selectionGeneration = ++sessionSelectionGeneration;
+		const selectionIsCurrent = (): boolean => !disposed && selectionGeneration === sessionSelectionGeneration;
 		// A draft is discarded the moment another session takes the Session tab.
 		// It never existed anywhere but this flag, so there is nothing to clean up.
 		draftOpen = false;
@@ -947,6 +950,7 @@
 			if (root) {
 				countInvoke("validate_project_root");
 				const validation = await validateProjectRootFromTauri(root);
+				if (!selectionIsCurrent()) return;
 				selectedRootAvailable = validation === null || (validation.exists && validation.isDirectory);
 			}
 		}
@@ -966,21 +970,27 @@
 			try {
 				await flushConversationSessionDraft(previous);
 			} catch (error) {
+				if (!selectionIsCurrent()) return;
 				rail.error = `conversation draft checkpoint failed: ${describeError(error)}`;
 				workspaceAutosaveEnabled = true;
 				return;
 			}
+			if (!selectionIsCurrent()) return;
 			workspaceCaptured = shellPanels.loadsAllowed();
 			if (workspaceCaptured && !(await snapshotWorkspace(previous))) {
+				if (!selectionIsCurrent()) return;
 				workspaceAutosaveEnabled = true;
 				return;
 			}
+			if (!selectionIsCurrent()) return;
 			if (workspaceCaptured) releaseBrowserWorkspace();
 		}
+		if (!selectionIsCurrent()) return;
 		if (switching && previous !== null) {
 			stopConversationTerminalProjection(previous);
 			service?.releaseView(previous);
 			await disposeExtensionApiProbeResources();
+			if (!selectionIsCurrent()) return;
 			if (workspaceCaptured) releaseConversationForRead(previous);
 			gitService.releaseHistorySurface();
 			gitCommitFilesService.release();
@@ -993,6 +1003,7 @@
 		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
 		if (switching && selected && selectedRoot && activeRootAvailable) {
 			await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root: selectedRoot });
+			if (!selectionIsCurrent()) return;
 		}
 		// Point the file tree, the context cards and any tab the user has already
 		// opened at this session's project. Ignored while start-up is still
@@ -1007,6 +1018,7 @@
 				editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
 			}
 			await restoreWorkspace(ownedId);
+			if (!selectionIsCurrent()) return;
 			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
 			// Both columns go back to the tabs this session was left on. After the
 			// workspace restore, which may have brought the editor forward for a file
@@ -1015,14 +1027,17 @@
 		}
 		if (switching && selected?.ptySessionId && service) {
 			const host = await hostFor(ownedId);
+			if (!selectionIsCurrent()) return;
 			if (!host) {
 				rail.error = `no terminal host for "${selected.title}"`;
 			} else {
 				const size = livePtySizes.get(selected.ptySessionId) ?? null;
 				try {
 					await service.adoptExisting(selected, host, size);
+					if (!selectionIsCurrent()) return;
 					service.show(ownedId);
 				} catch (error) {
+					if (!selectionIsCurrent()) return;
 					rail.error = `re-attach failed for "${selected.title}": ${describeError(error)}`;
 				}
 			}
@@ -1038,10 +1053,12 @@
 			setConversationMode(ownedId, "structured");
 			if (switching) {
 				await Promise.all([loadConversationForRead(ownedId), loadConversationSessionDraft(ownedId)]).catch((error) => {
+					if (!selectionIsCurrent()) return;
 					const message = describeError(error);
 					updateOwnedSession(ownedId, { lastError: message });
 					if (propagateStructuredFailure) throw error;
 				});
+				if (!selectionIsCurrent()) return;
 			}
 		}
 	}
