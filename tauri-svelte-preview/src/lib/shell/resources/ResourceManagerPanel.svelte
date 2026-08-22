@@ -204,6 +204,11 @@
         <span><strong>{resourceDiagnostics.loadedConversationProjections}</strong> loaded conversations</span>
         <span><strong>{resourceDiagnostics.loadedConversationEventBytes}</strong> conversation bytes</span>
         <span><strong>{resourceDiagnostics.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
+        <span><strong>{resourceDiagnostics.conversationRenderedRows}</strong> rendered turn rows</span>
+        <span><strong>{resourceDiagnostics.conversationVirtualRows}</strong> virtual turn rows</span>
+        <span><strong>{resourceDiagnostics.conversationMeasuredElementCacheEntries}</strong> measured-element cache entries</span>
+        <span><strong>{resourceDiagnostics.sentAttachmentMapEntries}</strong> sent attachment map entries</span>
+        <span><strong>{resourceDiagnostics.sentAttachmentCount}</strong> sent attachments</span>
         <span><strong>{resourceDiagnostics.tauriRootListeners}</strong> Tauri listeners</span>
         <span><strong>{resourceDiagnostics.tauriEventSubscribers}</strong> JS event subscribers</span>
         <span><strong>{resourceDiagnostics.tauriChannels}</strong> Tauri Channels</span>

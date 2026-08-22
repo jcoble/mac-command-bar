@@ -23,7 +23,8 @@
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import {
     cancelTrackedAnimationFrame,
-    requestTrackedAnimationFrame
+    requestTrackedAnimationFrame,
+    setConversationTimelineDiagnostics
   } from '$lib/shell/resourceDiagnostics.svelte';
   import TimelineItem from './TimelineItem.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
@@ -158,6 +159,25 @@
     getScrollElement: () => host,
     estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
     overscan: 6
+  });
+
+  let timelineMounted = false;
+  function publishTimelineDiagnostics(): void {
+    if (!timelineMounted) return;
+    setConversationTimelineDiagnostics(
+      renderedGroups.length,
+      $virtualizer.getVirtualItems().length,
+      $virtualizer.elementsCache.size
+    );
+  }
+
+  $effect(() => {
+    timelineMounted = true;
+    publishTimelineDiagnostics();
+    return () => {
+      timelineMounted = false;
+      setConversationTimelineDiagnostics(0, 0, 0);
+    };
   });
 
   let appliedRowCount = -1;
@@ -627,7 +647,13 @@
    * observer the virtualizer keeps on the element. */
   function measureRow(node: HTMLDivElement): { destroy(): void } {
     $virtualizer.measureElement(node);
-    return { destroy(): void { $virtualizer.measureElement(null); } };
+    publishTimelineDiagnostics();
+    return {
+      destroy(): void {
+        $virtualizer.measureElement(null);
+        publishTimelineDiagnostics();
+      }
+    };
   }
 
   function userInputInterrupts(node: HTMLElement): { destroy(): void } {

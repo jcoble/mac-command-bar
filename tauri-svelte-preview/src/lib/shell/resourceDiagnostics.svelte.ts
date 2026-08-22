@@ -8,6 +8,11 @@ export const resourceDiagnostics = $state({
   loadedConversationProjections: 0,
   loadedConversationEventBytes: 0,
   loadedChildTranscriptBytes: 0,
+  conversationRenderedRows: 0,
+  conversationVirtualRows: 0,
+  conversationMeasuredElementCacheEntries: 0,
+  sentAttachmentMapEntries: 0,
+  sentAttachmentCount: 0,
   tauriRootListeners: 0,
   tauriEventSubscribers: 0,
   tauriChannels: 0,
@@ -53,6 +58,29 @@ export function setConversationProjectionDiagnostics(
     0,
     Math.trunc(childTranscriptBytes)
   );
+}
+
+export function setConversationTimelineDiagnostics(
+  renderedRows: number,
+  virtualRows: number,
+  measuredElementCacheEntries: number
+): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.conversationRenderedRows = Math.max(0, Math.trunc(renderedRows));
+  resourceDiagnostics.conversationVirtualRows = Math.max(0, Math.trunc(virtualRows));
+  resourceDiagnostics.conversationMeasuredElementCacheEntries = Math.max(
+    0,
+    Math.trunc(measuredElementCacheEntries)
+  );
+}
+
+export function setSentAttachmentDiagnostics(
+  mapEntries: number,
+  attachmentCount: number
+): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.sentAttachmentMapEntries = Math.max(0, Math.trunc(mapEntries));
+  resourceDiagnostics.sentAttachmentCount = Math.max(0, Math.trunc(attachmentCount));
 }
 
 export function setLoadedTreeNodes(nodes: number): void {

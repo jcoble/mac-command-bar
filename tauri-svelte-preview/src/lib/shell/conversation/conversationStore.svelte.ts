@@ -58,6 +58,7 @@ import {
 import {
   revokeTrackedObjectUrl,
   setConversationProjectionDiagnostics,
+  setSentAttachmentDiagnostics,
   textBytes
 } from '../resourceDiagnostics.svelte.ts';
 
@@ -169,11 +170,19 @@ export const conversationSessions = $state<Record<string, ConversationWorkspaceS
 function publishConversationProjectionDiagnostics(): void {
   if (!import.meta.env.DEV) return;
   const projections = Object.values(conversationSessions);
+  let sentAttachmentMapEntries = 0;
+  let sentAttachmentCount = 0;
+  for (const projection of projections) {
+    const entries = Object.values(projection.sentAttachments);
+    sentAttachmentMapEntries += entries.length;
+    for (const attachments of entries) sentAttachmentCount += attachments.length;
+  }
   setConversationProjectionDiagnostics(
     projections.length,
     projections.reduce((total, projection) => total + projection.loadedEventBytes, 0),
     projections.reduce((total, projection) => total + projection.loadedChildTranscriptBytes, 0)
   );
+  setSentAttachmentDiagnostics(sentAttachmentMapEntries, sentAttachmentCount);
 }
 
 function serializedEventBytes(event: AgentConversationEvent): number {
@@ -1424,6 +1433,7 @@ export function restoreSentConversationAttachments(
     else if (!current.sentAttachments[itemId]?.length) current.sentAttachments[itemId] = attachments;
   }
   revokeUnretainedPreviewUrls(discarded, Object.values(current.sentAttachments).flat());
+  publishConversationProjectionDiagnostics();
 }
 
 export function setConversationCapabilities(
