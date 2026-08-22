@@ -131,7 +131,12 @@
           // shows are, because a diff wants the width of the middle.
           panels: [
             { id: 'session', title: 'Session', element: sessionSlot },
-            { id: 'editor', title: 'Editor', element: editorSlot },
+            {
+              id: 'editor',
+              title: 'Editor',
+              element: editorSlot,
+              renderer: 'onlyWhenVisible'
+            },
             {
               id: 'diff',
               title: 'Diff',

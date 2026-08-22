@@ -687,13 +687,21 @@
     }
   }
 
+  /** A language service exists only for a visible, editable source document. */
+  function activeLanguageRoot(): string | null {
+    return showing && rootAvailable && editorState.activePath && !activeFileReadOnly
+      ? editorState.projectRoot
+      : null;
+  }
+
   /** Keep the lookup service pointed at whatever is on screen. */
   function syncIntelligenceWithActiveFile(): void {
     if (activeFileReadOnly && (languageServerStatus !== null || languageServerSubject !== null)) {
       applyLanguageServerStatus(null, null);
     }
-    sourceIntelligence.setProjectRoot(activeFileReadOnly ? null : editorState.projectRoot);
-    sourceIntelligence.setActivePreview(activeFileReadOnly ? null : activeEditorFile()?.preview ?? null);
+    const root = activeLanguageRoot();
+    sourceIntelligence.setProjectRoot(root);
+    sourceIntelligence.setActivePreview(root ? activeEditorFile()?.preview ?? null : null);
   }
 
   // Session restore and project switching update the shared editor store
@@ -701,6 +709,7 @@
   // intelligence service attached to that state continuously; otherwise the
   // file can be visible while counts are asked with projectRoot = null.
   $effect(() => {
+    showing;
     editorState.projectRoot;
     editorState.activePath;
     activeEditorFile()?.preview;
@@ -708,7 +717,7 @@
   });
 
   $effect(() => {
-    const root = rootAvailable ? editorState.projectRoot : null;
+    const root = activeLanguageRoot();
     languageIntelligenceChoices;
     const languageServersEnabled = settings.intelligence.languageServers;
     const generation = ++ownerSelectionGeneration;
@@ -725,7 +734,7 @@
         if (
           destroyed
           || !answer
-          || root !== (rootAvailable ? editorState.projectRoot : null)
+          || root !== activeLanguageRoot()
         ) return;
         languageServerPids = answer.serverPids;
       } catch {
@@ -735,7 +744,7 @@
   });
 
   $effect(() => {
-    const root = rootAvailable && fullMode ? editorState.projectRoot : null;
+    const root = fullMode ? activeLanguageRoot() : null;
     if (root === nativeCsharpRoot) return;
     nativeCsharpRoot = root;
     void import('$lib/shell/editor/csharpLanguageClient').then(({ setNativeCsharpActiveRoot }) =>
