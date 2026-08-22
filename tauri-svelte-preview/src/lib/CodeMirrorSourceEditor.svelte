@@ -12,9 +12,16 @@
     indentOnInput,
     syntaxHighlighting
   } from '@codemirror/language';
-  import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
+  import { forEachDiagnostic, lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
   import { highlightSelectionMatches } from '@codemirror/search';
-  import { EditorState, Compartment, Transaction, type Extension } from '@codemirror/state';
+  import {
+    EditorState,
+    Compartment,
+    StateEffect,
+    StateField,
+    Transaction,
+    type Extension
+  } from '@codemirror/state';
   import {
     crosshairCursor,
     drawSelection,
@@ -26,7 +33,9 @@
     hoverTooltip,
     keymap,
     lineNumbers,
-    rectangularSelection
+    rectangularSelection,
+    showTooltip,
+    type Tooltip
   } from '@codemirror/view';
   import { vscodeKeymap } from '@replit/codemirror-vscode-keymap';
   import { onDestroy, onMount } from 'svelte';
@@ -52,6 +61,9 @@
   } from '$lib/shell/editor/sourceIntelligence';
   import {
     extractSourceSymbols,
+    type SourceCodeAction,
+    type SourceCodeActionDiagnostic,
+    type SourceCodeActionLookupRequest,
     type SourceDiagnostic,
     type SourcePreview,
     type SourceSymbol
@@ -75,6 +87,10 @@
     targetLine?: number | null;
     targetLineRequestId?: number;
     onContentChange?: (content: string) => void;
+    onCodeActionLookup?: (
+      request: SourceCodeActionLookupRequest
+    ) => SourceCodeAction[] | Promise<SourceCodeAction[] | null> | null | undefined;
+    onWorkspaceEditAction?: (action: SourceCodeAction) => void | Promise<void>;
     onRestoredViewStateConsumed?: (path: string) => void;
     onExternalNavigation?: (request: { path: string; line: number; column: number }) => void | Promise<void>;
     onSaveRequest?: () => void;
@@ -92,6 +108,7 @@
     targetLine = null,
     targetLineRequestId = 0,
     onContentChange,
+    onCodeActionLookup,
     onRestoredViewStateConsumed,
     onCompletionLookup,
     onDefinitionLookup,
@@ -100,7 +117,8 @@
     onReferenceLookup,
     onReferenceCountsOutOfDate,
     onSaveRequest,
-    onSymbolsChange
+    onSymbolsChange,
+    onWorkspaceEditAction
   }: Props = $props();
 
   let host: HTMLDivElement;
@@ -124,6 +142,50 @@
   let themeGeneration = 0;
   let requestedThemeKey = '';
   let loadedThemeKey = '';
+  let codeActionGeneration = 0;
+
+  type CodeActionMenu = { path: string; root: string; pos: number; actions: SourceCodeAction[] };
+  const setCodeActionMenu = StateEffect.define<CodeActionMenu | null>();
+  const codeActionMenuState = StateField.define<CodeActionMenu | null>({
+    create: () => null,
+    update(menu, transaction) {
+      for (const effect of transaction.effects) {
+        if (effect.is(setCodeActionMenu)) menu = effect.value;
+      }
+      return transaction.docChanged || !transaction.startState.selection.eq(transaction.newSelection)
+        ? null
+        : menu;
+    },
+    provide: (field) => showTooltip.computeN([field], (state): readonly Tooltip[] => {
+      const menu = state.field(field);
+      if (!menu) return [];
+      return [{
+        pos: menu.pos,
+        above: true,
+        create: (editor) => {
+          const dom = document.createElement('div');
+          dom.className = 'cm-code-actions';
+          dom.setAttribute('role', 'menu');
+          dom.setAttribute('aria-label', 'Code actions');
+          for (const action of menu.actions) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.setAttribute('role', 'menuitem');
+            button.textContent = action.title;
+            button.addEventListener('mousedown', (event) => event.preventDefault());
+            button.addEventListener('click', () => applyCodeAction(editor, action));
+            dom.append(button);
+          }
+          return { dom };
+        }
+      }];
+    })
+  });
+
+  function clearCodeActions(): void {
+    codeActionGeneration += 1;
+    if (view) view.dispatch({ effects: setCodeActionMenu.of(null) });
+  }
 
   function clearReferenceCountTimer(): void {
     if (referenceCountTimer !== null) clearTimeout(referenceCountTimer);
@@ -332,12 +394,84 @@
     hover
   ];
 
+  function codeActionDiagnostics(state: EditorState): SourceCodeActionDiagnostic[] {
+    const selection = state.selection.main;
+    const diagnostics: SourceCodeActionDiagnostic[] = [];
+    forEachDiagnostic(state, (diagnostic, from, to) => {
+      const intersects = selection.empty
+        ? from <= selection.head && selection.head <= to
+        : from <= selection.to && to >= selection.from;
+      if (!intersects) return;
+      const start = state.doc.lineAt(from);
+      const end = state.doc.lineAt(to);
+      diagnostics.push({
+        severity: diagnostic.severity,
+        message: diagnostic.message,
+        startLine: start.number,
+        startColumn: from - start.from + 1,
+        endLine: end.number,
+        endColumn: to - end.from + 1,
+        source: diagnostic.source
+      });
+    });
+    return diagnostics;
+  }
+
+  async function showCodeActions(editor: EditorView): Promise<void> {
+    if (!onCodeActionLookup || !officialLspExpected() || !languageServerRoot) return;
+    clearCodeActions();
+    const generation = codeActionGeneration;
+    const path = currentPath;
+    const root = languageServerRoot;
+    const selection = editor.state.selection.main;
+    const start = editor.state.doc.lineAt(selection.from);
+    const end = editor.state.doc.lineAt(selection.to);
+    const actions = await onCodeActionLookup({
+      startLine: start.number,
+      startColumn: selection.from - start.from + 1,
+      endLine: end.number,
+      endColumn: selection.to - end.from + 1,
+      diagnostics: codeActionDiagnostics(editor.state)
+    });
+    if (
+      !view || view !== editor || !actions?.length ||
+      generation !== codeActionGeneration || !officialLspExpected() ||
+      currentPath !== path || languageServerRoot !== root
+    ) return;
+    const applicable = actions.filter((action) =>
+      !action.disabledReason &&
+      (action.kind.startsWith('quickfix') || action.kind.startsWith('refactor'))
+    );
+    if (!applicable.length) return;
+    editor.dispatch({
+      effects: setCodeActionMenu.of({ path, root, pos: selection.head, actions: applicable })
+    });
+  }
+
+  function applyCodeAction(editor: EditorView, action: SourceCodeAction): void {
+    const path = currentPath;
+    const edits = action.files.find((file) => file.path === path)?.edits ?? [];
+    const changes = edits
+      .map((edit) => ({
+        from: linePosition(editor.state, edit.startLine, edit.startColumn),
+        to: linePosition(editor.state, edit.endLine, edit.endColumn),
+        insert: edit.newText
+      }))
+      .sort((left, right) => left.from - right.from || left.to - right.to);
+    clearCodeActions();
+    if (changes.length) editor.dispatch({ changes });
+    if (action.files.some((file) => file.path !== path && file.edits.length)) {
+      void onWorkspaceEditAction?.(action);
+    }
+  }
+
   /**
    * On a file change, reconfiguring this compartment destroys the old document
    * plugin (which sends didClose) but keeps the one root client/socket. Nothing
    * here retains a document extension or its results after that reconfigure.
    */
   function clearLspSupport(disposeClient = true): void {
+    clearCodeActions();
     lspGeneration += 1;
     requestedLspKey = '';
     loadedLspKey = '';
@@ -411,6 +545,22 @@
     keymap.of([
       { key: 'Mod-s', run: () => { onSaveRequest?.(); return true; } },
       {
+        key: 'Mod-.',
+        run: (editor) => {
+          if (!officialLspExpected() || !onCodeActionLookup) return false;
+          void showCodeActions(editor);
+          return true;
+        }
+      },
+      {
+        key: 'Escape',
+        run: (editor) => {
+          if (!editor.state.field(codeActionMenuState, false)) return false;
+          clearCodeActions();
+          return true;
+        }
+      },
+      {
         key: 'F12',
         run: () => {
           if (officialLspExpected()) return false;
@@ -449,6 +599,7 @@
     intelligence.of(callbackIntelligence),
     language.of([]),
     editing.of(editingExtensions()),
+    codeActionMenuState,
     EditorView.domEventHandlers({
       mousedown: (event, editor) => {
         if (!(event.metaKey || event.ctrlKey) || event.button !== 0) return false;
@@ -460,6 +611,9 @@
       }
     }),
     EditorView.updateListener.of((update) => {
+      if (update.docChanged || update.selectionSet) {
+        codeActionGeneration += 1;
+      }
       if (currentPath) {
         sessionEditorStates.set(currentPath, update.state);
         publishRetainedEditorDiagnostics();
@@ -670,5 +824,32 @@
     font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1.45;
+  }
+
+  :global(.cm-code-actions) {
+    display: grid;
+    min-width: 240px;
+    padding: 4px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-elevated);
+    box-shadow: var(--shadow-lg);
+  }
+
+  :global(.cm-code-actions button) {
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 4px;
+    color: var(--color-text);
+    background: transparent;
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  :global(.cm-code-actions button:hover),
+  :global(.cm-code-actions button:focus-visible) {
+    outline: none;
+    background: var(--color-hover);
   }
 </style>

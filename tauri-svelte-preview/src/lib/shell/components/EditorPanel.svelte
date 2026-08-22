@@ -90,6 +90,7 @@
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
   import { openFileTimeline } from '$lib/shell/workbenchNavigation';
   import {
+    findSourceLspCodeActionsFromTauri,
     isNativeTauriRuntime,
     readAssemblySettingFromTauri,
     readSourceFromTauri,
@@ -101,11 +102,14 @@
   } from '$lib/tauriSource';
   import type CodeMirrorSourceEditor from '$lib/CodeMirrorSourceEditor.svelte';
   import type {
+    SourceCodeAction,
+    SourceCodeActionLookupRequest,
     SourceDiagnostic,
     SourceInlayHint,
     SourceRecord,
     SourceSymbol
   } from '$lib/sourceData';
+  import { applySourceTextEdits } from '$lib/sourceData';
 
   /**
    * The code editor is a large download, so it is fetched with the first file
@@ -774,6 +778,59 @@
     setEditorFileDraft(file.path, content);
   }
 
+  async function lookupCodeActions(
+    request: SourceCodeActionLookupRequest
+  ): Promise<SourceCodeAction[]> {
+    const file = activeEditorFile();
+    const root = editorState.projectRoot;
+    if (!fullMode || !file?.preview || !root || activeFileReadOnly) return [];
+    const language = file.language.toLowerCase();
+    if (language !== 'csharp' && language !== 'c#') return [];
+    const generation = sessionResourceGeneration;
+    const path = file.path;
+    try {
+      countInvoke('find_source_lsp_code_actions');
+      const actions = await findSourceLspCodeActionsFromTauri(
+        { ...file.preview, content: file.draftContent ?? file.preview.content },
+        { ...request, root, limit: 50 }
+      );
+      if (
+        destroyed || generation !== sessionResourceGeneration ||
+        editorState.projectRoot !== root || editorState.activePath !== path || !fullMode
+      ) return [];
+      return actions ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function applyExternalWorkspaceEdits(action: SourceCodeAction): Promise<void> {
+    const activePath = editorState.activePath;
+    const root = editorState.projectRoot;
+    const generation = sessionResourceGeneration;
+    if (!activePath || !root || !fullMode) return;
+    for (const fileEdit of action.files) {
+      if (fileEdit.path === activePath || fileEdit.edits.length === 0) continue;
+      let file = editorFileFor(fileEdit.path);
+      if (!file?.preview) {
+        const record = recordForPath(fileEdit.path, root);
+        countInvoke('read_source_file');
+        const preview = await readSourceFromTauri(record).catch(() => null);
+        if (
+          !preview || destroyed || generation !== sessionResourceGeneration ||
+          editorState.projectRoot !== root || editorState.activePath !== activePath || !fullMode
+        ) return;
+        openEditorFile(record);
+        setEditorFilePreview(record.path, preview);
+        setActiveEditorFile(activePath);
+        file = editorFileFor(record.path);
+      }
+      if (!file?.preview) continue;
+      const content = file.draftContent ?? file.preview.content;
+      setEditorFileDraft(file.path, applySourceTextEdits(content, fileEdit.edits));
+    }
+  }
+
   async function saveEditorFile(path: string): Promise<boolean> {
     if (!rootAvailable) return false;
     const file = editorFileFor(path);
@@ -1328,6 +1385,8 @@
             bind:this={codeEditor}
             {...sourceIntelligence.callbacks}
             onInlayHintLookup={activeFileReadOnly ? undefined : lookupInlayHintsWhenServerCanAnswer}
+            onCodeActionLookup={fullMode && !activeFileReadOnly ? lookupCodeActions : undefined}
+            onWorkspaceEditAction={fullMode && !activeFileReadOnly ? applyExternalWorkspaceEdits : undefined}
             preview={activeFile.preview}
             content={activeFile.draftContent ?? activeFile.preview.content}
             editable={rootAvailable && !activeFileReadOnly && !closeActionBusy}
