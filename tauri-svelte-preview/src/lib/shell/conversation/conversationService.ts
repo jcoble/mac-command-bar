@@ -228,6 +228,7 @@ export function cleanupConversationAttachmentPreview(attachment: ConversationAtt
 /** Drop frontend-only conversation data after its workspace has been saved. */
 export function releaseConversationForRead(ownedId: string): void {
   readVersions.set(ownedId, (readVersions.get(ownedId) ?? 0) + 1);
+  resyncing.delete(ownedId);
   cancelChildConversationTranscriptRead(ownedId);
   const state = getConversationSession(ownedId);
   if (!state) return;
@@ -538,18 +539,35 @@ async function resyncConversation(ownedId: string): Promise<void> {
       void hydrateSentConversationAttachments(ownedId, snapshot.events);
       if (sequenceBeforeApply <= snapshot.lastSequence) return;
     }
-  })().finally(() => resyncing.delete(ownedId));
+  })().finally(() => {
+    if (resyncing.get(ownedId) === work) resyncing.delete(ownedId);
+  });
   resyncing.set(ownedId, work);
   return work;
 }
 
 export async function loadConversationForRead(ownedId: string): Promise<void> {
+  const existing = resyncing.get(ownedId);
+  if (existing) return existing;
+  const generation = getConversationSession(ownedId)?.generation ?? 0;
   const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
   readVersions.set(ownedId, readVersion);
-  const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
-  if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
-  applyAgentConversationSnapshot(snapshot);
-  void hydrateSentConversationAttachments(ownedId, snapshot.events);
+  let work: Promise<void>;
+  work = (async () => {
+    const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
+    const current = getConversationSession(ownedId);
+    if (
+      !snapshot
+      || readVersions.get(ownedId) !== readVersion
+      || current?.generation !== generation
+    ) return;
+    applyAgentConversationSnapshot(snapshot);
+    void hydrateSentConversationAttachments(ownedId, snapshot.events);
+  })().finally(() => {
+    if (resyncing.get(ownedId) === work) resyncing.delete(ownedId);
+  });
+  resyncing.set(ownedId, work);
+  return work;
 }
 
 /** How much older history one scroll to the top reads, in bytes of stored
