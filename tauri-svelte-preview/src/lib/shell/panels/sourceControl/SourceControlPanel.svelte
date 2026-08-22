@@ -70,9 +70,10 @@
     type DiscardTarget
   } from '$lib/shell/components/git/discardConfirm';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
+  import { canonicalPath } from '$lib/shell/explorer/explorerStore.svelte';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
-  import type { ProjectGitFileStatus } from '$lib/tauriSource';
+  import { validateProjectRootFromTauri, type ProjectGitFileStatus } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
 
   import ChangedFileRow from './ChangedFileRow.svelte';
@@ -102,6 +103,8 @@
     commitFilesState?: GitCommitFilesState;
     /** Can this page change the repository? Defaults to "only in the desktop app". */
     canWrite?: boolean;
+    inspectionRoot?: string | null;
+    onInspectionRootChange?(root: string | null): void;
     /** Applies a selected linked worktree as the active session checkout. */
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
@@ -114,6 +117,8 @@
     commitFiles = defaultCommitFilesService,
     commitFilesState = defaultCommitFilesState,
     canWrite = canChangeRepository(),
+    inspectionRoot,
+    onInspectionRootChange,
     onUseSessionCheckout
   }: Props = $props();
 
@@ -194,10 +199,50 @@
 
   /** A different session means a different repository: the old pick is dropped. */
   let scopedSessionRoot = '';
+  let inspectionRestoreGeneration = 0;
   $effect(() => {
     if (sessionRoot === scopedSessionRoot) return;
     scopedSessionRoot = sessionRoot;
+    inspectionRestoreGeneration += 1;
     scopeRoot = '';
+  });
+
+  $effect(() => {
+    const requestedRoot = canonicalPath(inspectionRoot ?? '');
+    const sessionRootPath = canonicalPath(sessionRoot);
+    const target = requestedRoot && requestedRoot !== sessionRootPath ? requestedRoot : '';
+    const currentRoot = canonicalPath(scopeRoot);
+    const generation = ++inspectionRestoreGeneration;
+    if (!visible || !sessionRootPath) return;
+    if (requestedRoot === currentRoot && (!inspectionRoot || target !== '')) return;
+    if (!target) {
+      setInspectionRoot('');
+      return;
+    }
+    const worktree = worktreeManager.worktrees.find(
+      (entry) => canonicalPath(entry.path) === target && entry.isPrunable !== true
+    );
+    if (worktreeManager.loading || canonicalPath(worktreeManager.root ?? '') !== sessionRootPath) return;
+    if (!worktree || !scopeOptions.some((option) => canonicalPath(option.path) === target)) {
+      setInspectionRoot('');
+      return;
+    }
+    void (async () => {
+      const validation = await validateProjectRootFromTauri(target);
+      if (
+        generation !== inspectionRestoreGeneration
+        || canonicalPath(root) !== sessionRootPath
+        || canonicalPath(inspectionRoot ?? '') !== target
+      ) return;
+      if (validation === null || (validation.exists && validation.isDirectory)) {
+        setInspectionRoot(target);
+      } else {
+        setInspectionRoot('');
+      }
+    })();
+    return () => {
+      inspectionRestoreGeneration += 1;
+    };
   });
 
   /** The one place a scope becomes a real read. `activate` ignores a repeat. */
@@ -277,6 +322,20 @@
     } finally {
       checkoutBusy = false;
     }
+  }
+
+  function setInspectionRoot(value: string): void {
+    const target = canonicalPath(value);
+    if (!target || target === canonicalPath(sessionRoot)) {
+      if (scopeRoot === '' && !inspectionRoot) return;
+      scopeRoot = '';
+      onInspectionRootChange?.(null);
+      return;
+    }
+    if (!scopeOptions.some((option) => canonicalPath(option.path) === target)) return;
+    if (canonicalPath(scopeRoot) === target) return;
+    scopeRoot = target;
+    onInspectionRootChange?.(target);
   }
 
   /** Which file sections the reader has opened. Starting collapsed keeps a
@@ -494,7 +553,7 @@
           <Select.Root
             type="single"
             value={scopeValue}
-            onValueChange={(value) => (scopeRoot = value === sessionRoot ? '' : value)}
+            onValueChange={setInspectionRoot}
           >
             <Select.Trigger
               size="sm"

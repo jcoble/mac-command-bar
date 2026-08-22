@@ -38,6 +38,10 @@
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(root: string, paths: readonly string[]): void;
+    filesInspectionRoot?: string | null;
+    sourceControlInspectionRoot?: string | null;
+    onFilesInspectionRootChange?(root: string | null): void;
+    onSourceControlInspectionRootChange?(root: string | null): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
@@ -49,6 +53,10 @@
     onRootUnavailable,
     expandedPathsByRoot,
     onExpandedPathsChange,
+    filesInspectionRoot,
+    sourceControlInspectionRoot,
+    onFilesInspectionRootChange,
+    onSourceControlInspectionRootChange,
     onUseSessionCheckout
   }: Props = $props();
 </script>
@@ -66,6 +74,8 @@
           {onRootUnavailable}
           {expandedPathsByRoot}
           {onExpandedPathsChange}
+          inspectionRoot={filesInspectionRoot}
+          onInspectionRootChange={onFilesInspectionRootChange}
         />
       </div>
     {:else if activeId === 'source-control'}
@@ -75,6 +85,8 @@
           {root}
           {ownedId}
           {rootAvailable}
+          inspectionRoot={sourceControlInspectionRoot}
+          onInspectionRootChange={onSourceControlInspectionRootChange}
           {onUseSessionCheckout}
         />
       </div>

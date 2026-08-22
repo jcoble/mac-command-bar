@@ -114,6 +114,10 @@ export interface SessionWorkspaceSnapshot {
   rightTab: RightTabId;
   /** Expanded lazy-tree directories, keyed by the root they belong to. */
   expandedPathsByRoot?: SessionWorkspaceExpandedPathsByRoot;
+  /** Files panel checkout being inspected, or null for the session checkout. */
+  filesInspectionRoot?: string | null;
+  /** Source-control checkout being inspected, or null for the session checkout. */
+  sourceControlInspectionRoot?: string | null;
 }
 
 /**
@@ -174,6 +178,8 @@ export function captureWorkspace(input: {
   center?: SessionCenterWorkspace | null;
   rightTab: RightTabId;
   expandedPathsByRoot?: SessionWorkspaceExpandedPathsByRoot;
+  filesInspectionRoot?: string | null;
+  sourceControlInspectionRoot?: string | null;
 }): SessionWorkspaceSnapshot {
   const activePath = input.activePath ?? null;
   // A path with no folder cannot be checked against the session being restored,
@@ -219,6 +225,10 @@ export function captureWorkspace(input: {
   if (input.center) snapshot.center = normalizeCenter(input.center) ?? undefined;
   const expandedPathsByRoot = normalizeExpandedPathsByRoot(input.expandedPathsByRoot);
   if (expandedPathsByRoot) snapshot.expandedPathsByRoot = expandedPathsByRoot;
+  const filesInspectionRoot = normalizeInspectionRoot(input.filesInspectionRoot);
+  if (filesInspectionRoot) snapshot.filesInspectionRoot = filesInspectionRoot;
+  const sourceControlInspectionRoot = normalizeInspectionRoot(input.sourceControlInspectionRoot);
+  if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
   return snapshot;
 }
 
@@ -384,6 +394,12 @@ function canonicalWorkspacePath(value: string): string {
   return absolute ? `/${joined}` : joined;
 }
 
+function normalizeInspectionRoot(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const root = canonicalWorkspacePath(value);
+  return root || null;
+}
+
 function isPathAtOrBelow(path: string, root: string): boolean {
   if (path === root) return true;
   if (root === '/') return path.startsWith('/');
@@ -448,6 +464,10 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if (center) snapshot.center = center;
   const expandedPathsByRoot = normalizeExpandedPathsByRoot(entry.expandedPathsByRoot);
   if (expandedPathsByRoot) snapshot.expandedPathsByRoot = expandedPathsByRoot;
+  const filesInspectionRoot = normalizeInspectionRoot(entry.filesInspectionRoot);
+  if (filesInspectionRoot) snapshot.filesInspectionRoot = filesInspectionRoot;
+  const sourceControlInspectionRoot = normalizeInspectionRoot(entry.sourceControlInspectionRoot);
+  if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
   return snapshot;
 }
 

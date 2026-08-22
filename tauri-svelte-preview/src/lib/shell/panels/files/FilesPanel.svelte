@@ -48,7 +48,8 @@
     isNativeTauriRuntime,
     listRepositoryCheckoutsFromTauri,
     moveToTrashFromTauri,
-    searchSourceTreeFromTauri
+    searchSourceTreeFromTauri,
+    validateProjectRootFromTauri
   } from '$lib/tauriSource';
   import type { RepositoryCheckout } from '$lib/tauriSource';
   import type { SourceTreeSearchMatch } from '$lib/sourceData';
@@ -60,6 +61,8 @@
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(root: string, paths: readonly string[]): void;
+    inspectionRoot?: string | null;
+    onInspectionRootChange?(root: string | null): void;
   }
 
   type PendingEntry = {
@@ -90,7 +93,9 @@
     ownedId,
     onRootUnavailable,
     expandedPathsByRoot,
-    onExpandedPathsChange
+    onExpandedPathsChange,
+    inspectionRoot,
+    onInspectionRootChange
   }: Props = $props();
   let inspectedRoot = $state('');
   let checkouts = $state<RepositoryCheckout[]>([]);
@@ -118,6 +123,7 @@
   let expansionRestoreGeneration = 0;
   let scopedSessionKey = '';
   let checkoutGeneration = 0;
+  let checkoutsLoaded = $state(false);
   let inspectionGeneration = 0;
 
   const READ_ONLY_SCOPE_MESSAGE =
@@ -214,6 +220,7 @@
     scopedSessionKey = sessionKey;
     inspectionGeneration += 1;
     checkoutGeneration += 1;
+    checkoutsLoaded = false;
     inspectedRoot = '';
     checkouts = [];
     cancelActiveSearch();
@@ -233,6 +240,37 @@
     }
     activateExplorer(sessionRoot || null);
     void loadCheckouts(sessionRoot, checkoutGeneration);
+  });
+
+  $effect(() => {
+    const requestedRoot = canonicalPath(inspectionRoot ?? '');
+    const sessionRootPath = canonicalPath(sessionRoot);
+    const target = requestedRoot && requestedRoot !== sessionRootPath ? requestedRoot : '';
+    const generation = ++inspectionGeneration;
+    if (!visible || !sessionRootPath) return;
+    if (requestedRoot === canonicalPath(inspectedRoot) && (!inspectionRoot || target !== '')) return;
+    if (!target) {
+      selectInspectionRoot('');
+      return;
+    }
+    if (!checkoutsLoaded) return;
+    if (!scopeOptions.some((option) => canonicalPath(option.path) === target)) {
+      selectInspectionRoot('');
+      return;
+    }
+    void (async () => {
+      const validation = await validateProjectRootFromTauri(target);
+      if (
+        generation !== inspectionGeneration
+        || canonicalPath(root) !== sessionRootPath
+        || canonicalPath(inspectionRoot ?? '') !== target
+      ) return;
+      if (validation === null || (validation.exists && validation.isDirectory)) {
+        selectInspectionRoot(target);
+      } else {
+        selectInspectionRoot('');
+      }
+    })();
   });
 
   $effect(() => {
@@ -370,6 +408,7 @@
   function selectInspectionRoot(value: string): void {
     const target = canonicalPath(value);
     if (!target || target === canonicalPath(sessionRoot)) {
+      if (inspectedRoot === '' && !inspectionRoot) return;
       inspectedRoot = '';
       inspectionGeneration += 1;
       revealGeneration += 1;
@@ -380,9 +419,11 @@
       searchText = '';
       cancelActiveSearch();
       activateExplorer(sessionRoot || null);
+      onInspectionRootChange?.(null);
       return;
     }
     if (!scopeOptions.some((option) => canonicalPath(option.path) === target)) return;
+    if (canonicalPath(inspectedRoot) === target) return;
     inspectedRoot = target;
     inspectionGeneration += 1;
     revealGeneration += 1;
@@ -393,6 +434,7 @@
     searchText = '';
     cancelActiveSearch();
     activateExplorer(target);
+    onInspectionRootChange?.(target);
   }
 
   async function loadCheckouts(sessionRootValue: string, generation: number): Promise<void> {
@@ -401,8 +443,12 @@
       const result = await listRepositoryCheckoutsFromTauri([sessionRootValue]);
       if (generation !== checkoutGeneration || canonicalPath(root) !== canonicalPath(sessionRootValue)) return;
       checkouts = result?.[sessionRootValue] ?? [];
+      checkoutsLoaded = true;
     } catch {
-      if (generation === checkoutGeneration) checkouts = [];
+      if (generation === checkoutGeneration) {
+        checkouts = [];
+        checkoutsLoaded = true;
+      }
     }
   }
 

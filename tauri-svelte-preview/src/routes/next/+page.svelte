@@ -811,6 +811,39 @@
 		);
 	}
 
+	function rememberInspectionRoot(kind: 'files' | 'source-control', root: string | null): void {
+		const ownedId = rail.activeOwnedId;
+		const sessionRoot = canonicalPath(readSelection().root);
+		if (!ownedId || !sessionRoot) return;
+		const selectedRoot = canonicalPath(root ?? '');
+		const inspectionRoot = selectedRoot && selectedRoot !== sessionRoot ? selectedRoot : null;
+		const filesInspectionRoot =
+			kind === 'files' ? inspectionRoot : (activeWorkspaceSnapshot?.filesInspectionRoot ?? null);
+		const sourceControlInspectionRoot =
+			kind === 'source-control'
+				? inspectionRoot
+				: (activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null);
+		activeWorkspaceSnapshot = activeWorkspaceSnapshot
+			? { ...activeWorkspaceSnapshot, filesInspectionRoot, sourceControlInspectionRoot }
+			: captureWorkspace({
+					openFiles: [],
+					activePath: null,
+					selectedPath: explorer.selectedPath,
+					scrollTop: explorer.scrollTop,
+					rightTab,
+					filesInspectionRoot,
+					sourceControlInspectionRoot,
+				});
+		scheduleWorkspaceAutosave(
+			ownedId,
+			editorState.openFiles,
+			editorState.activePath,
+			centerTab,
+			rightTab,
+			captureBrowserState(),
+		);
+	}
+
 	/** Remember the editor tabs and file tree this session is leaving behind.
 	 * Stored straight away: a reload can come at any moment, and the write is a
 	 * few hundred bytes. */
@@ -837,6 +870,8 @@
 				center: frameControls?.captureCenterLayout() ?? null,
 				rightTab,
 				expandedPathsByRoot: activeWorkspaceSnapshot?.expandedPathsByRoot,
+				filesInspectionRoot: activeWorkspaceSnapshot?.filesInspectionRoot,
+				sourceControlInspectionRoot: activeWorkspaceSnapshot?.sourceControlInspectionRoot,
 		});
 		activeWorkspaceSnapshot = snapshot;
 		try {
@@ -2018,6 +2053,10 @@
 			onRootUnavailable={handleActiveRootUnavailable}
 			expandedPathsByRoot={activeWorkspaceSnapshot?.expandedPathsByRoot ?? {}}
 			onExpandedPathsChange={rememberFileTreeExpandedPaths}
+			filesInspectionRoot={activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
+			sourceControlInspectionRoot={activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
+			onFilesInspectionRootChange={(root) => rememberInspectionRoot('files', root)}
+			onSourceControlInspectionRootChange={(root) => rememberInspectionRoot('source-control', root)}
 			onUseSessionCheckout={async (root) => {
 				const ownedId = rail.activeOwnedId;
 				if (ownedId !== null) await changeCodexCheckout(ownedId, root);
