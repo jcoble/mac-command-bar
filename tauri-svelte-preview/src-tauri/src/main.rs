@@ -182,6 +182,24 @@ struct SourceSearchMatch {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SourceTreeSearchMatch {
+    path: String,
+    relative_path: String,
+    name: String,
+    is_directory: bool,
+    excluded: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceTreeSearchPage {
+    matches: Vec<SourceTreeSearchMatch>,
+    next_cursor: Option<usize>,
+    complete: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SourceDefinitionTarget {
     path: String,
     relative_path: String,
@@ -876,6 +894,41 @@ async fn search_source_files(
     tauri::async_runtime::spawn_blocking(move || search_source_files_sync(records, query, limit))
         .await
         .map_err(|error| format!("Source search task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn search_source_tree(
+    app: tauri::AppHandle,
+    scan_registry: tauri::State<'_, SourceScanRegistry>,
+    root: String,
+    query: String,
+    page_size: Option<usize>,
+    cursor: Option<usize>,
+    include_excluded: Option<bool>,
+    scan_id: Option<String>,
+) -> Result<SourceTreeSearchPage, String> {
+    allow_workspace_root_in_fs_scope(&app, &root);
+    let cancellation =
+        source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
+    let scan_id_for_cleanup = scan_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        search_source_tree_sync(
+            PathBuf::from(root),
+            query,
+            page_size,
+            cursor,
+            include_excluded.unwrap_or(false),
+            cancellation,
+        )
+    })
+    .await
+    .map_err(|error| format!("Source tree search task failed: {error}"))?;
+
+    if let Some(scan_id) = &scan_id_for_cleanup {
+        scan_registry.unregister(scan_id);
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -2473,6 +2526,133 @@ fn search_source_files_sync(
     }
 
     Ok(matches)
+}
+
+fn search_source_tree_sync(
+    root: PathBuf,
+    query: String,
+    page_size: Option<usize>,
+    cursor: Option<usize>,
+    include_excluded: bool,
+    cancellation: SourceScanCancellation,
+) -> Result<SourceTreeSearchPage, String> {
+    cancellation.ensure_active()?;
+    let metadata = std::fs::metadata(&root)
+        .map_err(|error| format!("Could not read source root metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Source root is not a directory".to_string());
+    }
+
+    let normalized_query = query.trim().to_lowercase();
+    let page_size = clamp_source_search_page_size(page_size);
+    let offset = cursor.unwrap_or(0);
+    if normalized_query.is_empty() {
+        return Ok(SourceTreeSearchPage {
+            matches: Vec::new(),
+            next_cursor: None,
+            complete: true,
+        });
+    }
+
+    let mut matches = Vec::with_capacity(page_size.saturating_add(1));
+    let mut matched_count = 0;
+    collect_source_tree_search_matches(
+        &root,
+        &root,
+        &normalized_query,
+        page_size,
+        offset,
+        include_excluded,
+        &mut matched_count,
+        &mut matches,
+        &cancellation,
+    )?;
+
+    cancellation.ensure_active()?;
+    let complete = matches.len() <= page_size;
+    let next_cursor = if complete {
+        None
+    } else {
+        matches.truncate(page_size);
+        Some(offset.saturating_add(page_size))
+    };
+    Ok(SourceTreeSearchPage {
+        matches,
+        next_cursor,
+        complete,
+    })
+}
+
+fn collect_source_tree_search_matches(
+    root: &Path,
+    current: &Path,
+    query: &str,
+    page_size: usize,
+    offset: usize,
+    include_excluded: bool,
+    matched_count: &mut usize,
+    matches: &mut Vec<SourceTreeSearchMatch>,
+    cancellation: &SourceScanCancellation,
+) -> Result<bool, String> {
+    cancellation.ensure_active()?;
+    let mut entries = std::fs::read_dir(current)
+        .map_err(|error| format!("Could not read source directory: {error}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| compare_source_walk_entries(root, left, right));
+
+    for entry in entries {
+        cancellation.ensure_active()?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("Could not read source entry metadata: {error}"))?;
+        if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) {
+            continue;
+        }
+
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_directory = file_type.is_dir();
+        let excluded = is_directory && skip_dir_reason(&name).is_some();
+        if is_directory && excluded && !include_excluded {
+            continue;
+        }
+
+        let relative_path = normalized_relative_source_path(root, &path);
+        if relative_path.to_lowercase().contains(query) {
+            if *matched_count >= offset {
+                matches.push(SourceTreeSearchMatch {
+                    path: path.display().to_string(),
+                    relative_path,
+                    name,
+                    is_directory,
+                    excluded,
+                });
+            }
+            *matched_count = (*matched_count).saturating_add(1);
+            if matches.len() > page_size {
+                return Ok(true);
+            }
+        }
+
+        if is_directory
+            && collect_source_tree_search_matches(
+                root,
+                &path,
+                query,
+                page_size,
+                offset,
+                include_excluded,
+                matched_count,
+                matches,
+                cancellation,
+            )?
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn append_source_search_matches(
@@ -5738,6 +5918,10 @@ fn source_collection_limit(limit: usize) -> usize {
         .saturating_add(1)
 }
 
+fn clamp_source_search_page_size(page_size: Option<usize>) -> usize {
+    page_size.unwrap_or(DEFAULT_SOURCE_SEARCH_LIMIT).clamp(1, MAX_SOURCE_SEARCH_LIMIT)
+}
+
 fn compare_source_walk_entries(
     root: &Path,
     left: &std::fs::DirEntry,
@@ -6198,6 +6382,7 @@ fn main() {
             open_terminal_path,
             open_terminal_command,
             search_source_files,
+            search_source_tree,
             find_source_definitions,
             find_source_references,
             count_source_references,

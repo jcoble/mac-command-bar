@@ -25,13 +25,14 @@
     row: StackRow;
     /** A start or stop for this action is still in flight. */
     busy?: boolean;
+    canStart?: boolean;
     onRun(): void;
     onStop(): void;
     onEdit(): void;
     onRemove(): void;
     onOpenPreview(): void;
   }
-  let { row, busy = false, onRun, onStop, onEdit, onRemove, onOpenPreview }: Props = $props();
+  let { row, busy = false, canStart = true, onRun, onStop, onEdit, onRemove, onOpenPreview }: Props = $props();
 
   const live = $derived(row.state === 'running' || row.state === 'starting');
 
@@ -82,7 +83,7 @@
       <Square />
     </IconButton>
   {:else}
-    <IconButton label={`Run ${row.definition.name}`} disabled={busy} onclick={onRun}>
+    <IconButton label={`Run ${row.definition.name}`} disabled={busy || !canStart} onclick={onRun}>
       <Play />
     </IconButton>
   {/if}

@@ -21,6 +21,16 @@ export type SourceDirectoryEntry = {
   excluded: boolean;
 };
 
+export type SourceTreeSearchMatch = SourceDirectoryEntry & {
+  relativePath: string;
+};
+
+export type SourceTreeSearchPage = {
+  matches: SourceTreeSearchMatch[];
+  nextCursor: number | null;
+  complete: boolean;
+};
+
 export type SourcePreview = SourceRecord & {
   content: string;
   lineCount: number;

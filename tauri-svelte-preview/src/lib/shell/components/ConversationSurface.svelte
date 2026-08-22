@@ -74,6 +74,7 @@
     owned: OwnedSession[];
     activeOwnedId: string | null;
     activeOrigin?: OwnedSession['origin'];
+    rootAvailable?: boolean;
     registerHost(ownedId: string, host: HTMLElement): void;
     onHostLayout?(ownedId: string): void;
     onOpenNativeCli?(ownedId: string): void | Promise<void>;
@@ -84,6 +85,7 @@
     owned,
     activeOwnedId,
     activeOrigin,
+    rootAvailable = true,
     registerHost,
     onHostLayout,
     onOpenNativeCli,
@@ -438,15 +440,15 @@
     <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
       {#if !appOwned}
         <div class="handoff-actions" aria-label="Conversation handoff actions">
-          <button type="button" data-testid="open-native-cli" onclick={() => void onOpenNativeCli?.(active.ownedId)}>
+          <button type="button" data-testid="open-native-cli" disabled={!rootAvailable} onclick={() => void onOpenNativeCli?.(active.ownedId)}>
             Open in native CLI
           </button>
           {#if conversation.capabilities?.session.fork}
-            <button type="button" data-testid="fork-native-cli" onclick={() => void onForkNativeCli?.(active.ownedId)}>
+            <button type="button" data-testid="fork-native-cli" disabled={!rootAvailable} onclick={() => void onForkNativeCli?.(active.ownedId)}>
               Fork to native CLI
             </button>
           {/if}
-          <button type="button" data-testid="conversation-open-raw" onclick={() => setConversationMode(active.ownedId, 'raw')}>
+          <button type="button" data-testid="conversation-open-raw" disabled={!rootAvailable} onclick={() => setConversationMode(active.ownedId, 'raw')}>
             Open raw terminal
           </button>
         </div>

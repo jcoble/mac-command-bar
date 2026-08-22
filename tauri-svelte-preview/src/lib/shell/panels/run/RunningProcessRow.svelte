@@ -26,11 +26,12 @@
     tail?: readonly string[];
     /** A start or stop for this action is still in flight. */
     busy?: boolean;
+    canRestart?: boolean;
     onStop(): void;
     onRestart(): void;
     onOpenSession(): void;
   }
-  let { row, tail = [], busy = false, onStop, onRestart, onOpenSession }: Props = $props();
+  let { row, tail = [], busy = false, canRestart = true, onStop, onRestart, onOpenSession }: Props = $props();
 
   const tone = $derived<ChipTone>(row.state === 'running' ? 'live' : 'attention');
 
@@ -53,7 +54,7 @@
       {row.definition.name}
     </Button>
     <Chip {tone}>{row.statusLabel}</Chip>
-    <IconButton label={`Restart ${row.definition.name}`} size="xs" disabled={busy} onclick={onRestart}>
+    <IconButton label={`Restart ${row.definition.name}`} size="xs" disabled={busy || !canRestart} onclick={onRestart}>
       <RotateCcw />
     </IconButton>
     <IconButton label={`Stop ${row.definition.name}`} size="xs" disabled={busy} onclick={onStop}>

@@ -23,6 +23,7 @@ import type {
   SourceSemanticToken,
   SourceSignatureHelp,
   SourceSymbol,
+  SourceTreeSearchPage,
   SourceTextEdit,
   SourceWorkspaceSymbol
 } from './sourceData';
@@ -596,6 +597,21 @@ export async function listSourceDirectoryFromTauri(
     directory,
     includeExcluded
   });
+}
+
+export async function searchSourceTreeFromTauri(
+  root: string,
+  query: string,
+  pageSize = 50,
+  cursor: number | null = null,
+  includeExcluded = false,
+  scanId: string | null = null
+): Promise<SourceTreeSearchPage | null> {
+  const request = { root, query: query.trim(), pageSize, cursor, includeExcluded, scanId };
+  if (!isTauriRuntime()) return postLocalSourceBridge<SourceTreeSearchPage>('search-tree', request);
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceTreeSearchPage>('search_source_tree', request);
 }
 
 export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean> {

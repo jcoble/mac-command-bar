@@ -68,6 +68,11 @@
   import { showCenterTab, showRightTab } from '$lib/shell/workbenchNavigation';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
 
+  interface Props {
+    rootAvailable?: boolean;
+  }
+  let { rootAvailable = true }: Props = $props();
+
   /** One row of the table is exactly this tall, so its SVG can be drawn to size. */
   const ROW_HEIGHT = 24;
   const LANE_SPACING = 12;
@@ -165,18 +170,20 @@
   }
 
   function pickRepository(path: string): void {
-    if (!path || path === gitPanel.root) return;
+    if (!rootAvailable || !path || path === gitPanel.root) return;
     // The same call the source-control panel makes. It reads; it changes nothing.
     gitService.activate(path);
     gitCommitFilesService.activate(path);
   }
 
   function toggleCommit(sha: string, isMerge: boolean): void {
+    if (!rootAvailable) return;
     gitCommitFilesService.activate(gitPanel.root);
     void gitCommitFilesService.toggleCommit(sha, isMerge);
   }
 
   function pickFile(sha: string, file: GitCommitFileChange): void {
+    if (!rootAvailable) return;
     gitCommitFilesService.activate(gitPanel.root);
     void gitCommitFilesService.selectCommitFile(sha, file);
     showCenterTab('diff');
@@ -199,6 +206,7 @@
   /** Near the bottom, and there is more: ask for it. Scrolling is the only
    * request — there is no button, the way Git Graph has none. */
   function onScroll(event: Event): void {
+    if (!rootAvailable) return;
     const list = event.currentTarget as HTMLElement;
     if (!canLoadMore || filtering) return;
     if (list.scrollTop + list.clientHeight < list.scrollHeight - LOAD_MORE_SLACK) return;
@@ -207,6 +215,9 @@
 </script>
 
 <section class="git-history">
+  {#if !rootAvailable}
+    <p class="notice">Checkout/Worktree deleted.</p>
+  {:else}
   <header class="toolbar">
     <!-- Every control here comes from the kit: `Select` (never a native
          `<select>` — see `src/lib/components/ui/DESIGN.md`), `Input`, and
@@ -476,6 +487,7 @@
       </p>
     {/if}
   </div>
+  {/if}
 </section>
 
 <style>

@@ -57,8 +57,10 @@ function describeError(error: unknown): string {
 }
 
 function checkoutWasDeleted(message: string): boolean {
-  return message.includes('Could not read source root metadata:') &&
-    (message.includes('No such file or directory') || message.includes('os error 2'));
+  const normalized = message.toLowerCase();
+  return (normalized.includes('could not read source root metadata:') ||
+    normalized.includes('could not read source directory metadata:')) &&
+    (normalized.includes('no such file or directory') || normalized.includes('os error 2'));
 }
 
 function publishLoadedFiles(root: string): void {
@@ -104,6 +106,32 @@ export async function loadDirectory(directory: string, depth: number): Promise<b
   } finally {
     if (directoryRequests.get(target) === requestId) directoryRequests.delete(target);
   }
+}
+
+/** Load the root and each missing directory on the path to a file, in order. */
+export async function revealExplorerPath(path: string): Promise<string[]> {
+  const root = canonicalPath(explorer.root ?? '');
+  const target = canonicalPath(path);
+  if (!root || !target || !isExplorerPathAtOrBelow(target, root) || target === root) return [];
+
+  const relative = target.slice(root.length).replace(/^\/+/, '');
+  const components = relative.split('/').filter(Boolean).slice(0, -1);
+  const directories: string[] = [];
+  let directory = root;
+  for (const component of components) {
+    directory = `${directory}/${component}`;
+    directories.push(directory);
+  }
+
+  const loaded: string[] = [];
+  for (const [index, candidate] of [root, ...directories].entries()) {
+    const depth = index;
+    if (loadedExplorerDirectoryDepth(candidate) === null && !(await loadDirectory(candidate, depth))) {
+      break;
+    }
+    if (candidate !== root) loaded.push(candidate);
+  }
+  return loaded;
 }
 
 export function unloadDirectory(directory: string): void {

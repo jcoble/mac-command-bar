@@ -66,7 +66,7 @@
     /** The active session's id, or null. Unused: actions belong to the project. */
     ownedId: string | null;
   }
-  let { visible }: Props = $props();
+  let { visible, root }: Props = $props();
 
   /**
    * The same card look the Context tab uses, so the two tabs of the right
@@ -105,6 +105,7 @@
 
   /** The folder a new action starts in: the project the shell is on. */
   const folder = $derived((stacks.activeRoot ?? '').trim());
+  const rootAvailable = $derived(root.trim().length > 0);
 
   /**
    * The sessions to follow, as one string, so the watch below is rebuilt when
@@ -154,6 +155,7 @@
 
   /** Start an action, and show its page when it was set up to do that. */
   async function run(definition: StackDefinition): Promise<void> {
+    if (!rootAvailable) return;
     await startStack(definition.id);
     const url = (definition.previewUrl ?? '').trim();
     if (definition.openPreviewOnRun === true && url) await openUrlInBrowser({ url });
@@ -186,7 +188,7 @@
    * so it can never reach this.
    */
   function onKeydown(event: KeyboardEvent): void {
-    if (event.defaultPrevented || isTyping(event.target)) return;
+    if (!rootAvailable || event.defaultPrevented || isTyping(event.target)) return;
     const matched = matchKeybinding(event, shortcutOrder);
     if (!matched) return;
     event.preventDefault();
@@ -272,6 +274,7 @@
                 <li>
                   <RunActionRow
                     {row}
+                    canStart={rootAvailable}
                     busy={isStackBusy(row.definition.id)}
                     onRun={() => void run(row.definition)}
                     onStop={() => void stopStack(row.definition.id)}
@@ -295,6 +298,7 @@
               {#each running as row (row.definition.id)}
                 <RunningProcessRow
                   {row}
+                  canRestart={rootAvailable}
                   tail={row.ownedId ? (tails[row.ownedId] ?? []) : []}
                   busy={isStackBusy(row.definition.id)}
                   onStop={() => void stopStack(row.definition.id)}

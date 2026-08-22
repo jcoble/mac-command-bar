@@ -21,28 +21,37 @@
     loadDirectory,
     refresh,
     refreshChangedPath,
+    revealExplorerPath,
     scanRoot,
     stopScan,
     unloadDirectory
   } from '$lib/shell/explorer/explorerService';
   import {
+    canonicalPath,
     explorer,
     explorerNodes,
     selectPath,
-    setIncludeExcluded,
-    setQuery
+    setIncludeExcluded
   } from '$lib/shell/explorer/explorerStore.svelte';
   import type { ExplorerTreeNode } from '$lib/shell/explorer/explorerStore.svelte';
   import { projectRootLabel } from '$lib/shell/explorer/explorerTree';
   import { gitService } from '$lib/shell/git/gitService';
   import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation';
   import { trackFileWatcher } from '$lib/shell/resourceDiagnostics.svelte';
-  import { isNativeTauriRuntime, moveToTrashFromTauri } from '$lib/tauriSource';
+  import {
+    cancelSourceScanFromTauri,
+    createSourceScanId,
+    isNativeTauriRuntime,
+    moveToTrashFromTauri,
+    searchSourceTreeFromTauri
+  } from '$lib/tauriSource';
+  import type { SourceTreeSearchMatch } from '$lib/sourceData';
 
   interface Props {
     visible: boolean;
     root: string;
     ownedId: string | null;
+    onRootUnavailable?(root: string): void | Promise<void>;
   }
 
   type PendingEntry = {
@@ -64,9 +73,10 @@
     hasChildren: boolean;
     expanded: boolean;
     selected: boolean;
+    searchResult?: boolean;
   };
 
-  let { visible, root }: Props = $props();
+  let { visible, root, onRootUnavailable }: Props = $props();
   let expanded = $state.raw<Set<string>>(new Set());
   let treeData = $state.raw<TreeItem[]>([]);
   let sortDirection = $state<'ascending' | 'descending'>('ascending');
@@ -77,34 +87,45 @@
   let fileClipboard = $state.raw<FileClipboard | null>(null);
   let treeHost = $state<HTMLDivElement | null>(null);
   let treeHeight = $state(400);
+  let searchText = $state('');
+  let searchMatches = $state.raw<SourceTreeSearchMatch[]>([]);
+  let searchNextCursor = $state<number | null>(null);
+  let searchLoading = $state(false);
+  let searchError = $state<string | null>(null);
+  let searchGeneration = 0;
+  let activeSearchScanId: string | null = null;
+  let notifiedUnavailableRoot = '';
 
   const loadedNodes = $derived(explorerNodes());
   const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
   const listedCount = $derived(loadedNodes.length);
   const listed = $derived(explorer.lastScanFinishedAt !== null);
-
-  function searchedNodes(): ExplorerTreeNode[] {
-    const query = explorer.query.trim().toLowerCase();
-    if (!query) return loadedNodes;
-
-    const byPath = new Map(loadedNodes.map((node) => [node.path, node]));
-    const shown = new Set<string>();
-    for (const node of loadedNodes) {
-      const path = relativePath((explorer.root ?? root).replace(/\/+$/, ''), node.path);
-      if (!path.toLowerCase().includes(query)) continue;
-      let current: ExplorerTreeNode | undefined = node;
-      while (current) {
-        shown.add(current.path);
-        current = byPath.get(current.parentPath);
-      }
-    }
-    return loadedNodes.filter((node) => shown.has(node.path));
-  }
+  const searching = $derived(searchText.trim().length > 0);
+  const searchTreeData = $derived(
+    searchMatches.map<TreeItem>((match) => ({
+      path: match.path,
+      name: match.name,
+      isDirectory: match.isDirectory,
+      excluded: match.excluded,
+      parentPath: (explorer.root ?? root).trim(),
+      depth: 0,
+      childCount: 0,
+      ignored: match.excluded,
+      treePath: match.relativePath,
+      treeParentPath: '',
+      relativePath: match.relativePath,
+      hasChildren: false,
+      expanded: false,
+      selected: match.path === explorer.selectedPath,
+      searchResult: true
+    }))
+  );
+  const displayedTreeData = $derived(searching ? searchTreeData : treeData);
 
   $effect(() => {
     const projectRoot = (explorer.root ?? root).replace(/\/+$/, '');
     sortDirection;
-    treeData = searchedNodes().map((node) => ({
+    treeData = loadedNodes.map((node) => ({
       ...node,
       treePath: relativePath(projectRoot, node.path),
       treeParentPath: node.parentPath === projectRoot ? '' : relativePath(projectRoot, node.parentPath),
@@ -120,6 +141,39 @@
     expanded = new Set();
     pending = null;
     fileClipboard = null;
+    searchText = '';
+  });
+
+  $effect(() => {
+    const target = (explorer.root ?? root).trim();
+    if (explorer.unavailable !== 'checkout-deleted' || !target) {
+      if (explorer.unavailable === null) notifiedUnavailableRoot = '';
+      return;
+    }
+    if (canonicalPath(target) === canonicalPath(notifiedUnavailableRoot)) return;
+    notifiedUnavailableRoot = target;
+    void onRootUnavailable?.(target);
+  });
+
+  $effect(() => {
+    const query = searchText.trim();
+    const projectRoot = (explorer.root ?? root).trim();
+    explorer.includeExcluded;
+    const generation = ++searchGeneration;
+    cancelActiveSearch();
+    searchMatches = [];
+    searchNextCursor = null;
+    searchError = null;
+    searchLoading = false;
+    if (!query || !visible || !listed || !projectRoot) return;
+
+    const timer = window.setTimeout(() => {
+      void loadSearchPage(generation, null, true);
+    }, 220);
+    return () => {
+      window.clearTimeout(timer);
+      cancelActiveSearch();
+    };
   });
 
   $effect(() => {
@@ -135,6 +189,10 @@
           target,
           (event) => {
             if (explorer.scanning || isBuildOutputOnly(event.paths)) return;
+            if (event.paths.some((path) => canonicalPath(path) === canonicalPath(target))) {
+              refresh();
+              return;
+            }
             for (const path of event.paths) refreshChangedPath(path);
           },
           { recursive: true, delayMs: 300 }
@@ -192,12 +250,74 @@
     return error instanceof Error ? error.message : String(error);
   }
 
+  function cancelActiveSearch(): void {
+    const scanId = activeSearchScanId;
+    activeSearchScanId = null;
+    if (scanId) void cancelSourceScanFromTauri(scanId);
+  }
+
   function isBuildOutputOnly(paths: readonly string[]): boolean {
     return paths.length > 0 && paths.every((path) => UNLISTED_FOLDERS.some((part) => path.includes(part)));
   }
 
   function onFilterInput(event: Event & { currentTarget: HTMLInputElement }): void {
-    setQuery(event.currentTarget.value);
+    searchText = event.currentTarget.value;
+  }
+
+  async function loadSearchPage(
+    generation: number,
+    cursor: number | null,
+    replace: boolean
+  ): Promise<void> {
+    const projectRoot = (explorer.root ?? root).trim();
+    const query = searchText.trim();
+    if (!projectRoot || !query || generation !== searchGeneration) return;
+
+    cancelActiveSearch();
+    const scanId = createSourceScanId();
+    activeSearchScanId = scanId;
+    searchLoading = true;
+    searchError = null;
+    try {
+      const page = await searchSourceTreeFromTauri(
+        projectRoot,
+        query,
+        50,
+        cursor,
+        explorer.includeExcluded,
+        scanId
+      );
+      if (generation !== searchGeneration || searchText.trim() !== query) return;
+      if (!page) {
+        searchError = 'The file search is not available here.';
+        return;
+      }
+      searchMatches = replace ? page.matches : [...searchMatches, ...page.matches];
+      searchNextCursor = page.nextCursor;
+    } catch (error) {
+      if (generation === searchGeneration) searchError = describeError(error);
+    } finally {
+      if (generation === searchGeneration) searchLoading = false;
+      if (activeSearchScanId === scanId) activeSearchScanId = null;
+    }
+  }
+
+  function loadMoreSearchResults(): void {
+    if (searchNextCursor === null || searchLoading) return;
+    void loadSearchPage(searchGeneration, searchNextCursor, false);
+  }
+
+  async function onSearchResultClicked(node: TreeItem): Promise<void> {
+    const projectRoot = canonicalPath(explorer.root ?? root);
+    if (!projectRoot) return;
+    searchText = '';
+    const ancestors = await revealExplorerPath(node.path);
+    if (canonicalPath(explorer.root ?? root) !== projectRoot) return;
+    expanded = new Set([...expanded, ...ancestors]);
+    selectPath(node.path);
+    if (!node.isDirectory) {
+      openFileInEditor({ path: node.path, projectRoot });
+    }
   }
 
   function compareTreeNodes(left: LTreeNode<TreeItem>, right: LTreeNode<TreeItem>): number {
@@ -230,6 +350,10 @@
   function onTreeNodeClicked(treeNode: LTreeNode<TreeItem>): void {
     const node = treeNode.data;
     if (!node) return;
+    if (node.searchResult) {
+      void onSearchResultClicked(node);
+      return;
+    }
     if (node.isDirectory) {
       if (expanded.has(node.path)) collapsePath(node.path);
       else {
@@ -250,7 +374,7 @@
     event.preventDefault();
     event.stopPropagation();
     const row = target.closest<HTMLElement>('[data-tree-path]');
-    const node = treeData.find((item) => item.treePath === row?.dataset.treePath);
+    const node = displayedTreeData.find((item) => item.treePath === row?.dataset.treePath);
     if (node) onTreeNodeClicked({ data: node } as LTreeNode<TreeItem>);
   }
 
@@ -446,9 +570,9 @@
         <Input
           type="search"
           class="h-7 w-32"
-          placeholder="Search loaded"
-          aria-label="Search loaded files"
-          value={explorer.query}
+          placeholder="Search files"
+          aria-label="Search project files"
+          value={searchText}
           oninput={onFilterInput}
         />
         <IconButton
@@ -514,6 +638,9 @@
     {#if actionError}
       <p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{actionError}</p>
     {/if}
+    {#if searchError}
+      <p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{searchError}</p>
+    {/if}
     {#if pending}
       <div class="entry-bar">
         <Input
@@ -537,7 +664,7 @@
       onclickcapture={onTreeWrapperClick}
     >
       <Tree
-        data={treeData}
+        data={displayedTreeData}
         treeId="project-files"
         treePathSeparator="/"
         idMember="path"
@@ -548,7 +675,7 @@
         isSelectedMember="selected"
         displayValueMember="name"
         searchValueMember="relativePath"
-        searchText={explorer.query}
+        searchText=""
         sortCallback={sortTreeNodes}
         shouldToggleOnNodeClick={false}
         shouldUseInternalSearchIndex={false}
@@ -610,11 +737,19 @@
         {/snippet}
       </Tree>
     </div>
+    {#if searching && searchNextCursor !== null}
+      <div class="search-more">
+        <Button size="sm" variant="ghost" disabled={searchLoading} onclick={loadMoreSearchResults}>
+          {searchLoading ? 'Loading…' : 'Load more'}
+        </Button>
+      </div>
+    {/if}
   {/if}
 </div>
 
 <style>
   .tree-host{--tree-node-indent-per-level:12px;display:flex;height:0;min-height:0;flex:1;overflow:hidden;padding:0 4px 4px}
+  .search-more{display:flex;justify-content:center;padding:2px 8px 6px;border-top:1px solid var(--color-border)}
   .entry-bar{padding:4px 8px;border-bottom:1px solid var(--color-border)}
   .tree-row{display:flex;align-items:center;min-width:0;width:100%;gap:6px;color:var(--color-text)}
   .tree-row.excluded{opacity:.55}

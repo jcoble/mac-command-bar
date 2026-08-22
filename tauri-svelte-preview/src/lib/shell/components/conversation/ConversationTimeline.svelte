@@ -460,7 +460,7 @@
     if (firstItemId === anchoredFirstItemId) return;
     anchoredFirstItemId = firstItemId;
     const anchor = pageAnchor;
-    if (!anchor || anchor.itemId === firstItemId) return;
+    if (!anchor) return;
     pageAnchor = null;
     void tick().then(() => {
       if (!host) return;
@@ -496,6 +496,9 @@
     if (jumpingToLatest) return;
     if (hasNewer && onJumpToLatest) {
       jumpingToLatest = true;
+      // A direct tail reload replaces the paging operation. Do not let its
+      // pending viewport correction pull the reader back from the newest row.
+      pageAnchor = null;
       try {
         await onJumpToLatest();
         await tick();

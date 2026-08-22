@@ -15,7 +15,9 @@ import {
   type SourceReferenceTarget,
   type SourceScanStats,
   type SourceScanResult,
-  type SourceSearchMatch
+  type SourceSearchMatch,
+  type SourceTreeSearchMatch,
+  type SourceTreeSearchPage
 } from '../sourceData.ts';
 
 const defaultSourceListLimit = 10_000;
@@ -64,6 +66,14 @@ type LocalSourceScanInput = {
   root: string;
   query?: string | null;
   limit?: number | null;
+};
+
+type LocalSourceTreeSearchInput = {
+  root: string;
+  query?: string | null;
+  pageSize?: number | null;
+  cursor?: number | null;
+  includeExcluded?: boolean;
 };
 
 type LocalSourceScanStats = SourceScanStats & {
@@ -1109,7 +1119,7 @@ export async function listLocalSourceDirectory(
     .filter((entry) => {
       if (entry.isSymbolicLink()) return false;
       if (entry.isDirectory()) return includeExcluded || skipDirReason(entry.name) === null;
-      return entry.isFile() && isSourceFile(path.join(directory, entry.name));
+      return entry.isFile();
     })
     .map((entry) => ({
       path: path.join(directory, entry.name),
@@ -1183,6 +1193,46 @@ export async function searchLocalSourceFiles(
 ): Promise<SourceSearchMatch[]> {
   const previews = await readLocalSourcePreviews(records);
   return findSourceSearchMatches(previews, query, limit);
+}
+
+export async function searchLocalSourceTree(
+  input: LocalSourceTreeSearchInput
+): Promise<SourceTreeSearchPage> {
+  const root = normalizeRootPath(input.root);
+  const rootStats = await stat(root).catch((error: unknown) => {
+    throw new Error(`Could not read source root metadata: ${errorMessage(error)}`);
+  });
+  if (!rootStats.isDirectory()) throw new Error('Source root is not a directory');
+
+  const query = input.query?.trim().toLowerCase() ?? '';
+  const pageSize = clampSourceSearchPageSize(input.pageSize);
+  const offset = clampSourceSearchCursor(input.cursor);
+  if (!query) return { matches: [], nextCursor: null, complete: true };
+
+  const matches: SourceTreeSearchMatch[] = [];
+  const state = { matchedCount: 0 };
+  await collectLocalSourceTreeSearch(
+    root,
+    root,
+    query,
+    pageSize,
+    offset,
+    input.includeExcluded === true,
+    matches,
+    state
+  );
+
+  const complete = matches.length <= pageSize;
+  if (!complete) {
+    matches.length = pageSize;
+    return {
+      matches,
+      nextCursor: offset + pageSize,
+      complete: false
+    };
+  }
+
+  return { matches, nextCursor: null, complete: true };
 }
 
 export async function findLocalSourceDefinitions(
@@ -1298,6 +1348,62 @@ async function readLocalSourcePreviewForRecord(record: SourceRecord): Promise<So
     },
     content
   );
+}
+
+async function collectLocalSourceTreeSearch(
+  root: string,
+  current: string,
+  query: string,
+  pageSize: number,
+  offset: number,
+  includeExcluded: boolean,
+  matches: SourceTreeSearchMatch[],
+  state: { matchedCount: number }
+): Promise<boolean> {
+  const entries = await readdir(current, { withFileTypes: true }).catch((error: unknown) => {
+    throw new Error(`Could not read source directory: ${errorMessage(error)}`);
+  });
+  entries.sort((left, right) => compareSourceWalkEntries(root, current, left, right));
+
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const entryPath = path.join(current, entry.name);
+    const isDirectory = entry.isDirectory();
+    if (!isDirectory && !entry.isFile()) continue;
+
+    const relativePath = normalizeRelativePath(path.relative(root, entryPath));
+    const excluded = isDirectory && skipDirReason(entry.name) !== null;
+    if (isDirectory && excluded && !includeExcluded) continue;
+
+    if (relativePath.toLowerCase().includes(query)) {
+      if (state.matchedCount >= offset) {
+        matches.push({
+          path: entryPath,
+          relativePath,
+          name: entry.name,
+          isDirectory,
+          excluded
+        });
+      }
+      state.matchedCount += 1;
+      if (matches.length > pageSize) return true;
+    }
+
+    if (isDirectory && (await collectLocalSourceTreeSearch(
+      root,
+      entryPath,
+      query,
+      pageSize,
+      offset,
+      includeExcluded,
+      matches,
+      state
+    ))) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function collectSourceFiles(
@@ -1431,6 +1537,16 @@ function normalizeRelativePath(relativePath: string) {
 function clampSourceLimit(limit: number | null | undefined) {
   if (!Number.isFinite(limit) || !limit) return defaultSourceListLimit;
   return Math.min(maxSourceListLimit, Math.max(0, Math.trunc(limit)));
+}
+
+function clampSourceSearchPageSize(pageSize: number | null | undefined) {
+  if (!Number.isFinite(pageSize) || !pageSize) return 50;
+  return Math.min(200, Math.max(1, Math.trunc(pageSize)));
+}
+
+function clampSourceSearchCursor(cursor: number | null | undefined) {
+  if (!Number.isFinite(cursor)) return 0;
+  return Math.max(0, Math.trunc(cursor as number));
 }
 
 function sourceCollectionLimit(limit: number) {

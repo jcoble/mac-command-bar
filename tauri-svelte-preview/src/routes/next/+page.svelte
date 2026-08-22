@@ -75,6 +75,7 @@
 	import { editorState, resetEditorState, restoreEditorFiles } from "$lib/shell/editor/editorStore.svelte";
 	import {
 		configureExtensionApiProbeRuntime,
+		disposeExtensionApiProbeResources,
 		disposeExtensionApiProbeRuntime,
 		onExtensionApiProbeObservation,
 		setExtensionApiProbeWorkspace,
@@ -85,7 +86,7 @@
 		setLanguageServersEnabled,
 		sourceIntelligence,
 	} from "$lib/shell/editor/sourceIntelligence";
-	import { explorer, selectPath, setScrollTop } from "$lib/shell/explorer/explorerStore.svelte";
+	import { canonicalPath, explorer, selectPath, setScrollTop } from "$lib/shell/explorer/explorerStore.svelte";
 	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
 	import { gitCommitFilesService } from "$lib/shell/git/gitCommitFilesService";
 	import { gitService } from "$lib/shell/git/gitService";
@@ -973,6 +974,7 @@
 		if (switching && previous !== null) {
 			stopConversationTerminalProjection(previous);
 			service?.releaseView(previous);
+			await disposeExtensionApiProbeResources();
 			if (workspaceCaptured) releaseConversationForRead(previous);
 			gitService.releaseHistorySurface();
 			gitCommitFilesService.release();
@@ -1035,6 +1037,38 @@
 					if (propagateStructuredFailure) throw error;
 				});
 			}
+		}
+	}
+
+	async function handleActiveRootUnavailable(root: string): Promise<void> {
+		const selectedRoot = readSelection().root.trim();
+		const ownedId = rail.activeOwnedId;
+		if (
+			!activeRootAvailable ||
+			!selectedRoot ||
+			canonicalPath(root) !== canonicalPath(selectedRoot)
+		) return;
+
+		activeRootAvailable = false;
+		setUnavailableOpenFileRoot(selectedRoot);
+		if (ownedId) {
+			stopConversationTerminalProjection(ownedId);
+			service?.releaseView(ownedId);
+		}
+		const probeCleanup = disposeExtensionApiProbeResources();
+		editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
+		resetEditorState();
+		gitService.releaseHistorySurface();
+		gitCommitFilesService.release();
+		gitService.clearSelection();
+		shellPanels.sessionPicked(false);
+		try {
+			await probeCleanup;
+		} catch (error) {
+			if (
+				rail.activeOwnedId === ownedId &&
+				canonicalPath(readSelection().root) === canonicalPath(selectedRoot)
+			) rail.error = `extension probe cleanup failed: ${describeError(error)}`;
 		}
 	}
 
@@ -1212,7 +1246,7 @@
 			// Said again here rather than relied upon: the pick above is what loads
 			// the file tree and re-points the open tabs, and this is the one place
 			// that must be certain it happened for the folder the user chose.
-			shellPanels.sessionPicked();
+			shellPanels.sessionPicked(activeRootAvailable);
 			// Only now — both tabs are remembered under the session that is actually
 			// active, and a new session opens on its own transcript and its own files.
 			selectCenterTab("session");
@@ -1753,12 +1787,13 @@
 	</div>
 {/snippet}
 {#snippet toolsArea()}
-	<RightPanel
-		activeId={rightTab}
-		onSelect={selectRightTab}
-		root={activeRootAvailable ? readSelection().root : ""}
-		ownedId={rail.activeOwnedId}
-	/>
+		<RightPanel
+			activeId={rightTab}
+			onSelect={selectRightTab}
+			root={activeRootAvailable ? readSelection().root : ""}
+			ownedId={rail.activeOwnedId}
+			onRootUnavailable={handleActiveRootUnavailable}
+		/>
 {/snippet}
 {#snippet centerTabsArea()}
 	<CenterCornerTabs activeId={centerTab} onSelect={selectCenterTab} />
@@ -1775,11 +1810,12 @@
        active terminal host lives inside this component, and unmounting it to
        show a draft would take the running session off screen. -->
 	<div class="session-area">
-		<ConversationSurface
+			<ConversationSurface
 			bind:this={conversationSurface}
 			owned={rail.owned}
 			activeOwnedId={rail.activeOwnedId}
-			activeOrigin={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.origin}
+				activeOrigin={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.origin}
+				rootAvailable={activeRootAvailable}
 			{registerHost}
 			onHostLayout={scheduleRefit}
 			onOpenNativeCli={openNativeCli}
@@ -1803,9 +1839,10 @@
 {/snippet}
 {#snippet editorArea()}
 	<!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight. -->
-	<EditorPanel
+		<EditorPanel
 		bind:this={editorPanel}
-		showing={centerTab === "editor"}
+			showing={centerTab === "editor"}
+			rootAvailable={activeRootAvailable}
 		onCloseAllEditors={clearAllEditorWorkspaceRecords}
 		onFileOpened={() => {
 			selectCenterTab("editor");
@@ -1816,11 +1853,11 @@
      reads that selection itself and takes no props, so it can simply live here
      as a tab of its own — which is what gives a diff the width of the middle
      instead of a column. -->
-{#snippet diffArea()}{#if centerTab === "diff"}<GitDiffView showing={true} />{/if}{/snippet}
+	{#snippet diffArea()}{#if centerTab === "diff"}<GitDiffView showing={true} rootAvailable={activeRootAvailable} />{/if}{/snippet}
 
 <!-- The whole commit history as a table, given the width of the middle. It reads
      `gitPanel` itself and takes no props, the same way the diff above does. -->
-{#snippet gitHistoryArea()}{#if centerTab === "git-history"}<GitHistoryView />{/if}{/snippet}
+	{#snippet gitHistoryArea()}{#if centerTab === "git-history"}<GitHistoryView rootAvailable={activeRootAvailable} />{/if}{/snippet}
 
 <!-- The webview's own right-click menu runs a native tracking loop that stalls
      the whole window for seconds, which reads as a freeze. Surfaces with a menu

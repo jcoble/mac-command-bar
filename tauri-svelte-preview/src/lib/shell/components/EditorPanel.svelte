@@ -117,10 +117,12 @@
      * back opens them out of sight, and the code editor is far too expensive to
      * start for a file nobody is looking at. */
     showing?: boolean;
+    /** False when the selected session's checkout no longer exists. */
+    rootAvailable?: boolean;
     /** Clears every session's saved editor strip after this panel closes its live tabs. */
     onCloseAllEditors?: () => void;
   }
-  let { onFileOpened, showing = false, onCloseAllEditors }: Props = $props();
+  let { onFileOpened, showing = false, rootAvailable = true, onCloseAllEditors }: Props = $props();
 
   type CodeEditorComponent = typeof CodeMirrorSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
@@ -623,6 +625,7 @@
 
   /** EXPLICIT IO: read one file and show it. */
   async function readFileIntoEditor(record: SourceRecord): Promise<void> {
+    if (!rootAvailable) return;
     if (readsInFlight.has(record.path)) return;
     const generation = sessionResourceGeneration;
     readsInFlight.add(record.path);
@@ -657,6 +660,7 @@
   }
 
   async function saveActiveFile(): Promise<void> {
+    if (!rootAvailable) return;
     const file = activeEditorFile();
     if (!file?.preview || !file.dirty || file.saving) return;
     if (readOnlyByPath[file.path]) return;
@@ -701,7 +705,7 @@
     projectRoot?: string,
     origin: 'jump' | 'strip' = 'jump'
   ): boolean {
-    if (!path.trim()) return false;
+    if (!rootAvailable || !path.trim()) return false;
     activateEditor(projectRoot);
     const record = recordForPath(path);
     const entry = openEditorFile(record);
@@ -800,6 +804,7 @@
   }
 
   function retryRead(path: string): void {
+    if (!rootAvailable) return;
     void readFileIntoEditor(recordForPath(path));
   }
 
@@ -957,6 +962,8 @@
             Try again
           </button>
         </div>
+      {:else if !rootAvailable}
+        <p class="canvas-message">Checkout/Worktree deleted.</p>
       {:else if activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
         <SourceMarkdownPreview
           content={activeFile.draftContent ?? activeFile.preview.content}
@@ -972,7 +979,7 @@
             onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
             preview={activeFile.preview}
             content={activeFile.draftContent ?? activeFile.preview.content}
-            editable={!activeFileReadOnly}
+            editable={rootAvailable && !activeFileReadOnly}
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}

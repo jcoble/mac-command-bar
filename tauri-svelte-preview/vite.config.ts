@@ -13,6 +13,7 @@ import {
   readLocalSourceFile,
   scanLocalAgentSessions,
   scanLocalSourceFiles,
+  searchLocalSourceTree,
   searchLocalSourceFiles,
   validateLocalProjectRoot,
   writeLocalSourceFile,
@@ -183,6 +184,19 @@ function createLocalSourceBridgeMiddleware() {
               String(body.query ?? ""),
               numberOrUndefined(body.limit)
             )
+          );
+          break;
+        case "/__mcb/source/search-tree":
+          sendJSON(
+            response,
+            200,
+            await searchLocalSourceTree({
+              root: String(body.root ?? ""),
+              query: stringOrNull(body.query),
+              pageSize: numberOrNull(body.pageSize),
+              cursor: numberOrNull(body.cursor),
+              includeExcluded: Boolean(body.includeExcluded),
+            })
           );
           break;
         case "/__mcb/source/definitions":

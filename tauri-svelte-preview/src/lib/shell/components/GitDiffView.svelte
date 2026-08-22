@@ -24,8 +24,9 @@
      * remembered a diff has it put back at launch, and CodeMirror must not start
      * for a comparison nobody is looking at. */
     showing?: boolean;
+    rootAvailable?: boolean;
   }
-  let { showing = false }: Props = $props();
+  let { showing = false, rootAvailable = true }: Props = $props();
 
   type DiffEditorComponent = typeof CodeMirrorGitDiffEditor;
   let DiffEditor = $state<DiffEditorComponent | null>(null);
@@ -96,7 +97,7 @@
   function openAtLine(line: number | null): void {
     const root = gitPanel.root;
     const relativePath = diff?.relativePath ?? gitPanel.selectedPath;
-    if (!root || !relativePath) return;
+    if (!rootAvailable || !root || !relativePath) return;
     const path = `${root.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}`;
     requestOpenFile({
       path,
@@ -119,7 +120,9 @@
 </script>
 
 <div class="diff-view">
-  {#if gitPanel.selectedPath === ''}
+  {#if !rootAvailable}
+    <p class="notice">Checkout/Worktree deleted.</p>
+  {:else if gitPanel.selectedPath === ''}
     <p class="notice">Pick a changed file to see what changed in it.</p>
   {:else}
     <header class="head">
