@@ -1355,6 +1355,30 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the attachment list", error))
     }
 
+    pub fn update_attachment_thumbnail(
+        &self,
+        id: &str,
+        mime_type: &str,
+        byte_length: i64,
+        relative_path: &str,
+    ) -> Result<()> {
+        let connection = self.lock()?;
+        let changed = connection
+            .execute(
+                "UPDATE attachments
+                 SET thumbnail_mime_type = ?, thumbnail_byte_length = ?, thumbnail_relative_path = ?
+                 WHERE id = ?",
+                params![mime_type, byte_length, relative_path, id],
+            )
+            .map_err(|error| StoreError::sqlite("could not save the attachment thumbnail", error))?;
+        if changed != 1 {
+            return Err(StoreError::message(
+                "could not save the attachment thumbnail because the attachment does not exist",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn delete_attachment(&self, id: &str) -> Result<()> {
         let connection = self.lock()?;
         connection

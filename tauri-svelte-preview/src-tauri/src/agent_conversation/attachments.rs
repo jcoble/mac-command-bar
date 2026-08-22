@@ -1,3 +1,4 @@
+use image::{ImageFormat, ImageReader};
 use mcb_core::session_store::{AttachmentRow, SessionStore};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -8,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+const MAX_IMAGE_EDGE: u32 = 12_000;
+const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 const THUMBNAIL_MAX_EDGE: u32 = 360;
 const THUMBNAIL_MIME_TYPE: &str = "image/webp";
 
@@ -115,7 +118,9 @@ pub fn read<R: tauri::Runtime>(
         .list_attachments(owned_id)
         .map_err(|error| error.to_string())?
         .into_iter()
+        .map(|row| ensure_thumbnail(app, store, row))
         .map(|row| {
+            let row = row?;
             Ok(SavedConversationAttachment {
                 path: root.join(&row.relative_path).display().to_string(),
                 id: row.id,
@@ -158,14 +163,14 @@ pub fn delete<R: tauri::Runtime>(
         .transpose()?
         .flatten();
     let target = validate_delete_target(&root, attachment_id, Path::new(&request.path))?;
-    store
-        .delete_attachment(&attachment_id.to_string())
-        .map_err(|error| error.to_string())?;
-    fs::remove_file(&target).map_err(|error| format!("Could not delete screenshot: {error}"))?;
     if let Some(thumbnail) = thumbnail {
         fs::remove_file(thumbnail)
             .map_err(|error| format!("Could not delete screenshot thumbnail: {error}"))?;
     }
+    fs::remove_file(&target).map_err(|error| format!("Could not delete screenshot: {error}"))?;
+    store
+        .delete_attachment(&attachment_id.to_string())
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -217,7 +222,36 @@ fn validate_image<'a>(mime_type: &str, bytes: &'a [u8]) -> Result<&'static str, 
     Ok(extension)
 }
 
+fn validate_image_dimensions(bytes: &[u8]) -> Result<(), String> {
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| format!("Could not read screenshot image format: {error}"))?;
+    let format = reader
+        .format()
+        .ok_or_else(|| "Could not read screenshot image format".to_string())?;
+    if !matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP
+    ) {
+        return Err("Only PNG, JPEG, GIF, and WebP images are supported".to_string());
+    }
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|error| format!("Could not read screenshot image dimensions: {error}"))?;
+    if width == 0 || height == 0 || width > MAX_IMAGE_EDGE || height > MAX_IMAGE_EDGE {
+        return Err(format!(
+            "Image dimensions must be between 1x1 and {MAX_IMAGE_EDGE}x{MAX_IMAGE_EDGE}"
+        ));
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_IMAGE_PIXELS {
+        return Err("Image is too large to thumbnail safely".to_string());
+    }
+    Ok(())
+}
+
 fn thumbnail(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    validate_image_dimensions(bytes)?;
     let image = image::load_from_memory(bytes)
         .map_err(|error| format!("Could not read screenshot image: {error}"))?;
     let thumbnail = image.thumbnail(THUMBNAIL_MAX_EDGE, THUMBNAIL_MAX_EDGE);
@@ -226,6 +260,58 @@ fn thumbnail(bytes: &[u8]) -> Result<Vec<u8>, String> {
         .write_to(&mut encoded, image::ImageFormat::WebP)
         .map_err(|error| format!("Could not encode screenshot thumbnail: {error}"))?;
     Ok(encoded.into_inner())
+}
+
+fn ensure_thumbnail<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    store: &SessionStore,
+    mut row: AttachmentRow,
+) -> Result<AttachmentRow, String> {
+    if row.thumbnail_mime_type.is_some()
+        && row.thumbnail_byte_length.is_some()
+        && row.thumbnail_relative_path.is_some()
+    {
+        return Ok(row);
+    }
+    let attachment_id =
+        uuid::Uuid::parse_str(row.id.trim()).map_err(|_| "Attachment id is invalid".to_string())?;
+    let root = attachment_root(app, &row.owned_id)?;
+    let root = canonical_root(&root)?;
+    let original = vault_root(app)?.join(&row.relative_path);
+    let original = validate_existing_managed_file(&root, &original, "screenshot")?;
+    let bytes = fs::read(&original)
+        .map_err(|error| format!("Could not read screenshot for thumbnail: {error}"))?;
+    if bytes.is_empty() || bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err("Image must be between 1 byte and 20 MB".to_string());
+    }
+    let thumbnail_bytes = thumbnail(&bytes)?;
+    let thumbnail_name = format!("screenshot-{attachment_id}-thumb.webp");
+    let thumbnail_path = root.join(&thumbnail_name);
+    fs::write(&thumbnail_path, &thumbnail_bytes)
+        .map_err(|error| format!("Could not save screenshot thumbnail: {error}"))?;
+    if !thumbnail_path
+        .canonicalize()
+        .map_err(|error| format!("Could not verify screenshot thumbnail path: {error}"))?
+        .starts_with(&root)
+    {
+        let _ = fs::remove_file(&thumbnail_path);
+        return Err(
+            "Attachment thumbnail path is outside the managed attachment folder".to_string(),
+        );
+    }
+    let relative_path = format!("{}/{}", row.owned_id, thumbnail_name);
+    let byte_length = i64::try_from(thumbnail_bytes.len())
+        .map_err(|_| "Attachment thumbnail is too large to record".to_string())?;
+    if let Err(error) =
+        store.update_attachment_thumbnail(&row.id, THUMBNAIL_MIME_TYPE, byte_length, &relative_path)
+    {
+        let _ = fs::remove_file(&thumbnail_path);
+        return Err(error.to_string());
+    }
+    row.thumbnail_mime_type = Some(THUMBNAIL_MIME_TYPE.to_string());
+    row.thumbnail_byte_length = Some(byte_length);
+    row.thumbnail_relative_path = Some(relative_path);
+    Ok(row)
 }
 
 fn canonical_root(path: &Path) -> Result<PathBuf, String> {
@@ -255,6 +341,22 @@ fn validate_delete_target(
     Ok(target)
 }
 
+fn validate_existing_managed_file(
+    root: &Path,
+    path: &Path,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let target = path
+        .canonicalize()
+        .map_err(|error| format!("Could not verify {label} path: {error}"))?;
+    if !target.starts_with(root) || target.parent() != Some(root) {
+        return Err(format!(
+            "Attachment {label} path is outside the managed attachment folder"
+        ));
+    }
+    Ok(target)
+}
+
 fn validate_optional_managed_file(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
     let target = match path.canonicalize() {
         Ok(target) => target,
@@ -262,7 +364,9 @@ fn validate_optional_managed_file(root: &Path, path: &Path) -> Result<Option<Pat
         Err(error) => return Err(format!("Could not verify screenshot thumbnail path: {error}")),
     };
     if !target.starts_with(root) || target.parent() != Some(root) {
-        return Err("Attachment thumbnail path is outside the managed attachment folder".to_string());
+        return Err(
+            "Attachment thumbnail path is outside the managed attachment folder".to_string(),
+        );
     }
     Ok(Some(target))
 }
