@@ -376,8 +376,8 @@
       nextState = EditorState.create({
         doc,
         selection: {
-          anchor: Math.min(max, selection.anchor),
-          head: Math.min(max, selection.head)
+          anchor: Math.max(0, Math.min(max, selection.anchor)),
+          head: Math.max(0, Math.min(max, selection.head))
         },
         extensions: editorExtensions
       });
