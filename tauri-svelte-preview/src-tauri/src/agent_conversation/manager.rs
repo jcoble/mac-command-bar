@@ -3780,10 +3780,16 @@ fn record_payload_for_session_with_lifecycle(
         payload_json,
         created_at_ms: store_timestamp(timestamp_ms),
     };
-    session
-        .store
-        .upsert_session_with_event(&row, Some(&event_row))
-        .map_err(|error| error.to_string())?;
+    let result = if matches!(&payload, AgentConversationPayload::CheckoutChanged { .. }) {
+        session
+            .store
+            .upsert_session_with_event_and_clear_workspace(&row, Some(&event_row))
+    } else {
+        session
+            .store
+            .upsert_session_with_event(&row, Some(&event_row))
+    };
+    result.map_err(|error| error.to_string())?;
     candidate.apply(session);
     Ok(frontend_event)
 }

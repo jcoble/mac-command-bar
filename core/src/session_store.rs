@@ -662,6 +662,47 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not finish the session event write", error))
     }
 
+    /// Saves a session row and event while removing its stale workspace as one
+    /// durable checkout change.
+    pub fn upsert_session_with_event_and_clear_workspace(
+        &self,
+        session: &SessionRow,
+        event: Option<&EventRow>,
+    ) -> Result<()> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the checkout change", error)
+            })?;
+        upsert_session_on(&transaction, session)?;
+        if let Some(event) = event {
+            transaction
+                .execute(
+                    "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                    params![
+                        event.owned_id,
+                        event.seq,
+                        event.turn_id,
+                        event.kind,
+                        event.payload_json,
+                        event.created_at_ms
+                    ],
+                )
+                .map_err(|error| StoreError::sqlite("could not append the event", error))?;
+        }
+        transaction
+            .execute(
+                "DELETE FROM session_workspaces WHERE owned_id = ?",
+                [session.owned_id.as_str()],
+            )
+            .map_err(|error| StoreError::sqlite("could not clear the session workspace", error))?;
+        transaction
+            .commit()
+            .map_err(|error| StoreError::sqlite("could not finish the checkout change", error))
+    }
+
     pub fn get_session(&self, owned_id: &str) -> Result<Option<SessionRow>> {
         let connection = self.lock()?;
         connection
