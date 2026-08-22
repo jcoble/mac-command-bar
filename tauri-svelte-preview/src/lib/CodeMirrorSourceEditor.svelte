@@ -372,12 +372,15 @@
         extensions: editorExtensions
       });
     } else if (nextState.doc.toString() !== doc) {
-      applyingContent = true;
-      nextState = nextState.update({
-        changes: { from: 0, to: nextState.doc.length, insert: doc },
-        annotations: Transaction.addToHistory.of(false)
-      }).state;
-      applyingContent = false;
+      const selection = restored ?? nextState.selection.main;
+      nextState = EditorState.create({
+        doc,
+        selection: {
+          anchor: Math.min(max, selection.anchor),
+          head: Math.min(max, selection.head)
+        },
+        extensions: editorExtensions
+      });
     }
     applyingContent = true;
     view.setState(nextState);
