@@ -26,7 +26,7 @@
    * same call the panel itself makes — and picking a row only reads.
    */
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import X from '@lucide/svelte/icons/x';
 
   import { Chip } from '$lib/components/ui/chip/index.js';
@@ -80,11 +80,22 @@
     gitService.ensureHistorySurface();
   });
 
+  onDestroy(() => {
+    gitService.releaseHistorySurface();
+    gitCommitFilesService.release();
+  });
+
   $effect(() => {
-    const targetRoot = root.trim();
-    if (!rootAvailable || !targetRoot || targetRoot === requestedRoot) return;
+    const targetRoot = rootAvailable ? root.trim() : '';
+    if (targetRoot === requestedRoot) return;
     requestedRoot = targetRoot;
+    if (!targetRoot) {
+      gitService.releaseHistorySurface();
+      gitCommitFilesService.release();
+      return;
+    }
     gitService.activate(targetRoot);
+    gitCommitFilesService.activate(targetRoot);
     gitService.ensureHistorySurface();
   });
 
