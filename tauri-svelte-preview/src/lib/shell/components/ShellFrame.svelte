@@ -4,7 +4,7 @@
    * teleports Svelte-owned content into them. All content is authored in the
    * hidden parking stage below, so dockview NEVER owns app DOM; if the frame
    * fails to mount, content simply stays parked (invisible) and the page's
-   * error rail reports it. No backend IO anywhere in this component.
+   * error rail reports it. Layout persistence is supplied by SQLite settings.
    */
   import 'dockview-core/dist/styles/dockview.css';
   import { onMount, type Snippet } from 'svelte';
@@ -21,6 +21,13 @@
     type ShellFrame as Frame,
     type ShellRegionId
   } from '$lib/shell/layout/frame';
+  import {
+    readAssemblySettingFromTauri,
+    writeAssemblySettingFromTauri
+  } from '$lib/tauriSource';
+
+  const GRID_LAYOUT_SETTING_KEY = 'shell.grid-layout';
+  const CENTER_LAYOUT_SETTING_KEY = 'shell.center-layout';
 
   interface Props {
     /** The left column: the sessions list, and nothing else. */
@@ -94,70 +101,80 @@
 
   onMount(() => {
     let observer: ResizeObserver | null = null;
-    try {
-      frame = createShellFrame(gridHost, {
-        storage: window.localStorage,
-        regions: {
-          sessions: sessionsSlot,
-          center: centerRegionSlot,
-          tools: toolsSlot,
-          dock: dockSlot
-        }
-      });
-      // Lay out the parent Gridview before the center Dockview restores or
-      // builds its panels. Center Dockview's restore path deliberately measures
-      // its host before calling `fromJSON`; doing that while the Gridview is
-      // still at 0×0 leaves always-rendered panels with stale overlay bounds
-      // until the next activation.
-      frame.layout(gridHost.clientWidth, gridHost.clientHeight);
-      centerDock = createCenterDock(centerSlot, {
-        storage: window.localStorage,
-        // All three stacked, one showing at a time, opening on the session. The
-        // corner tabs are what move between them. Source control itself is not
-        // here at all — it is a panel of the right column — but the changes it
-        // shows are, because a diff wants the width of the middle.
-        panels: [
-          { id: 'session', title: 'Session', element: sessionSlot },
-          { id: 'editor', title: 'Editor', element: editorSlot },
-          {
-            id: 'diff',
-            title: 'Diff',
-            element: diffSlot,
-            renderer: 'onlyWhenVisible'
+    let mounted = true;
+    void (async () => {
+      try {
+        frame = createShellFrame(gridHost, {
+          readLayout: () => readAssemblySettingFromTauri(GRID_LAYOUT_SETTING_KEY),
+          writeLayout: (layout) => writeAssemblySettingFromTauri(GRID_LAYOUT_SETTING_KEY, layout),
+          regions: {
+            sessions: sessionsSlot,
+            center: centerRegionSlot,
+            tools: toolsSlot,
+            dock: dockSlot
+          }
+        });
+        await frame.ready;
+        if (!mounted || !frame) return;
+        // Lay out the parent Gridview before the center Dockview restores or
+        // builds its panels. Center Dockview's restore path deliberately measures
+        // its host before calling `fromJSON`; doing that while the Gridview is
+        // still at 0×0 leaves always-rendered panels with stale overlay bounds
+        // until the next activation.
+        frame.layout(gridHost.clientWidth, gridHost.clientHeight);
+        centerDock = createCenterDock(centerSlot, {
+          readLayout: () => readAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY),
+          writeLayout: (layout) => writeAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY, layout),
+          // All three stacked, one showing at a time, opening on the session. The
+          // corner tabs are what move between them. Source control itself is not
+          // here at all — it is a panel of the right column — but the changes it
+          // shows are, because a diff wants the width of the middle.
+          panels: [
+            { id: 'session', title: 'Session', element: sessionSlot },
+            { id: 'editor', title: 'Editor', element: editorSlot },
+            {
+              id: 'diff',
+              title: 'Diff',
+              element: diffSlot,
+              renderer: 'onlyWhenVisible'
+            },
+            { id: 'git-history', title: 'Git History', element: gitHistorySlot }
+          ],
+          onPanelLayout: (id) => {
+            if (id === 'session') onSessionPanelLayout?.();
           },
-          { id: 'git-history', title: 'Git History', element: gitHistorySlot }
-        ],
-        onPanelLayout: (id) => {
-          if (id === 'session') onSessionPanelLayout?.();
-        },
-        onPanelActivated: (id) => {
-          onCenterPanelShown?.(id);
-        }
-      });
-      observer = new ResizeObserver(() => {
-        frame?.layout(gridHost.clientWidth, gridHost.clientHeight);
-      });
-      observer.observe(gridHost);
-      ready = true;
-      onReady?.({
-        resetLayout: () => {
-          frame?.resetLayout();
-          centerDock?.resetLayout();
-        },
-        showCenterPanel: (id: string) => centerDock?.activatePanel(id),
-        captureCenterLayout: () => centerDock?.captureLayout() ?? null,
-        restoreCenterLayout: (snapshot) => centerDock?.restoreLayout(snapshot),
-        setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
-        setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
-        setDockPresent: (present) => frame?.setDockPresent(present),
-        setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
-        regionWidth: (id) => frame?.regionWidth(id) ?? null
-      });
-    } catch (error) {
-      onError?.(error instanceof Error ? error.message : String(error));
-    }
+          onPanelActivated: (id) => {
+            onCenterPanelShown?.(id);
+          }
+        });
+        await centerDock.ready;
+        if (!mounted || !centerDock) return;
+        observer = new ResizeObserver(() => {
+          frame?.layout(gridHost.clientWidth, gridHost.clientHeight);
+        });
+        observer.observe(gridHost);
+        ready = true;
+        onReady?.({
+          resetLayout: () => {
+            frame?.resetLayout();
+            centerDock?.resetLayout();
+          },
+          showCenterPanel: (id: string) => centerDock?.activatePanel(id),
+          captureCenterLayout: () => centerDock?.captureLayout() ?? null,
+          restoreCenterLayout: (snapshot) => centerDock?.restoreLayout(snapshot),
+          setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
+          setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
+          setDockPresent: (present) => frame?.setDockPresent(present),
+          setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
+          regionWidth: (id) => frame?.regionWidth(id) ?? null
+        });
+      } catch (error) {
+        if (mounted) onError?.(error instanceof Error ? error.message : String(error));
+      }
+    })();
 
     return () => {
+      mounted = false;
       observer?.disconnect();
       centerDock?.dispose();
       centerDock = null;

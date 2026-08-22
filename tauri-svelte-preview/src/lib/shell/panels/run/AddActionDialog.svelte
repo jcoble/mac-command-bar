@@ -87,7 +87,7 @@
     open = true;
   }
 
-  function save(): void {
+  async function save(): Promise<void> {
     const draft = {
       name: draftName,
       script: draftScript,
@@ -98,7 +98,7 @@
       runOnWorktreeCreation: draftRunOnWorktreeCreation,
       openPreviewOnRun: draftOpenPreviewOnRun
     };
-    const saved = editing ? updateStack(editing.id, draft) : addStack(draft);
+    const saved = editing ? await updateStack(editing.id, draft) : await addStack(draft);
     if (!saved) {
       // `addStack` and `updateStack` both say why they refused. Show it here
       // rather than leaving the user with a button that did nothing.

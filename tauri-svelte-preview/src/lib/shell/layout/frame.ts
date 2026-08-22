@@ -1,7 +1,8 @@
 /**
  * frame.ts — the /next shell's Gridview root. Left to right: the sessions
  * column, the center dock, and the right panel; the bottom dock sits under the
- * center only. DOM-only: zero backend IO, zero Svelte imports.
+ * center only. It owns only DOM and Dockview state; persistence is supplied by
+ * the shell.
  *
  * Teleport contract: every region's content is a Svelte-owned element that
  * this module MOVES into a dockview-owned host div. dockview never renders or
@@ -16,14 +17,7 @@ import {
   type IFrameworkPart
 } from 'dockview-core';
 
-import {
-  clearLayout,
-  GRID_LAYOUT_KEY,
-  gridPanelIds,
-  loadLayout,
-  saveLayout,
-  type LayoutStorage
-} from './layoutStorage';
+import { gridPanelIds } from './layoutStorage';
 
 export type ShellRegionId = 'sessions' | 'center' | 'tools' | 'dock';
 
@@ -85,7 +79,8 @@ export const DOCK_HEIGHT = 180;
 export const SESSIONS_STRIP_WIDTH = 52;
 
 export interface ShellFrameOptions {
-  storage: LayoutStorage;
+  readLayout: () => Promise<unknown>;
+  writeLayout: (layout: unknown) => Promise<void>;
   regions: Record<ShellRegionId, HTMLElement>;
   onLayoutPersisted?: (ok: boolean) => void;
 }
@@ -106,6 +101,8 @@ export interface RegionHeightLimits {
 
 export interface ShellFrame {
   api: GridviewApi;
+  /** Resolves after the SQLite-backed layout has been read, or ignored. */
+  ready: Promise<void>;
   resetLayout(): void;
   /**
    * Give one region a width, optionally changing what it may be dragged to.
@@ -180,6 +177,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   let synchronizingDepth = 0;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+  let layoutVersion = 0;
 
   const adopt = (id: string, host: HTMLElement): void => {
     const region = options.regions[id as ShellRegionId];
@@ -351,22 +349,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
 
   layoutToContainer();
 
-  runSynchronized(() => {
-    const stored = loadLayout<object>(options.storage, GRID_LAYOUT_KEY);
-    if (stored && storedRegionsUsable(gridPanelIds(stored))) {
-      try {
-        api.fromJSON(stored as never);
-        return;
-      } catch {
-        try {
-          api.clear();
-        } catch {
-          // fall through to a plain rebuild on a fresh container
-        }
-      }
-    }
-    buildDefault();
-  });
+  runSynchronized(buildDefault);
 
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;
@@ -377,19 +360,51 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       // Never store a grid measured at zero: every region in it sits at its
       // minimum, and the next launch scales those wrong sizes up to the window.
       if (api.width <= 0 || api.height <= 0) return;
-      let ok = false;
       try {
         // `toJSON` runs inside the guard too: a grid in an unexpected state can
         // throw from it, and an unhandled throw in here kills the timer.
-        ok = saveLayout(options.storage, GRID_LAYOUT_KEY, api.toJSON());
+        void options.writeLayout(api.toJSON()).then(
+          () => {
+            if (!disposed) options.onLayoutPersisted?.(true);
+          },
+          () => {
+            if (!disposed) options.onLayoutPersisted?.(false);
+          }
+        );
+        return;
       } catch {
-        ok = false;
+        options.onLayoutPersisted?.(false);
       }
-      options.onLayoutPersisted?.(ok);
     }, PERSIST_DEBOUNCE_MS);
   };
 
-  const changeListener = api.onDidLayoutChange(persistSoon);
+  const changeListener = api.onDidLayoutChange(() => {
+    if (disposed || synchronizingDepth > 0) return;
+    layoutVersion += 1;
+    persistSoon();
+  });
+
+  const restoreVersion = layoutVersion;
+  const ready = Promise.resolve()
+    .then(() => options.readLayout())
+    .then((stored) => {
+      if (disposed || layoutVersion !== restoreVersion) return;
+      if (!stored || !storedRegionsUsable(gridPanelIds(stored))) return;
+      runSynchronized(() => {
+        if (disposed || layoutVersion !== restoreVersion) return;
+        try {
+          api.fromJSON(stored as never);
+        } catch {
+          try {
+            api.clear();
+            buildDefault();
+          } catch {
+            // Keep whatever usable portion of the existing arrangement remains.
+          }
+        }
+      });
+    })
+    .catch(() => undefined);
 
   const setDockPresent = (present: boolean): void => {
     try {
@@ -417,13 +432,14 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
 
   return {
     api,
+    ready,
     setRegionWidth,
     setRegionHeight,
     setDockPresent,
     setRegionLimits,
     regionWidth,
     resetLayout(): void {
-      clearLayout(options.storage, GRID_LAYOUT_KEY);
+      void options.writeLayout(null).catch(() => undefined);
       runSynchronized(() => {
         api.clear();
         buildDefault();

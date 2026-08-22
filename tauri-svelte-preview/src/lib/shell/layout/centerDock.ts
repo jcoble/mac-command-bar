@@ -1,6 +1,7 @@
 /**
- * centerDock.ts — the /next center surface area (one Dockview). DOM-only: zero
- * backend IO, zero Svelte imports. Same teleport contract as frame.ts, plus
+ * centerDock.ts — the /next center surface area (one Dockview). It owns only
+ * DOM and Dockview state; persistence is supplied by the shell. Same teleport
+ * contract as frame.ts, plus
  * an explicit "return to parking" on panel close so Svelte-owned content
  * (the terminal surface!) is never destroyed with a dockview renderer.
  */
@@ -14,16 +15,7 @@ import {
   type IContentRenderer
 } from 'dockview-core';
 
-import {
-  CENTER_LAYOUT_KEY,
-  clearLayout,
-  dockGroupCount,
-  dockPanelIds,
-  loadLayout,
-  panelSetMatches,
-  saveLayout,
-  type LayoutStorage
-} from './layoutStorage';
+import { dockGroupCount, dockPanelIds, panelSetMatches } from './layoutStorage';
 
 export interface CenterPanelSpec {
   id: string;
@@ -35,7 +27,8 @@ export interface CenterPanelSpec {
 }
 
 export interface CenterDockOptions {
-  storage: LayoutStorage;
+  readLayout: () => Promise<unknown>;
+  writeLayout: (layout: unknown) => Promise<void>;
   panels: CenterPanelSpec[];
   onPanelLayout?: (id: string) => void;
   /**
@@ -52,6 +45,8 @@ export interface CenterDockOptions {
 
 export interface CenterDock {
   api: DockviewApi;
+  /** Resolves after the SQLite-backed layout has been read, or ignored. */
+  ready: Promise<void>;
   activatePanel(id: string): void;
   captureLayout(): CenterDockSnapshot | null;
   restoreLayout(snapshot: CenterDockSnapshot | null | undefined): void;
@@ -82,6 +77,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   let synchronizingDepth = 0;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+  let layoutVersion = 0;
   /** Roster tabs whose re-add is already queued, so a burst cannot double-add. */
   const readding = new Set<string>();
 
@@ -255,30 +251,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
 
   layoutToContainer();
 
-  runSynchronized(() => {
-    const stored = loadLayout<object>(options.storage, CENTER_LAYOUT_KEY);
-    // The panel set has to match AND the surfaces have to be in one group. A
-    // layout written by the older side-by-side geometry passes the first test
-    // and fails the second, so it is rebuilt rather than resurrected.
-    if (
-      stored &&
-      panelSetMatches(dockPanelIds(stored), specs.keys()) &&
-      dockGroupCount(stored) === 1
-    ) {
-      try {
-        api.fromJSON(stored as never);
-        return;
-      } catch {
-        try {
-          api.clear();
-        } catch {
-          // fall through
-        }
-      }
-    }
-
-    buildDefault();
-  });
+  runSynchronized(buildDefault);
   normalizePanelRenderers();
 
   const persistSoon = (): void => {
@@ -290,20 +263,30 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       // Never store a dock measured at zero: the sizes in it are meaningless and
       // the next launch would restore from them.
       if (api.width <= 0 || api.height <= 0) return;
-      let ok = false;
       try {
         // `toJSON` runs inside the guard too: a dock in an unexpected state can
         // throw from it, and an unhandled throw in here kills the timer.
-        ok = saveLayout(options.storage, CENTER_LAYOUT_KEY, api.toJSON());
+        void options.writeLayout(api.toJSON()).then(
+          () => {
+            if (!disposed) options.onLayoutPersisted?.(true);
+          },
+          () => {
+            if (!disposed) options.onLayoutPersisted?.(false);
+          }
+        );
+        return;
       } catch {
-        ok = false;
+        options.onLayoutPersisted?.(false);
       }
-      options.onLayoutPersisted?.(ok);
     }, PERSIST_DEBOUNCE_MS);
   };
 
   const listeners = [
-    api.onDidLayoutChange(persistSoon),
+    api.onDidLayoutChange(() => {
+      if (disposed || synchronizingDepth > 0) return;
+      layoutVersion += 1;
+      persistSoon();
+    }),
     api.onDidRemovePanel((panel) => keepRosterPanel(panel.id)),
     api.onDidActivePanelChange((panel) => {
       if (disposed || !panel) return;
@@ -311,8 +294,41 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     })
   ];
 
+  const restoreVersion = layoutVersion;
+  const ready = Promise.resolve()
+    .then(() => options.readLayout())
+    .then((stored) => {
+      if (disposed || layoutVersion !== restoreVersion) return;
+      // The panel set has to match AND the surfaces have to be in one group. A
+      // layout written by the older side-by-side geometry passes the first test
+      // and fails the second, so it is ignored and the already-built defaults
+      // remain in place.
+      if (
+        !stored ||
+        !panelSetMatches(dockPanelIds(stored), specs.keys()) ||
+        dockGroupCount(stored) !== 1
+      ) return;
+      runSynchronized(() => {
+        if (disposed || layoutVersion !== restoreVersion) return;
+        try {
+          api.fromJSON(stored as never);
+          normalizePanelRenderers();
+        } catch {
+          try {
+            api.clear();
+            buildDefault();
+            normalizePanelRenderers();
+          } catch {
+            // Keep whatever usable portion of the existing arrangement remains.
+          }
+        }
+      });
+    })
+    .catch(() => undefined);
+
   return {
     api,
+    ready,
     activatePanel(id: string): void {
       panelById(id)?.api.setActive();
     },
@@ -339,7 +355,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       if (snapshot.activePanelId) panelById(snapshot.activePanelId)?.api.setActive();
     },
     resetLayout(): void {
-      clearLayout(options.storage, CENTER_LAYOUT_KEY);
+      void options.writeLayout(null).catch(() => undefined);
       runSynchronized(() => {
         api.clear();
         buildDefault();

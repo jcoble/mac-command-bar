@@ -4,12 +4,10 @@
  * A RUN CONFIGURATION is one saved way to start something: `pnpm dev`,
  * `docker compose up`, `dotnet watch`. On screen that is the only word used.
  *
- * WHY THE CODE STILL SAYS "STACK". Every name in this file — the storage keys,
- * the exported functions, the `script` field — was written when the feature was
- * called a stack, and the keys are what a user's saved data is filed under. A
- * rename here would mean their saved configurations came back empty after an
- * update. So the vocabulary changed where a person can see it and stayed where
- * only the code can: `stack` in this module means "run configuration".
+ * WHY THE CODE STILL SAYS "STACK". The exported functions and `script` field
+ * were written when the feature was called a stack. The vocabulary changed
+ * where a person can see it and stayed where only the code can: `stack` in this
+ * module means "run configuration".
  *
  * The store holds
  *
@@ -21,8 +19,8 @@
  * THREE RULES this module exists to enforce (same shape as `browserStore` and
  * `contextStore`):
  *
- * 1. **No backend, ever.** The only IO here is localStorage. Every Tauri call
- *    lives in `stackService.ts` and lands here as a plain mutation.
+ * 1. **No backend, ever.** SQLite IO is injected by `stackService.ts`. Every
+ *    Tauri call still lives there and lands here as a plain value.
  * 2. **No `$effect`.** It is illegal in a `.svelte.ts` module and against the
  *    shell rules, so saving is an explicit `persist…()` call at the end of every
  *    mutator that changes something worth keeping.
@@ -45,7 +43,7 @@
  * folder will therefore both show that folder's ports; the row says "in this
  * folder", not "definitely yours".
  *
- * Imports are type-only on purpose — the module has none at all — which is what
+ * The module deliberately has no imports, which is what
  * lets `scripts/stackStore.test.mjs` compile and exercise it in plain node.
  */
 
@@ -139,14 +137,14 @@ export interface StackRow extends StackStatus {
 // ── Storage ───────────────────────────────────────────────────────────────────
 
 /** Where the saved stacks live. */
-export const STACK_DEFINITIONS_STORAGE_KEY = 'mac-command-bar.next.stacks.definitions';
+export const STACK_DEFINITIONS_SETTING_KEY = 'run-configurations.definitions';
 
 /** Where "this session is that stack" lives, so the tag survives a reload. */
-export const STACK_RUNS_STORAGE_KEY = 'mac-command-bar.next.stacks.runs';
+export const STACK_RUNS_SETTING_KEY = 'run-configurations.runs';
 
 /** What the user is told when a saved configuration could not be written down. */
 export const STORAGE_WRITE_FAILED_MESSAGE =
-  'This run configuration will not come back after a reload — browser storage is full';
+  'This run configuration could not be saved to the Assembly database.';
 
 function trimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
@@ -549,10 +547,30 @@ export const stacks = $state<{
 
 // ── Saving ────────────────────────────────────────────────────────────────────
 
-function writeStorage(key: string, value: string): boolean {
-  if (typeof localStorage === 'undefined') return false;
+type StackPersistence = {
+  read: (key: string) => Promise<unknown>;
+  write: (key: string, value: unknown) => Promise<void>;
+};
+
+let persistence: StackPersistence | null = null;
+let hydrationInFlight: Promise<void> | null = null;
+let hydrationGeneration = 0;
+
+/** Give this backend-free store the SQLite setting functions owned by the service. */
+export function configureStackPersistence(next: StackPersistence): void {
+  persistence = next;
+}
+
+function persistedJson(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return JSON.stringify(value) ?? null;
+}
+
+/** Save the saved-stacks list. */
+async function persistDefinitions(): Promise<boolean> {
   try {
-    localStorage.setItem(key, value);
+    if (!persistence) throw new Error('Run configuration persistence is not configured.');
+    await persistence.write(STACK_DEFINITIONS_SETTING_KEY, stacks.definitions);
     return true;
   } catch {
     stacks.notice = STORAGE_WRITE_FAILED_MESSAGE;
@@ -560,23 +578,16 @@ function writeStorage(key: string, value: string): boolean {
   }
 }
 
-function readStorage(key: string): string | null {
-  if (typeof localStorage === 'undefined') return null;
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-/** Save the saved-stacks list. */
-function persistDefinitions(): boolean {
-  return writeStorage(STACK_DEFINITIONS_STORAGE_KEY, serializeStackDefinitions(stacks.definitions));
-}
-
 /** Save the session-to-stack tags. */
-function persistRuns(): boolean {
-  return writeStorage(STACK_RUNS_STORAGE_KEY, serializeStackRuns(Object.values(stacks.runs)));
+async function persistRuns(): Promise<boolean> {
+  try {
+    if (!persistence) throw new Error('Run configuration persistence is not configured.');
+    await persistence.write(STACK_RUNS_SETTING_KEY, Object.values(stacks.runs));
+    return true;
+  } catch {
+    stacks.notice = STORAGE_WRITE_FAILED_MESSAGE;
+    return false;
+  }
 }
 
 /**
@@ -586,17 +597,33 @@ function persistRuns(): boolean {
  * A tag pointing at a stack that no longer exists is dropped as it is read: the
  * stack it named is gone, so the session it named is just a terminal now.
  */
-export function hydrateStacks(): void {
-  if (stacks.hydrated) return;
-  stacks.hydrated = true;
-  stacks.definitions = parseStackDefinitions(readStorage(STACK_DEFINITIONS_STORAGE_KEY));
-  const known = new Set(stacks.definitions.map((definition) => definition.id));
-  const runs: Record<string, StackRunRecord> = {};
-  for (const run of parseStackRuns(readStorage(STACK_RUNS_STORAGE_KEY))) {
-    if (!known.has(run.stackId)) continue;
-    runs[run.ownedId] = run;
-  }
-  stacks.runs = runs;
+export function hydrateStacks(): Promise<void> {
+  if (stacks.hydrated) return Promise.resolve();
+  if (hydrationInFlight) return hydrationInFlight;
+  const generation = hydrationGeneration;
+  const hydration = (async () => {
+    if (!persistence) throw new Error('Run configuration persistence is not configured.');
+    const [savedDefinitions, savedRuns] = await Promise.all([
+      persistence.read(STACK_DEFINITIONS_SETTING_KEY),
+      persistence.read(STACK_RUNS_SETTING_KEY)
+    ]);
+    const definitions = parseStackDefinitions(persistedJson(savedDefinitions));
+    const known = new Set(definitions.map((definition) => definition.id));
+    const runs: Record<string, StackRunRecord> = {};
+    for (const run of parseStackRuns(persistedJson(savedRuns))) {
+      if (!known.has(run.stackId)) continue;
+      runs[run.ownedId] = run;
+    }
+    if (generation !== hydrationGeneration) return;
+    stacks.definitions = definitions;
+    stacks.runs = runs;
+    stacks.hydrated = true;
+  })();
+  hydrationInFlight = hydration;
+  void hydration.finally(() => {
+    if (hydrationInFlight === hydration) hydrationInFlight = null;
+  }).catch(() => undefined);
+  return hydration;
 }
 
 // ── Mutations ─────────────────────────────────────────────────────────────────
@@ -737,7 +764,7 @@ function applyOptionalFields(
  * field was blank — in which case `stacks.notice` says which one, because a
  * button that silently does nothing is worse than one that explains itself.
  */
-export function addStack(draft: StackDraft): StackDefinition | null {
+export async function addStack(draft: StackDraft): Promise<StackDefinition | null> {
   const problem = describeStackProblem(draft);
   if (problem) {
     stacks.notice = problem;
@@ -754,10 +781,10 @@ export function addStack(draft: StackDraft): StackDefinition | null {
   // What is on disk comes first. Adding to a list that was never read wrote
   // one action over every action ever saved, whenever the Run tab was opened
   // before a session had been picked.
-  hydrateStacks();
+  await hydrateStacks();
   stacks.definitions = [...stacks.definitions, definition];
   stacks.notice = null;
-  if (!persistDefinitions()) {
+  if (!(await persistDefinitions())) {
     stacks.definitions = stacks.definitions.filter((existing) => existing.id !== definition.id);
     return null;
   }
@@ -772,7 +799,11 @@ export function addStack(draft: StackDraft): StackDefinition | null {
  * Returns the saved record, or `null` when the id is unknown or a field was
  * blank; `stacks.notice` says which, same as adding one.
  */
-export function updateStack(stackId: string, draft: StackDraft): StackDefinition | null {
+export async function updateStack(
+  stackId: string,
+  draft: StackDraft
+): Promise<StackDefinition | null> {
+  await hydrateStacks();
   const existing = stacks.definitions.find((definition) => definition.id === stackId);
   if (!existing) {
     stacks.notice = 'That run configuration is no longer saved.';
@@ -796,7 +827,7 @@ export function updateStack(stackId: string, draft: StackDraft): StackDefinition
     definition.id === stackId ? updated : definition
   );
   stacks.notice = null;
-  if (!persistDefinitions()) {
+  if (!(await persistDefinitions())) {
     stacks.definitions = before;
     return null;
   }
@@ -808,7 +839,8 @@ export function updateStack(stackId: string, draft: StackDraft): StackDefinition
  * to it. The SESSION survives untouched — this only removes CommandBar's saved
  * command.
  */
-export function removeStack(stackId: string): void {
+export async function removeStack(stackId: string): Promise<void> {
+  await hydrateStacks();
   stacks.definitions = stacks.definitions.filter((definition) => definition.id !== stackId);
   const runs: Record<string, StackRunRecord> = {};
   for (const run of Object.values(stacks.runs)) {
@@ -816,8 +848,8 @@ export function removeStack(stackId: string): void {
     runs[run.ownedId] = run;
   }
   stacks.runs = runs;
-  persistDefinitions();
-  persistRuns();
+  await persistDefinitions();
+  await persistRuns();
 }
 
 /**
@@ -825,7 +857,8 @@ export function removeStack(stackId: string): void {
  * time, so starting it again drops the tag on the previous session — that
  * terminal may still be on screen, it just is not this stack's any more.
  */
-export function recordStackStart(stackId: string, ownedId: string): void {
+export async function recordStackStart(stackId: string, ownedId: string): Promise<void> {
+  await hydrateStacks();
   const runs: Record<string, StackRunRecord> = {};
   for (const run of Object.values(stacks.runs)) {
     if (run.stackId === stackId) continue;
@@ -840,7 +873,7 @@ export function recordStackStart(stackId: string, ownedId: string): void {
     signal: null
   };
   stacks.runs = runs;
-  persistRuns();
+  await persistRuns();
 }
 
 /**
@@ -848,27 +881,29 @@ export function recordStackStart(stackId: string, ownedId: string): void {
  * stack's — which is how the service knows whether the exit is worth a refresh —
  * and `false` for every other session in the shell.
  */
-export function recordStackExit(
+export async function recordStackExit(
   ownedId: string,
   outcome: { exitCode: number | null; signal: string | null }
-): boolean {
+): Promise<boolean> {
+  await hydrateStacks();
   const run = stacks.runs[ownedId];
   if (!run) return false;
   stacks.runs = {
     ...stacks.runs,
     [ownedId]: { ...run, exited: true, exitCode: outcome.exitCode, signal: outcome.signal }
   };
-  persistRuns();
+  await persistRuns();
   return true;
 }
 
 /** Drop a session's tag — used when the session itself is removed. */
-export function forgetStackRun(ownedId: string): void {
+export async function forgetStackRun(ownedId: string): Promise<void> {
+  await hydrateStacks();
   if (!stacks.runs[ownedId]) return;
   const runs = { ...stacks.runs };
   delete runs[ownedId];
   stacks.runs = runs;
-  persistRuns();
+  await persistRuns();
 }
 
 /** Which stack a session belongs to, or `null` when it is not a stack's. */
@@ -948,6 +983,8 @@ export function runRecordForStack(stackId: string): StackRunRecord | null {
 
 /** Drop everything back to launch state. Used by tests and by a full reset. */
 export function resetStacks(): void {
+  hydrationGeneration += 1;
+  hydrationInFlight = null;
   stacks.hydrated = false;
   stacks.activated = false;
   stacks.activeRoot = null;

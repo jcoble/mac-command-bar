@@ -25,9 +25,9 @@
  * ruling of 2026-07-28 that this comment used to carry).
  *
  * In the desktop app it comes from the language server, progressively and a
- * few symbols at a time. The targets returned while counting are retained, so
- * clicking a finished number does not ask the same language-server question a
- * second time and the number agrees with the list it opens.
+ * few symbols at a time. The targets returned while counting are retained for
+ * the current file view, so clicking a finished number does not ask the same
+ * language-server question a second time and the number agrees with its list.
  *
  * In the browser preview it comes from one plain-text project scan for every
  * name in the file. A browser has no language server, so this is the fast
@@ -83,10 +83,6 @@ import {
   type CodeLensCount,
   type ReferenceCountStore
 } from './referenceCountBatcher.ts';
-import {
-  loadPersistedReferenceCounts,
-  replacePersistedReferenceCounts
-} from './referenceCountPersistence.ts';
 import {
   statusMessageIsAboutThisFile,
   type LanguageServerStatusMessage
@@ -151,15 +147,6 @@ export const semanticCountRetryDelaysMs = [2_000, 6_000, 12_000];
  * leave the margin blank while a big project was being typed in.
  */
 export const codeLensReferenceCountCacheMs = 24 * 60 * 60 * 1_000;
-/**
- * Native reference counts belong to the live Roslyn workspace and cannot be
- * validated across app/page lifetimes. Keep them warm in memory, but never
- * restore an older solution's answer from IndexedDB. Browser preview counts
- * are plain-text project scans and may use the durable cache.
- */
-export function referenceCountPersistenceEnabled(nativeRuntime: boolean): boolean {
-  return !nativeRuntime;
-}
 /**
  * Where the plain-text counts are filed. They are counted by NAME across the
  * whole project, so the same name has the same number in every file and they
@@ -485,49 +472,16 @@ export function createSourceIntelligence(): SourceIntelligence {
   //
   // Two machines can answer "how many references?", and which one does depends
   // entirely on whether there is a language server behind this page. See the
-  // note at the top of the file for the ruling. Both file their answers in the
-  // one store below.
+  // note at the top of the file for the ruling. Both keep their live answer in
+  // the one in-memory store below while this file owns the editor view.
 
   /**
-   * The one place a counted number is remembered, for either machine.
-   *
-   * Filed under the project it was counted in, so opening another workspace
-   * puts its numbers in a drawer of their own rather than emptying this one —
-   * coming back finds the first workspace's numbers where they were left.
+   * The one place a counted number is remembered, for either machine. The
+   * store is cleared when the active file or project changes, so no answer
+   * outlives the view that owns it.
    */
-  let countStore: ReferenceCountStore;
-  let persistCountsTimer: number | null = null;
-  let persistenceWrite = Promise.resolve();
-  const persistReferenceCounts = referenceCountPersistenceEnabled(isNativeTauriRuntime());
-  const scheduleCountPersistence = () => {
-    if (!persistReferenceCounts || typeof window === 'undefined' || persistCountsTimer !== null) {
-      return;
-    }
-    persistCountsTimer = window.setTimeout(() => {
-      persistCountsTimer = null;
-      const entries = countStore.entries();
-      persistenceWrite = persistenceWrite.then(() =>
-        replacePersistedReferenceCounts(entries)
-      );
-    }, 100);
-  };
-  countStore = createReferenceCountStore({
-    cacheMs: codeLensReferenceCountCacheMs,
-    onChange: scheduleCountPersistence
-  });
-  let persistedCountsLoaded = !persistReferenceCounts;
-  const persistedCountsHydration = persistReferenceCounts
-    ? loadPersistedReferenceCounts()
-        .then((entries) => countStore.restore(entries))
-        .catch(() => {
-          // Durable caching is an optimization; storage failure never blocks counts.
-        })
-    : Promise.resolve();
-  const persistedCountsReady = Promise.race([
-    persistedCountsHydration,
-    new Promise<void>((resolve) => setTimeout(resolve, 100))
-  ]).then(() => {
-    persistedCountsLoaded = true;
+  const countStore: ReferenceCountStore = createReferenceCountStore({
+    cacheMs: codeLensReferenceCountCacheMs
   });
 
   /** The plain-text search over the project: one pass answers many names. */
@@ -584,6 +538,8 @@ export function createSourceIntelligence(): SourceIntelligence {
     string,
     Promise<{ count: CodeLensCount; targets: SourceReferenceTarget[] } | null>
   >();
+  /** Bumps when the active file/view changes so late answers cannot repopulate it. */
+  let referenceAnswerGeneration = 0;
 
   /**
    * Symbols whose questions are held back because the language server is still
@@ -689,6 +645,7 @@ export function createSourceIntelligence(): SourceIntelligence {
     request: SourceLookupRequest,
     root: string | null
   ): Promise<{ count: CodeLensCount; targets: SourceReferenceTarget[] } | null> {
+    const generation = referenceAnswerGeneration;
     const filePath = normalizeProjectPath(preview.path);
     const requestWithFile = { ...request, filePath: preview.path };
     const resultKey = semanticTargetKey(requestWithFile, root);
@@ -710,6 +667,7 @@ export function createSourceIntelligence(): SourceIntelligence {
         limit: maxSourceReferenceCountResults
       }).catch(() => null);
       if (!targets) return null;
+      if (generation !== referenceAnswerGeneration) return null;
 
       const uniqueUses = new Map<string, SourceReferenceTarget>();
       for (const target of targets) {
@@ -732,8 +690,10 @@ export function createSourceIntelligence(): SourceIntelligence {
       countStore.remember(root, filePath, countKeyFor(request), count);
       return { count, targets: peekTargets };
     })().finally(() => {
-      semanticReferenceRequests.delete(resultKey);
-      publishResourceDiagnostics();
+      if (generation === referenceAnswerGeneration) {
+        semanticReferenceRequests.delete(resultKey);
+        publishResourceDiagnostics();
+      }
     });
 
     semanticReferenceRequests.set(resultKey, answer);
@@ -914,10 +874,6 @@ export function createSourceIntelligence(): SourceIntelligence {
       if (remembered) return remembered;
     }
 
-    if (!persistedCountsLoaded) {
-      return persistedCountsReady.then(() => countReferencesForCodeLens(spotRequest));
-    }
-
     if (preview) {
       return countUnrememberedSemanticReferences(key, spotRequest, preview);
     }
@@ -979,24 +935,31 @@ export function createSourceIntelligence(): SourceIntelligence {
 
   /**
    * Stop counting for the file that was on screen. Everything still queued is
-   * dropped; anyone still waiting is told we have no number, which takes the
-   * zero placeholder off a margin nobody is looking at any more.
+   * dropped; live answers and targets are cleared so none can outlive the view.
    */
   function stopCountingForTheOldFile(): void {
+    referenceAnswerGeneration += 1;
     semanticScheduler.clear();
+    referenceCountBatcher?.forget();
     for (const timer of semanticRetryTimers) clearTimeout(timer as ReturnType<typeof setTimeout>);
     semanticRetryTimers.clear();
     heldUntilServerIsReady = [];
     const abandoned = [...waitingSpots.values()];
     waitingSpots.clear();
+    semanticReferenceRequests.clear();
+    rememberedSemanticTargets.clear();
+    countStore.forgetEverything();
     publishResourceDiagnostics();
     for (const spot of abandoned) {
       for (const waiter of spot.waiters) waiter(null);
     }
   }
 
-  /** Every remembered number in every project, let go. */
+  /** Let go of every live answer when the source projection resets. */
   function forgetReferenceCounts(): void {
+    referenceAnswerGeneration += 1;
+    referenceCountBatcher?.forget();
+    semanticReferenceRequests.clear();
     countStore.forgetEverything();
     rememberedSemanticTargets.clear();
     publishResourceDiagnostics();
@@ -1015,6 +978,10 @@ export function createSourceIntelligence(): SourceIntelligence {
   function forgetFileReferenceCounts(filePath: string): void {
     if (!filePath) return;
     const normalizedPath = normalizeProjectPath(filePath);
+    if (normalizeProjectPath(activePreview?.path ?? '') === normalizedPath) {
+      referenceAnswerGeneration += 1;
+      semanticReferenceRequests.clear();
+    }
     countStore.forgetFile(projectRoot, normalizedPath);
     const prefix = `${projectRoot ?? ''}|${normalizedPath}|`;
     for (const key of rememberedSemanticTargets.keys()) {
@@ -1257,9 +1224,8 @@ export function createSourceIntelligence(): SourceIntelligence {
         nextProjectRoot && nextProjectRoot.trim().length > 0 ? nextProjectRoot : null;
       if (normalized === projectRoot) return;
       projectRoot = normalized;
-      // The numbers counted for the old project are NOT thrown away — they are
-      // filed under it, and coming back finds them. What must stop is the
-      // counting that was still going on for the file that was on screen.
+      // The old project's live answers belong to the view that just left it.
+      // Stop that work and release those answers before pointing at the new root.
       externalPreviewCache.clear();
       stopCountingForTheOldFile();
     },

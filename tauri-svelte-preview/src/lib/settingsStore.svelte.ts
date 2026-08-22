@@ -2,9 +2,8 @@
  * settingsStore.svelte.ts — Svelte 5 runes-based settings store.
  *
  * Holds appearance / editor / terminal / general preferences in a reactive
- * `$state` object, persisted to localStorage under
- * `mac-command-bar.settings`. Loads once on module init and saves on any
- * change via `$effect.root`.
+ * `$state` object. The active /next shell hydrates it from the native SQLite
+ * app-settings row and writes changes through the shared Tauri bridge.
  *
  * Defaults mirror the app's current hardcoded values:
  *   - editor:   src/lib/sourcePreviewAppearance.ts (Google Sans Mono / 13 / 21)
@@ -15,6 +14,11 @@
  * NOTE: This module only owns the *values*. Applying them into Monaco / xterm
  * is a later wiring step in +page.svelte and is intentionally NOT done here.
  */
+
+import {
+	readAssemblySettingFromTauri,
+	writeAssemblySettingFromTauri
+} from './tauriSource';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -126,7 +130,7 @@ export type SettingsSection = keyof Settings;
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
-export const STORAGE_KEY = 'mac-command-bar.settings';
+export const SETTINGS_SETTING_KEY = 'workbench.settings';
 
 /** Produces a fresh, deeply-independent copy of the default settings. */
 export function defaultSettings(): Settings {
@@ -209,26 +213,6 @@ function mergeWithDefaults(raw: unknown): Settings {
 	return base;
 }
 
-function loadSettings(): Settings {
-	if (typeof localStorage === 'undefined') return defaultSettings();
-	try {
-		const stored = localStorage.getItem(STORAGE_KEY);
-		if (!stored) return defaultSettings();
-		return mergeWithDefaults(JSON.parse(stored));
-	} catch {
-		return defaultSettings();
-	}
-}
-
-function persist(value: Settings): void {
-	if (typeof localStorage === 'undefined') return;
-	try {
-		localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
-	} catch {
-		/* storage full / unavailable — non-fatal, keep in-memory state */
-	}
-}
-
 // ── Reactive state ────────────────────────────────────────────────────────────
 
 /**
@@ -236,14 +220,77 @@ function persist(value: Settings): void {
  * (e.g. `settings.editor.fontSize`) and bind to them; reads/writes are
  * tracked by Svelte's runes runtime and auto-persisted.
  */
-export const settings = $state<Settings>(loadSettings());
+export const settings = $state<Settings>(defaultSettings());
+const initialSettingsSnapshot = JSON.stringify($state.snapshot(settings) as Settings);
+
+let settingsHydrated = $state(false);
+let hydrationPromise: Promise<void> | null = null;
+let hydrationBaseline: string | null = null;
+let hydrationSawMutation = false;
+let lastPersistedSettings: string | null = null;
+
+function persistSettings(value: Settings): void {
+	const serialized = JSON.stringify(value);
+	lastPersistedSettings = serialized;
+	void writeAssemblySettingFromTauri(SETTINGS_SETTING_KEY, value).catch(() => undefined);
+}
+
+function noteSettingsMutation(): void {
+	if (!settingsHydrated) hydrationSawMutation = true;
+}
+
+/**
+ * Read the one native settings row. Calls made while a read is in flight share
+ * it; a rejected read clears the in-flight handle so the next call can retry.
+ * A value changed after this read began is left alone rather than replaced by
+ * the late SQLite result.
+ */
+export function hydrateSettings(): Promise<void> {
+	if (settingsHydrated) return Promise.resolve();
+	if (hydrationPromise) return hydrationPromise;
+
+	const baseline = JSON.stringify($state.snapshot(settings) as Settings);
+	hydrationBaseline = baseline;
+	const hydration = readAssemblySettingFromTauri(SETTINGS_SETTING_KEY)
+		.then((stored) => {
+			const current = $state.snapshot(settings) as Settings;
+			const changed =
+				hydrationSawMutation ||
+				JSON.stringify(current) !== baseline ||
+				JSON.stringify(current) !== initialSettingsSnapshot;
+			if (!changed) {
+				const hydrated = mergeWithDefaults(stored);
+				for (const key of Object.keys(hydrated) as SettingsSection[]) {
+					settings[key] = hydrated[key] as never;
+				}
+				lastPersistedSettings = JSON.stringify($state.snapshot(settings) as Settings);
+			} else {
+				lastPersistedSettings = null;
+			}
+			settingsHydrated = true;
+		})
+		.finally(() => {
+			if (hydrationPromise === hydration) hydrationPromise = null;
+			hydrationBaseline = null;
+		});
+	hydrationPromise = hydration;
+	return hydration;
+}
 
 // Save on any change. `$effect.root` lets us own an effect outside of a
 // component, with a detach handle for teardown (tests / HMR). Reading the
 // nested fields registers the dependency graph.
 const disposeAutosave = $effect.root(() => {
 	$effect(() => {
-		persist($state.snapshot(settings) as Settings);
+		const value = $state.snapshot(settings) as Settings;
+		const serialized = JSON.stringify(value);
+		if (!settingsHydrated) {
+			if (hydrationBaseline !== null && serialized !== hydrationBaseline) {
+				hydrationSawMutation = true;
+			}
+			return;
+		}
+		if (serialized !== lastPersistedSettings) persistSettings(value);
 	});
 });
 
@@ -264,6 +311,7 @@ export function updateSettings<S extends SettingsSection>(
 	section: S,
 	patch: Partial<Settings[S]>
 ): void {
+	noteSettingsMutation();
 	Object.assign(settings[section] as object, patch);
 }
 
@@ -274,6 +322,7 @@ export function setSection<S extends SettingsSection>(
 	section: S,
 	value: Settings[S]
 ): void {
+	noteSettingsMutation();
 	settings[section] = value;
 }
 
@@ -284,6 +333,7 @@ export function setSection<S extends SettingsSection>(
  * @example resetSettings('terminal')  // just the terminal section
  */
 export function resetSettings(section?: SettingsSection): void {
+	noteSettingsMutation();
 	const defaults = defaultSettings();
 	if (section) {
 		settings[section] = defaults[section] as never;

@@ -24,7 +24,7 @@
      is painted on the first frame, before any theme has been applied. */
 	import "$lib/shell/styles/themeChrome.css";
 
-	import { settings, type ProblemsLocation } from "$lib/settingsStore.svelte";
+	import { hydrateSettings, settings, type ProblemsLocation } from "$lib/settingsStore.svelte";
 	import { captureBrowserState, openBrowserUrl, restoreBrowserState } from "$lib/shell/browser/browserStore.svelte.ts";
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
@@ -1426,7 +1426,7 @@
 			await persistOwnedMetadata(ownedId);
 			// A restarted stack run is a run again — without this the stacks pane
 			// keeps the old exit on record and says "stopped" under a live server.
-			if (restartedStackId !== null) recordStackStart(restartedStackId, ownedId);
+			if (restartedStackId !== null) await recordStackStart(restartedStackId, ownedId);
 			await selectOwned(ownedId);
 			// Only on this path, where the session the user asked for is the one that
 			// ended up on screen. Every early return above hands the screen to a
@@ -1522,6 +1522,20 @@
 		applyStoredTheme();
 		applyStoredFonts();
 		disposed = false;
+		void hydrateSettings()
+			.then(() => {
+				if (disposed) return;
+				applyStoredTheme();
+				applyStoredFonts();
+				applyProblemsLocation(settings.panels.problemsLocation);
+				if (!settings.intelligence.csharpLanguageServer) {
+					void setCsharpLanguageServerEnabled(false);
+				}
+				if (!settings.intelligence.languageServers) {
+					void setLanguageServersEnabled(false);
+				}
+			})
+			.catch(() => undefined);
 		const collapsedRestoreVersion = sessionsCollapsedVersion;
 		void readAssemblySettingFromTauri(SESSIONS_COLLAPSED_SETTING_KEY)
 			.then((stored) => {

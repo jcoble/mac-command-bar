@@ -39,15 +39,10 @@ const compiled = compileModule(javascript, {
 });
 writeFileSync(outputPath, compiled.js.code);
 
-// A save that does not reach storage is refused, so the store needs
-// somewhere to save to. The smallest thing that answers like localStorage.
+// A save that does not reach SQLite is refused, so the store needs the smallest
+// in-memory stand-in for the two injected setting functions.
 const memory = new Map();
-globalThis.localStorage = {
-  getItem: (key) => (memory.has(key) ? memory.get(key) : null),
-  setItem: (key, value) => void memory.set(key, String(value)),
-  removeItem: (key) => void memory.delete(key),
-  clear: () => memory.clear()
-};
+let rejectWrites = false;
 
 let store;
 try {
@@ -59,6 +54,7 @@ try {
 const {
   addStack,
   buildStackRows,
+  configureStackPersistence,
   deriveStackState,
   describeStackState,
   isStackSession,
@@ -77,21 +73,33 @@ const {
   updateStack
 } = store;
 
+configureStackPersistence({
+  read: async (key) => (memory.has(key) ? JSON.parse(memory.get(key)) : null),
+  write: async (key, value) => {
+    if (rejectWrites) throw new Error('SQLite write failed');
+    memory.set(key, JSON.stringify(value));
+  }
+});
+
 /** A clean store AND clean storage: adding reads storage first now. */
 function resetStacks() {
   resetStore();
   memory.clear();
+  rejectWrites = false;
 }
 
 let passed = 0;
+let tests = Promise.resolve();
 function test(name, run) {
-  try {
-    run();
-    passed += 1;
-  } catch (error) {
-    console.error(`FAILED: ${name}`);
-    throw error;
-  }
+  tests = tests.then(async () => {
+    try {
+      await run();
+      passed += 1;
+    } catch (error) {
+      console.error(`FAILED: ${name}`);
+      throw error;
+    }
+  });
 }
 
 const web = { id: 'stack-web', name: 'Web', script: 'pnpm dev', cwd: '/Users/me/app' };
@@ -346,16 +354,16 @@ test('an unusable shortcut or toggle drops that field and keeps the configuratio
   assert.deepEqual(parsed[0], { id: 'a', name: 'Web', script: 'pnpm dev', cwd: '/p' });
 });
 
-test('adding to a store that was never read keeps what was already saved', () => {
+test('adding to a store that was never read keeps what was already saved', async () => {
   resetStacks();
-  localStorage.setItem(
-    'mac-command-bar.next.stacks.definitions',
+  memory.set(
+    'run-configurations.definitions',
     JSON.stringify([{ id: 'kept', name: 'Dev server', script: 'pnpm dev', cwd: '/p' }])
   );
   // Nothing hydrated: the Run tab was opened before a session was picked.
-  const added = addStack({ name: 'Database', script: 'docker compose up db', cwd: '/p' });
+  const added = await addStack({ name: 'Database', script: 'docker compose up db', cwd: '/p' });
   assert.ok(added);
-  const onDisk = JSON.parse(localStorage.getItem('mac-command-bar.next.stacks.definitions'));
+  const onDisk = JSON.parse(memory.get('run-configurations.definitions'));
   assert.deepEqual(
     onDisk.map((definition) => definition.name),
     ['Dev server', 'Database'],
@@ -363,24 +371,17 @@ test('adding to a store that was never read keeps what was already saved', () =>
   );
 });
 
-test('a save that does not reach storage is refused, not claimed', () => {
+test('a save that does not reach storage is refused, not claimed', async () => {
   resetStacks();
-  const setItem = localStorage.setItem;
-  localStorage.setItem = () => {
-    throw new Error('QuotaExceededError');
-  };
-  try {
-    const added = addStack({ name: 'Web', script: 'pnpm dev', cwd: '/p' });
-    assert.equal(added, null);
-    assert.equal(stacks.definitions.length, 0, 'nothing is shown that was not saved');
-  } finally {
-    localStorage.setItem = setItem;
-  }
+  rejectWrites = true;
+  const added = await addStack({ name: 'Web', script: 'pnpm dev', cwd: '/p' });
+  assert.equal(added, null);
+  assert.equal(stacks.definitions.length, 0, 'nothing is shown that was not saved');
 });
 
-test('adding and changing a configuration keeps the four fields', () => {
+test('adding and changing a configuration keeps the four fields', async () => {
   resetStacks();
-  const added = addStack({
+  const added = await addStack({
     name: 'Web',
     script: 'pnpm dev',
     cwd: '/Users/me/app',
@@ -394,7 +395,7 @@ test('adding and changing a configuration keeps the four fields', () => {
   assert.equal(added.runOnWorktreeCreation, true);
   assert.equal(added.openPreviewOnRun, true);
 
-  const changed = updateStack(added.id, {
+  const changed = await updateStack(added.id, {
     name: 'Web',
     script: 'pnpm dev',
     cwd: '/Users/me/app',
@@ -436,57 +437,58 @@ test('run records survive a round trip', () => {
 
 // ── Mutations ────────────────────────────────────────────────────────────────
 
-test('adding a stack keeps it, and refuses one with a blank field', () => {
+test('adding a stack keeps it, and refuses one with a blank field', async () => {
   resetStacks();
-  const added = addStack({ name: ' Web ', script: ' pnpm dev ', cwd: '/Users/me/app' });
+  const added = await addStack({ name: ' Web ', script: ' pnpm dev ', cwd: '/Users/me/app' });
   assert.ok(added);
   assert.equal(added.name, 'Web');
   assert.equal(added.script, 'pnpm dev');
   assert.equal(stacks.definitions.length, 1);
 
-  assert.equal(addStack({ name: '', script: 'pnpm dev', cwd: '/p' }), null);
-  assert.equal(addStack({ name: 'x', script: '  ', cwd: '/p' }), null);
-  assert.equal(addStack({ name: 'x', script: 'y', cwd: '' }), null);
+  assert.equal(await addStack({ name: '', script: 'pnpm dev', cwd: '/p' }), null);
+  assert.equal(await addStack({ name: 'x', script: '  ', cwd: '/p' }), null);
+  assert.equal(await addStack({ name: 'x', script: 'y', cwd: '' }), null);
   assert.equal(stacks.definitions.length, 1);
   assert.ok(stacks.notice, 'a refused add says why');
 });
 
-test('a session is tagged with the stack it was started for, and untagged when the stack goes', () => {
+test('a session is tagged with the stack it was started for, and untagged when the stack goes', async () => {
   resetStacks();
-  const added = addStack({ name: 'Web', script: 'pnpm dev', cwd: '/Users/me/app' });
-  recordStackStart(added.id, 'owned-9');
+  const added = await addStack({ name: 'Web', script: 'pnpm dev', cwd: '/Users/me/app' });
+  await recordStackStart(added.id, 'owned-9');
 
   assert.equal(stackIdForOwnedId('owned-9'), added.id);
   assert.equal(isStackSession('owned-9'), true);
   assert.equal(isStackSession('owned-other'), false);
   assert.equal(ownedIdForStack(added.id), 'owned-9');
 
-  removeStack(added.id);
+  await removeStack(added.id);
   assert.equal(stacks.definitions.length, 0);
   assert.equal(stackIdForOwnedId('owned-9'), null);
 });
 
-test('starting a stack again replaces the session it points at', () => {
+test('starting a stack again replaces the session it points at', async () => {
   resetStacks();
-  const added = addStack({ name: 'Web', script: 'pnpm dev', cwd: '/Users/me/app' });
-  recordStackStart(added.id, 'owned-1');
-  recordStackStart(added.id, 'owned-2');
+  const added = await addStack({ name: 'Web', script: 'pnpm dev', cwd: '/Users/me/app' });
+  await recordStackStart(added.id, 'owned-1');
+  await recordStackStart(added.id, 'owned-2');
   assert.equal(ownedIdForStack(added.id), 'owned-2');
   assert.equal(stackIdForOwnedId('owned-1'), null);
 });
 
-test('a terminal that ends is written down against its stack, and other terminals are ignored', () => {
+test('a terminal that ends is written down against its stack, and other terminals are ignored', async () => {
   resetStacks();
-  const added = addStack({ name: 'Web', script: 'pnpm dev', cwd: '/Users/me/app' });
-  recordStackStart(added.id, 'owned-1');
+  const added = await addStack({ name: 'Web', script: 'pnpm dev', cwd: '/Users/me/app' });
+  await recordStackStart(added.id, 'owned-1');
 
-  assert.equal(recordStackExit('someone-elses-session', { exitCode: 1, signal: null }), false);
-  assert.equal(recordStackExit('owned-1', { exitCode: 1, signal: null }), true);
+  assert.equal(await recordStackExit('someone-elses-session', { exitCode: 1, signal: null }), false);
+  assert.equal(await recordStackExit('owned-1', { exitCode: 1, signal: null }), true);
 
   const rows = buildStackRows(stacks.definitions, stacks.runs, []);
   assert.equal(rows[0].state, 'failed');
   assert.equal(rows[0].statusLabel, 'stopped with error code 1');
 });
 
+await tests;
 resetStacks();
 console.log(`stackStore: ${passed} passed`);

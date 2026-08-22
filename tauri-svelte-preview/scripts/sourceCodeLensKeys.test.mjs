@@ -20,7 +20,6 @@ import {
 globalThis.$state = (value) => value;
 const {
 	countingReadinessForStatus,
-	referenceCountPersistenceEnabled,
 	semanticCountRetryDelaysMs,
 	semanticCountRetryLimit
 } = await import(
@@ -129,14 +128,6 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 		monacoEditorSource,
 		/if \(nativeMode\) \{[\s\S]*?\} else \{[\s\S]*?registerSourceCodeLensProvider\(monaco\)/
 	);
-}
-
-// A native editor must never repaint a stale count from an earlier app/page
-// lifetime. Roslyn owns native counts; only the browser text counter may use
-// durable storage. Both modes still retain their same-process memory cache.
-{
-	assert.equal(referenceCountPersistenceEnabled(true), false);
-	assert.equal(referenceCountPersistenceEnabled(false), true);
 }
 
 // A superseded request cannot erase a newer Roslyn count, and a transient

@@ -91,7 +91,9 @@
   // Read what is saved before showing anything. The store was only read once a
   // session had been picked, so opening this tab first showed "No actions
   // saved yet" over a full list on disk.
-  hydrateStacks();
+  void hydrateStacks().catch((error) => {
+    stacks.error = `Could not load run configurations: ${error instanceof Error ? error.message : String(error)}`;
+  });
 
   // Every saved action, whichever folder it belongs to. The list was filtered
   // to the active session's working folder, which is not a project root — a
@@ -163,9 +165,9 @@
     await run(row.definition);
   }
 
-  function confirmRemoval(): void {
+  async function confirmRemoval(): Promise<void> {
     if (!removing) return;
-    removeStack(removing.id);
+    await removeStack(removing.id);
     removing = null;
   }
 

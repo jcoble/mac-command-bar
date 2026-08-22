@@ -32,9 +32,8 @@
  * reader will read them in), and closing the file drops the rest.
  *
  * `createReferenceCountStore` is the one place a counted number is remembered,
- * for either machine. It is filed under the project it was counted in, so
- * moving to another project and back finds the first project's numbers still
- * there instead of counting everything a second time.
+ * for either machine. The source-intelligence owner clears it when the active
+ * file or project changes, so no answer survives the view that owns it.
  */
 import type { SourceReferenceCountResult } from '../../sourceData.ts';
 
@@ -130,15 +129,21 @@ export function createReferenceCountBatcher(
   const memory = options.memory;
   let waiting = new Map<string, ((count: CodeLensCount | null) => void)[]>();
   let windowTimer: ReturnType<typeof setTimeout> | null = null;
+  let generation = 0;
 
   async function askForWaitingSymbols(): Promise<void> {
     windowTimer = null;
     const batch = waiting;
     waiting = new Map();
+    const startedIn = generation;
 
     const result = await options.countReferences([...batch.keys()]).catch(() => null);
 
     for (const [symbolName, callers] of batch) {
+      if (startedIn !== generation) {
+        for (const caller of callers) caller(null);
+        continue;
+      }
       const count = countFromResult(result, symbolName, options.maxCount);
       if (count !== null) memory.remember(symbolName, count);
       for (const caller of callers) caller(count);
@@ -162,6 +167,14 @@ export function createReferenceCountBatcher(
       });
     },
     forget(): void {
+      generation += 1;
+      if (windowTimer !== null) clearTimeout(windowTimer);
+      windowTimer = null;
+      const abandoned = waiting;
+      waiting = new Map();
+      for (const callers of abandoned.values()) {
+        for (const caller of callers) caller(null);
+      }
       memory.forget();
     }
   };
@@ -293,10 +306,6 @@ export interface ReferenceCountStoreOptions {
   cacheMs: number;
   /** The clock, so tests can move time without waiting. */
   now?: () => number;
-  /** Counts restored from the previous page instance. */
-  initial?: readonly StoredReferenceCount[];
-  /** Called after a remembered value is added or removed. */
-  onChange?: () => void;
 }
 
 export interface StoredReferenceCount {
@@ -316,10 +325,8 @@ export interface ReferenceCountStore {
   /** Every file in this project moved underneath us. */
   forgetProject(project: string | null): void;
   forgetEverything(): void;
-  /** Serializable view used to survive a webview/page refresh. */
+  /** Live entries used by development resource diagnostics. */
   entries(): StoredReferenceCount[];
-  /** Add counts loaded asynchronously from the durable page cache. */
-  restore(entries: readonly StoredReferenceCount[]): void;
   /**
    * One drawer of this store, seen through the flat interface the plain-text
    * batcher wants. `whichProject` is asked each time rather than fixed, so the
@@ -350,21 +357,6 @@ export function createReferenceCountStore(
   const drawerFor = (project: string | null) => project ?? noProject;
   const projectFor = (drawer: string) => (drawer === noProject ? null : drawer);
 
-  for (const entry of options.initial ?? []) {
-    const drawer = drawerFor(entry.project);
-    let files = projects.get(drawer);
-    if (!files) {
-      files = new Map();
-      projects.set(drawer, files);
-    }
-    let symbols = files.get(entry.file);
-    if (!symbols) {
-      symbols = new Map();
-      files.set(entry.file, symbols);
-    }
-    symbols.set(entry.key, { value: entry.value, countedAt: entry.countedAt });
-  }
-
   const store: ReferenceCountStore = {
     get(project: string | null, file: string, key: string): CodeLensCount | undefined {
       const files = projects.get(drawerFor(project));
@@ -373,7 +365,6 @@ export function createReferenceCountStore(
       if (!entry) return undefined;
       if (now() - entry.countedAt >= options.cacheMs) {
         symbols?.delete(key);
-        options.onChange?.();
         return undefined;
       }
       return entry.value;
@@ -391,18 +382,15 @@ export function createReferenceCountStore(
         files.set(file, symbols);
       }
       symbols.set(key, { value, countedAt: now() });
-      options.onChange?.();
     },
     forgetFile(project: string | null, file: string): void {
-      if (projects.get(drawerFor(project))?.delete(file)) options.onChange?.();
+      projects.get(drawerFor(project))?.delete(file);
     },
     forgetProject(project: string | null): void {
-      if (projects.delete(drawerFor(project))) options.onChange?.();
+      projects.delete(drawerFor(project));
     },
     forgetEverything(): void {
-      if (projects.size === 0) return;
       projects.clear();
-      options.onChange?.();
     },
     entries(): StoredReferenceCount[] {
       const entries: StoredReferenceCount[] = [];
@@ -426,26 +414,6 @@ export function createReferenceCountStore(
       }
       for (const entry of expired) entry.symbols.delete(entry.key);
       return entries;
-    },
-    restore(entries: readonly StoredReferenceCount[]): void {
-      for (const entry of entries) {
-        const drawer = drawerFor(entry.project);
-        let files = projects.get(drawer);
-        if (!files) {
-          files = new Map();
-          projects.set(drawer, files);
-        }
-        let symbols = files.get(entry.file);
-        if (!symbols) {
-          symbols = new Map();
-          files.set(entry.file, symbols);
-        }
-        // A count produced in this page wins over an older durable value.
-        const current = symbols.get(entry.key);
-        if (!current || current.countedAt < entry.countedAt) {
-          symbols.set(entry.key, { value: entry.value, countedAt: entry.countedAt });
-        }
-      }
     },
     drawer(whichProject: () => string | null, file: string): CountMemory {
       return {
