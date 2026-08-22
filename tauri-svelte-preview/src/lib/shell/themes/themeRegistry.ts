@@ -13,14 +13,14 @@
  *   terminal  xterm's theme object. Same story — its own palette, set on the
  *             terminal instance.
  *
- * Two themes ship. `houston` is what the app looks like TODAY, copied value for
- * value out of the three files that hold those values now, so picking it can
- * never change a pixel. `dracula` is the proof that switching works: it repaints
- * the chrome, the editor and the dock.
+ * Houston is what the app looks like TODAY, copied value for value out of the
+ * three files that hold those values now, so picking it can never change a
+ * pixel. The additional CodeMirror catalog entries keep that shell palette and
+ * swap only the visible editor's syntax extension.
  *
  * The copying is the risk. `scripts/themeRegistry.test.mjs` reads the original
- * files and fails if Houston stops agreeing with them, so the two cannot drift
- * apart quietly.
+ * files and fails if Houston stops agreeing with them, so the shipped palette
+ * cannot drift apart quietly.
  *
  * This module is deliberately plain data with no imports: no DOM, no store, no
  * Svelte runes. Applying a theme is `themeService.ts`'s job.
@@ -509,8 +509,23 @@ const DRACULA: ShellTheme = {
 /** The theme the app opens with, and the one every unknown name falls back to. */
 export const DEFAULT_THEME_ID = 'houston';
 
+/** ThemeMirror entries keep the Houston shell until CodeMirror adds its palette. */
+const THEMEMIRROR_THEMES: ShellTheme[] = [
+  ['amy', 'Amy'],
+  ['ayu-light', 'Ayu Light'],
+  ['cobalt', 'Cobalt'],
+  ['rose-pine-dawn', 'Rose Pine Dawn'],
+  ['tomorrow', 'Tomorrow']
+].map(([id, label]) => ({
+  ...HOUSTON,
+  id,
+  label,
+  description: `${label} CodeMirror syntax theme.`,
+  monaco: { ...HOUSTON.monaco, id }
+}));
+
 /** Every theme, in the order the chooser should list them. */
-export const THEMES: ShellTheme[] = [HOUSTON, DRACULA];
+export const THEMES: ShellTheme[] = [HOUSTON, ...THEMEMIRROR_THEMES, DRACULA];
 
 const BY_ID = new Map<string, ShellTheme>(THEMES.map((theme) => [theme.id, theme]));
 

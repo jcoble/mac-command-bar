@@ -20,6 +20,7 @@ import {
 	writeAssemblySettingFromTauri
 } from './tauriSource';
 import { DEFAULT_MONO_FONT_ID, MONO_FONTS } from './shell/themes/fontRegistry';
+import { DEFAULT_THEME_ID, isThemeId } from './shell/themes/themeRegistry';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -134,7 +135,7 @@ export const SETTINGS_SETTING_KEY = 'workbench.settings';
 export function defaultSettings(): Settings {
 	return {
 		appearance: {
-			themeId: 'dark',
+			themeId: DEFAULT_THEME_ID,
 			appFontSize: 13,
 			uiFontId: 'system',
 			monoFontId: 'system'
@@ -214,6 +215,9 @@ function mergeWithDefaults(raw: unknown): Settings {
 	// always been.
 	if (!PROBLEMS_LOCATIONS.includes(base.panels.problemsLocation)) {
 		base.panels.problemsLocation = 'hidden';
+	}
+	if (!isThemeId(base.appearance.themeId)) {
+		base.appearance.themeId = DEFAULT_THEME_ID;
 	}
 	if (!MONO_FONTS.some((font) => font.id === base.editor.fontFamily)) {
 		base.editor.fontFamily = DEFAULT_MONO_FONT_ID;

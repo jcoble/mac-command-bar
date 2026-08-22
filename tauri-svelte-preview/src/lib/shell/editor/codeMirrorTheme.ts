@@ -71,15 +71,22 @@ export const codeMirrorTheme = [
   syntaxHighlighting(syntax)
 ];
 
-type ThemeLoader = () => Promise<Extension>;
+type ThemeMirrorModule = typeof import('thememirror');
+type ThemeLoader = (themes: ThemeMirrorModule) => Extension;
 
 const themeLoaders: Record<string, ThemeLoader> = {
-  dracula: () =>
-    // Keep ThemeMirror, including its catalog, out of the startup chunk.
-    import('thememirror').then(({ dracula }) => [codeMirrorTheme, dracula])
+  amy: ({ amy }) => amy,
+  'ayu-light': ({ ayuLight }) => ayuLight,
+  cobalt: ({ cobalt }) => cobalt,
+  dracula: ({ dracula }) => dracula,
+  'rose-pine-dawn': ({ rosePineDawn }) => rosePineDawn,
+  tomorrow: ({ tomorrow }) => tomorrow
 };
 
 /** Resolve the selected CodeMirror extension, keeping Houston as the fallback. */
 export function loadCodeMirrorTheme(themeId: unknown): Promise<Extension> {
-  return themeLoaders[typeof themeId === 'string' ? themeId : '']?.() ?? Promise.resolve(codeMirrorTheme);
+  const loader = themeLoaders[typeof themeId === 'string' ? themeId : ''];
+  if (!loader) return Promise.resolve(codeMirrorTheme);
+  // Keep ThemeMirror, including its catalog, out of the startup chunk.
+  return import('thememirror').then((themes) => [codeMirrorTheme, loader(themes)]);
 }
