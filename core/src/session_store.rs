@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -99,6 +99,30 @@ CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idx
 CREATE UNIQUE INDEX IF NOT EXISTS orchestration_events_idempotency_idx
     ON orchestration_events(run_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;";
+
+const EVIDENCE_ARTIFACT_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS evidence_artifacts (
+    id TEXT PRIMARY KEY,
+    orchestration_run_id TEXT NOT NULL,
+    task_id TEXT,
+    agent TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    scenario TEXT NOT NULL,
+    commit_hash TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    worktree TEXT NOT NULL,
+    captured_at_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    original_ref TEXT NOT NULL,
+    thumbnail_ref TEXT,
+    pinned INTEGER NOT NULL CHECK (pinned IN (0, 1)),
+    expires_at_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS evidence_artifacts_newest_idx
+    ON evidence_artifacts(captured_at_ms DESC, id ASC);
+CREATE INDEX IF NOT EXISTS evidence_artifacts_run_idx
+    ON evidence_artifacts(orchestration_run_id, captured_at_ms DESC);";
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -273,6 +297,27 @@ pub struct OrchestrationEventRow {
     pub payload_json: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceArtifact {
+    pub id: String,
+    pub orchestration_run_id: String,
+    pub task_id: Option<String>,
+    pub agent: String,
+    pub provider: String,
+    pub scenario: String,
+    pub commit_hash: String,
+    pub branch: String,
+    pub worktree: String,
+    pub captured_at_ms: i64,
+    pub kind: String,
+    pub status: String,
+    pub byte_size: i64,
+    pub original_ref: String,
+    pub thumbnail_ref: Option<String>,
+    pub pinned: bool,
+    pub expires_at_ms: Option<i64>,
+}
+
 impl SessionStore {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)
@@ -369,13 +414,18 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the durable UI tables", error)
-                })?;
+                transaction
+                    .execute_batch(DURABLE_UI_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the durable UI tables", error)
+                    })?;
                 add_tool_item_schema(&transaction)?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -408,12 +458,17 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the durable UI tables", error)
-                })?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(DURABLE_UI_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the durable UI tables", error)
+                    })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -436,12 +491,17 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the durable UI tables", error)
-                })?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(DURABLE_UI_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the durable UI tables", error)
+                    })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -464,12 +524,17 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the durable UI tables", error)
-                })?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(DURABLE_UI_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the durable UI tables", error)
+                    })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -489,14 +554,19 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the durable UI tables", error)
-                })?;
+                transaction
+                    .execute_batch(DURABLE_UI_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the durable UI tables", error)
+                    })?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -515,12 +585,17 @@ impl SessionStore {
                 add_attachment_thumbnail_schema(&transaction)?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
-                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the durable UI tables", error)
-                })?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(DURABLE_UI_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the durable UI tables", error)
+                    })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -537,12 +612,17 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the session workspace upgrade", error)
                     })?;
                 add_attachment_thumbnail_schema(&transaction)?;
-                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the durable UI tables", error)
-                })?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(DURABLE_UI_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the durable UI tables", error)
+                    })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -559,12 +639,17 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the app settings upgrade", error)
                     })?;
                 add_attachment_thumbnail_schema(&transaction)?;
-                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the durable UI tables", error)
-                })?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(DURABLE_UI_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the durable UI tables", error)
+                    })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -581,9 +666,12 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the orchestration upgrade", error)
                     })?;
                 add_attachment_thumbnail_schema(&transaction)?;
-                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the orchestration table", error)
-                })?;
+                transaction
+                    .execute_batch(ORCHESTRATION_SCHEMA)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not create the orchestration table", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -597,9 +685,13 @@ impl SessionStore {
                 let transaction = connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|error| {
-                        StoreError::sqlite("could not begin the attachment thumbnail upgrade", error)
+                        StoreError::sqlite(
+                            "could not begin the attachment thumbnail upgrade",
+                            error,
+                        )
                     })?;
                 add_attachment_thumbnail_schema(&transaction)?;
+                add_evidence_artifact_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -607,6 +699,22 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the attachment thumbnail upgrade", error)
+                })?;
+            }
+            10 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the evidence artifact upgrade", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the evidence artifact upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -618,7 +726,10 @@ impl SessionStore {
         }
         connection
             .execute_batch(ORCHESTRATION_SCHEMA)
-            .map_err(|error| StoreError::sqlite("could not create the orchestration table", error))?;
+            .map_err(|error| {
+                StoreError::sqlite("could not create the orchestration table", error)
+            })?;
+        add_evidence_artifact_schema(&connection)?;
 
         SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
@@ -686,9 +797,7 @@ impl SessionStore {
         let mut connection = self.lock_write()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| {
-                StoreError::sqlite("could not begin the checkout change", error)
-            })?;
+            .map_err(|error| StoreError::sqlite("could not begin the checkout change", error))?;
         upsert_session_on(&transaction, session)?;
         if let Some(event) = event {
             transaction
@@ -804,7 +913,10 @@ impl SessionStore {
     pub fn delete_workspace_snapshot(&self, owned_id: &str) -> Result<()> {
         let connection = self.lock_write()?;
         connection
-            .execute("DELETE FROM session_workspaces WHERE owned_id = ?", [owned_id])
+            .execute(
+                "DELETE FROM session_workspaces WHERE owned_id = ?",
+                [owned_id],
+            )
             .map_err(|error| StoreError::sqlite("could not delete the session workspace", error))?;
         Ok(())
     }
@@ -968,6 +1080,108 @@ impl SessionStore {
             .map_err(|error| {
                 StoreError::sqlite("could not read the latest orchestration sequence", error)
             })
+    }
+
+    pub fn upsert_evidence_artifact(&self, artifact: &EvidenceArtifact) -> Result<()> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the evidence artifact write", error)
+            })?;
+        transaction
+            .execute(
+                "INSERT INTO evidence_artifacts (
+                    id, orchestration_run_id, task_id, agent, provider, scenario,
+                    commit_hash, branch, worktree, captured_at_ms, kind, status, byte_size,
+                    original_ref, thumbnail_ref, pinned, expires_at_ms
+                 )
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET
+                    orchestration_run_id = excluded.orchestration_run_id,
+                    task_id = excluded.task_id,
+                    agent = excluded.agent,
+                    provider = excluded.provider,
+                    scenario = excluded.scenario,
+                    commit_hash = excluded.commit_hash,
+                    branch = excluded.branch,
+                    worktree = excluded.worktree,
+                    captured_at_ms = excluded.captured_at_ms,
+                    kind = excluded.kind,
+                    status = excluded.status,
+                    byte_size = excluded.byte_size,
+                    original_ref = excluded.original_ref,
+                    thumbnail_ref = excluded.thumbnail_ref,
+                    pinned = excluded.pinned,
+                    expires_at_ms = excluded.expires_at_ms",
+                params![
+                    artifact.id,
+                    artifact.orchestration_run_id,
+                    artifact.task_id,
+                    artifact.agent,
+                    artifact.provider,
+                    artifact.scenario,
+                    artifact.commit_hash,
+                    artifact.branch,
+                    artifact.worktree,
+                    artifact.captured_at_ms,
+                    artifact.kind,
+                    artifact.status,
+                    artifact.byte_size,
+                    artifact.original_ref,
+                    artifact.thumbnail_ref,
+                    artifact.pinned,
+                    artifact.expires_at_ms,
+                ],
+            )
+            .map_err(|error| StoreError::sqlite("could not save the evidence artifact", error))?;
+        transaction.commit().map_err(|error| {
+            StoreError::sqlite("could not finish the evidence artifact write", error)
+        })
+    }
+
+    pub fn list_evidence_artifacts(
+        &self,
+        before_captured_at_ms: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<EvidenceArtifact>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, orchestration_run_id, task_id, agent, provider, scenario,
+                        commit_hash, branch, worktree, captured_at_ms, kind, status, byte_size,
+                        original_ref, thumbnail_ref, pinned, expires_at_ms
+                 FROM evidence_artifacts
+                 WHERE (?1 IS NULL OR captured_at_ms < ?1)
+                 ORDER BY captured_at_ms DESC, id ASC
+                 LIMIT ?2",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not prepare the evidence artifact page", error)
+            })?;
+        let rows = statement
+            .query_map(
+                params![before_captured_at_ms, i64::from(limit)],
+                evidence_artifact_from_row,
+            )
+            .map_err(|error| StoreError::sqlite("could not list evidence artifacts", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the evidence artifact page", error))
+    }
+
+    pub fn delete_evidence_artifact(&self, id: &str) -> Result<()> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the evidence artifact delete", error)
+            })?;
+        transaction
+            .execute("DELETE FROM evidence_artifacts WHERE id = ?", [id])
+            .map_err(|error| StoreError::sqlite("could not delete the evidence artifact", error))?;
+        transaction.commit().map_err(|error| {
+            StoreError::sqlite("could not finish the evidence artifact delete", error)
+        })
     }
 
     pub fn append_event(&self, row: &EventRow) -> Result<()> {
@@ -1460,7 +1674,9 @@ impl SessionStore {
                  WHERE id = ?",
                 params![mime_type, byte_length, relative_path, id],
             )
-            .map_err(|error| StoreError::sqlite("could not save the attachment thumbnail", error))?;
+            .map_err(|error| {
+                StoreError::sqlite("could not save the attachment thumbnail", error)
+            })?;
         if changed != 1 {
             return Err(StoreError::message(
                 "could not save the attachment thumbnail because the attachment does not exist",
@@ -1592,7 +1808,10 @@ fn add_attachment_thumbnail_schema(connection: &Connection) -> Result<()> {
         return Ok(());
     }
     for (column, schema) in [
-        ("thumbnail_mime_type", "ALTER TABLE attachments ADD COLUMN thumbnail_mime_type TEXT"),
+        (
+            "thumbnail_mime_type",
+            "ALTER TABLE attachments ADD COLUMN thumbnail_mime_type TEXT",
+        ),
         (
             "thumbnail_byte_length",
             "ALTER TABLE attachments ADD COLUMN thumbnail_byte_length INTEGER",
@@ -1620,6 +1839,12 @@ fn add_attachment_thumbnail_schema(connection: &Connection) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn add_evidence_artifact_schema(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(EVIDENCE_ARTIFACT_SCHEMA)
+        .map_err(|error| StoreError::sqlite("could not create the evidence artifact table", error))
 }
 
 /// Writes every persisted session field on the caller's connection or transaction.
@@ -1656,9 +1881,7 @@ fn extra_json_keeping_import_cursor(connection: &Connection, row: &SessionRow) -
             |stored| stored.get(0),
         )
         .optional()
-        .map_err(|error| {
-            StoreError::sqlite("could not read the stored session metadata", error)
-        })?;
+        .map_err(|error| StoreError::sqlite("could not read the stored session metadata", error))?;
     let Some(stored) = stored else {
         return Ok(row.extra_json.clone());
     };
@@ -1792,6 +2015,28 @@ fn orchestration_event_from_row(row: &Row<'_>) -> rusqlite::Result<Orchestration
     })
 }
 
+fn evidence_artifact_from_row(row: &Row<'_>) -> rusqlite::Result<EvidenceArtifact> {
+    Ok(EvidenceArtifact {
+        id: row.get(0)?,
+        orchestration_run_id: row.get(1)?,
+        task_id: row.get(2)?,
+        agent: row.get(3)?,
+        provider: row.get(4)?,
+        scenario: row.get(5)?,
+        commit_hash: row.get(6)?,
+        branch: row.get(7)?,
+        worktree: row.get(8)?,
+        captured_at_ms: row.get(9)?,
+        kind: row.get(10)?,
+        status: row.get(11)?,
+        byte_size: row.get(12)?,
+        original_ref: row.get(13)?,
+        thumbnail_ref: row.get(14)?,
+        pinned: row.get(15)?,
+        expires_at_ms: row.get(16)?,
+    })
+}
+
 fn insert_orchestration_event_on(
     connection: &Connection,
     row: &OrchestrationEventRow,
@@ -1873,7 +2118,7 @@ mod tests {
     use rusqlite::Connection;
     use tempfile::TempDir;
 
-    use super::{EventRow, SessionRow, SessionStore};
+    use super::{EventRow, EvidenceArtifact, SessionRow, SessionStore};
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {
         SessionRow {
@@ -1910,7 +2155,9 @@ mod tests {
 
         // What the runtime writes: no cursor, because it has never had one.
         let runtime = fixture_session("owned-import", 3_000);
-        store.upsert_session(&runtime).expect("save from the runtime");
+        store
+            .upsert_session(&runtime)
+            .expect("save from the runtime");
 
         let stored = store
             .get_session("owned-import")
@@ -1919,7 +2166,9 @@ mod tests {
         let extra: serde_json::Value =
             serde_json::from_str(&stored.extra_json).expect("stored metadata is JSON");
         assert_eq!(
-            extra.get("import").and_then(|cursor| cursor.get("cutoffOffset")),
+            extra
+                .get("import")
+                .and_then(|cursor| cursor.get("cutoffOffset")),
             Some(&serde_json::Value::from(42)),
             "the cursor survives a save that did not carry one"
         );
@@ -1939,7 +2188,9 @@ mod tests {
         store.upsert_session(&first).expect("import the session");
 
         let mut moved = fixture_session("owned-import", 3_000);
-        moved.extra_json = r#"{"import":{"transcriptPath":"/tmp/a.jsonl","cutoffOffset":7,"reachedStart":true}}"#.to_owned();
+        moved.extra_json =
+            r#"{"import":{"transcriptPath":"/tmp/a.jsonl","cutoffOffset":7,"reachedStart":true}}"#
+                .to_owned();
         store.upsert_session(&moved).expect("move the cursor");
 
         let stored = store
@@ -1949,7 +2200,9 @@ mod tests {
         let extra: serde_json::Value =
             serde_json::from_str(&stored.extra_json).expect("stored metadata is JSON");
         assert_eq!(
-            extra.get("import").and_then(|cursor| cursor.get("cutoffOffset")),
+            extra
+                .get("import")
+                .and_then(|cursor| cursor.get("cutoffOffset")),
             Some(&serde_json::Value::from(7))
         );
     }
@@ -1962,6 +2215,28 @@ mod tests {
             kind: "message".to_owned(),
             payload_json: format!(r#"{{"seq":{seq}}}"#),
             created_at_ms: 10_000 + seq,
+        }
+    }
+
+    fn fixture_evidence_artifact(id: &str, captured_at_ms: i64) -> EvidenceArtifact {
+        EvidenceArtifact {
+            id: id.to_owned(),
+            orchestration_run_id: "run-1".to_owned(),
+            task_id: Some("TSK-808".to_owned()),
+            agent: "Codex".to_owned(),
+            provider: "openai".to_owned(),
+            scenario: "phase-2-proof".to_owned(),
+            commit_hash: "abcdef0".to_owned(),
+            branch: "tsk-808-evidence-schema".to_owned(),
+            worktree: "/worktrees/mac-command-bar/tsk-808-evidence-schema".to_owned(),
+            captured_at_ms,
+            kind: "screenshot".to_owned(),
+            status: "ready".to_owned(),
+            byte_size: 1234,
+            original_ref: format!("managed/originals/{id}.png"),
+            thumbnail_ref: Some(format!("managed/thumbs/{id}.png")),
+            pinned: false,
+            expires_at_ms: Some(captured_at_ms + 10_000),
         }
     }
 
@@ -1989,7 +2264,13 @@ mod tests {
             .expect("write session");
         for (seq, status) in [(1, "started"), (2, "running"), (3, "finished")] {
             store
-                .append_event(&tool_event("session-a", seq, "item.updated", "tool-a", status))
+                .append_event(&tool_event(
+                    "session-a",
+                    seq,
+                    "item.updated",
+                    "tool-a",
+                    status,
+                ))
                 .expect("append tool update");
         }
         store
@@ -2028,7 +2309,10 @@ mod tests {
         let events = store
             .list_events("session-a", i64::MIN, 100)
             .expect("list events");
-        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [3, 4]);
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            [3, 4]
+        );
     }
 
     #[test]
@@ -2079,7 +2363,13 @@ mod tests {
         let events = store
             .list_events("session-a", i64::MIN, 100)
             .expect("list events");
-        assert_eq!(events.iter().map(|event| event.kind.as_str()).collect::<Vec<_>>(), ["item.updated", "item.completed"]);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            ["item.updated", "item.completed"]
+        );
     }
 
     #[test]
@@ -2108,8 +2398,7 @@ mod tests {
                     rusqlite::params![
                         "session-a",
                         seq,
-                        tool_event("session-a", seq, "item.updated", "tool-a", status)
-                            .payload_json,
+                        tool_event("session-a", seq, "item.updated", "tool-a", status).payload_json,
                         10_000 + seq
                     ],
                 )
@@ -2127,7 +2416,10 @@ mod tests {
         let events = store
             .list_events("session-a", i64::MIN, 100)
             .expect("list upgraded events");
-        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [3, 4]);
+        assert_eq!(
+            events.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            [3, 4]
+        );
         drop(store);
 
         let connection = Connection::open(&path).expect("inspect upgraded database");
@@ -2135,6 +2427,215 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read schema version");
         assert_eq!(version, super::SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn schema_v6_upgrade_adds_evidence_artifacts_and_keeps_events() {
+        let directory = TempDir::new().expect("create temporary directory");
+        let path = directory.path().join("sessions.db");
+        let connection = Connection::open(&path).expect("create version six database");
+        connection
+            .execute_batch(
+                "CREATE TABLE sessions (
+                    owned_id TEXT PRIMARY KEY,
+                    native_session_id TEXT,
+                    provider TEXT NOT NULL,
+                    model TEXT,
+                    effort TEXT,
+                    cwd TEXT NOT NULL,
+                    worktree TEXT,
+                    branch TEXT,
+                    title TEXT,
+                    project TEXT,
+                    state TEXT NOT NULL,
+                    suspended INTEGER NOT NULL CHECK (suspended IN (0, 1)),
+                    created_at INTEGER NOT NULL,
+                    last_activity_at INTEGER NOT NULL,
+                    extra TEXT NOT NULL,
+                    title_source TEXT
+                );
+                CREATE TABLE events (
+                    owned_id TEXT NOT NULL REFERENCES sessions(owned_id) ON DELETE CASCADE,
+                    seq INTEGER NOT NULL,
+                    turn_id TEXT,
+                    kind TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    item_id TEXT GENERATED ALWAYS AS (json_extract(payload, '$.payload.itemId')) VIRTUAL,
+                    PRIMARY KEY (owned_id, seq)
+                );
+                CREATE INDEX events_item_idx ON events(owned_id, kind, item_id, seq);
+                CREATE TABLE drafts (
+                    owned_id TEXT PRIMARY KEY REFERENCES sessions(owned_id) ON DELETE CASCADE,
+                    text TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE annotations (
+                    id INTEGER PRIMARY KEY,
+                    owned_id TEXT NOT NULL REFERENCES sessions(owned_id) ON DELETE CASCADE,
+                    url TEXT NOT NULL,
+                    rect TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE attachments (
+                    id TEXT PRIMARY KEY,
+                    owned_id TEXT NOT NULL REFERENCES sessions(owned_id) ON DELETE CASCADE,
+                    file_name TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    byte_length INTEGER NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX attachments_owned_id_idx ON attachments(owned_id, file_name);
+                PRAGMA user_version = 6;",
+            )
+            .expect("create version six schema");
+        let session = fixture_session("session-v6", 20_000);
+        let event = fixture_event("session-v6", 1);
+        connection
+            .execute(
+                "INSERT INTO sessions (
+                    owned_id, native_session_id, provider, model, effort, cwd, worktree,
+                    branch, title, project, state, suspended, created_at, last_activity_at,
+                    extra, title_source
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    session.owned_id,
+                    session.native_session_id,
+                    session.provider,
+                    session.model,
+                    session.effort,
+                    session.cwd,
+                    session.worktree,
+                    session.branch,
+                    session.title,
+                    session.project,
+                    session.state,
+                    session.suspended,
+                    session.created_at_ms,
+                    session.last_activity_at_ms,
+                    session.extra_json,
+                    session.title_source,
+                ],
+            )
+            .expect("insert sentinel session");
+        connection
+            .execute(
+                "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    event.owned_id,
+                    event.seq,
+                    event.turn_id,
+                    event.kind,
+                    event.payload_json,
+                    event.created_at_ms
+                ],
+            )
+            .expect("insert sentinel event");
+        drop(connection);
+
+        let store = SessionStore::open(&path).expect("upgrade database");
+        assert_eq!(
+            store
+                .list_events("session-v6", i64::MIN, 10)
+                .expect("read sentinel event"),
+            [event]
+        );
+        drop(store);
+
+        let connection = Connection::open(&path).expect("inspect upgraded database");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read schema version");
+        assert_eq!(version, super::SCHEMA_VERSION);
+        connection
+            .prepare("SELECT original_ref, thumbnail_ref, pinned FROM evidence_artifacts")
+            .expect("prepare evidence artifact query");
+    }
+
+    #[test]
+    fn evidence_artifact_schema_is_idempotent_on_reopen() {
+        let (_directory, path, store) = open_temp_store();
+        drop(store);
+
+        let reopened = SessionStore::open(&path).expect("reopen session store");
+        drop(reopened);
+
+        let connection = Connection::open(&path).expect("inspect reopened database");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read schema version");
+        let table_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'evidence_artifacts'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count evidence tables");
+        assert_eq!(version, super::SCHEMA_VERSION);
+        assert_eq!(table_count, 1);
+    }
+
+    #[test]
+    fn evidence_artifact_page_is_bounded_and_newest_first() {
+        let (_directory, _path, store) = open_temp_store();
+        for (id, captured_at_ms) in [
+            ("oldest", 1_000),
+            ("middle", 2_000),
+            ("newest", 3_000),
+            ("newer", 4_000),
+        ] {
+            store
+                .upsert_evidence_artifact(&fixture_evidence_artifact(id, captured_at_ms))
+                .expect("upsert evidence artifact");
+        }
+
+        let first_page = store
+            .list_evidence_artifacts(None, 2)
+            .expect("list newest evidence page");
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["newer", "newest"]
+        );
+
+        let second_page = store
+            .list_evidence_artifacts(first_page.last().map(|artifact| artifact.captured_at_ms), 2)
+            .expect("list older evidence page");
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["middle", "oldest"]
+        );
+
+        let mut updated = fixture_evidence_artifact("middle", 5_000);
+        updated.status = "pinned".to_owned();
+        updated.pinned = true;
+        store
+            .upsert_evidence_artifact(&updated)
+            .expect("update evidence artifact");
+        assert_eq!(
+            store
+                .list_evidence_artifacts(None, 1)
+                .expect("read updated evidence artifact"),
+            [updated.clone()]
+        );
+
+        store
+            .delete_evidence_artifact("middle")
+            .expect("delete evidence artifact");
+        assert!(!store
+            .list_evidence_artifacts(None, 10)
+            .expect("list after evidence delete")
+            .iter()
+            .any(|artifact| artifact.id == "middle"));
     }
 
     #[test]
@@ -2560,8 +3061,15 @@ mod tests {
             .list_events_before(&session.owned_id, 400, 1_024)
             .expect("list the page before the cursor");
         let seqs: Vec<i64> = page.events.iter().map(|event| event.seq).collect();
-        assert_eq!(seqs.last().copied(), Some(399), "the page ends at the cursor");
-        assert!(seqs.windows(2).all(|pair| pair[1] == pair[0] + 1), "no gaps");
+        assert_eq!(
+            seqs.last().copied(),
+            Some(399),
+            "the page ends at the cursor"
+        );
+        assert!(
+            seqs.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "no gaps"
+        );
         let spent: usize = page
             .events
             .iter()
