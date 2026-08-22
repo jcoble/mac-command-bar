@@ -211,6 +211,7 @@
   const fullMode = $derived(
     !activeFileReadOnly
       && settings.intelligence.languageServers
+      && activeServerEnabled === true
   );
   /**
    * The sentence on hover: what the mode means for this project, and the
