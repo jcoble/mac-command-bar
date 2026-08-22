@@ -1816,6 +1816,7 @@ impl AgentRuntimeManager {
         if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
             session.prompt_once_active = false;
         }
+        drop(sessions);
         drop(lifecycle);
         if let Err(error) = self.suspend_if_quiescent(owned_id, generation).await {
             crate::debug_log::stderr_log!(
