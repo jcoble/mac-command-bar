@@ -65,22 +65,22 @@
   $effect(() => {
     if (!visible || !ownedId || !conversation || !selectedChildId) return;
     if (!selectedChild?.transcriptAvailable) return;
-    if (!selectedChildRunning) return;
     const parentGeneration = conversation.generation;
     void parentGeneration;
     const nativeSessionId = rail.owned.find((session) => session.ownedId === ownedId)?.nativeSessionId;
-    if (!nativeSessionId) return;
 
-    const timer = window.setInterval(() => {
-      void readChildConversationTranscript({
-        ownedId,
-        provider: conversation.provider,
-        nativeSessionId,
-        childSessionId: selectedChildId
-      }).catch(() => undefined);
-    }, 10_000);
+    const timer = nativeSessionId && selectedChildRunning
+      ? window.setInterval(() => {
+          void readChildConversationTranscript({
+            ownedId,
+            provider: conversation.provider,
+            nativeSessionId,
+            childSessionId: selectedChildId
+          }).catch(() => undefined);
+        }, 10_000)
+      : null;
     return () => {
-      window.clearInterval(timer);
+      if (timer !== null) window.clearInterval(timer);
       cancelChildConversationTranscriptRead(ownedId);
     };
   });
