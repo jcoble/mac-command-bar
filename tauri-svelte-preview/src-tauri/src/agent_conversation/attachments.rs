@@ -154,32 +154,48 @@ pub fn delete<R: tauri::Runtime>(
 ) -> Result<(), String> {
     let attachment_id = uuid::Uuid::parse_str(request.attachment_id.trim())
         .map_err(|_| "Attachment id is invalid".to_string())?;
-    let root = attachment_root(app, &request.owned_id)?;
+    let owned_id = safe_segment(&request.owned_id, "Owned session id")?.to_string();
+    let root = attachment_root(app, &owned_id)?;
     let root = canonical_root(&root)?;
-    let thumbnail = store
-        .list_attachments(&request.owned_id)
+    let id = attachment_id.to_string();
+    let row = store
+        .list_attachments(&owned_id)
         .map_err(|error| error.to_string())?
         .into_iter()
-        .find(|row| row.id == attachment_id.to_string())
-        .and_then(|row| row.thumbnail_relative_path)
+        .find(|row| row.id == id)
+        .ok_or_else(|| "Attachment row was not found".to_string())?;
+    let thumbnail = row
+        .thumbnail_relative_path
+        .as_ref()
         .map(|relative_path| vault_root(app).map(|vault| vault.join(relative_path)))
         .transpose()?
         .map(|path| validate_optional_managed_file(&root, &path))
         .transpose()?
         .flatten();
     let target = validate_delete_target(&root, attachment_id, Path::new(&request.path))?;
+    validate_delete_row(&owned_id, &row, attachment_id, &target)?;
+    store
+        .delete_attachment(&id)
+        .map_err(|error| error.to_string())?;
     if let Some(thumbnail) = thumbnail {
         if let Err(error) = fs::remove_file(thumbnail) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                return Err(format!("Could not delete screenshot thumbnail: {error}"));
+                crate::debug_log::stderr_log!(
+                    "Deleted attachment row {id}, but could not remove its managed thumbnail: {error}"
+                );
+                return Err(format!(
+                    "Attachment row was deleted, but the managed screenshot thumbnail could not be removed: {error}"
+                ));
             }
         }
     }
-    fs::remove_file(&target).map_err(|error| format!("Could not delete screenshot: {error}"))?;
-    store
-        .delete_attachment(&attachment_id.to_string())
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    fs::remove_file(&target).map_err(|error| {
+        crate::debug_log::stderr_log!(
+            "Deleted attachment row {id}, but could not remove managed file {}: {error}",
+            target.display()
+        );
+        format!("Attachment row was deleted, but the managed screenshot file could not be removed: {error}")
+    })
 }
 
 /// The folder that holds every session's attachments, and the root that stored
@@ -384,6 +400,28 @@ fn validate_optional_managed_file(root: &Path, path: &Path) -> Result<Option<Pat
         );
     }
     Ok(Some(target))
+}
+
+fn validate_delete_row(
+    owned_id: &str,
+    row: &AttachmentRow,
+    attachment_id: uuid::Uuid,
+    target: &Path,
+) -> Result<(), String> {
+    if row.owned_id != owned_id {
+        return Err("Attachment row belongs to a different session".to_string());
+    }
+    if row.id != attachment_id.to_string() {
+        return Err("Attachment row id does not match the request".to_string());
+    }
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Attachment path has no valid file name".to_string())?;
+    if row.file_name != file_name || row.relative_path != format!("{owned_id}/{file_name}") {
+        return Err("Attachment path does not match the stored attachment row".to_string());
+    }
+    Ok(())
 }
 
 fn safe_segment<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {

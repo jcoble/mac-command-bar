@@ -658,6 +658,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-22 · “Attachment delete ordering follows SQLite authority”</td><td>Deleting one managed conversation attachment validates the request against its stored row, deletes that SQLite row first, and only then removes the thumbnail and original. A database failure leaves both indexed files untouched; a later filesystem failure is reported and logged as unindexed managed orphan data instead of restoring a row that may point at missing bytes.</td><td>10</td></tr>
             <tr><td>2026-08-22 · “Serialize checkout with session selection”</td><td>One frontend projection owner serializes session selection with Codex checkout switching. Checkout refuses to start during an active selection, and a selection cannot advance, checkpoint, or release the current projection while checkout awaits its durable backend commit.</td><td>13</td></tr>
             <tr><td>2026-08-22 · “Document Source Control command wiring”</td><td>The right Source Control panel now owns the shipped repository actions: stage or unstage one file, stage all, commit or amend, confirmed discard, refresh, fetch, pull and push, branch creation and switching, stash and pop, plus opening a changed file in the editor or revealing it in Finder. Pull and push require an upstream; fetch does not.</td><td>13</td></tr>
             <tr><td>2026-08-22 · “Keep attachment thumbnails repairable”</td><td>Image dimensions and pixel count are bounded before decode. SQLite records the managed original plus WebP thumbnail metadata; attachment reads recreate a missing legacy thumbnail on demand, but one failed thumbnail leaves that row visible with null thumbnail fields instead of failing the list. Chat owns only thumbnails, the lightbox loads the original on request, and deletion removes the thumbnail then original before deleting the row, so an original-delete failure leaves a valid, repairable row.</td><td>09, 10, 12</td></tr>
@@ -1112,7 +1113,7 @@
           </article>
         </div>
 
-        <p>SQLite runs in WAL mode with <code>synchronous=NORMAL</code> and foreign keys enabled. A live event write uses an immediate transaction to upsert the session and append the event before anything is emitted to the UI. Deleting a session cascades its events, draft, annotations, and attachment rows; the rail’s Remove does that through <code>delete_agent_conversation_session</code>, so a removed session does not come back at the next launch. The attachment files in the vault are not removed yet (tracked follow-up).</p>
+        <p>SQLite runs in WAL mode with <code>synchronous=NORMAL</code> and foreign keys enabled. A live event write uses an immediate transaction to upsert the session and append the event before anything is emitted to the UI. Deleting a session cascades its events, draft, annotations, and attachment rows; the rail’s Remove does that through <code>delete_agent_conversation_session</code>, so a removed session does not come back at the next launch. Deleting one attachment first validates the requested file against the SQLite row, then deletes the row, then removes the managed file. If the database delete fails, the file remains indexed. If file cleanup fails after the row is gone, Assembly reports/logs an unindexed managed orphan instead of restoring a row that might point at missing bytes.</p>
         <span class="source"><code>core/src/session_store.rs:7,155-223,304-345,388-435</code></span>
         <p>The version ladder upgrades in place and never rewrites a conversation row. Every supported prior version creates the orchestration table and advances to version 9 in the same immediate transaction.</p>
         <span class="source"><code>core/src/session_store.rs:7,179-314,957-972</code></span>
@@ -1127,10 +1128,12 @@
           <li>Rust validates owner ID, 20-MiB input size, PNG/JPEG/GIF/WebP signature, dimensions, and pixel count before decoding.</li>
           <li>It writes the original plus a bounded WebP thumbnail beneath the owned session’s app-data vault and records both in SQLite.</li>
           <li>Legacy or missing thumbnails are recreated only when attachments are read; one failure preserves the original row with null thumbnail fields.</li>
+          <li>If the SQLite insert fails, it removes the just-written original and thumbnail.</li>
+          <li>Delete is ordered the other way: validate row/path ownership, delete the SQLite row, then remove the managed thumbnail and original. A cleanup failure is reported as unindexed orphan data.</li>
           <li>The user-message event stores attachment IDs, so restart replay can reconnect timeline items to indexed files.</li>
-          <li>Chat loads thumbnails; the lightbox and structured send load original bytes only on request. Deletion removes thumbnail, original, then row, making partial failure repairable.</li>
+          <li>Chat loads thumbnails; the lightbox and structured send load original bytes only on request.</li>
         </ol>
-        <span class="source"><code>attachments.rs:38-178,225-330</code> · <code>conversationService.ts:133-220,390-437,609-752</code></span>
+        <span class="source"><code>attachments.rs:38-220,225-350</code> · <code>conversationService.ts:133-220,390-437,609-752</code></span>
       </section>
 
       <section id="formats">
