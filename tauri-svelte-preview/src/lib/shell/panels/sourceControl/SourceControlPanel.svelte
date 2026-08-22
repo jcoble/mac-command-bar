@@ -11,8 +11,9 @@
    * session's own and can be pointed at any other checkout of the repository,
    * which is READ-ONLY: on somebody else's worktree the commit box, the two
    * buttons, the remote actions and the per-file write actions are all gone,
-   * and a line says which folder is on screen. Only the session's own folder
-   * can be changed from here.
+   * and a line says which folder is on screen. Selecting another checkout is
+   * always read-only; Codex Assembly sessions get a separate action to make
+   * that folder their durable session checkout.
    *
    * THIS PANEL IS THE ONLY PLACE A DISCARD IS ASKED ABOUT. A row can request
    * one; nothing reaches `gitService.discardPaths` until the dialog is answered,
@@ -67,6 +68,8 @@
     type DiscardTarget
   } from '$lib/shell/components/git/discardConfirm';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
+  import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import type { ProjectGitFileStatus } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
 
@@ -95,6 +98,8 @@
     commitFilesState?: GitCommitFilesState;
     /** Can this page change the repository? Defaults to "only in the desktop app". */
     canWrite?: boolean;
+    /** Applies a selected linked worktree as the active session checkout. */
+    onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
     visible,
@@ -102,7 +107,8 @@
     service = defaultService,
     commitFiles = defaultCommitFilesService,
     commitFilesState = defaultCommitFilesState,
-    canWrite = canChangeRepository()
+    canWrite = canChangeRepository(),
+    onUseSessionCheckout
   }: Props = $props();
 
   /** Why nothing can be changed while the panel is on another checkout. */
@@ -122,6 +128,62 @@
   const scopeValue = $derived(scopeRoot === '' ? sessionRoot : scopeRoot);
   const scopeLabel = $derived(
     scopeOptions.find((option) => option.path === scopeValue)?.label ?? 'Session folder'
+  );
+
+  const ownedSession = $derived(
+    ownedId === null ? null : rail.owned.find((session) => session.ownedId === ownedId) ?? null
+  );
+  const conversation = $derived(ownedId === null ? null : getConversationSession(ownedId));
+  const activeTool = $derived(
+    conversation?.timeline.some(
+      (entry) => entry.kind === 'tool' && (entry.state === 'started' || entry.state === 'updated')
+    ) ?? false
+  );
+  let checkoutBusy = $state(false);
+  const checkoutDisabledReason = $derived.by(() => {
+    if (!readOnlyScope) return null;
+    if (!onUseSessionCheckout) return 'Checkout changes are unavailable from this surface.';
+    if (rail.activeOwnedId !== ownedId) return 'Select this session before changing its checkout.';
+    if (ownedSession?.agent === 'claude') {
+      return 'Claude Code sessions cannot change checkout; this action is Codex-only.';
+    }
+    if (ownedSession?.agent === 'antigravity') {
+      return 'Antigravity (agy) sessions cannot change checkout; this action is Codex-only.';
+    }
+    if (ownedSession?.agent !== 'codex' || ownedSession.origin !== 'app') {
+      return 'Only Codex Assembly sessions can change the session checkout.';
+    }
+    if (!conversation || conversation.provider !== 'codex') {
+      return 'The Codex Assembly session is not connected yet.';
+    }
+    if (ownedSession.executionOwner !== 'structured') {
+      return 'Checkout changes require the structured Assembly writer.';
+    }
+    if (conversation.sending || conversation.activeTurnId || ownedSession.activeTurnId) {
+      return 'Finish the active turn before changing checkout.';
+    }
+    if (Object.keys(conversation.pendingApprovals).length > 0 || ownedSession.pendingPermission) {
+      return 'Resolve the pending permission before changing checkout.';
+    }
+    if (Object.keys(conversation.pendingInputs).length > 0 || ownedSession.pendingInput) {
+      return 'Complete the pending input before changing checkout.';
+    }
+    if (activeTool) return 'Wait for the active tool operation to finish before changing checkout.';
+    if (
+      ownedSession.runtimeState !== undefined
+      && !['ready', 'suspended'].includes(ownedSession.runtimeState)
+    ) {
+      return 'Wait for the Codex session to become quiescent before changing checkout.';
+    }
+    return null;
+  });
+  const canUseSessionCheckout = $derived(
+    readOnlyScope && !checkoutBusy && checkoutDisabledReason === null
+  );
+  const checkoutHint = $derived(
+    checkoutBusy
+      ? 'Changing the Codex session checkout…'
+      : checkoutDisabledReason ?? 'Use this linked worktree as the Codex session checkout.'
   );
 
   /** A different session means a different repository: the old pick is dropped. */
@@ -170,6 +232,16 @@
 
   function runRemote(id: SourceControlRemoteActionId): void {
     void service.runRemoteAction(id);
+  }
+
+  async function useSessionCheckout(): Promise<void> {
+    if (!canUseSessionCheckout || !onUseSessionCheckout) return;
+    checkoutBusy = true;
+    try {
+      await onUseSessionCheckout(scopeValue);
+    } finally {
+      checkoutBusy = false;
+    }
   }
 
   /** Which file sections the reader has opened. Starting collapsed keeps a
@@ -360,6 +432,19 @@
         {#if readOnlyScope}
           <p class="text-sm text-muted-foreground" data-testid="source-control-scope-note">
             {describeSourceControlScope(scopeRoot)}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            class="w-full"
+            disabled={!canUseSessionCheckout}
+            title={checkoutHint}
+            aria-label="Use as session checkout"
+            data-testid="source-control-use-session-checkout"
+            onclick={useSessionCheckout}
+          >{checkoutBusy ? 'Changing checkout…' : 'Use as session checkout'}</Button>
+          <p class="text-sm text-muted-foreground" data-testid="source-control-checkout-hint">
+            {checkoutHint}
           </p>
         {:else}
           <label class="flex flex-col gap-1">

@@ -986,22 +986,26 @@ impl AgentRuntimeManager {
         session.suspending = false;
         session.cwd = new_cwd.clone();
         session.rail_meta.worktree = Some(new_cwd.clone());
-        let lifecycle = had_runtime.then_some(SessionLifecycleUpdate {
-            state: AgentRuntimeState::Suspended,
-            connection_state: ConversationConnectionState::Disconnected,
-            owner: AgentExecutionOwner::Stopped,
-            writer_owner: AgentWriterLeaseOwner::None,
-            native_session_mode: Some(AgentNativeSessionMode::Resume),
-        });
-        let event = record_payload_for_session_and_dispatch_with_lifecycle(
-            session,
-            &self.emitter,
-            AgentConversationPayload::CheckoutChanged {
-                from_cwd: from_cwd.clone(),
-                to_cwd: new_cwd,
-            },
-            lifecycle,
-        );
+        let payload = AgentConversationPayload::CheckoutChanged {
+            from_cwd: from_cwd.clone(),
+            to_cwd: new_cwd,
+        };
+        let event = if had_runtime {
+            record_payload_for_session_and_dispatch_with_lifecycle(
+                session,
+                &self.emitter,
+                payload,
+                SessionLifecycleUpdate {
+                    state: AgentRuntimeState::Suspended,
+                    connection_state: ConversationConnectionState::Disconnected,
+                    owner: AgentExecutionOwner::Stopped,
+                    writer_owner: AgentWriterLeaseOwner::None,
+                    native_session_mode: Some(AgentNativeSessionMode::Resume),
+                },
+            )
+        } else {
+            record_payload_for_session_and_dispatch(session, &self.emitter, payload)
+        };
         if let Err(error) = event {
             session.cwd = from_cwd;
             session.rail_meta.worktree = previous_worktree;
@@ -1575,17 +1579,23 @@ impl AgentRuntimeManager {
         approval_policy: Option<String>,
     ) -> Result<(), String> {
         self.activate(owned_id, generation).await?;
+        if model.is_some() || approval_policy.is_some() {
+            self.apply_conversation_config(SetAgentConversationConfigRequest {
+                owned_id: owned_id.to_string(),
+                generation,
+                model,
+                reasoning_effort: None,
+                approval_policy,
+            })
+            .await?;
+        }
+        // Keep prompt acceptance and checkout switching in one lifecycle
+        // critical section. Otherwise checkout switching can observe a
+        // quiescent row after activation releases the guard but before
+        // `prompt` marks the turn active, then detach the runtime under an
+        // outgoing send.
         let sent = async {
-            if model.is_some() || approval_policy.is_some() {
-                self.apply_conversation_config(SetAgentConversationConfigRequest {
-                    owned_id: owned_id.to_string(),
-                    generation,
-                    model,
-                    reasoning_effort: None,
-                    approval_policy,
-                })
-                .await?;
-            }
+            let _lifecycle = self.lifecycle_guard(owned_id).await?;
             self.prompt(owned_id, generation, input).await
         }
         .await;

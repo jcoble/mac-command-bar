@@ -825,10 +825,25 @@
 	 * checkout-backed surfaces once that transaction succeeds. */
 	async function changeCodexCheckout(ownedId: string, requestedRoot: string): Promise<boolean> {
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
-		if (!selected || rail.activeOwnedId !== ownedId || conversationProviderFor(ownedId) !== 'codex') {
+		const conversation = getConversationSession(ownedId);
+		if (
+			!selected
+			|| selected.origin !== "app"
+			|| rail.activeOwnedId !== ownedId
+			|| conversationProviderFor(ownedId) !== 'codex'
+			|| !conversation
+		) {
 			rail.error = 'Only the active Codex session can change checkout.';
 			return false;
 		}
+		const conversationGeneration = conversation.generation;
+		const restoreGeneration = workspaceRestoreGeneration;
+		const checkoutStillCurrent = (): boolean =>
+			!disposed
+			&& rail.activeOwnedId === ownedId
+			&& workspaceRestoreGeneration === restoreGeneration
+			&& getConversationSession(ownedId)?.generation === conversationGeneration
+			&& conversationProviderFor(ownedId) === 'codex';
 		const root = requestedRoot.trim();
 		if (!root) {
 			rail.error = 'A checkout folder is required.';
@@ -836,6 +851,7 @@
 		}
 		countInvoke('validate_project_root');
 		const validation = await validateProjectRootFromTauri(root);
+		if (!checkoutStillCurrent()) return false;
 		if (validation && (!validation.exists || !validation.isDirectory)) {
 			rail.error = 'That checkout folder is not available.';
 			return false;
@@ -845,14 +861,21 @@
 		cancelWorkspaceAutosave();
 		try {
 			await flushConversationSessionDraft(ownedId);
+			if (!checkoutStillCurrent()) return false;
 			if (!(await snapshotWorkspace(ownedId))) return false;
+			if (!checkoutStillCurrent()) return false;
 			const oldPaths = editorState.openFiles.map((file) => file.path);
 			const record = await changeStructuredConversationCheckout(ownedId, root);
 			if (!record) return false;
+			// The backend has already committed the durable row by this point. If
+			// selection changed while it ran, leave the newly selected projection
+			// alone; its normal restore path will read the committed row.
+			if (!checkoutStillCurrent()) return true;
 
 			stopConversationTerminalProjection(ownedId);
 			service?.releaseView(ownedId);
 			await disposeExtensionApiProbeResources();
+			if (!checkoutStillCurrent()) return true;
 			editorPanel?.releaseSessionResources(oldPaths);
 			gitService.releaseHistorySurface();
 			gitCommitFilesService.release();
@@ -869,7 +892,10 @@
 			shellPanels.sessionPicked(true);
 			syncGitSurfaceVisibility();
 			await setExtensionApiProbeWorkspace({ ownedId, root: record.cwd });
-			return await snapshotWorkspace(ownedId);
+			if (!checkoutStillCurrent()) return true;
+			const saved = await snapshotWorkspace(ownedId);
+			if (!checkoutStillCurrent()) return true;
+			return saved;
 		} catch (error) {
 			rail.error = `Checkout change failed: ${describeError(error)}`;
 			return false;
@@ -1907,6 +1933,10 @@
 			onRootUnavailable={handleActiveRootUnavailable}
 			expandedPathsByRoot={activeWorkspaceSnapshot?.expandedPathsByRoot ?? {}}
 			onExpandedPathsChange={rememberFileTreeExpandedPaths}
+			onUseSessionCheckout={async (root) => {
+				const ownedId = rail.activeOwnedId;
+				if (ownedId !== null) await changeCodexCheckout(ownedId, root);
+			}}
 		/>
 {/snippet}
 {#snippet centerTabsArea()}

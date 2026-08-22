@@ -36,6 +36,7 @@
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(root: string, paths: readonly string[]): void;
+    onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
     activeId,
@@ -44,7 +45,8 @@
     ownedId,
     onRootUnavailable,
     expandedPathsByRoot,
-    onExpandedPathsChange
+    onExpandedPathsChange,
+    onUseSessionCheckout
   }: Props = $props();
 </script>
 
@@ -64,7 +66,9 @@
         />
       </div>
     {:else if activeId === 'source-control'}
-      <div class="panel-body showing"><SourceControlPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing">
+        <SourceControlPanel visible={true} {root} {ownedId} {onUseSessionCheckout} />
+      </div>
     {:else if activeId === 'worktrees'}
       <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
     {:else if activeId === 'run'}
