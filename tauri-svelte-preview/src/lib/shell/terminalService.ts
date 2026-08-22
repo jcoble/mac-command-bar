@@ -471,6 +471,12 @@ export function createTerminalService(opts: {
     }
   }
 
+  function dropView(ownedId: string): void {
+    const ptyId = ptyByOwned.get(ownedId);
+    if (ptyId) cancelRepaintNudge(ptyId);
+    manager.closeView(ownedId);
+  }
+
   /**
    * Force the TUI attached to `ptyId` to repaint its whole frame, shortly after
    * a re-attach has replayed its scrollback.
@@ -790,10 +796,16 @@ export function createTerminalService(opts: {
     return true;
   }
 
-  function releaseView(ownedId: string): void {
-    const ptyId = ptyByOwned.get(ownedId);
-    if (ptyId) cancelRepaintNudge(ptyId);
-    manager.closeView(ownedId);
+  function releaseView(_ownedId: string): void {
+    // Session changes must leave no hidden xterm behind; PTY maps stay intact
+    // so the next selection can hydrate from backend scrollback.
+    const active = manager.activeKey();
+    for (const key of manager.liveKeys()) {
+      if (key !== active) dropView(key);
+    }
+    for (const key of manager.liveKeys()) {
+      dropView(key);
+    }
   }
 
   async function createProbe(
@@ -857,7 +869,12 @@ export function createTerminalService(opts: {
   }
 
   function show(ownedId: string): void {
+    if (!manager.hasView(ownedId)) return;
     manager.showView(ownedId);
+    const active = manager.activeKey();
+    for (const key of manager.liveKeys()) {
+      if (key !== active) dropView(key);
+    }
   }
 
   /**
