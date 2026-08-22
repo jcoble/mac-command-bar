@@ -106,7 +106,6 @@
 </script>
 
 {#if tooltip}
-  <Tooltip.Provider delayDuration={400}>
     <Tooltip.Root>
       <Tooltip.Trigger>
         {#snippet child({ props })}
@@ -127,7 +126,6 @@
       </Tooltip.Trigger>
       <Tooltip.Content {side} sideOffset={6}>{label}</Tooltip.Content>
     </Tooltip.Root>
-  </Tooltip.Provider>
 {:else}
   <Button
     data-slot="icon-button"

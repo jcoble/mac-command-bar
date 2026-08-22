@@ -1,5 +1,6 @@
 <script lang="ts">
   import '../app.css';
+  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 
   if (typeof window !== 'undefined' && typeof window.requestIdleCallback !== 'function') {
     window.requestIdleCallback = (callback) =>
@@ -10,4 +11,6 @@
   let { children } = $props();
 </script>
 
-{@render children()}
+<Tooltip.Provider delayDuration={400}>
+  {@render children()}
+</Tooltip.Provider>
