@@ -757,7 +757,7 @@
       } else if (id === 'paste') {
         await pasteInto(node);
       } else if (id === 'open-timeline' || id === 'git-file-history') {
-        const projectRoot = (explorer.root ?? root).trim();
+        const projectRoot = projectRootForView();
         if (projectRoot) await openFileTimeline({ projectRoot, relativePath: node.relativePath });
       } else if (id === 'toggle-excluded') {
         await toggleExcludedFiles();
