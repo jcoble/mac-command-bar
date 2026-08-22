@@ -5036,6 +5036,11 @@ fn percent_decode_path(path: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn supercharged_test_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        locked(LOCK.get_or_init(|| Mutex::new(())))
+    }
+
     #[test]
     fn product_identity_lsp_client_name_is_assembly() {
         assert_eq!(crate::product_identity::LSP_CLIENT_NAME, "Assembly");
@@ -5219,9 +5224,9 @@ mod tests {
 
     #[test]
     fn supercharged_off_allows_no_server() {
+        let _test_lock = supercharged_test_lock();
         let root = unique_lsp_temp_root("mcb-lsp-supercharged-off");
         let root_text = root.display().to_string();
-        set_language_intelligence(&root_text, true);
         set_language_servers_enabled(false);
 
         let registry = SourceLspRegistry::default();
@@ -5245,6 +5250,7 @@ mod tests {
 
     #[test]
     fn supercharged_on_respects_per_server_off() {
+        let _test_lock = supercharged_test_lock();
         let root = unique_lsp_temp_root("mcb-lsp-rust-off");
         let root_text = root.display().to_string();
         set_language_servers_enabled(true);
@@ -5268,15 +5274,13 @@ mod tests {
 
     #[test]
     fn turning_supercharged_off_stops_running_servers() {
+        let _test_lock = supercharged_test_lock();
         let root = unique_lsp_temp_root("mcb-lsp-supercharged-stop");
         let root_text = root.display().to_string();
         let root_key = normalized_lsp_root(&root_text).expect("canonical temp root");
         set_language_servers_enabled(true);
         set_language_server_enabled("rust", true).unwrap();
-        assert_eq!(
-            set_language_intelligence(&root_text, true),
-            LanguageIntelligenceChange::TurnedOn
-        );
+        assert!(language_intelligence_on(&root_text));
 
         let registry = SourceLspRegistry::default();
         registry
