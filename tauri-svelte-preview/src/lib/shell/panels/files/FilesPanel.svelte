@@ -504,7 +504,11 @@
         explorer.includeExcluded,
         scanId
       );
-      if (generation !== searchGeneration || searchText.trim() !== query) return;
+      if (
+        generation !== searchGeneration ||
+        searchText.trim() !== query ||
+        projectRootForView() !== projectRoot
+      ) return;
       if (!page) {
         searchError = 'The file search is not available here.';
         return;

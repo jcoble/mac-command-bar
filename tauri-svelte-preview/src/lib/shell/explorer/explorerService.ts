@@ -112,6 +112,7 @@ export async function revealExplorerPath(path: string): Promise<string[]> {
   const root = canonicalPath(explorer.root ?? '');
   const target = canonicalPath(path);
   if (!root || !target || !isExplorerPathAtOrBelow(target, root) || target === root) return [];
+  const generation = explorerScanGeneration();
 
   const relative = target.slice(root.length).replace(/^\/+/, '');
   const components = relative.split('/').filter(Boolean).slice(0, -1);
@@ -124,6 +125,7 @@ export async function revealExplorerPath(path: string): Promise<string[]> {
 
   const loaded: string[] = [];
   for (const [index, candidate] of [root, ...directories].entries()) {
+    if (generation !== explorerScanGeneration() || canonicalPath(explorer.root ?? '') !== root) break;
     const depth = index;
     if (loadedExplorerDirectoryDepth(candidate) === null && !(await loadDirectory(candidate, depth))) {
       break;
