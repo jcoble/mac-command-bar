@@ -443,6 +443,17 @@ pub async fn list_agent_conversation_events_before(
 }
 
 #[tauri::command]
+/// Lists the page of durable events just newer than the requested sequence.
+pub async fn list_agent_conversation_events_after(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    after_sequence: i64,
+    max_bytes: u32,
+) -> CommandResult<AgentConversationEventPage> {
+    command_result(manager.list_events_after(&owned_id, after_sequence, max_bytes))
+}
+
+#[tauri::command]
 /// Updates owner-scoped conversation metadata and returns the stored record.
 pub async fn update_agent_conversation_session_meta(
     manager: tauri::State<'_, AgentRuntimeManager>,

@@ -80,6 +80,7 @@ export interface ConversationRecentEvent {
 }
 
 export const CONVERSATION_RECENT_EVENT_CAP = 200;
+const ACTIVE_EVENT_WINDOW_BYTES = 8 * 1024 * 1024;
 
 export interface ConversationWorkspaceState extends ConversationSessionState {
   draft: string;
@@ -131,15 +132,24 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   pendingConfig: Record<string, AgentConfigValue>;
   configErrors: Record<string, string>;
   recentEvents: ConversationRecentEvent[];
+  /** The bounded SQLite event window that produced `timeline` and `agentItems`.
+   * It is retained only for the active projection so either trimmed end can be
+   * rebuilt without introducing a second display model. */
+  loadedEvents: AgentConversationEvent[];
   /** The lowest stored sequence currently on screen, and where scrolling up
    * asks from. Zero until a session has been opened. */
   oldestLoadedSequence: number;
+  /** The highest stored sequence represented on screen, and where scrolling
+   * down asks from after the newest end was trimmed. */
+  newestLoadedSequence: number;
   /** A backward page is in flight; the transcript must not ask for another. */
   loadingOlder: boolean;
   /** Nothing older than what is on screen exists, so stop asking. */
   reachedTranscriptStart: boolean;
-  /** Serialized bytes of the normalized event window currently represented by
-   * this projection. The raw events themselves remain owned by SQLite. */
+  loadingNewer: boolean;
+  reachedTranscriptEnd: boolean;
+  /** Serialized bytes of the bounded event window currently represented by
+   * this projection. SQLite remains the durable owner. */
   loadedEventBytes: number;
   /** UTF-8 text bytes retained for the one selected child transcript. */
   loadedChildTranscriptBytes: number;
@@ -166,7 +176,6 @@ function publishConversationProjectionDiagnostics(): void {
 }
 
 function serializedEventBytes(event: AgentConversationEvent): number {
-  if (!import.meta.env.DEV) return 0;
   return textBytes(JSON.stringify(event));
 }
 
@@ -220,9 +229,13 @@ function freshState(
     pendingConfig: {},
     configErrors: {},
     recentEvents: [],
+    loadedEvents: [],
     oldestLoadedSequence: 0,
+    newestLoadedSequence: 0,
     loadingOlder: false,
     reachedTranscriptStart: false,
+    loadingNewer: false,
+    reachedTranscriptEnd: true,
     loadedEventBytes: 0,
     loadedChildTranscriptBytes: 0
   };
@@ -279,6 +292,12 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   if (existing && event.provider !== existing.provider) return false;
   const current = ensureConversationSession(event.ownedId, event.provider);
   appendRecentEvent(current, event);
+  // A live event cannot be joined across a trimmed middle. Ask the service for
+  // the newest bounded snapshot instead; it will replace this older window.
+  if (current.loadedEvents.length > 0 && !current.reachedTranscriptEnd) {
+    current.desynchronized = true;
+    return true;
+  }
   const applied = applyLegacyEventInPlace(current, event);
   if (!applied) return false;
   current.loadedEventBytes += serializedEventBytes(event);
@@ -291,6 +310,27 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
     }
   }
   applyTypedEventPayload(current, displayEvent);
+  current.loadedEvents.push(event);
+  current.newestLoadedSequence = event.sequence;
+  current.reachedTranscriptEnd = true;
+  let trimmed = false;
+  while (current.loadedEventBytes > ACTIVE_EVENT_WINDOW_BYTES && current.loadedEvents.length > 0) {
+    const removed = current.loadedEvents.shift();
+    if (removed) {
+      current.loadedEventBytes -= serializedEventBytes(removed);
+      trimmed = true;
+    }
+  }
+  current.oldestLoadedSequence = current.loadedEvents[0]?.sequence ?? event.sequence;
+  if (trimmed) {
+    applyAgentConversationSnapshot(projectionSnapshot(current), {
+      events: [...current.loadedEvents],
+      reachedStart: false,
+      reachedEnd: true,
+      oldestSequence: current.oldestLoadedSequence,
+      newestSequence: event.sequence
+    });
+  }
   if (!current.desynchronized) recordConversationPresenceEvent(displayEvent);
   publishConversationProjectionDiagnostics();
   return true;
@@ -631,7 +671,36 @@ function idempotentSnapshotEvents(events: AgentConversationEvent[]): AgentConver
   });
 }
 
-export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapshot): void {
+interface ProjectionWindowState {
+  events: AgentConversationEvent[];
+  reachedStart: boolean;
+  reachedEnd: boolean;
+  loadingOlder?: boolean;
+  loadingNewer?: boolean;
+  oldestSequence?: number;
+  newestSequence?: number;
+}
+
+function projectionSnapshot(current: ConversationWorkspaceState): AgentConversationSnapshot {
+  return {
+    connection: {
+      ownedId: current.ownedId,
+      provider: current.provider,
+      generation: current.generation,
+      nativeSessionId: current.nativeSessionId,
+      state: current.connectionState,
+      config: current.agentConfig
+    },
+    suspended: current.suspended,
+    lastSequence: current.lastSequence,
+    events: []
+  };
+}
+
+export function applyAgentConversationSnapshot(
+  snapshot: AgentConversationSnapshot,
+  window?: ProjectionWindowState
+): void {
   const current = ensureConversationSession(
     snapshot.connection.ownedId,
     snapshot.connection.provider
@@ -643,13 +712,24 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   // replay and re-render for nothing — on long sessions that work is
   // user-visible. Skip it outright. A desynchronized session never skips:
   // its snapshot is the repair.
-  const newestSnapshotSequence = snapshot.events.length
-    ? snapshot.events[snapshot.events.length - 1].sequence
+  let sourceEvents = window?.events ?? snapshot.events;
+  if (!window) {
+    sourceEvents = [...sourceEvents];
+    let bytes = serializedEventsBytes(sourceEvents);
+    while (bytes > ACTIVE_EVENT_WINDOW_BYTES && sourceEvents.length > 0) {
+      const removed = sourceEvents.shift();
+      if (removed) bytes -= serializedEventBytes(removed);
+    }
+  }
+  const newestSnapshotSequence = sourceEvents.length
+    ? sourceEvents[sourceEvents.length - 1].sequence
     : 0;
   if (
-    snapshot.connection.generation === current.generation
+    !window
+    && snapshot.connection.generation === current.generation
     && current.lastSequence > 0
     && newestSnapshotSequence <= current.lastSequence
+    && current.reachedTranscriptEnd
     && !current.desynchronized
     && current.suspended === snapshot.suspended
     && current.connectionState === snapshot.connection.state
@@ -658,7 +738,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     snapshot.connection.ownedId,
     snapshot.connection.provider
   );
-  const events = idempotentSnapshotEvents(snapshot.events);
+  const events = idempotentSnapshotEvents(sourceEvents);
   const firstEvent = events[0];
   // A read snapshot is deliberately a bounded tail window. Seed the reducer
   // immediately before that window so the first retained event is contiguous
@@ -676,6 +756,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   if (
     snapshot.connection.generation === current.generation
     && rebuilt.lastSequence < current.lastSequence
+    && !window
   ) return;
   // Build the complete snapshot off the reactive graph. Publishing this object
   // before replay made every event traverse Svelte's deep proxy machinery and
@@ -689,6 +770,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   const generation = Math.max(rebuilt.generation, snapshot.connection.generation);
   const restored: ConversationWorkspaceState = {
     ...rebuilt,
+    lastSequence: window ? current.lastSequence : snapshot.lastSequence,
     generation,
     suspended: snapshot.suspended === true,
     timelineRevision: current.timelineRevision + 1,
@@ -730,12 +812,18 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     pendingAgentConfig: current.pendingAgentConfig,
     agentConfigError: current.agentConfigError,
     recentEvents: [],
+    loadedEvents: sourceEvents,
     // A snapshot is the newest window of a longer journal. Scrolling up asks
     // for what came before its first event.
-    oldestLoadedSequence: firstEvent?.sequence ?? 0,
-    loadingOlder: false,
-    reachedTranscriptStart: false,
-    loadedEventBytes: serializedEventsBytes(events),
+    oldestLoadedSequence: window?.oldestSequence ?? firstEvent?.sequence ?? snapshot.lastSequence,
+    newestLoadedSequence: window?.newestSequence
+      ?? sourceEvents[sourceEvents.length - 1]?.sequence
+      ?? snapshot.lastSequence,
+    loadingOlder: window?.loadingOlder ?? false,
+    reachedTranscriptStart: window?.reachedStart ?? false,
+    loadingNewer: window?.loadingNewer ?? false,
+    reachedTranscriptEnd: window?.reachedEnd ?? newestSnapshotSequence >= snapshot.lastSequence,
+    loadedEventBytes: serializedEventsBytes(sourceEvents),
     loadedChildTranscriptBytes: current.loadedChildTranscriptBytes
   };
   for (const event of events) {
@@ -760,15 +848,9 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
 /**
  * Puts the page of stored events just older than the transcript in front of it.
  *
- * Opening a conversation ships one screen of history, so reaching further back
- * means reading a page and prepending it. The page is replayed into a throwaway
- * session first: it is built by the same reducer the live path uses, but its
- * metadata, plan, tasks and usage are stale by definition and must never
- * overwrite what is on screen. Only the rows are taken.
- *
- * An item whose start is in the older page and whose completion is already on
- * screen appears in both, so anything already drawn is dropped rather than
- * duplicated.
+ * The one retained event window is replayed through the existing reducers so
+ * `timeline` and `agentItems` remain the only display projections. Once the
+ * byte ceiling is reached, the newest end is removed and remains refetchable.
  */
 export function prependOlderConversationEvents(
   ownedId: string,
@@ -776,45 +858,53 @@ export function prependOlderConversationEvents(
 ): void {
   const current = conversationSessions[ownedId];
   if (!current) return;
-  const events = idempotentSnapshotEvents(page.events);
-  const firstEvent = events[0];
-  let rebuilt = createConversationState(current.ownedId, current.provider);
-  rebuilt.generation = firstEvent?.generation ?? current.generation;
-  // Not clamped at zero: importing older history writes it at descending
-  // sequences that run through zero into negatives, and a clamp here would make
-  // the reducer read every one of those as already seen and drop it.
-  rebuilt.lastSequence = firstEvent ? firstEvent.sequence - 1 : 0;
-  for (const event of events) {
-    rebuilt = applyConversationEvent(rebuilt, event);
-  }
-  const older: ConversationWorkspaceState = {
-    ...freshState(current.ownedId, current.provider),
-    ...rebuilt
-  };
-  for (const event of events) {
-    const displayEvent = displayEventFrom(event);
-    const typedItem = agentItemFromEvent(displayEvent);
-    if (typedItem) {
-      mergeAgentItemInPlace(older, typedItem, conversationEventAppendsItemContent(displayEvent));
+  const events = [...page.events, ...current.loadedEvents];
+  const oldestSequence = page.events[0]?.sequence ?? current.oldestLoadedSequence;
+  let bytes = serializedEventsBytes(events);
+  let trimmedNewest = false;
+  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && events.length > 0) {
+    const removed = events.pop();
+    if (removed) {
+      bytes -= serializedEventBytes(removed);
+      trimmedNewest = true;
     }
   }
+  applyAgentConversationSnapshot(projectionSnapshot(current), {
+    events,
+    reachedStart: !page.hasMore,
+    reachedEnd: current.reachedTranscriptEnd && !trimmedNewest,
+    oldestSequence: events[0]?.sequence ?? oldestSequence,
+    newestSequence: events[events.length - 1]?.sequence ?? oldestSequence - 1
+  });
+}
 
-  const drawnEntries = new Set(current.timeline.map((entry) => entry.itemId));
-  const entries = older.timeline.filter((entry) => !drawnEntries.has(entry.itemId));
-  const drawnItems = new Set(current.agentItems.map((item) => item.id));
-  const items = older.agentItems.filter((item) => !drawnItems.has(item.id));
-  if (entries.length) current.timeline.unshift(...entries);
-  if (items.length) current.agentItems.unshift(...items);
-  // Both caches map an item id to its position, and every position just moved.
-  timelineIndexBySession.delete(current);
-  agentItemIndexBySession.delete(current);
-
-  if (firstEvent) current.oldestLoadedSequence = firstEvent.sequence;
-  current.reachedTranscriptStart = !page.hasMore;
-  current.loadingOlder = false;
-  current.loadedEventBytes += serializedEventsBytes(events);
-  current.timelineRevision += 1;
-  publishConversationProjectionDiagnostics();
+/** Adds the next stored page after the current window, trimming the oldest end
+ * when the active projection reaches its byte ceiling. */
+export function appendNewerConversationEvents(
+  ownedId: string,
+  page: AgentConversationEventPage
+): void {
+  const current = conversationSessions[ownedId];
+  if (!current) return;
+  const events = [...current.loadedEvents, ...page.events];
+  const newestSequence = page.events[page.events.length - 1]?.sequence
+    ?? current.newestLoadedSequence;
+  let bytes = serializedEventsBytes(events);
+  let trimmedOldest = false;
+  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && events.length > 0) {
+    const removed = events.shift();
+    if (removed) {
+      bytes -= serializedEventBytes(removed);
+      trimmedOldest = true;
+    }
+  }
+  applyAgentConversationSnapshot(projectionSnapshot(current), {
+    events,
+    reachedStart: current.reachedTranscriptStart && !trimmedOldest,
+    reachedEnd: !page.hasMore,
+    oldestSequence: events[0]?.sequence ?? newestSequence + 1,
+    newestSequence: events[events.length - 1]?.sequence ?? newestSequence
+  });
 }
 
 /** Marks a backward page as in flight so only one is ever asked for. */
@@ -825,7 +915,7 @@ export function beginLoadingOlderConversationEvents(ownedId: string): boolean {
   // Nothing is on screen yet, so there is no cursor to read backwards from.
   // Sequence numbers themselves say nothing here: extending an import writes
   // older events at descending sequences, which run through 1 and past it.
-  if (current.timeline.length === 0) return false;
+  if (current.oldestLoadedSequence === 0 && current.loadedEvents.length === 0) return false;
   current.loadingOlder = true;
   return true;
 }
@@ -834,6 +924,19 @@ export function beginLoadingOlderConversationEvents(ownedId: string): boolean {
 export function failLoadingOlderConversationEvents(ownedId: string): void {
   const current = conversationSessions[ownedId];
   if (current) current.loadingOlder = false;
+}
+
+export function beginLoadingNewerConversationEvents(ownedId: string): boolean {
+  const current = conversationSessions[ownedId];
+  if (!current || current.loadingNewer || current.reachedTranscriptEnd) return false;
+  if (current.newestLoadedSequence === 0 && current.loadedEvents.length === 0) return false;
+  current.loadingNewer = true;
+  return true;
+}
+
+export function failLoadingNewerConversationEvents(ownedId: string): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.loadingNewer = false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -147,7 +147,8 @@ pub struct EventRow {
     pub created_at_ms: i64,
 }
 
-/// One backward page of events, with whether older history remains.
+/// One directional page of events, with whether more history remains in that
+/// direction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OlderEvents {
     pub events: Vec<EventRow>,
@@ -890,6 +891,60 @@ impl SessionStore {
                 |row| row.get(0),
             )
             .map_err(|error| StoreError::sqlite("could not look past the older window", error))?;
+        Ok(OlderEvents { events, has_more })
+    }
+
+    /// The window of events just newer than `after_seq`, bounded by bytes.
+    pub fn list_events_after(
+        &self,
+        owned_id: &str,
+        after_seq: i64,
+        max_bytes: u32,
+    ) -> Result<OlderEvents> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT owned_id, seq, turn_id, kind, payload, created_at
+                 FROM (
+                     SELECT owned_id, seq, turn_id, kind, payload, created_at,
+                            SUM(LENGTH(payload)) OVER (
+                                ORDER BY seq ASC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                            ) AS spent
+                     FROM (
+                         SELECT owned_id, seq, turn_id, kind, payload, created_at
+                         FROM events
+                         WHERE owned_id = ? AND seq > ?
+                         ORDER BY seq ASC
+                         LIMIT ?
+                     )
+                 )
+                 WHERE COALESCE(spent, 0) <= ?
+                 ORDER BY seq ASC",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare the newer event list", error))?;
+        let rows = statement
+            .query_map(
+                params![
+                    owned_id,
+                    after_seq,
+                    i64::from(Self::WINDOW_ROW_CEILING),
+                    i64::from(max_bytes)
+                ],
+                event_from_row,
+            )
+            .map_err(|error| StoreError::sqlite("could not list newer events", error))?;
+        let events: Vec<EventRow> = rows
+            .collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the newer event list", error))?;
+        let newest = events.last().map_or(after_seq, |event| event.seq);
+        let has_more: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE owned_id = ? AND seq > ?)",
+                params![owned_id, newest],
+                |row| row.get(0),
+            )
+            .map_err(|error| StoreError::sqlite("could not look past the newer window", error))?;
         Ok(OlderEvents { events, has_more })
     }
 

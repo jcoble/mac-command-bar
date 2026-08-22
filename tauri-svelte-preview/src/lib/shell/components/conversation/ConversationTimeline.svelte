@@ -39,6 +39,11 @@
     hasOlder?: boolean;
     loadingOlder?: boolean;
     onLoadOlder?(): void;
+    /** Newer history exists beyond a window trimmed while reading upward. */
+    hasNewer?: boolean;
+    loadingNewer?: boolean;
+    onLoadNewer?(): void;
+    onJumpToLatest?(): void | Promise<void>;
     onScroll?(scrollTop: number): void;
     onApprovalDecision?(requestId: string, decision: string): void;
     onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
@@ -62,6 +67,10 @@
     hasOlder = false,
     loadingOlder = false,
     onLoadOlder,
+    hasNewer = false,
+    loadingNewer = false,
+    onLoadNewer,
+    onJumpToLatest,
     onScroll,
     onApprovalDecision,
     onInputSubmit,
@@ -386,25 +395,37 @@
   }
 
   /*
-   * Reading older history moves everything already on screen down by the height
-   * of what arrived above it, so the view would jump. The scroll height before
-   * the page is asked for is recorded here, and the difference is added back to
-   * the scroll position once the new rows are laid out, which leaves the row the
-   * reader was looking at exactly where it was.
+   * Reading older history moves everything already on screen down. Remember the
+   * first existing item and restore its viewport offset after replay; anchoring
+   * an item rather than total height also survives the newest rows being trimmed.
    */
-  let prependAnchor: { scrollHeight: number; scrollTop: number; firstItemId: string } | null = null;
+  let pageAnchor: { viewportTop: number; itemId: string } | null = null;
   let anchoredFirstItemId = '';
+
+  function captureViewportAnchor(): void {
+    if (!host) return;
+    const hostTop = host.getBoundingClientRect().top;
+    const candidates = [...host.querySelectorAll<HTMLElement>('[data-item-id]')];
+    const item = candidates.find((candidate) => candidate.getBoundingClientRect().bottom > hostTop)
+      ?? candidates[0];
+    pageAnchor = item
+      ? { viewportTop: item.getBoundingClientRect().top, itemId: item.dataset.itemId ?? '' }
+      : null;
+  }
 
   function requestOlderHistory(): void {
     if (!host || !hasOlder || loadingOlder || !onLoadOlder) return;
     // One viewport of warning, so the page arrives before the reader hits the top.
     if (host.scrollTop > Math.max(viewportHeight, 1)) return;
-    prependAnchor = {
-      scrollHeight: host.scrollHeight,
-      scrollTop: host.scrollTop,
-      firstItemId: renderedItems[0]?.itemId ?? ''
-    };
+    captureViewportAnchor();
     onLoadOlder();
+  }
+
+  function requestNewerHistory(force = false): void {
+    if (!host || !hasNewer || loadingNewer || !onLoadNewer) return;
+    if (!force && distanceBelowReader() > Math.max(viewportHeight, 1)) return;
+    captureViewportAnchor();
+    onLoadNewer();
   }
 
   // A restored page can mount with estimates that make its bounded tail look
@@ -438,14 +459,28 @@
     const firstItemId = renderedItems[0]?.itemId ?? '';
     if (firstItemId === anchoredFirstItemId) return;
     anchoredFirstItemId = firstItemId;
-    const anchor = prependAnchor;
-    if (!anchor || anchor.firstItemId === firstItemId) return;
-    prependAnchor = null;
+    const anchor = pageAnchor;
+    if (!anchor || anchor.itemId === firstItemId) return;
+    pageAnchor = null;
     void tick().then(() => {
       if (!host) return;
-      const grown = host.scrollHeight - anchor.scrollHeight;
-      if (grown > 0) host.scrollTop = anchor.scrollTop + grown;
+      const rowIndex = renderedGroups.findIndex((group) =>
+        group.items.some((item) => item.itemId === anchor.itemId)
+      );
+      if (rowIndex >= 0) $virtualizer.scrollToIndex(rowIndex, { align: 'start' });
+      requestAnimationFrame(() => {
+        if (!host) return;
+        const item = host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(anchor.itemId)}"]`);
+        if (item) host.scrollTop += item.getBoundingClientRect().top - anchor.viewportTop;
+      });
     });
+  });
+
+  let paging = false;
+  $effect(() => {
+    const now = loadingOlder || loadingNewer;
+    if (paging && !now && renderedItems[0]?.itemId === anchoredFirstItemId) pageAnchor = null;
+    paging = now;
   });
 
   function handleScroll(): void {
@@ -453,9 +488,21 @@
     follow = distanceBelowReader() <= 80;
     onScroll?.(host.scrollTop);
     requestOlderHistory();
+    requestNewerHistory();
   }
 
-  function jumpToLatest(): void {
+  let jumpingToLatest = false;
+  async function jumpToLatest(): Promise<void> {
+    if (jumpingToLatest) return;
+    if (hasNewer && onJumpToLatest) {
+      jumpingToLatest = true;
+      try {
+        await onJumpToLatest();
+        await tick();
+      } finally {
+        jumpingToLatest = false;
+      }
+    }
     const decision = decideConversationScroll(scrollState, {
       type: 'jump-to-latest',
       reducedMotion: prefersReducedMotion()
@@ -644,7 +691,7 @@
       {/if}
     </div>
   </div>
-  {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" aria-label="Jump to latest" onclick={jumpToLatest}><ArrowDown size={16} strokeWidth={2} aria-hidden="true" /></button>{/if}
+  {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" aria-label="Jump to latest" onclick={() => void jumpToLatest()}><ArrowDown size={16} strokeWidth={2} aria-hidden="true" /></button>{/if}
 </div>
 
 <style>

@@ -17,7 +17,6 @@ mod openai;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
@@ -119,6 +118,8 @@ pub enum HelperError {
     Vendor { status: u16, message: String },
     /// The vendor answered with something this code cannot read.
     BadResponse(String),
+    /// The helper settings store or its JSON value could not be used.
+    Settings(String),
 }
 
 impl HelperError {
@@ -137,6 +138,7 @@ impl HelperError {
             Self::BadResponse(detail) => {
                 format!("The helper model's answer could not be read: {detail}")
             }
+            Self::Settings(detail) => format!("The helper settings could not be used: {detail}"),
         }
     }
 }
@@ -288,32 +290,38 @@ impl HelperTransport for HttpTransport {
     }
 }
 
-/// Where vendor and model are kept. Not in the frontend's settings store:
-/// the app itself runs helper jobs, so it has to be able to read the choice
-/// without a window open.
-fn settings_path(app: &AppHandle) -> Result<PathBuf, HelperError> {
-    let directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| HelperError::Transport(error.to_string()))?;
-    Ok(directory.join("helper-settings.json"))
+const SETTINGS_KEY: &str = "helper.settings";
+
+/// The stored choice, or the default when nothing has been chosen yet. Store
+/// and JSON errors stay visible to the caller instead of silently changing the
+/// vendor or model.
+fn read_settings(app: &AppHandle) -> Result<HelperSettings, HelperError> {
+    let runtime = app
+        .try_state::<crate::agent_conversation::manager::AgentRuntimeManager>()
+        .ok_or_else(|| HelperError::Settings("the session database is unavailable".to_string()))?;
+    let Some(value_json) = runtime
+        .read_app_setting(SETTINGS_KEY)
+        .map_err(HelperError::Settings)?
+    else {
+        return Ok(HelperSettings::default());
+    };
+    serde_json::from_str(&value_json).map_err(|error| HelperError::Settings(error.to_string()))
 }
 
-/// The stored choice, or the default when nothing has been chosen yet. A file
-/// that cannot be read is treated the same as one that is not there: the
-/// helper is a convenience, and failing to start over a stray byte would be
-/// worse than quietly using the cheapest model.
-fn read_settings(app: &AppHandle) -> HelperSettings {
-    settings_path(app)
-        .ok()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice::<HelperSettings>(&bytes).ok())
-        .unwrap_or_default()
+fn write_settings(app: &AppHandle, settings: &HelperSettings) -> Result<(), HelperError> {
+    let value_json =
+        serde_json::to_string(settings).map_err(|error| HelperError::Settings(error.to_string()))?;
+    let runtime = app
+        .try_state::<crate::agent_conversation::manager::AgentRuntimeManager>()
+        .ok_or_else(|| HelperError::Settings("the session database is unavailable".to_string()))?;
+    runtime
+        .write_app_setting(SETTINGS_KEY, &value_json)
+        .map_err(HelperError::Settings)
 }
 
 /// Runs one helper job end to end: read the choice, read the key, ask, log.
 fn run_job(app: &AppHandle, job: HelperJob, input: &str) -> Result<HelperCompletion, HelperError> {
-    let settings = read_settings(app);
+    let settings = read_settings(app)?;
     let key = keychain::read_key(settings.vendor.name())?.ok_or(HelperError::NoKey)?;
     let request = HelperRequest {
         job,
@@ -378,32 +386,27 @@ pub async fn set_helper_key(vendor: HelperVendor, key: String) -> Result<(), Str
 #[tauri::command]
 pub async fn read_helper_settings(app: AppHandle) -> Result<HelperSettingsView, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let settings = read_settings(&app);
+        let settings = read_settings(&app).map_err(|error| error.sentence())?;
         let has_key = keychain::read_key(settings.vendor.name())
             .ok()
             .flatten()
             .is_some();
-        HelperSettingsView {
+        Ok(HelperSettingsView {
             vendor: settings.vendor,
             model: settings.model,
             has_key,
             openai_models: OPENAI_MODELS.iter().map(|id| id.to_string()).collect(),
             anthropic_models: ANTHROPIC_MODELS.iter().map(|id| id.to_string()).collect(),
-        }
+        })
     })
     .await
-    .map_err(|error| format!("helper task failed: {error}"))
+    .map_err(|error| format!("helper task failed: {error}"))?
 }
 
 #[tauri::command]
 pub async fn write_helper_settings(app: AppHandle, settings: HelperSettings) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = settings_path(&app).map_err(|error| error.sentence())?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let document = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
-        std::fs::write(path, document).map_err(|error| error.to_string())
+        write_settings(&app, &settings).map_err(|error| error.sentence())
     })
     .await
     .map_err(|error| format!("helper task failed: {error}"))?

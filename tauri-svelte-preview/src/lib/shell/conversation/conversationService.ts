@@ -23,8 +23,11 @@ import {
   setConversationWriterLeaseTransition,
   clearConversationWriterLeaseTransition,
   beginLoadingOlderConversationEvents,
+  beginLoadingNewerConversationEvents,
   failLoadingOlderConversationEvents,
-  prependOlderConversationEvents
+  failLoadingNewerConversationEvents,
+  prependOlderConversationEvents,
+  appendNewerConversationEvents
 } from './conversationStore.svelte.ts';
 import type {
   AgentCapabilities,
@@ -51,6 +54,7 @@ import {
 import {
   readAgentConversationCapabilitiesFromTauri,
   listAgentConversationEventsBeforeFromTauri,
+  listAgentConversationEventsAfterFromTauri,
   extendAgentConversationImportFromTauri,
   readAgentConversationSnapshotFromTauri,
   writeTerminalSessionFromTauri
@@ -499,7 +503,7 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
  * megabyte conversation took forty of them. The rows are virtualized, so a
  * bigger page costs a longer read and no more drawing; what it buys is a
  * quarter as many waits. */
-const OLDER_PAGE_BYTES = 1024 * 1024;
+const EVENT_PAGE_BYTES = 1024 * 1024;
 
 /**
  * Reads the page of stored events just older than the transcript and puts it in
@@ -508,13 +512,25 @@ const OLDER_PAGE_BYTES = 1024 * 1024;
  */
 export async function loadOlderConversationEvents(ownedId: string): Promise<void> {
   if (!beginLoadingOlderConversationEvents(ownedId)) return;
-  const before = getConversationSession(ownedId)?.oldestLoadedSequence ?? 0;
+  const started = getConversationSession(ownedId);
+  const before = started?.oldestLoadedSequence ?? 0;
+  const generation = started?.generation ?? 0;
+  const readVersion = readVersions.get(ownedId) ?? 0;
   try {
     const page = await listAgentConversationEventsBeforeFromTauri(
       ownedId,
       before,
-      OLDER_PAGE_BYTES
+      EVENT_PAGE_BYTES
     );
+    const current = getConversationSession(ownedId);
+    if (
+      readVersions.get(ownedId) !== readVersion
+      || current?.generation !== generation
+      || current.oldestLoadedSequence !== before
+    ) {
+      failLoadingOlderConversationEvents(ownedId);
+      return;
+    }
     if (!page) {
       failLoadingOlderConversationEvents(ownedId);
       return;
@@ -530,6 +546,15 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     // started here has no transcript behind it and reports nothing added,
     // which is how this stops.
     const extended = await extendAgentConversationImportFromTauri(ownedId);
+    const afterExtend = getConversationSession(ownedId);
+    if (
+      readVersions.get(ownedId) !== readVersion
+      || afterExtend?.generation !== generation
+      || afterExtend.oldestLoadedSequence !== before
+    ) {
+      failLoadingOlderConversationEvents(ownedId);
+      return;
+    }
     if (!extended) {
       failLoadingOlderConversationEvents(ownedId);
       return;
@@ -547,14 +572,55 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     const grown = await listAgentConversationEventsBeforeFromTauri(
       ownedId,
       before,
-      OLDER_PAGE_BYTES
+      EVENT_PAGE_BYTES
     );
+    const afterGrow = getConversationSession(ownedId);
+    if (
+      readVersions.get(ownedId) !== readVersion
+      || afterGrow?.generation !== generation
+      || afterGrow.oldestLoadedSequence !== before
+    ) {
+      failLoadingOlderConversationEvents(ownedId);
+      return;
+    }
     prependOlderConversationEvents(ownedId, {
       events: grown?.events ?? [],
       hasMore: grown?.hasMore || !extended.reachedStart
     });
   } catch {
     failLoadingOlderConversationEvents(ownedId);
+  }
+}
+
+/** Reads the next stored page after a window whose newest end was trimmed. */
+export async function loadNewerConversationEvents(ownedId: string): Promise<void> {
+  if (!beginLoadingNewerConversationEvents(ownedId)) return;
+  const started = getConversationSession(ownedId);
+  const after = started?.newestLoadedSequence ?? 0;
+  const generation = started?.generation ?? 0;
+  const readVersion = readVersions.get(ownedId) ?? 0;
+  try {
+    const page = await listAgentConversationEventsAfterFromTauri(
+      ownedId,
+      after,
+      EVENT_PAGE_BYTES
+    );
+    const current = getConversationSession(ownedId);
+    if (
+      readVersions.get(ownedId) !== readVersion
+      || current?.generation !== generation
+      || current.newestLoadedSequence !== after
+    ) {
+      failLoadingNewerConversationEvents(ownedId);
+      return;
+    }
+    if (!page) {
+      failLoadingNewerConversationEvents(ownedId);
+      return;
+    }
+    appendNewerConversationEvents(ownedId, page);
+  } catch {
+    failLoadingNewerConversationEvents(ownedId);
   }
 }
 

@@ -2206,6 +2206,28 @@ impl AgentRuntimeManager {
         })
     }
 
+    /// The page of transcript events just newer than `after_sequence`.
+    pub fn list_events_after(
+        &self,
+        owned_id: &str,
+        after_sequence: i64,
+        max_bytes: u32,
+    ) -> Result<AgentConversationEventPage, String> {
+        let page = self
+            .store
+            .list_events_after(owned_id, after_sequence, max_bytes)
+            .map_err(|error| error.to_string())?;
+        let events = page
+            .events
+            .into_iter()
+            .map(stored_event)
+            .collect::<Result<Vec<AgentConversationEvent>, String>>()?;
+        Ok(AgentConversationEventPage {
+            events,
+            has_more: page.has_more,
+        })
+    }
+
     pub fn submit_terminal_projection(
         &self,
         owned_id: &str,

@@ -491,24 +491,48 @@ function kindFor(item: AgentItem): ConversationDisplayItem['kind'] {
   }
 }
 
-function toolKindOf(value: unknown, name = ''): ConversationToolKind {
-  const normalized = stringOf(value).trim().toLowerCase().replaceAll('_', '-');
-  if (/file|edit|patch|diff|write/.test(normalized)) return 'file-edit';
-  // The web is checked before searching in general, so a web search is drawn
-  // with a globe and a local one with a magnifier. Both are searches; only one
-  // of them left the machine.
-  if (/web/.test(normalized)) return 'fetch';
-  if (/search|grep|find|query/.test(normalized)) return 'search';
-  if (/fetch|read|view|open|http|mcp|web/.test(normalized)) return 'fetch';
-  if (/command|execute|terminal|shell|run/.test(normalized)) return 'command';
-  if (!normalized) {
-    const inferred = name.toLowerCase();
-    if (/web/.test(inferred)) return 'fetch';
-    if (/search|grep|find|query/.test(inferred)) return 'search';
-    if (/fetch|read|view|open|http|mcp/.test(inferred)) return 'fetch';
-    if (/command|execute|terminal|shell|run/.test(inferred)) return 'command';
+function toolKindOf(...values: unknown[]): ConversationToolKind {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    switch (value.trim().toLowerCase().replaceAll('_', '-')) {
+      case 'command':
+      case 'execute':
+      case 'terminal':
+      case 'shell':
+      case 'run':
+        return 'command';
+      case 'file':
+      case 'file-change':
+      case 'file-edit':
+      case 'edit':
+      case 'patch':
+      case 'diff':
+      case 'write':
+      case 'delete':
+      case 'move':
+        return 'file-edit';
+      case 'search':
+      case 'grep':
+      case 'find':
+      case 'query':
+        return 'search';
+      case 'fetch':
+      case 'read':
+      case 'view':
+      case 'open':
+      case 'http':
+      case 'web':
+      case 'web-search':
+      case 'image-view':
+        return 'fetch';
+    }
   }
   return 'tool';
+}
+
+function toolTitleOf(value: unknown): string | null {
+  const title = stringOf(value).trim();
+  return title || null;
 }
 
 /** The first readable line of a title's fenced block, with the fence
@@ -577,7 +601,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     timestampMs: startedAt
   };
   if (kind === 'tool') {
-    const rawTitle = stringOf(metadata?.title, stringOf(metadata?.name, item.type));
+    const rawTitle = toolTitleOf(metadata?.title) ?? toolTitleOf(metadata?.name) ?? item.type;
     // A raw title sometimes has a fenced block stuffed into it instead of a
     // separate summary; when it does, the fence is the row's one-line
     // title, with the fence itself discarded.
@@ -585,7 +609,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     const fencedSummary = fenceIndex < 0 ? '' : toolSummaryLine(rawTitle);
     const title = fenceIndex < 0 ? rawTitle : fencedSummary || rawTitle.slice(0, fenceIndex).trim() || 'Tool';
     const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : undefined;
-    const toolKind = toolKindOf(metadata?.toolKind ?? item.type, title);
+    const toolKind = toolKindOf(metadata?.toolKind, metadata?.kind, metadata?.nativeType, metadata?.category, item.type);
     const output = toolKind === 'file-edit' ? '' : textOf(item.content) || stringOf(metadata?.output);
     const diff = stringOf(metadata?.diff);
     return {
@@ -686,7 +710,7 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
     kind: 'tool',
     itemId: entry.itemId,
     title: entry.name,
-    toolKind: toolKindOf('', entry.name),
+    toolKind: 'tool',
     state: toolStateOf(entry.state),
     // The body and the row's one line are different things. This handed the
     // summary over as both, so a row either repeated itself or, far more often,
@@ -945,20 +969,18 @@ function eventMetadata(
  * and that is the provider's vocabulary, not the reader's. A row says what was
  * done instead, and the provider's own detail stays in the line beside it.
  *
- * Only the two kinds a transcript is mostly made of are renamed, and only when
- * the call itself says so. A shell call still names the command it ran, and a
- * `Grep` still says `Grep`, because that is the work and any broader guess
- * would mislabel it. */
+ * Only a structured file-edit kind is renamed. A shell call still names the
+ * command it ran, and a `Grep` still says `Grep`, because that is the work and
+ * any broader guess would mislabel it. */
 function plainToolTitle(toolKind: ConversationToolKind, name: string): string {
   if (toolKind === 'file-edit') return 'Edited a file';
-  if (/web/i.test(name)) return 'Searched the web';
   return name;
 }
 
 function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, payloadKind: string): AgentItem {
   // A row that was handed its own title keeps it: the only caller that does so
   // is the whole-turn file change, which already knows it covers several files.
-  const givenTitle = stringOf(payload.title);
+  const givenTitle = toolTitleOf(payload.title) ?? '';
   const name = givenTitle || stringOf(payload.name, stringOf(payload.command, stringOf(payload.path, 'Tool')));
   // A summary is the row's one-line preview, and nothing else. It used to
   // stand in for the body as well, which printed the same sentence twice —
@@ -968,8 +990,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
   // `output` is what a stored call answered; `content` is what a live ACP
   // update carries. A row reads whichever it was given.
   const contentText = textFromValue(payload.output) || textFromValue(payload.content);
-  const rawKind = stringOf(payload.toolKind, stringOf(payload.category, stringOf(payload.type)));
-  const toolKind = toolKindOf(rawKind, name);
+  const toolKind = toolKindOf(payload.toolKind, payload.kind, payload.nativeType, payload.category, payload.type);
   const title = givenTitle || plainToolTitle(toolKind, name);
   const diff = stringOf(payload.diff) || firstNestedString(payload.content, ['diff', 'patch']);
   const output = toolKind === 'file-edit' ? '' : contentText;

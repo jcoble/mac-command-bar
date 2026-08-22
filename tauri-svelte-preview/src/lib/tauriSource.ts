@@ -1480,6 +1480,21 @@ export async function listAgentConversationEventsBeforeFromTauri(
   });
 }
 
+/** The page of stored events just newer than `afterSequence`, for scrolling down. */
+export async function listAgentConversationEventsAfterFromTauri(
+  ownedId: string,
+  afterSequence: number,
+  maxBytes: number
+): Promise<AgentConversationEventPage | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
+    ownedId,
+    afterSequence,
+    maxBytes
+  });
+}
+
 export async function updateAgentConversationSessionMetaFromTauri(input: {
   ownedId: string;
   model: string | null;

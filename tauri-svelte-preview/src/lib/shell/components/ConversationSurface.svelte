@@ -26,7 +26,9 @@
     clearConversationSessionDraft,
     flushConversationSessionDraft,
     loadConversationCapabilities,
+    loadConversationForRead,
     loadOlderConversationEvents,
+    loadNewerConversationEvents,
     persistConversationSessionDraft,
     readChildConversationTranscript,
     removeConversationAttachment,
@@ -456,6 +458,10 @@
         hasOlder={!conversation.selectedChildId && !conversation.reachedTranscriptStart}
         loadingOlder={!conversation.selectedChildId && conversation.loadingOlder}
         onLoadOlder={() => void loadOlderConversationEvents(active.ownedId)}
+        hasNewer={!conversation.selectedChildId && !conversation.reachedTranscriptEnd}
+        loadingNewer={!conversation.selectedChildId && conversation.loadingNewer}
+        onLoadNewer={() => void loadNewerConversationEvents(active.ownedId)}
+        onJumpToLatest={() => loadConversationForRead(active.ownedId)}
         onScroll={(scrollTop) => {
           if (conversation.selectedChildId) conversation.childScrollTopById[conversation.selectedChildId] = scrollTop;
           else setConversationScrollTop(active.ownedId, scrollTop);
