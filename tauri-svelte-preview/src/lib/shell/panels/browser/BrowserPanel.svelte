@@ -678,9 +678,17 @@
     });
   });
 
-  // Whatever unmounts this panel — a different session, a rebuilt shell — the
-  // view must not be left on screen behind it.
-  $effect(() => () => untrack(() => releaseBrowserWorkspace()));
+  // Release the native view and panel-owned resources whenever this scope is
+  // hidden or handed to another session/root, not only when it unmounts.
+  $effect(() => {
+    visible;
+    ownedId;
+    root;
+    return () => untrack(() => {
+      releaseBrowserWorkspace();
+      discard();
+    });
+  });
 
   $effect(() => {
     ownedId;
