@@ -5,6 +5,7 @@
   import { basicSetup } from 'codemirror';
   import { onDestroy, onMount } from 'svelte';
 
+  import { addMergeView, setMergeDocBytes, textBytes } from '$lib/shell/resourceDiagnostics.svelte';
   import {
     codeMirrorLanguageForPath,
     loadCodeMirrorLanguage
@@ -55,7 +56,11 @@
     const generation = ++renderGeneration;
     const language = await loadCodeMirrorLanguage(codeMirrorLanguageForPath(relativePath));
     if (!mounted || generation !== renderGeneration) return;
-    mergeView?.destroy();
+    if (mergeView) {
+      mergeView.destroy();
+      addMergeView(-1);
+      setMergeDocBytes(0);
+    }
     mergeView = new MergeView({
       parent: host,
       a: { doc: originalContent, extensions: readOnlyExtensions(language) },
@@ -65,6 +70,8 @@
       gutter: true,
       diffConfig: { scanLimit: 1000, timeout: 500 }
     });
+    addMergeView(1);
+    setMergeDocBytes(textBytes(originalContent) + textBytes(modifiedContent));
   }
 
   $effect(() => {
@@ -82,8 +89,12 @@
   onDestroy(() => {
     mounted = false;
     renderGeneration += 1;
-    mergeView?.destroy();
+    if (mergeView) {
+      mergeView.destroy();
+      addMergeView(-1);
+    }
     mergeView = null;
+    setMergeDocBytes(0);
   });
 </script>
 

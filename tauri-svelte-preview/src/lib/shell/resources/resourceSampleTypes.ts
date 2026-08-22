@@ -18,6 +18,33 @@ export type ResourceSampleHistory = {
   rssBytes: number[];
 };
 
+export type ResourceDiagnostics = {
+  conversations: {
+    durableSessionRows: number;
+    liveSessionOverlays: number;
+    liveRuntimeHandles: number;
+    sidecarProcesses: number;
+    activeTurns: number;
+    pendingPermissions: number;
+    pendingInputs: number;
+    liveToolCalls: number;
+    backgroundWork: number;
+    suspendableSessions: number;
+    adapterPools?: number;
+  };
+  terminals: {
+    liveSessions: number;
+    userPtys: number;
+    agentToolPtys: number;
+    runConfigurations: number;
+    browserAutomations: number;
+    exitedSessionsRetained: number;
+  };
+  languageServers: {
+    runningProcesses: number;
+  };
+};
+
 export type ResourceSampleSession = {
   ownedId?: string;
   label: string;
@@ -41,6 +68,7 @@ export type ResourceSample = {
     rssBytes: number;
     processCount: number;
   };
+  diagnostics: ResourceDiagnostics;
   app: {
     parts: ResourceSampleAppPart[];
     history: ResourceSampleHistory;

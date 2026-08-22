@@ -22,6 +22,7 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import { resourceDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
 
   import PlaywrightCard from '$lib/shell/components/processes/PlaywrightCard.svelte';
 
@@ -170,6 +171,32 @@
       <p class="message error">{resourceStopState.error}</p>
     {:else if resourceStopState.receipt}
       <p class="message receipt">{resourceStopState.receipt}</p>
+    {/if}
+    {#if resourceSampleState.sample}
+      <section class="diagnostic-strip" aria-label="Assembly lifecycle counts">
+        <span><strong>{resourceSampleState.sample.diagnostics.conversations.durableSessionRows}</strong> SQLite sessions</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.conversations.liveSessionOverlays}</strong> overlays</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.conversations.liveRuntimeHandles}</strong> ACP runtimes</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.conversations.sidecarProcesses}</strong> sidecars</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.conversations.activeTurns}</strong> active turns</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.terminals.userPtys}</strong> user PTYs</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.terminals.agentToolPtys}</strong> tool PTYs</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.languageServers.runningProcesses}</strong> LSPs</span>
+      </section>
+    {/if}
+    {#if import.meta.env.DEV}
+      <section class="diagnostic-strip" aria-label="Frontend lifecycle counts">
+        <span><strong>{resourceDiagnostics.xtermViews}</strong> xterm views</span>
+        <span><strong>{resourceDiagnostics.codeMirrorEditorViews}</strong> editor views</span>
+        <span><strong>{resourceDiagnostics.codeMirrorDocBytes}</strong> editor bytes</span>
+        <span><strong>{resourceDiagnostics.mergeViews}</strong> merge views</span>
+        <span><strong>{resourceDiagnostics.mergeDocBytes}</strong> diff bytes</span>
+        <span><strong>{resourceDiagnostics.elementVisibilityWatchers}</strong> visibility watchers</span>
+        <span><strong>{resourceDiagnostics.railElapsedWatchers}</strong> rail watchers</span>
+        <span><strong>{resourceDiagnostics.semanticWaitingSpots}</strong> semantic waits</span>
+        <span><strong>{resourceDiagnostics.semanticSchedulerInFlight}</strong> semantic inflight</span>
+        <span><strong>{resourceDiagnostics.semanticRetryTimers}</strong> semantic retries</span>
+      </section>
     {/if}
 
     {#if view}
@@ -487,6 +514,28 @@
     background: var(--color-bg);
   }
   .disk-message { padding-left: 28px; background: var(--color-bg); }
+  .diagnostic-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+  .diagnostic-strip span {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-height: 24px;
+    padding: 3px 7px;
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    color: var(--color-text-2);
+    background: var(--color-elevated);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .diagnostic-strip strong { color: var(--color-text); font-weight: 650; }
 
   /*
     The action stays visible rather than appearing on hover: a control that is

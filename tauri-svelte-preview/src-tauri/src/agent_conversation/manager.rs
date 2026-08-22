@@ -321,6 +321,23 @@ pub struct AgentResourceRoot {
     pub cwd: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeDiagnostics {
+    pub durable_session_rows: usize,
+    pub live_session_overlays: usize,
+    pub live_runtime_handles: usize,
+    pub sidecar_processes: usize,
+    pub active_turns: usize,
+    pub pending_permissions: usize,
+    pub pending_inputs: usize,
+    pub live_tool_calls: usize,
+    pub background_work: usize,
+    pub suspendable_sessions: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter_pools: Option<usize>,
+}
+
 impl Default for AgentRuntimeManager {
     fn default() -> Self {
         Self::new(ProviderRegistry::default())
@@ -680,6 +697,58 @@ impl AgentRuntimeManager {
                 })
             })
             .collect()
+    }
+
+    pub fn resource_diagnostics(&self) -> Result<AgentRuntimeDiagnostics, String> {
+        let durable_session_rows = self.store.count_sessions().map_err(|error| error.to_string())?;
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let diagnostics = AgentRuntimeDiagnostics {
+            durable_session_rows,
+            live_session_overlays: sessions.len(),
+            live_runtime_handles: sessions
+                .values()
+                .filter(|session| session.runtime.is_some())
+                .count(),
+            sidecar_processes: sessions
+                .values()
+                .filter_map(|session| session.runtime.as_ref())
+                .filter_map(|runtime| runtime.try_lock().ok())
+                .filter(|runtime| runtime.process_id().is_some())
+                .count(),
+            active_turns: sessions
+                .values()
+                .filter(|session| session.active_turn_id.is_some())
+                .count(),
+            pending_permissions: sessions
+                .values()
+                .map(|session| session.permission_requests.len())
+                .sum(),
+            pending_inputs: sessions
+                .values()
+                .map(|session| session.user_input_requests.len())
+                .sum(),
+            live_tool_calls: sessions
+                .values()
+                .map(|session| session.live_tool_calls.len())
+                .sum(),
+            background_work: sessions
+                .values()
+                .map(|session| session.background_work.len())
+                .sum(),
+            suspendable_sessions: sessions
+                .values()
+                .filter(|session| session_can_suspend(session))
+                .count(),
+            adapter_pools: None,
+        };
+        drop(sessions);
+        Ok(AgentRuntimeDiagnostics {
+            adapter_pools: self.adapter_pools.try_lock().ok().map(|pools| pools.len()),
+            ..diagnostics
+        })
     }
 
     /// Returns the capability snapshot advertised by the active ACP session. WorkflowEngine uses

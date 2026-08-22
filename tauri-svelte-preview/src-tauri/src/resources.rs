@@ -160,8 +160,34 @@ fn attach_resource_history(sample: &mut ResourceSample, store: &mut ResourceHist
 pub struct ResourceSample {
     pub generated_at_ms: u128,
     pub totals: ResourceSampleTotals,
+    pub diagnostics: ResourceDiagnostics,
     pub app: ResourceSampleApp,
     pub groups: Vec<ResourceSampleGroup>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceDiagnostics {
+    pub conversations: crate::agent_conversation::manager::AgentRuntimeDiagnostics,
+    pub terminals: TerminalResourceDiagnostics,
+    pub language_servers: LanguageServerResourceDiagnostics,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalResourceDiagnostics {
+    pub live_sessions: usize,
+    pub user_ptys: usize,
+    pub agent_tool_ptys: usize,
+    pub run_configurations: usize,
+    pub browser_automations: usize,
+    pub exited_sessions_retained: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageServerResourceDiagnostics {
+    pub running_processes: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -410,6 +436,7 @@ pub async fn read_resource_sample(
 
     tauri::async_runtime::spawn_blocking(move || {
         let owners = resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?;
+        let diagnostics = resource_diagnostics(&terminal_registry, &agent_runtime, &lsp_registry)?;
         let mut system = system
             .lock()
             .map_err(|_| "Resource sampler is unavailable".to_string())?;
@@ -420,6 +447,7 @@ pub async fn read_resource_sample(
             &processes,
             &owners,
         );
+        sample.diagnostics = diagnostics;
         let mut history = history
             .lock()
             .map_err(|_| "Resource history is unavailable".to_string())?;
@@ -534,6 +562,47 @@ fn resource_sample_owners(
             }),
     );
     Ok(owners)
+}
+
+fn resource_diagnostics(
+    terminal_registry: &crate::terminal::TerminalRegistry,
+    agent_runtime: &crate::agent_conversation::manager::AgentRuntimeManager,
+    lsp_registry: &crate::lsp::SourceLspRegistry,
+) -> Result<ResourceDiagnostics, String> {
+    let terminal_sessions = crate::terminal::list_terminal_sessions(terminal_registry)?;
+    let live_terminal_sessions = terminal_sessions
+        .iter()
+        .filter(|session| !session.exited)
+        .collect::<Vec<_>>();
+    Ok(ResourceDiagnostics {
+        conversations: agent_runtime.resource_diagnostics()?,
+        terminals: TerminalResourceDiagnostics {
+            live_sessions: live_terminal_sessions.len(),
+            user_ptys: live_terminal_sessions
+                .iter()
+                .filter(|session| session.kind == crate::terminal::TerminalKind::UserPty)
+                .count(),
+            agent_tool_ptys: live_terminal_sessions
+                .iter()
+                .filter(|session| session.kind == crate::terminal::TerminalKind::AgentTool)
+                .count(),
+            run_configurations: live_terminal_sessions
+                .iter()
+                .filter(|session| session.kind == crate::terminal::TerminalKind::RunConfiguration)
+                .count(),
+            browser_automations: live_terminal_sessions
+                .iter()
+                .filter(|session| session.kind == crate::terminal::TerminalKind::BrowserAutomation)
+                .count(),
+            exited_sessions_retained: terminal_sessions
+                .iter()
+                .filter(|session| session.exited)
+                .count(),
+        },
+        language_servers: LanguageServerResourceDiagnostics {
+            running_processes: lsp_registry.running_language_server_processes().len(),
+        },
+    })
 }
 
 fn resource_workspace_label(cwd: &str) -> String {
@@ -883,6 +952,7 @@ fn build_resource_sample(
             rss_bytes: included.iter().map(|process| process.rss_bytes).sum(),
             process_count: included.len(),
         },
+        diagnostics: ResourceDiagnostics::default(),
         app: ResourceSampleApp {
             parts: app_parts,
             history: ResourceSampleHistory::default(),

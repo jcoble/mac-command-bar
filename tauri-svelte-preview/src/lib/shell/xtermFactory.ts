@@ -20,6 +20,7 @@
  */
 import type { TerminalView } from '../liveConversationTerminals';
 import { defaultSettings, settings } from '../settingsStore.svelte';
+import { addXtermView } from './resourceDiagnostics.svelte.ts';
 import { currentTheme, registerTerminalApplier } from './themes/themeService';
 
 /**
@@ -173,6 +174,7 @@ export function makeTerminalView(
   terminal.loadAddon(serializeAddon);
   terminal.open(host);
   liveTerminals.add(terminal);
+  addXtermView(1);
 
   const inputDisposable = terminal.onData((data) => hooks.onData(data));
 
@@ -263,6 +265,7 @@ export function makeTerminalView(
       if (disposed) return;
       disposed = true;
       liveTerminals.delete(terminal);
+      addXtermView(-1);
       inputDisposable.dispose();
       releaseWebgl();
       try {

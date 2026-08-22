@@ -88,6 +88,7 @@ import {
   replacePersistedReferenceCounts
 } from './referenceCountPersistence.ts';
 import { statusMessageIsAboutThisFile } from '../components/editor/languageServerStatus.ts';
+import { setSourceIntelligenceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────
@@ -581,6 +582,21 @@ export function createSourceIntelligence(): SourceIntelligence {
    */
   let heldUntilServerIsReady: string[] = [];
 
+  function publishResourceDiagnostics(): void {
+    if (!import.meta.env.DEV) return;
+    setSourceIntelligenceDiagnostics({
+      semanticWaitingSpots: waitingSpots.size,
+      semanticSchedulerWaiting: semanticScheduler.waiting,
+      semanticSchedulerInFlight: semanticScheduler.inFlight,
+      semanticReferenceRequests: semanticReferenceRequests.size,
+      semanticRetryTimers: semanticRetryTimers.size,
+      semanticHeldUntilReady: heldUntilServerIsReady.length,
+      semanticRememberedTargets: rememberedSemanticTargets.size,
+      sourcePreviewCacheEntries: externalPreviewCache.size,
+      rememberedReferenceCountEntries: countStore.entries().length
+    });
+  }
+
   const semanticScheduler = createSemanticReferenceCountScheduler({
     maxInFlight: semanticReferenceCountMaxInFlight,
     async countFor(key: string) {
@@ -613,10 +629,12 @@ export function createSourceIntelligence(): SourceIntelligence {
           retryTimer = window.setTimeout(askAgain, retryDelayMs);
         }
         semanticRetryTimers.add(retryTimer);
+        publishResourceDiagnostics();
         return;
       }
 
       waitingSpots.delete(key);
+      publishResourceDiagnostics();
       reportLensTiming(
         `${spot.request.symbolName}: ${
           count ? `${count.count} reference(s)` : 'no answer'
@@ -705,9 +723,11 @@ export function createSourceIntelligence(): SourceIntelligence {
       return { count, targets: peekTargets };
     })().finally(() => {
       semanticReferenceRequests.delete(resultKey);
+      publishResourceDiagnostics();
     });
 
     semanticReferenceRequests.set(resultKey, answer);
+    publishResourceDiagnostics();
     return answer;
   }
 
@@ -940,6 +960,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       } else {
         semanticScheduler.request([key]);
       }
+      publishResourceDiagnostics();
     });
   }
 
@@ -955,6 +976,7 @@ export function createSourceIntelligence(): SourceIntelligence {
     heldUntilServerIsReady = [];
     const abandoned = [...waitingSpots.values()];
     waitingSpots.clear();
+    publishResourceDiagnostics();
     for (const spot of abandoned) {
       for (const waiter of spot.waiters) waiter(null);
     }
@@ -964,6 +986,7 @@ export function createSourceIntelligence(): SourceIntelligence {
   function forgetReferenceCounts(): void {
     countStore.forgetEverything();
     rememberedSemanticTargets.clear();
+    publishResourceDiagnostics();
   }
 
   /**
@@ -984,6 +1007,7 @@ export function createSourceIntelligence(): SourceIntelligence {
     for (const key of rememberedSemanticTargets.keys()) {
       if (key.startsWith(prefix)) rememberedSemanticTargets.delete(key);
     }
+    publishResourceDiagnostics();
   }
 
   /**

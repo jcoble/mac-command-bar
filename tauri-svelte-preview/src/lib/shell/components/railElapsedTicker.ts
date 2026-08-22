@@ -11,6 +11,7 @@
  * everything else asks for `minute`, and a rail with no second-by-second row
  * ticks once a minute rather than once a second.
  */
+import { setRailElapsedDiagnostics } from '../resourceDiagnostics.svelte.ts';
 
 export type RailElapsedListener = (nowMs: number) => void;
 /** How often a row needs to hear from the clock. */
@@ -45,6 +46,7 @@ function retune(): void {
   if (timer !== null) clearInterval(timer);
   interval = wanted;
   timer = wanted === null ? null : setInterval(tick, wanted);
+  setRailElapsedDiagnostics(watchers.size, interval);
 }
 
 /**
@@ -58,6 +60,7 @@ export function watchRailElapsed(
 ): () => void {
   watchers.set(listener, cadence);
   retune();
+  setRailElapsedDiagnostics(watchers.size, interval);
 
   let released = false;
   return () => {
@@ -65,6 +68,7 @@ export function watchRailElapsed(
     released = true;
     watchers.delete(listener);
     retune();
+    setRailElapsedDiagnostics(watchers.size, interval);
   };
 }
 

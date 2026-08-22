@@ -11,6 +11,7 @@
  *
  * One observer watches every element rather than one observer per element.
  */
+import { setElementVisibilityDiagnostics } from './resourceDiagnostics.svelte.ts';
 
 export type ElementVisibilityListener = (visible: boolean) => void;
 
@@ -21,6 +22,10 @@ function handle(entries: IntersectionObserverEntry[]): void {
   for (const entry of entries) {
     listeners.get(entry.target)?.(entry.isIntersecting);
   }
+}
+
+function publishDiagnostics(): void {
+  setElementVisibilityDiagnostics(listeners.size, observer !== null);
 }
 
 /**
@@ -40,6 +45,7 @@ export function observeElementVisibility(
   observer ??= new IntersectionObserver(handle);
   listeners.set(element, listener);
   observer.observe(element);
+  publishDiagnostics();
 
   return () => {
     listeners.delete(element);
@@ -48,6 +54,7 @@ export function observeElementVisibility(
       observer?.disconnect();
       observer = null;
     }
+    publishDiagnostics();
   };
 }
 

@@ -33,6 +33,11 @@
   } from '@codemirror/view';
   import { onDestroy, onMount } from 'svelte';
 
+  import {
+    addCodeMirrorEditorView,
+    setCodeMirrorDocBytes,
+    textBytes
+  } from '$lib/shell/resourceDiagnostics.svelte';
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
   import { codeMirrorTheme } from '$lib/shell/editor/codeMirrorTheme';
   import type {
@@ -310,6 +315,7 @@
         : undefined,
       extensions: editorExtensions
     }));
+    setCodeMirrorDocBytes(textBytes(doc));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
     const generation = ++languageGeneration;
@@ -348,6 +354,7 @@
     currentPath = '';
     sessionViewStates.clear();
     view?.setState(EditorState.create());
+    setCodeMirrorDocBytes(0);
   }
 
   $effect(() => {
@@ -364,6 +371,7 @@
       annotations: Transaction.addToHistory.of(false)
     });
     applyingContent = false;
+    setCodeMirrorDocBytes(textBytes(next));
   });
 
   $effect(() => {
@@ -388,6 +396,7 @@
 
   onMount(() => {
     view = new EditorView({ parent: host, state: EditorState.create({ extensions: editorExtensions }) });
+    addCodeMirrorEditorView(1);
     showFile();
   });
 
@@ -396,6 +405,8 @@
     languageGeneration += 1;
     view?.destroy();
     view = null;
+    addCodeMirrorEditorView(-1);
+    setCodeMirrorDocBytes(0);
   });
 </script>
 

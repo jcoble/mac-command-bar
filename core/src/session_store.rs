@@ -484,6 +484,15 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the session list", error))
     }
 
+    pub fn count_sessions(&self) -> Result<usize> {
+        let connection = self.lock()?;
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not count sessions", error))?;
+        usize::try_from(count)
+            .map_err(|_| StoreError::message("the session count could not be represented"))
+    }
+
     pub fn delete_session(&self, owned_id: &str) -> Result<()> {
         let connection = self.lock()?;
         connection
