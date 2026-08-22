@@ -864,6 +864,7 @@
 		const selectionGeneration = sessionSelectionGeneration;
 		const checkoutStillCurrent = (): boolean =>
 			!disposed
+			&& !clearAllEditorsInFlight
 			&& rail.activeOwnedId === ownedId
 			&& workspaceRestoreGeneration === restoreGeneration
 			&& sessionSelectionGeneration === selectionGeneration
@@ -896,6 +897,7 @@
 			const oldPaths = editorState.openFiles.map((file) => file.path);
 			const record = await changeStructuredConversationCheckout(ownedId, root);
 			if (!record) return false;
+			if (!checkoutStillCurrent()) return false;
 			// The backend has committed the new CWD. Replace the old-root workspace
 			// checkpoint before any stale exit or unrelated probe work can fail.
 			stopConversationTerminalProjection(ownedId);
@@ -918,12 +920,12 @@
 			shellPanels.sessionPicked(true);
 			syncGitSurfaceVisibility();
 			if (!(await snapshotWorkspace(ownedId))) return false;
-			if (!checkoutStillCurrent()) return true;
+			if (!checkoutStillCurrent()) return !clearAllEditorsInFlight;
 
 			await disposeExtensionApiProbeResources();
-			if (!checkoutStillCurrent()) return true;
+			if (!checkoutStillCurrent()) return !clearAllEditorsInFlight;
 			await setExtensionApiProbeWorkspace({ ownedId, root: record.cwd });
-			if (!checkoutStillCurrent()) return true;
+			if (!checkoutStillCurrent()) return !clearAllEditorsInFlight;
 			return true;
 		} catch (error) {
 			rail.error = `Checkout change failed: ${describeError(error)}`;
@@ -1043,7 +1045,7 @@
 				rail.error = `workspace restore failed: ${describeError(error)}`;
 			}
 		}
-		if (disposed || generation !== workspaceRestoreGeneration || rail.activeOwnedId !== ownedId) return;
+		if (disposed || generation !== workspaceRestoreGeneration || rail.activeOwnedId !== ownedId || clearAllEditorsInFlight) return;
 		activeWorkspaceSnapshot = snapshot;
 		restoreBrowserState(snapshot?.browser);
 		// A remembered diff is read only when this session is returning to the Diff
@@ -1099,7 +1101,7 @@
 	}
 
 	async function selectOwnedCurrent(ownedId: string, propagateStructuredFailure: boolean, selectionGeneration: number): Promise<void> {
-		const selectionIsCurrent = (): boolean => !disposed && selectionGeneration === sessionSelectionGeneration;
+		const selectionIsCurrent = (): boolean => !disposed && !clearAllEditorsInFlight && selectionGeneration === sessionSelectionGeneration;
 		// A draft is discarded the moment another session takes the Session tab.
 		// It never existed anywhere but this flag, so there is nothing to clean up.
 		draftOpen = false;

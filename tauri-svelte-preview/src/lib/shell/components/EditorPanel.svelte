@@ -774,7 +774,7 @@
   }
 
   async function saveEditorFile(path: string): Promise<boolean> {
-    if (!rootAvailable) return false;
+    if (closeActionBusy || !rootAvailable) return false;
     const file = editorFileFor(path);
     if (!file?.dirty) return true;
     if (file.saving || readOnlyByPath[path] || file.draftContent === null || file.conflict) return false;
@@ -797,6 +797,7 @@
   }
 
   async function saveActiveFile(): Promise<void> {
+    if (closeActionBusy) return;
     const file = activeEditorFile();
     if (file) await saveEditorFile(file.path);
   }
@@ -953,11 +954,11 @@
     closeActionBusy = true;
     try {
       const cleared = await onCloseAllEditors?.();
+      if (generation !== sessionResourceGeneration) return;
       if (cleared === false) {
         editorLoadError = 'Could not clear saved editor tabs.';
         return;
       }
-      if (generation !== sessionResourceGeneration) return;
       for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
       codeEditor?.disposeAllTabModels();
       resetEditorState();
@@ -965,7 +966,7 @@
       diagnosticsByPath = {};
       readOnlyByPath = {};
     } catch (error) {
-      editorLoadError = `Could not clear saved editor tabs: ${describeError(error)}`;
+      if (generation === sessionResourceGeneration) editorLoadError = `Could not clear saved editor tabs: ${describeError(error)}`;
     } finally {
       closeActionBusy = false;
     }
