@@ -20,9 +20,6 @@ export function deriveDiskRootsFromProcesses(processes: ResourceProcess[]): Reso
   return [...roots.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-export const RESOURCE_CPU_HISTORY_LIMIT = 12;
-export type ResourceCpuHistory = Record<string, number[]>;
-
 const ownerLabels: Record<ProcessOwner, string> = {
   app: 'App process',
   'owned-session': 'Owned session',
@@ -39,65 +36,6 @@ export function resourceOwnerLabel(resource: Pick<ResourceProcess, 'owner' | 'ow
 
 export function resourceCanStop(resource: Pick<ResourceProcess, 'owner' | 'canStop'>): boolean {
   return resource.owner !== 'external' && resource.canStop;
-}
-
-export function resourceProcessHistoryKey(
-  resource: Pick<ResourceProcess, 'pid' | 'ownerId' | 'root'>
-): string {
-  return `${resource.pid}:${resource.ownerId ?? ''}:${resource.root ?? ''}`;
-}
-
-export function appendResourceCpuSamples(
-  history: ResourceCpuHistory,
-  processes: ResourceProcess[],
-  maxSamples = RESOURCE_CPU_HISTORY_LIMIT
-): ResourceCpuHistory {
-  const limit = Math.max(1, Math.floor(maxSamples));
-  const next: ResourceCpuHistory = {};
-  for (const process of processes) {
-    const key = resourceProcessHistoryKey(process);
-    const previous = history[key] ?? [];
-    const retained = limit > 1 ? previous.slice(-(limit - 1)) : [];
-    next[key] = [...retained, process.cpuPercent];
-  }
-  return next;
-}
-
-export function resourceCpuSamples(
-  processes: ResourceProcess[],
-  history: ResourceCpuHistory
-): number[] {
-  if (processes.length === 0) return [];
-  const histories = processes.map((process) => {
-    const samples = history[resourceProcessHistoryKey(process)];
-    return samples?.length ? samples : [process.cpuPercent];
-  });
-
-  const sampleCount = Math.max(...histories.map((samples) => samples.length));
-  return Array.from({ length: sampleCount }, (_, index) => {
-    const offset = sampleCount - index;
-    return histories.reduce((total, samples) => total + (samples[samples.length - offset] ?? 0), 0);
-  });
-}
-
-export function resourceCpuSparklinePoints(
-  processes: ResourceProcess[],
-  history: ResourceCpuHistory,
-  width = 52,
-  height = 16
-): string {
-  const samples = resourceCpuSamples(processes, history);
-  if (samples.length === 0) return '';
-  const plotted = samples.length === 1 ? [samples[0], samples[0]] : samples;
-  const max = Math.max(1, ...plotted);
-  const horizontalStep = plotted.length > 1 ? width / (plotted.length - 1) : width;
-  return plotted
-    .map((sample, index) => {
-      const x = index * horizontalStep;
-      const y = height - 1 - (Math.max(0, sample) / max) * (height - 2);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
 }
 
 export function countInactiveResourceWorkspaces(

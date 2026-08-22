@@ -21,15 +21,6 @@ use tauri::State;
 
 use crate::debug_log::stderr_log;
 
-/// How many samples each history series keeps. At the panel's three second
-/// cadence that is the last three minutes, which is long enough for a spike or
-/// a leak to read as a shape.
-pub const RESOURCE_HISTORY_CAPACITY: usize = 60;
-
-/// A series nobody has sent a sample for in five minutes is dropped, so a
-/// finished session does not hold its numbers forever.
-const RESOURCE_HISTORY_IDLE_MS: u128 = 5 * 60 * 1_000;
-
 /// How long a stopped process is given to exit on its own before the harder
 /// signal follows.
 const RESOURCE_STOP_GRACE_SECONDS: u64 = 5;
@@ -38,7 +29,6 @@ pub struct ResourceRegistry {
     generation: AtomicU64,
     active_source_root: Arc<Mutex<Option<PathBuf>>>,
     sample_system: Arc<Mutex<System>>,
-    history: Arc<Mutex<ResourceHistoryStore>>,
 }
 
 impl Default for ResourceRegistry {
@@ -47,121 +37,8 @@ impl Default for ResourceRegistry {
             generation: AtomicU64::default(),
             active_source_root: Arc::new(Mutex::new(None)),
             sample_system: Arc::new(Mutex::new(System::new())),
-            history: Arc::new(Mutex::new(ResourceHistoryStore::default())),
         }
     }
-}
-
-/// The recent past of one row in the panel: two equal-length lists, oldest
-/// first, so the row can draw a sparkline without doing any arithmetic itself.
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResourceSampleHistory {
-    pub cpu_percent: Vec<f32>,
-    pub physical_footprint_bytes: Vec<u64>,
-}
-
-#[derive(Debug, Default)]
-struct ResourceHistorySeries {
-    last_seen_ms: u128,
-    points: VecDeque<(f32, u64)>,
-}
-
-#[derive(Debug, Default)]
-pub struct ResourceHistoryStore {
-    series: HashMap<String, ResourceHistorySeries>,
-}
-
-impl ResourceHistoryStore {
-    fn record(&mut self, key: &str, cpu_percent: f32, physical_footprint_bytes: u64, now_ms: u128) {
-        let series = self.series.entry(key.to_string()).or_default();
-        series.last_seen_ms = now_ms;
-        series.points.push_back((cpu_percent, physical_footprint_bytes));
-        while series.points.len() > RESOURCE_HISTORY_CAPACITY {
-            series.points.pop_front();
-        }
-    }
-
-    fn read(&self, key: &str) -> ResourceSampleHistory {
-        let Some(series) = self.series.get(key) else {
-            return ResourceSampleHistory::default();
-        };
-        ResourceSampleHistory {
-            cpu_percent: series.points.iter().map(|(cpu, _)| *cpu).collect(),
-            physical_footprint_bytes: series
-                .points
-                .iter()
-                .map(|(_, footprint)| *footprint)
-                .collect(),
-        }
-    }
-
-    fn prune(&mut self, now_ms: u128) {
-        self.series.retain(|_, series| {
-            now_ms.saturating_sub(series.last_seen_ms) <= RESOURCE_HISTORY_IDLE_MS
-        });
-    }
-}
-
-fn app_history_key() -> String {
-    "app".to_string()
-}
-
-fn workspace_history_key(workspace: &str) -> String {
-    format!("workspace\u{1f}{workspace}")
-}
-
-fn session_history_key(workspace: &str, session: &ResourceSampleSession) -> String {
-    let identity = session.owned_id.as_deref().unwrap_or(&session.label);
-    format!("session\u{1f}{workspace}\u{1f}{identity}")
-}
-
-/// Fold the sample just taken into the ring buffers, then hand every row the
-/// series it belongs to. Doing both here keeps the newest reading as the last
-/// point of the line the panel draws.
-fn attach_resource_history(sample: &mut ResourceSample, store: &mut ResourceHistoryStore) {
-    let now_ms = sample.generated_at_ms;
-    let app_cpu = sample
-        .app
-        .parts
-        .iter()
-        .map(|part| part.cpu_percent)
-        .sum::<f32>();
-    let app_footprint = sample
-        .app
-        .parts
-        .iter()
-        .map(|part| part.physical_footprint_bytes)
-        .sum();
-    store.record(&app_history_key(), app_cpu, app_footprint, now_ms);
-    sample.app.history = store.read(&app_history_key());
-
-    for group in &mut sample.groups {
-        let mut workspace_cpu = 0.0f32;
-        let mut workspace_footprint = 0u64;
-        for session in &mut group.sessions {
-            let cpu = session
-                .processes
-                .iter()
-                .map(|process| process.cpu_percent)
-                .sum::<f32>();
-            let footprint = session
-                .processes
-                .iter()
-                .map(|process| process.physical_footprint_bytes)
-                .sum::<u64>();
-            workspace_cpu += cpu;
-            workspace_footprint += footprint;
-            let key = session_history_key(&group.workspace, session);
-            store.record(&key, cpu, footprint, now_ms);
-            session.history = store.read(&key);
-        }
-        let key = workspace_history_key(&group.workspace);
-        store.record(&key, workspace_cpu, workspace_footprint, now_ms);
-        group.history = store.read(&key);
-    }
-
-    store.prune(now_ms);
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -232,7 +109,6 @@ pub struct ResourceSampleTotals {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSampleApp {
     pub parts: Vec<ResourceSampleAppPart>,
-    pub history: ResourceSampleHistory,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -260,7 +136,6 @@ pub struct ResourceSampleCategory {
 pub struct ResourceSampleGroup {
     pub workspace: String,
     pub sessions: Vec<ResourceSampleSession>,
-    pub history: ResourceSampleHistory,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -274,7 +149,6 @@ pub struct ResourceSampleSession {
     /// names this pid so the backend can prove the tree is one the app owns.
     pub root_pid: u32,
     pub processes: Vec<ResourceSampleProcess>,
-    pub history: ResourceSampleHistory,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
@@ -478,7 +352,6 @@ pub async fn read_resource_sample(
     browser_registry: State<'_, crate::browser::BrowserRegistry>,
 ) -> Result<ResourceSample, String> {
     let system = Arc::clone(&registry.sample_system);
-    let history = Arc::clone(&registry.history);
     let terminal_registry = terminal_registry.inner().clone();
     let agent_runtime = agent_runtime.inner().clone();
     let lsp_registry = lsp_registry.inner().clone();
@@ -507,10 +380,6 @@ pub async fn read_resource_sample(
             &owners,
         );
         sample.diagnostics = diagnostics;
-        let mut history = history
-            .lock()
-            .map_err(|_| "Resource history is unavailable".to_string())?;
-        attach_resource_history(&mut sample, &mut history);
         Ok(sample)
     })
     .await
@@ -1070,7 +939,6 @@ fn build_resource_sample(
                 kind: owner.kind,
                 root_pid: owner.root_pid,
                 processes: owned_processes,
-                history: ResourceSampleHistory::default(),
             });
     }
     let groups = sessions_by_workspace
@@ -1078,7 +946,6 @@ fn build_resource_sample(
         .map(|(workspace, sessions)| ResourceSampleGroup {
             workspace,
             sessions,
-            history: ResourceSampleHistory::default(),
         })
         .collect::<Vec<_>>();
 
@@ -1131,7 +998,6 @@ fn build_resource_sample(
         diagnostics: ResourceDiagnostics::default(),
         app: ResourceSampleApp {
             parts: app_parts,
-            history: ResourceSampleHistory::default(),
         },
         process_categories,
         groups,
@@ -2156,46 +2022,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn history_keeps_the_last_sixty_samples_per_row_and_drops_idle_rows() {
-        let mut store = ResourceHistoryStore::default();
-        let processes = vec![
-            observed(1, None, "app", 1.0, 100),
-            observed(10, Some(1), "zsh", 2.0, 200),
-        ];
-        let owners = vec![owner(
-            10,
-            "terminal-a",
-            "Terminal 1",
-            ResourceSampleSessionKind::Terminal,
-            "workspace",
-        )];
-
-        for tick in 0..RESOURCE_HISTORY_CAPACITY as u128 + 5 {
-            let mut sample = build_resource_sample(tick, 1, &processes, &owners);
-            attach_resource_history(&mut sample, &mut store);
-        }
-
-        let mut sample = build_resource_sample(
-            RESOURCE_HISTORY_CAPACITY as u128 + 5,
-            1,
-            &processes,
-            &owners,
-        );
-        attach_resource_history(&mut sample, &mut store);
-        let session = &sample.groups[0].sessions[0];
-        assert_eq!(session.history.cpu_percent.len(), RESOURCE_HISTORY_CAPACITY);
-        assert_eq!(session.history.physical_footprint_bytes.len(), RESOURCE_HISTORY_CAPACITY);
-        assert_eq!(session.history.physical_footprint_bytes.last(), Some(&200));
-        assert_eq!(sample.groups[0].history.physical_footprint_bytes.last(), Some(&200));
-        assert_eq!(sample.app.history.physical_footprint_bytes.last(), Some(&100));
-
-        // A row nobody has sampled for longer than the idle window is dropped.
-        let mut later = build_resource_sample(RESOURCE_HISTORY_IDLE_MS + 10_000, 1, &[], &[]);
-        attach_resource_history(&mut later, &mut store);
-        assert!(store
-            .read(&session_history_key("workspace", session))
-            .physical_footprint_bytes
-            .is_empty());
-    }
 }

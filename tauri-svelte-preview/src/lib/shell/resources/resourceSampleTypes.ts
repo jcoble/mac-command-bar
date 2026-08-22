@@ -22,12 +22,6 @@ export type ResourceSampleCategory = {
   processCount: number;
 };
 
-/** The last sixty readings of one row, oldest first. */
-export type ResourceSampleHistory = {
-  cpuPercent: number[];
-  physicalFootprintBytes: number[];
-};
-
 export type ResourceDiagnostics = {
   conversations: {
     durableSessionRows: number;
@@ -77,13 +71,11 @@ export type ResourceSampleSession = {
   /** The process the app started for this session; every stop request names it. */
   rootPid: number;
   processes: ResourceSampleProcess[];
-  history: ResourceSampleHistory;
 };
 
 export type ResourceSampleGroup = {
   workspace: string;
   sessions: ResourceSampleSession[];
-  history: ResourceSampleHistory;
 };
 
 export type ResourceSample = {
@@ -97,7 +89,6 @@ export type ResourceSample = {
   diagnostics: ResourceDiagnostics;
   app: {
     parts: ResourceSampleAppPart[];
-    history: ResourceSampleHistory;
   };
   processCategories: ResourceSampleCategory[];
   groups: ResourceSampleGroup[];

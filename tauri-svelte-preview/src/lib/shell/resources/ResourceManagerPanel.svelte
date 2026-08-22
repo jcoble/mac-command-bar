@@ -4,10 +4,8 @@
    * where the disk went.
    *
    * Three things share one panel because they answer one question. The tree
-   * says what is running now. The line beside each row says what it has been
-   * doing for the last few minutes, which is the difference between a spike and
-   * a leak. The disk section at the bottom says which folders grew while nobody
-   * was looking.
+   * says what is running now. The disk section at the bottom says which folders
+   * grew while nobody was looking.
    *
    * Two of those rows can act, and both act only through a dialog that names
    * the exact thing: the process ids about to be signalled, or the folder about
@@ -18,16 +16,17 @@
    * user's own Chrome in Activity Monitor, and are the thing people come to this
    * panel to find.
    */
+  import { onMount } from 'svelte';
   import Square from '@lucide/svelte/icons/square';
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { resourceDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
+  import { activate as activatePlaywright } from '$lib/shell/processes/playwrightService';
 
   import PlaywrightCard from '$lib/shell/components/processes/PlaywrightCard.svelte';
 
   import ResourceConfirmDialog from './ResourceConfirmDialog.svelte';
-  import Sparkline from './Sparkline.svelte';
   import {
     buildReclaimRequest,
     describeReclaimQuestion,
@@ -77,6 +76,8 @@
   let reclaimQuestion = $derived(
     resourceReclaimState.entry ? describeReclaimQuestion(resourceReclaimState.entry) : null
   );
+
+  onMount(() => activatePlaywright());
 
   function toggle(id: string): void {
     collapsed = { ...collapsed, [id]: !collapsed[id] };
@@ -158,7 +159,6 @@
 
   <div class="column-headings" aria-hidden="true">
     <span>Workspace / session / process</span>
-    <span class="trend">Trend</span>
     <span>CPU%</span>
     <span>Physical footprint</span>
     <span></span>
@@ -253,7 +253,6 @@
                     <span class:collapsed={collapsed[group.id]} class="disclosure" aria-hidden="true">▾</span>
                     <span><small>Workspace</small><strong>{group.workspace}</strong></span>
                   </span>
-                  <span class="trend"><Sparkline values={group.history.physicalFootprintBytes} unit="memory" /></span>
                   <span class="metric">{formatResourceCpu(group.totals.cpuPercent)}</span>
                   <span class="metric">{formatResourceBytes(group.totals.physicalFootprintBytes)}</span>
                 </button>
@@ -276,7 +275,6 @@
                             <small>{resourceSessionKindLabel(session.kind)} · {session.totals.processCount} {session.totals.processCount === 1 ? 'process' : 'processes'}</small>
                           </span>
                         </span>
-                        <span class="trend"><Sparkline values={session.history.cpuPercent} unit="cpu" /></span>
                         <span class="metric">{formatResourceCpu(session.totals.cpuPercent)}</span>
                         <span class="metric">{formatResourceBytes(session.totals.physicalFootprintBytes)}</span>
                       </button>
@@ -299,7 +297,6 @@
                               <strong>{process.name}</strong>
                               <small>PID {process.pid}</small>
                             </span>
-                            <span class="trend"></span>
                             <span class="metric">{formatResourceCpu(process.cpuPercent)}</span>
                             <span class="metric">{formatResourceBytes(process.physicalFootprintBytes)}</span>
                           </div>
@@ -329,7 +326,6 @@
             <span class="app-mark" aria-hidden="true"></span>
             <span><small>Application</small><strong id="this-app-title">This app</strong></span>
           </span>
-          <span class="trend"><Sparkline values={view.appHistory.physicalFootprintBytes} unit="memory" /></span>
           <span class="metric">{formatResourceCpu(view.appTotals.cpuPercent)}</span>
           <span class="metric">{formatResourceBytes(view.appTotals.physicalFootprintBytes)}</span>
         </div>
@@ -339,7 +335,6 @@
           {#each view.appParts as part (part.pid)}
             <div class="tree-row process-row app-part">
               <span class="process-name"><strong>{part.label}</strong><small>PID {part.pid}</small></span>
-              <span class="trend"></span>
               <span class="metric">{formatResourceCpu(part.cpuPercent)}</span>
               <span class="metric">{formatResourceBytes(part.physicalFootprintBytes)}</span>
             </div>
@@ -362,7 +357,6 @@
               <strong id="disk-title">Where the space went</strong>
             </span>
           </span>
-          <span class="trend"></span>
           <span class="metric"></span>
           <span class="metric">{diskView ? diskView.totalLabel : ''}</span>
         </button>
@@ -401,7 +395,6 @@
                   <small>{section.root || 'App data'} · {formatDiskMeasuredAgo(section.measuredAtMs, nowMs)}</small>
                 </span>
               </span>
-              <span class="trend"></span>
               <span class="metric"></span>
               <span class="metric">{section.sizeLabel}</span>
             </div>
@@ -412,7 +405,6 @@
                     <strong>{entry.label}</strong>
                     <small>{entry.categoryLabel}{entry.truncated ? ' · at least' : ''}</small>
                   </span>
-                  <span class="trend"></span>
                   <span class="metric"></span>
                   <span class="metric">{entry.sizeLabel}</span>
                 </div>
@@ -512,10 +504,10 @@
 
   .column-headings, .tree-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 70px 66px 88px;
+    grid-template-columns: minmax(0, 1fr) 66px 88px;
     align-items: center;
   }
-  .column-headings { grid-template-columns: minmax(0, 1fr) 70px 66px 88px 34px; }
+  .column-headings { grid-template-columns: minmax(0, 1fr) 66px 88px 34px; }
   .column-headings {
     min-height: 25px;
     padding: 0 12px;
@@ -525,7 +517,6 @@
     font-size: 12px;
   }
   .column-headings span:not(:first-child) { text-align: right; }
-  .column-headings .trend { text-align: left; padding-left: 4px; }
   .manager-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
 
   .workspace-group + .workspace-group, .app-group, .disk-group, .playwright-group { border-top: 1px solid var(--color-border); }
@@ -596,7 +587,6 @@
   .disclosure { display: inline-grid; width: 10px; place-items: center; color: var(--color-text-3); transition: transform 120ms ease; }
   .disclosure.collapsed { transform: rotate(-90deg); }
   .app-mark { width: 6px; height: 14px; border-radius: 2px; background: var(--color-accent); }
-  .trend { display: flex; justify-content: flex-start; padding-left: 4px; }
   .metric { text-align: right; color: var(--color-text-2); font-variant-numeric: tabular-nums; }
   .message { padding: 18px 14px; color: var(--color-text-2); }
   .error { color: var(--color-bad); border-bottom: 1px solid var(--color-border); }
@@ -610,7 +600,6 @@
     .headline-totals { display: none; }
     .column-headings, .tree-row { grid-template-columns: minmax(0, 1fr) 58px 76px; }
     .column-headings { grid-template-columns: minmax(0, 1fr) 58px 76px 34px; }
-    .trend { display: none; }
     .session-row, .disk-section-row { padding-left: 20px; }
     .process-row, .disk-entry-row { padding-left: 38px; }
   }

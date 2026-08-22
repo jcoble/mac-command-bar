@@ -2,13 +2,9 @@ import type {
   ResourceSample,
   ResourceSampleAppPart,
   ResourceSampleGroup,
-  ResourceSampleHistory,
   ResourceSampleProcess,
   ResourceSampleSession
 } from './resourceSampleTypes.ts';
-
-/** A row with no history yet still has to render, so it gets empty series. */
-export const emptyResourceHistory: ResourceSampleHistory = { cpuPercent: [], physicalFootprintBytes: [] };
 
 export type ResourceTotals = {
   cpuPercent: number;
@@ -32,7 +28,6 @@ export type ResourceSampleView = {
   groups: ResourceWorkspaceView[];
   appParts: ResourceSampleAppPart[];
   appTotals: ResourceTotals;
-  appHistory: ResourceSampleHistory;
 };
 
 function totalsFor(
@@ -60,7 +55,6 @@ export function shapeResourceSample(sample: ResourceSample): ResourceSampleView 
           );
           return {
             ...session,
-            history: session.history ?? emptyResourceHistory,
             id: `${stableId(group.workspace)}-${stableId(session.ownedId ?? session.label)}-${sessionIndex}`,
             processes,
             totals: totalsFor(processes)
@@ -70,7 +64,6 @@ export function shapeResourceSample(sample: ResourceSample): ResourceSampleView 
       return {
         workspace: group.workspace,
         id: `${stableId(group.workspace)}-${groupIndex}`,
-        history: group.history ?? emptyResourceHistory,
         sessions,
         totals: totalsFor(sessions.flatMap((session) => session.processes))
       } satisfies ResourceWorkspaceView;
@@ -86,8 +79,7 @@ export function shapeResourceSample(sample: ResourceSample): ResourceSampleView 
   return {
     groups,
     appParts,
-    appTotals: totalsFor(appParts),
-    appHistory: sample.app.history ?? emptyResourceHistory
+    appTotals: totalsFor(appParts)
   };
 }
 

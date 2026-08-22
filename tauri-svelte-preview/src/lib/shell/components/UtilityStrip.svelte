@@ -13,22 +13,19 @@
    * for and hands over the rectangle of the button that was pressed.
    *
    * The one piece of IO here is the resource sample: it is read on mount, again
-   * whenever the window comes back to the front, and on a single cadence that
-   * slows down while the Resource Manager is closed.
+   * whenever the window comes back to the front, and every five seconds.
    */
   import { onMount } from 'svelte';
   import ChartNoAxesCombined from '@lucide/svelte/icons/chart-no-axes-combined';
   import Cpu from '@lucide/svelte/icons/cpu';
   import Settings from '@lucide/svelte/icons/settings';
 
-  import { activate as activatePlaywright } from '$lib/shell/processes/playwrightService';
   import {
     formatResourceBytes,
     formatResourceCpu
   } from '$lib/shell/resources/resourceSampleViewModel';
   import {
     refreshResourceSample,
-    resourceManagerState,
     resourceSampleState
   } from '$lib/shell/resources/resourceSampleStore.svelte';
 
@@ -67,24 +64,11 @@
       if (document.visibilityState === 'visible') void refreshResourceSample();
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
-    return () => document.removeEventListener('visibilitychange', refreshWhenVisible);
-  });
-
-  // One cadence owns the shared resource sample. The closed-panel readout is
-  // slower; the open panel keeps the existing history cadence.
-  $effect(() => {
-    if (resourceManagerState.open) {
-      // The Playwright card lives at the bottom of this panel. Its own read runs
-      // once and then only when somebody presses its refresh, so it is switched
-      // on here rather than joining the process-tree poll below.
-      activatePlaywright();
-    }
-    void refreshResourceSample();
-    const pollTimer = window.setInterval(
-      () => void refreshResourceSample(),
-      resourceManagerState.open ? 3_000 : 5_000
-    );
-    return () => window.clearInterval(pollTimer);
+    const pollTimer = window.setInterval(() => void refreshResourceSample(), 5_000);
+    return () => {
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.clearInterval(pollTimer);
+    };
   });
 </script>
 

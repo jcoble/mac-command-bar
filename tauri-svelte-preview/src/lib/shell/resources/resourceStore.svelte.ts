@@ -1,6 +1,5 @@
 import type { DiskScanReport, ResourceSnapshot } from './resourceTypes.ts';
 import { resourceService } from './resourceService.ts';
-import { appendResourceCpuSamples, type ResourceCpuHistory } from './resourceViewModel.ts';
 
 export const resourceState = $state<{
   snapshot: ResourceSnapshot | null;
@@ -10,7 +9,6 @@ export const resourceState = $state<{
   error: string | null;
   unavailableReason: string | null;
   lastRefreshAt: number | null;
-  cpuHistory: ResourceCpuHistory;
 }>({
   snapshot: null,
   disk: null,
@@ -18,8 +16,7 @@ export const resourceState = $state<{
   diskLoading: false,
   error: null,
   unavailableReason: null,
-  lastRefreshAt: null,
-  cpuHistory: {}
+  lastRefreshAt: null
 });
 
 export async function refreshResources(): Promise<ResourceSnapshot | null> {
@@ -28,9 +25,6 @@ export async function refreshResources(): Promise<ResourceSnapshot | null> {
   resourceState.error = null;
   try {
     const snapshot = await resourceService.refresh();
-    if (snapshot) {
-      resourceState.cpuHistory = appendResourceCpuSamples(resourceState.cpuHistory, snapshot.processes);
-    }
     resourceState.snapshot = snapshot;
     resourceState.unavailableReason = snapshot ? null : 'Resource inventory is available in the desktop app.';
     resourceState.lastRefreshAt = snapshot ? Date.now() : resourceState.lastRefreshAt;

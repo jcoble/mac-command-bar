@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
 import {
-  appendResourceCpuSamples,
   groupResourceProcesses,
   formatBytes,
   resourceCanStop,
-  resourceCpuSamples,
   resourceOwnerLabel,
   countInactiveResourceWorkspaces
 } from '../src/lib/shell/resources/resourceViewModel.ts';
@@ -30,9 +28,6 @@ assert.equal(groups[0].workspaces[0].sessions[0].processes.length, 2);
 assert.equal(groups[0].totalRssBytes, 7168);
 assert.equal(groups[0].totalCpuPercent, 6);
 assert.equal(formatBytes(1024 * 1024), '1.0 MB');
-const history = appendResourceCpuSamples({}, [process(1, 'repo-a', 'workspace-a', 'Terminal 1', 2048, 2)]);
-const nextHistory = appendResourceCpuSamples(history, [process(1, 'repo-a', 'workspace-a', 'Terminal 1', 2048, 4)]);
-assert.deepEqual(resourceCpuSamples([process(1, 'repo-a', 'workspace-a', 'Terminal 1', 2048, 4)], nextHistory), [2, 4]);
 assert.equal(countInactiveResourceWorkspaces([{ workspaceId: 'workspace-a' }], ['workspace-a', 'workspace-b', 'workspace-b']), 1);
 console.log('resource view-model tests passed');
 {
