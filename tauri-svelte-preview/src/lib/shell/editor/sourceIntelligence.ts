@@ -89,7 +89,8 @@ import {
 } from '../components/editor/languageServerStatus.ts';
 import {
   setSourceIntelligenceDiagnostics,
-  trackTauriListener
+  trackTauriListener,
+  trackTauriSubscriber
 } from '../resourceDiagnostics.svelte.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
@@ -1217,7 +1218,7 @@ export function createSourceIntelligence(): SourceIntelligence {
     ): () => void {
       statusSubscribers.add(listener);
       if (isNativeTauriRuntime()) void watchLanguageServerStatus();
-      return () => statusSubscribers.delete(listener);
+      return trackTauriSubscriber(() => statusSubscribers.delete(listener));
     },
     setProjectRoot(nextProjectRoot: string | null): void {
       const normalized =

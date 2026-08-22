@@ -7,7 +7,7 @@ import type {
   BrowserViewport
 } from './browserTypes.ts';
 import { invokeBrowserCommandFromTauri, isTauriRuntime } from '../../tauriSource.ts';
-import { trackTauriListener } from '../resourceDiagnostics.svelte.ts';
+import { trackTauriListener, trackTauriSubscriber } from '../resourceDiagnostics.svelte.ts';
 
 export type BrowserBackendResult<T> = T | Promise<T>;
 
@@ -79,15 +79,49 @@ export interface BrowserBackendCall {
   input: unknown;
 }
 
-export async function listenToBrowserNavigation(
-  handler: (event: BrowserTabNavigationEvent) => void
-): Promise<() => void> {
-  if (!isTauriRuntime()) return () => undefined;
-  const { listen } = await import('@tauri-apps/api/event');
-  const stop = await listen<BrowserTabNavigationEvent>('browser-tab-navigation', (event) => {
-    handler(event.payload);
+export type BrowserNavigationSubscriber = (event: BrowserTabNavigationEvent) => void;
+
+const browserNavigationSubscribers = new Set<BrowserNavigationSubscriber>();
+let browserNavigationUnlisten: (() => void) | null = null;
+let browserNavigationSetup: Promise<void> | null = null;
+let browserNavigationGeneration = 0;
+
+export function subscribeToBrowserNavigation(
+  subscriber: BrowserNavigationSubscriber
+): () => void {
+  browserNavigationSubscribers.add(subscriber);
+  ensureBrowserNavigationListener();
+  return trackTauriSubscriber(() => {
+    browserNavigationSubscribers.delete(subscriber);
+    if (browserNavigationSubscribers.size === 0) stopBrowserNavigationListener();
   });
-  return trackTauriListener(stop);
+}
+
+function ensureBrowserNavigationListener(): void {
+  if (!isTauriRuntime() || browserNavigationUnlisten || browserNavigationSetup) return;
+  const generation = browserNavigationGeneration;
+  const setup = (async () => {
+    const { listen } = await import('@tauri-apps/api/event');
+    const stopNative = await listen<BrowserTabNavigationEvent>('browser-tab-navigation', (event) => {
+      for (const current of browserNavigationSubscribers) current(event.payload);
+    });
+    const stop = trackTauriListener(stopNative);
+    if (generation !== browserNavigationGeneration || browserNavigationSubscribers.size === 0) {
+      stop();
+      return;
+    }
+    browserNavigationUnlisten = stop;
+  })().catch(() => undefined).finally(() => {
+    if (browserNavigationSetup === setup) browserNavigationSetup = null;
+  });
+  browserNavigationSetup = setup;
+}
+
+function stopBrowserNavigationListener(): void {
+  browserNavigationGeneration += 1;
+  browserNavigationUnlisten?.();
+  browserNavigationUnlisten = null;
+  browserNavigationSetup = null;
 }
 
 interface FakeTabRecord extends BrowserBackendTarget {

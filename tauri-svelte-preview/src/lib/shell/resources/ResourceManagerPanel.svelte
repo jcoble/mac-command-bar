@@ -192,6 +192,7 @@
         <span><strong>{resourceDiagnostics.loadedConversationEventBytes}</strong> conversation bytes</span>
         <span><strong>{resourceDiagnostics.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
         <span><strong>{resourceDiagnostics.tauriRootListeners}</strong> Tauri listeners</span>
+        <span><strong>{resourceDiagnostics.tauriEventSubscribers}</strong> JS event subscribers</span>
         <span><strong>{resourceDiagnostics.fileWatchers}</strong> file watchers</span>
         <span><strong>{resourceDiagnostics.objectUrls}</strong> object URLs</span>
         <span><strong>{resourceDiagnostics.loadedTreeNodes}</strong> tree nodes</span>

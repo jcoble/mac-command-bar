@@ -947,29 +947,54 @@ function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function mergeConversationChild(
-  current: ConversationWorkspaceState,
+function normalizeChildProvider(
+  rawProvider: unknown,
+  fallback: AgentConversationProvider
+): AgentConversationProvider {
+  const provider = asString(rawProvider)?.toLowerCase().replaceAll(/[\s_-]+/g, '');
+  if (provider === 'codex') return 'codex';
+  if (provider === 'claude' || provider === 'claudecode') return 'claude';
+  if (provider === 'agy' || provider === 'antigravity') return 'antigravity';
+  return fallback;
+}
+
+function isWorkflowChildRecord(value: Record<string, unknown>): boolean {
+  return ['kind', 'type', 'category'].some((key) => asString(value[key])?.toLowerCase() === 'workflow');
+}
+
+function childParentWouldCycle(
+  children: readonly ConversationChildAgent[],
+  childId: string,
+  parentId: string
+): boolean {
+  const seen = new Set<string>([childId]);
+  let nextParentId: string | undefined = parentId;
+  while (nextParentId) {
+    if (seen.has(nextParentId)) return true;
+    seen.add(nextParentId);
+    nextParentId = children.find((child) => child.childId === nextParentId)?.parentId;
+  }
+  return false;
+}
+
+function normalizedConversationChild(
   value: unknown,
+  existing: ConversationChildAgent | null,
   provider: AgentConversationProvider,
-  timestampMs: number
-): void {
-  if (!isRecord(value)) return;
-  const childId = asString(value.childId);
-  if (!childId) return;
-  const index = current.children.findIndex((child) => child.childId === childId);
-  const existing = index >= 0 ? current.children[index] : null;
+  timestampMs: number,
+  siblings: readonly ConversationChildAgent[]
+): ConversationChildAgent | null {
+  if (!isRecord(value) || isWorkflowChildRecord(value)) return null;
+  const childId = asString(value.childId) ?? asString(value.childSessionId) ?? asString(value.id);
+  if (!childId) return null;
   const parentToolCallId = asString(value.parentToolCallId) ?? existing?.parentToolCallId;
   const parentId = asString(value.parentId) ?? parentToolCallId ?? existing?.parentId;
-  if (!parentId) return;
-  const rawProvider = asString(value.provider);
-  const childProvider = rawProvider === 'codex' || rawProvider === 'claude'
-    ? rawProvider
-    : existing?.provider ?? provider;
-  const child: ConversationChildAgent = {
+  if (!parentId || childParentWouldCycle(siblings, childId, parentId)) return null;
+  return {
     childId,
     parentId,
     ...(parentToolCallId ? { parentToolCallId } : {}),
-    provider: childProvider,
+    provider: normalizeChildProvider(value.provider, existing?.provider ?? provider),
     label: asString(value.label) ?? existing?.label ?? 'Sub-agent',
     state: asString(value.state) ?? existing?.state ?? 'finished',
     ...(asString(value.latestActivity) || existing?.latestActivity
@@ -979,6 +1004,45 @@ function mergeConversationChild(
       ? value.updatedAtMs
       : timestampMs
   };
+}
+
+function normalizedConversationChildren(
+  values: readonly unknown[],
+  existingChildren: readonly ConversationChildAgent[],
+  provider: AgentConversationProvider,
+  timestampMs: number
+): ConversationChildAgent[] {
+  const children: ConversationChildAgent[] = [];
+  for (const value of values) {
+    if (!isRecord(value)) continue;
+    const childId = asString(value.childId) ?? asString(value.childSessionId) ?? asString(value.id);
+    const existing = childId
+      ? children.find((child) => child.childId === childId)
+        ?? existingChildren.find((child) => child.childId === childId)
+        ?? null
+      : null;
+    const child = normalizedConversationChild(value, existing, provider, timestampMs, children);
+    if (!child) continue;
+    const index = children.findIndex((entry) => entry.childId === child.childId);
+    if (index >= 0) children[index] = child;
+    else children.push(child);
+  }
+  return children;
+}
+
+function mergeConversationChild(
+  current: ConversationWorkspaceState,
+  value: unknown,
+  provider: AgentConversationProvider,
+  timestampMs: number
+): void {
+  if (!isRecord(value)) return;
+  const childId = asString(value.childId) ?? asString(value.childSessionId) ?? asString(value.id);
+  if (!childId) return;
+  const index = current.children.findIndex((child) => child.childId === childId);
+  const existing = index >= 0 ? current.children[index] : null;
+  const child = normalizedConversationChild(value, existing, provider, timestampMs, current.children);
+  if (!child) return;
   if (index >= 0) current.children[index] = child;
   else current.children.push(child);
 }
@@ -1181,7 +1245,7 @@ export function applyConversationTranscript(
     connectionState: 'connected',
     desynchronized: false,
     metadata: snapshot.metadata,
-    children: snapshot.children,
+    children: normalizedConversationChildren(snapshot.children, current.children, provider, 0),
     timeline: snapshot.messages.map((message) => ({
       kind: message.role,
       itemId: message.itemId,

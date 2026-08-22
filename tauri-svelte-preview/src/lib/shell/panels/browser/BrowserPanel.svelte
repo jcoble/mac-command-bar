@@ -60,7 +60,7 @@
     setBrowserUrl,
     syncBrowserNavigation
   } from '$lib/shell/browser/browserStore.svelte.ts';
-  import { listenToBrowserNavigation } from '$lib/shell/browser/browserBackend.ts';
+  import { subscribeToBrowserNavigation } from '$lib/shell/browser/browserBackend.ts';
   import {
     collapseBrowserToControl,
     describeBrowserError,
@@ -739,18 +739,8 @@
   });
 
   $effect(() => {
-    let stopNavigation: (() => void) | null = null;
-    let dropped = false;
-    void listenToBrowserNavigation(syncBrowserNavigation)
-      .then((unsubscribe) => {
-        if (dropped) unsubscribe();
-        else stopNavigation = unsubscribe;
-      })
-      .catch(() => undefined);
-    return () => {
-      dropped = true;
-      stopNavigation?.();
-    };
+    const stopNavigation = subscribeToBrowserNavigation(syncBrowserNavigation);
+    return () => stopNavigation();
   });
 
   $effect(() => {

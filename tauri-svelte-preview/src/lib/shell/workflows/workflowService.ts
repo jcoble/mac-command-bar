@@ -20,7 +20,10 @@ import {
   startWorkflowRunFromTauri,
   submitWorkflowResultFromTauri
 } from '$lib/tauriSource';
-import { trackTauriListener } from '$lib/shell/resourceDiagnostics.svelte';
+import {
+  trackTauriListener,
+  trackTauriSubscriber
+} from '$lib/shell/resourceDiagnostics.svelte';
 import type {
   ApproveWorkflowGateDto,
   CancelWorkflowRunDto,
@@ -108,6 +111,8 @@ type WorkflowSnapshotPayload = WorkflowRunRecord | WorkflowRunRecord[];
 type WorkflowSnapshotListener = (snapshot: WorkflowSnapshotPayload) => void;
 
 let unlisten: UnlistenFn | null = null;
+let workflowSnapshotSetup: Promise<void> | null = null;
+let workflowSnapshotGeneration = 0;
 const listeners = new Set<WorkflowSnapshotListener>();
 
 /**
@@ -116,35 +121,47 @@ const listeners = new Set<WorkflowSnapshotListener>();
  * controllers simply receive a no-op unsubscribe.  The subscription itself is
  * kept here so components never import Tauri event APIs.
  */
-export async function subscribeWorkflowSnapshots(
+export function subscribeWorkflowSnapshots(
   listener: WorkflowSnapshotListener
-): Promise<() => void> {
+): () => void {
   listeners.add(listener);
-  if (!isNativeTauriRuntime() || unlisten) {
-    return () => listeners.delete(listener);
-  }
+  ensureWorkflowSnapshotSubscription();
+  return trackTauriSubscriber(() => {
+    listeners.delete(listener);
+    if (listeners.size === 0) stopWorkflowSnapshotListener();
+  });
+}
 
-  try {
+function ensureWorkflowSnapshotSubscription(): void {
+  if (!isNativeTauriRuntime() || unlisten || workflowSnapshotSetup) return;
+  const generation = workflowSnapshotGeneration;
+  const setup = (async () => {
     const stop = await listen<WorkflowSnapshotPayload>(workflowSnapshotEvent, ({ payload }) => {
       for (const current of listeners) current(payload);
     });
-    unlisten = trackTauriListener(stop);
-  } catch {
+    const trackedStop = trackTauriListener(stop);
+    if (generation !== workflowSnapshotGeneration || listeners.size === 0) {
+      trackedStop();
+      return;
+    }
+    unlisten = trackedStop;
+  })().catch(() => {
     // An older controller has no event channel; commands remain authoritative.
     unlisten = null;
-  }
+  }).finally(() => {
+    if (workflowSnapshotSetup === setup) workflowSnapshotSetup = null;
+  });
+  workflowSnapshotSetup = setup;
+}
 
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) {
-      unlisten?.();
-      unlisten = null;
-    }
-  };
+function stopWorkflowSnapshotListener(): void {
+  workflowSnapshotGeneration += 1;
+  unlisten?.();
+  unlisten = null;
+  workflowSnapshotSetup = null;
 }
 
 export function stopWorkflowSnapshotSubscription(): void {
-  unlisten?.();
-  unlisten = null;
+  stopWorkflowSnapshotListener();
   listeners.clear();
 }

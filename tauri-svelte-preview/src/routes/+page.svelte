@@ -216,8 +216,6 @@
 		killPlaywrightSessionsFromTauri,
 		listAgentSessionsFromLocalBridge,
 		listAgentSessionsFromTauri,
-		listenToSourceScanProgress,
-		listenToTerminalOutput,
 		listGitRepositorySummariesFromTauri,
 		listOrchestrationRunsFromTauri,
 		listPlaywrightSessionsFromTauri,
@@ -249,6 +247,7 @@
 		searchSourceFilesFromTauri,
 		stageGitPathsFromTauri,
 		startTerminalSessionFromTauri,
+		subscribeToSourceScanProgress,
 		unstageGitPathsFromTauri,
 		validateProjectRootFromTauri,
 		warmSourceLspForRootFromTauri,
@@ -269,6 +268,7 @@
 		type TerminalOutputPayload,
 		type TerminalSessionInfo,
 	} from "$lib/tauriSource";
+	import { subscribeToTerminalOutput } from "$lib/shell/terminalService.ts";
 	import {
 		describeWorkspaceSnapshotRestoreReadiness,
 		parseStoredWorkspaceSnapshot,
@@ -14639,26 +14639,12 @@
 	}
 
 	onMount(() => {
-		let unlistenSourceScanProgress: (() => void) | null = null;
-		let unlistenTerminalOutput: (() => void) | null = null;
-		void listenToSourceScanProgress((progress) => {
+		const unlistenSourceScanProgress = subscribeToSourceScanProgress((progress) => {
 			if (progress.scanId === files.scan.activeScanId) {
 				files.scan.progress = progress;
 			}
-		})
-			.then((unlisten) => {
-				unlistenSourceScanProgress = unlisten;
-			})
-			.catch(() => {
-				unlistenSourceScanProgress = null;
-			});
-		void listenToTerminalOutput(handleTerminalOutput)
-			.then((unlisten) => {
-				unlistenTerminalOutput = unlisten;
-			})
-			.catch(() => {
-				unlistenTerminalOutput = null;
-			});
+		});
+		const unlistenTerminalOutput = subscribeToTerminalOutput(handleTerminalOutput);
 		window.addEventListener("beforeunload", captureActiveWorkspaceSnapshotBeforeUnload);
 		window.addEventListener("pagehide", captureActiveWorkspaceSnapshotBeforeUnload);
 		document.addEventListener("visibilitychange", handleWorkspaceSnapshotVisibilityChange);

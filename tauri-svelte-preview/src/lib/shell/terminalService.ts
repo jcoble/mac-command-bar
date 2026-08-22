@@ -37,21 +37,48 @@ import {
   type TerminalStartRequest
 } from '../tauriSource.ts';
 import { hasBackendCapability } from './backendCapabilities.ts';
+import { trackTauriSubscriber } from './resourceDiagnostics.svelte.ts';
 
 export type TerminalOutputSubscriber = (payload: TerminalOutputPayload) => void;
 
 const terminalOutputSubscribers = new Set<TerminalOutputSubscriber>();
+let terminalOutputUnlisten: (() => void) | null = null;
+let terminalOutputSetup: Promise<void> | null = null;
+let terminalOutputGeneration = 0;
 
 /** Subscribe to the one terminal-output stream without opening another Tauri listener. */
 export function subscribeToTerminalOutput(subscriber: TerminalOutputSubscriber): () => void {
   terminalOutputSubscribers.add(subscriber);
-  return () => {
+  ensureTerminalOutputListener();
+  return trackTauriSubscriber(() => {
     terminalOutputSubscribers.delete(subscriber);
-  };
+    if (terminalOutputSubscribers.size === 0) stopTerminalOutputListener();
+  });
 }
 
-function publishTerminalOutput(payload: TerminalOutputPayload): void {
-  for (const subscriber of terminalOutputSubscribers) subscriber(payload);
+function ensureTerminalOutputListener(): void {
+  if (terminalOutputUnlisten || terminalOutputSetup) return;
+  const generation = terminalOutputGeneration;
+  const setup = (async () => {
+    const stop = await listenToTerminalOutput((payload) => {
+      for (const subscriber of terminalOutputSubscribers) subscriber(payload);
+    });
+    if (generation !== terminalOutputGeneration || terminalOutputSubscribers.size === 0) {
+      stop?.();
+      return;
+    }
+    terminalOutputUnlisten = stop;
+  })().catch(() => undefined).finally(() => {
+    if (terminalOutputSetup === setup) terminalOutputSetup = null;
+  });
+  terminalOutputSetup = setup;
+}
+
+function stopTerminalOutputListener(): void {
+  terminalOutputGeneration += 1;
+  terminalOutputUnlisten?.();
+  terminalOutputUnlisten = null;
+  terminalOutputSetup = null;
 }
 
 /**
@@ -228,7 +255,7 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
     },
     listen(handler: (payload: TerminalOutputPayload) => void): Promise<(() => void) | null> {
       count('listen:terminal_output');
-      return listenToTerminalOutput(handler);
+      return Promise.resolve(subscribeToTerminalOutput(handler));
     }
   };
 }
@@ -604,7 +631,6 @@ export function createTerminalService(opts: {
           // no view here; its backend scrollback ring remains the authority.
           manager.feedSession(payload.sessionId, payload.data);
         }
-        publishTerminalOutput(payload);
         if (!payload.terminated) {
           return;
         }
@@ -918,7 +944,6 @@ export function createTerminalService(opts: {
       probe.disposed = true;
     }
     probesByOwned.clear();
-    terminalOutputSubscribers.clear();
     // The PTYs live on but the VIEWS do not: the next mount rebuilds them from
     // scratch, and a remembered size would suppress the resize that new view
     // legitimately needs.

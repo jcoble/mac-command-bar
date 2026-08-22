@@ -9,6 +9,7 @@ export const resourceDiagnostics = $state({
   loadedConversationEventBytes: 0,
   loadedChildTranscriptBytes: 0,
   tauriRootListeners: 0,
+  tauriEventSubscribers: 0,
   fileWatchers: 0,
   objectUrls: 0,
   loadedTreeNodes: 0,
@@ -76,6 +77,25 @@ export function trackTauriListener(unlisten: () => void): () => void {
         0,
         resourceDiagnostics.tauriRootListeners - 1
       );
+    }
+  };
+}
+
+export function trackTauriSubscriber(unsubscribe: () => void): () => void {
+  if (import.meta.env.DEV) resourceDiagnostics.tauriEventSubscribers += 1;
+  let subscribed = true;
+  return () => {
+    if (!subscribed) return;
+    subscribed = false;
+    try {
+      unsubscribe();
+    } finally {
+      if (import.meta.env.DEV) {
+        resourceDiagnostics.tauriEventSubscribers = Math.max(
+          0,
+          resourceDiagnostics.tauriEventSubscribers - 1
+        );
+      }
     }
   };
 }

@@ -40,7 +40,10 @@ import {
   normalizeWorkspaceSnapshot,
   type SessionWorkspaceSnapshot
 } from './shell/sessionWorkspaces';
-import { trackTauriListener } from './shell/resourceDiagnostics.svelte.ts';
+import {
+  trackTauriListener,
+  trackTauriSubscriber
+} from './shell/resourceDiagnostics.svelte.ts';
 
 export const defaultSourceScanLimit = 10_000;
 export const expandedSourceScanLimit = 25_000;
@@ -52,6 +55,8 @@ export type NativeSourceScanProgress = {
   visitedEntries: number;
   matchedFiles: number;
 };
+
+export type SourceScanProgressSubscriber = (progress: NativeSourceScanProgress) => void;
 
 export type TerminalStartRequest = {
   cwd: string;
@@ -623,19 +628,47 @@ export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean
   return invoke<boolean>('cancel_source_scan', { scanId });
 }
 
-export async function listenToSourceScanProgress(
-  handler: (progress: NativeSourceScanProgress) => void
-): Promise<(() => void) | null> {
-  if (!isTauriRuntime()) {
-    return null;
-  }
+const sourceScanProgressSubscribers = new Set<SourceScanProgressSubscriber>();
+let sourceScanProgressUnlisten: (() => void) | null = null;
+let sourceScanProgressSetup: Promise<void> | null = null;
+let sourceScanProgressGeneration = 0;
 
-  const { listen } = await import('@tauri-apps/api/event');
-  return trackTauriListener(
-    await listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
-      handler(event.payload);
-    })
-  );
+export function subscribeToSourceScanProgress(
+  subscriber: SourceScanProgressSubscriber
+): () => void {
+  sourceScanProgressSubscribers.add(subscriber);
+  ensureSourceScanProgressListener();
+  return trackTauriSubscriber(() => {
+    sourceScanProgressSubscribers.delete(subscriber);
+    if (sourceScanProgressSubscribers.size === 0) stopSourceScanProgressListener();
+  });
+}
+
+function ensureSourceScanProgressListener(): void {
+  if (!isTauriRuntime() || sourceScanProgressUnlisten || sourceScanProgressSetup) return;
+  const generation = sourceScanProgressGeneration;
+  const setup = (async () => {
+    const { listen } = await import('@tauri-apps/api/event');
+    const stopNative = await listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
+      for (const current of sourceScanProgressSubscribers) current(event.payload);
+    });
+    const stop = trackTauriListener(stopNative);
+    if (generation !== sourceScanProgressGeneration || sourceScanProgressSubscribers.size === 0) {
+      stop();
+      return;
+    }
+    sourceScanProgressUnlisten = stop;
+  })().catch(() => undefined).finally(() => {
+    if (sourceScanProgressSetup === setup) sourceScanProgressSetup = null;
+  });
+  sourceScanProgressSetup = setup;
+}
+
+function stopSourceScanProgressListener(): void {
+  sourceScanProgressGeneration += 1;
+  sourceScanProgressUnlisten?.();
+  sourceScanProgressUnlisten = null;
+  sourceScanProgressSetup = null;
 }
 
 export async function startTerminalSessionFromTauri(
