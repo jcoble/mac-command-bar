@@ -8,8 +8,13 @@
    * from the view options, which is also how a person groups by project instead.
    */
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import { onMount } from 'svelte';
 
   import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import {
+    readAssemblySettingFromTauri,
+    writeAssemblySettingFromTauri
+  } from '$lib/tauriSource';
   import { buildMyWorkGroups, type MyWorkViewOptions } from './myWorkViewOptions.ts';
   import WorktreeAgentRow from './WorktreeAgentRow.svelte';
 
@@ -47,38 +52,37 @@
     position: 'before' | 'after';
   } | null>(null);
   const loadedOrderKeys = new Set<string>();
+  const groupOrderVersions = new Map<string, number>();
+  let destroyed = false;
 
-  /** A group owns one durable id array at `mcb.rail.order.<groupKey>`. */
-  function orderStorageKey(groupKey: string): string {
-    return `mcb.rail.order.${groupKey}`;
+  function groupOrderSettingKey(groupKey: string): string {
+    return `rail.group-order.${groupKey}`;
   }
 
-  function parseStoredOrder(value: string | null): string[] {
-    if (!value) return [];
-    try {
-      const parsed: unknown = JSON.parse(value);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter((item): item is string => typeof item === 'string');
-    } catch {
-      return [];
-    }
+  function normalizeGroupOrder(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value.filter((ownedId): ownedId is string => typeof ownedId === 'string');
   }
+
+  onMount(() => {
+    return () => {
+      destroyed = true;
+    };
+  });
 
   $effect(() => {
-    if (typeof localStorage === 'undefined') return;
-    const next = { ...groupOrders };
-    let changed = false;
     for (const group of groups) {
       if (loadedOrderKeys.has(group.key)) continue;
       loadedOrderKeys.add(group.key);
-      try {
-        next[group.key] = parseStoredOrder(localStorage.getItem(orderStorageKey(group.key)));
-      } catch {
-        next[group.key] = [];
-      }
-      changed = true;
+      const restoreVersion = groupOrderVersions.get(group.key) ?? 0;
+      void readAssemblySettingFromTauri(groupOrderSettingKey(group.key))
+        .then((stored) => {
+          if (!destroyed && (groupOrderVersions.get(group.key) ?? 0) === restoreVersion) {
+            groupOrders = { ...groupOrders, [group.key]: normalizeGroupOrder(stored) };
+          }
+        })
+        .catch(() => undefined);
     }
-    if (changed) groupOrders = next;
   });
 
   function orderedSessions(groupKey: string, defaultSessions: OwnedSession[]): OwnedSession[] {
@@ -101,12 +105,11 @@
   }
 
   function persistOrder(groupKey: string, ownedIds: string[]): void {
+    groupOrderVersions.set(groupKey, (groupOrderVersions.get(groupKey) ?? 0) + 1);
     groupOrders = { ...groupOrders, [groupKey]: ownedIds };
-    try {
-      localStorage.setItem(orderStorageKey(groupKey), JSON.stringify(ownedIds));
-    } catch {
-      // Reordering still works for this visit when storage is unavailable.
-    }
+    void writeAssemblySettingFromTauri(groupOrderSettingKey(groupKey), ownedIds).catch(
+      () => undefined
+    );
   }
 
   function clearDrag(): void {
