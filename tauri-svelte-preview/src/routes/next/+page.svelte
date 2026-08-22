@@ -27,6 +27,7 @@
 	import { hydrateSettings, settings, type ProblemsLocation } from "$lib/settingsStore.svelte";
 	import {
 		captureBrowserState,
+		clearBrowserUrl,
 		openBrowserUrl,
 		releaseBrowserWorkspace,
 		restoreBrowserState,
@@ -203,6 +204,7 @@
 	let activeWorkspaceSnapshot: SessionWorkspaceSnapshot | null = null;
 	let workspaceRestoreGeneration = 0;
 	let sessionSelectionGeneration = 0;
+	let sessionProjectionOwner: "selection" | "checkout" | null = null;
 	let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let workspaceWriteQueue: Promise<void> = Promise.resolve();
 	let workspaceAutosaveEnabled = false;
@@ -860,17 +862,21 @@
 			rail.error = 'A checkout folder is required.';
 			return false;
 		}
-		countInvoke('validate_project_root');
-		const validation = await validateProjectRootFromTauri(root);
-		if (!checkoutStillCurrent()) return false;
-		if (validation && (!validation.exists || !validation.isDirectory)) {
-			rail.error = 'That checkout folder is not available.';
+		if (sessionProjectionOwner !== null) {
+			rail.error = 'Wait for the current session change to finish.';
 			return false;
 		}
-
-		workspaceAutosaveEnabled = false;
-		cancelWorkspaceAutosave();
+		sessionProjectionOwner = "checkout";
 		try {
+			countInvoke('validate_project_root');
+			const validation = await validateProjectRootFromTauri(root);
+			if (!checkoutStillCurrent()) return false;
+			if (validation && (!validation.exists || !validation.isDirectory)) {
+				rail.error = 'That checkout folder is not available.';
+				return false;
+			}
+			workspaceAutosaveEnabled = false;
+			cancelWorkspaceAutosave();
 			await flushConversationSessionDraft(ownedId);
 			if (!checkoutStillCurrent()) return false;
 			if (!(await snapshotWorkspace(ownedId))) return false;
@@ -878,15 +884,16 @@
 			const oldPaths = editorState.openFiles.map((file) => file.path);
 			const record = await changeStructuredConversationCheckout(ownedId, root);
 			if (!record) return false;
-			// The backend has already committed the durable row by this point. If
-			// selection changed while it ran, leave the newly selected projection
-			// alone; its normal restore path will read the committed row.
+			// The backend has already committed the durable row by this point. A
+			// disposed route or replaced conversation must not touch its projection.
 			if (!checkoutStillCurrent()) return true;
 
 			stopConversationTerminalProjection(ownedId);
 			service?.releaseView(ownedId);
 			await disposeExtensionApiProbeResources();
 			if (!checkoutStillCurrent()) return true;
+			releaseBrowserWorkspace();
+			clearBrowserUrl();
 			editorPanel?.releaseSessionResources(oldPaths);
 			gitService.releaseHistorySurface();
 			gitCommitFilesService.release();
@@ -911,6 +918,7 @@
 			rail.error = `Checkout change failed: ${describeError(error)}`;
 			return false;
 		} finally {
+			if (sessionProjectionOwner === "checkout") sessionProjectionOwner = null;
 			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
 		}
 	}
@@ -1062,7 +1070,19 @@
 	}
 
 	async function selectOwned(ownedId: string, propagateStructuredFailure = false): Promise<void> {
+		if (sessionProjectionOwner === "checkout") return;
 		const selectionGeneration = ++sessionSelectionGeneration;
+		sessionProjectionOwner = "selection";
+		try {
+			await selectOwnedCurrent(ownedId, propagateStructuredFailure, selectionGeneration);
+		} finally {
+			if (selectionGeneration === sessionSelectionGeneration && sessionProjectionOwner === "selection") {
+				sessionProjectionOwner = null;
+			}
+		}
+	}
+
+	async function selectOwnedCurrent(ownedId: string, propagateStructuredFailure: boolean, selectionGeneration: number): Promise<void> {
 		const selectionIsCurrent = (): boolean => !disposed && selectionGeneration === sessionSelectionGeneration;
 		// A draft is discarded the moment another session takes the Session tab.
 		// It never existed anywhere but this flag, so there is nothing to clean up.
