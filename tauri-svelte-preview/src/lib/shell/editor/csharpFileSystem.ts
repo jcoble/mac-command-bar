@@ -17,7 +17,7 @@ import { readNativeCsharpFileFromTauri, writeSourceToTauri } from '$lib/tauriSou
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const roots = new Set<string>();
+let activeRoot: string | null = null;
 let registered = false;
 
 function normalizedPath(path: string): string {
@@ -27,10 +27,9 @@ function normalizedPath(path: string): string {
 
 function rootFor(path: string): string | null {
   const candidate = normalizedPath(path);
-  const matches = [...roots]
-    .filter((root) => candidate === root || candidate.startsWith(`${root}/`))
-    .sort((left, right) => right.length - left.length);
-  return matches[0] ?? null;
+  return activeRoot && (candidate === activeRoot || candidate.startsWith(`${activeRoot}/`))
+    ? activeRoot
+    : null;
 }
 
 function readOnlyError(): never {
@@ -86,8 +85,9 @@ const provider: IFileSystemProvider = {
   }
 };
 
-export function registerNativeCsharpFileSystem(root: string): void {
-  roots.add(normalizedPath(root));
+export function registerNativeCsharpFileSystem(root: string | null): void {
+  activeRoot = root ? normalizedPath(root) : null;
+  if (!activeRoot) return;
   if (registered) return;
   registered = true;
   registerCustomProvider('file', provider);

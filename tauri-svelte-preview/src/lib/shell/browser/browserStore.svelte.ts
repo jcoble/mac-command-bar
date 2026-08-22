@@ -180,6 +180,31 @@ export function deactivateBrowserWorkspace(): void {
   }
 }
 
+/** Release native browser views while keeping only the compact address metadata. */
+export function releaseBrowserWorkspace(): void {
+  const url = browser.url;
+  const inputUrl = browser.inputUrl;
+  for (const tabId of Object.keys(browser.workspace.tabs)) {
+    closeBrowserTab(modelContext(), tabId);
+  }
+  browser.workspace.tabs = {};
+  browser.workspace.tabOrder = [];
+  browser.workspace.activeTabId = null;
+  browser.workspace.activeGeneration = 0;
+  browser.workspace.activated = false;
+  browser.workspace.interaction = 'browse';
+  browser.workspace.pendingSelection = null;
+  browser.workspace.pendingSelectionKind = null;
+  browser.workspace.pendingMarkup = null;
+  browser.workspace.queue = [];
+  browser.workspace.markupCaptures = {};
+  browser.workspace.error = null;
+  browser.url = url;
+  browser.inputUrl = inputUrl;
+  browser.activated = false;
+  browser.error = '';
+}
+
 export function setBrowserUrl(value: string): boolean {
   try {
     activateBrowser();

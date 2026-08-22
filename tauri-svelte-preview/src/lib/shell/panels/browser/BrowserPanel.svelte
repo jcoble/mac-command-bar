@@ -57,6 +57,7 @@
     browser,
     browserModelContext,
     reloadBrowserFrame,
+    releaseBrowserWorkspace,
     setBrowserUrl,
     syncBrowserNavigation
   } from '$lib/shell/browser/browserStore.svelte.ts';
@@ -719,7 +720,7 @@
 
   // Whatever unmounts this panel — a different session, a rebuilt shell — the
   // view must not be left on screen behind it.
-  $effect(() => () => untrack(() => sendPlacement(HIDDEN_PLACEMENT)));
+  $effect(() => () => untrack(() => releaseBrowserWorkspace()));
 
   $effect(() => {
     const nextOwnedId = ownedId;

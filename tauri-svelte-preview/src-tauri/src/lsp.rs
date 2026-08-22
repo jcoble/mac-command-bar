@@ -38,9 +38,8 @@ const MAX_LSP_DOCUMENT_SYMBOL_BYTES: u64 = 4 * 1024 * 1024;
 /// How many lines of a language server's own error output are kept, so a reader can see
 /// what it complained about without the app growing without bound.
 const MAX_LSP_LOG_LINES: usize = 200;
-/// Keep the workspace-switching path warm without allowing an unbounded number
-/// of compiler processes. The session rail commonly moves among 3-5 roots.
-const MAX_LSP_WORKSPACES_PER_LANGUAGE: usize = 5;
+/// The active Supercharged workspace owns the one process for each language.
+const MAX_LSP_WORKSPACES_PER_LANGUAGE: usize = 1;
 /// Project activation only needs enough filesystem discovery to know which
 /// language server to preload. Keep this deliberately shallow and bounded: it
 /// is not a source scan and it never reads file contents.
@@ -165,6 +164,7 @@ impl LanguageIntelligenceChange {
     }
 
     /// Must the caller stop this workspace's servers now?
+    #[cfg(test)]
     pub(crate) fn must_stop_servers(self) -> bool {
         matches!(self, Self::TurnedOff)
     }
@@ -1609,6 +1609,7 @@ fn progress_text(value: &Value, field: &str) -> Option<String> {
 pub(crate) struct SourceLspRegistry {
     sessions: Arc<Mutex<HashMap<SourceLspSessionKey, Arc<Mutex<SourceLspSession>>>>>,
     native_csharp_sessions: Arc<Mutex<HashMap<String, Arc<NativeCsharpSession>>>>,
+    active_root: Arc<Mutex<Option<String>>>,
     preload_languages_by_root: Arc<Mutex<HashMap<String, Vec<String>>>>,
     next_use: Arc<AtomicU64>,
 }
@@ -1665,9 +1666,7 @@ pub(crate) struct LanguageServerProcess {
     pub(crate) server_name: String,
 }
 
-/// A warm language-server slot belongs to both a language and a workspace root.
-/// Switching among session workspaces therefore reuses their indexed processes
-/// instead of repeatedly re-pointing one process and losing its project state.
+/// A language-server slot belongs to both a language and the active workspace root.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SourceLspSessionKey {
     language: String,
@@ -1697,6 +1696,83 @@ fn lsp_session_key_to_evict(
 }
 
 impl SourceLspRegistry {
+    /// Make one workspace the sole owner of language-server processes.
+    pub(crate) fn set_active_root(&self, root: &str, enabled: bool) -> Result<usize, String> {
+        let root = if enabled {
+            normalized_lsp_root(root)
+                .ok_or_else(|| "Project root is not a directory".to_string())?
+        } else {
+            language_intelligence_key(root)
+        };
+        let mut active_root = self
+            .active_root
+            .lock()
+            .map_err(|_| "Active language-server root lock poisoned".to_string())?;
+        if !enabled {
+            let Some(old_root) = active_root.take() else {
+                return Ok(0);
+            };
+            drop(active_root);
+            return self.stop_servers_for_root(&old_root);
+        }
+        if active_root.as_deref() == Some(&root) {
+            return Ok(0);
+        }
+        let next_root = Some(root);
+        *active_root = next_root.clone();
+
+        let stopped = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| "Language server registry lock poisoned".to_string())?;
+            let keys = sessions
+                .keys()
+                .filter(|key| next_root.as_deref() != Some(key.root.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| sessions.remove(&key).map(|session| (key, session)))
+                .collect::<Vec<_>>()
+        };
+        let stopped_native = {
+            let mut sessions = self
+                .native_csharp_sessions
+                .lock()
+                .map_err(|_| "Native C# registry lock poisoned".to_string())?;
+            let roots = sessions
+                .keys()
+                .filter(|existing| next_root.as_deref() != Some(existing.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            roots
+                .into_iter()
+                .filter_map(|old_root| sessions.remove(&old_root).map(|session| (old_root, session)))
+                .collect::<Vec<_>>()
+        };
+        let stopped_count = stopped.len() + stopped_native.len();
+        let mut stopped_roots = stopped
+            .iter()
+            .map(|(key, _)| (key.language.clone(), key.root.clone()))
+            .collect::<Vec<_>>();
+        stopped_roots.extend(
+            stopped_native
+                .iter()
+                .map(|(root, _)| ("csharp".to_string(), root.clone())),
+        );
+        drop(stopped);
+        drop(stopped_native);
+        for (language, root) in stopped_roots {
+            record_language_server_state(
+                &language,
+                &root,
+                LanguageServerState::NotRunning,
+                Some("The active Supercharged project changed.".to_string()),
+            );
+        }
+        Ok(stopped_count)
+    }
+
     /// Return the one authenticated native C# language-client endpoint for a
     /// canonical workspace root. The registry lock covers lookup and insertion,
     /// so concurrent frontend and Rust warm calls cannot create duplicate slots.
@@ -1717,6 +1793,13 @@ impl SourceLspRegistry {
         // can bring Roslyn up behind their back.
         if !language_intelligence_on(&root) {
             return Err(READ_MODE_DETAIL.to_string());
+        }
+        let active_root = self
+            .active_root
+            .lock()
+            .map_err(|_| "Active language-server root lock poisoned".to_string())?;
+        if active_root.as_deref() != Some(&root) {
+            return Err("This workspace is no longer the active Supercharged project.".to_string());
         }
         let use_tick = self.next_use.fetch_add(1, Ordering::Relaxed) + 1;
 
@@ -1800,6 +1883,13 @@ impl SourceLspRegistry {
     pub(crate) fn mark_native_csharp_client_ready(&self, root: &str) -> Result<(), String> {
         let root = normalized_lsp_root(root)
             .ok_or_else(|| "Project root is not a directory".to_string())?;
+        let active_root = self
+            .active_root
+            .lock()
+            .map_err(|_| "Active language-server root lock poisoned".to_string())?;
+        if active_root.as_deref() != Some(&root) {
+            return Err("This workspace is no longer the active Supercharged project.".to_string());
+        }
         let sessions = self
             .native_csharp_sessions
             .lock()
@@ -2269,6 +2359,13 @@ impl SourceLspRegistry {
         key: SourceLspSessionKey,
         server: ResolvedLspServer,
     ) -> Result<Arc<Mutex<SourceLspSession>>, String> {
+        let active_root = self
+            .active_root
+            .lock()
+            .map_err(|_| "Active language-server root lock poisoned".to_string())?;
+        if active_root.as_deref() != Some(&key.root) {
+            return Err("This workspace is no longer the active Supercharged project.".to_string());
+        }
         let use_tick = self.next_use.fetch_add(1, Ordering::Relaxed) + 1;
 
         let mut sessions = self
@@ -2552,13 +2649,12 @@ impl SourceLspRegistry {
         Ok(())
     }
 
-    /// Proactively warm every known language at `root`.
+    /// Proactively warm every known language at the active `root`.
     ///
     /// The frontend calls this on a project switch, before the active file is
     /// read. Existing server languages follow the reader between roots, while a
     /// cheap cached project-marker probe lets a C# workspace start Roslyn before
-    /// its first file is opened. A new workspace gets its own bounded warm slot
-    /// without disturbing the roots the reader may switch back to.
+    /// its first file is opened.
     pub(crate) fn warm_running_servers_for_root(&self, root: &str) -> Result<usize, String> {
         let Some(root) = normalized_lsp_root(root) else {
             return Ok(0);

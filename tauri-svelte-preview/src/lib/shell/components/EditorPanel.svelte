@@ -46,7 +46,6 @@
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import {
     languageIntelligenceOn,
-    launchRestoreFor,
     LANGUAGE_INTELLIGENCE_SETTING_KEY,
     normalizeLanguageIntelligenceChoices,
     withLanguageIntelligenceChoice,
@@ -150,16 +149,15 @@
   let languageIntelligenceNote = $state<string | null>(null);
   /** True while a switch is being acted on, so it cannot be flipped twice. */
   let languageIntelligenceBusy = $state(false);
+  let nativeCsharpRoot: string | null = null;
+  let backendOwnerRoot: string | null = null;
+  let requestedOwnerKey: string | null = null;
+  let ownerSelectionGeneration = 0;
+  let ownerTransitionTail: Promise<void> = Promise.resolve();
+  let currentOwnerTransition: ReturnType<typeof setWorkspaceLanguageIntelligenceFromTauri> =
+    Promise.resolve(null);
   /** Language-server processes the desktop app reports for this project. */
   let languageServerPids = $state<number[]>([]);
-  /**
-   * Projects whose saved choice has been handed to the desktop app, with the
-   * handing-over itself so callers can wait for it. One project at a time and
-   * only when it is opened: restoring the whole remembered list at launch would
-   * wake servers for projects nobody is looking at.
-   */
-  const modeRestores = new Map<string, Promise<void>>();
-
   let destroyed = false;
 
   function hydrateLanguageIntelligenceChoices(): Promise<void> {
@@ -473,27 +471,52 @@
     }
   }
 
-  /**
-   * Hand the desktop app this project's remembered choice, once per project.
-   *
-   * Called when a file in the project is opened — never at start-up for every
-   * project that was ever switched on. Saying "on" starts nothing by itself;
-   * the file being opened is what does that, and only in full mode.
-   */
+  function queueLanguageIntelligenceOwner(
+    projectRoot: string | null,
+    enabled: boolean,
+    language: string | null = null,
+    force = false
+  ): ReturnType<typeof setWorkspaceLanguageIntelligenceFromTauri> {
+    const root = projectRoot ? workspaceKey(projectRoot) : null;
+    const ownerKey = `${root ?? ''}|${enabled}`;
+    if (!force && requestedOwnerKey === ownerKey) return currentOwnerTransition;
+    requestedOwnerKey = ownerKey;
+
+    const transition = ownerTransitionTail.then(async () => {
+      if (!isNativeTauriRuntime()) return null;
+      const commandRoot = root ?? backendOwnerRoot;
+      if (!commandRoot) return null;
+      if (backendOwnerRoot !== root) warmedProjectRoots.clear();
+      countInvoke('set_workspace_language_intelligence');
+      const answer = await setWorkspaceLanguageIntelligenceFromTauri(
+        commandRoot,
+        Boolean(root && enabled),
+        root && enabled ? language : null
+      );
+      backendOwnerRoot = root && enabled ? root : null;
+      return answer;
+    });
+    ownerTransitionTail = transition.then(() => undefined, () => undefined);
+    currentOwnerTransition = transition;
+    return transition;
+  }
+
+  /** Hand the ordered backend owner this project's current remembered choice. */
   function applySavedModeForProject(projectRoot: string): Promise<void> {
     const root = workspaceKey(projectRoot);
-    const already = modeRestores.get(root);
-    if (already) return already;
-    const restore = (async () => {
+    return (async () => {
       await hydrateLanguageIntelligenceChoices();
-      if (destroyed) return;
-      const decision = launchRestoreFor(languageIntelligenceChoices, root);
-      if (!decision || !isNativeTauriRuntime()) return;
-      countInvoke('set_workspace_language_intelligence');
+      if (
+        destroyed
+        || !rootAvailable
+        || !editorState.projectRoot
+        || workspaceKey(editorState.projectRoot) !== root
+      ) return;
       try {
-        const answer = await setWorkspaceLanguageIntelligenceFromTauri(
-          decision.root,
-          decision.enabled
+        const answer = await queueLanguageIntelligenceOwner(
+          root,
+          settings.intelligence.languageServers
+            && languageIntelligenceOn(languageIntelligenceChoices, root)
         );
         if (destroyed || !answer) return;
         if (editorState.projectRoot && workspaceKey(editorState.projectRoot) === root) {
@@ -504,17 +527,11 @@
         // project in read mode, which is the safe half of the choice.
       }
     })();
-    modeRestores.set(root, restore);
-    void restore.catch(() => {
-      if (modeRestores.get(root) === restore) modeRestores.delete(root);
-    });
-    return restore;
   }
 
   /**
-   * Tell the language server which project this file belongs to, once per
-   * project. A no-op unless a server is already running for that language,
-   * and never called at all for a project in read mode.
+   * Tell the language server which project this file belongs to before warming
+   * the file's language.
    */
   async function warmLanguageServer(projectRoot: string | null): Promise<void> {
     if (!projectRoot) return;
@@ -563,9 +580,13 @@
         enabled
       );
       await writeAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY, nextChoices);
-      if (destroyed) return;
+      if (
+        destroyed
+        || !rootAvailable
+        || !editorState.projectRoot
+        || workspaceKey(editorState.projectRoot) !== workspaceKey(root)
+      ) return;
       languageIntelligenceChoices = nextChoices;
-      modeRestores.set(workspaceKey(root), Promise.resolve());
       if (!enabled) {
         warmedProjectRoots.delete(root);
         diagnosticsByPath = {};
@@ -577,15 +598,15 @@
       // and the two switches read as one that "would not stay off". A C# start
       // that Settings has refused now says so in the note under the switch.
 
-      countInvoke('set_workspace_language_intelligence');
       // The file already on screen is the one the reader wants answered, so its
       // language is what the desktop app starts a server for — now, rather than
       // at the next file opened. With nothing open there is nothing to start,
       // and the answer says so.
-      const answer = await setWorkspaceLanguageIntelligenceFromTauri(
+      const answer = await queueLanguageIntelligenceOwner(
         root,
         enabled,
-        enabled ? activeFileLanguage() : null
+        enabled ? activeFileLanguage() : null,
+        true
       );
       if (destroyed) return;
       languageIntelligenceNote = answer?.message ?? null;
@@ -621,6 +642,42 @@
     editorState.activePath;
     activeEditorFile()?.preview;
     syncIntelligenceWithActiveFile();
+  });
+
+  $effect(() => {
+    const root = rootAvailable ? editorState.projectRoot : null;
+    languageIntelligenceChoices;
+    const languageServersEnabled = settings.intelligence.languageServers;
+    const generation = ++ownerSelectionGeneration;
+    void (async () => {
+      await hydrateLanguageIntelligenceChoices();
+      if (destroyed || generation !== ownerSelectionGeneration) return;
+      const enabled = Boolean(
+        root
+          && languageServersEnabled
+          && languageIntelligenceOn(languageIntelligenceChoices, root)
+      );
+      try {
+        const answer = await queueLanguageIntelligenceOwner(root, enabled);
+        if (
+          destroyed
+          || !answer
+          || root !== (rootAvailable ? editorState.projectRoot : null)
+        ) return;
+        languageServerPids = answer.serverPids;
+      } catch {
+        // An older desktop build leaves the selected project in read mode.
+      }
+    })();
+  });
+
+  $effect(() => {
+    const root = rootAvailable && fullMode ? editorState.projectRoot : null;
+    if (root === nativeCsharpRoot) return;
+    nativeCsharpRoot = root;
+    void import('$lib/shell/editor/csharpLanguageClient').then(({ setNativeCsharpActiveRoot }) =>
+      setNativeCsharpActiveRoot(root)
+    ).catch(() => undefined);
   });
 
   /** EXPLICIT IO: read one file and show it. */

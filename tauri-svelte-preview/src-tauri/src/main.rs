@@ -1158,15 +1158,15 @@ async fn set_workspace_language_intelligence(
     tauri::async_runtime::spawn_blocking(move || {
         let key = lsp::language_intelligence_key(&root);
         let change = lsp::set_language_intelligence(&key, enabled);
-        let stopped_servers = if change.must_stop_servers() {
-            registry.stop_servers_for_root(&key)?
+        let enabled = change.may_start_servers();
+        let stopped_servers = if enabled {
+            registry.set_active_root(&key, true)?
         } else {
-            0
+            registry.set_active_root(&key, false)?
         };
         // What the switch now says is what the state machine decided, not what
         // the caller asked for — the two only differ if something else changed
         // this workspace in between, and the reader should see the truth.
-        let enabled = change.may_start_servers();
         // A start that fails is not a failed switch: the choice is recorded
         // either way, so the reason comes back in the message rather than as an
         // error that would make the switch look like it never moved.

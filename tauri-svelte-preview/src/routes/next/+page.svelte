@@ -25,7 +25,12 @@
 	import "$lib/shell/styles/themeChrome.css";
 
 	import { hydrateSettings, settings, type ProblemsLocation } from "$lib/settingsStore.svelte";
-	import { captureBrowserState, openBrowserUrl, restoreBrowserState } from "$lib/shell/browser/browserStore.svelte.ts";
+	import {
+		captureBrowserState,
+		openBrowserUrl,
+		releaseBrowserWorkspace,
+		restoreBrowserState,
+	} from "$lib/shell/browser/browserStore.svelte.ts";
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
@@ -970,6 +975,7 @@
 				workspaceAutosaveEnabled = true;
 				return;
 			}
+			if (workspaceCaptured) releaseBrowserWorkspace();
 		}
 		if (switching && previous !== null) {
 			stopConversationTerminalProjection(previous);

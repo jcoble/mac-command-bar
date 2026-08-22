@@ -41,7 +41,6 @@ import {
 import { ensureExtensionApiProbeWorkspaceRoot } from "./extensionApiProbeController";
 import { registerExtensionApiProbeBridgeCommands } from "./extensionApiProbeBridge";
 
-const MAX_WARM_CSHARP_ROOTS = 5;
 const BUILD_COMMAND = "mcb.nativeCsharp.build";
 const TEST_COMMAND = "mcb.nativeCsharp.test";
 const PEEK_REFERENCES_COMMAND = "roslyn.client.peekReferences";
@@ -75,7 +74,6 @@ type ClientSlot = {
   root: string;
   wrapper: LanguageClientWrapper;
   codeLensDisposable: vscode.Disposable;
-  lastUsed: number;
 };
 
 type DocumentAction = (documentUri: string) => void | Promise<void>;
@@ -86,15 +84,16 @@ const diagnosticsListeners = new Set<
   (diagnostics: NativeCsharpDiagnostic[]) => void
 >();
 let apiReady: Promise<void> | null = null;
-let useSequence = 0;
+let activeRoot: string | null = null;
+let activeRootChange = Promise.resolve();
 let buildAction: DocumentAction | null = null;
 let testAction: DocumentAction | null = null;
 let commandsRegistered = false;
-const browserWorkspaceRoots = new Set<string>();
+let browserWorkspaceRoot: string | null = null;
+let browserWorkspaceMarker: vscode.Disposable | null = null;
 const browserWorkspaceFileSystem = new RegisteredFileSystemProvider(true);
 let browserWorkspaceOverlayRegistered = false;
 let vscodeThemeApplierRegistered = false;
-let eagerStartRequested = false;
 
 function vscodeEditorConfiguration() {
   const theme = currentTheme();
@@ -261,14 +260,17 @@ function normalizedPath(path: string): string {
   return path.replaceAll("\\", "/").replace(/\/+$/, "");
 }
 
-function registerBrowserWorkspaceRoot(root: string): void {
+function registerBrowserWorkspaceRoot(root: string | null): void {
+  if (browserWorkspaceRoot === root) return;
+  browserWorkspaceMarker?.dispose();
+  browserWorkspaceMarker = null;
+  browserWorkspaceRoot = root;
+  if (!root) return;
   if (!browserWorkspaceOverlayRegistered) {
     browserWorkspaceOverlayRegistered = true;
     registerFileSystemOverlay(1, browserWorkspaceFileSystem);
   }
-  if (browserWorkspaceRoots.has(root)) return;
-  browserWorkspaceRoots.add(root);
-  browserWorkspaceFileSystem.registerFile(
+  browserWorkspaceMarker = browserWorkspaceFileSystem.registerFile(
     new RegisteredMemoryFile(
       vscode.Uri.file(`${root}/${MCB_EXTENSION_API_PROBE_MARKER_FILE}`),
       `root=${root}\n`
@@ -315,11 +317,13 @@ function diagnosticsForRoot(root: string): NativeCsharpDiagnostic[] {
 }
 
 function publishDiagnostics(): void {
-  for (const root of clients.keys()) {
-    const diagnostics = diagnosticsForRoot(root);
-    recordNativeCsharpDiagnostics(root, diagnostics);
-    for (const listener of diagnosticsListeners) listener(diagnostics);
+  if (!activeRoot || !clients.has(activeRoot)) {
+    for (const listener of diagnosticsListeners) listener([]);
+    return;
   }
+  const diagnostics = diagnosticsForRoot(activeRoot);
+  recordNativeCsharpDiagnostics(activeRoot, diagnostics);
+  for (const listener of diagnosticsListeners) listener(diagnostics);
 }
 
 function registerDocumentActions(): void {
@@ -359,8 +363,11 @@ function registerDocumentActions(): void {
   vscode.languages.onDidChangeDiagnostics(publishDiagnostics);
 }
 
-async function ensureApi(root: string): Promise<void> {
+async function ensureApi(root: string, expectedActiveRoot: string): Promise<void> {
   const workspaceContext = await ensureExtensionApiProbeWorkspaceRoot(root);
+  if (activeRoot !== expectedActiveRoot) {
+    throw new Error("This C# client request belongs to an inactive project.");
+  }
   registerBrowserWorkspaceRoot(workspaceContext.activeRoot);
   if (isNativeTauriRuntime()) {
     registerNativeCsharpFileSystem(workspaceContext.activeRoot);
@@ -421,49 +428,19 @@ async function ensureApi(root: string): Promise<void> {
   await apiReady;
 }
 
-/**
- * Initialize the VS Code-compatible Monaco services before the editor imports
- * or creates a standalone model. The service container is global and can only
- * be initialized once, so this is deliberately safe to call for every root.
- */
-export async function prepareNativeCsharpEditorServices(
-  root: string
-): Promise<void> {
-  await ensureApi(normalizedPath(root));
-}
-
-/** Start the page-global VS Code services before any session can build an editor. */
-export function startVscodeServicesEagerly(): void {
-  if (eagerStartRequested) return;
-  eagerStartRequested = true;
-  void (async () => {
-    const knownRoot = browserWorkspaceRoots.values().next().value;
-    const root = knownRoot ?? await (await import("@tauri-apps/api/path")).homeDir();
-    await ensureApi(normalizedPath(root));
-  })().catch((error) => {
-    console.error("[code-services] eager start failed", error);
-  });
-}
-
-async function evictColdRootIfNeeded(): Promise<void> {
-  if (clients.size < MAX_WARM_CSHARP_ROOTS) return;
-  const oldest = [...clients.values()].sort(
-    (left, right) => left.lastUsed - right.lastUsed
-  )[0];
-  if (!oldest) return;
-  clients.delete(oldest.root);
-  oldest.codeLensDisposable.dispose();
-  await oldest.wrapper.dispose();
-  recordNativeCsharpDiagnostics(oldest.root, []);
-}
-
 async function startClient(
   requestedRoot: string,
   startedAt: number
 ): Promise<NativeCsharpEnsureResult> {
+  if (activeRoot !== requestedRoot) {
+    throw new Error("This C# client request belongs to an inactive project.");
+  }
   // This must precede both the WebSocket client and any Monaco editor/model.
   // `registerCustomProvider` refuses to run after standalone services exist.
-  await ensureApi(requestedRoot);
+  await ensureApi(requestedRoot, requestedRoot);
+  if (activeRoot !== requestedRoot) {
+    throw new Error("This C# client request belongs to an inactive project.");
+  }
   const endpoint = await ensureNativeCsharpLanguageClientFromTauri(
     requestedRoot
   );
@@ -472,12 +449,13 @@ async function startClient(
       "No C# endpoint for this project: it is in read mode, has no C# project, or this is not the desktop app."
     );
   const root = normalizedPath(endpoint.root);
+  if (activeRoot !== root) {
+    throw new Error("This C# client request belongs to an inactive project.");
+  }
   const existing = clients.get(root);
   if (existing) {
-    existing.lastUsed = ++useSequence;
     return { root, reused: true, elapsedMs: performance.now() - startedAt };
   }
-  await evictColdRootIfNeeded();
   const workspaceUri = vscode.Uri.file(root);
   const workspaceFolder =
     vscode.workspace.workspaceFolders?.find(
@@ -513,7 +491,7 @@ async function startClient(
           withinRoot(document.uri) ? next(document, token) : [],
         resolveCodeLens: (codeLens, token, next) => next(codeLens, token),
         handleDiagnostics: (uri, diagnostics, next) => {
-          if (withinRoot(uri)) next(uri, diagnostics);
+          if (activeRoot === root && withinRoot(uri)) next(uri, diagnostics);
         },
         workspace: {
           configuration: async (params, token, next) => {
@@ -541,7 +519,20 @@ async function startClient(
   };
   const wrapper = new LanguageClientWrapper(config);
   await wrapper.start();
-  await markNativeCsharpLanguageClientReadyFromTauri(root);
+  if (activeRoot !== root) {
+    await wrapper.dispose();
+    throw new Error("This C# client request belongs to an inactive project.");
+  }
+  try {
+    await markNativeCsharpLanguageClientReadyFromTauri(root);
+  } catch (error) {
+    await wrapper.dispose();
+    throw error;
+  }
+  if (activeRoot !== root) {
+    await wrapper.dispose();
+    throw new Error("This C# client request belongs to an inactive project.");
+  }
   const codeLensDisposable = vscode.languages.registerCodeLensProvider(
     selector,
     {
@@ -568,7 +559,6 @@ async function startClient(
     root,
     wrapper,
     codeLensDisposable,
-    lastUsed: ++useSequence,
   });
   publishDiagnostics();
   return { root, reused: false, elapsedMs: performance.now() - startedAt };
@@ -583,17 +573,25 @@ export function ensureNativeCsharpLanguageClient(
     );
   }
   const key = normalizedPath(root);
+  if (activeRoot !== key) {
+    return Promise.reject(new Error("This C# client request belongs to an inactive project."));
+  }
   const existing = clients.get(key);
   if (existing) {
-    existing.lastUsed = ++useSequence;
     return Promise.resolve({ root: key, reused: true, elapsedMs: 0 });
   }
   const inFlight = pending.get(key);
   if (inFlight) return inFlight;
   const startedAt = performance.now();
-  const promise = startClient(key, startedAt).finally(() =>
-    pending.delete(key)
-  );
+  const ownership = activeRootChange;
+  const promise = ownership
+    .then(() => {
+      if (activeRoot !== key) {
+        throw new Error("This C# client request belongs to an inactive project.");
+      }
+      return startClient(key, startedAt);
+    })
+    .finally(() => pending.delete(key));
   pending.set(key, promise);
   return promise;
 }
@@ -653,6 +651,21 @@ export function subscribeNativeCsharpDiagnostics(
 
 export function nativeCsharpClientIsWarm(root: string): boolean {
   return clients.has(normalizedPath(root));
+}
+
+/** Point the page-global native C# slot at the active Supercharged root. */
+export async function setNativeCsharpActiveRoot(root: string | null): Promise<void> {
+  const nextRoot = root ? normalizedPath(root) : null;
+  if (activeRoot === nextRoot) return;
+  activeRoot = nextRoot;
+  registerBrowserWorkspaceRoot(nextRoot);
+  registerNativeCsharpFileSystem(nextRoot);
+  activeRootChange = activeRootChange.then(async () => {
+    const oldRoots = [...clients.keys()].filter((clientRoot) => clientRoot !== nextRoot);
+    await Promise.all(oldRoots.map(stopNativeCsharpLanguageClient));
+    publishDiagnostics();
+  });
+  await activeRootChange;
 }
 
 /**
