@@ -896,6 +896,7 @@
 			const oldPaths = editorState.openFiles.map((file) => file.path);
 			const record = await changeStructuredConversationCheckout(ownedId, root);
 			if (!record) return false;
+			if (!checkoutStillCurrent()) return false;
 			// The backend has committed the new CWD. Replace the old-root workspace
 			// checkpoint before any stale exit or unrelated probe work can fail.
 			stopConversationTerminalProjection(ownedId);
