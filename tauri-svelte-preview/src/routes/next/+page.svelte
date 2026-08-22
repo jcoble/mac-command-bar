@@ -1246,6 +1246,7 @@
 
 		activeRootAvailable = false;
 		setUnavailableOpenFileRoot(selectedRoot);
+		releaseBrowserWorkspace();
 		if (ownedId) {
 			stopConversationTerminalProjection(ownedId);
 			service?.releaseView(ownedId);

@@ -75,11 +75,6 @@
     BrowserTabState
   } from '$lib/shell/browser/browserTypes.ts';
   import { normalizeBrowserUrl } from '$lib/shell/browser/normalizeBrowserUrl.ts';
-  import {
-    readBrowserSessionSnapshot,
-    writeBrowserSessionSnapshot,
-    type BrowserPanelSessionSnapshot
-  } from '$lib/shell/browser/browserSessionSnapshots.ts';
 
   import AnnotationBadges from './AnnotationBadges.svelte';
   import AnnotationCanvas from './AnnotationCanvas.svelte';
@@ -111,7 +106,7 @@
     /** The session whose browser this is. */
     ownedId: string | null;
   }
-  let { visible, ownedId }: Props = $props();
+  let { visible, root, ownedId }: Props = $props();
 
   let pageHost = $state<HTMLDivElement | null>(null);
   /** The panel's own rows above the page — measured, never assumed. */
@@ -151,7 +146,6 @@
   /** Bumped whenever the host rectangle could have moved. */
   let layoutTick = $state(0);
   let nextMarkId = 0;
-  let snapshotOwnedId: string | null = null;
 
   /**
    * Erasing takes a mark out of the list it came from rather than hiding it
@@ -367,43 +361,6 @@
     backdrop = createTrackedObjectUrl(
       new Blob([Uint8Array.from(shot.bytes)], { type: shot.mimeType || 'image/png' })
     );
-  }
-
-  function panelSnapshot(): BrowserPanelSessionSnapshot {
-    // The snapshot store deep-copies with structuredClone, which throws
-    // DataCloneError on reactive proxies — hand it plain objects instead.
-    return $state.snapshot({
-      annotations,
-      strokes,
-      description,
-      listOpen,
-      tool,
-      capture,
-      editingId,
-      expanded
-    }) as BrowserPanelSessionSnapshot;
-  }
-
-  function restorePanelSnapshot(snapshot: BrowserPanelSessionSnapshot): void {
-    if (backdrop) revokeTrackedObjectUrl(backdrop);
-    annotations = snapshot.annotations;
-    strokes = snapshot.strokes;
-    description = snapshot.description;
-    listOpen = snapshot.listOpen;
-    tool = snapshot.tool;
-    capture = snapshot.capture;
-    backdrop = capture
-      ? createTrackedObjectUrl(
-          new Blob([Uint8Array.from(capture.bytes)], { type: capture.mimeType || 'image/png' })
-        )
-      : null;
-    editingId = snapshot.editingId;
-    expanded = snapshot.expanded;
-    address = '';
-    addressEdited = false;
-    failure = '';
-    stopHover();
-    layoutTick += 1;
   }
 
   function dropStill(): void {
@@ -691,7 +648,7 @@
 
   $effect(() => {
     // Every input that can move the view, read so the effect re-runs.
-    const onScreen = visible && !showsStill && Boolean(browser.url);
+    const onScreen = visible && Boolean(root) && !showsStill && Boolean(browser.url);
     layoutTick;
     browser.workspace.activeTabId;
     // Placing the view writes to the same shell state this effect reads from,
@@ -711,7 +668,7 @@
    * session's teardown left in the workspace's error.
    */
   $effect(() => {
-    const wanted = visible && Boolean(browser.url) && !browser.workspace.activeTabId;
+    const wanted = visible && Boolean(root) && Boolean(browser.url) && !browser.workspace.activeTabId;
     if (!wanted) return;
     untrack(() => {
       placeBeforeOpening();
@@ -725,32 +682,24 @@
   $effect(() => () => untrack(() => releaseBrowserWorkspace()));
 
   $effect(() => {
-    const nextOwnedId = ownedId;
+    ownedId;
+    root;
     untrack(() => {
-      if (snapshotOwnedId && snapshotOwnedId !== nextOwnedId) {
-        writeBrowserSessionSnapshot(snapshotOwnedId, { panel: panelSnapshot() });
-      }
-      if (snapshotOwnedId !== nextOwnedId) {
-        restorePanelSnapshot(
-          nextOwnedId
-            ? readBrowserSessionSnapshot(nextOwnedId).panel
-            : readBrowserSessionSnapshot('').panel
-        );
-        snapshotOwnedId = nextOwnedId;
-      }
+      discard();
+      expanded = false;
+      address = '';
+      addressEdited = false;
     });
   });
 
   $effect(() => {
+    if (!visible || !root || !ownedId) return;
     const stopNavigation = subscribeToBrowserNavigation(syncBrowserNavigation);
     return () => stopNavigation();
   });
 
   $effect(() => {
     return () => {
-      if (snapshotOwnedId) {
-        writeBrowserSessionSnapshot(snapshotOwnedId, { panel: panelSnapshot() });
-      }
       if (backdrop) revokeTrackedObjectUrl(backdrop);
     };
   });
