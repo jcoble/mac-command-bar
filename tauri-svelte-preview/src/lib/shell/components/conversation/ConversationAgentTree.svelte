@@ -27,7 +27,7 @@
 {#snippet node(child: ConversationChildAgent, depth: number)}
   <div class="tree-node" style={`--depth:${depth}`}>
     <button class:active={selectedChildId === child.childId} data-testid="conversation-child-agent" type="button" onclick={() => onSelect?.(child.childId)} title={child.childId}>
-      <span class="tree-line" aria-hidden="true">{depth ? '└' : '├'}</span><span class:working={child.state === 'active'} class:failed={child.state === 'failed'} class="agent-dot"></span><span class="node-label">{child.label}</span><small>{child.state} · read-only</small>
+      <span class="tree-line" aria-hidden="true">{depth ? '└' : '├'}</span><span class:working={child.state === 'active'} class:failed={child.state === 'failed'} class="agent-dot"></span><span class="node-label">{child.title}</span><small>{child.state} · read-only</small>
     </button>
     {#each descendants(child.childId) as nested (nested.childId)}{@render node(nested, depth + 1)}{/each}
   </div>

@@ -489,7 +489,7 @@
         activeTurnId={conversation.activeTurnId ?? null}
         {localTurnActive}
         {composerHeight}
-        assistantLabel={selectedChild?.label ?? active.agent}
+        assistantLabel={selectedChild?.title ?? active.agent}
         savedScrollTop={conversation.selectedChildId ? conversation.childScrollTopById[conversation.selectedChildId] ?? 0 : conversation.scrollTop}
         emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}
         hasOlder={!conversation.selectedChildId && !conversation.reachedTranscriptStart}

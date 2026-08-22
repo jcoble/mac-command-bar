@@ -55,14 +55,16 @@
   );
 
   const rows = $derived(agentActivityRows(conversation?.children ?? [], timelineByChild));
+  const selectedChild = $derived(
+    conversation?.children.find((child) => child.childId === selectedChildId) ?? null
+  );
   const selectedChildRunning = $derived(
-    conversation?.children.some(
-      (child) => child.childId === selectedChildId && agentStatus(child.state) === 'working'
-    ) ?? false
+    selectedChild !== null && agentStatus(selectedChild.state) === 'working'
   );
 
   $effect(() => {
     if (!visible || !ownedId || !conversation || !selectedChildId) return;
+    if (!selectedChild?.transcriptAvailable) return;
     if (!selectedChildRunning) return;
     const parentGeneration = conversation.generation;
     void parentGeneration;
@@ -89,6 +91,8 @@
     cancelChildConversationTranscriptRead(ownedId);
     setConversationSelectedChild(ownedId, next);
     if (!next) return;
+    const child = conversation.children.find((entry) => entry.childId === next) ?? null;
+    if (!child?.transcriptAvailable) return;
     // The conversation in the center switches to the child that was picked, so
     // bring it forward rather than leaving the change somewhere unseen.
     showCenterTab('session');

@@ -2,7 +2,7 @@
  * The Agents panel's view model.
  *
  * A session's subagents arrive as `ConversationChildAgent` records, which carry
- * a label, a provider state string, and a time — and nothing else. In
+ * a title, a provider state string, timestamps, and transcript availability. In
  * particular there is no message count and no path to a log on that record, so
  * this module is careful to say "not known" rather than invent either one.
  *
@@ -100,7 +100,7 @@ export function agentActivityRows(
       const transcriptActivity = timeline ? activityFrom(timeline) : '';
       return {
         childId: child.childId,
-        label: child.label,
+        label: child.title,
         status: agentStatus(child.state),
         activity: transcriptActivity || firstLine(child.latestActivity ?? ''),
         messageCount: timeline ? timeline.length : null,

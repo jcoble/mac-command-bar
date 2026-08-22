@@ -634,13 +634,16 @@ export interface ConversationMetadata {
 
 export interface ConversationChildAgent {
   childId: string;
+  parentOwnedId: string;
+  parentGeneration: number;
   parentId: string;
   parentToolCallId?: string;
   provider: AgentConversationProvider;
-  label: string;
+  title: string;
   state: string;
   latestActivity?: string;
   updatedAtMs: number;
+  transcriptAvailable: boolean;
 }
 
 export interface ConversationTranscriptMessage {

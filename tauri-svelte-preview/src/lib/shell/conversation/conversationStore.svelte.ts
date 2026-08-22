@@ -988,6 +988,10 @@ function normalizeChildProvider(
   return fallback;
 }
 
+function childTranscriptAvailable(provider: AgentConversationProvider): boolean {
+  return provider !== 'antigravity';
+}
+
 function isWorkflowChildRecord(value: Record<string, unknown>): boolean {
   return ['kind', 'type', 'category'].some((key) => asString(value[key])?.toLowerCase() === 'workflow');
 }
@@ -1011,6 +1015,8 @@ function normalizedConversationChild(
   value: unknown,
   existing: ConversationChildAgent | null,
   provider: AgentConversationProvider,
+  parentOwnedId: string,
+  parentGeneration: number,
   timestampMs: number,
   siblings: readonly ConversationChildAgent[]
 ): ConversationChildAgent | null {
@@ -1020,19 +1026,23 @@ function normalizedConversationChild(
   const parentToolCallId = asString(value.parentToolCallId) ?? existing?.parentToolCallId;
   const parentId = asString(value.parentId) ?? parentToolCallId ?? existing?.parentId;
   if (!parentId || childParentWouldCycle(siblings, childId, parentId)) return null;
+  const childProvider = normalizeChildProvider(value.provider, existing?.provider ?? provider);
   return {
     childId,
+    parentOwnedId,
+    parentGeneration,
     parentId,
     ...(parentToolCallId ? { parentToolCallId } : {}),
-    provider: normalizeChildProvider(value.provider, existing?.provider ?? provider),
-    label: asString(value.label) ?? existing?.label ?? 'Sub-agent',
+    provider: childProvider,
+    title: asString(value.title) ?? asString(value.label) ?? existing?.title ?? 'Sub-agent',
     state: asString(value.state) ?? existing?.state ?? 'finished',
     ...(asString(value.latestActivity) || existing?.latestActivity
       ? { latestActivity: asString(value.latestActivity) ?? existing?.latestActivity }
       : {}),
     updatedAtMs: typeof value.updatedAtMs === 'number' && Number.isFinite(value.updatedAtMs)
       ? value.updatedAtMs
-      : timestampMs
+      : timestampMs,
+    transcriptAvailable: childTranscriptAvailable(childProvider)
   };
 }
 
@@ -1040,6 +1050,8 @@ function normalizedConversationChildren(
   values: readonly unknown[],
   existingChildren: readonly ConversationChildAgent[],
   provider: AgentConversationProvider,
+  parentOwnedId: string,
+  parentGeneration: number,
   timestampMs: number
 ): ConversationChildAgent[] {
   const children: ConversationChildAgent[] = [];
@@ -1051,7 +1063,15 @@ function normalizedConversationChildren(
         ?? existingChildren.find((child) => child.childId === childId)
         ?? null
       : null;
-    const child = normalizedConversationChild(value, existing, provider, timestampMs, children);
+    const child = normalizedConversationChild(
+      value,
+      existing,
+      provider,
+      parentOwnedId,
+      parentGeneration,
+      timestampMs,
+      children
+    );
     if (!child) continue;
     const index = children.findIndex((entry) => entry.childId === child.childId);
     if (index >= 0) children[index] = child;
@@ -1064,6 +1084,7 @@ function mergeConversationChild(
   current: ConversationWorkspaceState,
   value: unknown,
   provider: AgentConversationProvider,
+  parentGeneration: number,
   timestampMs: number
 ): void {
   if (!isRecord(value)) return;
@@ -1071,7 +1092,15 @@ function mergeConversationChild(
   if (!childId) return;
   const index = current.children.findIndex((child) => child.childId === childId);
   const existing = index >= 0 ? current.children[index] : null;
-  const child = normalizedConversationChild(value, existing, provider, timestampMs, current.children);
+  const child = normalizedConversationChild(
+    value,
+    existing,
+    provider,
+    current.ownedId,
+    parentGeneration,
+    timestampMs,
+    current.children
+  );
   if (!child) return;
   if (index >= 0) current.children[index] = child;
   else current.children.push(child);
@@ -1170,11 +1199,11 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
     if (Array.isArray(payload.tasks)) current.tasks = parseTasks(payload.tasks);
   }
   if (payload.kind === 'childUpdate') {
-    mergeConversationChild(current, payload, event.provider, event.timestampMs);
+    mergeConversationChild(current, payload, event.provider, event.generation, event.timestampMs);
   }
   if (eventType === 'children.updated' && Array.isArray(payload.children)) {
     for (const child of payload.children) {
-      mergeConversationChild(current, child, event.provider, event.timestampMs);
+      mergeConversationChild(current, child, event.provider, event.generation, event.timestampMs);
     }
   }
   const richPermission = permissionRequestFromEvent(event);
@@ -1275,7 +1304,14 @@ export function applyConversationTranscript(
     connectionState: 'connected',
     desynchronized: false,
     metadata: snapshot.metadata,
-    children: normalizedConversationChildren(snapshot.children, current.children, provider, 0),
+    children: normalizedConversationChildren(
+      snapshot.children,
+      current.children,
+      provider,
+      ownedId,
+      current.generation,
+      0
+    ),
     timeline: snapshot.messages.map((message) => ({
       kind: message.role,
       itemId: message.itemId,
