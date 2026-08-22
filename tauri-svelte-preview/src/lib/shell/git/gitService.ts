@@ -451,6 +451,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyNextCursor = null;
     state.historyComplete = false;
     state.historyPaged = false;
+    if (!historySurfaceVisible) return;
     await loadHistory(null, false);
   }
 
