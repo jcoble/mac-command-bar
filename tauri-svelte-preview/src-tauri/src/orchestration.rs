@@ -427,12 +427,13 @@ pub(crate) fn import_legacy_orchestration_events(store: &SessionStore) -> Result
     store
         .import_orchestration_events(&rows)
         .map_err(|error| error.to_string())?;
-    std::fs::remove_file(&path).map_err(|error| {
-        format!(
-            "Could not remove imported legacy orchestration event store {}: {error}",
+    if let Err(error) = std::fs::remove_file(&path) {
+        eprintln!(
+            "Imported legacy orchestration event store {}, but could not remove it: {error}",
             path.display()
-        )
-    })
+        );
+    }
+    Ok(())
 }
 
 fn read_orchestration_events(store: &SessionStore) -> Result<Vec<OrchestrationEvent>, String> {
