@@ -28,6 +28,7 @@
    */
   import { onMount } from 'svelte';
   import X from '@lucide/svelte/icons/x';
+  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
 
   import { upgradeUnknownLanguage } from './editor/editorLanguage.ts';
   import {
@@ -123,8 +124,8 @@
     showing?: boolean;
     /** False when the selected session's checkout no longer exists. */
     rootAvailable?: boolean;
-    /** Clears every session's saved editor strip after this panel closes its live tabs. */
-    onCloseAllEditors?: () => void;
+    /** Clears every session's saved editor strip after the close outcome succeeds. */
+    onCloseAllEditors?: () => void | Promise<boolean | void>;
   }
   let { onFileOpened, showing = false, rootAvailable = true, onCloseAllEditors }: Props = $props();
 
@@ -138,6 +139,10 @@
   } | null>(null);
   let editorLoadError = $state<string | null>(null);
   let loadingEditorComponent = false;
+  type CloseRequest = { kind: 'file'; path: string } | { kind: 'all' };
+  let closeRequest = $state<CloseRequest | null>(null);
+  let closeDialogOpen = $state(false);
+  let closeActionBusy = $state(false);
 
   /** Paths whose read is in flight, so a double click cannot read twice. */
   const readsInFlight = new Set<string>();
@@ -766,27 +771,32 @@
     setEditorFileDraft(file.path, content);
   }
 
-  async function saveActiveFile(): Promise<void> {
-    if (!rootAvailable) return;
-    const file = activeEditorFile();
-    if (!file?.preview || !file.dirty || file.saving) return;
-    if (readOnlyByPath[file.path]) return;
-    if (file.conflict) return;
+  async function saveEditorFile(path: string): Promise<boolean> {
+    if (!rootAvailable) return false;
+    const file = editorFileFor(path);
+    if (!file?.dirty) return true;
+    if (!file.preview || file.saving || readOnlyByPath[path] || file.conflict) return false;
     const generation = sessionResourceGeneration;
     const content = file.draftContent ?? file.preview.content;
     setEditorFileSaving(file.path, true);
     try {
       const saved = await writeSourceToTauri(recordForPath(file.path), content);
       if (!saved) throw new Error('The file could not be written from here.');
-      if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
-        setEditorFilePreview(file.path, saved, content);
-      }
+      if (destroyed || generation !== sessionResourceGeneration || !editorFileFor(file.path)) return false;
+      setEditorFilePreview(file.path, saved, content);
+      return true;
     } catch (error) {
       if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
         setEditorFileSaving(file.path, false);
         setEditorFileError(file.path, `Could not save this file: ${describeError(error)}`);
       }
+      return false;
     }
+  }
+
+  async function saveActiveFile(): Promise<void> {
+    const file = activeEditorFile();
+    if (file) await saveEditorFile(file.path);
   }
 
   /**
@@ -891,8 +901,8 @@
     }
   }
 
-  function closeOpenFileAt(path: string): void {
-    const disposePath = modelPathToDisposeOnClose(editorFileFor(path));
+  function closeFileNow(path: string, discard = false): void {
+    const disposePath = discard ? path : modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
     releaseMarkdownView(path);
     if (disposePath) codeEditor?.disposeTabModel(disposePath);
@@ -910,14 +920,98 @@
     readOnlyByPath = remaining;
   }
 
-  function closeAllOpenEditors(): void {
+  function closeOpenFileAt(path: string): void {
+    if (editorFileFor(path)?.dirty) {
+      closeRequest = { kind: 'file', path };
+      closeDialogOpen = true;
+      return;
+    }
+    closeFileNow(path);
+  }
+
+  function closeOtherOpenFiles(path: string): void {
+    for (const file of editorState.openFiles) {
+      if (file.path !== path && !file.dirty) closeFileNow(file.path);
+    }
+  }
+
+  function closeSavedOpenFiles(): void {
+    for (const file of editorState.openFiles) {
+      if (!file.dirty) closeFileNow(file.path);
+    }
+  }
+
+  async function closeAllOpenEditorsNow(): Promise<void> {
+    let cleared: boolean | void;
+    try {
+      cleared = await onCloseAllEditors?.();
+    } catch (error) {
+      editorLoadError = `Could not clear saved editor tabs: ${describeError(error)}`;
+      return;
+    }
+    if (cleared === false) {
+      editorLoadError = 'Could not clear saved editor tabs.';
+      return;
+    }
     for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
     codeEditor?.disposeAllTabModels();
     resetEditorState();
     markdownViewByPath = {};
     diagnosticsByPath = {};
     readOnlyByPath = {};
-    onCloseAllEditors?.();
+  }
+
+  function closeAllOpenEditors(): void {
+    if (editorState.openFiles.some((file) => file.dirty)) {
+      closeRequest = { kind: 'all' };
+      closeDialogOpen = true;
+      return;
+    }
+    void closeAllOpenEditorsNow();
+  }
+
+  async function confirmCloseSave(): Promise<void> {
+    const request = closeRequest;
+    if (!request) return;
+    closeActionBusy = true;
+    if (request.kind === 'file') {
+      const saved = await saveEditorFile(request.path);
+      closeActionBusy = false;
+      closeDialogOpen = false;
+      closeRequest = null;
+      if (saved) closeFileNow(request.path);
+      return;
+    }
+    const dirtyPaths = editorState.openFiles.filter((file) => file.dirty).map((file) => file.path);
+    let saved = true;
+    for (const path of dirtyPaths) {
+      if (!(await saveEditorFile(path))) {
+        saved = false;
+        break;
+      }
+    }
+    closeActionBusy = false;
+    closeDialogOpen = false;
+    closeRequest = null;
+    if (saved) await closeAllOpenEditorsNow();
+  }
+
+  function confirmCloseDiscard(): void {
+    const request = closeRequest;
+    closeDialogOpen = false;
+    closeRequest = null;
+    if (!request) return;
+    if (request.kind === 'file') closeFileNow(request.path, true);
+    else void closeAllOpenEditorsNow();
+  }
+
+  function handleCloseDialogChange(open: boolean): void {
+    closeDialogOpen = open;
+    if (!open && !closeActionBusy) closeRequest = null;
+  }
+
+  export function requestCloseActive(): void {
+    if (editorState.activePath) closeOpenFileAt(editorState.activePath);
   }
 
   function openTimelineFor(file: { relativePath: string }): void {
@@ -1105,6 +1199,17 @@
                 >Pin Tab</ContextMenu.Item>
               {/if}
               <ContextMenu.Item
+                onSelect={() => closeOpenFileAt(file.path)}
+              >Close</ContextMenu.Item>
+              <ContextMenu.Item
+                disabled={!editorState.openFiles.some((candidate) => candidate.path !== file.path && !candidate.dirty)}
+                onSelect={() => closeOtherOpenFiles(file.path)}
+              >Close other clean files</ContextMenu.Item>
+              <ContextMenu.Item
+                disabled={!editorState.openFiles.some((candidate) => !candidate.dirty)}
+                onSelect={closeSavedOpenFiles}
+              >Close saved files</ContextMenu.Item>
+              <ContextMenu.Item
                 onSelect={() => openTimelineFor(file)}
               >File Timeline</ContextMenu.Item>
             </ContextMenu.Content>
@@ -1212,6 +1317,33 @@
     </div>
   {/if}
 </div>
+
+{#if closeRequest}
+  <AlertDialog.Root open={closeDialogOpen} onOpenChange={handleCloseDialogChange}>
+    <AlertDialog.Content>
+      <AlertDialog.Header>
+        <AlertDialog.Title>Unsaved changes</AlertDialog.Title>
+        <AlertDialog.Description>
+          {closeRequest.kind === 'all'
+            ? 'Some open files have unsaved drafts. Save all before closing them?'
+            : 'This file has an unsaved draft. Save it before closing?'}
+        </AlertDialog.Description>
+      </AlertDialog.Header>
+      <AlertDialog.Footer>
+        <AlertDialog.Cancel disabled={closeActionBusy}>Cancel</AlertDialog.Cancel>
+        <AlertDialog.Action
+          disabled={closeActionBusy || !rootAvailable}
+          onclick={() => void confirmCloseSave()}
+        >{closeRequest.kind === 'all' ? 'Save All' : 'Save'}</AlertDialog.Action>
+        <AlertDialog.Action
+          variant="destructive"
+          disabled={closeActionBusy}
+          onclick={confirmCloseDiscard}
+        >{closeRequest.kind === 'all' ? 'Discard All' : 'Discard'}</AlertDialog.Action>
+      </AlertDialog.Footer>
+    </AlertDialog.Content>
+  </AlertDialog.Root>
+{/if}
 
 <style>
   .editor-panel {

@@ -12,7 +12,7 @@
  */
 import { settings } from '../settingsStore.svelte.ts';
 import { browser, reloadBrowserFrame } from './browser/browserStore.svelte.ts';
-import { closeEditorFile, editorState } from './editor/editorStore.svelte.ts';
+import { editorState } from './editor/editorStore.svelte.ts';
 import { explorer } from './explorer/explorerStore.svelte.ts';
 import { refresh as refreshFileList, stopScan } from './explorer/explorerService.ts';
 import { gitPanel } from './git/gitPanelStore.svelte.ts';
@@ -39,6 +39,8 @@ export interface ShellCommandHooks {
    * removes the buttons that would put it back, so this is a way in from the
    * keyboard that cannot be taken away. */
   showProblemsAtBottom(): void;
+  /** Ask the editor to close its active tab, including its dirty-tab dialog. */
+  closeActiveEditor(): void;
 }
 
 /** Register the panel actions. Calling it again replaces them, never doubles. */
@@ -194,9 +196,7 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       label: 'Close the file in the editor',
       detail: 'Stop showing the file you are reading',
       disabled: () => editorState.activePath === null,
-      perform: () => {
-        if (editorState.activePath) closeEditorFile(editorState.activePath);
-      }
+      perform: () => hooks.closeActiveEditor()
     }
   ]);
 }

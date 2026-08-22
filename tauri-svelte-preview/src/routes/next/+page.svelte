@@ -507,6 +507,7 @@
 			if (tab) selectRightTab(tab);
 		},
 		openNewSession: () => openNewSession(),
+		closeActiveEditor: () => editorPanel?.requestCloseActive(),
 		showProblemsAtBottom: () => {
 			settings.panels.problemsLocation = "bottom";
 			applyProblemsLocation("bottom");
@@ -961,15 +962,17 @@
 		}
 	});
 
-	async function clearAllEditorWorkspaceRecords(): Promise<void> {
+	async function clearAllEditorWorkspaceRecords(): Promise<boolean> {
 		const ownedId = rail.activeOwnedId;
-		if (ownedId === null) return;
+		if (ownedId === null) return false;
 		workspaceAutosaveEnabled = false;
 		cancelWorkspaceAutosave();
 		const clear = workspaceWriteQueue.then(clearAgentConversationWorkspaceEditorsFromTauri);
 		workspaceWriteQueue = clear.catch(() => undefined);
+		let cleared = false;
 		try {
 			await clear;
+			cleared = true;
 			if (activeWorkspaceSnapshot !== null) {
 				activeWorkspaceSnapshot = {
 					...activeWorkspaceSnapshot,
@@ -983,6 +986,7 @@
 		} finally {
 			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
 		}
+		return cleared;
 	}
 
 	async function clearAllWorkspaceTabRecords(): Promise<void> {
