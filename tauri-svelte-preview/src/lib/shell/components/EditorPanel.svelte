@@ -1126,7 +1126,7 @@
         </div>
       {:else if !rootAvailable}
         <p class="canvas-message">Checkout/Worktree deleted.</p>
-      {:else if activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
+      {:else if showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
         <SourceMarkdownPreview
           content={activeFile.draftContent ?? activeFile.preview.content}
           fileName={activeFile.fileName}
