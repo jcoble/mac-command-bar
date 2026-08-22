@@ -209,12 +209,12 @@
         <span><strong>{resourceDiagnostics.loadedGitHistoryRows}</strong> Git rows</span>
         <span><strong>{resourceDiagnostics.activeDiffs}</strong> active diffs</span>
         <span><strong>{resourceDiagnostics.xtermViews}</strong> xterm views</span>
-        <span><strong>{resourceDiagnostics.codeMirrorEditorViews}</strong> editor views</span>
-        <span><strong>{resourceDiagnostics.codeMirrorEditorStates}</strong> editor states</span>
+        <span><strong>{resourceDiagnostics.codeMirrorEditorViews}</strong> mounted EditorViews</span>
+        <span><strong>{resourceDiagnostics.codeMirrorEditorStates}</strong> retained EditorStates</span>
         <span><strong>{resourceDiagnostics.codeMirrorDocBytes}</strong> editor bytes</span>
-        <span><strong>{resourceDiagnostics.codeMirrorUndoDepth}</strong> undo groups</span>
-        <span><strong>{resourceDiagnostics.openTabDocumentBytes}</strong> open-tab bytes</span>
-        <span><strong>{resourceDiagnostics.mergeViews}</strong> merge views</span>
+        <span><strong>{resourceDiagnostics.codeMirrorUndoDepth}</strong> active undo depth</span>
+        <span><strong>{resourceDiagnostics.openTabDocumentBytes}</strong> active open-tab document bytes</span>
+        <span><strong>{resourceDiagnostics.mergeViews}</strong> mounted MergeViews</span>
         <span><strong>{resourceDiagnostics.mergeDocBytes}</strong> diff bytes</span>
         <span><strong>{resourceDiagnostics.elementVisibilityWatchers}</strong> visibility watchers</span>
         <span><strong>{resourceDiagnostics.railElapsedWatchers}</strong> rail watchers</span>

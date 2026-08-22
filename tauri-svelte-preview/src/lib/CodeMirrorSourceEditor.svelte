@@ -118,6 +118,13 @@
     return content ?? preview.content;
   }
 
+  function publishRetainedEditorDiagnostics(): void {
+    setCodeMirrorEditorStateCount(sessionEditorStates.size);
+    setCodeMirrorUndoDepth(
+      [...sessionEditorStates.values()].reduce((total, state) => total + undoDepth(state), 0)
+    );
+  }
+
   function editingExtensions(): Extension {
     return [EditorState.readOnly.of(!editable), EditorView.editable.of(editable)];
   }
@@ -175,7 +182,7 @@
   function rememberCurrentView(): void {
     if (!view || !currentPath) return;
     sessionEditorStates.set(currentPath, view.state);
-    setCodeMirrorEditorStateCount(sessionEditorStates.size);
+    publishRetainedEditorDiagnostics();
     const selection = view.state.selection.main;
     sessionViewStates.set(currentPath, {
       anchor: selection.anchor,
@@ -326,10 +333,9 @@
       }
     }),
     EditorView.updateListener.of((update) => {
-      setCodeMirrorUndoDepth(undoDepth(update.state));
       if (currentPath) {
         sessionEditorStates.set(currentPath, update.state);
-        setCodeMirrorEditorStateCount(sessionEditorStates.size);
+        publishRetainedEditorDiagnostics();
       }
       if (!update.docChanged || applyingContent) return;
       const next = update.state.doc.toString();
@@ -376,9 +382,8 @@
     view.setState(nextState);
     applyingContent = false;
     sessionEditorStates.set(currentPath, view.state);
-    setCodeMirrorEditorStateCount(sessionEditorStates.size);
+    publishRetainedEditorDiagnostics();
     setCodeMirrorDocBytes(textBytes(doc));
-    setCodeMirrorUndoDepth(undoDepth(view.state));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
     clearLanguageSupport();
@@ -399,9 +404,13 @@
   }
 
   export function disposeTabModel(path: string): boolean {
-    if (currentPath === path) currentPath = '';
+    const wasCurrent = currentPath === path;
+    if (wasCurrent) currentPath = '';
     sessionEditorStates.delete(path);
-    setCodeMirrorEditorStateCount(sessionEditorStates.size);
+    publishRetainedEditorDiagnostics();
+    if (wasCurrent) {
+      setCodeMirrorDocBytes(0);
+    }
     return sessionViewStates.delete(path);
   }
 
@@ -409,7 +418,9 @@
     currentPath = '';
     sessionViewStates.clear();
     sessionEditorStates.clear();
-    setCodeMirrorEditorStateCount(0);
+    publishRetainedEditorDiagnostics();
+    setCodeMirrorDocBytes(0);
+    setCodeMirrorUndoDepth(0);
   }
 
   export function releaseSessionResources(): void {
@@ -418,12 +429,11 @@
     currentPath = '';
     sessionViewStates.clear();
     sessionEditorStates.clear();
-    setCodeMirrorEditorStateCount(0);
+    publishRetainedEditorDiagnostics();
     applyingContent = true;
     view?.setState(EditorState.create());
     applyingContent = false;
     setCodeMirrorDocBytes(0);
-    setCodeMirrorUndoDepth(0);
   }
 
   $effect(() => {
@@ -441,7 +451,6 @@
     });
     applyingContent = false;
     setCodeMirrorDocBytes(textBytes(next));
-    setCodeMirrorUndoDepth(undoDepth(view.state));
   });
 
   $effect(() => {
@@ -481,9 +490,9 @@
     view?.destroy();
     view = null;
     addCodeMirrorEditorView(-1);
-    setCodeMirrorEditorStateCount(0);
+    sessionEditorStates.clear();
+    publishRetainedEditorDiagnostics();
     setCodeMirrorDocBytes(0);
-    setCodeMirrorUndoDepth(0);
   });
 </script>
 
