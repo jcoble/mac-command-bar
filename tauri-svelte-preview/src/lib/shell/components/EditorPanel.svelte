@@ -570,7 +570,7 @@
    * the file's language.
    */
   async function warmLanguageServer(projectRoot: string | null): Promise<void> {
-    if (!projectRoot) return;
+    if (!projectRoot || activeServerEnabled !== true) return;
     try {
       await applySavedModeForProject(projectRoot);
     } catch (error) {
@@ -694,6 +694,7 @@
       const enabled = Boolean(
         root
           && languageServersEnabled
+          && activeServerEnabled === true
       );
       try {
         const answer = await queueLanguageIntelligenceOwner(root, enabled);
