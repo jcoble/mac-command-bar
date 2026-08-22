@@ -406,7 +406,10 @@
       : !linkIsRecordedFile && recordedPath.includes('/')
         ? recordedPath.slice(0, recordedPath.lastIndexOf('/'))
         : '';
-    const root = resolveConversationFilePath(recordedRoot, sessionRoot).replace(/\/+$/, '') || sessionRoot;
+    const recordedRootPath = recordedRoot
+      ? resolveConversationFilePath(recordedRoot, sessionRoot).replace(/\/+$/, '')
+      : '';
+    const root = recordedRootPath || sessionRoot;
     if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
       // Nothing here resolves to a file, so there is nothing to open.
       setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
@@ -419,7 +422,13 @@
     // file this session does not own is safe, and refusing it left the reader
     // with a notice and no way to see what the link pointed at.
     const outside = absolute !== root && !absolute.startsWith(`${root}/`);
-    requestOpenFile({ path: absolute, projectRoot: root, readOnly: outside, line });
+    const readOnly = outside || Boolean(recordedRootPath && recordedRootPath !== sessionRoot);
+    requestOpenFile({
+      path: absolute,
+      projectRoot: readOnly ? sessionRoot : root,
+      readOnly,
+      line
+    });
   }
 
   async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {

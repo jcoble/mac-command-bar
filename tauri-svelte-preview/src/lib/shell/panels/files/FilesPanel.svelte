@@ -81,6 +81,7 @@
   let {
     visible,
     root,
+    ownedId,
     onRootUnavailable,
     expandedPathsByRoot,
     onExpandedPathsChange
@@ -107,6 +108,34 @@
   let hydratedRoot = '';
   let hydratedExpansionKey = '';
   let expansionRestoreGeneration = 0;
+
+  const READ_ONLY_SCOPE_MESSAGE =
+    'This folder is open for reading only — switch back to the session folder to change it.';
+  const READ_ONLY_RUNTIME_MESSAGE = 'File changes are available in the desktop app only.';
+  const MUTATING_ACTIONS = new Set([
+    'new-file',
+    'new-folder',
+    'cut',
+    'copy',
+    'paste',
+    'rename',
+    'delete'
+  ]);
+
+  function canMutateFileTree(): boolean {
+    const sessionRoot = canonicalPath(root);
+    const listedRoot = canonicalPath(explorer.root ?? root);
+    return (
+      isNativeTauriRuntime() &&
+      Boolean(ownedId) &&
+      sessionRoot !== '' &&
+      listedRoot === sessionRoot
+    );
+  }
+
+  function fileTreeMutationReason(): string {
+    return isNativeTauriRuntime() ? READ_ONLY_SCOPE_MESSAGE : READ_ONLY_RUNTIME_MESSAGE;
+  }
 
   const loadedNodes = $derived(explorerNodes());
   const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
@@ -508,6 +537,10 @@
     const name = pendingName.trim();
     pending = null;
     if (!entry || !name || name.includes('/')) return;
+    if (!canMutateFileTree()) {
+      actionError = fileTreeMutationReason();
+      return;
+    }
 
     try {
       const fs = await import('@tauri-apps/plugin-fs');
@@ -582,6 +615,7 @@
 
   async function runAction(node: TreeItem, id: string): Promise<void> {
     actionError = null;
+    if (MUTATING_ACTIONS.has(id) && !canMutateFileTree()) return;
     try {
       if (id === 'new-file' || id === 'new-folder' || id === 'rename') {
         beginEntry(node, id);
@@ -616,15 +650,30 @@
   }
 
   function contextMenuItems(node: TreeItem) {
+    const mutationDisabled = !canMutateFileTree();
+    const mutationReason = mutationDisabled ? fileTreeMutationReason() : undefined;
     return [
       ...(node.isDirectory
         ? [
-            { id: 'new-file', label: 'New File', onselect: () => void runAction(node, 'new-file') },
-            { id: 'new-folder', label: 'New Folder', onselect: () => void runAction(node, 'new-folder') },
+            {
+              id: 'new-file',
+              label: 'New File',
+              disabled: mutationDisabled,
+              title: mutationReason,
+              onselect: () => void runAction(node, 'new-file')
+            },
+            {
+              id: 'new-folder',
+              label: 'New Folder',
+              disabled: mutationDisabled,
+              title: mutationReason,
+              onselect: () => void runAction(node, 'new-folder')
+            },
             {
               id: 'paste',
               label: 'Paste',
-              disabled: !fileClipboard,
+              disabled: mutationDisabled || !fileClipboard,
+              title: mutationReason ?? (fileClipboard ? undefined : 'Copy or cut a file first.'),
               onselect: () => void runAction(node, 'paste')
             }
           ]
@@ -640,14 +689,36 @@
         label: 'Git: View File History',
         onselect: () => void runAction(node, 'git-file-history')
       },
-      { id: 'cut', label: 'Cut', separatorBefore: true, onselect: () => void runAction(node, 'cut') },
-      { id: 'copy', label: 'Copy', onselect: () => void runAction(node, 'copy') },
+      {
+        id: 'cut',
+        label: 'Cut',
+        separatorBefore: true,
+        disabled: mutationDisabled,
+        title: mutationReason,
+        onselect: () => void runAction(node, 'cut')
+      },
+      {
+        id: 'copy',
+        label: 'Copy',
+        disabled: mutationDisabled,
+        title: mutationReason,
+        onselect: () => void runAction(node, 'copy')
+      },
       { id: 'copy-path', label: 'Copy Path', onselect: () => void runAction(node, 'copy-path') },
-      { id: 'rename', label: 'Rename', separatorBefore: true, onselect: () => void runAction(node, 'rename') },
+      {
+        id: 'rename',
+        label: 'Rename',
+        separatorBefore: true,
+        disabled: mutationDisabled,
+        title: mutationReason,
+        onselect: () => void runAction(node, 'rename')
+      },
       {
         id: 'delete',
         label: 'Delete',
         danger: true,
+        disabled: mutationDisabled,
+        title: mutationReason,
         onselect: () => void runAction(node, 'delete')
       },
       {
@@ -826,6 +897,7 @@
                   {#if item.separatorBefore}<ContextMenu.Separator />{/if}
                   <ContextMenu.Item
                     disabled={item.disabled}
+                    title={item.title}
                     variant={item.danger ? 'destructive' : 'default'}
                     onSelect={item.onselect}
                   >{item.label}</ContextMenu.Item>
