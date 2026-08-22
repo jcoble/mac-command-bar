@@ -864,7 +864,6 @@
 		const selectionGeneration = sessionSelectionGeneration;
 		const checkoutStillCurrent = (): boolean =>
 			!disposed
-			&& !clearAllEditorsInFlight
 			&& rail.activeOwnedId === ownedId
 			&& workspaceRestoreGeneration === restoreGeneration
 			&& sessionSelectionGeneration === selectionGeneration
@@ -875,7 +874,7 @@
 			rail.error = 'A checkout folder is required.';
 			return false;
 		}
-		if (sessionProjectionOwner !== null) {
+		if (sessionProjectionOwner !== null || clearAllEditorsInFlight) {
 			rail.error = 'Wait for the current session change to finish.';
 			return false;
 		}
@@ -897,7 +896,6 @@
 			const oldPaths = editorState.openFiles.map((file) => file.path);
 			const record = await changeStructuredConversationCheckout(ownedId, root);
 			if (!record) return false;
-			if (!checkoutStillCurrent()) return false;
 			// The backend has committed the new CWD. Replace the old-root workspace
 			// checkpoint before any stale exit or unrelated probe work can fail.
 			stopConversationTerminalProjection(ownedId);
@@ -920,12 +918,12 @@
 			shellPanels.sessionPicked(true);
 			syncGitSurfaceVisibility();
 			if (!(await snapshotWorkspace(ownedId))) return false;
-			if (!checkoutStillCurrent()) return !clearAllEditorsInFlight;
+			if (!checkoutStillCurrent()) return true;
 
 			await disposeExtensionApiProbeResources();
-			if (!checkoutStillCurrent()) return !clearAllEditorsInFlight;
+			if (!checkoutStillCurrent()) return true;
 			await setExtensionApiProbeWorkspace({ ownedId, root: record.cwd });
-			if (!checkoutStillCurrent()) return !clearAllEditorsInFlight;
+			if (!checkoutStillCurrent()) return true;
 			return true;
 		} catch (error) {
 			rail.error = `Checkout change failed: ${describeError(error)}`;
@@ -968,7 +966,7 @@
 
 	async function clearAllEditorWorkspaceRecords(): Promise<boolean> {
 		const ownedId = rail.activeOwnedId;
-		if (ownedId === null || clearAllEditorsInFlight) return false;
+		if (ownedId === null || clearAllEditorsInFlight || sessionProjectionOwner === "checkout") return false;
 		clearAllEditorsInFlight = true;
 		workspaceAutosaveEnabled = false;
 		cancelWorkspaceAutosave();
@@ -1041,7 +1039,7 @@
 		try {
 			snapshot = await readAgentConversationWorkspaceFromTauri(ownedId);
 		} catch (error) {
-			if (generation === workspaceRestoreGeneration && rail.activeOwnedId === ownedId) {
+			if (generation === workspaceRestoreGeneration && rail.activeOwnedId === ownedId && !clearAllEditorsInFlight) {
 				rail.error = `workspace restore failed: ${describeError(error)}`;
 			}
 		}

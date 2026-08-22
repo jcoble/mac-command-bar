@@ -774,7 +774,7 @@
   }
 
   async function saveEditorFile(path: string): Promise<boolean> {
-    if (closeActionBusy || !rootAvailable) return false;
+    if (!rootAvailable) return false;
     const file = editorFileFor(path);
     if (!file?.dirty) return true;
     if (file.saving || readOnlyByPath[path] || file.draftContent === null || file.conflict) return false;
