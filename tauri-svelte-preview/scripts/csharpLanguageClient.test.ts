@@ -5,61 +5,46 @@ const client = await readFile(
   new URL('../src/lib/shell/editor/csharpLanguageClient.ts', import.meta.url),
   'utf8'
 );
-const fileSystem = await readFile(
-  new URL('../src/lib/shell/editor/csharpFileSystem.ts', import.meta.url),
+const editor = await readFile(
+  new URL('../src/lib/CodeMirrorSourceEditor.svelte', import.meta.url),
   'utf8'
 );
-const editor = await readFile(new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url), 'utf8');
-assert.match(client, /new vscode\.RelativePattern\(workspaceFolder, ["']\*\*\/\*\.cs["']\)/);
-assert.match(client, /provideCodeLenses:[\s\S]*withinRoot\(document\.uri\)/);
-assert.match(client, /handleDiagnostics:[\s\S]*withinRoot\(uri\)/);
-assert.match(
-  client,
-  /NATIVE_CSHARP_CODE_LENS_REFRESH_METHOD\s*=\s*["']workspace\/codeLens\/refresh["']/
+const panel = await readFile(
+  new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
+  'utf8'
 );
-assert.match(client, /const pending = new Map/);
-assert.match(client, /if \(inFlight\) return inFlight/);
-assert.match(client, /MAX_WARM_CSHARP_ROOTS = 5/);
-assert.match(client, /arguments: \[documentUri\]/);
-assert.doesNotMatch(client, /0 references/);
-assert.doesNotMatch(client, /updateWorkspaceFolders/);
-assert.match(client, /ensureExtensionApiProbeWorkspaceRoot\(root\)/);
-assert.match(client, /registerExtensionApiProbeBridgeCommands\(\)/);
-assert.match(client, /enableExtHostWorker:\s*true/);
-assert.match(client, /registerBrowserWorkspaceRoot\(workspaceContext\.activeRoot\)/);
 
-assert.match(fileSystem, /readNativeCsharpFileFromTauri\(root, path\)/);
-assert.match(fileSystem, /nativeCsharpPathIsWithinRoot/);
-assert.match(fileSystem, /async writeFile\(resource: URI, content: Uint8Array/);
-assert.match(fileSystem, /writeSourceToTauri\(current, decoder\.decode\(content\)\)/);
+assert.match(client, /from ['"]@codemirror\/lsp-client['"]/);
+assert.match(client, /new LSPClient\([\s\S]*serverCompletion\(\{ override: true \}\)[\s\S]*hoverTooltips\(\)[\s\S]*serverDiagnostics\(\)/);
+assert.match(client, /new WebSocket\(endpoint\.wsUrl\)/);
+assert.match(client, /ensureNativeCsharpLanguageClientFromTauri\(requestedRoot\)/);
+assert.match(client, /markNativeCsharpLanguageClientReadyFromTauri\(requestedRoot\)/);
+assert.match(client, /activeSession\?\.dispose\(\)/);
+assert.match(client, /client\?\.disconnect\(\)/);
+assert.match(client, /socket\?\.close\(\)/);
+assert.doesNotMatch(client, /monaco|LanguageClientWrapper|fallback/i);
+assert.doesNotMatch(client, /(?:document|result)(?:Cache|Map|State)/i);
 
-assert.match(editor, /language !== "csharp"/);
+assert.match(editor, /languageServerRoot/);
+assert.match(editor, /connectCodeMirrorCsharpClient\(root\)/);
+assert.match(editor, /intelligence\.reconfigure\(extension\)/);
+assert.match(editor, /function clearLspSupport\(disposeClient = true\)/);
 assert.match(
   editor,
-  /function reconcileLanguageProviderOwnership\(monaco: typeof Monaco, nativeMode: boolean\)/,
-  'Monaco should reconcile custom/native provider ownership in one named transition'
-);
-assert.match(editor, /if \(reconciledNativeCsharpMode === nativeMode\) return;/);
-const reconcileStart = editor.indexOf('function reconcileLanguageProviderOwnership');
-// The slice must cover only the reconcile function itself: everything up to the
-// next top-level function declaration, whatever that function happens to be.
-const reconcileEnd = editor.indexOf('\n\tfunction ', reconcileStart + 1);
-const reconcileBody = editor.slice(reconcileStart, reconcileEnd);
-assert.ok(reconcileStart >= 0 && reconcileEnd > reconcileStart);
-assert.match(
-  reconcileBody,
-  /if \(nativeMode\) \{[\s\S]*codeLensProviderDisposable\?\.dispose\(\);[\s\S]*uninstallLazyTargetModelResolver\(\);[\s\S]*\} else \{[\s\S]*registerSourceCodeLensProvider\(monaco\);[\s\S]*installLazyTargetModelResolver\(monaco\);/,
-  'native activation should release custom C# CodeLens/resolver ownership and deactivation should restore it'
+  /function showFile\(\)[\s\S]*clearLspSupport\(false\);[\s\S]*rememberCurrentView\(\)/,
+  'file exit should remove the prior document plugin before retaining editor state'
 );
 assert.match(
   editor,
-  /\$effect\(\(\) => \{[\s\S]*const nativeMode = nativeCsharpLanguageClient;[\s\S]*reconcileLanguageProviderOwnership\(monacoApi, nativeMode\);[\s\S]*\}\);/,
-  'native mode should have one reactive in-place reconciliation path'
+  /function clearLspSupport\(disposeClient = true\)[\s\S]*intelligence\.reconfigure\(callbackIntelligence\)/,
+  'file switches should reconfigure the document overlay without disconnecting the root client'
 );
-assert.equal(
-  editor.match(/reconcileLanguageProviderOwnership\(monacoApi, nativeMode\);/g)?.length,
-  1,
-  'native mode should have exactly one reactive reconciliation call'
+assert.match(
+  editor,
+  /\.catch\(\(\) => \{[\s\S]*generation !== lspGeneration \|\| requestedLspKey !== key[\s\S]*intelligence\.reconfigure\(callbackIntelligence\)[\s\S]*setDiagnostics\(view\.state, diagnosticsFor\(view\.state\)\)/,
+  'a current failed official client load should restore callback intelligence and diagnostics'
 );
-assert.doesNotMatch(reconcileBody, /editor\?\.dispose\(|model\.dispose\(|ownedModels/);
-console.log('csharpLanguageClient contract tests passed');
+assert.match(editor, /if \(visible\)[\s\S]*loadVisibleLspSupport\(\)[\s\S]*else \{[\s\S]*clearLspSupport\(\)/);
+assert.match(panel, /languageServerRoot=\{fullMode \? editorState\.projectRoot : null\}/);
+
+console.log('official CodeMirror C# language client contract tests passed');

@@ -1332,6 +1332,7 @@
             content={activeFile.draftContent ?? activeFile.preview.content}
             editable={rootAvailable && !activeFileReadOnly && !closeActionBusy}
             visible={showing}
+            languageServerRoot={fullMode ? editorState.projectRoot : null}
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}

@@ -41,6 +41,10 @@
   } from '$lib/shell/resourceDiagnostics.svelte';
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
   import { codeMirrorTheme, loadCodeMirrorTheme } from '$lib/shell/editor/codeMirrorTheme';
+  import {
+    connectCodeMirrorCsharpClient,
+    setNativeCsharpActiveRoot
+  } from '$lib/shell/editor/csharpLanguageClient';
   import { settings } from '$lib/settingsStore.svelte';
   import type {
     SourceIntelligenceCallbacks,
@@ -64,6 +68,7 @@
     content?: string;
     editable?: boolean;
     visible?: boolean;
+    languageServerRoot?: string | null;
     externalDiagnostics?: SourceDiagnostic[];
     restoredViewStates?: Record<string, object>;
     loading?: boolean;
@@ -81,6 +86,7 @@
     content,
     editable = false,
     visible = true,
+    languageServerRoot = null,
     externalDiagnostics = [],
     restoredViewStates = {},
     targetLine = null,
@@ -105,7 +111,12 @@
   let requestedLanguageKey = '';
   let loadedLanguageKey = '';
   let referenceCountTimer: ReturnType<typeof setTimeout> | null = null;
+  let lspGeneration = 0;
+  let requestedLspKey = '';
+  let loadedLspKey = '';
+  let lspSession: ReturnType<typeof connectCodeMirrorCsharpClient> | null = null;
   const language = new Compartment();
+  const intelligence = new Compartment();
   const themeExtension = new Compartment();
   const editing = new Compartment();
   const sessionViewStates = new Map<string, StoredViewState>();
@@ -316,6 +327,73 @@
     };
   }, { hoverTime: 350, hideOnChange: true });
 
+  const callbackIntelligence: Extension = [
+    autocompletion({ defaultKeymap: false, override: [completionSource], activateOnTypingDelay: 180 }),
+    hover
+  ];
+
+  /**
+   * On a file change, reconfiguring this compartment destroys the old document
+   * plugin (which sends didClose) but keeps the one root client/socket. Nothing
+   * here retains a document extension or its results after that reconfigure.
+   */
+  function clearLspSupport(disposeClient = true): void {
+    lspGeneration += 1;
+    requestedLspKey = '';
+    loadedLspKey = '';
+    if (disposeClient) {
+      lspSession?.dispose();
+      lspSession = null;
+    }
+    if (view) view.dispatch({ effects: intelligence.reconfigure(callbackIntelligence) });
+  }
+
+  function officialLspExpected(): boolean {
+    const languageId = preview.language.toLowerCase();
+    return Boolean(
+      view && visible && languageServerRoot &&
+      (languageId === 'csharp' || languageId === 'c#') &&
+      currentPath && currentPath === preview.path
+    );
+  }
+
+  function loadVisibleLspSupport(): void {
+    const root = languageServerRoot;
+    if (!officialLspExpected() || !view || !root) return;
+    const key = `${root}\0${currentPath}`;
+    if (key === loadedLspKey || key === requestedLspKey) return;
+
+    clearLspSupport(false);
+    requestedLspKey = key;
+    const generation = ++lspGeneration;
+    setNativeCsharpActiveRoot(root);
+    const session = connectCodeMirrorCsharpClient(root);
+    lspSession = session;
+    view.dispatch({ effects: intelligence.reconfigure([]) });
+    view.dispatch(setDiagnostics(view.state, []));
+    void session.extension(currentPath).then((extension) => {
+      if (
+        !view ||
+        !visible ||
+        generation !== lspGeneration ||
+        requestedLspKey !== key ||
+        currentPath !== preview.path ||
+        languageServerRoot !== root
+      ) {
+        return;
+      }
+      requestedLspKey = '';
+      loadedLspKey = key;
+      view.dispatch({ effects: intelligence.reconfigure(extension) });
+    }).catch(() => {
+      if (generation !== lspGeneration || requestedLspKey !== key) return;
+      requestedLspKey = '';
+      if (!view) return;
+      view.dispatch({ effects: intelligence.reconfigure(callbackIntelligence) });
+      view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
+    });
+  }
+
   function diagnosticsFor(state: EditorState): Diagnostic[] {
     return externalDiagnostics.map((diagnostic) => {
       const from = linePosition(state, diagnostic.line, diagnostic.column);
@@ -354,8 +432,7 @@
     keymap.of(vscodeKeymap),
     themeExtension.of(codeMirrorTheme),
     lintGutter(),
-    autocompletion({ defaultKeymap: false, override: [completionSource], activateOnTypingDelay: 180 }),
-    hover,
+    intelligence.of(callbackIntelligence),
     language.of([]),
     editing.of(editingExtensions()),
     EditorView.domEventHandlers({
@@ -388,6 +465,7 @@
   function showFile(): void {
     if (!view) return;
     clearReferenceCountTimer();
+    clearLspSupport(false);
     rememberCurrentView();
     currentPath = preview.path;
     const restored = restoredState(currentPath);
@@ -426,6 +504,7 @@
     clearThemeSupport();
     loadVisibleLanguageSupport();
     loadVisibleThemeSupport();
+    loadVisibleLspSupport();
     if (restored) {
       requestTrackedAnimationFrame(() => {
         if (!view || currentPath !== preview.path) return;
@@ -443,7 +522,10 @@
 
   export function disposeTabModel(path: string): boolean {
     const wasCurrent = currentPath === path;
-    if (wasCurrent) currentPath = '';
+    if (wasCurrent) {
+      clearLspSupport(false);
+      currentPath = '';
+    }
     sessionEditorStates.delete(path);
     publishRetainedEditorDiagnostics();
     if (wasCurrent) {
@@ -453,6 +535,7 @@
   }
 
   export function disposeAllTabModels(): void {
+    clearLspSupport();
     currentPath = '';
     sessionViewStates.clear();
     sessionEditorStates.clear();
@@ -463,6 +546,7 @@
 
   export function releaseSessionResources(): void {
     clearReferenceCountTimer();
+    clearLspSupport();
     clearLanguageSupport();
     currentPath = '';
     sessionViewStates.clear();
@@ -497,8 +581,17 @@
   });
 
   $effect(() => {
-    if (visible) loadVisibleLanguageSupport();
-    else clearLanguageSupport();
+    languageServerRoot;
+    preview.path;
+    preview.language;
+    if (visible) {
+      loadVisibleLanguageSupport();
+      if (officialLspExpected()) loadVisibleLspSupport();
+      else clearLspSupport();
+    } else {
+      clearLanguageSupport();
+      clearLspSupport();
+    }
   });
 
   $effect(() => {
@@ -509,7 +602,9 @@
 
   $effect(() => {
     externalDiagnostics;
-    if (view) view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
+    if (view && !officialLspExpected()) {
+      view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
+    }
   });
 
   $effect(() => {
@@ -530,6 +625,7 @@
 
   onDestroy(() => {
     clearReferenceCountTimer();
+    clearLspSupport();
     languageGeneration += 1;
     themeGeneration += 1;
     view?.destroy();
