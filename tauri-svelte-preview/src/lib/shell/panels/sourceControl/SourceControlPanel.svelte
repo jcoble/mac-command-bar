@@ -46,7 +46,6 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import GitBranch from '@lucide/svelte/icons/git-branch';
-  import { onDestroy } from 'svelte';
   import { canChangeRepository, READ_ONLY_IN_BROWSER_MESSAGE } from '$lib/shell/git/gitBackendExtra';
   import {
     gitCommitFilesService as defaultCommitFilesService,
@@ -225,8 +224,6 @@
     commitFiles.activate(readableTarget);
     service.ensureHistorySurface();
   });
-
-  onDestroy(releaseHistorySurface);
 
   /** A folder with no repository in it is an ordinary thing to be looking at,
    * not a fault — so it gets a plain sentence instead of git's `fatal:` line. */

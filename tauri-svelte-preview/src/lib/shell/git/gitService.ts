@@ -424,7 +424,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
 
   function releaseHistorySurface(): void {
     historySurfaceVisible = false;
+    statusGuard.invalidate();
     historyGuard.invalidate();
+    state.status = null;
+    state.statusLoading = false;
+    state.statusError = '';
     state.history = [];
     state.historyPath = '';
     state.historyLoading = false;
@@ -435,6 +439,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyComplete = false;
     state.historyPaged = false;
     publishGitDiagnostics();
+    publishSourceControl();
   }
 
   async function refresh(): Promise<void> {
@@ -472,6 +477,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyPaged = false;
     resetGitCommitFilesState(gitCommitFiles, state.root);
     clearSelection();
+    if (!historySurfaceVisible) return;
     await loadHistory(null, false);
   }
 
@@ -521,7 +527,13 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   function activate(root: string | null): void {
-    if (root === state.root && state.activated) return;
+    if (
+      root === state.root &&
+      state.activated &&
+      (state.status !== null || state.statusLoading || state.statusError !== '' || state.desktopOnly)
+    ) {
+      return;
+    }
     statusGuard.invalidate();
     historyGuard.invalidate();
     diffGuard.invalidate();
