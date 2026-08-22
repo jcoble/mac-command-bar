@@ -9,20 +9,26 @@
   } from './usageAnalytics.ts';
   import { USAGE_COST_RATE_VERSION } from './usageCostModel.ts';
   import {
-    readUsageDisplayMode,
     usageDisplayLabel,
     usageDisplayPercent,
     usageProviderLabel,
     usageQuotaWindowLabel,
     usageResetLabel,
-    writeUsageDisplayMode,
     type UsageDisplayMode
   } from './usageCurrent.ts';
   import { refreshUsageHistory, selectUsageRange, usageState } from './usageStore.svelte.ts';
   import type { UsageProviderSummaryRow } from './usageTypes.ts';
 
-  interface Props { onClose?: () => void; }
-  let { onClose = () => undefined }: Props = $props();
+  interface Props {
+    onClose?: () => void;
+    displayMode?: UsageDisplayMode;
+    onToggleDisplayMode?: () => void;
+  }
+  let {
+    onClose = () => undefined,
+    displayMode = 'used',
+    onToggleDisplayMode = () => undefined
+  }: Props = $props();
 
   type RollupRange = 'today' | 'yesterday' | '30-days';
   const providerNames = ['codex', 'claude'] as const;
@@ -37,14 +43,6 @@
   const preciseCurrency = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const donutRadius = 39;
   const donutCircumference = 2 * Math.PI * donutRadius;
-
-  /** Read the quotas as how much has gone, or as how much is left. */
-  let displayMode = $state<UsageDisplayMode>(readUsageDisplayMode());
-
-  function toggleDisplayMode(): void {
-    displayMode = displayMode === 'used' ? 'remaining' : 'used';
-    writeUsageDisplayMode(displayMode);
-  }
 
   let totalTokens = $derived(usageState.summary?.totalTokens ?? 0);
   let cacheShare = $derived(usageState.summary?.cacheSharePercent ?? 0);
@@ -271,7 +269,7 @@
                       class="quota-figure"
                       data-testid="usage-display-toggle"
                       title={displayMode === 'used' ? 'Show how much is left' : 'Show how much has been used'}
-                      onclick={toggleDisplayMode}
+                      onclick={onToggleDisplayMode}
                     >
                       {usageDisplayLabel(window, displayMode)}
                     </button>

@@ -213,6 +213,23 @@ pub async fn clear_agent_conversation_workspace_tabs(
 }
 
 #[tauri::command]
+pub async fn write_assembly_setting(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    setting_key: String,
+    value_json: String,
+) -> CommandResult<()> {
+    command_result(manager.write_app_setting(&setting_key, &value_json))
+}
+
+#[tauri::command]
+pub async fn read_assembly_setting(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    setting_key: String,
+) -> CommandResult<Option<String>> {
+    command_result(manager.read_app_setting(&setting_key))
+}
+
+#[tauri::command]
 /// Records a legacy approval decision after validating its request identity.
 pub async fn respond_agent_conversation_approval(
     manager: tauri::State<'_, AgentRuntimeManager>,

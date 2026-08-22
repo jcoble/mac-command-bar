@@ -1,4 +1,8 @@
 import type { ProviderUsageSnapshot } from './usageTypes.ts';
+import {
+  readAssemblySettingFromTauri,
+  writeAssemblySettingFromTauri
+} from '$lib/tauriSource.ts';
 
 type ProviderUsageWindowInput = {
   label?: string;
@@ -93,7 +97,8 @@ export function usagePercent(window: { usedPercent: number }): number {
 /** Which way round a quota is read: how much has gone, or how much is left. */
 export type UsageDisplayMode = 'used' | 'remaining';
 
-export const USAGE_DISPLAY_STORAGE_KEY = 'mac-command-bar.next.usage-display-v1';
+export const USAGE_DISPLAY_SETTING_KEY = 'usage.display-mode';
+let usageDisplayWriteQueue: Promise<void> = Promise.resolve();
 
 /** The number a quota shows, 0–100, in whichever direction is being read. */
 export function usageDisplayPercent(
@@ -111,21 +116,20 @@ export function usageDisplayLabel(
   return `${Math.round(usageDisplayPercent(window, mode))}% ${mode === 'remaining' ? 'left' : 'used'}`;
 }
 
-export function readUsageDisplayMode(): UsageDisplayMode {
-  if (typeof localStorage === 'undefined') return 'used';
+export async function readUsageDisplayMode(): Promise<UsageDisplayMode> {
   try {
-    return localStorage.getItem(USAGE_DISPLAY_STORAGE_KEY) === 'remaining' ? 'remaining' : 'used';
+    await usageDisplayWriteQueue;
+    const stored = await readAssemblySettingFromTauri(USAGE_DISPLAY_SETTING_KEY);
+    return stored === 'remaining' ? 'remaining' : 'used';
   } catch {
     return 'used';
   }
 }
 
-/** Remember which way round the reader wants it. Failing this is not worth a word. */
-export function writeUsageDisplayMode(mode: UsageDisplayMode): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(USAGE_DISPLAY_STORAGE_KEY, mode);
-  } catch {
-    // Storage off; the choice just does not survive a reload.
-  }
+export function writeUsageDisplayMode(mode: UsageDisplayMode): Promise<void> {
+  const write = usageDisplayWriteQueue.then(() =>
+    writeAssemblySettingFromTauri(USAGE_DISPLAY_SETTING_KEY, mode)
+  );
+  usageDisplayWriteQueue = write.catch(() => undefined);
+  return usageDisplayWriteQueue;
 }

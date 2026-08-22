@@ -4,11 +4,16 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
-const SESSION_WORKSPACES_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS session_workspaces (
+const DURABLE_UI_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS session_workspaces (
     owned_id TEXT PRIMARY KEY REFERENCES sessions(owned_id) ON DELETE CASCADE,
     snapshot_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+    setting_key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL CHECK (json_valid(value_json)),
     updated_at INTEGER NOT NULL
 );";
 /// Event kinds where only the newest row still means anything.
@@ -271,8 +276,8 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the session workspace table", error)
+                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
                 add_tool_item_schema(&transaction)?;
                 transaction
@@ -307,8 +312,8 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the session workspace table", error)
+                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -331,8 +336,8 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the session workspace table", error)
+                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -355,8 +360,8 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the session workspace table", error)
+                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -376,8 +381,8 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
-                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the session workspace table", error)
+                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
@@ -398,8 +403,8 @@ impl SessionStore {
                     })?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
-                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the session workspace table", error)
+                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -416,8 +421,8 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the session workspace upgrade", error)
                     })?;
-                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
-                    StoreError::sqlite("could not create the session workspace table", error)
+                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -426,6 +431,24 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the session workspace upgrade", error)
+                })?;
+            }
+            7 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the app settings upgrade", error)
+                    })?;
+                transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the durable UI tables", error)
+                })?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the app settings upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -618,6 +641,33 @@ impl SessionStore {
             )
             .map_err(|error| StoreError::sqlite("could not reset session workspace tabs", error))?;
         Ok(())
+    }
+
+    pub fn upsert_app_setting(&self, setting_key: &str, value_json: &str) -> Result<()> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "INSERT INTO app_settings (setting_key, value_json, updated_at)
+                 VALUES (?, ?, CAST(strftime('%s', 'now') AS INTEGER) * 1000)
+                 ON CONFLICT(setting_key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at",
+                params![setting_key, value_json],
+            )
+            .map_err(|error| StoreError::sqlite("could not save the app setting", error))?;
+        Ok(())
+    }
+
+    pub fn get_app_setting(&self, setting_key: &str) -> Result<Option<String>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE setting_key = ?",
+                [setting_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not read the app setting", error))
     }
 
     pub fn append_event(&self, row: &EventRow) -> Result<()> {

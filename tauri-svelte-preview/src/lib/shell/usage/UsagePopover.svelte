@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { RefreshCw } from '@lucide/svelte';
   import { refreshCurrentUsage, refreshUsageHistory, usageState } from './usageStore.svelte.ts';
   import {
@@ -26,11 +26,24 @@
   let menuSnapshots = $state<Record<string, ProviderUsageSnapshot>>({});
   let menuLoading = $state(false);
   /** Read the quotas as how much has gone, or as how much is left. */
-  let displayMode = $state<UsageDisplayMode>(readUsageDisplayMode());
+  let displayMode = $state<UsageDisplayMode>('used');
+  let displayModeVersion = 0;
+
+  onMount(() => {
+    let mounted = true;
+    const restoreVersion = displayModeVersion;
+    void readUsageDisplayMode().then((stored) => {
+      if (mounted && displayModeVersion === restoreVersion) displayMode = stored;
+    });
+    return () => {
+      mounted = false;
+    };
+  });
 
   function toggleDisplayMode(): void {
+    displayModeVersion += 1;
     displayMode = displayMode === 'used' ? 'remaining' : 'used';
-    writeUsageDisplayMode(displayMode);
+    void writeUsageDisplayMode(displayMode);
   }
 
   function snapshotFor(providerName: string): ProviderUsageSnapshot | null {
@@ -176,7 +189,7 @@
       tabindex="-1"
       data-testid="usage-modal"
     >
-      <UsageWorkspace onClose={() => void closeStats()} />
+      <UsageWorkspace {displayMode} onToggleDisplayMode={toggleDisplayMode} onClose={() => void closeStats()} />
     </div>
   </div>
 {/if}

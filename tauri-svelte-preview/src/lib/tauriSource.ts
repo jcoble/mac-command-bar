@@ -1544,6 +1544,25 @@ export async function clearAgentConversationWorkspaceTabsFromTauri(): Promise<vo
   await invoke<void>('clear_agent_conversation_workspace_tabs');
 }
 
+export async function writeAssemblySettingFromTauri(
+  settingKey: string,
+  value: unknown
+): Promise<void> {
+  if (!isTauriRuntime() || !settingKey.trim()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('write_assembly_setting', {
+    settingKey,
+    valueJson: JSON.stringify(value)
+  });
+}
+
+export async function readAssemblySettingFromTauri(settingKey: string): Promise<unknown> {
+  if (!isTauriRuntime() || !settingKey.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  const valueJson = await invoke<string | null>('read_assembly_setting', { settingKey });
+  return valueJson === null ? null : JSON.parse(valueJson) as unknown;
+}
+
 /** Everything the backend needs to read a past session's transcript file in. */
 export interface AgentConversationTranscriptImport {
   provider: import('./shell/conversation/conversationTypes.ts').AgentConversationProvider;

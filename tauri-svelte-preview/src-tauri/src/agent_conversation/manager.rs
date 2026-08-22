@@ -430,6 +430,18 @@ impl AgentRuntimeManager {
             .map_err(|error| error.to_string())
     }
 
+    pub fn write_app_setting(&self, setting_key: &str, value_json: &str) -> Result<(), String> {
+        self.store
+            .upsert_app_setting(setting_key, value_json)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn read_app_setting(&self, setting_key: &str) -> Result<Option<String>, String> {
+        self.store
+            .get_app_setting(setting_key)
+            .map_err(|error| error.to_string())
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Names an imported session without reading a single record of it, so the
     /// rail has something to show while the transcript is still being read.
