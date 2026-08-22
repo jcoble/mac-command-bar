@@ -627,7 +627,7 @@
    * observer the virtualizer keeps on the element. */
   function measureRow(node: HTMLDivElement): { destroy(): void } {
     $virtualizer.measureElement(node);
-    return { destroy(): void {} };
+    return { destroy(): void { $virtualizer.measureElement(null); } };
   }
 
   function userInputInterrupts(node: HTMLElement): { destroy(): void } {
