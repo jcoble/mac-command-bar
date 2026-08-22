@@ -224,10 +224,10 @@ export interface GitService {
   /** The state this service writes. The panel reads the same object. */
   readonly state: GitPanelState;
   /**
-   * Point the panel at a repository and read its status. History is loaded by
-   * a visible graph surface. Idempotent: calling it again with the same root
-   * does nothing, so the integrator can call it on every activation. A
-   * different root wipes the panel and reloads its status.
+   * Point the panel at a repository. Status is loaded by the visible Source
+   * Control surface; history is loaded by a visible graph surface. Idempotent:
+   * calling it again with the same root does nothing, so the integrator can call
+   * it on every activation. A different root wipes the panel state.
    */
   activate(root: string | null): void;
   /** Re-read status and, when its surface is visible, commit history. */
@@ -542,9 +542,8 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     publishSourceControl();
     if (!root) return;
     state.activated = true;
-    // Status belongs to the repository activation. History is a visible-surface
-    // projection and is loaded by that surface through ensureHistorySurface().
-    void refreshStatus();
+    // Status and history are visible-surface projections. Their owners request
+    // them after activation so a history-only surface does not read status.
   }
 
   async function showStoredDiff(root: string, relativePath: string): Promise<void> {

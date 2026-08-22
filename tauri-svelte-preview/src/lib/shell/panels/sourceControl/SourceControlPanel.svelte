@@ -222,6 +222,14 @@
     }
     service.activate(readableTarget);
     commitFiles.activate(readableTarget);
+    if (
+      !service.state.status &&
+      !service.state.statusLoading &&
+      service.state.statusError === '' &&
+      !service.state.desktopOnly
+    ) {
+      void service.refreshStatus();
+    }
     service.ensureHistorySurface();
   });
 
