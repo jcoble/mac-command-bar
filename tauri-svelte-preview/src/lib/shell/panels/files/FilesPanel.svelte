@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { Tree, type LTreeNode } from '@keenmate/svelte-treeview';
   import ArrowDownAZ from '@lucide/svelte/icons/arrow-down-a-z';
   import ArrowUpZA from '@lucide/svelte/icons/arrow-up-z-a';
@@ -386,6 +386,23 @@
     observer.observe(host);
     return () => {
       observer.disconnect();
+    };
+  });
+
+  $effect(() => {
+    displayedTreeData.length;
+    const host = treeHost;
+    if (!host) return;
+    let active = true;
+    void tick().then(() => {
+      if (!active) return;
+      const viewport = host.querySelector<HTMLElement>('.ltree-virtual-scroll');
+      if (!viewport) return;
+      const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      if (viewport.scrollTop > maxScrollTop) viewport.scrollTop = maxScrollTop;
+    });
+    return () => {
+      active = false;
     };
   });
 
