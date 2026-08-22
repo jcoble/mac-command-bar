@@ -1,8 +1,8 @@
 /**
  * Covers the two names behind the editor's "N references" margin number: the
- * lens id Monaco identifies a lens by (and hands back on click), and the key
+ * lens id the editor identifies a lens by (and hands back on click), and the key
  * the editor remembers a counted number under. The rules live in
- * `src/lib/sourceCodeLensKeys.ts` so they can be checked without Monaco.
+ * `src/lib/sourceCodeLensKeys.ts` so they can be checked without an editor.
  */
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -29,22 +29,7 @@ const sourceIntelligenceSource = await readFile(
 	new URL('../src/lib/shell/editor/sourceIntelligence.ts', import.meta.url),
 	'utf8'
 );
-const monacoEditorSource = await readFile(
-	new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url),
-	'utf8'
-);
-const editorPanelSource = await readFile(
-	new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
-	'utf8'
-);
 const spot = (symbolName, line, column) => ({ symbolName, line, column });
-
-// Match VS Code's cold behavior: there is no reference lens until Roslyn has
-// returned a real count. A settled zero is still formatted and shown later.
-{
-	assert.match(monacoEditorSource, /if \(counted === undefined\) return undefined;/);
-	assert.doesNotMatch(monacoEditorSource, /sourceCodeLensPendingTitle/);
-}
 
 // an id carries the spot back intact when the user clicks the number
 {
@@ -100,36 +85,6 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	);
 }
 
-// The editor's one source-intelligence service must hand its Roslyn-backed
-// count, anchor, and invalidation callbacks to Monaco. Without these callbacks,
-// removing the pending placeholder would leave no reference lenses forever.
-{
-	assert.match(
-		sourceIntelligenceSource,
-		/const callbacks:[\s\S]*?onReferenceCountLookup:\s*countReferencesForCodeLens/
-	);
-	assert.match(
-		sourceIntelligenceSource,
-		/const callbacks:[\s\S]*?onCodeLensAnchorLookup:\s*lookupCodeLensAnchors/
-	);
-	assert.match(
-		sourceIntelligenceSource,
-		/const callbacks:[\s\S]*?onReferenceCountsOutOfDate:\s*forgetFileReferenceCounts/
-	);
-	assert.match(
-		monacoEditorSource,
-		/const workspaceLenses = dotnetWorkspaceCodeLenses[\s\S]*?if \(!onReferenceCountLookup\) \{[\s\S]*?return \{ lenses: workspaceLenses/
-	);
-	assert.match(
-		monacoEditorSource,
-		/if \(nativeMode\) \{[\s\S]*?\} else \{[\s\S]*?if \(onReferenceCountLookup\) registerSourceCodeLensReferenceCommand/
-	);
-	assert.match(
-		monacoEditorSource,
-		/if \(nativeMode\) \{[\s\S]*?\} else \{[\s\S]*?registerSourceCodeLensProvider\(monaco\)/
-	);
-}
-
 // A superseded request cannot erase a newer Roslyn count, and a transient
 // no-answer from the newest request does not replace an already settled count.
 {
@@ -138,46 +93,6 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	assert.deepEqual(settledSourceCodeLensCount(roslynCount, null, false), roslynCount);
 	assert.deepEqual(settledSourceCodeLensCount(roslynCount, null, true), roslynCount);
 	assert.equal(settledSourceCodeLensCount(undefined, null, true), null);
-}
-
-// changing editor models keeps the URI-keyed numbers; destroying the editor is
-// the only lifecycle event that clears the local paint cache
-{
-	assert.match(
-		monacoEditorSource,
-		/editor\.onDidChangeModel\(\(\) => \{[\s\S]*?forgetCodeLensRows\(\)/
-	);
-	assert.match(monacoEditorSource, /editor\?\.dispose\(\);[\s\S]*?forgetCodeLensRows\(true\)/);
-	assert.match(
-		monacoEditorSource,
-		/answer = onReferenceCountLookup\?\.\(spot\);[\s\S]*?acceptCountAnswer\(modelUri, key, requestId, answer\)/,
-		'a warm non-Promise count must reach the first CodeLens paint synchronously'
-	);
-	assert.match(
-		monacoEditorSource,
-		/codeLensCountRequestIds\.get\(key\) === requestId/,
-		'an older count request must not repaint over the newest Roslyn answer'
-	);
-	assert.match(
-		editorPanelSource,
-		/\$effect\(\(\) => \{[\s\S]*?editorState\.projectRoot;[\s\S]*?syncIntelligenceWithActiveFile\(\)/,
-		'restored tabs and session project switches must keep the extracted service synchronized'
-	);
-	assert.match(
-		monacoEditorSource,
-		/const codeLensNamedSymbolsByModel = new Map<string, SourceSymbol\[\] \| null>\(\)/,
-		'authoritative language-server anchors must be cached per real file model'
-	);
-	assert.match(
-		monacoEditorSource,
-		/const waitingForAuthoritativeAnchors =[\s\S]*?const spots = waitingForAuthoritativeAnchors \? \[\] : codeLensSpotsForModel\(model\)/,
-		'the quick parser must not paint a competing set of rows while language-server anchors load'
-	);
-	assert.match(
-		monacoEditorSource,
-		/if \(clearRememberedCounts\) \{[\s\S]*?codeLensNamedSymbolsByModel\.clear\(\)/,
-		'tab switches retain anchors and editor teardown clears them'
-	);
 }
 
 // a number that was counted in full is stated plainly, singular and plural
@@ -261,11 +176,6 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 		sourceIntelligenceSource,
 		/root: root \?\? ''/,
 		'a request queued before a project switch must not use the new active root'
-	);
-	assert.match(
-		monacoEditorSource,
-		/showCodeLensReferences[\s\S]*?askForOneCount\(modelUri, key, request\)/,
-		'a populated Peek must immediately repaint its count from the shared answer'
 	);
 }
 

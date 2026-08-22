@@ -278,7 +278,7 @@ export interface SourceIntelligence {
   loadActiveFileDiagnostics(): Promise<SourceDiagnostic[]>;
   /** Read-only view of the current context, for status lines and tests. */
   readonly projectRoot: string | null;
-  /** The callbacks to spread onto `MonacoSourceEditor`. */
+  /** The callbacks to spread onto `CodeMirrorSourceEditor`. */
   readonly callbacks: SourceIntelligenceCallbacks;
 }
 
