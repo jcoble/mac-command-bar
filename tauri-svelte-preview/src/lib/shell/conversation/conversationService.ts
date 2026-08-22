@@ -766,7 +766,9 @@ export async function ensureStructuredConversation(input: {
   nativeSessionMode?: 'resume' | 'load';
   reasoningEffort?: string | null;
 }): Promise<AgentConversationConnection | null> {
-  ensureConversationSession(input.ownedId, input.provider);
+  if (rail.activeOwnedId === input.ownedId) {
+    ensureConversationSession(input.ownedId, input.provider);
+  }
   if (!isTauri() || !input.cwd.trim()) return null;
   const request = { ...input, nativeSessionMode: input.nativeSessionMode ?? 'resume' };
   const signature = JSON.stringify(request);
@@ -776,10 +778,11 @@ export async function ensureStructuredConversation(input: {
     const connection = await invoke<AgentConversationConnection>('ensure_agent_conversation', {
       request
     });
-    setConversationConnection(connection);
     if (connection.nativeSessionId) {
       updateOwnedSession(input.ownedId, { nativeSessionId: connection.nativeSessionId });
     }
+    if (rail.activeOwnedId !== input.ownedId) return connection;
+    setConversationConnection(connection);
     await resyncConversation(input.ownedId);
     return connection;
   })().finally(() => {
