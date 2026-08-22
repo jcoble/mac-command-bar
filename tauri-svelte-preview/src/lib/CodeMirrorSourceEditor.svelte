@@ -40,7 +40,8 @@
     textBytes
   } from '$lib/shell/resourceDiagnostics.svelte';
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
-  import { codeMirrorTheme } from '$lib/shell/editor/codeMirrorTheme';
+  import { codeMirrorTheme, loadCodeMirrorTheme } from '$lib/shell/editor/codeMirrorTheme';
+  import { settings } from '$lib/settingsStore.svelte';
   import type {
     SourceIntelligenceCallbacks,
     SourceLookupRequest
@@ -105,9 +106,13 @@
   let loadedLanguageKey = '';
   let referenceCountTimer: ReturnType<typeof setTimeout> | null = null;
   const language = new Compartment();
+  const themeExtension = new Compartment();
   const editing = new Compartment();
   const sessionViewStates = new Map<string, StoredViewState>();
   const sessionEditorStates = new Map<string, EditorState>();
+  let themeGeneration = 0;
+  let requestedThemeKey = '';
+  let loadedThemeKey = '';
 
   function clearReferenceCountTimer(): void {
     if (referenceCountTimer !== null) clearTimeout(referenceCountTimer);
@@ -164,6 +169,37 @@
       })
       .catch(() => {
         if (generation === languageGeneration && requestedLanguageKey === key) requestedLanguageKey = '';
+      });
+  }
+
+  function clearThemeSupport(): void {
+    themeGeneration += 1;
+    requestedThemeKey = '';
+    loadedThemeKey = '';
+    if (view) view.dispatch({ effects: themeExtension.reconfigure(codeMirrorTheme) });
+  }
+
+  function loadVisibleThemeSupport(): void {
+    if (!view || !visible || !currentPath || currentPath !== preview.path) return;
+    const themeId = settings.appearance.themeId;
+    if (themeId === loadedThemeKey || themeId === requestedThemeKey) return;
+    requestedThemeKey = themeId;
+    const generation = ++themeGeneration;
+    void loadCodeMirrorTheme(themeId)
+      .then((extension) => {
+        if (
+          !view ||
+          !visible ||
+          generation !== themeGeneration ||
+          settings.appearance.themeId !== themeId ||
+          currentPath !== preview.path
+        ) return;
+        requestedThemeKey = '';
+        loadedThemeKey = themeId;
+        view.dispatch({ effects: themeExtension.reconfigure(extension) });
+      })
+      .catch(() => {
+        if (generation === themeGeneration && requestedThemeKey === themeId) requestedThemeKey = '';
       });
   }
 
@@ -316,7 +352,7 @@
     highlightActiveLine(),
     highlightSelectionMatches(),
     keymap.of(vscodeKeymap),
-    codeMirrorTheme,
+    themeExtension.of(codeMirrorTheme),
     lintGutter(),
     autocompletion({ defaultKeymap: false, override: [completionSource], activateOnTypingDelay: 180 }),
     hover,
@@ -387,7 +423,9 @@
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
     clearLanguageSupport();
+    clearThemeSupport();
     loadVisibleLanguageSupport();
+    loadVisibleThemeSupport();
     if (restored) {
       requestTrackedAnimationFrame(() => {
         if (!view || currentPath !== preview.path) return;
@@ -464,6 +502,12 @@
   });
 
   $effect(() => {
+    settings.appearance.themeId;
+    if (visible) loadVisibleThemeSupport();
+    else clearThemeSupport();
+  });
+
+  $effect(() => {
     externalDiagnostics;
     if (view) view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
   });
@@ -487,6 +531,7 @@
   onDestroy(() => {
     clearReferenceCountTimer();
     languageGeneration += 1;
+    themeGeneration += 1;
     view?.destroy();
     view = null;
     addCodeMirrorEditorView(-1);

@@ -1,3 +1,4 @@
+import type { Extension } from '@codemirror/state';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { EditorView } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
@@ -64,3 +65,16 @@ export const codeMirrorTheme = [
   ),
   syntaxHighlighting(syntax)
 ];
+
+type ThemeLoader = () => Promise<Extension>;
+
+const themeLoaders: Record<string, ThemeLoader> = {
+  dracula: () =>
+    // Keep ThemeMirror, including its catalog, out of the startup chunk.
+    import('thememirror').then(({ dracula }) => [codeMirrorTheme, dracula])
+};
+
+/** Resolve the selected CodeMirror extension, keeping Houston as the fallback. */
+export function loadCodeMirrorTheme(themeId: unknown): Promise<Extension> {
+  return themeLoaders[typeof themeId === 'string' ? themeId : '']?.() ?? Promise.resolve(codeMirrorTheme);
+}
