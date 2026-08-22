@@ -296,10 +296,12 @@
   }
 
   async function selectChild(childId: string | null): Promise<void> {
-    if (!active || !conversation || !active.nativeSessionId) return;
+    if (!active || !conversation) return;
     cancelChildConversationTranscriptRead(active.ownedId);
     setConversationSelectedChild(active.ownedId, childId);
-    if (!childId) return;
+    if (!childId || !active.nativeSessionId) return;
+    const child = conversation.children.find((candidate) => candidate.childId === childId);
+    if (!child?.transcriptAvailable) return;
     await readChildConversationTranscript({
       ownedId: active.ownedId,
       provider: conversation.provider,
