@@ -38,6 +38,7 @@
   import { projectRootLabel } from '$lib/shell/explorer/explorerTree';
   import { gitService } from '$lib/shell/git/gitService';
   import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation';
+  import { trackFileWatcher } from '$lib/shell/resourceDiagnostics.svelte';
   import { isNativeTauriRuntime, moveToTrashFromTauri } from '$lib/tauriSource';
 
   interface Props {
@@ -140,8 +141,9 @@
           },
           { recursive: true, delayMs: 300 }
         );
-        if (abandoned) stop();
-        else unwatch = stop;
+        const releaseWatcher = trackFileWatcher(stop);
+        if (abandoned) releaseWatcher();
+        else unwatch = releaseWatcher;
       } catch {
         // Refresh remains available when the watcher cannot be started.
       }

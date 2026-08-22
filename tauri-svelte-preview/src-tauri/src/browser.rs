@@ -446,6 +446,18 @@ impl BrowserRegistry {
         }
     }
 
+    pub(crate) fn live_view_count(&self) -> Result<usize, String> {
+        let workspaces = self
+            .inner
+            .workspaces
+            .lock()
+            .map_err(|_| "Browser registry is unavailable".to_string())?;
+        Ok(workspaces
+            .values()
+            .map(|workspace| workspace.tabs.len())
+            .sum())
+    }
+
     fn next_picker_epoch(&self) -> u64 {
         let mut epoch = self
             .inner

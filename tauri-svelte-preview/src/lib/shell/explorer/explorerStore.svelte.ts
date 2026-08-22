@@ -6,6 +6,7 @@
  * list is raw because it is replaced as a unit and no row needs a Svelte proxy.
  */
 import type { SourceDirectoryEntry } from '../../sourceData.ts';
+import { setLoadedTreeNodes } from '../resourceDiagnostics.svelte.ts';
 
 export type ExplorerTreeNode = SourceDirectoryEntry & {
   parentPath: string;
@@ -43,6 +44,10 @@ export const explorer = $state<{
 let treeNodes = $state.raw<ExplorerTreeNode[]>([]);
 const loadedDirectoryDepths = new Map<string, number>();
 
+function publishLoadedNodes(): void {
+  setLoadedTreeNodes(treeNodes.length);
+}
+
 export function explorerNodes(): ExplorerTreeNode[] {
   return treeNodes;
 }
@@ -61,6 +66,7 @@ function atOrBelow(path: string, directory: string): boolean {
 
 export function resetExplorer(): void {
   treeNodes = [];
+  publishLoadedNodes();
   loadedDirectoryDepths.clear();
   explorer.root = null;
   explorer.activated = false;
@@ -115,6 +121,7 @@ export function applyDirectoryResult(
   treeNodes = [...retained, ...children].map((node) =>
     node.path === directory ? { ...node, childCount: entries.length } : node
   );
+  publishLoadedNodes();
 
   for (const loadedPath of [...loadedDirectoryDepths.keys()]) {
     if (removedPaths.some((removedPath) => atOrBelow(loadedPath, removedPath))) {
@@ -131,6 +138,7 @@ export function applyDirectoryResult(
 
 export function discardDirectory(directory: string): void {
   treeNodes = treeNodes.filter((node) => !atOrBelow(node.path, directory) || node.path === directory);
+  publishLoadedNodes();
   for (const loadedPath of [...loadedDirectoryDepths.keys()]) {
     if (atOrBelow(loadedPath, directory)) loadedDirectoryDepths.delete(loadedPath);
   }
@@ -141,6 +149,7 @@ export function discardDirectory(directory: string): void {
 
 export function failScan(message: string, unavailable: 'checkout-deleted' | null = null): void {
   treeNodes = [];
+  publishLoadedNodes();
   loadedDirectoryDepths.clear();
   explorer.error = message;
   explorer.unavailable = unavailable;

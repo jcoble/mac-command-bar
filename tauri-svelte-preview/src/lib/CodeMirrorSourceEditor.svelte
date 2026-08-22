@@ -6,7 +6,7 @@
     completionKeymap,
     type CompletionContext
   } from '@codemirror/autocomplete';
-  import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+  import { defaultKeymap, history, historyKeymap, undoDepth } from '@codemirror/commands';
   import {
     bracketMatching,
     defaultHighlightStyle,
@@ -36,6 +36,7 @@
   import {
     addCodeMirrorEditorView,
     setCodeMirrorDocBytes,
+    setCodeMirrorUndoDepth,
     textBytes
   } from '$lib/shell/resourceDiagnostics.svelte';
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
@@ -288,6 +289,7 @@
       }
     }),
     EditorView.updateListener.of((update) => {
+      setCodeMirrorUndoDepth(undoDepth(update.state));
       if (!update.docChanged || applyingContent) return;
       const next = update.state.doc.toString();
       onContentChange?.(next);
@@ -316,6 +318,7 @@
       extensions: editorExtensions
     }));
     setCodeMirrorDocBytes(textBytes(doc));
+    setCodeMirrorUndoDepth(undoDepth(view.state));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
     const generation = ++languageGeneration;
@@ -355,6 +358,7 @@
     sessionViewStates.clear();
     view?.setState(EditorState.create());
     setCodeMirrorDocBytes(0);
+    setCodeMirrorUndoDepth(0);
   }
 
   $effect(() => {
@@ -372,6 +376,7 @@
     });
     applyingContent = false;
     setCodeMirrorDocBytes(textBytes(next));
+    setCodeMirrorUndoDepth(undoDepth(view.state));
   });
 
   $effect(() => {
@@ -407,6 +412,7 @@
     view = null;
     addCodeMirrorEditorView(-1);
     setCodeMirrorDocBytes(0);
+    setCodeMirrorUndoDepth(0);
   });
 </script>
 

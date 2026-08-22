@@ -49,6 +49,10 @@
   import { saveConversationClipboardImage } from '$lib/shell/conversation/conversationService.ts';
   import { sendToSession } from '$lib/shell/workbenchNavigation.ts';
   import {
+    createTrackedObjectUrl,
+    revokeTrackedObjectUrl
+  } from '$lib/shell/resourceDiagnostics.svelte';
+  import {
     activateBrowser,
     browser,
     browserModelContext,
@@ -357,9 +361,9 @@
   }
 
   function showStill(shot: BrowserMarkupCapture): void {
-    if (backdrop) URL.revokeObjectURL(backdrop);
+    if (backdrop) revokeTrackedObjectUrl(backdrop);
     capture = shot;
-    backdrop = URL.createObjectURL(
+    backdrop = createTrackedObjectUrl(
       new Blob([Uint8Array.from(shot.bytes)], { type: shot.mimeType || 'image/png' })
     );
   }
@@ -380,7 +384,7 @@
   }
 
   function restorePanelSnapshot(snapshot: BrowserPanelSessionSnapshot): void {
-    if (backdrop) URL.revokeObjectURL(backdrop);
+    if (backdrop) revokeTrackedObjectUrl(backdrop);
     annotations = snapshot.annotations;
     strokes = snapshot.strokes;
     description = snapshot.description;
@@ -388,7 +392,7 @@
     tool = snapshot.tool;
     capture = snapshot.capture;
     backdrop = capture
-      ? URL.createObjectURL(new Blob([Uint8Array.from(capture.bytes)], { type: capture.mimeType || 'image/png' }))
+      ? createTrackedObjectUrl(new Blob([Uint8Array.from(capture.bytes)], { type: capture.mimeType || 'image/png' }))
       : null;
     editingId = snapshot.editingId;
     expanded = snapshot.expanded;
@@ -401,7 +405,7 @@
 
   function dropStill(): void {
     stopHover();
-    if (backdrop) URL.revokeObjectURL(backdrop);
+    if (backdrop) revokeTrackedObjectUrl(backdrop);
     backdrop = null;
     capture = null;
     annotations = [];
@@ -754,7 +758,7 @@
       if (snapshotOwnedId) {
         writeBrowserSessionSnapshot(snapshotOwnedId, { panel: panelSnapshot() });
       }
-      if (backdrop) URL.revokeObjectURL(backdrop);
+      if (backdrop) revokeTrackedObjectUrl(backdrop);
     };
   });
 </script>

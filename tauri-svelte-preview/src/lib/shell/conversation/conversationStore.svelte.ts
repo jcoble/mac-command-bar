@@ -141,6 +141,8 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   /** Serialized bytes of the normalized event window currently represented by
    * this projection. The raw events themselves remain owned by SQLite. */
   loadedEventBytes: number;
+  /** UTF-8 text bytes retained for the one selected child transcript. */
+  loadedChildTranscriptBytes: number;
 }
 
 const emptyMetadata = (): ConversationMetadata => ({
@@ -158,7 +160,8 @@ function publishConversationProjectionDiagnostics(): void {
   const projections = Object.values(conversationSessions);
   setConversationProjectionDiagnostics(
     projections.length,
-    projections.reduce((total, projection) => total + projection.loadedEventBytes, 0)
+    projections.reduce((total, projection) => total + projection.loadedEventBytes, 0),
+    projections.reduce((total, projection) => total + projection.loadedChildTranscriptBytes, 0)
   );
 }
 
@@ -220,7 +223,8 @@ function freshState(
     oldestLoadedSequence: 0,
     loadingOlder: false,
     reachedTranscriptStart: false,
-    loadedEventBytes: 0
+    loadedEventBytes: 0,
+    loadedChildTranscriptBytes: 0
   };
 }
 
@@ -731,7 +735,8 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     oldestLoadedSequence: firstEvent?.sequence ?? 0,
     loadingOlder: false,
     reachedTranscriptStart: false,
-    loadedEventBytes: serializedEventsBytes(events)
+    loadedEventBytes: serializedEventsBytes(events),
+    loadedChildTranscriptBytes: current.loadedChildTranscriptBytes
   };
   for (const event of events) {
     const displayEvent = displayEventFrom(event);
@@ -1098,6 +1103,11 @@ export function applyChildConversationTranscript(
     completed: true,
     timestampMs: message.timestampMs
   }));
+  current.loadedChildTranscriptBytes = messages.reduce(
+    (total, message) => total + textBytes(message.text),
+    0
+  );
+  publishConversationProjectionDiagnostics();
 }
 
 export function setConversationAttachments(ownedId: string, attachments: ConversationAttachment[]): void {
@@ -1318,6 +1328,8 @@ export function setConversationSelectedChild(ownedId: string, childId: string | 
   if (!current || current.selectedChildId === childId) return;
   current.selectedChildId = childId;
   current.childTimeline = [];
+  current.loadedChildTranscriptBytes = 0;
+  publishConversationProjectionDiagnostics();
 }
 
 export function setConversationScrollTop(ownedId: string, scrollTop: number): void {

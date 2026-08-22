@@ -43,6 +43,9 @@ export type ResourceDiagnostics = {
   languageServers: {
     runningProcesses: number;
   };
+  browser: {
+    nativeViews: number;
+  };
 };
 
 export type ResourceSampleSession = {

@@ -27,6 +27,10 @@ import {
   type OpenEditorFile
 } from './editorStoreOps.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
+import {
+  setOpenTabDocumentBytes,
+  textBytes
+} from '../resourceDiagnostics.svelte.ts';
 
 export type { OpenEditorFile } from './editorStoreOps.ts';
 
@@ -52,6 +56,15 @@ export const editorState = $state<{
   activePath: null,
   symbols: []
 });
+
+function publishOpenTabDocumentBytes(): void {
+  setOpenTabDocumentBytes(
+    editorState.openFiles.reduce(
+      (total, file) => total + textBytes(file.draftContent ?? file.preview?.content ?? ''),
+      0
+    )
+  );
+}
 
 /**
  * Integration seam: the shell calls this the first time the editor tab is
@@ -86,6 +99,7 @@ export function editorFileFor(path: string): OpenEditorFile | null {
 export function openEditorFile(record: SourceRecord): OpenEditorFile {
   editorState.openFiles = upsertOpenFile(editorState.openFiles, record);
   editorState.activePath = record.path;
+  publishOpenTabDocumentBytes();
   return findOpenFile(editorState.openFiles, record.path)!;
 }
 
@@ -100,6 +114,7 @@ export function closeEditorFile(path: string): void {
   const nextActivePath = activePathAfterClose(editorState.openFiles, path, previousActivePath);
   editorState.openFiles = closeOpenFile(editorState.openFiles, path);
   editorState.activePath = nextActivePath;
+  publishOpenTabDocumentBytes();
   // The symbol list belongs to whatever was on screen; a switch invalidates it.
   if (nextActivePath !== previousActivePath) editorState.symbols = [];
 }
@@ -123,6 +138,7 @@ export function setEditorFilePreview(path: string, preview: SourcePreview): void
     loading: false,
     error: null
   });
+  publishOpenTabDocumentBytes();
 }
 
 /** Keep an unsaved Monaco edit with the session that owns this editor tab. */
@@ -136,6 +152,7 @@ export function setEditorFileDraft(path: string, content: string): void {
     draftContent: content,
     dirty: content !== file.preview.content
   });
+  publishOpenTabDocumentBytes();
 }
 
 /** Mark or clear the save spinner without replacing the draft. */
@@ -177,6 +194,7 @@ export function restoreEditorFiles(
     ? activePath
     : null;
   editorState.symbols = [];
+  publishOpenTabDocumentBytes();
 }
 
 /** Drop everything (used when the shell tears the editor down). */
@@ -184,4 +202,5 @@ export function resetEditorState(): void {
   editorState.openFiles = [];
   editorState.activePath = null;
   editorState.symbols = [];
+  publishOpenTabDocumentBytes();
 }

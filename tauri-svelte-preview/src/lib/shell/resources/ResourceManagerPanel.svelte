@@ -182,16 +182,26 @@
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.userPtys}</strong> user PTYs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.agentToolPtys}</strong> tool PTYs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.languageServers.runningProcesses}</strong> LSPs</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.browser.nativeViews}</strong> browser views</span>
       </section>
     {/if}
     {#if import.meta.env.DEV}
       <section class="diagnostic-strip" aria-label="Frontend lifecycle counts">
         <span><strong>{resourceDiagnostics.loadedConversationProjections}</strong> loaded conversations</span>
         <span><strong>{resourceDiagnostics.loadedConversationEventBytes}</strong> conversation bytes</span>
+        <span><strong>{resourceDiagnostics.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
         <span><strong>{resourceDiagnostics.tauriRootListeners}</strong> Tauri listeners</span>
+        <span><strong>{resourceDiagnostics.fileWatchers}</strong> file watchers</span>
+        <span><strong>{resourceDiagnostics.objectUrls}</strong> object URLs</span>
+        <span><strong>{resourceDiagnostics.loadedTreeNodes}</strong> tree nodes</span>
+        <span><strong>{resourceDiagnostics.loadedGitHistoryRows}</strong> Git rows</span>
+        <span><strong>{resourceDiagnostics.activeDiffs}</strong> active diffs</span>
         <span><strong>{resourceDiagnostics.xtermViews}</strong> xterm views</span>
         <span><strong>{resourceDiagnostics.codeMirrorEditorViews}</strong> editor views</span>
+        <span><strong>{resourceDiagnostics.codeMirrorEditorStates}</strong> editor states</span>
         <span><strong>{resourceDiagnostics.codeMirrorDocBytes}</strong> editor bytes</span>
+        <span><strong>{resourceDiagnostics.codeMirrorUndoDepth}</strong> undo groups</span>
+        <span><strong>{resourceDiagnostics.openTabDocumentBytes}</strong> open-tab bytes</span>
         <span><strong>{resourceDiagnostics.mergeViews}</strong> merge views</span>
         <span><strong>{resourceDiagnostics.mergeDocBytes}</strong> diff bytes</span>
         <span><strong>{resourceDiagnostics.elementVisibilityWatchers}</strong> visibility watchers</span>

@@ -26,6 +26,7 @@
 
 import { bridgeGitBackend, canChangeRepository, hasGitBridge } from './gitBackendExtra.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
+import { setGitSurfaceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 import {
   amendGitCommitFromTauri,
   commitGitRepositoryFromTauri,
@@ -310,6 +311,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   const historyGuard = createRequestGuard();
   const diffGuard = createRequestGuard();
 
+  function publishGitDiagnostics(): void {
+    setGitSurfaceDiagnostics(state.history.length, state.selectedDiff ? 1 : 0);
+  }
+
   function publishSourceControl(): void {
     if (typeof window === 'undefined') return;
     const snapshot = { root: state.root, status: state.status };
@@ -332,6 +337,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyComplete = false;
     state.historyPaged = false;
     state.historyCeiling = false;
+    publishGitDiagnostics();
     publishSourceControl();
   }
 
@@ -405,6 +411,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       if (stillCurrent(historyGuard, id, root)) {
         if (loadingMore) state.historyLoadingMore = false;
         else state.historyLoading = false;
+        publishGitDiagnostics();
       }
     }
   }
@@ -459,6 +466,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.selectedPath = file.relativePath;
     state.selectedDiff = null;
     state.diffError = '';
+    publishGitDiagnostics();
 
     if (isGitFileDeleted(file)) {
       // The diff command reads the file off disk first, so a deleted file always
@@ -481,6 +489,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
         return;
       }
       state.selectedDiff = diff;
+      publishGitDiagnostics();
     } catch (error) {
       if (!stillCurrent(diffGuard, id, root)) return;
       state.diffError = describeError(error, 'Could not read the changes for this file.');
@@ -492,6 +501,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   function clearSelection(): void {
     diffGuard.invalidate();
     clearSelectedGitFile(state);
+    publishGitDiagnostics();
   }
 
   function activate(root: string | null): void {
@@ -500,6 +510,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     historyGuard.invalidate();
     diffGuard.invalidate();
     resetGitPanelState(state, root);
+    publishGitDiagnostics();
     publishSourceControl();
     if (!root) return;
     state.activated = true;

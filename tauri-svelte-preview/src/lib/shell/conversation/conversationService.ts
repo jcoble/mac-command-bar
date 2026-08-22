@@ -68,7 +68,11 @@ import {
 } from './conversationActivation.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
-import { trackTauriListener } from '../resourceDiagnostics.svelte.ts';
+import {
+  createTrackedObjectUrl,
+  revokeTrackedObjectUrl,
+  trackTauriListener
+} from '../resourceDiagnostics.svelte.ts';
 
 let unlisten: UnlistenFn | null = null;
 let unlistenTitles: UnlistenFn | null = null;
@@ -170,12 +174,12 @@ export async function saveConversationClipboardImage(
     mimeType: file.type,
     bytes
   });
-  return { ...saved, bytes, previewUrl: URL.createObjectURL(file) } as AttachmentWithBytes;
+  return { ...saved, bytes, previewUrl: createTrackedObjectUrl(file) } as AttachmentWithBytes;
 }
 
 /** Revoke only URLs owned by this surface; the managed path never goes through the DOM. */
 export function cleanupConversationAttachmentPreview(attachment: ConversationAttachment): void {
-  if (attachment.previewUrl.startsWith('blob:')) URL.revokeObjectURL(attachment.previewUrl);
+  if (attachment.previewUrl.startsWith('blob:')) revokeTrackedObjectUrl(attachment.previewUrl);
 }
 
 /** Drop frontend-only conversation data after its workspace has been saved. */
@@ -189,7 +193,7 @@ export function releaseConversationForRead(ownedId: string): void {
     ...Object.values(state.sentAttachments).flat()
   ].map((attachment) => attachment.previewUrl));
   for (const previewUrl of previewUrls) {
-    if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+    if (previewUrl.startsWith('blob:')) revokeTrackedObjectUrl(previewUrl);
   }
   evictConversationSession(ownedId);
 }

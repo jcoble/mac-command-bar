@@ -7,10 +7,19 @@
 export const resourceDiagnostics = $state({
   loadedConversationProjections: 0,
   loadedConversationEventBytes: 0,
+  loadedChildTranscriptBytes: 0,
   tauriRootListeners: 0,
+  fileWatchers: 0,
+  objectUrls: 0,
+  loadedTreeNodes: 0,
+  loadedGitHistoryRows: 0,
+  activeDiffs: 0,
   xtermViews: 0,
   codeMirrorEditorViews: 0,
+  codeMirrorEditorStates: 0,
   codeMirrorDocBytes: 0,
+  codeMirrorUndoDepth: 0,
+  openTabDocumentBytes: 0,
   mergeViews: 0,
   mergeDocBytes: 0,
   elementVisibilityWatchers: 0,
@@ -30,11 +39,27 @@ export const resourceDiagnostics = $state({
 
 export function setConversationProjectionDiagnostics(
   projections: number,
-  eventBytes: number
+  eventBytes: number,
+  childTranscriptBytes: number
 ): void {
   if (!import.meta.env.DEV) return;
   resourceDiagnostics.loadedConversationProjections = Math.max(0, projections);
   resourceDiagnostics.loadedConversationEventBytes = Math.max(0, Math.trunc(eventBytes));
+  resourceDiagnostics.loadedChildTranscriptBytes = Math.max(
+    0,
+    Math.trunc(childTranscriptBytes)
+  );
+}
+
+export function setLoadedTreeNodes(nodes: number): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.loadedTreeNodes = Math.max(0, nodes);
+}
+
+export function setGitSurfaceDiagnostics(historyRows: number, activeDiffs: number): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.loadedGitHistoryRows = Math.max(0, historyRows);
+  resourceDiagnostics.activeDiffs = Math.max(0, activeDiffs);
 }
 
 export function trackTauriListener(unlisten: () => void): () => void {
@@ -55,6 +80,39 @@ export function trackTauriListener(unlisten: () => void): () => void {
   };
 }
 
+export function trackFileWatcher(unwatch: () => void): () => void {
+  if (!import.meta.env.DEV) return unwatch;
+  resourceDiagnostics.fileWatchers += 1;
+  let watching = true;
+  return () => {
+    if (!watching) return;
+    watching = false;
+    try {
+      unwatch();
+    } finally {
+      resourceDiagnostics.fileWatchers = Math.max(0, resourceDiagnostics.fileWatchers - 1);
+    }
+  };
+}
+
+const trackedObjectUrls = new Set<string>();
+
+export function createTrackedObjectUrl(value: Blob | MediaSource): string {
+  const url = URL.createObjectURL(value);
+  if (import.meta.env.DEV) {
+    trackedObjectUrls.add(url);
+    resourceDiagnostics.objectUrls = trackedObjectUrls.size;
+  }
+  return url;
+}
+
+export function revokeTrackedObjectUrl(url: string): void {
+  URL.revokeObjectURL(url);
+  if (!import.meta.env.DEV) return;
+  trackedObjectUrls.delete(url);
+  resourceDiagnostics.objectUrls = trackedObjectUrls.size;
+}
+
 export function textBytes(text: string): number {
   if (!import.meta.env.DEV) return 0;
   if (typeof TextEncoder === 'undefined') return text.length;
@@ -72,11 +130,23 @@ export function addCodeMirrorEditorView(delta: 1 | -1): void {
     0,
     resourceDiagnostics.codeMirrorEditorViews + delta
   );
+  // Each persistent source EditorView retains exactly one current EditorState.
+  resourceDiagnostics.codeMirrorEditorStates = resourceDiagnostics.codeMirrorEditorViews;
 }
 
 export function setCodeMirrorDocBytes(bytes: number): void {
   if (!import.meta.env.DEV) return;
   resourceDiagnostics.codeMirrorDocBytes = Math.max(0, Math.trunc(bytes));
+}
+
+export function setCodeMirrorUndoDepth(depth: number): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.codeMirrorUndoDepth = Math.max(0, Math.trunc(depth));
+}
+
+export function setOpenTabDocumentBytes(bytes: number): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.openTabDocumentBytes = Math.max(0, Math.trunc(bytes));
 }
 
 export function addMergeView(delta: 1 | -1): void {

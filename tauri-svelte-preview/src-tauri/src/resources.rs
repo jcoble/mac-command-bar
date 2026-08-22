@@ -171,6 +171,7 @@ pub struct ResourceDiagnostics {
     pub conversations: crate::agent_conversation::manager::AgentRuntimeDiagnostics,
     pub terminals: TerminalResourceDiagnostics,
     pub language_servers: LanguageServerResourceDiagnostics,
+    pub browser: BrowserResourceDiagnostics,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -188,6 +189,12 @@ pub struct TerminalResourceDiagnostics {
 #[serde(rename_all = "camelCase")]
 pub struct LanguageServerResourceDiagnostics {
     pub running_processes: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserResourceDiagnostics {
+    pub native_views: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -427,16 +434,23 @@ pub async fn read_resource_sample(
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
     lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
+    browser_registry: State<'_, crate::browser::BrowserRegistry>,
 ) -> Result<ResourceSample, String> {
     let system = Arc::clone(&registry.sample_system);
     let history = Arc::clone(&registry.history);
     let terminal_registry = terminal_registry.inner().clone();
     let agent_runtime = agent_runtime.inner().clone();
     let lsp_registry = lsp_registry.inner().clone();
+    let native_browser_views = browser_registry.live_view_count()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let owners = resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?;
-        let diagnostics = resource_diagnostics(&terminal_registry, &agent_runtime, &lsp_registry)?;
+        let diagnostics = resource_diagnostics(
+            &terminal_registry,
+            &agent_runtime,
+            &lsp_registry,
+            native_browser_views,
+        )?;
         let mut system = system
             .lock()
             .map_err(|_| "Resource sampler is unavailable".to_string())?;
@@ -568,6 +582,7 @@ fn resource_diagnostics(
     terminal_registry: &crate::terminal::TerminalRegistry,
     agent_runtime: &crate::agent_conversation::manager::AgentRuntimeManager,
     lsp_registry: &crate::lsp::SourceLspRegistry,
+    native_browser_views: usize,
 ) -> Result<ResourceDiagnostics, String> {
     let terminal_sessions = crate::terminal::list_terminal_sessions(terminal_registry)?;
     let live_terminal_sessions = terminal_sessions
@@ -601,6 +616,9 @@ fn resource_diagnostics(
         },
         language_servers: LanguageServerResourceDiagnostics {
             running_processes: lsp_registry.running_language_server_processes().len(),
+        },
+        browser: BrowserResourceDiagnostics {
+            native_views: native_browser_views,
         },
     })
 }
