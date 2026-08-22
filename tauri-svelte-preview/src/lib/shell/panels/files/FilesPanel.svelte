@@ -1073,7 +1073,6 @@
         virtualOverscan={6}
         virtualContainerHeight={`${treeHeight}px`}
         bodyClass="mcb-tree-body"
-        dragDropMode="none"
         expandLevel={0}
         selectedNodeClass="mcb-tree-selected"
         expandIconClass="mcb-tree-expand"

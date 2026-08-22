@@ -5,6 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  '@keenmate/svelte-treeview@4.8.0':
+    hash: bf66dc90d2348646e0ff6f05546de6b7b22378621bd19e4116c4cb9a96461fc6
+    path: patches/@keenmate__svelte-treeview@4.8.0.patch
   bits-ui@2.18.1:
     hash: af0df22c3b2624c919abaaab29e2523b089a321860ec99b256da65b6d6ffd684
     path: patches/bits-ui@2.18.1.patch
@@ -87,7 +90,7 @@ importers:
         version: 25.1.2
       '@keenmate/svelte-treeview':
         specifier: ^4.8.0
-        version: 4.8.0(svelte@5.56.3)
+        version: 4.8.0(patch_hash=bf66dc90d2348646e0ff6f05546de6b7b22378621bd19e4116c4cb9a96461fc6)(svelte@5.56.3)
       '@lezer/highlight':
         specifier: 1.2.3
         version: 1.2.3
@@ -1694,7 +1697,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@keenmate/svelte-treeview@4.8.0(svelte@5.56.3)':
+  '@keenmate/svelte-treeview@4.8.0(patch_hash=bf66dc90d2348646e0ff6f05546de6b7b22378621bd19e4116c4cb9a96461fc6)(svelte@5.56.3)':
     dependencies:
       svelte: 5.56.3
     optionalDependencies:
