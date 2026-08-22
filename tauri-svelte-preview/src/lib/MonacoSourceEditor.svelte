@@ -66,6 +66,8 @@
 		type SourceTextEdit,
 	} from "./sourceData";
 
+	let codeServicesFailureNoticeShown = false;
+
 	type SourceEditorIntelligenceAction =
 		| "completion"
 		| "definition"
@@ -2686,8 +2688,8 @@
 			console.warn("[code-services] editor building without services; initialized=", monacoVscodeApiIsInitialized());
 			console.warn("[code-services] fallback engaged after wait timeout");
 		}
-		if (!vscodeServicesReady && !sessionStorage.getItem("mcb-code-services-failure")) {
-			sessionStorage.setItem("mcb-code-services-failure", "1");
+		if (!vscodeServicesReady && !codeServicesFailureNoticeShown) {
+			codeServicesFailureNoticeShown = true;
 			showEditorNotice("Code services failed to start; highlighting is basic until the app restarts");
 		}
 		const standaloneImports = standaloneLanguageImportsFor(vscodeServicesReady);
