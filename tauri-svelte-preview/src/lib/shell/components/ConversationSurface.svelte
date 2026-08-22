@@ -313,7 +313,10 @@
   $effect(() => {
     const ownedId = active?.ownedId;
     return () => {
-      if (ownedId) cancelChildConversationTranscriptRead(ownedId);
+      if (ownedId) {
+        cancelChildConversationTranscriptRead(ownedId);
+        setConversationSelectedChild(ownedId, null);
+      }
     };
   });
 
