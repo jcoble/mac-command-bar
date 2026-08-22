@@ -1797,11 +1797,12 @@ impl AgentRuntimeManager {
             if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                 return Err("The structured writer is not the current owner".to_string());
             }
-            session.prompt_once_active = true;
-            session
+            let native_session_id = session
                 .native_session_id
                 .clone()
-                .ok_or_else(|| "Structured provider session has not started".to_string())?
+                .ok_or_else(|| "Structured provider session has not started".to_string())?;
+            session.prompt_once_active = true;
+            native_session_id
         };
         let result = runtime
             .lock()
