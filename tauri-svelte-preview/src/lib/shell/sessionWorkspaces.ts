@@ -21,6 +21,11 @@ import type {
   AgentWriterLease,
   AgentWriterLeaseTransition
 } from './conversation/conversationTypes.ts';
+import {
+  DEFAULT_RIGHT_TAB,
+  isRightTabId
+} from './layout/workbenchTabs.ts';
+import type { RightTabId } from './workbenchNavigation.ts';
 
 export const SESSION_CONVERSATION_WORKSPACE_VERSION = 1;
 
@@ -95,6 +100,8 @@ export interface SessionWorkspaceSnapshot {
   browser?: SessionBrowserWorkspace;
   /** The center Dockview arrangement and active tab owned by this session. */
   center?: SessionCenterWorkspace;
+  /** The selected tab in the right column. */
+  rightTab: RightTabId;
 }
 
 export const SESSION_WORKSPACES_STORAGE_KEY = 'mac-command-bar.next.session-workspaces';
@@ -155,6 +162,7 @@ export function captureWorkspace(input: {
   conversation?: SessionConversationWorkspace;
   browser?: SessionBrowserWorkspace;
   center?: SessionCenterWorkspace | null;
+  rightTab: RightTabId;
 }): SessionWorkspaceSnapshot {
   const activePath = input.activePath ?? null;
   // A path with no folder cannot be checked against the session being restored,
@@ -190,7 +198,8 @@ export function captureWorkspace(input: {
     selectedPath: input.selectedPath ?? null,
     scrollTop: Math.max(0, input.scrollTop),
     diffPath: bothKnown ? diffPath : null,
-    diffRoot: bothKnown ? diffRoot : null
+    diffRoot: bothKnown ? diffRoot : null,
+    rightTab: input.rightTab
   };
   if (Object.keys(fileStates).length > 0) snapshot.fileStates = fileStates;
   if (input.conversation) snapshot.conversation = normalizeConversation(input.conversation);
@@ -369,7 +378,8 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
     selectedPath: pathOf(entry.selectedPath),
     scrollTop,
     diffPath: bothKnown ? diffPath : null,
-    diffRoot: bothKnown ? diffRoot : null
+    diffRoot: bothKnown ? diffRoot : null,
+    rightTab: isRightTabId(entry.rightTab) ? entry.rightTab : DEFAULT_RIGHT_TAB
   };
   const fileStates = normalizeFileStates(entry.fileStates, openPaths);
   if (fileStates) snapshot.fileStates = fileStates;

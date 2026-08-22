@@ -105,11 +105,9 @@
 	} from "$lib/shell/layout/frame";
 	import { isSidebarViewId, type SidebarViewId } from "$lib/shell/layout/sidebarViews";
 	import {
-		clearWorkbenchTabs,
-		readCenterTab,
-		readRightTab,
-		writeCenterTab,
-		writeRightTab,
+		DEFAULT_CENTER_TAB,
+		DEFAULT_RIGHT_TAB,
+		isCenterTabId as isStoredCenterTabId,
 	} from "$lib/shell/layout/workbenchTabs";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartProviderConfig, ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow.ts";
@@ -167,6 +165,7 @@
 	import { loadXtermModules, makeTerminalView } from "$lib/shell/xtermFactory";
 	import {
 		clearAgentConversationWorkspaceEditorsFromTauri,
+		clearAgentConversationWorkspaceTabsFromTauri,
 		deleteAgentConversationSessionFromTauri,
 		readAgentConversationWorkspaceFromTauri,
 		listAgentConversationSessionsFromTauri,
@@ -222,10 +221,8 @@
 	 * pane is on. The PAGE owns both, because both are remembered per session and
 	 * the sessions are the page's. Read for the session on screen, written the
 	 * moment either is clicked. */
-	let rightTab = $state<RightTabId>(typeof window === "undefined" ? "files" : readRightTab(window.localStorage, null));
-	let centerTab = $state<CenterTabId>(
-		typeof window === "undefined" ? "session" : readCenterTab(window.localStorage, null),
-	);
+	let rightTab = $state<RightTabId>(DEFAULT_RIGHT_TAB);
+	let centerTab = $state<CenterTabId>(DEFAULT_CENTER_TAB);
 	let restoringTabs = false;
 	/** Which of the two bottom-strip surfaces is open, so its button reads as on. */
 	let openUtility = $state<UtilityId | null>(null);
@@ -329,9 +326,8 @@
 	}
 
 	/** A center tab the user clicked: shown, and remembered for this session. */
-	function selectCenterTab(id: CenterTabId, ownedId = rail.activeOwnedId): void {
+	function selectCenterTab(id: CenterTabId): void {
 		applyCenterTab(id);
-		writeCenterTab(window.localStorage, ownedId, id);
 	}
 
 	/**
@@ -367,17 +363,17 @@
 	}
 
 	/** A right tab the user clicked: shown, and remembered for this session. */
-	function selectRightTab(id: RightTabId, ownedId = rail.activeOwnedId): void {
+	function selectRightTab(id: RightTabId): void {
 		applyRightTab(id);
-		writeRightTab(window.localStorage, ownedId, id);
 	}
 
 	/** Put both columns back on the tabs this session was left on. */
-	function restoreTabsFor(ownedId: string | null): void {
+	function restoreTabsFor(snapshot: SessionWorkspaceSnapshot | null): void {
 		restoringTabs = true;
 		try {
-			applyCenterTab(readCenterTab(window.localStorage, ownedId));
-			applyRightTab(readRightTab(window.localStorage, ownedId));
+			const storedCenter = snapshot?.center?.activePanelId;
+			applyCenterTab(isStoredCenterTabId(storedCenter) ? storedCenter : DEFAULT_CENTER_TAB);
+			applyRightTab(snapshot?.rightTab ?? DEFAULT_RIGHT_TAB);
 		} finally {
 			restoringTabs = false;
 		}
@@ -511,13 +507,13 @@
 			if (rail.activeOwnedId === ownedId) return;
 			await selectOwned(ownedId);
 		},
-		showCenterPanel: (ownedId, id) => {
-			if (isCenterTabId(id)) selectCenterTab(id, ownedId);
+		showCenterPanel: (_ownedId, id) => {
+			if (isCenterTabId(id)) selectCenterTab(id);
 		},
-		showSidebarView: (ownedId, id) => {
+		showSidebarView: (_ownedId, id) => {
 			if (!isSidebarViewId(id)) return;
 			const tab = rightTabForView(id);
-			if (tab) selectRightTab(tab, ownedId);
+			if (tab) selectRightTab(tab);
 		},
 	});
 
@@ -662,8 +658,8 @@
 	 * arrangement, so it opens out too. */
 	function resetLayout(): void {
 		frameControls?.resetLayout();
-		clearWorkbenchTabs(window.localStorage);
-		restoreTabsFor(rail.activeOwnedId);
+		restoreTabsFor(null);
+		void clearAllWorkspaceTabRecords();
 		if (sessionsCollapsed) collapseSessions(false);
 		// A reset builds the default arrangement, which has the bottom strip open.
 		// Where the Problems list goes is a setting rather than part of the
@@ -764,6 +760,7 @@
 				conversation: captureConversationWorkspace(ownedId),
 				browser: captureBrowserState(),
 				center: frameControls?.captureCenterLayout() ?? null,
+				rightTab,
 			});
 		activeWorkspaceSnapshot = snapshot;
 		try {
@@ -786,7 +783,14 @@
 		workspaceSaveTimer = null;
 	}
 
-	function scheduleWorkspaceAutosave(ownedId: string, _openFiles: unknown, _activePath: unknown): void {
+	function scheduleWorkspaceAutosave(
+		ownedId: string,
+		_openFiles: unknown,
+		_activePath: unknown,
+		_centerTab: CenterTabId,
+		_rightTab: RightTabId,
+		_browser: unknown,
+	): void {
 		cancelWorkspaceAutosave();
 		workspaceSaveTimer = setTimeout(() => {
 			workspaceSaveTimer = null;
@@ -798,8 +802,9 @@
 		const ownedId = rail.activeOwnedId;
 		const openFiles = editorState.openFiles;
 		const activePath = editorState.activePath;
+		const browserState = captureBrowserState();
 		if (workspaceAutosaveEnabled && ownedId !== null) {
-			scheduleWorkspaceAutosave(ownedId, openFiles, activePath);
+			scheduleWorkspaceAutosave(ownedId, openFiles, activePath, centerTab, rightTab, browserState);
 		}
 	});
 
@@ -818,6 +823,29 @@
 					openPaths: [],
 					activePath: null,
 					fileStates: undefined,
+				};
+			}
+		} catch (error) {
+			rail.error = `workspace checkpoint failed: ${describeError(error)}`;
+		} finally {
+			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
+		}
+	}
+
+	async function clearAllWorkspaceTabRecords(): Promise<void> {
+		workspaceAutosaveEnabled = false;
+		cancelWorkspaceAutosave();
+		const clear = workspaceWriteQueue.then(clearAgentConversationWorkspaceTabsFromTauri);
+		workspaceWriteQueue = clear.catch(() => undefined);
+		try {
+			await clear;
+			if (activeWorkspaceSnapshot !== null) {
+				activeWorkspaceSnapshot = {
+					...activeWorkspaceSnapshot,
+					rightTab: DEFAULT_RIGHT_TAB,
+					center: activeWorkspaceSnapshot.center
+						? { ...activeWorkspaceSnapshot.center, activePanelId: DEFAULT_CENTER_TAB }
+						: activeWorkspaceSnapshot.center,
 				};
 			}
 		} catch (error) {
@@ -862,7 +890,7 @@
 		// hidden status and diff work for sessions returning to Chat or Editor.
 		const sessionRoot = activeRootAvailable ? readSelection().root.trim() : "";
 		const rememberedDiff = diffPathFor(snapshot, sessionRoot);
-		const restoringDiff = readCenterTab(window.localStorage, ownedId) === "diff";
+		const restoringDiff = snapshot?.center?.activePanelId === "diff";
 		if (!restoringDiff || rememberedDiff === null) {
 			gitService.clearSelection();
 		} else {
@@ -971,7 +999,7 @@
 			// Both columns go back to the tabs this session was left on. After the
 			// workspace restore, which may have brought the editor forward for a file
 			// it re-opened — the session's own remembered tab wins.
-			restoreTabsFor(ownedId);
+			restoreTabsFor(activeWorkspaceSnapshot);
 		}
 		if (switching && selected?.ptySessionId && service) {
 			const host = await hostFor(ownedId);
@@ -1841,7 +1869,7 @@
 				setTimeout(() => shellPanels.allowPanelLoads(), 0);
 				// Open on the tabs the shell was left on. The frame is what shows a
 				// center surface, so this cannot happen any earlier than here.
-				restoreTabsFor(rail.activeOwnedId);
+				restoreTabsFor(activeWorkspaceSnapshot);
 			}}
 			onError={(message) => (layoutError = `layout failed: ${message}`)}
 		/>

@@ -206,6 +206,13 @@ pub async fn clear_agent_conversation_workspace_editors(
 }
 
 #[tauri::command]
+pub async fn clear_agent_conversation_workspace_tabs(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+) -> CommandResult<()> {
+    command_result(manager.clear_workspace_tabs())
+}
+
+#[tauri::command]
 /// Records a legacy approval decision after validating its request identity.
 pub async fn respond_agent_conversation_approval(
     manager: tauri::State<'_, AgentRuntimeManager>,

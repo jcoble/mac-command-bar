@@ -4,8 +4,8 @@
  * The old /next callers still receive `browser`, `activateBrowser`,
  * `setBrowserUrl`, `reloadBrowserFrame`, `captureBrowserState` and
  * `restoreBrowserState`.  New surfaces use the same reactive workspace and
- * the pure browser model underneath; this file contains only the small legacy
- * URL snapshot adapter and explicit persistence.
+ * the pure browser model underneath. Durable restoration belongs to the active
+ * session's SQLite workspace snapshot, not browser storage.
  */
 import type { SessionBrowserWorkspace } from '../sessionWorkspaces.ts';
 import {
@@ -48,10 +48,7 @@ import {
 } from './browserTypes.ts';
 import { normalizeBrowserUrl } from './normalizeBrowserUrl.ts';
 
-export const BROWSER_URL_STORAGE_KEY = 'mac-command-bar.next.browser.url';
 export const INVALID_URL_MESSAGE = 'Enter an address that starts with http or https';
-export const STORAGE_WRITE_FAILED_MESSAGE =
-  'This address will not come back after a reload — browser storage is full';
 
 export interface BrowserCompatibilityState {
   url: string;
@@ -120,27 +117,6 @@ function syncLegacy(nextUrl?: string, bumpFrame = false): void {
   browser.error = browser.workspace.error ?? '';
 }
 
-function persist(url: string): boolean {
-  if (typeof localStorage === 'undefined') return false;
-  try {
-    if (url) localStorage.setItem(BROWSER_URL_STORAGE_KEY, url);
-    else localStorage.removeItem(BROWSER_URL_STORAGE_KEY);
-    return true;
-  } catch {
-    browser.error = STORAGE_WRITE_FAILED_MESSAGE;
-    return false;
-  }
-}
-
-export function loadStoredBrowserUrl(): string {
-  if (typeof localStorage === 'undefined') return '';
-  try {
-    return normalizeBrowserUrl(localStorage.getItem(BROWSER_URL_STORAGE_KEY) ?? '');
-  } catch {
-    return '';
-  }
-}
-
 export function captureBrowserState(): SessionBrowserWorkspace {
   return {
     url: browser.url,
@@ -151,10 +127,6 @@ export function captureBrowserState(): SessionBrowserWorkspace {
 
 export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | undefined): void {
   const nextUrl = normalizeBrowserUrl(snapshot?.url ?? '');
-  // The compatibility key represents only the browser currently owning the
-  // native view. Clear it with an empty session so activation cannot reopen
-  // the session we just left.
-  persist(nextUrl);
   browser.workspace.activated = snapshot?.activated === true && nextUrl.length > 0;
   browser.workspace.error = null;
   const current = browser.workspace.activeTabId
@@ -185,7 +157,7 @@ export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | u
 
 export function activateBrowser(): void {
   if (browser.workspace.activated) return;
-  const savedUrl = loadStoredBrowserUrl();
+  const savedUrl = normalizeBrowserUrl(browser.url);
   try {
     activateBrowserWorkspace(modelContext());
     if (savedUrl && !browser.workspace.activeTabId) {
@@ -218,7 +190,6 @@ export function setBrowserUrl(value: string): boolean {
     else navigateActiveBrowserTab(modelContext(), value);
     browser.workspace.error = null;
     syncLegacy(undefined, true);
-    persist(browser.url);
     return true;
   } catch (error) {
     browser.error = error instanceof BrowserModelError ? error.message : INVALID_URL_MESSAGE;
@@ -259,7 +230,6 @@ export function clearBrowserUrl(): void {
   browser.url = '';
   browser.inputUrl = '';
   browser.activated = browser.workspace.activated;
-  persist('');
 }
 
 export function clearBrowserError(): void {
@@ -323,5 +293,4 @@ export function syncBrowserNavigation(event: BrowserTabNavigationEvent): void {
   tab.canGoForward = event.canGoForward;
   tab.loadState = 'loaded';
   syncLegacy();
-  persist(browser.url);
 }

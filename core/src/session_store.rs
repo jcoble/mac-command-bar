@@ -603,6 +603,23 @@ impl SessionStore {
         Ok(())
     }
 
+    pub fn clear_workspace_selected_tabs(&self) -> Result<()> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "UPDATE session_workspaces
+                 SET snapshot_json = json_set(
+                        CASE WHEN json_type(snapshot_json) = 'object' THEN snapshot_json ELSE '{}' END,
+                        '$.rightTab', 'files', '$.center.activePanelId', 'session'
+                     ),
+                     updated_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+                 WHERE json_valid(snapshot_json)",
+                [],
+            )
+            .map_err(|error| StoreError::sqlite("could not reset session workspace tabs", error))?;
+        Ok(())
+    }
+
     pub fn append_event(&self, row: &EventRow) -> Result<()> {
         let mut connection = self.lock()?;
         let transaction = connection

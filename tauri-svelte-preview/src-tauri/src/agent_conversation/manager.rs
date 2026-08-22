@@ -424,6 +424,12 @@ impl AgentRuntimeManager {
             .map_err(|error| error.to_string())
     }
 
+    pub fn clear_workspace_tabs(&self) -> Result<(), String> {
+        self.store
+            .clear_workspace_selected_tabs()
+            .map_err(|error| error.to_string())
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Names an imported session without reading a single record of it, so the
     /// rail has something to show while the transcript is still being read.

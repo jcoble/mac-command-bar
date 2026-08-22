@@ -1538,6 +1538,12 @@ export async function clearAgentConversationWorkspaceEditorsFromTauri(): Promise
   await invoke<void>('clear_agent_conversation_workspace_editors');
 }
 
+export async function clearAgentConversationWorkspaceTabsFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('clear_agent_conversation_workspace_tabs');
+}
+
 /** Everything the backend needs to read a past session's transcript file in. */
 export interface AgentConversationTranscriptImport {
   provider: import('./shell/conversation/conversationTypes.ts').AgentConversationProvider;

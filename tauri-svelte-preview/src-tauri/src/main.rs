@@ -6304,6 +6304,7 @@ fn main() {
             agent_conversation::read_agent_conversation_workspace,
             agent_conversation::delete_agent_conversation_workspace,
             agent_conversation::clear_agent_conversation_workspace_editors,
+            agent_conversation::clear_agent_conversation_workspace_tabs,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,
