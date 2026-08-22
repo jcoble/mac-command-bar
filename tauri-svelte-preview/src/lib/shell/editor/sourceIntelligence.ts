@@ -758,7 +758,10 @@ export function createSourceIntelligence(): SourceIntelligence {
 
     const memoKey = `${projectRoot}|${preview.language}`;
     const remembered = rememberedReadiness.get(memoKey);
-    if (remembered && Date.now() - remembered.at < readinessMemoryMs) return remembered.answer;
+    if (remembered) {
+      if (Date.now() - remembered.at < readinessMemoryMs) return remembered.answer;
+      rememberedReadiness.delete(memoKey);
+    }
 
     const answer = readLanguageServerCountingReadiness(projectRoot, preview.language);
     rememberedReadiness.set(memoKey, { at: Date.now(), answer });
@@ -1222,6 +1225,11 @@ export function createSourceIntelligence(): SourceIntelligence {
       stopStatusWatch = null;
       statusWatch = null;
       statusSubscribers.clear();
+      projectRootGeneration += 1;
+      externalPreviewGeneration += 1;
+      rememberedReadiness.clear();
+      externalPreviewCache.clear();
+      stopCountingForTheOldFile();
     },
     subscribeToLanguageServerStatus(
       listener: (status: LanguageServerStatusMessage) => void
@@ -1236,6 +1244,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       if (normalized === projectRoot) return;
       projectRootGeneration += 1;
       projectRoot = normalized;
+      rememberedReadiness.clear();
       // The old project's live answers belong to the view that just left it.
       // Stop that work and release those answers before pointing at the new root.
       externalPreviewCache.clear();
