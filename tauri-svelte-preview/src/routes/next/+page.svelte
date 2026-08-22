@@ -323,7 +323,10 @@
 	function adoptCenterTab(id: CenterTabId): void {
 		const previous = centerTab;
 		centerTab = id;
-		if (previous === "diff" && id !== "diff") gitService.clearSelection();
+		if (previous === "diff" && id !== "diff") {
+			gitService.clearSelection();
+			gitCommitFilesService.clearSelection();
+		}
 	}
 
 	/** Show a center surface. The dock owns which panel is active, so the tab

@@ -208,6 +208,13 @@ export function createGitCommitFilesService(
     }
   }
 
+  function clearSelection(): void {
+    diffRequest += 1;
+    state.selectedCommitSha = '';
+    state.selectedRelativePath = '';
+    clearPanelSelection();
+  }
+
   return {
     state,
 
@@ -216,6 +223,7 @@ export function createGitCommitFilesService(
       topRequest = null;
       fileRequests.clear();
       diffRequest += 1;
+      clearPanelSelection();
       resetGitCommitFilesState(state, root);
     },
 
@@ -223,12 +231,16 @@ export function createGitCommitFilesService(
       topRequest = null;
       fileRequests.clear();
       diffRequest += 1;
+      clearPanelSelection();
       resetGitCommitFilesState(state, null);
     },
 
     async toggleCommit(sha: string, isMerge: boolean): Promise<void> {
       if (isCommitExpanded(state, sha)) {
         state.expanded[sha] = false;
+        fileRequests.delete(sha);
+        delete state.byCommit[sha];
+        if (state.selectedCommitSha === sha) clearSelection();
         return;
       }
       state.expanded[sha] = true;
@@ -245,11 +257,7 @@ export function createGitCommitFilesService(
 
     selectCommitFile,
 
-    clearSelection(): void {
-      diffRequest += 1;
-      state.selectedCommitSha = '';
-      state.selectedRelativePath = '';
-    }
+    clearSelection
   };
 }
 
