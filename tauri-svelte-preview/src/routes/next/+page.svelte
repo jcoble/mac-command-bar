@@ -365,7 +365,6 @@
 		const graphVisible = centerTab === "git-history" || rightTab === "source-control";
 		shellPanels.sourceControlVisible(graphVisible);
 		if (graphVisible) {
-			gitService.ensureHistorySurface();
 			return;
 		}
 		gitService.releaseHistorySurface();
@@ -2010,8 +2009,9 @@
 	{#snippet diffArea()}{#if centerTab === "diff"}<GitDiffView showing={true} rootAvailable={activeRootAvailable} />{/if}{/snippet}
 
 <!-- The whole commit history as a table, given the width of the middle. It reads
-     `gitPanel` itself and takes no props, the same way the diff above does. -->
-	{#snippet gitHistoryArea()}{#if centerTab === "git-history"}<GitHistoryView rootAvailable={activeRootAvailable} />{/if}{/snippet}
+     `gitPanel` itself; the active root only tells its lazy surface when to point
+     the existing service at a new repository. -->
+	{#snippet gitHistoryArea()}{#if centerTab === "git-history"}<GitHistoryView root={activeRootAvailable ? readSelection().root : ""} rootAvailable={activeRootAvailable} />{/if}{/snippet}
 
 <!-- The webview's own right-click menu runs a native tracking loop that stalls
      the whole window for seconds, which reads as a freeze. Surfaces with a menu

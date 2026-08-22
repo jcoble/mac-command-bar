@@ -26,6 +26,7 @@
    * same call the panel itself makes — and picking a row only reads.
    */
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import { onMount } from 'svelte';
   import X from '@lucide/svelte/icons/x';
 
   import { Chip } from '$lib/components/ui/chip/index.js';
@@ -69,9 +70,23 @@
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
 
   interface Props {
+    root?: string;
     rootAvailable?: boolean;
   }
-  let { rootAvailable = true }: Props = $props();
+  let { root = '', rootAvailable = true }: Props = $props();
+  let requestedRoot = '';
+
+  onMount(() => {
+    gitService.ensureHistorySurface();
+  });
+
+  $effect(() => {
+    const targetRoot = root.trim();
+    if (!rootAvailable || !targetRoot || targetRoot === requestedRoot) return;
+    requestedRoot = targetRoot;
+    gitService.activate(targetRoot);
+    gitService.ensureHistorySurface();
+  });
 
   /** One row of the table is exactly this tall, so its SVG can be drawn to size. */
   const ROW_HEIGHT = 24;

@@ -31,6 +31,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import { onMount } from 'svelte';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
@@ -84,6 +85,18 @@
 
   let open = $state(true);
   let contextMenu = $state<SourceControlCommitMenuSnapshot | null>(null);
+  let requestedRoot = '';
+
+  onMount(() => {
+    service.ensureHistorySurface();
+  });
+
+  $effect(() => {
+    const targetRoot = panel.root?.trim() ?? '';
+    if (!targetRoot || targetRoot === requestedRoot) return;
+    requestedRoot = targetRoot;
+    service.ensureHistorySurface();
+  });
 
   /** One row of the graph is exactly this tall, so the SVG can be drawn to size. */
   const ROW_HEIGHT = 40;

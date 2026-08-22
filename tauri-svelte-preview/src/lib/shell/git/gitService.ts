@@ -223,9 +223,10 @@ export interface GitService {
   /** The state this service writes. The panel reads the same object. */
   readonly state: GitPanelState;
   /**
-   * Point the panel at a repository and do its first read. Idempotent: calling
-   * it again with the same root does nothing, so the integrator can call it on
-   * every activation. A different root wipes the panel and reloads.
+   * Point the panel at a repository and read its status. History is loaded by
+   * a visible graph surface. Idempotent: calling it again with the same root
+   * does nothing, so the integrator can call it on every activation. A
+   * different root wipes the panel and reloads its status.
    */
   activate(root: string | null): void;
   /** Re-read status and commit history for the current repository. */
@@ -515,7 +516,9 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     publishSourceControl();
     if (!root) return;
     state.activated = true;
-    void refresh();
+    // Status belongs to the repository activation. History is a visible-surface
+    // projection and is loaded by that surface through ensureHistorySurface().
+    void refreshStatus();
   }
 
   async function showStoredDiff(root: string, relativePath: string): Promise<void> {
