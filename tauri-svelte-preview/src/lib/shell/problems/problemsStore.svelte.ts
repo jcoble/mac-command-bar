@@ -10,7 +10,7 @@
  * `context/contextStore.svelte.ts`):
  *
  * 1. **No backend, ever.** Nothing here calls Tauri, fetches, or touches
- *    localStorage. Every backend call lives in `problemsService.ts` (which
+ *    browser storage. Every backend call lives in `problemsService.ts` (which
  *    reaches the desktop through `problemsBackend.ts`) and lands here as a
  *    plain mutation.
  * 2. **No `$effect`.** `$effect` is illegal in a `.svelte.ts` module and against

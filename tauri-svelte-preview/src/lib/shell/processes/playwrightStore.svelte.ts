@@ -14,7 +14,7 @@
  * Two rules this module exists to enforce (same shape as `contextStore`):
  *
  * 1. **No backend, ever.** Nothing here calls Tauri, fetches, or touches
- *    localStorage. Every backend call lives in `playwrightService.ts` and lands
+ *    browser storage. Every backend call lives in `playwrightService.ts` and lands
  *    here as a plain mutation.
  * 2. **No `$effect`.** `$effect` is illegal in a `.svelte.ts` module. Loading is
  *    driven imperatively by the service.

@@ -3,7 +3,7 @@
  *
  * Construction is inert. A provider scan or user action only happens when its
  * corresponding method is called, and all effects are injected by the caller.
- * The service has no archive, no localStorage key, and no second rail/runtime
+ * The service has no archive, no browser-storage key, and no second rail/runtime
  * authority.
  */
 import type { AgentSession } from '../../tauriSource.ts';

@@ -14,7 +14,6 @@ import { createPaneview, type IPanePart, type PaneviewApi } from 'dockview-core'
 // `scripts/paneLayout.test.mjs` loads this module through node's own resolver,
 // which does not fill an extension in the way the bundler does.
 import {
-  clearLayout,
   loadLayout,
   paneviewPanelIds,
   panelSetMatches,
@@ -49,13 +48,6 @@ export interface PaneSpec {
 export interface PaneStackOptions {
   /** The injected layout authority. It is never created by this module. */
   layoutStore?: LayoutStorage;
-  /** @deprecated Compatibility alias for callers still passing Storage. */
-  storage?: LayoutStorage;
-  /**
-   * Caller-owned legacy key. When present, the stack reads/writes this key
-   * directly. New callers omit it and use the single side-pane v1 map below.
-   */
-  storageKey?: string;
   /** Stable entry inside the side-pane v1 map. */
   layoutId?: string;
   panes: PaneSpec[];
@@ -246,18 +238,11 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   if (specs.size !== options.panes.length) {
     throw new TypeError('PaneStack panes must have unique ids');
   }
-  const layoutStorage = options.layoutStore ?? options.storage ?? NO_LAYOUT_STORAGE;
-  // An injected store is the new authority. `storageKey` remains usable only
-  // for legacy callers that have not supplied one, so a compatibility key can
-  // never fork the new store into a second layout family.
-  const compatibilityKey = options.layoutStore ? null : options.storageKey?.trim() || null;
+  const layoutStorage = options.layoutStore ?? NO_LAYOUT_STORAGE;
   const centralLayoutId = defaultLayoutId(options);
-  const usesSidePaneMap = compatibilityKey === null;
 
-  /** One persistence adapter, with the old storageKey retained as a boundary
-   * adapter. New callers use the injected store and one v1 map entry. */
+  /** One persistence adapter, backed by the injected store and one v1 map entry. */
   const loadPersistedLayout = (): object | null => {
-    if (!usesSidePaneMap) return loadLayout<object>(layoutStorage, compatibilityKey!);
     const map = readSidePaneMap(layoutStorage);
     const stored = map.layouts[centralLayoutId];
     if (canRestorePaneLayout(stored, specs.keys())) return stored;
@@ -276,10 +261,6 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   };
 
   const clearPersistedLayout = (): void => {
-    if (!usesSidePaneMap) {
-      clearLayout(layoutStorage, compatibilityKey!);
-      return;
-    }
     const map = readSidePaneMap(layoutStorage);
     if (!(centralLayoutId in map.layouts)) return;
     const layouts = { ...map.layouts };
@@ -288,7 +269,6 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   };
 
   const savePersistedLayout = (layout: object): boolean => {
-    if (!usesSidePaneMap) return saveLayout(layoutStorage, compatibilityKey!, layout);
     const map = readSidePaneMap(layoutStorage);
     return writeSidePaneMap(layoutStorage, {
       version: SIDE_PANE_LAYOUT_VERSION,
