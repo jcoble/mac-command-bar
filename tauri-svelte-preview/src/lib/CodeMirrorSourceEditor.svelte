@@ -410,8 +410,22 @@
   const editorExtensions: Extension[] = [
     keymap.of([
       { key: 'Mod-s', run: () => { onSaveRequest?.(); return true; } },
-      { key: 'F12', run: () => { void navigate('definition'); return true; } },
-      { key: 'Shift-F12', run: () => { void navigate('references'); return true; } }
+      {
+        key: 'F12',
+        run: () => {
+          if (officialLspExpected()) return false;
+          void navigate('definition');
+          return true;
+        }
+      },
+      {
+        key: 'Shift-F12',
+        run: () => {
+          if (officialLspExpected()) return false;
+          void navigate('references');
+          return true;
+        }
+      }
     ]),
     lineNumbers(),
     highlightActiveLineGutter(),

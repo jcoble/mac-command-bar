@@ -1,11 +1,17 @@
 import {
+  findReferencesKeymap,
+  formatKeymap,
   LSPClient,
   hoverTooltips,
+  jumpToDefinitionKeymap,
+  renameKeymap,
   serverCompletion,
   serverDiagnostics,
+  signatureHelp,
   type Transport
 } from '@codemirror/lsp-client';
 import type { Extension } from '@codemirror/state';
+import { keymap } from '@codemirror/view';
 
 import {
   ensureNativeCsharpLanguageClientFromTauri,
@@ -91,7 +97,13 @@ export function connectCodeMirrorCsharpClient(root: string): CodeMirrorCsharpSes
       client = new LSPClient({
         rootUri: fileUri(requestedRoot),
         timeout: 30_000,
-        extensions: [serverCompletion({ override: true }), hoverTooltips(), serverDiagnostics()]
+        extensions: [
+          serverCompletion({ override: true }),
+          hoverTooltips(),
+          keymap.of([...formatKeymap, ...renameKeymap, ...jumpToDefinitionKeymap, ...findReferencesKeymap]),
+          signatureHelp(),
+          serverDiagnostics()
+        ]
       }).connect(transport);
       await client.initializing;
       if (disposed || activeRoot !== requestedRoot) {

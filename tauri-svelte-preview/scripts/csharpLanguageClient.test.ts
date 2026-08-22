@@ -15,7 +15,16 @@ const panel = await readFile(
 );
 
 assert.match(client, /from ['"]@codemirror\/lsp-client['"]/);
-assert.match(client, /new LSPClient\([\s\S]*serverCompletion\(\{ override: true \}\)[\s\S]*hoverTooltips\(\)[\s\S]*serverDiagnostics\(\)/);
+assert.match(client, /formatKeymap/);
+assert.match(client, /renameKeymap/);
+assert.match(client, /jumpToDefinitionKeymap/);
+assert.match(client, /findReferencesKeymap/);
+assert.match(client, /signatureHelp\(\)/);
+assert.match(
+  client,
+  /new LSPClient\([\s\S]*serverCompletion\(\{ override: true \}\)[\s\S]*hoverTooltips\(\)[\s\S]*keymap\.of\(\[\.\.\.formatKeymap, \.\.\.renameKeymap, \.\.\.jumpToDefinitionKeymap, \.\.\.findReferencesKeymap\]\)[\s\S]*signatureHelp\(\)[\s\S]*serverDiagnostics\(\)/,
+  'the official client should own completion, hover, formatting, rename, definition, references, signature help, and diagnostics'
+);
 assert.match(client, /new WebSocket\(endpoint\.wsUrl\)/);
 assert.match(client, /ensureNativeCsharpLanguageClientFromTauri\(requestedRoot\)/);
 assert.match(client, /markNativeCsharpLanguageClientReadyFromTauri\(requestedRoot\)/);
@@ -28,6 +37,16 @@ assert.doesNotMatch(client, /(?:document|result)(?:Cache|Map|State)/i);
 assert.match(editor, /languageServerRoot/);
 assert.match(editor, /connectCodeMirrorCsharpClient\(root\)/);
 assert.match(editor, /intelligence\.reconfigure\(extension\)/);
+assert.match(
+  editor,
+  /key: 'F12'[\s\S]*if \(officialLspExpected\(\)\) return false;[\s\S]*navigate\('definition'\)/,
+  'official C# LSP should receive F12 before callback intelligence'
+);
+assert.match(
+  editor,
+  /key: 'Shift-F12'[\s\S]*if \(officialLspExpected\(\)\) return false;[\s\S]*navigate\('references'\)/,
+  'official C# LSP should receive Shift-F12 before callback intelligence'
+);
 assert.match(editor, /function clearLspSupport\(disposeClient = true\)/);
 assert.match(
   editor,
