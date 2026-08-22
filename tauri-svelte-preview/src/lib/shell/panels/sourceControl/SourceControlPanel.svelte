@@ -46,6 +46,7 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import GitBranch from '@lucide/svelte/icons/git-branch';
+  import { onDestroy } from 'svelte';
   import { canChangeRepository, READ_ONLY_IN_BROWSER_MESSAGE } from '$lib/shell/git/gitBackendExtra';
   import {
     gitCommitFilesService as defaultCommitFilesService,
@@ -201,15 +202,31 @@
   });
 
   /** The one place a scope becomes a real read. `activate` ignores a repeat. */
+  let historyRoot = '';
+
+  function releaseHistorySurface(): void {
+    historyRoot = '';
+    service.releaseHistorySurface();
+    commitFiles.release();
+  }
+
   $effect(() => {
     const target = scopeRoot === '' ? sessionRoot : scopeRoot;
-    if (target === '') {
-      commitFiles.release();
+    const readableTarget = rootAvailable || scopeRoot !== '' ? target : '';
+    if (!visible || readableTarget === '') {
+      releaseHistorySurface();
       return;
     }
-    service.activate(target);
-    commitFiles.activate(target);
+    if (historyRoot !== readableTarget) {
+      releaseHistorySurface();
+      historyRoot = readableTarget;
+    }
+    service.activate(readableTarget);
+    commitFiles.activate(readableTarget);
+    service.ensureHistorySurface();
   });
+
+  onDestroy(releaseHistorySurface);
 
   /** A folder with no repository in it is an ordinary thing to be looking at,
    * not a fault — so it gets a plain sentence instead of git's `fatal:` line. */

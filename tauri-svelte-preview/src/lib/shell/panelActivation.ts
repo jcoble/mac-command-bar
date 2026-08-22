@@ -214,7 +214,9 @@ export function createPanelActivation(
     const key = selectionKey(selection);
     if (filesInView && filesLoadedFor !== key) loadFiles(selection);
     if (sourceControlInView && gitLoadedFor !== key) loadSourceControl(selection);
-    if (worktreesInView && worktreesLoadedFor !== key) loadWorktrees(selection);
+    if ((worktreesInView || sourceControlInView) && worktreesLoadedFor !== key) {
+      loadWorktrees(selection);
+    }
     if (stacksInView && stacksLoadedFor !== key) loadStacks(selection);
     if (problemsInView && problemsLoadedFor !== key) loadProblems(selection);
   };
@@ -279,8 +281,8 @@ export function createPanelActivation(
       const selection = currentSelection();
       // Already showing this folder: coming back to it is not a reason to read
       // the repository again.
-      if (gitLoadedFor === selectionKey(selection)) return;
-      loadSourceControl(selection);
+      if (gitLoadedFor !== selectionKey(selection)) loadSourceControl(selection);
+      if (worktreesLoadedFor !== selectionKey(selection)) loadWorktrees(selection);
     },
 
     worktreesVisible(visible: boolean): void {
