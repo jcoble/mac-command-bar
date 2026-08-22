@@ -766,6 +766,7 @@
   }
 
   function updateActiveDraft(content: string): void {
+    if (closeActionBusy) return;
     const file = activeEditorFile();
     if (!file || readOnlyByPath[file.path]) return;
     setEditorFileDraft(file.path, content);
@@ -830,7 +831,7 @@
     previewTab = false,
     pinTab = false
   ): boolean {
-    if (!rootAvailable || !path.trim()) return false;
+    if (closeActionBusy || !rootAvailable || !path.trim()) return false;
     if (editorState.activePath && editorState.activePath !== path) {
       releaseMarkdownView(editorState.activePath);
     }
@@ -921,6 +922,7 @@
   }
 
   function closeOpenFileAt(path: string): void {
+    if (closeActionBusy) return;
     if (editorFileFor(path)?.dirty) {
       closeRequest = { kind: 'file', path };
       closeDialogOpen = true;
@@ -930,38 +932,44 @@
   }
 
   function closeOtherOpenFiles(path: string): void {
+    if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (file.path !== path && !file.dirty) closeFileNow(file.path);
     }
   }
 
   function closeSavedOpenFiles(): void {
+    if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (!file.dirty) closeFileNow(file.path);
     }
   }
 
   async function closeAllOpenEditorsNow(): Promise<void> {
-    let cleared: boolean | void;
+    const generation = sessionResourceGeneration;
+    closeActionBusy = true;
     try {
-      cleared = await onCloseAllEditors?.();
+      const cleared = await onCloseAllEditors?.();
+      if (cleared === false) {
+        editorLoadError = 'Could not clear saved editor tabs.';
+        return;
+      }
+      if (generation !== sessionResourceGeneration) return;
+      for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
+      codeEditor?.disposeAllTabModels();
+      resetEditorState();
+      markdownViewByPath = {};
+      diagnosticsByPath = {};
+      readOnlyByPath = {};
     } catch (error) {
       editorLoadError = `Could not clear saved editor tabs: ${describeError(error)}`;
-      return;
+    } finally {
+      closeActionBusy = false;
     }
-    if (cleared === false) {
-      editorLoadError = 'Could not clear saved editor tabs.';
-      return;
-    }
-    for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
-    codeEditor?.disposeAllTabModels();
-    resetEditorState();
-    markdownViewByPath = {};
-    diagnosticsByPath = {};
-    readOnlyByPath = {};
   }
 
   function closeAllOpenEditors(): void {
+    if (closeActionBusy) return;
     if (editorState.openFiles.some((file) => file.dirty)) {
       closeRequest = { kind: 'all' };
       closeDialogOpen = true;
@@ -990,10 +998,13 @@
         break;
       }
     }
-    closeActionBusy = false;
+    if (!saved) closeActionBusy = false;
     closeDialogOpen = false;
     closeRequest = null;
-    if (saved) await closeAllOpenEditorsNow();
+    if (saved) {
+      closeActionBusy = false;
+      await closeAllOpenEditorsNow();
+    }
   }
 
   function confirmCloseDiscard(): void {
@@ -1047,6 +1058,8 @@
 
   export function releaseSessionResources(paths: readonly string[]): void {
     sessionResourceGeneration += 1;
+    closeRequest = null;
+    closeDialogOpen = false;
     if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
     diagnosticsTimer = null;
     sourceIntelligence.setActivePreview(null);
@@ -1273,7 +1286,7 @@
             onInlayHintLookup={activeFileReadOnly ? undefined : lookupInlayHintsWhenServerCanAnswer}
             preview={activeFile.preview}
             content={activeFile.draftContent ?? activeFile.preview.content}
-            editable={rootAvailable && !activeFileReadOnly}
+            editable={rootAvailable && !activeFileReadOnly && !closeActionBusy}
             visible={showing}
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}

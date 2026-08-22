@@ -208,6 +208,7 @@
 	let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let workspaceWriteQueue: Promise<void> = Promise.resolve();
 	let workspaceAutosaveEnabled = false;
+	let clearAllEditorsInFlight = false;
 	let service: ReturnType<typeof createTerminalService> | null = null;
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
 	let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
@@ -964,7 +965,8 @@
 
 	async function clearAllEditorWorkspaceRecords(): Promise<boolean> {
 		const ownedId = rail.activeOwnedId;
-		if (ownedId === null) return false;
+		if (ownedId === null || clearAllEditorsInFlight) return false;
+		clearAllEditorsInFlight = true;
 		workspaceAutosaveEnabled = false;
 		cancelWorkspaceAutosave();
 		const clear = workspaceWriteQueue.then(clearAgentConversationWorkspaceEditorsFromTauri);
@@ -985,6 +987,7 @@
 			rail.error = `workspace checkpoint failed: ${describeError(error)}`;
 		} finally {
 			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
+			clearAllEditorsInFlight = false;
 		}
 		return cleared;
 	}
@@ -1082,7 +1085,7 @@
 	}
 
 	async function selectOwned(ownedId: string, propagateStructuredFailure = false): Promise<void> {
-		if (sessionProjectionOwner === "checkout") return;
+		if (sessionProjectionOwner === "checkout" || clearAllEditorsInFlight) return;
 		const selectionGeneration = ++sessionSelectionGeneration;
 		sessionProjectionOwner = "selection";
 		try {
