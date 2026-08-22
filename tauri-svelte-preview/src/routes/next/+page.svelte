@@ -927,7 +927,7 @@
 			if (!checkoutStillCurrent()) return true;
 			return true;
 		} catch (error) {
-			rail.error = `Checkout change failed: ${describeError(error)}`;
+			if (!disposed) rail.error = `Checkout change failed: ${describeError(error)}`;
 			return false;
 		} finally {
 			if (sessionProjectionOwner === "checkout") sessionProjectionOwner = null;
@@ -986,7 +986,7 @@
 				};
 			}
 		} catch (error) {
-			rail.error = `workspace checkpoint failed: ${describeError(error)}`;
+			if (!disposed) rail.error = `workspace checkpoint failed: ${describeError(error)}`;
 		} finally {
 			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
 			clearAllEditorsInFlight = false;
@@ -1040,7 +1040,7 @@
 		try {
 			snapshot = await readAgentConversationWorkspaceFromTauri(ownedId);
 		} catch (error) {
-			if (generation === workspaceRestoreGeneration && rail.activeOwnedId === ownedId && !clearAllEditorsInFlight) {
+			if (!disposed && generation === workspaceRestoreGeneration && rail.activeOwnedId === ownedId && !clearAllEditorsInFlight) {
 				rail.error = `workspace restore failed: ${describeError(error)}`;
 			}
 		}
