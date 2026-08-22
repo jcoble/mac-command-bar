@@ -404,8 +404,9 @@
    * first existing item and restore its viewport offset after replay; anchoring
    * an item rather than total height also survives the newest rows being trimmed.
    */
-  let pageAnchor: { viewportTop: number; itemId: string } | null = null;
-  let anchoredFirstItemId = '';
+  type PageAnchor = { viewportTop: number; itemId: string };
+
+  let pageAnchor: PageAnchor | null = null;
 
   function captureViewportAnchor(): void {
     if (!host) return;
@@ -460,13 +461,7 @@
     hydrationFrame = requestTrackedAnimationFrame(() => hydrateVisibleWindow());
   });
 
-  $effect(() => {
-    const firstItemId = renderedItems[0]?.itemId ?? '';
-    if (firstItemId === anchoredFirstItemId) return;
-    anchoredFirstItemId = firstItemId;
-    const anchor = pageAnchor;
-    if (!anchor) return;
-    pageAnchor = null;
+  function restoreViewportAnchor(anchor: PageAnchor): void {
     void tick().then(() => {
       if (!host) return;
       const rowIndex = renderedGroups.findIndex((group) =>
@@ -479,12 +474,22 @@
         if (item) host.scrollTop += item.getBoundingClientRect().top - anchor.viewportTop;
       });
     });
+  }
+
+  let anchoredRevision = -1;
+  $effect(() => {
+    const revision = timelineRevision;
+    const anchor = pageAnchor;
+    if (!anchor || revision === anchoredRevision) return;
+    anchoredRevision = revision;
+    pageAnchor = null;
+    restoreViewportAnchor(anchor);
   });
 
   let paging = false;
   $effect(() => {
     const now = loadingOlder || loadingNewer;
-    if (paging && !now && renderedItems[0]?.itemId === anchoredFirstItemId) pageAnchor = null;
+    if (paging && !now) pageAnchor = null;
     paging = now;
   });
 

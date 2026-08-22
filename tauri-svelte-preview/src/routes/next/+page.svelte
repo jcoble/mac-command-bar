@@ -1162,6 +1162,27 @@
 		setActiveOwned(ownedId);
 		activeRootAvailable = selectedRootAvailable;
 		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
+		const provider = conversationProviderFor(ownedId);
+		let structuredHydration: Promise<void> | null = null;
+		if (selected && provider) {
+			ensureConversationSession(ownedId, provider);
+			if (selected.origin === "external" && selected.ptySessionId) {
+				setConversationMode(ownedId, "raw");
+			} else {
+				setConversationMode(ownedId, "structured");
+				if (switching) {
+					structuredHydration = Promise.all([
+						loadConversationForRead(ownedId),
+						loadConversationSessionDraft(ownedId),
+					]).then(() => undefined).catch((error) => {
+						if (!selectionIsCurrent()) return;
+						const message = describeError(error);
+						updateOwnedSession(ownedId, { lastError: message });
+						if (propagateStructuredFailure) throw error;
+					});
+				}
+			}
+		}
 		if (!activeRootAvailable) {
 			await handleActiveRootUnavailable(selectedRoot, true);
 			if (!selectionIsCurrent()) return;
@@ -1204,23 +1225,13 @@
 			}
 		}
 		if (!switching && activeRootAvailable) service?.show(ownedId);
-		const provider = conversationProviderFor(ownedId);
 		if (selected && provider) {
-			ensureConversationSession(ownedId, provider);
-			if (selected.origin === "external" && selected.ptySessionId) {
-				setConversationMode(ownedId, "raw");
-				return;
-			}
-			setConversationMode(ownedId, "structured");
-			if (switching) {
-				await Promise.all([loadConversationForRead(ownedId), loadConversationSessionDraft(ownedId)]).catch((error) => {
-					if (!selectionIsCurrent()) return;
-					const message = describeError(error);
-					updateOwnedSession(ownedId, { lastError: message });
-					if (propagateStructuredFailure) throw error;
-				});
-				if (!selectionIsCurrent()) return;
-			}
+			const mode = selected.origin === "external" && selected.ptySessionId ? "raw" : "structured";
+			setConversationMode(ownedId, mode);
+		}
+		if (structuredHydration) {
+			await structuredHydration;
+			if (!selectionIsCurrent()) return;
 		}
 	}
 
