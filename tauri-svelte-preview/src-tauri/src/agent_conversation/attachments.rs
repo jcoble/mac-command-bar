@@ -118,9 +118,14 @@ pub fn read<R: tauri::Runtime>(
         .list_attachments(owned_id)
         .map_err(|error| error.to_string())?
         .into_iter()
-        .map(|row| ensure_thumbnail(app, store, row))
         .map(|row| {
-            let row = row?;
+            let fallback = row.clone();
+            let row = ensure_thumbnail(app, store, row).unwrap_or_else(|_| AttachmentRow {
+                thumbnail_mime_type: None,
+                thumbnail_byte_length: None,
+                thumbnail_relative_path: None,
+                ..fallback
+            });
             Ok(SavedConversationAttachment {
                 path: root.join(&row.relative_path).display().to_string(),
                 id: row.id,
@@ -164,8 +169,11 @@ pub fn delete<R: tauri::Runtime>(
         .flatten();
     let target = validate_delete_target(&root, attachment_id, Path::new(&request.path))?;
     if let Some(thumbnail) = thumbnail {
-        fs::remove_file(thumbnail)
-            .map_err(|error| format!("Could not delete screenshot thumbnail: {error}"))?;
+        if let Err(error) = fs::remove_file(thumbnail) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!("Could not delete screenshot thumbnail: {error}"));
+            }
+        }
     }
     fs::remove_file(&target).map_err(|error| format!("Could not delete screenshot: {error}"))?;
     store
@@ -267,16 +275,23 @@ fn ensure_thumbnail<R: tauri::Runtime>(
     store: &SessionStore,
     mut row: AttachmentRow,
 ) -> Result<AttachmentRow, String> {
+    let root = attachment_root(app, &row.owned_id)?;
+    let root = canonical_root(&root)?;
     if row.thumbnail_mime_type.is_some()
         && row.thumbnail_byte_length.is_some()
         && row.thumbnail_relative_path.is_some()
     {
-        return Ok(row);
+        let thumbnail_path = vault_root(app)?.join(
+            row.thumbnail_relative_path
+                .as_deref()
+                .expect("thumbnail path was checked"),
+        );
+        if validate_optional_managed_file(&root, &thumbnail_path)?.is_some() {
+            return Ok(row);
+        }
     }
     let attachment_id =
         uuid::Uuid::parse_str(row.id.trim()).map_err(|_| "Attachment id is invalid".to_string())?;
-    let root = attachment_root(app, &row.owned_id)?;
-    let root = canonical_root(&root)?;
     let original = vault_root(app)?.join(&row.relative_path);
     let original = validate_existing_managed_file(&root, &original, "screenshot")?;
     let bytes = fs::read(&original)

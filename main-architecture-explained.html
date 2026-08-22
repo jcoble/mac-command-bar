@@ -658,6 +658,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-22 · “Keep attachment thumbnails repairable”</td><td>Image dimensions and pixel count are bounded before decode. SQLite records the managed original plus WebP thumbnail metadata; attachment reads recreate a missing legacy thumbnail on demand, but one failed thumbnail leaves that row visible with null thumbnail fields instead of failing the list. Chat owns only thumbnails, the lightbox loads the original on request, and deletion removes the thumbnail then original before deleting the row, so an original-delete failure leaves a valid, repairable row.</td><td>09, 10, 12</td></tr>
             <tr><td>2026-08-22 · “Serialize Codex checkout switching with prompt acceptance”</td><td>The Source Control linked-worktree picker exposes a Codex-only <code>Use as session checkout</code> action while other linked roots remain read-only inspection projections. One lifecycle guard serializes checkout with send activation, configuration, and the durable active-turn write; active turns, permissions, inputs, tools, background work, or a competing frontend selection block the change. Success checkpoints the old workspace, persists the new CWD and a structured SQLite <code>CheckoutChanged</code> event, releases old-root surfaces, and rebuilds the selected projection.</td><td>07, 09, 10, 13, 18</td></tr>
             <tr><td>2026-08-22 · proposed milestone · “Release inactive browser and language-service roots”</td><td>A departing Assembly workspace is checkpointed to SQLite before its native browser child WebViews are closed; Browser-panel teardown uses the same close path and keeps only the current compact address until SQLite restores the selected session. Supercharged now has one canonical active native LSP root and one frontend C# client/overlay/filesystem root. Root changes stop old processes and clients, stale starts are rejected before they can replace the active overlay, and disabling an old root cannot stop the new one.</td><td>05, 08, 09, 13, 16, 18</td></tr>
             <tr><td>2026-08-22 · “Bound agent and terminal projection streams”</td><td>High-volume agent-conversation and terminal output now use two root ordered Tauri Channels. Each frame carries one newly persisted agent event or one newly read terminal chunk/termination with session, generation, sequence, kind, and serialized chunk bytes. The Rust workers bound queued plus sent-but-unacknowledged frames and bytes; agent overflow clears queued data and sends a resync marker, while terminal output waits for ACK capacity after appending to its bounded scrollback. Resources reports current channel and backlog counts. LSP status, workflow, browser, source-scan, title, and opened child-transcript paths remain outside this two-Channel milestone.</td><td>03, 08, 09, 13, 18</td></tr>
@@ -1121,13 +1122,13 @@
 
         <h3>How image attachments are made durable</h3>
         <ol class="clean">
-          <li>Rust validates owner ID, maximum size (20 MiB), and PNG/JPEG/GIF/WebP signatures.</li>
-          <li>It writes a generated filename beneath the owned session’s app-data vault and verifies canonical path containment.</li>
-          <li>It inserts the attachment row in SQLite. If that insert fails, it deletes the just-written file.</li>
+          <li>Rust validates owner ID, 20-MiB input size, PNG/JPEG/GIF/WebP signature, dimensions, and pixel count before decoding.</li>
+          <li>It writes the original plus a bounded WebP thumbnail beneath the owned session’s app-data vault and records both in SQLite.</li>
+          <li>Legacy or missing thumbnails are recreated only when attachments are read; one failure preserves the original row with null thumbnail fields.</li>
           <li>The user-message event stores attachment IDs, so restart replay can reconnect timeline items to indexed files.</li>
-          <li>Structured send loads the bytes as ACP image content. Raw terminal send can only append managed file paths to text.</li>
+          <li>Chat loads thumbnails; the lightbox and structured send load original bytes only on request. Deletion removes thumbnail, original, then row, making partial failure repairable.</li>
         </ol>
-        <span class="source"><code>attachments.rs:29-163</code> · <code>conversationService.ts:133-220,390-437,609-752</code></span>
+        <span class="source"><code>attachments.rs:38-178,225-330</code> · <code>conversationService.ts:133-220,390-437,609-752</code></span>
       </section>
 
       <section id="formats">
