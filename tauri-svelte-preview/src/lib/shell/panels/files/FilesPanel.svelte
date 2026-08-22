@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { Tree, type LTreeNode } from '@keenmate/svelte-treeview';
   import ArrowDownAZ from '@lucide/svelte/icons/arrow-down-a-z';
   import ArrowUpZA from '@lucide/svelte/icons/arrow-up-z-a';
@@ -16,8 +17,10 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
+  import * as Select from '$lib/components/ui/select/index.js';
   import FileIcon from '$lib/shell/components/explorer/FileIcon.svelte';
   import {
+    activate as activateExplorer,
     loadDirectory,
     refresh,
     refreshChangedPath,
@@ -42,9 +45,11 @@
     cancelSourceScanFromTauri,
     createSourceScanId,
     isNativeTauriRuntime,
+    listRepositoryCheckoutsFromTauri,
     moveToTrashFromTauri,
     searchSourceTreeFromTauri
   } from '$lib/tauriSource';
+  import type { RepositoryCheckout } from '$lib/tauriSource';
   import type { SourceTreeSearchMatch } from '$lib/sourceData';
 
   interface Props {
@@ -86,6 +91,8 @@
     expandedPathsByRoot,
     onExpandedPathsChange
   }: Props = $props();
+  let inspectedRoot = $state('');
+  let checkouts = $state<RepositoryCheckout[]>([]);
   let expanded = $state.raw<Set<string>>(new Set());
   let treeData = $state.raw<TreeItem[]>([]);
   let sortDirection = $state<'ascending' | 'descending'>('ascending');
@@ -108,6 +115,9 @@
   let hydratedRoot = '';
   let hydratedExpansionKey = '';
   let expansionRestoreGeneration = 0;
+  let scopedSessionKey = '';
+  let checkoutGeneration = 0;
+  let inspectionGeneration = 0;
 
   const READ_ONLY_SCOPE_MESSAGE =
     'This folder is open for reading only — switch back to the session folder to change it.';
@@ -116,7 +126,6 @@
     'new-file',
     'new-folder',
     'cut',
-    'copy',
     'paste',
     'rename',
     'delete'
@@ -138,7 +147,28 @@
   }
 
   const loadedNodes = $derived(explorerNodes());
-  const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
+  const sessionRoot = $derived(root.trim());
+  const projectRoot = $derived((inspectedRoot || explorer.root || sessionRoot).trim());
+  const readOnlyInspection = $derived(
+    Boolean(inspectedRoot) && canonicalPath(inspectedRoot) !== canonicalPath(sessionRoot)
+  );
+  const scopeOptions = $derived(
+    sessionRoot === ''
+      ? []
+      : [
+          { path: sessionRoot, label: `${folderName(sessionRoot)} (session)` },
+          ...checkouts
+            .filter((checkout) => canonicalPath(checkout.path) !== canonicalPath(sessionRoot))
+            .map((checkout) => ({
+              path: checkout.path,
+              label: checkout.branch.trim()
+                ? `${folderName(checkout.path)} — ${checkout.branch.trim()}`
+                : folderName(checkout.path)
+            }))
+        ]
+  );
+  const scopeValue = $derived(projectRoot || sessionRoot);
+  const rootLabel = $derived(projectRootLabel(projectRoot || sessionRoot));
   const listedCount = $derived(loadedNodes.length);
   const listed = $derived(explorer.lastScanFinishedAt !== null);
   const searching = $derived(searchText.trim().length > 0);
@@ -148,7 +178,7 @@
       name: match.name,
       isDirectory: match.isDirectory,
       excluded: match.excluded,
-      parentPath: (explorer.root ?? root).trim(),
+      parentPath: projectRoot,
       depth: 0,
       childCount: 0,
       ignored: match.excluded,
@@ -164,13 +194,13 @@
   const displayedTreeData = $derived(searching ? searchTreeData : treeData);
 
   $effect(() => {
-    const projectRoot = (explorer.root ?? root).replace(/\/+$/, '');
+    const treeRoot = projectRoot.replace(/\/+$/, '');
     sortDirection;
     treeData = loadedNodes.map((node) => ({
       ...node,
-      treePath: relativePath(projectRoot, node.path),
-      treeParentPath: node.parentPath === projectRoot ? '' : relativePath(projectRoot, node.parentPath),
-      relativePath: relativePath(projectRoot, node.path),
+      treePath: relativePath(treeRoot, node.path),
+      treeParentPath: node.parentPath === treeRoot ? '' : relativePath(treeRoot, node.parentPath),
+      relativePath: relativePath(treeRoot, node.path),
       hasChildren: node.isDirectory,
       expanded: expanded.has(node.path),
       selected: node.path === explorer.selectedPath
@@ -178,10 +208,15 @@
   });
 
   $effect(() => {
-    root;
+    const sessionKey = `${ownedId ?? ''}:${canonicalPath(root)}`;
+    if (sessionKey === scopedSessionKey) return;
+    scopedSessionKey = sessionKey;
+    inspectionGeneration += 1;
+    checkoutGeneration += 1;
+    inspectedRoot = '';
+    checkouts = [];
+    cancelActiveSearch();
     revealGeneration += 1;
-    const requestedRoot = canonicalPath(root);
-    if (requestedRoot === hydratedRoot) return;
     hydratedRoot = '';
     hydratedExpansionKey = '';
     expansionRestoreGeneration += 1;
@@ -189,10 +224,12 @@
     pending = null;
     fileClipboard = null;
     searchText = '';
+    activateExplorer(sessionRoot || null);
+    void loadCheckouts(sessionRoot, checkoutGeneration);
   });
 
   $effect(() => {
-    const requestedRoot = canonicalPath(root);
+    const requestedRoot = canonicalPath(projectRoot);
     const activeRoot = canonicalPath(explorer.root ?? '');
     const savedPaths = activeRoot
       ? canonicalExpandedPaths(activeRoot, expandedPathsByRoot?.[activeRoot] ?? [])
@@ -218,8 +255,8 @@
   });
 
   $effect(() => {
-    const target = (explorer.root ?? root).trim();
-    if (explorer.unavailable !== 'checkout-deleted' || !target) {
+    const target = projectRoot;
+    if (explorer.unavailable !== 'checkout-deleted' || !target || readOnlyInspection) {
       if (explorer.unavailable === null) notifiedUnavailableRoot = '';
       return;
     }
@@ -230,7 +267,7 @@
 
   $effect(() => {
     const query = searchText.trim();
-    const projectRoot = (explorer.root ?? root).trim();
+    const projectRoot = projectRootForView();
     explorer.includeExcluded;
     const generation = ++searchGeneration;
     cancelActiveSearch();
@@ -250,7 +287,7 @@
   });
 
   $effect(() => {
-    const target = (explorer.root ?? '').trim();
+    const target = projectRoot;
     if (!visible || !listed || !target || !isNativeTauriRuntime()) return;
 
     let unwatch: (() => void) | null = null;
@@ -312,6 +349,54 @@
   function relativePath(projectRoot: string, path: string): string {
     const prefix = `${projectRoot}/`;
     return path.startsWith(prefix) ? path.slice(prefix.length) : path.replace(/^\/+/, '');
+  }
+
+  function folderName(path: string): string {
+    const parts = path.split('/').filter(Boolean);
+    return parts.at(-1) ?? path;
+  }
+
+  function projectRootForView(): string {
+    return canonicalPath(projectRoot);
+  }
+
+  function selectInspectionRoot(value: string): void {
+    const target = canonicalPath(value);
+    if (!target || target === canonicalPath(sessionRoot)) {
+      inspectedRoot = '';
+      inspectionGeneration += 1;
+      revealGeneration += 1;
+      expanded = new Set();
+      pending = null;
+      fileClipboard = null;
+      actionError = null;
+      searchText = '';
+      cancelActiveSearch();
+      activateExplorer(sessionRoot || null);
+      return;
+    }
+    if (!scopeOptions.some((option) => canonicalPath(option.path) === target)) return;
+    inspectedRoot = target;
+    inspectionGeneration += 1;
+    revealGeneration += 1;
+    expanded = new Set();
+    pending = null;
+    fileClipboard = null;
+    actionError = null;
+    searchText = '';
+    cancelActiveSearch();
+    activateExplorer(target);
+  }
+
+  async function loadCheckouts(sessionRootValue: string, generation: number): Promise<void> {
+    if (!sessionRootValue) return;
+    try {
+      const result = await listRepositoryCheckoutsFromTauri([sessionRootValue]);
+      if (generation !== checkoutGeneration || canonicalPath(root) !== canonicalPath(sessionRootValue)) return;
+      checkouts = result?.[sessionRootValue] ?? [];
+    } catch {
+      if (generation === checkoutGeneration) checkouts = [];
+    }
   }
 
   function parentOf(path: string): string {
@@ -401,7 +486,7 @@
     cursor: number | null,
     replace: boolean
   ): Promise<void> {
-    const projectRoot = (explorer.root ?? root).trim();
+    const projectRoot = projectRootForView();
     const query = searchText.trim();
     if (!projectRoot || !query || generation !== searchGeneration) return;
 
@@ -440,17 +525,17 @@
   }
 
   async function onSearchResultClicked(node: TreeItem): Promise<void> {
-    const projectRoot = canonicalPath(explorer.root ?? root);
+    const projectRoot = projectRootForView();
     if (!projectRoot) return;
     const generation = ++revealGeneration;
     searchText = '';
     const ancestors = await revealExplorerPath(node.path);
-    if (generation !== revealGeneration || canonicalPath(explorer.root ?? root) !== projectRoot) return;
+    if (generation !== revealGeneration || projectRootForView() !== projectRoot) return;
     expanded = new Set([...expanded, ...ancestors]);
     persistExpandedPaths();
     selectPath(node.path);
     if (!node.isDirectory) {
-      openFileInEditor({ path: node.path, projectRoot });
+      openFileInEditor({ path: node.path, projectRoot, readOnly: readOnlyInspection });
     }
   }
 
@@ -500,8 +585,12 @@
     }
 
     selectPath(node.path);
-    const projectRoot = (explorer.root ?? root).trim();
-    openFileInEditor({ path: node.path, projectRoot: projectRoot || undefined });
+    const projectRoot = projectRootForView();
+    openFileInEditor({
+      path: node.path,
+      projectRoot: projectRoot || undefined,
+      readOnly: readOnlyInspection
+    });
   }
 
   function onTreeWrapperClick(event: MouseEvent): void {
@@ -515,6 +604,7 @@
   }
 
   function beginEntry(node: TreeItem, kind: PendingEntry['kind']): void {
+    if (readOnlyInspection) return;
     actionError = null;
     if (kind !== 'rename' && !expanded.has(node.path)) {
       expanded = new Set([...expanded, node.path]);
@@ -533,6 +623,8 @@
   }
 
   async function commitEntry(): Promise<void> {
+    if (readOnlyInspection) return;
+    const generation = inspectionGeneration;
     const entry = pending;
     const name = pendingName.trim();
     pending = null;
@@ -544,9 +636,11 @@
 
     try {
       const fs = await import('@tauri-apps/plugin-fs');
+      if (generation !== inspectionGeneration || readOnlyInspection) return;
       if (entry.kind === 'rename') {
         const target = `${parentOf(entry.path)}/${name}`;
         if (target !== entry.path && (await isFree(target))) {
+          if (generation !== inspectionGeneration || readOnlyInspection) return;
           await fs.rename(entry.path, target);
           collapsePath(entry.path);
           refreshChangedPath(target);
@@ -554,6 +648,7 @@
       } else {
         const target = `${entry.path}/${name}`;
         if (!(await isFree(target))) return;
+        if (generation !== inspectionGeneration || readOnlyInspection) return;
         if (entry.kind === 'new-folder') await fs.mkdir(target);
         else await fs.writeTextFile(target, '');
         refreshChangedPath(target);
@@ -586,12 +681,16 @@
   }
 
   async function pasteInto(node: TreeItem): Promise<void> {
+    if (readOnlyInspection) return;
+    const generation = inspectionGeneration;
     const entry = fileClipboard;
     if (!entry || !node.isDirectory) return;
     const target = `${node.path}/${entry.name}`;
     if (!(await isFree(target))) return;
+    if (generation !== inspectionGeneration || readOnlyInspection) return;
 
     const fs = await import('@tauri-apps/plugin-fs');
+    if (generation !== inspectionGeneration || readOnlyInspection) return;
     if (entry.operation === 'cut') {
       await fs.rename(entry.path, target);
       collapsePath(entry.path);
@@ -700,8 +799,6 @@
       {
         id: 'copy',
         label: 'Copy',
-        disabled: mutationDisabled,
-        title: mutationReason,
         onselect: () => void runAction(node, 'copy')
       },
       { id: 'copy-path', label: 'Copy Path', onselect: () => void runAction(node, 'copy-path') },
@@ -734,12 +831,36 @@
       }
     ];
   }
+
+  onDestroy(() => {
+    inspectionGeneration += 1;
+    checkoutGeneration += 1;
+    searchGeneration += 1;
+    revealGeneration += 1;
+    cancelActiveSearch();
+    if (inspectedRoot) activateExplorer(null);
+  });
 </script>
 
 <div class="files-panel flex h-full min-h-0 w-full flex-col text-foreground">
   <PanelHeader title="Files" count={explorer.activated ? listedCount : null}>
     {#snippet actions()}
       {#if explorer.activated && explorer.unavailable === null}
+        {#if scopeOptions.length > 1}
+          <Select.Root type="single" value={scopeValue} onValueChange={selectInspectionRoot}>
+            <Select.Trigger size="sm" class="w-44 min-w-0" aria-label="Folder this panel reads">
+              <span class="min-w-0 truncate">
+                {scopeOptions.find((option) => canonicalPath(option.path) === canonicalPath(scopeValue))?.label ??
+                  'Session folder'}
+              </span>
+            </Select.Trigger>
+            <Select.Content>
+              {#each scopeOptions as option (option.path)}
+                <Select.Item value={option.path} label={option.label} />
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        {/if}
         <Input
           type="search"
           class="h-7 w-32"
@@ -773,14 +894,14 @@
         {/if}
       {/if}
     {/snippet}
-    {rootLabel}
+    {rootLabel}{#if readOnlyInspection} · read-only{/if}
   </PanelHeader>
 
   {#if !explorer.activated}
     <EmptyState title="No session selected" body="Pick a session and its files appear here.">
       {#snippet icon()}<FolderTree />{/snippet}
     </EmptyState>
-  {:else if explorer.unavailable === 'checkout-deleted'}
+  {:else if explorer.unavailable === 'checkout-deleted' && !readOnlyInspection}
     <EmptyState
       title="Checkout/Worktree deleted."
       body="The conversation is still available, but this session’s project files no longer exist."

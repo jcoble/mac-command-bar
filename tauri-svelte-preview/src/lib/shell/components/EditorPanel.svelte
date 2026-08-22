@@ -197,7 +197,8 @@
    * can switch every server off at once, and then no project is, whatever its
    * own switch says: the switch reads Off, and its title says which one held. */
   const fullMode = $derived(
-    settings.intelligence.languageServers
+    !activeFileReadOnly
+      && settings.intelligence.languageServers
       && languageIntelligenceOn(languageIntelligenceChoices, editorState.projectRoot)
   );
   /**
@@ -319,6 +320,12 @@
    * that arrives as a pushed message.
    */
   async function refreshLanguageServerStatus(): Promise<void> {
+    if (activeFileReadOnly) {
+      if (languageServerStatus !== null || languageServerSubject !== null) {
+        applyLanguageServerStatus(null, null);
+      }
+      return;
+    }
     const root = editorState.projectRoot;
     const language = activeFileLanguage();
 
@@ -348,6 +355,7 @@
 
   /** Apply status updates fanned out by the shared source-intelligence listener. */
   function handleLanguageServerStatus(status: unknown): void {
+    if (activeFileReadOnly) return;
     const root = editorState.projectRoot;
     const language = activeFileLanguage();
     if (!root || !language) return;
@@ -359,6 +367,7 @@
 
   /** Ask what is wrong with the file on screen, and remember it against that file. */
   async function loadDiagnosticsForActiveFile(): Promise<void> {
+    if (activeFileReadOnly) return;
     const path = editorState.activePath;
     if (!path) return;
     const generation = sessionResourceGeneration;
@@ -373,6 +382,7 @@
   function refreshDiagnosticsForActiveFile(): void {
     if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
     diagnosticsTimer = null;
+    if (activeFileReadOnly) return;
     void loadDiagnosticsForActiveFile();
     scheduleSecondDiagnosticsRead();
   }
@@ -420,6 +430,7 @@
   async function lookupInlayHintsWhenServerCanAnswer(
     request: SourceInlayHintRequest
   ): Promise<SourceInlayHint[]> {
+    if (activeFileReadOnly) return [];
     if (languageServerGate.isBusy()) {
       const path = editorState.activePath;
       const ticket = ++inlayHintRequestCount;
@@ -448,8 +459,8 @@
    * LOAD-BEARING ORDER: the record is what the read wrapper copies the language
    * back out of, so it has to be right before the file is read, not after.
    */
-  function recordForPath(path: string): SourceRecord {
-    const record = sourceRecordFromPath(editorState.projectRoot, path);
+  function recordForPath(path: string, projectRoot = editorState.projectRoot): SourceRecord {
+    const record = sourceRecordFromPath(projectRoot, path);
     const language = upgradeUnknownLanguage(record.path, record.language);
     return language === record.language ? record : { ...record, language };
   }
@@ -569,7 +580,7 @@
    */
   async function switchLanguageIntelligence(enabled: boolean): Promise<void> {
     const root = editorState.projectRoot;
-    if (!root || languageIntelligenceBusy) return;
+    if (!root || activeFileReadOnly || languageIntelligenceBusy) return;
     languageIntelligenceBusy = true;
     try {
       await hydrateLanguageIntelligenceChoices();
@@ -631,8 +642,11 @@
 
   /** Keep the lookup service pointed at whatever is on screen. */
   function syncIntelligenceWithActiveFile(): void {
-    sourceIntelligence.setProjectRoot(editorState.projectRoot);
-    sourceIntelligence.setActivePreview(activeEditorFile()?.preview ?? null);
+    if (activeFileReadOnly && (languageServerStatus !== null || languageServerSubject !== null)) {
+      applyLanguageServerStatus(null, null);
+    }
+    sourceIntelligence.setProjectRoot(activeFileReadOnly ? null : editorState.projectRoot);
+    sourceIntelligence.setActivePreview(activeFileReadOnly ? null : activeEditorFile()?.preview ?? null);
   }
 
   // Session restore and project switching update the shared editor store
@@ -687,9 +701,10 @@
     if (!rootAvailable) return;
     if (readsInFlight.has(record.path)) return;
     const generation = sessionResourceGeneration;
+    const readOnly = Boolean(readOnlyByPath[record.path]);
     readsInFlight.add(record.path);
     markEditorFileLoading(record.path);
-    void warmLanguageServer(editorState.projectRoot);
+    if (!readOnly) void warmLanguageServer(editorState.projectRoot);
     try {
       // The record has to be built first: the read wrapper copies the relative
       // path, language and size back out of it onto the preview it returns.
@@ -708,13 +723,13 @@
     } finally {
       if (generation === sessionResourceGeneration) readsInFlight.delete(record.path);
       syncIntelligenceWithActiveFile();
-      void refreshEditorIntelligenceForActiveFile();
+      if (!readOnly) void refreshEditorIntelligenceForActiveFile();
     }
   }
 
   function updateActiveDraft(content: string): void {
     const file = activeEditorFile();
-    if (!file) return;
+    if (!file || readOnlyByPath[file.path]) return;
     setEditorFileDraft(file.path, content);
   }
 
@@ -748,8 +763,9 @@
    * firing everything at it the instant a file lands.
    */
   async function refreshEditorIntelligenceForActiveFile(): Promise<void> {
+    if (activeFileReadOnly) return;
     await refreshLanguageServerStatus();
-    if (destroyed) return;
+    if (destroyed || activeFileReadOnly) return;
     refreshDiagnosticsForActiveFile();
   }
 
@@ -765,11 +781,12 @@
     path: string,
     line?: number | null,
     projectRoot?: string,
-    origin: 'jump' | 'strip' = 'jump'
+    origin: 'jump' | 'strip' = 'jump',
+    readOnly = false
   ): boolean {
     if (!rootAvailable || !path.trim()) return false;
-    activateEditor(projectRoot);
-    const record = recordForPath(path);
+    if (!readOnly) activateEditor(projectRoot);
+    const record = recordForPath(path, projectRoot);
     const entry = openEditorFile(record);
     rememberMarkdownDefault(record.path, entry.fileName, origin);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
@@ -781,16 +798,24 @@
   function handleOpenFileRequest(request: OpenFileRequest): void {
     // Marked before the open, so the file is never editable for a frame. The
     // record's path is the key: it is what the strip and the editor hold.
-    if (request.readOnly) readOnlyByPath[recordForPath(request.path).path] = true;
+    const record = recordForPath(request.path, request.projectRoot);
+    if (request.readOnly) {
+      readOnlyByPath = { ...readOnlyByPath, [record.path]: true };
+    } else if (readOnlyByPath[record.path]) {
+      const { [record.path]: _wasReadOnly, ...remaining } = readOnlyByPath;
+      readOnlyByPath = remaining;
+    }
     // Only once the file is in the strip. The read runs after this and may still
     // fail — the tab is the right place to show that, so it stays in front.
-    if (openPath(request.path, request.line, request.projectRoot)) onFileOpened?.();
+    if (openPath(request.path, request.line, request.projectRoot, 'jump', Boolean(request.readOnly))) {
+      onFileOpened?.();
+    }
   }
 
   function selectOpenFile(path: string): void {
     setActiveEditorFile(path);
     syncIntelligenceWithActiveFile();
-    void refreshEditorIntelligenceForActiveFile();
+    if (!activeFileReadOnly) void refreshEditorIntelligenceForActiveFile();
     const entry = editorFileFor(path);
     // A file restored into the strip never went through `openPath`, so this is
     // where it gets its first view. Picking a tab is editing, not reading.
@@ -882,6 +907,7 @@
     line: number;
     column: number;
   }): void {
+    if (activeFileReadOnly) return;
     openPath(request.path, request.line);
   }
 
@@ -918,7 +944,7 @@
       status: languageServerStatus,
       fullMode,
       busy: languageIntelligenceBusy,
-      hasProject: Boolean(editorState.projectRoot),
+      hasProject: Boolean(editorState.projectRoot) && !activeFileReadOnly,
       title: languageIntelligenceTitle
     });
   });
@@ -1055,17 +1081,17 @@
           <CodeEditor
             bind:this={codeEditor}
             {...sourceIntelligence.callbacks}
-            onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
+            onInlayHintLookup={activeFileReadOnly ? undefined : lookupInlayHintsWhenServerCanAnswer}
             preview={activeFile.preview}
             content={activeFile.draftContent ?? activeFile.preview.content}
             editable={rootAvailable && !activeFileReadOnly}
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}
-            externalDiagnostics={diagnosticsByPath[activeFile.path] ?? NO_DIAGNOSTICS}
+            externalDiagnostics={activeFileReadOnly ? NO_DIAGNOSTICS : diagnosticsByPath[activeFile.path] ?? NO_DIAGNOSTICS}
             {restoredViewStates}
-            onExternalNavigation={navigateToExternalSource}
-            onContentChange={updateActiveDraft}
+            onExternalNavigation={activeFileReadOnly ? undefined : navigateToExternalSource}
+            onContentChange={activeFileReadOnly ? undefined : updateActiveDraft}
             onRestoredViewStateConsumed={consumeRestoredViewState}
             onSaveRequest={() => void saveActiveFile()}
             onSymbolsChange={handleSymbolsChange}

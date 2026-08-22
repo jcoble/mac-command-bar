@@ -1123,14 +1123,18 @@
 			gitService.clearSelection();
 			shellPanels.sourceControlVisible(false);
 		}
-		setActiveOwned(ownedId);
-		activeRootAvailable = selectedRootAvailable;
 		const selectedRoot = selected ? selected.cwd.trim() || (selected.projectPath ?? "").trim() : "";
-		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
-		if (switching && selected && selectedRoot && activeRootAvailable) {
+		if (switching && selected && selectedRoot && selectedRootAvailable) {
 			await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root: selectedRoot });
 			if (!selectionIsCurrent()) return;
 		}
+		if (!selectionIsCurrent()) return;
+		// Publish the new owner only after every async precondition is current. A
+		// second click during the probe setup must still checkpoint the session that
+		// is actually on screen, not this one whose setup has not finished.
+		setActiveOwned(ownedId);
+		activeRootAvailable = selectedRootAvailable;
+		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
 		// Point the file tree, the context cards and any tab the user has already
 		// opened at this session's project. Ignored while start-up is still
 		// re-attaching sessions, so a reload still loads nothing on its own.

@@ -11,7 +11,7 @@ import {
 } from '../../tauriSource.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
-  forgetAllProjectSourceRecords,
+  forgetProjectSourceRecords,
   setProjectSourceRecords
 } from '../projectSourceIndex.ts';
 import { sourceRecordFromPath } from '../editor/sourceRecordFromPath.ts';
@@ -64,7 +64,6 @@ function checkoutWasDeleted(message: string): boolean {
 }
 
 function publishLoadedFiles(root: string): void {
-  forgetAllProjectSourceRecords();
   setProjectSourceRecords(
     root,
     explorerNodes()
@@ -146,9 +145,11 @@ export function unloadDirectory(directory: string): void {
 export async function scanRoot(root: string): Promise<void> {
   const target = canonicalPath(root);
   if (!target) return;
+  const previousRoot = explorer.root;
   directoryRequests.clear();
   resetExplorer();
-  forgetAllProjectSourceRecords();
+  if (previousRoot && previousRoot !== target) forgetProjectSourceRecords(previousRoot);
+  forgetProjectSourceRecords(target);
   beginScan(target);
   const generation = explorerScanGeneration();
   try {
@@ -162,7 +163,7 @@ export function activate(root: string | null, checkoutDeleted = false): void {
   const target = canonicalPath(root ?? '');
   if (!target) {
     directoryRequests.clear();
-    forgetAllProjectSourceRecords();
+    if (explorer.root) forgetProjectSourceRecords(explorer.root);
     if (checkoutDeleted) markCheckoutDeleted();
     else resetExplorer();
     return;
