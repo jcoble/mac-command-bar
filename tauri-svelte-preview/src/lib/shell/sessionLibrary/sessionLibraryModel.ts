@@ -180,7 +180,10 @@ function latestTurnsFor(
   return preview ? [{ speaker: 'agent', text: preview }] : [];
 }
 
-export function ownedSessionLibraryRecord(session: OwnedSession): SessionLibraryRecord {
+export function ownedSessionLibraryRecord(
+  session: OwnedSession,
+  includeDetails = false
+): SessionLibraryRecord {
   const provider = providerForOwned(session);
   const cwd = canonicalCwd(session.cwd || session.projectPath);
   return {
@@ -204,14 +207,17 @@ export function ownedSessionLibraryRecord(session: OwnedSession): SessionLibrary
     messageCount: session.messageCount ?? null,
     logPath: null,
     firstPrompt: null,
-    latestTurns: latestTurnsFor(null, session.latestTurnPreview),
+    latestTurns: includeDetails ? latestTurnsFor(null, session.latestTurnPreview) : [],
     subagents: [],
     owned: session,
     available: null
   };
 }
 
-export function providerSessionLibraryRecord(session: AgentSession): SessionLibraryRecord {
+export function providerSessionLibraryRecord(
+  session: AgentSession,
+  includeDetails = false
+): SessionLibraryRecord {
   const provider = canonicalProvider(session.provider);
   const cwd = canonicalCwd(session.projectPath);
   const identity = sessionIdentityKey({ provider, nativeSessionId: session.id, cwd });
@@ -234,10 +240,10 @@ export function providerSessionLibraryRecord(session: AgentSession): SessionLibr
     messageCount: session.messageCount ?? null,
     logPath: session.logPath ?? null,
     firstPrompt: null,
-    latestTurns: latestTurnsFor(session.latestTurns, session.latestTurnPreview),
+    latestTurns: includeDetails ? latestTurnsFor(session.latestTurns, session.latestTurnPreview) : [],
     subagents: [],
     owned: null,
-    available: session
+    available: includeDetails ? session : { ...session, latestTurns: undefined }
   };
 }
 
@@ -248,7 +254,8 @@ export function providerSessionLibraryRecord(session: AgentSession): SessionLibr
  */
 export function buildSessionLibrary(
   owned: readonly OwnedSession[],
-  available: readonly AgentSession[]
+  available: readonly AgentSession[],
+  options: { includeDetails?: boolean } = {}
 ): SessionLibraryRecord[] {
   const records: SessionLibraryRecord[] = [];
   const ownedIds = new Set<string>();
@@ -257,7 +264,7 @@ export function buildSessionLibrary(
   for (const session of owned) {
     if (!session || ownedIds.has(session.ownedId)) continue;
     ownedIds.add(session.ownedId);
-    const record = ownedSessionLibraryRecord(session);
+    const record = ownedSessionLibraryRecord(session, options.includeDetails === true);
     const identity = sessionIdentityKey({
       provider: record.provider,
       nativeSessionId: record.nativeSessionId,
@@ -270,7 +277,7 @@ export function buildSessionLibrary(
 
   for (const session of available) {
     if (!session || !session.id) continue;
-    const record = providerSessionLibraryRecord(session);
+    const record = providerSessionLibraryRecord(session, options.includeDetails === true);
     const identity = sessionIdentityKey({
       provider: record.provider,
       nativeSessionId: record.nativeSessionId,

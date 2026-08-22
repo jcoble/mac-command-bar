@@ -37,7 +37,8 @@ export interface SessionLibraryService {
   readonly records: readonly SessionLibraryRecord[];
   refresh(
     keys?: ReadonlySet<string>,
-    scope?: { projectPath: string }
+    scope?: { projectPath: string },
+    options?: { includeDetails?: boolean }
   ): Promise<SessionLibraryRecord[]>;
   release(keys?: ReadonlySet<string>): void;
   resume(record: SessionLibraryRecord): Promise<void>;
@@ -122,14 +123,15 @@ export function createSessionLibraryService(
     },
     async refresh(
       keys?: ReadonlySet<string>,
-      scope?: { projectPath: string }
+      scope?: { projectPath: string },
+      options?: { includeDetails?: boolean }
     ): Promise<SessionLibraryRecord[]> {
       const owned = source.getOwnedSessions?.() ?? [];
       const current = source.getAvailableSessions?.() ?? [];
       const provider = source.listProviderSessions
         ? await source.listProviderSessions(scope?.projectPath)
         : [];
-      const records = buildSessionLibrary(owned, [...current, ...provider]);
+      const records = buildSessionLibrary(owned, [...current, ...provider], options);
       const selected = keys ? records.filter((record) => keys.has(record.key)) : records;
       if (!keys) held.clear();
       for (const record of selected) held.set(record.key, record);

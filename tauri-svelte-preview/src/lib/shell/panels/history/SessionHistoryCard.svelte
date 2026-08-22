@@ -60,6 +60,8 @@
     /** One line of what was last said, or the session's first prompt. */
     excerpt: string;
     expanded: boolean;
+    detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'>;
+    detailsLoading?: boolean;
     /** The clock, passed down so forty cards do not keep forty of them. */
     now: Date;
     onToggle(): void;
@@ -70,8 +72,19 @@
     onOpenLog(path: string): void;
   }
 
-  let { record, title, excerpt, expanded, now, onToggle, onAction, onCopyText, onOpenLog }: Props =
-    $props();
+  let {
+    record,
+    title,
+    excerpt,
+    expanded,
+    detail = null,
+    detailsLoading = false,
+    now,
+    onToggle,
+    onAction,
+    onCopyText,
+    onOpenLog
+  }: Props = $props();
 
   let menuOpen = $state(false);
   /** The turns are behind a disclosure and start closed, the way "Why" does. */
@@ -105,6 +118,8 @@
   const turnsLabel = $derived(
     record.messageCount && record.messageCount > 0 ? String(record.messageCount) : DASH
   );
+  const firstPrompt = $derived(detail?.firstPrompt?.trim() ?? '');
+  const latestTurns = $derived(detail?.latestTurns ?? []);
 
   /**
    * A folder path, shortened from the middle so both ends survive: the repo is
@@ -149,9 +164,9 @@
    * when the window already opens with it, so it is never shown twice.
    */
   const turns = $derived.by(() => {
-    const first = record.firstPrompt?.trim() ?? '';
+    const first = firstPrompt;
     const list: SessionLibraryTurn[] = first ? [{ speaker: 'user', text: first }] : [];
-    for (const turn of record.latestTurns) {
+    for (const turn of latestTurns) {
       const text = turn.text.trim();
       if (!text || text === first) continue;
       list.push({ speaker: turn.speaker, text });
@@ -182,6 +197,7 @@
       (item) => !item.enabled && item.disabledReason
     );
     if (off?.disabledReason) return off.disabledReason;
+    if (detailsLoading) return 'Loading session details…';
     if (turns.length === 0) return 'No turns were stored for this session.';
     return `Started with ${providerName}. Everything the scan kept is shown above.`;
   });
@@ -317,6 +333,31 @@
           </dd>
         {/each}
       </dl>
+
+      <section class="flex flex-col gap-(--space-2) px-(--space-3)">
+        <div class="flex items-center justify-between">
+          <h3 class={SECTION_LABEL}>First prompt</h3>
+          <IconButton
+            label="Copy first prompt"
+            size="xs"
+            disabled={!firstPrompt}
+            onclick={() => onCopyText(firstPrompt)}
+          >
+            <Copy />
+          </IconButton>
+        </div>
+        {#if detailsLoading}
+          <p class={QUIET_LINE}>Loading session details…</p>
+        {:else if firstPrompt}
+          <ScrollArea>
+            <p class="m-0 max-h-48 overflow-y-auto whitespace-pre-wrap text-(length:--text-quiet) leading-relaxed">
+              {firstPrompt}
+            </p>
+          </ScrollArea>
+        {:else}
+          <p class={QUIET_LINE}>First prompt was not stored for this session.</p>
+        {/if}
+      </section>
 
       <!-- The conversation, behind a disclosure: the first turn, then the last
            two. The block is here even when the scan kept nothing, because a

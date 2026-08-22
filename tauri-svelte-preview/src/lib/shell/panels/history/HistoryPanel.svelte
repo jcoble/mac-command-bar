@@ -16,6 +16,7 @@
   import History from '@lucide/svelte/icons/history';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import { onDestroy } from 'svelte';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -84,7 +85,7 @@
     /** The active session's ownedId, or null. */
     ownedId: string | null;
   }
-  let { visible }: Props = $props();
+  let { visible, root, ownedId }: Props = $props();
 
   // Read once, at init: the page registers its actions in its own component
   // body, which runs before this panel is created.
@@ -106,6 +107,26 @@
    *  is seconds of nothing happening otherwise. */
   let loadingProjectKey = $state<string | null>(null);
   let loadVersion = 0;
+  type SessionHistoryDetail = Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'>;
+  let detailsByKey = $state<Record<string, SessionHistoryDetail>>({});
+  let detailLoadingKey = $state<string | null>(null);
+
+  function releaseDetails(keys?: ReadonlySet<string>): void {
+    loadVersion += 1;
+    if (!keys) {
+      detailsByKey = {};
+      detailLoadingKey = null;
+      host.service.release();
+      return;
+    }
+    const next = { ...detailsByKey };
+    for (const key of keys) delete next[key];
+    detailsByKey = next;
+    if (detailLoadingKey && keys.has(detailLoadingKey)) detailLoadingKey = null;
+    host.service.release(keys);
+  }
+
+  onDestroy(() => releaseDetails());
 
   /**
    * The checkouts each repository still has, asked of git once the sessions have
@@ -131,8 +152,7 @@
   function search(value: string): void {
     query = value;
     windowState = resetSessionHistoryWindowOnFilterChange(windowState, { query });
-    loadVersion += 1;
-    host.service.release();
+    releaseDetails();
     loadedRecords = [];
     loadOutcome = null;
     checkouts = {};
@@ -141,12 +161,18 @@
 
   $effect(() => {
     if (visible) return;
-    loadVersion += 1;
-    host.service.release();
+    releaseDetails();
     loadedRecords = [];
     loadOutcome = null;
     checkouts = {};
     collapseState = createSessionHistoryCollapseState();
+    expandedKey = null;
+  });
+
+  $effect(() => {
+    root;
+    ownedId;
+    releaseDetails();
     expandedKey = null;
   });
 
@@ -161,6 +187,7 @@
     project: SessionHistoryProjectGroup,
     reload = false
   ): Promise<void> {
+    releaseDetails();
     const closing = !reload
       && isSessionHistoryGroupOpen(collapseState, 'project', project.key);
     const version = ++loadVersion;
@@ -199,6 +226,7 @@
       loadOutcome = outcome;
       loadedRecords = [...outcome.records];
       checkouts = outcome.checkouts;
+      host.service.release(keys);
       if (refreshed.status === 'rejected') {
         console.error('[history] could not load project', refreshed.reason);
       }
@@ -211,6 +239,7 @@
   }
 
   function toggleWorktree(key: string): void {
+    releaseDetails();
     collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
   }
 
@@ -371,7 +400,43 @@
   }
 
   function toggleCard(row: SessionHistoryRow): void {
-    expandedKey = expandedKey === row.record.key ? null : row.record.key;
+    if (expandedKey === row.record.key) {
+      releaseDetails(new Set([row.record.key]));
+      expandedKey = null;
+      return;
+    }
+    releaseDetails();
+    expandedKey = row.record.key;
+    void loadCardDetails(row.record);
+  }
+
+  async function loadCardDetails(record: SessionLibraryRecord): Promise<void> {
+    const key = record.key;
+    const version = ++loadVersion;
+    detailLoadingKey = key;
+    const projectPath = record.projectPath?.trim() || record.canonicalCwd.trim();
+    try {
+      const refreshed = await host.service.refresh(
+        new Set([key]),
+        projectPath ? { projectPath } : undefined,
+        { includeDetails: true }
+      );
+      if (!visible || version !== loadVersion || expandedKey !== key) {
+        host.service.release(new Set([key]));
+        return;
+      }
+      const detail = refreshed.find((candidate) => candidate.key === key);
+      if (detail) {
+        detailsByKey = {
+          ...detailsByKey,
+          [key]: { firstPrompt: detail.firstPrompt, latestTurns: detail.latestTurns }
+        };
+      }
+    } catch (error) {
+      if (version === loadVersion) console.error('[history] could not load session details', error);
+    } finally {
+      if (version === loadVersion) detailLoadingKey = null;
+    }
   }
 </script>
 
@@ -413,6 +478,8 @@
         onAction={(id) => void runAction(row.record, id)}
         onCopyText={(value) => void copyText(value)}
         onOpenLog={(path) => openFileInEditor({ path })}
+        detail={detailsByKey[row.record.key]}
+        detailsLoading={detailLoadingKey === row.record.key}
       />
     {/each}
     {#if worktree.olderCount > 0}
