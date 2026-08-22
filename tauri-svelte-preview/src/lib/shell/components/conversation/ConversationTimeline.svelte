@@ -404,7 +404,7 @@
    * first existing item and restore its viewport offset after replay; anchoring
    * an item rather than total height also survives the newest rows being trimmed.
    */
-  type PageAnchor = { viewportTop: number; itemId: string };
+  type PageAnchor = { viewportTop: number; itemId: string; timelineRevision: number };
 
   let pageAnchor: PageAnchor | null = null;
 
@@ -415,7 +415,11 @@
     const item = candidates.find((candidate) => candidate.getBoundingClientRect().bottom > hostTop)
       ?? candidates[0];
     pageAnchor = item
-      ? { viewportTop: item.getBoundingClientRect().top, itemId: item.dataset.itemId ?? '' }
+      ? {
+          viewportTop: item.getBoundingClientRect().top,
+          itemId: item.dataset.itemId ?? '',
+          timelineRevision
+        }
       : null;
   }
 
@@ -480,7 +484,7 @@
   $effect(() => {
     const revision = timelineRevision;
     const anchor = pageAnchor;
-    if (!anchor || revision === anchoredRevision) return;
+    if (!anchor || revision === anchoredRevision || revision <= anchor.timelineRevision) return;
     anchoredRevision = revision;
     pageAnchor = null;
     restoreViewportAnchor(anchor);
