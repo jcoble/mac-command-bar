@@ -35,7 +35,6 @@
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
-  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { buildGitCommitGraphRows } from '$lib/gitGraphViewModel';
   import {
     assignGitGraphLanes,
@@ -63,13 +62,6 @@
   import { COMMIT_HISTORY_LIMIT, type GitService } from '$lib/shell/git/gitService';
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { cn } from '$lib/utils';
-  import {
-    snapshotSourceControlCommitMenu,
-    sourceControlContextMenuAnchor,
-    type SourceControlCommitMenuSnapshot,
-    type SourceControlContextMenuAction
-  } from './sourceControlContextMenu';
-  import SourceControlContextMenu from './SourceControlContextMenu.svelte';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
 
   interface Props {
@@ -84,7 +76,6 @@
   let { panel, service, commitFiles, files, onShowDiff }: Props = $props();
 
   let open = $state(true);
-  let contextMenu = $state<SourceControlCommitMenuSnapshot | null>(null);
   let requestedRoot = '';
 
   onMount(() => {
@@ -164,38 +155,9 @@
     return formatLastActivity(committedAt, new Date());
   }
 
-  function toggleCommit(row: Pick<GitGraphLaneRow, 'sha' | 'isMerge'>): void {
+  function toggleCommit(row: GitGraphLaneRow): void {
     commitFiles.activate(panel.root);
     void commitFiles.toggleCommit(row.sha, row.isMerge);
-  }
-
-  function copyCommitHash(sha: string): void {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
-    void navigator.clipboard.writeText(sha);
-  }
-
-  /** Keep the context menu on the same expansion path as a left click. */
-  function openCommitContextMenu(
-    row: GitGraphLaneRow,
-    expanded: boolean,
-    event: MouseEvent
-  ): void {
-    event.preventDefault();
-    event.stopPropagation();
-    contextMenu = snapshotSourceControlCommitMenu({
-      sha: row.sha,
-      isMerge: row.isMerge,
-      expanded,
-      anchor: sourceControlContextMenuAnchor(event)
-    });
-  }
-
-  function runCommitContextAction(action: SourceControlContextMenuAction): void {
-    const current = contextMenu;
-    contextMenu = null;
-    if (!current) return;
-    if (action === 'toggle-commit') toggleCommit(current.target);
-    else if (action === 'copy-hash') copyCommitHash(current.target.sha);
   }
 
   function pickFile(sha: string, file: GitCommitFileChange): void {
@@ -225,41 +187,19 @@
   /** A branch or tag name. Capped so a long branch name cannot push the commit
    * subject — the thing you are actually reading — off the end of the row. */
   const PILL =
-    'inline-flex max-w-[45%] shrink-0 items-center truncate rounded-full border px-1.5 ' +
-    'text-[12px] leading-[16px] font-medium';
-
-  /** The same card, eyebrow and count pill the Stats & Usage screen is built from. */
-  const CARD =
-    'rounded-[var(--radius-md)] border ' +
-    'border-[color-mix(in_srgb,var(--color-border)_36%,transparent)] ' +
-    'bg-[color-mix(in_srgb,var(--color-elevated)_38%,var(--color-surface))]';
-  const TILE =
-    'rounded-[var(--radius-sm)] ' +
-    'bg-[color-mix(in_srgb,var(--color-elevated)_56%,var(--color-surface))]';
-  const EYEBROW =
-    'text-[12px] leading-[16px] [font-weight:680] tracking-[0.085em] uppercase ' +
-    'text-[var(--color-text-3)]';
-  const COUNT_PILL =
-    'inline-flex items-center justify-center rounded-full px-1.5 py-px text-[12px] ' +
-    'leading-[16px] font-medium tabular-nums text-[var(--color-text-2)] ' +
-    'bg-[color-mix(in_srgb,var(--color-elevated)_82%,transparent)]';
-  const SECONDARY_ACTION =
-    'bg-[color-mix(in_srgb,var(--color-elevated)_72%,transparent)] text-[var(--color-text-2)] ' +
-    'hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] ' +
-    'disabled:cursor-not-allowed disabled:opacity-[0.52]';
+    'inline-flex max-w-[45%] shrink-0 items-center truncate rounded-[4px] px-1 text-[12px] leading-[16px]';
 </script>
 
 <section
-  class={cn('flex min-h-0 flex-col overflow-hidden', CARD, open ? 'flex-1' : 'shrink-0')}
+  class={cn('flex min-h-0 flex-col border-t border-[var(--color-border)]', open ? 'flex-1' : 'shrink-0')}
 >
-  <div class="flex shrink-0 items-center gap-1.5 px-2.5 py-2">
+  <div class="flex shrink-0 items-center gap-1 px-2 py-1">
     <button
       type="button"
-      class={cn(
-        'flex min-w-0 flex-1 items-center gap-1.5 text-left transition-colors',
-        'hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50 outline-none',
-        EYEBROW
-      )}
+      class="flex min-w-0 flex-1 items-center gap-1 text-left text-[12px] tracking-[0.06em]
+             text-[var(--color-text-2)] uppercase transition-colors
+             hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50
+             outline-none"
       aria-expanded={open}
       onclick={() => (open = !open)}
     >
@@ -269,51 +209,39 @@
         <ChevronRight class="size-3 shrink-0" aria-hidden="true" />
       {/if}
       <span>Commits</span>
-      {#if historyCount}
-        <span class={cn('ml-auto normal-case tracking-normal', COUNT_PILL)} title={historyFooter}>
-          {historyCount}
-        </span>
-      {/if}
+      <span class="ml-auto normal-case text-[var(--color-text-3)]" title={historyFooter}>
+        {historyCount}
+      </span>
     </button>
-    <IconButton
-      label="Read the commit history again"
-      size="sm"
-      side="bottom"
-      class="shrink-0 text-[var(--color-text-2)] hover:text-[var(--color-text)]"
+    <button
+      type="button"
+      class="flex size-5 shrink-0 items-center justify-center rounded-[4px]
+             text-[var(--color-text-2)] transition-colors hover:bg-[var(--color-elevated)]
+             hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50
+             outline-none disabled:opacity-45"
+      aria-label="Read the commit history again"
+      title="Read the commit history again"
       disabled={!panel.activated || panel.historyLoading}
       onclick={() => void service.refreshHistory()}
     >
-      <RefreshCw class={cn('size-3.5', panel.historyLoading && 'animate-spin')} aria-hidden="true" />
-    </IconButton>
+      <RefreshCw class={cn('size-3', panel.historyLoading && 'animate-spin')} aria-hidden="true" />
+    </button>
   </div>
 
   {#if open}
     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-2">
       {#if panel.historyError && commits.length === 0}
-        <div class={cn('mx-2.5 flex flex-col gap-1 px-2.5 py-4 text-center', TILE)}>
-          <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-bad)]">
-            The history could not be read
-          </strong>
-          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">{panel.historyError}</p>
-        </div>
+        <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-bad)]">
+          {panel.historyError}
+        </p>
       {:else if panel.historyLoading && commits.length === 0}
-        <div class={cn('mx-2.5 flex flex-col gap-1 px-2.5 py-4 text-center', TILE)}>
-          <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-text)]">
-            Reading the commit history…
-          </strong>
-          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
-            Asking git for the newest commits on this branch.
-          </p>
-        </div>
+        <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
+          Reading the commit history…
+        </p>
       {:else if commits.length === 0}
-        <div class={cn('mx-2.5 flex flex-col gap-1 px-2.5 py-4 text-center', TILE)}>
-          <strong class="text-[13px] leading-[18px] font-medium text-[var(--color-text)]">
-            No commits yet.
-          </strong>
-          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
-            The first commit you make will appear here.
-          </p>
-        </div>
+        <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
+          No commits yet.
+        </p>
       {:else}
         {#each commits as commit, index (commit.sha)}
           {@const row = layout.rows[index]}
@@ -325,88 +253,71 @@
             onOpenChange={() => row && toggleCommit(row)}
             class="border-b border-[var(--color-border)]/45 last:border-b-0"
           >
-                <Collapsible.Trigger
-                  class={cn(
-                    'flex w-full items-stretch gap-1.5 pr-2.5 text-left transition-colors',
-                    'hover:bg-[var(--color-hover)] focus-visible:ring-3 focus-visible:ring-ring/50',
-                    'outline-none',
-                    expanded &&
-                      'bg-[color-mix(in_srgb,var(--color-accent)_12%,var(--color-elevated))]'
-                  )}
-                  title={commit.detailLabel}
-                  oncontextmenu={(event) => row && openCommitContextMenu(row, expanded, event)}
-                >
-                  <svg
-                    class="shrink-0"
-                    width={graphWidth}
-                    height={ROW_HEIGHT}
-                    viewBox="0 0 {graphWidth} {ROW_HEIGHT}"
-                    aria-hidden="true"
-                  >
-                    {#if row}
-                      {#each row.edges as edge, edgeIndex (edgeIndex)}
-                        <path
-                          d={edgePath(edge.kind, edge.fromLane, edge.toLane)}
-                          fill="none"
-                          stroke={laneColor(edge.kind === 'child' ? edge.toLane : edge.fromLane)}
-                          stroke-width="1.5"
-                          stroke-linecap="round"
-                          opacity="0.75"
-                        />
-                      {/each}
-                      <circle
-                        cx={laneX(row.lane)}
-                        cy={ROW_HEIGHT / 2}
-                        r={row.isMerge ? 3 : 3.5}
-                        fill={row.isMerge ? 'var(--color-bg)' : laneColor(row.lane)}
-                        stroke={laneColor(row.lane)}
-                        stroke-width="1.5"
-                      />
-                    {/if}
-                  </svg>
+            <Collapsible.Trigger
+              class={cn(
+                'flex w-full items-stretch gap-1.5 pr-2 text-left transition-colors',
+                'hover:bg-[var(--color-elevated)] focus-visible:ring-3 focus-visible:ring-ring/50',
+                'outline-none',
+                expanded && 'bg-[var(--color-elevated)]'
+              )}
+              title={commit.detailLabel}
+            >
+              <svg
+                class="shrink-0"
+                width={graphWidth}
+                height={ROW_HEIGHT}
+                viewBox="0 0 {graphWidth} {ROW_HEIGHT}"
+                aria-hidden="true"
+              >
+                {#if row}
+                  {#each row.edges as edge, edgeIndex (edgeIndex)}
+                    <path
+                      d={edgePath(edge.kind, edge.fromLane, edge.toLane)}
+                      fill="none"
+                      stroke={laneColor(edge.kind === 'child' ? edge.toLane : edge.fromLane)}
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      opacity="0.75"
+                    />
+                  {/each}
+                  <circle
+                    cx={laneX(row.lane)}
+                    cy={ROW_HEIGHT / 2}
+                    r={row.isMerge ? 3 : 3.5}
+                    fill={row.isMerge ? 'var(--color-bg)' : laneColor(row.lane)}
+                    stroke={laneColor(row.lane)}
+                    stroke-width="1.5"
+                  />
+                {/if}
+              </svg>
 
-                  <span class="flex min-w-0 flex-1 flex-col justify-center py-[3px]">
-                    <span class="flex min-w-0 items-center gap-1">
-                      <!-- The branch you are on is mint; every other ref is blue,
-                           and tags keep amber, so the checked-out branch is the
-                           one chip the eye finds first. -->
-                      {#each commit.refs.headLabels as label (label)}
-                        <span
-                          class="{PILL} border-[color-mix(in_srgb,var(--color-accent)_38%,transparent)]
-                                 bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)]
-                                 text-[var(--color-accent)]"
-                        >
-                          {label}
-                        </span>
-                      {/each}
-                      {#each branchPills(commit.refs) as label (label)}
-                        <span
-                          class="{PILL} border-[color-mix(in_srgb,var(--color-live)_32%,transparent)]
-                                 bg-[var(--color-live-bg)] text-[var(--color-live)]"
-                        >
-                          {label}
-                        </span>
-                      {/each}
-                      {#each commit.refs.tagLabels as label (label)}
-                        <span
-                          class="{PILL} border-[color-mix(in_srgb,var(--color-attention)_32%,transparent)]
-                                 bg-[var(--color-attention-bg)] text-[var(--color-attention)]"
-                        >
-                          {label}
-                        </span>
-                      {/each}
-                      <span class="min-w-0 truncate text-[13px] leading-[17px] text-[var(--color-text)]">
-                        {commit.subject || '(no message)'}
-                      </span>
+              <span class="flex min-w-0 flex-1 flex-col justify-center py-[3px]">
+                <span class="flex min-w-0 items-center gap-1">
+                  {#each commit.refs.headLabels as label (label)}
+                    <span class="{PILL} bg-[var(--color-live-bg)] text-[var(--color-live)]">
+                      {label}
                     </span>
-                    <span
-                      class="truncate text-[12px] leading-[16px] tabular-nums text-[var(--color-text-2)]"
-                    >
-                      {commit.shortSha} · {commit.author} · {whenCommitted(commit.committedAt)}
-                      {#if row?.isMerge}· merge{/if}
+                  {/each}
+                  {#each branchPills(commit.refs) as label (label)}
+                    <span class="{PILL} bg-[var(--color-elevated)] text-[var(--color-text-2)]">
+                      {label}
                     </span>
+                  {/each}
+                  {#each commit.refs.tagLabels as label (label)}
+                    <span class="{PILL} bg-[var(--color-attention-bg)] text-[var(--color-attention)]">
+                      {label}
+                    </span>
+                  {/each}
+                  <span class="min-w-0 truncate text-[13px] leading-[17px]">
+                    {commit.subject || '(no message)'}
                   </span>
-                </Collapsible.Trigger>
+                </span>
+                <span class="truncate text-[12px] leading-[15px] text-[var(--color-text-3)]">
+                  {commit.shortSha} · {commit.author} · {whenCommitted(commit.committedAt)}
+                  {#if row?.isMerge}· merge{/if}
+                </span>
+              </span>
+            </Collapsible.Trigger>
 
             <!-- Layout classes go on the div INSIDE: a closed collapsible is
                  hidden by the `hidden` attribute, which any display rule of
@@ -443,10 +354,10 @@
                       <button
                         type="button"
                         class={cn(
-                          'flex w-full items-center gap-1.5 rounded-[var(--radius-sm)] py-[3px] pr-1.5 pl-1',
-                          'text-left transition-colors hover:bg-[var(--color-hover)]',
+                          'flex w-full items-center gap-1.5 rounded-[4px] py-[3px] pr-1.5 pl-1',
+                          'text-left transition-colors hover:bg-[var(--color-elevated)]',
                           'focus-visible:ring-3 focus-visible:ring-ring/50 outline-none',
-                          chosen && 'bg-[color-mix(in_srgb,var(--color-accent)_14%,var(--color-elevated))]',
+                          chosen && 'bg-[var(--color-elevated)]',
                           unreadable && 'opacity-70'
                         )}
                         title={unreadable
@@ -484,13 +395,13 @@
         <!-- How much of the history is on screen, and how to get more of it.
              Inside the scrolling list on purpose: it belongs to the end of the
              list, the way the bottom of a page belongs to the page. -->
-        <div class="flex shrink-0 flex-col gap-1.5 px-2.5 pt-2 pb-0.5">
+        <div class="flex shrink-0 flex-col gap-1 px-2 pt-1.5">
           {#if panel.historyError}
             <p class="text-[12px] leading-[16px] text-[var(--color-bad)]">
               {panel.historyError}
             </p>
           {/if}
-          <p class="text-[12px] leading-[16px] tabular-nums text-[var(--color-text-3)]">
+          <p class="text-[12px] leading-[16px] text-[var(--color-text-2)]">
             {historyFooter}
           </p>
           {#if canLoadMore || panel.historyLoadingMore}
@@ -498,8 +409,7 @@
               type="button"
               class={cn(
                 buttonVariants({ variant: 'secondary', size: 'xs' }),
-                'w-full text-[12px] font-normal',
-                SECONDARY_ACTION
+                'w-full text-[12px] font-normal'
               )}
               disabled={!canLoadMore}
               title="Read another {COMMIT_HISTORY_LIMIT} commits further back in this branch's history"
@@ -515,14 +425,3 @@
     </div>
   {/if}
 </section>
-
-{#if contextMenu}
-  {#key contextMenu.key}
-    <SourceControlContextMenu
-      anchor={contextMenu.anchor}
-      items={contextMenu.items}
-      onSelect={runCommitContextAction}
-      onClose={() => (contextMenu = null)}
-    />
-  {/key}
-{/if}

@@ -20,12 +20,12 @@
   import CloudDownload from '@lucide/svelte/icons/cloud-download';
   import CloudUpload from '@lucide/svelte/icons/cloud-upload';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import RefreshCcwDot from '@lucide/svelte/icons/refresh-ccw-dot';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
-  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import {
     describeGitBranchTitle,
     repositoryLabel,
@@ -33,8 +33,6 @@
   } from '$lib/shell/git/gitPanelStore.svelte';
   import type { GitService } from '$lib/shell/git/gitService';
   import { cn } from '$lib/utils';
-
-  import BranchMenu from './BranchMenu.svelte';
 
   interface Props {
     panel: GitPanelState;
@@ -50,6 +48,7 @@
 
   const busy = $derived(panel.actionBusy !== '');
   const name = $derived(repositoryLabel(panel.root) || 'Source control');
+  const branch = $derived(panel.status?.branch ?? '');
   const ahead = $derived(panel.status?.ahead ?? 0);
   const behind = $derived(panel.status?.behind ?? 0);
   const hasUpstream = $derived(panel.status?.hasUpstream ?? false);
@@ -80,21 +79,10 @@
   ] as const;
 
   const CHIP =
-    'inline-flex shrink-0 items-center rounded-full border px-1.5 py-px text-[12px] ' +
-    'leading-[16px] font-medium tabular-nums';
-
-  /** The same card the Stats & Usage screen uses, so the strip reads as one system. */
-  const CARD =
-    'rounded-[var(--radius-md)] border ' +
-    'border-[color-mix(in_srgb,var(--color-border)_36%,transparent)] ' +
-    'bg-[color-mix(in_srgb,var(--color-elevated)_38%,var(--color-surface))]';
-  const SECONDARY_ACTION =
-    'bg-[color-mix(in_srgb,var(--color-elevated)_72%,transparent)] text-[var(--color-text-2)] ' +
-    'hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] ' +
-    'disabled:cursor-not-allowed disabled:opacity-[0.52]';
+    'inline-flex shrink-0 items-center rounded-[4px] px-1 py-px text-[12px] leading-[16px]';
 </script>
 
-<header class={cn('shrink-0 px-2.5 py-2', CARD)}>
+<header class="shrink-0 border-b border-[var(--color-border)] px-2 py-1.5">
   <div class="flex items-center gap-1.5">
     <FolderGit2 class="size-3.5 shrink-0 text-[var(--color-text-2)]" aria-hidden="true" />
     <h2
@@ -103,39 +91,40 @@
     >
       {name}
     </h2>
-    <IconButton
-      label="Read the changed files and the history again"
-      size="sm"
-      side="bottom"
-      class="shrink-0 text-[var(--color-text-2)] hover:text-[var(--color-text)]"
+    <button
+      type="button"
+      class="flex size-6 shrink-0 items-center justify-center rounded-[4px]
+             text-[var(--color-text-2)] transition-colors hover:bg-[var(--color-elevated)]
+             hover:text-[var(--color-text)] focus-visible:ring-3 focus-visible:ring-ring/50
+             outline-none disabled:opacity-45"
+      aria-label="Read this repository again"
+      title="Read the changed files and the history again"
       disabled={!panel.activated || panel.statusLoading}
       onclick={() => void service.refresh()}
     >
       <RefreshCw class={cn('size-3.5', panel.statusLoading && 'animate-spin')} aria-hidden="true" />
-    </IconButton>
+    </button>
   </div>
 
-  <!-- The branch name IS the control that changes branches, because that is
-       what a person looks at when they want to change it. It truncates rather
-       than wraps now that it is a button, so the hover text on this row carries
-       the full name and spells the ahead/behind counts out as sentences — a
-       name cut off at `codex/outbound-rule-generat…` cannot be told apart from
-       the next one like it. -->
+  <!-- The branch name wraps rather than being cut off: a name shortened to
+       `codex/outbound-rule-generat…` cannot be told apart from the next one like
+       it. The hover text carries the full name and spells the counts out, for
+       the case where even wrapping runs out of room. -->
   <div
-    class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 pl-3
+    class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 pl-5
            text-[12px] leading-[16px] text-[var(--color-text-2)]"
     title={branchTitle}
   >
-    <BranchMenu {panel} {service} {canWrite} {readOnlyReason} />
+    <GitBranch class="size-3 shrink-0" aria-hidden="true" />
+    <span class="min-w-0 break-words">{branch || 'no branch checked out'}</span>
     {#if !hasUpstream}
-      <span class="{CHIP} border-transparent text-[var(--color-text-3)]">no remote branch</span>
+      <span class="{CHIP} text-[var(--color-text-3)]">no remote branch</span>
     {:else if ahead === 0 && behind === 0}
-      <span class="{CHIP} border-transparent text-[var(--color-text-3)]">up to date</span>
+      <span class="{CHIP} text-[var(--color-text-3)]">up to date</span>
     {:else}
       {#if ahead > 0}
         <span
-          class="{CHIP} border-[color-mix(in_srgb,var(--color-live)_32%,transparent)]
-                 bg-[var(--color-live-bg)] text-[var(--color-live)]"
+          class="{CHIP} bg-[var(--color-live-bg)] text-[var(--color-live)]"
           title="{ahead} commit{ahead === 1 ? '' : 's'} of yours the remote does not have"
         >
           ↑{ahead}
@@ -143,8 +132,7 @@
       {/if}
       {#if behind > 0}
         <span
-          class="{CHIP} border-[color-mix(in_srgb,var(--color-attention)_32%,transparent)]
-                 bg-[var(--color-attention-bg)] text-[var(--color-attention)]"
+          class="{CHIP} bg-[var(--color-attention-bg)] text-[var(--color-attention)]"
           title="{behind} commit{behind === 1 ? '' : 's'} on the remote you do not have"
         >
           ↓{behind}
@@ -153,15 +141,14 @@
     {/if}
   </div>
 
-  <div class="mt-2 flex items-center gap-1.5">
+  <div class="mt-1.5 flex items-center gap-1">
     {#each remoteActions as action (action.id)}
       {@const Icon = action.icon}
       <button
         type="button"
         class={cn(
           buttonVariants({ variant: 'secondary', size: 'xs' }),
-          'flex-1 gap-1 px-1.5 text-[12px] font-normal',
-          SECONDARY_ACTION
+          'flex-1 gap-1 px-1.5 text-[12px] font-normal'
         )}
         disabled={!canWrite || busy || !panel.activated}
         title={canWrite ? action.tip : readOnlyReason}
@@ -177,9 +164,7 @@
     type="button"
     class={cn(
       buttonVariants({ variant: 'ghost', size: 'xs' }),
-      'mt-1.5 w-full justify-start gap-1.5 px-1.5 text-[12px] text-[var(--color-text-2)]',
-      'hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]',
-      'disabled:cursor-not-allowed disabled:opacity-[0.52]'
+      'mt-1.5 w-full justify-start gap-1.5 px-1.5 text-[12px] text-[var(--color-text-2)]'
     )}
     disabled={!panel.activated || !canWrite}
     title={canWrite ? 'Generate the pull request title and description, then push and create it' : readOnlyReason}
