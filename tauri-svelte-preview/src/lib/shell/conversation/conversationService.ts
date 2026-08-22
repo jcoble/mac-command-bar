@@ -118,7 +118,12 @@ export async function clearConversationSessionDraft(ownedId: string): Promise<vo
 }
 
 /** Loads one child transcript through the typed conversation command boundary. */
-const childTranscriptReads = new Map<string, object>();
+interface ChildTranscriptRead {
+  generation: number;
+  childSessionId: string;
+}
+
+const childTranscriptReads = new Map<string, ChildTranscriptRead>();
 
 export function cancelChildConversationTranscriptRead(ownedId: string): void {
   childTranscriptReads.delete(ownedId);
@@ -130,15 +135,30 @@ export async function readChildConversationTranscript(input: {
   nativeSessionId: string;
   childSessionId: string;
 }): Promise<void> {
-  const readToken = {};
-  childTranscriptReads.set(input.ownedId, readToken);
-  const snapshot = await invoke<ConversationTranscriptSnapshot>('read_agent_conversation_transcript', {
-    provider: input.provider,
-    nativeSessionId: input.nativeSessionId,
+  const readToken = {
+    generation: getConversationSession(input.ownedId)?.generation ?? 0,
     childSessionId: input.childSessionId
-  });
+  };
+  childTranscriptReads.set(input.ownedId, readToken);
+  let snapshot: ConversationTranscriptSnapshot;
+  try {
+    snapshot = await invoke<ConversationTranscriptSnapshot>('read_agent_conversation_transcript', {
+      provider: input.provider,
+      nativeSessionId: input.nativeSessionId,
+      childSessionId: input.childSessionId
+    });
+  } catch (error) {
+    if (childTranscriptReads.get(input.ownedId) === readToken) childTranscriptReads.delete(input.ownedId);
+    throw error;
+  }
+  const current = getConversationSession(input.ownedId);
   if (childTranscriptReads.get(input.ownedId) !== readToken) return;
   childTranscriptReads.delete(input.ownedId);
+  if (
+    !current
+    || current.generation !== readToken.generation
+    || current.selectedChildId !== readToken.childSessionId
+  ) return;
   applyChildConversationTranscript(input.ownedId, input.childSessionId, snapshot.messages);
 }
 
@@ -204,6 +224,7 @@ export function cleanupConversationAttachmentPreview(attachment: ConversationAtt
 /** Drop frontend-only conversation data after its workspace has been saved. */
 export function releaseConversationForRead(ownedId: string): void {
   readVersions.set(ownedId, (readVersions.get(ownedId) ?? 0) + 1);
+  cancelChildConversationTranscriptRead(ownedId);
   const state = getConversationSession(ownedId);
   if (!state) return;
   const previewUrls = new Set([
@@ -720,6 +741,7 @@ export async function startConversationEvents(): Promise<void> {
 export function stopConversationEvents(): void {
   conversationEventsDisposed = true;
   conversationEventsGeneration += 1;
+  childTranscriptReads.clear();
   void conversationStream?.unregister();
   conversationStream = null;
   unlistenTitles?.();

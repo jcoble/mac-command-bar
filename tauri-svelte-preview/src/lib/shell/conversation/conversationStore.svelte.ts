@@ -187,6 +187,24 @@ const timelineIndexBySession = new WeakMap<ConversationWorkspaceState, Map<strin
 const agentItemIndexBySession = new WeakMap<ConversationWorkspaceState, Map<string, number>>();
 const activeReasoningBySession = new WeakMap<ConversationWorkspaceState, Set<AgentItem>>();
 
+function releaseChildTranscriptProjection(current: ConversationWorkspaceState): boolean {
+  const hadProjection = current.selectedChildId !== null
+    || current.childTimeline.length > 0
+    || current.loadedChildTranscriptBytes > 0;
+  current.selectedChildId = null;
+  current.childTimeline = [];
+  current.loadedChildTranscriptBytes = 0;
+  return hadProjection;
+}
+
+function releaseOtherChildTranscriptProjections(ownedId: string): boolean {
+  let released = false;
+  for (const [candidateOwnedId, projection] of Object.entries(conversationSessions)) {
+    if (candidateOwnedId !== ownedId) released = releaseChildTranscriptProjection(projection) || released;
+  }
+  return released;
+}
+
 function freshState(
   ownedId: string,
   provider: AgentConversationProvider
@@ -779,6 +797,7 @@ export function applyAgentConversationSnapshot(
   // it, or the next send is addressed to an incarnation the backend has
   // already replaced and is refused.
   const generation = Math.max(rebuilt.generation, snapshot.connection.generation);
+  const keepChildProjection = generation === current.generation;
   const restored: ConversationWorkspaceState = {
     ...rebuilt,
     lastSequence: window ? current.lastSequence : snapshot.lastSequence,
@@ -794,8 +813,8 @@ export function applyAgentConversationSnapshot(
     attachments: current.attachments,
     metadata: current.metadata,
     children: current.children,
-    selectedChildId: current.selectedChildId,
-    childTimeline: current.childTimeline,
+    selectedChildId: keepChildProjection ? current.selectedChildId : null,
+    childTimeline: keepChildProjection ? current.childTimeline : [],
     scrollTop: current.scrollTop,
     childScrollTopById: current.childScrollTopById,
     executionOwner: current.executionOwner,
@@ -835,7 +854,7 @@ export function applyAgentConversationSnapshot(
     loadingNewer: window?.loadingNewer ?? false,
     reachedTranscriptEnd: window?.reachedEnd ?? newestSnapshotSequence >= snapshot.lastSequence,
     loadedEventBytes: serializedEventsBytes(sourceEvents),
-    loadedChildTranscriptBytes: current.loadedChildTranscriptBytes
+    loadedChildTranscriptBytes: keepChildProjection ? current.loadedChildTranscriptBytes : 0
   };
   for (const event of events) {
     const displayEvent = displayEventFrom(event);
@@ -1274,6 +1293,7 @@ export function applyChildConversationTranscript(
 ): void {
   const current = conversationSessions[ownedId];
   if (!current || current.selectedChildId !== childId) return;
+  releaseOtherChildTranscriptProjections(ownedId);
   current.childTimeline = messages.map((message) => ({
     kind: message.role,
     itemId: `child:${childId}:${message.itemId}`,
@@ -1503,7 +1523,12 @@ export function setConversationPendingInput(ownedId: string, request: AgentUserI
 
 export function setConversationSelectedChild(ownedId: string, childId: string | null): void {
   const current = conversationSessions[ownedId];
-  if (!current || current.selectedChildId === childId) return;
+  if (!current) return;
+  const releasedOther = childId !== null && releaseOtherChildTranscriptProjections(ownedId);
+  if (current.selectedChildId === childId) {
+    if (releasedOther) publishConversationProjectionDiagnostics();
+    return;
+  }
   current.selectedChildId = childId;
   current.childTimeline = [];
   current.loadedChildTranscriptBytes = 0;
@@ -1592,9 +1617,11 @@ export function setConversationConnection(connection: AgentConversationConnectio
   const existing = conversationSessions[connection.ownedId];
   if (existing && connection.generation < existing.generation) return;
   const current = ensureConversationSession(connection.ownedId, connection.provider);
+  let releasedChildProjection = false;
   if (connection.generation > current.generation) {
     current.capabilities = null;
     current.capabilitiesGeneration = 0;
+    releasedChildProjection = releaseChildTranscriptProjection(current);
   }
   current.generation = connection.generation;
   current.writerLease.generation = connection.generation;
@@ -1610,6 +1637,7 @@ export function setConversationConnection(connection: AgentConversationConnectio
     current.agentConfig = connection.config;
     current.agentConfigError = null;
   }
+  if (releasedChildProjection) publishConversationProjectionDiagnostics();
 }
 
 export function captureConversationWorkspace(
@@ -1630,7 +1658,7 @@ export function captureConversationWorkspace(
     telemetry: current.telemetry,
     writerLease: current.writerLease,
     writerLeaseTransition: current.writerLeaseTransition,
-    selectedChildId: current.selectedChildId,
+    selectedChildId: null,
     scrollTop: current.scrollTop,
     providerGeneration: current.generation,
     lastSequence: current.lastSequence
@@ -1644,7 +1672,7 @@ export function restoreConversationWorkspace(
 ): ConversationWorkspaceState {
   const current = ensureConversationSession(ownedId, provider);
   current.mode = snapshot?.mode === 'raw' ? 'raw' : 'structured';
-  current.selectedChildId = snapshot?.selectedChildId ?? null;
+  releaseChildTranscriptProjection(current);
   current.scrollTop = snapshot?.parentScrollTop ?? snapshot?.scrollTop ?? 0;
   current.childScrollTopById = snapshot?.childScrollTopById ?? {};
   current.executionOwner = snapshot?.owner ?? current.executionOwner;
