@@ -174,6 +174,38 @@ pub async fn agent_conversation_clear_session_draft(
 }
 
 #[tauri::command]
+pub async fn write_agent_conversation_workspace(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    snapshot_json: String,
+) -> CommandResult<()> {
+    command_result(manager.write_workspace(&owned_id, &snapshot_json))
+}
+
+#[tauri::command]
+pub async fn read_agent_conversation_workspace(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> CommandResult<Option<String>> {
+    command_result(manager.read_workspace(&owned_id))
+}
+
+#[tauri::command]
+pub async fn delete_agent_conversation_workspace(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+) -> CommandResult<()> {
+    command_result(manager.delete_workspace(&owned_id))
+}
+
+#[tauri::command]
+pub async fn clear_agent_conversation_workspace_editors(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+) -> CommandResult<()> {
+    command_result(manager.clear_workspace_editors())
+}
+
+#[tauri::command]
 /// Records a legacy approval decision after validating its request identity.
 pub async fn respond_agent_conversation_approval(
     manager: tauri::State<'_, AgentRuntimeManager>,

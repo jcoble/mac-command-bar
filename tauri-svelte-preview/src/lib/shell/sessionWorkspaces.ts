@@ -345,7 +345,7 @@ function normalizeFileStates(
 /** One stored entry, or null if it is not a record at all. Fields of the wrong
  * type become their empty version rather than sinking the whole entry: a
  * half-corrupt record still restores most of a session. */
-function snapshotOf(value: unknown): SessionWorkspaceSnapshot | null {
+export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnapshot | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
 
   const entry = value as Record<string, unknown>;
@@ -414,7 +414,7 @@ export function readWorkspaces(storage: LayoutStorage): Record<string, SessionWo
 
   const all: Record<string, SessionWorkspaceSnapshot> = {};
   for (const [ownedId, value] of Object.entries(stored)) {
-    const snapshot = snapshotOf(value);
+    const snapshot = normalizeWorkspaceSnapshot(value);
     if (snapshot) all[ownedId] = snapshot;
   }
   return all;

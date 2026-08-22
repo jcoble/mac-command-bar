@@ -25,10 +25,6 @@
 	import "$lib/shell/styles/themeChrome.css";
 
 	import { settings, type ProblemsLocation } from "$lib/settingsStore.svelte";
-	import {
-		readBrowserSessionSnapshot,
-		writeBrowserSessionSnapshot,
-	} from "$lib/shell/browser/browserSessionSnapshots.ts";
 	import { captureBrowserState, openBrowserUrl, restoreBrowserState } from "$lib/shell/browser/browserStore.svelte.ts";
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
@@ -134,12 +130,8 @@
 	import { readSessionsCollapsed, writeSessionsCollapsed } from "$lib/shell/sessionStrip";
 	import {
 		captureWorkspace,
-		clearWorkspaceEditorTabs,
 		diffPathFor,
 		planWorkspaceRestore,
-		pruneWorkspaces,
-		readWorkspaces,
-		writeWorkspaces,
 		type SessionWorkspaceSnapshot,
 	} from "$lib/shell/sessionWorkspaces";
 	import { registerShellCommands } from "$lib/shell/shellCommands";
@@ -174,7 +166,9 @@
 	} from "$lib/shell/workbenchNavigation";
 	import { loadXtermModules, makeTerminalView } from "$lib/shell/xtermFactory";
 	import {
+		clearAgentConversationWorkspaceEditorsFromTauri,
 		deleteAgentConversationSessionFromTauri,
+		readAgentConversationWorkspaceFromTauri,
 		listAgentConversationSessionsFromTauri,
 		listAgentSessionsForProjectFromTauri,
 		listAgentSessionsFromLocalBridge,
@@ -182,6 +176,7 @@
 		openMainDevtoolsFromTauri,
 		updateAgentConversationSessionMetaFromTauri,
 		validateProjectRootFromTauri,
+		writeAgentConversationWorkspaceFromTauri,
 		type AgentSession,
 	} from "$lib/tauriSource";
 
@@ -197,11 +192,11 @@
 	 * view keeps 80x24 and wraps its replay wrong. */
 	const livePtySizes = new Map<string, { cols: number; rows: number }>();
 
-	/** What each session had open, by owned id. Read once at start-up, then kept
-	 * in step by `snapshotWorkspace` — the editor and the file tree are one of
-	 * each for the whole shell, so this is what keeps two sessions in the same
-	 * repository from overwriting each other's tabs. */
-	let workspaces: Record<string, SessionWorkspaceSnapshot> = {};
+	let activeWorkspaceSnapshot: SessionWorkspaceSnapshot | null = null;
+	let workspaceRestoreGeneration = 0;
+	let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
+	let workspaceWriteQueue: Promise<void> = Promise.resolve();
+	let workspaceAutosaveEnabled = false;
 	let service: ReturnType<typeof createTerminalService> | null = null;
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
 	let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
@@ -756,12 +751,9 @@
 	/** Remember the editor tabs and file tree this session is leaving behind.
 	 * Stored straight away: a reload can come at any moment, and the write is a
 	 * few hundred bytes. */
-	function snapshotWorkspace(ownedId: string): boolean {
+	async function snapshotWorkspace(ownedId: string): Promise<boolean> {
 		const openPaths = editorState.openFiles.map((file) => file.path);
-		writeBrowserSessionSnapshot(ownedId, { browser: captureBrowserState() });
-		workspaces = {
-			...workspaces,
-			[ownedId]: captureWorkspace({
+		const snapshot = captureWorkspace({
 				openFiles: editorState.openFiles,
 				activePath: editorState.activePath,
 				viewStates: editorPanel?.captureViewStates(openPaths),
@@ -770,15 +762,69 @@
 				diffPath: gitPanel.selectedPath || null,
 				diffRoot: gitPanel.root,
 				conversation: captureConversationWorkspace(ownedId),
+				browser: captureBrowserState(),
 				center: frameControls?.captureCenterLayout() ?? null,
-			}),
-		};
-		return writeWorkspaces(window.localStorage, workspaces);
+			});
+		activeWorkspaceSnapshot = snapshot;
+		try {
+			const write = workspaceWriteQueue.then(async () => {
+				if (!(await writeAgentConversationWorkspaceFromTauri(ownedId, snapshot))) {
+					throw new Error("workspace checkpoint was refused");
+				}
+			});
+			workspaceWriteQueue = write.catch(() => undefined);
+			await write;
+			return true;
+		} catch (error) {
+			rail.error = `workspace checkpoint failed: ${describeError(error)}`;
+			return false;
+		}
 	}
 
-	function clearAllEditorWorkspaceRecords(): void {
-		workspaces = clearWorkspaceEditorTabs(workspaces);
-		writeWorkspaces(window.localStorage, workspaces);
+	function cancelWorkspaceAutosave(): void {
+		if (workspaceSaveTimer !== null) clearTimeout(workspaceSaveTimer);
+		workspaceSaveTimer = null;
+	}
+
+	function scheduleWorkspaceAutosave(ownedId: string, _openFiles: unknown, _activePath: unknown): void {
+		cancelWorkspaceAutosave();
+		workspaceSaveTimer = setTimeout(() => {
+			workspaceSaveTimer = null;
+			if (workspaceAutosaveEnabled && rail.activeOwnedId === ownedId) void snapshotWorkspace(ownedId);
+		}, 30_000);
+	}
+
+	$effect(() => {
+		const ownedId = rail.activeOwnedId;
+		const openFiles = editorState.openFiles;
+		const activePath = editorState.activePath;
+		if (workspaceAutosaveEnabled && ownedId !== null) {
+			scheduleWorkspaceAutosave(ownedId, openFiles, activePath);
+		}
+	});
+
+	async function clearAllEditorWorkspaceRecords(): Promise<void> {
+		const ownedId = rail.activeOwnedId;
+		if (ownedId === null) return;
+		workspaceAutosaveEnabled = false;
+		cancelWorkspaceAutosave();
+		const clear = workspaceWriteQueue.then(clearAgentConversationWorkspaceEditorsFromTauri);
+		workspaceWriteQueue = clear.catch(() => undefined);
+		try {
+			await clear;
+			if (activeWorkspaceSnapshot !== null) {
+				activeWorkspaceSnapshot = {
+					...activeWorkspaceSnapshot,
+					openPaths: [],
+					activePath: null,
+					fileStates: undefined,
+				};
+			}
+		} catch (error) {
+			rail.error = `workspace checkpoint failed: ${describeError(error)}`;
+		} finally {
+			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
+		}
 	}
 
 	/**
@@ -794,24 +840,34 @@
 	 * highlighted file that no longer exists loses its highlight when that scan
 	 * lands, which is the right answer.
 	 */
-	function restoreWorkspace(ownedId: string): void {
+	async function restoreWorkspace(ownedId: string): Promise<void> {
 		// Start-up re-attaching a session picks it, which is indistinguishable from
 		// a click. Replaying files then would read files before launch is over; the
 		// end of start-up calls this itself once the gate is open.
 		if (!shellPanels.loadsAllowed()) return;
-		restoreBrowserState(readBrowserSessionSnapshot(ownedId).browser);
+		const generation = ++workspaceRestoreGeneration;
+		let snapshot: SessionWorkspaceSnapshot | null = null;
+		try {
+			snapshot = await readAgentConversationWorkspaceFromTauri(ownedId);
+		} catch (error) {
+			if (generation === workspaceRestoreGeneration && rail.activeOwnedId === ownedId) {
+				rail.error = `workspace restore failed: ${describeError(error)}`;
+			}
+		}
+		if (disposed || generation !== workspaceRestoreGeneration || rail.activeOwnedId !== ownedId) return;
+		activeWorkspaceSnapshot = snapshot;
+		restoreBrowserState(snapshot?.browser);
 		// A remembered diff is read only when this session is returning to the Diff
 		// surface. Restoring it before the remembered center tab is applied would do
 		// hidden status and diff work for sessions returning to Chat or Editor.
 		const sessionRoot = activeRootAvailable ? readSelection().root.trim() : "";
-		const rememberedDiff = diffPathFor(workspaces[ownedId] ?? null, sessionRoot);
+		const rememberedDiff = diffPathFor(snapshot, sessionRoot);
 		const restoringDiff = readCenterTab(window.localStorage, ownedId) === "diff";
 		if (!restoringDiff || rememberedDiff === null) {
 			gitService.clearSelection();
 		} else {
 			void gitService.showStoredDiff(sessionRoot, rememberedDiff);
 		}
-		const snapshot = workspaces[ownedId];
 		const conversationProvider = conversationProviderFor(ownedId);
 		if (conversationProvider) {
 			restoreConversationWorkspace(ownedId, conversationProvider, snapshot?.conversation);
@@ -867,9 +923,20 @@
 		// session actually had (rows are clickable for seconds while the first
 		// scan runs — including the close button, which switches sessions too).
 		if (switching && previous !== null) {
-			await flushConversationSessionDraft(previous).catch(() => undefined);
+			workspaceAutosaveEnabled = false;
+			cancelWorkspaceAutosave();
+			try {
+				await flushConversationSessionDraft(previous);
+			} catch (error) {
+				rail.error = `conversation draft checkpoint failed: ${describeError(error)}`;
+				workspaceAutosaveEnabled = true;
+				return;
+			}
 			workspaceCaptured = shellPanels.loadsAllowed();
-			if (workspaceCaptured) snapshotWorkspace(previous);
+			if (workspaceCaptured && !(await snapshotWorkspace(previous))) {
+				workspaceAutosaveEnabled = true;
+				return;
+			}
 		}
 		if (switching && previous !== null) {
 			stopConversationTerminalProjection(previous);
@@ -899,7 +966,8 @@
 			if (previous !== null && workspaceCaptured) {
 				editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
 			}
-			restoreWorkspace(ownedId);
+			await restoreWorkspace(ownedId);
+			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
 			// Both columns go back to the tabs this session was left on. After the
 			// workspace restore, which may have brought the editor forward for a file
 			// it re-opened — the session's own remembered tab wins.
@@ -1402,13 +1470,7 @@
 		// A removed row takes its stack tag with it, rather than leaving one
 		// pointing at a session that is gone.
 		noteSessionRemoved(ownedId);
-		// The row is gone, so the tabs and tree it remembered go with it — pruning
-		// against what is left also clears anything an earlier build orphaned.
-		workspaces = pruneWorkspaces(
-			workspaces,
-			rail.owned.map((entry) => entry.ownedId),
-		);
-		writeWorkspaces(window.localStorage, workspaces);
+		if (rail.activeOwnedId === ownedId) activeWorkspaceSnapshot = null;
 	}
 
 	onMount(() => {
@@ -1532,13 +1594,6 @@
 					const size = session.ptySessionId ? (livePtySizes.get(session.ptySessionId) ?? null) : null;
 					service.trackExisting(session, size);
 				}
-				// The per-session tabs and tree state, read once. Sessions that did not
-				// survive the reconcile take their records with them.
-				workspaces = pruneWorkspaces(
-					readWorkspaces(window.localStorage),
-					owned.map((entry) => entry.ownedId),
-				);
-				writeWorkspaces(window.localStorage, workspaces);
 				const initial = attachable[0] ?? null;
 				if (initial) await selectOwned(initial.ownedId);
 				const activationError = rail.error;
@@ -1571,7 +1626,8 @@
 				// Same story for the files that session had open: the pick that would
 				// have restored them happened before the gate opened, so a reload would
 				// otherwise come back with an empty editor.
-				if (!disposed && rail.activeOwnedId !== null) restoreWorkspace(rail.activeOwnedId);
+				if (!disposed && rail.activeOwnedId !== null) await restoreWorkspace(rail.activeOwnedId);
+				if (!disposed) workspaceAutosaveEnabled = shellPanels.loadsAllowed();
 			}
 		})();
 
@@ -1580,15 +1636,16 @@
 		 * reload would come back to an empty editor. `pagehide` is the event
 		 * browsers still fire for both a reload and a close. */
 		const saveOnLeaving = (): void => {
-			if (rail.activeOwnedId !== null) snapshotWorkspace(rail.activeOwnedId);
+			if (rail.activeOwnedId !== null) void snapshotWorkspace(rail.activeOwnedId);
 		};
 		window.addEventListener("pagehide", saveOnLeaving);
 		disposers.push(() => window.removeEventListener("pagehide", saveOnLeaving));
 
 		return () => {
+			cancelWorkspaceAutosave();
 			// Navigating away inside the app ends here instead, and it is the same
 			// last chance to remember what the session on screen had open.
-			if (!disposed && rail.activeOwnedId !== null) snapshotWorkspace(rail.activeOwnedId);
+			if (!disposed && rail.activeOwnedId !== null) void snapshotWorkspace(rail.activeOwnedId);
 			disposed = true;
 			for (const dispose of disposers.splice(0)) dispose();
 			// Probe teardown closes only its disposable PTY first. The product

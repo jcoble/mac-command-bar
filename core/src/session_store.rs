@@ -4,8 +4,13 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
+const SESSION_WORKSPACES_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS session_workspaces (
+    owned_id TEXT PRIMARY KEY REFERENCES sessions(owned_id) ON DELETE CASCADE,
+    snapshot_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);";
 /// Event kinds where only the newest row still means anything.
 ///
 /// Both are running state rather than history: the conversation reads each one
@@ -266,6 +271,9 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
+                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the session workspace table", error)
+                })?;
                 add_tool_item_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -299,6 +307,9 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
+                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the session workspace table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -319,6 +330,9 @@ impl SessionStore {
                 add_title_source_column(&transaction)?;
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
+                })?;
+                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the session workspace table", error)
                 })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -341,6 +355,9 @@ impl SessionStore {
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
+                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the session workspace table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -358,6 +375,9 @@ impl SessionStore {
                     })?;
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
+                })?;
+                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the session workspace table", error)
                 })?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
@@ -378,6 +398,9 @@ impl SessionStore {
                     })?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
+                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the session workspace table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -385,6 +408,24 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the tool event upgrade", error)
+                })?;
+            }
+            6 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the session workspace upgrade", error)
+                    })?;
+                transaction.execute_batch(SESSION_WORKSPACES_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the session workspace table", error)
+                })?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the session workspace upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -498,6 +539,67 @@ impl SessionStore {
         connection
             .execute("DELETE FROM sessions WHERE owned_id = ?", [owned_id])
             .map_err(|error| StoreError::sqlite("could not delete the session", error))?;
+        Ok(())
+    }
+
+    pub fn upsert_workspace_snapshot(&self, owned_id: &str, snapshot_json: &str) -> Result<()> {
+        let connection = self.lock()?;
+        let changed = connection
+            .execute(
+                "INSERT INTO session_workspaces (owned_id, snapshot_json, updated_at)
+                 SELECT owned_id, ?, CAST(strftime('%s', 'now') AS INTEGER) * 1000
+                 FROM sessions WHERE owned_id = ?
+                 ON CONFLICT(owned_id) DO UPDATE SET
+                    snapshot_json = excluded.snapshot_json,
+                    updated_at = excluded.updated_at",
+                params![snapshot_json, owned_id],
+            )
+            .map_err(|error| StoreError::sqlite("could not save the session workspace", error))?;
+        if changed != 1 {
+            return Err(StoreError::message(
+                "could not save the workspace because the session does not exist",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn get_workspace_snapshot(&self, owned_id: &str) -> Result<Option<String>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT snapshot_json FROM session_workspaces WHERE owned_id = ?",
+                [owned_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not read the session workspace", error))
+    }
+
+    pub fn delete_workspace_snapshot(&self, owned_id: &str) -> Result<()> {
+        let connection = self.lock()?;
+        connection
+            .execute("DELETE FROM session_workspaces WHERE owned_id = ?", [owned_id])
+            .map_err(|error| StoreError::sqlite("could not delete the session workspace", error))?;
+        Ok(())
+    }
+
+    pub fn clear_workspace_editor_tabs(&self) -> Result<()> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "UPDATE session_workspaces
+                 SET snapshot_json = json_remove(
+                        json_set(
+                            CASE WHEN json_type(snapshot_json) = 'object' THEN snapshot_json ELSE '{}' END,
+                            '$.openPaths', json('[]'), '$.activePath', json('null')
+                        ),
+                        '$.fileStates'
+                     ),
+                     updated_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
+                 WHERE json_valid(snapshot_json)",
+                [],
+            )
+            .map_err(|error| StoreError::sqlite("could not clear session workspace editors", error))?;
         Ok(())
     }
 

@@ -400,6 +400,30 @@ impl AgentRuntimeManager {
             .map_err(|error| error.to_string())
     }
 
+    pub fn write_workspace(&self, owned_id: &str, snapshot_json: &str) -> Result<(), String> {
+        self.store
+            .upsert_workspace_snapshot(owned_id, snapshot_json)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn read_workspace(&self, owned_id: &str) -> Result<Option<String>, String> {
+        self.store
+            .get_workspace_snapshot(owned_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn delete_workspace(&self, owned_id: &str) -> Result<(), String> {
+        self.store
+            .delete_workspace_snapshot(owned_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn clear_workspace_editors(&self) -> Result<(), String> {
+        self.store
+            .clear_workspace_editor_tabs()
+            .map_err(|error| error.to_string())
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Names an imported session without reading a single record of it, so the
     /// rail has something to show while the transcript is still being read.

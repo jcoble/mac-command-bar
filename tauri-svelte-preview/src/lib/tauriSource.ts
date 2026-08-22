@@ -35,6 +35,10 @@ import type {
   WorkflowDefinitionV1,
   WorkflowRunRecord
 } from './shell/workflows/workflowTypes';
+import {
+  normalizeWorkspaceSnapshot,
+  type SessionWorkspaceSnapshot
+} from './shell/sessionWorkspaces';
 import { trackTauriListener } from './shell/resourceDiagnostics.svelte.ts';
 
 export const defaultSourceScanLimit = 10_000;
@@ -1495,6 +1499,43 @@ export async function deleteAgentConversationSessionFromTauri(ownedId: string): 
   if (!isTauriRuntime() || !ownedId.trim()) return false;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<boolean>('delete_agent_conversation_session', { ownedId });
+}
+
+export async function writeAgentConversationWorkspaceFromTauri(
+  ownedId: string,
+  snapshot: SessionWorkspaceSnapshot
+): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  if (!ownedId.trim()) return false;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('write_agent_conversation_workspace', {
+    ownedId,
+    snapshotJson: JSON.stringify(snapshot)
+  });
+  return true;
+}
+
+export async function readAgentConversationWorkspaceFromTauri(
+  ownedId: string
+): Promise<SessionWorkspaceSnapshot | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  const snapshot = await invoke<string | null>('read_agent_conversation_workspace', { ownedId });
+  if (snapshot === null) return null;
+  const parsed: unknown = JSON.parse(snapshot);
+  return normalizeWorkspaceSnapshot(parsed);
+}
+
+export async function deleteAgentConversationWorkspaceFromTauri(ownedId: string): Promise<void> {
+  if (!isTauriRuntime() || !ownedId.trim()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('delete_agent_conversation_workspace', { ownedId });
+}
+
+export async function clearAgentConversationWorkspaceEditorsFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('clear_agent_conversation_workspace_editors');
 }
 
 /** Everything the backend needs to read a past session's transcript file in. */
