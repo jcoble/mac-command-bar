@@ -981,9 +981,14 @@
   async function confirmCloseSave(): Promise<void> {
     const request = closeRequest;
     if (!request) return;
+    const generation = sessionResourceGeneration;
     closeActionBusy = true;
     if (request.kind === 'file') {
       const saved = await saveEditorFile(request.path);
+      if (generation !== sessionResourceGeneration) {
+        closeActionBusy = false;
+        return;
+      }
       closeActionBusy = false;
       closeDialogOpen = false;
       closeRequest = null;
@@ -993,10 +998,18 @@
     const dirtyPaths = editorState.openFiles.filter((file) => file.dirty).map((file) => file.path);
     let saved = true;
     for (const path of dirtyPaths) {
+      if (generation !== sessionResourceGeneration) {
+        saved = false;
+        break;
+      }
       if (!(await saveEditorFile(path))) {
         saved = false;
         break;
       }
+    }
+    if (generation !== sessionResourceGeneration) {
+      closeActionBusy = false;
+      return;
     }
     if (!saved) closeActionBusy = false;
     closeDialogOpen = false;
