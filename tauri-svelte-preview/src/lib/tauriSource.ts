@@ -40,7 +40,7 @@ import type {
 import {
   normalizeWorkspaceSnapshot,
   type SessionWorkspaceSnapshot
-} from './shell/sessionWorkspaces';
+} from './shell/sessionWorkspaces.ts';
 import {
   trackTauriListener,
   trackTauriSubscriber,
