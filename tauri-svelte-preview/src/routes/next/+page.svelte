@@ -891,14 +891,10 @@
 			const oldPaths = editorState.openFiles.map((file) => file.path);
 			const record = await changeStructuredConversationCheckout(ownedId, root);
 			if (!record) return false;
-			// The backend has already committed the durable row by this point. A
-			// disposed route or replaced conversation must not touch its projection.
-			if (!checkoutStillCurrent()) return true;
-
+			// The backend has committed the new CWD. Replace the old-root workspace
+			// checkpoint before any stale exit or unrelated probe work can fail.
 			stopConversationTerminalProjection(ownedId);
 			service?.releaseView(ownedId);
-			await disposeExtensionApiProbeResources();
-			if (!checkoutStillCurrent()) return true;
 			releaseBrowserWorkspace();
 			clearBrowserUrl();
 			editorPanel?.releaseSessionResources(oldPaths);
@@ -916,11 +912,14 @@
 			activeWorkspaceSnapshot = null;
 			shellPanels.sessionPicked(true);
 			syncGitSurfaceVisibility();
+			if (!(await snapshotWorkspace(ownedId))) return false;
+			if (!checkoutStillCurrent()) return true;
+
+			await disposeExtensionApiProbeResources();
+			if (!checkoutStillCurrent()) return true;
 			await setExtensionApiProbeWorkspace({ ownedId, root: record.cwd });
 			if (!checkoutStillCurrent()) return true;
-			const saved = await snapshotWorkspace(ownedId);
-			if (!checkoutStillCurrent()) return true;
-			return saved;
+			return true;
 		} catch (error) {
 			rail.error = `Checkout change failed: ${describeError(error)}`;
 			return false;
