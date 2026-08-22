@@ -7,20 +7,7 @@ import {
   reconcileOwnedSessions
 } from '../src/lib/shell/ownedSessions.ts';
 import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
-import {
-  readWorkspaces,
-  SESSION_WORKSPACES_STORAGE_KEY,
-  writeWorkspaces
-} from '../src/lib/shell/sessionWorkspaces.ts';
-
-function storageStub(initial = {}) {
-  const values = new Map(Object.entries(initial));
-  return {
-    getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value),
-    removeItem: (key) => values.delete(key)
-  };
-}
+import { normalizeWorkspaceSnapshot } from '../src/lib/shell/sessionWorkspaces.ts';
 
 const scanRecord = {
   provider: 'codex', id: 'native-a', title: 'Runtime fixture', description: null,
@@ -66,17 +53,13 @@ const scanRecord = {
   assert.equal(reconciled.nativeSessionId, 'native-a');
   assert.deepEqual(parseStoredOwnedSessions(JSON.stringify([reconciled])), [reconciled]);
 
-  const storage = storageStub({
-    [SESSION_WORKSPACES_STORAGE_KEY]: JSON.stringify({ 'owned-a': fixture.workspace })
-  });
-  const restored = readWorkspaces(storage);
-  assert.equal('draft' in restored['owned-a'].conversation, false);
-  assert.deepEqual(restored['owned-a'].conversation.attachmentIds, ['attachment-a']);
-  assert.equal(restored['owned-a'].conversation.unknownLegacyField.retained, true);
+  const restored = normalizeWorkspaceSnapshot(fixture.workspace);
+  assert.ok(restored);
+  assert.equal('draft' in restored.conversation, false);
+  assert.deepEqual(restored.conversation.attachmentIds, ['attachment-a']);
+  assert.equal(restored.conversation.unknownLegacyField.retained, true);
   assert.deepEqual(fixture.transcript, [{ itemId: 'message-a', text: 'retained transcript' }]);
   assert.deepEqual(fixture.attachments, [{ id: 'attachment-a', path: '/managed/a.png' }]);
-  assert.equal(writeWorkspaces(storage, restored), true);
-  assert.deepEqual(readWorkspaces(storage), restored);
 
   const failed = reconcileOwnedSessions([reconciled], []).owned[0];
   assert.equal(failed.executionOwner, 'stopped');
@@ -120,7 +103,6 @@ const scanRecord = {
   assert.equal(appSession.origin, 'app');
   assert.equal(externalSession.origin, 'external');
 
-  const storage = storageStub();
   const snapshots = {
     'owned-a': {
       openPaths: [], activePath: null, selectedPath: null,
@@ -139,8 +121,12 @@ const scanRecord = {
       }
     }
   };
-  assert.equal(writeWorkspaces(storage, snapshots), true);
-  const restored = readWorkspaces(storage);
+  const restored = Object.fromEntries(
+    Object.entries(snapshots).map(([ownedId, snapshot]) => [
+      ownedId,
+      normalizeWorkspaceSnapshot(snapshot)!
+    ])
+  );
   assert.equal(restored['owned-a'].conversation.mode, 'structured', 'app-owned sessions stay structured');
   assert.equal(restored['owned-b'].conversation.mode, 'raw', 'external sessions retain raw mode');
   assert.equal(restored['owned-a'].conversation.writerLease.ownedId, 'owned-a');

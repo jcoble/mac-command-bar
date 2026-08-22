@@ -2,18 +2,8 @@ import assert from 'node:assert/strict';
 
 import {
   captureWorkspace,
-  readWorkspaces,
-  writeWorkspaces
+  normalizeWorkspaceSnapshot
 } from '../src/lib/shell/sessionWorkspaces.ts';
-
-function storageStub() {
-  const values = new Map();
-  return {
-    getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => values.set(key, value),
-    removeItem: (key) => values.delete(key)
-  };
-}
 
 function sessionSnapshot(name, mode, panel) {
   return captureWorkspace({
@@ -53,15 +43,18 @@ function sessionSnapshot(name, mode, panel) {
   });
 }
 
-const storage = storageStub();
 const sessions = {
   'owned-a': sessionSnapshot('alpha', 'structured', 'session'),
   'owned-b': sessionSnapshot('bravo', 'raw', 'browser'),
   'owned-c': sessionSnapshot('charlie', 'structured', 'diff')
 };
 
-assert.equal(writeWorkspaces(storage, sessions), true);
-const restored = readWorkspaces(storage);
+const restored = Object.fromEntries(
+  Object.entries(sessions).map(([ownedId, snapshot]) => [
+    ownedId,
+    normalizeWorkspaceSnapshot(snapshot)!
+  ])
+);
 
 assert.equal('draft' in restored['owned-a'].conversation, false);
 assert.equal(restored['owned-b'].conversation.mode, 'raw');
@@ -81,20 +74,15 @@ assert.notDeepEqual(
 );
 
 // A pre-conversation snapshot migrates without inventing another session's UI.
-storage.setItem(
-  'mac-command-bar.next.session-workspaces',
-  JSON.stringify({
-    legacy: {
-      openPaths: ['/repo/legacy.cs'],
-      activePath: '/repo/legacy.cs',
-      selectedPath: null,
-      scrollTop: 0,
-      diffPath: null,
-      diffRoot: null
-    }
-  })
-);
-const legacy = readWorkspaces(storage).legacy;
+const legacy = normalizeWorkspaceSnapshot({
+  openPaths: ['/repo/legacy.cs'],
+  activePath: '/repo/legacy.cs',
+  selectedPath: null,
+  scrollTop: 0,
+  diffPath: null,
+  diffRoot: null
+});
+assert.ok(legacy);
 assert.equal(legacy.conversation, undefined);
 assert.equal(legacy.browser, undefined);
 assert.equal(legacy.center, undefined);

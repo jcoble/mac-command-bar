@@ -3,47 +3,11 @@ import test from 'node:test';
 
 import {
   captureWorkspace,
-  clearWorkspaceEditorTabs,
   diffPathFor,
+  normalizeWorkspaceSnapshot,
   OPEN_PATHS_CAP,
-  planWorkspaceRestore,
-  pruneWorkspaces,
-  readWorkspaces,
-  SESSION_WORKSPACES_STORAGE_KEY,
-  writeWorkspaces
+  planWorkspaceRestore
 } from '../src/lib/shell/sessionWorkspaces.ts';
-
-/** A storage stub that can be handed junk, or made to refuse writes. */
-function storageStub(initial = {}, { refuseWrites = false } = {}) {
-  const items = new Map(Object.entries(initial));
-  return {
-    items,
-    getItem: (key) => (items.has(key) ? items.get(key) : null),
-    setItem: (key, value) => {
-      if (refuseWrites) throw new Error('storage is full');
-      items.set(key, value);
-    },
-    removeItem: (key) => items.delete(key)
-  };
-}
-
-// Close All Editors empties every session's saved tabs without dropping its other workspace state.
-{
-  const snapshot = captureWorkspace({
-    openFiles: openFiles('/repo/a.ts'),
-    activePath: '/repo/a.ts',
-    selectedPath: '/repo/selected.ts',
-    scrollTop: 18
-  });
-  const all = { 'owned-1': snapshot, 'owned-2': snapshot };
-  const cleared = clearWorkspaceEditorTabs(all);
-  assert.deepEqual(Object.values(cleared).map(({ openPaths, activePath }) => ({ openPaths, activePath })), [
-    { openPaths: [], activePath: null },
-    { openPaths: [], activePath: null }
-  ]);
-  assert.equal(cleared['owned-1'].selectedPath, '/repo/selected.ts');
-  assert.equal(all['owned-1'].openPaths.length, 1, 'the input is untouched');
-}
 
 /** Editor entries with only the field the capture reads. */
 function openFiles(...paths) {
@@ -51,7 +15,6 @@ function openFiles(...paths) {
 }
 
 test('workspace_record_round_trips_view_state_per_path', () => {
-  const storage = storageStub();
   const viewState = {
     cursorState: [{ position: { lineNumber: 8, column: 3 } }],
     viewState: { scrollTop: 240, scrollLeft: 0 }
@@ -63,9 +26,10 @@ test('workspace_record_round_trips_view_state_per_path', () => {
     scrollTop: 0,
     viewStates: { '/repo/b.ts': viewState }
   });
+  const restored = normalizeWorkspaceSnapshot(snapshot);
+  assert.ok(restored);
 
-  assert.equal(writeWorkspaces(storage, { session: snapshot }), true);
-  assert.deepEqual(readWorkspaces(storage).session.fileStates, {
+  assert.deepEqual(restored.fileStates, {
     '/repo/b.ts': { viewState }
   });
 });
@@ -108,18 +72,6 @@ test('capture_keeps_every_drafted_path_over_the_cap', () => {
 
   assert.ok(snapshot.openPaths.includes(paths[0]));
   assert.equal(snapshot.fileStates?.[paths[0]]?.draftContent, 'oldest unsaved draft');
-});
-
-test('capture_reports_refused_write', () => {
-  const storage = storageStub({}, { refuseWrites: true });
-  const snapshot = captureWorkspace({
-    openFiles: openFiles('/repo/a.ts'),
-    activePath: '/repo/a.ts',
-    selectedPath: null,
-    scrollTop: 0
-  });
-
-  assert.equal(writeWorkspaces(storage, { session: snapshot }), false);
 });
 
 test('restore_plan_marks_the_active_path_without_file_contents', () => {
@@ -235,84 +187,18 @@ test('restore_plan_marks_the_active_path_without_file_contents', () => {
   assert.equal(snapshot.scrollTop, 0);
 }
 
-// What was written is what comes back.
-{
-  const storage = storageStub();
-  const all = {
-    'owned-1': captureWorkspace({
-      openFiles: openFiles('/repo/a.ts'),
-      activePath: '/repo/a.ts',
-      selectedPath: '/repo/a.ts',
-      scrollTop: 20
-    })
-  };
-  assert.equal(writeWorkspaces(storage, all), true);
-  assert.ok(storage.items.has(SESSION_WORKSPACES_STORAGE_KEY), 'stored under the shared key');
-  assert.deepEqual(readWorkspaces(storage), all);
-}
-
-// A storage that refuses the write says so rather than throwing into the shell.
-{
-  const storage = storageStub({}, { refuseWrites: true });
-  assert.equal(writeWorkspaces(storage, {}), false);
-}
-
-// Nothing stored, unreadable JSON, and a stored value that is not a map of
-// sessions all come back as "no session has a workspace yet".
-{
-  assert.deepEqual(readWorkspaces(storageStub()), {});
-  assert.deepEqual(
-    readWorkspaces(storageStub({ [SESSION_WORKSPACES_STORAGE_KEY]: '{not json' })),
-    {}
-  );
-  assert.deepEqual(readWorkspaces(storageStub({ [SESSION_WORKSPACES_STORAGE_KEY]: 'null' })), {});
-  assert.deepEqual(readWorkspaces(storageStub({ [SESSION_WORKSPACES_STORAGE_KEY]: '[1,2]' })), {});
-  assert.deepEqual(readWorkspaces(storageStub({ [SESSION_WORKSPACES_STORAGE_KEY]: '"text"' })), {});
-}
-
-// A storage that throws on read is a storage with nothing in it.
-{
-  const storage = {
-    getItem() {
-      throw new Error('storage is unavailable');
-    },
-    setItem() {},
-    removeItem() {}
-  };
-  assert.deepEqual(readWorkspaces(storage), {});
-}
-
-// One rotten entry costs only itself; the sessions beside it still come back.
-{
-  const stored = JSON.stringify({
-    'owned-junk': null,
-    'owned-array': [],
-    'owned-text': 'nonsense',
-    'owned-good': {
-      openPaths: ['/repo/a.ts'],
-      activePath: '/repo/a.ts',
-      selectedPath: null,
-      scrollTop: 12
-    }
-  });
-  const all = readWorkspaces(storageStub({ [SESSION_WORKSPACES_STORAGE_KEY]: stored }));
-  assert.deepEqual(Object.keys(all), ['owned-good']);
-}
-
 // Fields of the wrong type inside an otherwise fine entry are replaced with the
 // empty version of themselves, so a half-corrupt record still restores a session
 // rather than breaking the switch.
 {
-  const stored = JSON.stringify({
-    'owned-1': {
-      openPaths: ['/repo/a.ts', 7, null, '/repo/b.ts'],
-      activePath: 42,
-      selectedPath: {},
-      scrollTop: 'far down'
-    }
+  const snapshot = normalizeWorkspaceSnapshot({
+    openPaths: ['/repo/a.ts', 7, null, '/repo/b.ts'],
+    activePath: 42,
+    selectedPath: {},
+    scrollTop: 'far down'
   });
-  const all = readWorkspaces(storageStub({ [SESSION_WORKSPACES_STORAGE_KEY]: stored }));
-  assert.deepEqual(all['owned-1'], {
+  assert.ok(snapshot);
+  assert.deepEqual(snapshot, {
     openPaths: ['/repo/a.ts', '/repo/b.ts'],
     activePath: null,
     selectedPath: null,
@@ -328,42 +214,14 @@ test('restore_plan_marks_the_active_path_without_file_contents', () => {
 // written by an older build cannot grow without limit.
 {
   const paths = Array.from({ length: 30 }, (_, index) => `/repo/file-${index}.ts`);
-  const stored = JSON.stringify({
-    'owned-1': {
-      openPaths: paths,
-      activePath: '/repo/file-29.ts',
-      selectedPath: null,
-      scrollTop: 0
-    }
-  });
-  const all = readWorkspaces(storageStub({ [SESSION_WORKSPACES_STORAGE_KEY]: stored }));
-  assert.deepEqual(all['owned-1'].openPaths, paths.slice(18));
-}
-
-// Pruning keeps the sessions still on the rail and drops the rest, so removing a
-// session takes its workspace with it.
-{
-  const snapshot = captureWorkspace({
-    openFiles: openFiles('/repo/a.ts'),
-    activePath: '/repo/a.ts',
+  const snapshot = normalizeWorkspaceSnapshot({
+    openPaths: paths,
+    activePath: '/repo/file-29.ts',
     selectedPath: null,
     scrollTop: 0
   });
-  const all = { 'owned-1': snapshot, 'owned-2': snapshot, 'owned-3': snapshot };
-  const kept = pruneWorkspaces(all, ['owned-1', 'owned-3', 'owned-never-seen']);
-  assert.deepEqual(Object.keys(kept), ['owned-1', 'owned-3']);
-  assert.deepEqual(Object.keys(all), ['owned-1', 'owned-2', 'owned-3'], 'the input is untouched');
-}
-
-// An empty rail keeps no workspaces at all.
-{
-  const snapshot = captureWorkspace({
-    openFiles: [],
-    activePath: null,
-    selectedPath: null,
-    scrollTop: 0
-  });
-  assert.deepEqual(pruneWorkspaces({ 'owned-1': snapshot }, []), {});
+  assert.ok(snapshot);
+  assert.deepEqual(snapshot.openPaths, paths.slice(18));
 }
 
 // Which file the Diff tab should show for the session being restored, or null
@@ -401,26 +259,25 @@ test('restore_plan_marks_the_active_path_without_file_contents', () => {
 // Structured is the pinned mode for app-owned agents; raw remains valid for an
 // external session, so the persisted union intentionally stays two-valued.
 {
-  const storage = storageStub({
-    [SESSION_WORKSPACES_STORAGE_KEY]: JSON.stringify({
-      current: {
-        openPaths: [], activePath: null, selectedPath: null,
-        scrollTop: 0, diffPath: null, diffRoot: null,
-        conversation: {
-          mode: 'structured', draft: 'keep', version: 1, generation: 4,
-          owner: 'terminal', attachmentIds: ['attachment-a'], config: { future: 'value' },
-          parentScrollTop: 20, childScrollTopById: { child: 30 }, sequence: 12,
-          telemetry: { latencyMs: 7 }, futureField: { nested: true }
-        }
-      },
-      legacy: {
-        openPaths: [], activePath: null, selectedPath: null,
-        scrollTop: 0, diffPath: null, diffRoot: null,
-        conversation: { mode: 'raw', draft: 'old', unknownLegacyField: 'preserved' }
+  const restored = {
+    current: normalizeWorkspaceSnapshot({
+      openPaths: [], activePath: null, selectedPath: null,
+      scrollTop: 0, diffPath: null, diffRoot: null,
+      conversation: {
+        mode: 'structured', draft: 'keep', version: 1, generation: 4,
+        owner: 'terminal', attachmentIds: ['attachment-a'], config: { future: 'value' },
+        parentScrollTop: 20, childScrollTopById: { child: 30 }, sequence: 12,
+        telemetry: { latencyMs: 7 }, futureField: { nested: true }
       }
+    }),
+    legacy: normalizeWorkspaceSnapshot({
+      openPaths: [], activePath: null, selectedPath: null,
+      scrollTop: 0, diffPath: null, diffRoot: null,
+      conversation: { mode: 'raw', draft: 'old', unknownLegacyField: 'preserved' }
     })
-  });
-  const restored = readWorkspaces(storage);
+  };
+  assert.ok(restored.current);
+  assert.ok(restored.legacy);
   assert.equal(restored.current.conversation.mode, 'structured', 'app-owned mode is pinned');
   assert.equal(restored.legacy.conversation.mode, 'raw', 'external raw mode persists');
   assert.equal(restored.current.conversation.futureField.nested, true);

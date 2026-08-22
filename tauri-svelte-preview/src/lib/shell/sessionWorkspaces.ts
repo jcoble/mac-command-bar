@@ -2,8 +2,8 @@
  * sessionWorkspaces.ts — what each session had open, kept per session.
  *
  * PURE: no store, no DOM, no backend call. It only turns "this is what the
- * editor and the file tree look like right now" into a small record, and reads
- * those records back out of a storage the caller hands in.
+ * editor and the file tree look like right now" into a small record, and
+ * normalizes records read back from SQLite.
  *
  * The problem it exists for: the editor and the file tree are one of each for
  * the whole shell, so two sessions working in the same repository were sharing
@@ -14,7 +14,6 @@
  * What is NOT here: any decision about when to save or restore. The page owns
  * that (see `+page.svelte`), so nothing in this file can fire on its own.
  */
-import { loadLayout, saveLayout, type LayoutStorage } from './layout/layoutStorage.ts';
 import type { AgentExecutionOwner } from './ownedSessions.ts';
 import type {
   AgentConfigValue,
@@ -104,13 +103,10 @@ export interface SessionWorkspaceSnapshot {
   rightTab: RightTabId;
 }
 
-export const SESSION_WORKSPACES_STORAGE_KEY = 'mac-command-bar.next.session-workspaces';
-
 /**
  * How many tabs a session's record keeps. Twelve is more than anyone has open
- * at once and far less than the hundreds a long session can accumulate — the
- * point of the limit is that every session on the rail is stored together, so
- * one busy session must not be able to fill the browser's storage on its own.
+ * at once and far less than the hundreds a long session can accumulate. The
+ * limit bounds both the SQLite row and the active frontend projection.
  */
 export const OPEN_PATHS_CAP = 12;
 
@@ -414,55 +410,6 @@ export function diffPathFor(
   const folder = (root ?? '').trim();
   if (!snapshot || !folder || !snapshot.diffPath || !snapshot.diffRoot) return null;
   return sameFolder(snapshot.diffRoot, folder) ? snapshot.diffPath : null;
-}
-
-/** Every session's record, by owned id. Anything unreadable — no value, broken
- * JSON, a value that is not a map — comes back as "no session has one yet". */
-export function readWorkspaces(storage: LayoutStorage): Record<string, SessionWorkspaceSnapshot> {
-  const stored = loadLayout<unknown>(storage, SESSION_WORKSPACES_STORAGE_KEY);
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
-
-  const all: Record<string, SessionWorkspaceSnapshot> = {};
-  for (const [ownedId, value] of Object.entries(stored)) {
-    const snapshot = normalizeWorkspaceSnapshot(value);
-    if (snapshot) all[ownedId] = snapshot;
-  }
-  return all;
-}
-
-/** False means the write was refused (a full storage). Nothing is retried: the
- * cost is one session coming back to an empty editor after a reload. */
-export function writeWorkspaces(
-  storage: LayoutStorage,
-  all: Record<string, SessionWorkspaceSnapshot>
-): boolean {
-  return saveLayout(storage, SESSION_WORKSPACES_STORAGE_KEY, all);
-}
-
-/** Drop the records of sessions the rail no longer has, so a removed session
- * takes its workspace with it and the store cannot grow forever. */
-export function pruneWorkspaces(
-  all: Record<string, SessionWorkspaceSnapshot>,
-  keepOwnedIds: string[]
-): Record<string, SessionWorkspaceSnapshot> {
-  const keep = new Set(keepOwnedIds);
-  const kept: Record<string, SessionWorkspaceSnapshot> = {};
-  for (const [ownedId, snapshot] of Object.entries(all)) {
-    if (keep.has(ownedId)) kept[ownedId] = snapshot;
-  }
-  return kept;
-}
-
-/** Close every saved editor strip while preserving the rest of each workspace. */
-export function clearWorkspaceEditorTabs(
-  all: Record<string, SessionWorkspaceSnapshot>
-): Record<string, SessionWorkspaceSnapshot> {
-  return Object.fromEntries(
-    Object.entries(all).map(([ownedId, snapshot]) => [
-      ownedId,
-      { ...snapshot, openPaths: [], activePath: null, fileStates: undefined }
-    ])
-  );
 }
 
 /** What the page has to do to put a session's editor back the way it was. */
