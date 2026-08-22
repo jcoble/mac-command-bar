@@ -135,8 +135,11 @@ export async function readChildConversationTranscript(input: {
   nativeSessionId: string;
   childSessionId: string;
 }): Promise<void> {
+  const generation = getConversationSession(input.ownedId)?.generation ?? 0;
+  const active = childTranscriptReads.get(input.ownedId);
+  if (active?.generation === generation && active.childSessionId === input.childSessionId) return;
   const readToken = {
-    generation: getConversationSession(input.ownedId)?.generation ?? 0,
+    generation,
     childSessionId: input.childSessionId
   };
   childTranscriptReads.set(input.ownedId, readToken);

@@ -23,7 +23,10 @@
     getConversationSession,
     setConversationSelectedChild
   } from '$lib/shell/conversation/conversationStore.svelte.ts';
-  import { readChildConversationTranscript } from '$lib/shell/conversation/conversationService.ts';
+  import {
+    cancelChildConversationTranscriptRead,
+    readChildConversationTranscript
+  } from '$lib/shell/conversation/conversationService.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { showCenterTab } from '$lib/shell/workbenchNavigation.ts';
 
@@ -61,6 +64,8 @@
   $effect(() => {
     if (!visible || !ownedId || !conversation || !selectedChildId) return;
     if (!selectedChildRunning) return;
+    const parentGeneration = conversation.generation;
+    void parentGeneration;
     const nativeSessionId = rail.owned.find((session) => session.ownedId === ownedId)?.nativeSessionId;
     if (!nativeSessionId) return;
 
@@ -72,12 +77,16 @@
         childSessionId: selectedChildId
       }).catch(() => undefined);
     }, 10_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      cancelChildConversationTranscriptRead(ownedId);
+    };
   });
 
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation) return;
     const next = selectedChildId === childId ? null : childId;
+    cancelChildConversationTranscriptRead(ownedId);
     setConversationSelectedChild(ownedId, next);
     if (!next) return;
     // The conversation in the center switches to the child that was picked, so
