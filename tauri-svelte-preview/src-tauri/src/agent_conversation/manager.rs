@@ -1809,14 +1809,15 @@ impl AgentRuntimeManager {
             .await
             .prompt_once_on(&native_session_id, input)
             .await;
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
-            session.prompt_once_active = false;
+        {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
+                session.prompt_once_active = false;
+            }
         }
-        drop(sessions);
         drop(lifecycle);
         if let Err(error) = self.suspend_if_quiescent(owned_id, generation).await {
             crate::debug_log::stderr_log!(
