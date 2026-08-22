@@ -169,6 +169,7 @@
   /** Language-server processes the desktop app reports for this project. */
   let languageServerPids = $state<number[]>([]);
   let destroyed = false;
+  let fileStrip = $state<HTMLDivElement | null>(null);
 
   function hydrateLanguageIntelligenceChoices(): Promise<void> {
     if (languageIntelligenceHydrated) return Promise.resolve();
@@ -1129,6 +1130,16 @@
     void ensureCodeEditor();
   });
 
+  // Keep the selected tab on screen when opening, selecting, or restoring files.
+  $effect(() => {
+    const activePath = editorState.activePath;
+    const openFiles = editorState.openFiles;
+    if (!activePath || openFiles.length === 0 || !fileStrip) return;
+    fileStrip
+      .querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  });
+
   /**
    * Keep the top strip's copy of the language-server controls in step.
    *
@@ -1188,7 +1199,7 @@
     </div>
   {:else}
     <div class="editor-header">
-      <div class="file-strip" role="tablist" aria-label="Open files">
+      <div bind:this={fileStrip} class="file-strip" role="tablist" aria-label="Open files">
         {#each editorState.openFiles as file (file.path)}
           <ContextMenu.Root>
             <ContextMenu.Trigger>
