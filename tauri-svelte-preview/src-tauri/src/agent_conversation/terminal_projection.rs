@@ -191,6 +191,13 @@ pub struct TerminalProjectionRegistry {
 }
 
 impl TerminalProjectionRegistry {
+    pub fn live_watcher_count(&self) -> Result<usize, String> {
+        self.watchers
+            .lock()
+            .map(|watchers| watchers.len())
+            .map_err(|_| "Terminal projection registry is unavailable".to_string())
+    }
+
     pub fn start(
         &self,
         manager: AgentRuntimeManager,

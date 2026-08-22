@@ -181,6 +181,7 @@
         <span><strong>{resourceSampleState.sample.diagnostics.conversations.activeTurns}</strong> active turns</span>
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.userPtys}</strong> user PTYs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.agentToolPtys}</strong> tool PTYs</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.terminals.transcriptProjections}</strong> transcript projections</span>
         <span><strong>{resourceSampleState.sample.diagnostics.languageServers.runningProcesses}</strong> LSPs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.browser.nativeViews}</strong> browser views</span>
       </section>

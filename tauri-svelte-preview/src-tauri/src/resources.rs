@@ -178,6 +178,7 @@ pub struct ResourceDiagnostics {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalResourceDiagnostics {
     pub live_sessions: usize,
+    pub transcript_projections: usize,
     pub user_ptys: usize,
     pub agent_tool_ptys: usize,
     pub run_configurations: usize,
@@ -432,6 +433,10 @@ fn read_resource_snapshot_at_generation(
 pub async fn read_resource_sample(
     registry: State<'_, ResourceRegistry>,
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
+    terminal_projection_registry: State<
+        '_,
+        crate::agent_conversation::terminal_projection::TerminalProjectionRegistry,
+    >,
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
     lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
     browser_registry: State<'_, crate::browser::BrowserRegistry>,
@@ -442,6 +447,7 @@ pub async fn read_resource_sample(
     let agent_runtime = agent_runtime.inner().clone();
     let lsp_registry = lsp_registry.inner().clone();
     let native_browser_views = browser_registry.live_view_count()?;
+    let transcript_projections = terminal_projection_registry.live_watcher_count()?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let owners = resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?;
@@ -450,6 +456,7 @@ pub async fn read_resource_sample(
             &agent_runtime,
             &lsp_registry,
             native_browser_views,
+            transcript_projections,
         )?;
         let mut system = system
             .lock()
@@ -583,6 +590,7 @@ fn resource_diagnostics(
     agent_runtime: &crate::agent_conversation::manager::AgentRuntimeManager,
     lsp_registry: &crate::lsp::SourceLspRegistry,
     native_browser_views: usize,
+    transcript_projections: usize,
 ) -> Result<ResourceDiagnostics, String> {
     let terminal_sessions = crate::terminal::list_terminal_sessions(terminal_registry)?;
     let live_terminal_sessions = terminal_sessions
@@ -593,6 +601,7 @@ fn resource_diagnostics(
         conversations: agent_runtime.resource_diagnostics()?,
         terminals: TerminalResourceDiagnostics {
             live_sessions: live_terminal_sessions.len(),
+            transcript_projections,
             user_ptys: live_terminal_sessions
                 .iter()
                 .filter(|session| session.kind == crate::terminal::TerminalKind::UserPty)

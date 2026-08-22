@@ -34,6 +34,7 @@ export type ResourceDiagnostics = {
   };
   terminals: {
     liveSessions: number;
+    transcriptProjections: number;
     userPtys: number;
     agentToolPtys: number;
     runConfigurations: number;
