@@ -12,6 +12,13 @@ export type ResourceSampleAppPart = {
   rssBytes: number;
 };
 
+export type ResourceSampleCategory = {
+  label: string;
+  cpuPercent: number;
+  rssBytes: number;
+  processCount: number;
+};
+
 /** The last sixty readings of one row, oldest first. */
 export type ResourceSampleHistory = {
   cpuPercent: number[];
@@ -88,5 +95,6 @@ export type ResourceSample = {
     parts: ResourceSampleAppPart[];
     history: ResourceSampleHistory;
   };
+  processCategories: ResourceSampleCategory[];
   groups: ResourceSampleGroup[];
 };

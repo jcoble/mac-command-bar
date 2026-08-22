@@ -173,6 +173,11 @@
       <p class="message receipt">{resourceStopState.receipt}</p>
     {/if}
     {#if resourceSampleState.sample}
+      <section class="diagnostic-strip" aria-label="Assembly process footprint">
+        {#each resourceSampleState.sample.processCategories as category (category.label)}
+          <span><strong>{formatResourceBytes(category.rssBytes)}</strong> {category.label}</span>
+        {/each}
+      </section>
       <section class="diagnostic-strip" aria-label="Assembly lifecycle counts">
         <span><strong>{resourceSampleState.sample.diagnostics.conversations.durableSessionRows}</strong> SQLite sessions</span>
         <span><strong>{resourceSampleState.sample.diagnostics.conversations.liveSessionOverlays}</strong> overlays</span>

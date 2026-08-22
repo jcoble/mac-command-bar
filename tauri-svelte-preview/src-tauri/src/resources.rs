@@ -162,6 +162,7 @@ pub struct ResourceSample {
     pub totals: ResourceSampleTotals,
     pub diagnostics: ResourceDiagnostics,
     pub app: ResourceSampleApp,
+    pub process_categories: Vec<ResourceSampleCategory>,
     pub groups: Vec<ResourceSampleGroup>,
 }
 
@@ -230,6 +231,15 @@ pub struct ResourceSampleAppPart {
     pub pid: u32,
     pub cpu_percent: f32,
     pub rss_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceSampleCategory {
+    pub label: &'static str,
+    pub cpu_percent: f32,
+    pub rss_bytes: u64,
+    pub process_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -897,6 +907,92 @@ fn app_part_label(process: &ObservedProcess, app_pid: u32) -> String {
     }
 }
 
+const RESOURCE_PROCESS_CATEGORIES: [&str; 9] = [
+    "Main app",
+    "WebContent",
+    "Networking",
+    "Graphics and Media/GPU",
+    "AutoFill",
+    "ACP adapters/sidecars",
+    "PTYs",
+    "LSPs",
+    "Unknown / unattributed",
+];
+
+fn resource_owner_category(owner: &ResourceSampleOwner) -> &'static str {
+    if owner.kind == ResourceSampleSessionKind::Conversation {
+        "ACP adapters/sidecars"
+    } else if owner.kind == ResourceSampleSessionKind::Terminal
+        || owner.label.starts_with("Agent tool ")
+    {
+        "PTYs"
+    } else if owner.label.ends_with(" language server") {
+        "LSPs"
+    } else {
+        "Unknown / unattributed"
+    }
+}
+
+fn resource_app_process_category(process: &ObservedProcess, app_pid: u32) -> &'static str {
+    if process.pid == app_pid {
+        return "Main app";
+    }
+    match process.name.as_str() {
+        "com.apple.WebKit.WebContent" => "WebContent",
+        "com.apple.WebKit.Networking" => "Networking",
+        "com.apple.WebKit.GPU" => "Graphics and Media/GPU",
+        "AutoFillPanelService" | "com.apple.AutoFillPanel" => "AutoFill",
+        _ => "Unknown / unattributed",
+    }
+}
+
+fn resource_process_categories(
+    app_pid: u32,
+    processes: &[ObservedProcess],
+    claims: &HashMap<u32, (usize, usize)>,
+    app_process_ids: &HashSet<u32>,
+    owners: &[ResourceSampleOwner],
+) -> Vec<ResourceSampleCategory> {
+    let mut totals = RESOURCE_PROCESS_CATEGORIES
+        .into_iter()
+        .map(|label| (label, (0.0f32, 0u64, 0usize)))
+        .collect::<BTreeMap<_, _>>();
+    for process in processes {
+        let Some(category) = claims
+            .get(&process.pid)
+            .map(|(owner_index, _)| resource_owner_category(&owners[*owner_index]))
+            .or_else(|| {
+                app_process_ids
+                    .contains(&process.pid)
+                    .then(|| resource_app_process_category(process, app_pid))
+            })
+        else {
+            continue;
+        };
+        let entry = totals
+            .get_mut(category)
+            .expect("every process category has a serialized row");
+        entry.0 += process.cpu_percent;
+        entry.1 += process.rss_bytes;
+        entry.2 += 1;
+    }
+    RESOURCE_PROCESS_CATEGORIES
+        .into_iter()
+        .map(|label| {
+            let (cpu_percent, rss_bytes, process_count) = totals
+                .get(label)
+                .copied()
+                .expect("every process category has a serialized row");
+            ResourceSampleCategory {
+                label,
+                cpu_percent,
+                rss_bytes,
+                process_count,
+            }
+        })
+        .collect()
+}
+
 fn build_resource_sample(
     generated_at_ms: u128,
     app_pid: u32,
@@ -993,6 +1089,13 @@ fn build_resource_sample(
             claims.contains_key(&process.pid) || app_process_ids.contains(&process.pid)
         })
         .collect::<Vec<_>>();
+    let process_categories = resource_process_categories(
+        app_pid,
+        processes,
+        &claims,
+        &app_process_ids,
+        owners,
+    );
     ResourceSample {
         generated_at_ms,
         totals: ResourceSampleTotals {
@@ -1005,6 +1108,7 @@ fn build_resource_sample(
             parts: app_parts,
             history: ResourceSampleHistory::default(),
         },
+        process_categories,
         groups,
     }
 }
