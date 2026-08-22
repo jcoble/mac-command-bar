@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -123,6 +123,26 @@ CREATE INDEX IF NOT EXISTS evidence_artifacts_newest_idx
     ON evidence_artifacts(captured_at_ms DESC, id ASC);
 CREATE INDEX IF NOT EXISTS evidence_artifacts_run_idx
     ON evidence_artifacts(orchestration_run_id, captured_at_ms DESC);";
+
+const NOTION_TASK_PROJECTION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notion_task_projections (
+    source_task_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    project TEXT NOT NULL,
+    status TEXT NOT NULL,
+    priority TEXT,
+    assignee TEXT,
+    due_date TEXT,
+    source_url TEXT NOT NULL,
+    fetched_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notion_task_projections_offline_page_idx
+    ON notion_task_projections(
+        project COLLATE NOCASE ASC,
+        status COLLATE NOCASE ASC,
+        due_date ASC,
+        title COLLATE NOCASE ASC,
+        source_task_id ASC
+    );";
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -318,6 +338,19 @@ pub struct EvidenceArtifact {
     pub expires_at_ms: Option<i64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotionTaskProjection {
+    pub source_task_id: String,
+    pub title: String,
+    pub project: String,
+    pub status: String,
+    pub priority: Option<String>,
+    pub assignee: Option<String>,
+    pub due_date: Option<String>,
+    pub source_url: String,
+    pub fetched_at_ms: i64,
+}
+
 impl SessionStore {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)
@@ -426,6 +459,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -469,6 +503,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -502,6 +537,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -535,6 +571,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -567,6 +604,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -596,6 +634,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -623,6 +662,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -650,6 +690,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -672,6 +713,7 @@ impl SessionStore {
                         StoreError::sqlite("could not create the orchestration table", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -692,6 +734,7 @@ impl SessionStore {
                     })?;
                 add_attachment_thumbnail_schema(&transaction)?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -708,6 +751,7 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the evidence artifact upgrade", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -715,6 +759,25 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the evidence artifact upgrade", error)
+                })?;
+            }
+            11 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite(
+                            "could not begin the Notion task projection upgrade",
+                            error,
+                        )
+                    })?;
+                add_notion_task_projection_schema(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the Notion task projection upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -730,6 +793,7 @@ impl SessionStore {
                 StoreError::sqlite("could not create the orchestration table", error)
             })?;
         add_evidence_artifact_schema(&connection)?;
+        add_notion_task_projection_schema(&connection)?;
 
         SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
@@ -1181,6 +1245,92 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not delete the evidence artifact", error))?;
         transaction.commit().map_err(|error| {
             StoreError::sqlite("could not finish the evidence artifact delete", error)
+        })
+    }
+
+    pub fn replace_notion_task_projections(&self, tasks: &[NotionTaskProjection]) -> Result<()> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the Notion task projection snapshot", error)
+            })?;
+        transaction
+            .execute("DELETE FROM notion_task_projections", [])
+            .map_err(|error| {
+                StoreError::sqlite("could not clear the Notion task projection snapshot", error)
+            })?;
+        for task in tasks {
+            transaction
+                .execute(
+                    "INSERT INTO notion_task_projections (
+                        source_task_id, title, project, status, priority, assignee, due_date,
+                        source_url, fetched_at_ms
+                     )
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        task.source_task_id,
+                        task.title,
+                        task.project,
+                        task.status,
+                        task.priority,
+                        task.assignee,
+                        task.due_date,
+                        task.source_url,
+                        task.fetched_at_ms,
+                    ],
+                )
+                .map_err(|error| {
+                    StoreError::sqlite("could not save a Notion task projection", error)
+                })?;
+        }
+        transaction.commit().map_err(|error| {
+            StoreError::sqlite(
+                "could not finish the Notion task projection snapshot",
+                error,
+            )
+        })
+    }
+
+    pub fn list_notion_task_projections(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<NotionTaskProjection>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT source_task_id, title, project, status, priority, assignee, due_date,
+                        source_url, fetched_at_ms
+                 FROM notion_task_projections
+                 ORDER BY project COLLATE NOCASE ASC,
+                          status COLLATE NOCASE ASC,
+                          due_date IS NULL ASC,
+                          due_date ASC,
+                          title COLLATE NOCASE ASC,
+                          source_task_id ASC
+                 LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not prepare the Notion task projection page", error)
+            })?;
+        let rows = statement
+            .query_map(params![i64::from(limit), i64::from(offset)], |row| {
+                Ok(NotionTaskProjection {
+                    source_task_id: row.get(0)?,
+                    title: row.get(1)?,
+                    project: row.get(2)?,
+                    status: row.get(3)?,
+                    priority: row.get(4)?,
+                    assignee: row.get(5)?,
+                    due_date: row.get(6)?,
+                    source_url: row.get(7)?,
+                    fetched_at_ms: row.get(8)?,
+                })
+            })
+            .map_err(|error| StoreError::sqlite("could not list Notion task projections", error))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(|error| {
+            StoreError::sqlite("could not read the Notion task projection page", error)
         })
     }
 
@@ -1847,6 +1997,14 @@ fn add_evidence_artifact_schema(connection: &Connection) -> Result<()> {
         .map_err(|error| StoreError::sqlite("could not create the evidence artifact table", error))
 }
 
+fn add_notion_task_projection_schema(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(NOTION_TASK_PROJECTION_SCHEMA)
+        .map_err(|error| {
+            StoreError::sqlite("could not create the Notion task projection table", error)
+        })
+}
+
 /// Writes every persisted session field on the caller's connection or transaction.
 /// Where the transcript importer records how far back through a past transcript
 /// a session has been read.
@@ -2118,7 +2276,7 @@ mod tests {
     use rusqlite::Connection;
     use tempfile::TempDir;
 
-    use super::{EventRow, EvidenceArtifact, SessionRow, SessionStore};
+    use super::{EventRow, EvidenceArtifact, NotionTaskProjection, SessionRow, SessionStore};
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {
         SessionRow {
@@ -2237,6 +2395,26 @@ mod tests {
             thumbnail_ref: Some(format!("managed/thumbs/{id}.png")),
             pinned: false,
             expires_at_ms: Some(captured_at_ms + 10_000),
+        }
+    }
+
+    fn fixture_notion_task(
+        source_task_id: &str,
+        project: &str,
+        status: &str,
+        title: &str,
+        due_date: Option<&str>,
+    ) -> NotionTaskProjection {
+        NotionTaskProjection {
+            source_task_id: source_task_id.to_owned(),
+            title: title.to_owned(),
+            project: project.to_owned(),
+            status: status.to_owned(),
+            priority: Some("High".to_owned()),
+            assignee: Some("Codex".to_owned()),
+            due_date: due_date.map(str::to_owned),
+            source_url: format!("https://notion.local/{source_task_id}"),
+            fetched_at_ms: 123_456,
         }
     }
 
@@ -2577,6 +2755,138 @@ mod tests {
             .expect("count evidence tables");
         assert_eq!(version, super::SCHEMA_VERSION);
         assert_eq!(table_count, 1);
+    }
+
+    #[test]
+    fn schema_v11_upgrade_adds_notion_projection_and_keeps_evidence() {
+        let directory = TempDir::new().expect("create temporary directory");
+        let path = directory.path().join("sessions.db");
+        let connection = Connection::open(&path).expect("create version eleven database");
+        connection
+            .execute_batch(super::EVIDENCE_ARTIFACT_SCHEMA)
+            .expect("create evidence artifact schema");
+        let artifact = fixture_evidence_artifact("sentinel", 55_000);
+        connection
+            .execute(
+                "INSERT INTO evidence_artifacts (
+                    id, orchestration_run_id, task_id, agent, provider, scenario,
+                    commit_hash, branch, worktree, captured_at_ms, kind, status, byte_size,
+                    original_ref, thumbnail_ref, pinned, expires_at_ms
+                 )
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    artifact.id,
+                    artifact.orchestration_run_id,
+                    artifact.task_id,
+                    artifact.agent,
+                    artifact.provider,
+                    artifact.scenario,
+                    artifact.commit_hash,
+                    artifact.branch,
+                    artifact.worktree,
+                    artifact.captured_at_ms,
+                    artifact.kind,
+                    artifact.status,
+                    artifact.byte_size,
+                    artifact.original_ref,
+                    artifact.thumbnail_ref,
+                    artifact.pinned,
+                    artifact.expires_at_ms,
+                ],
+            )
+            .expect("insert evidence sentinel");
+        connection
+            .pragma_update(None, "user_version", 11)
+            .expect("set version eleven");
+        drop(connection);
+
+        let store = SessionStore::open(&path).expect("upgrade database");
+        assert_eq!(
+            store
+                .list_evidence_artifacts(None, 10)
+                .expect("read evidence sentinel"),
+            [artifact]
+        );
+        drop(store);
+
+        let connection = Connection::open(&path).expect("inspect upgraded database");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read schema version");
+        assert_eq!(version, super::SCHEMA_VERSION);
+        connection
+            .prepare(
+                "SELECT source_task_id, title, project, status, priority, assignee, due_date,
+                        source_url, fetched_at_ms
+                 FROM notion_task_projections",
+            )
+            .expect("prepare Notion task projection query");
+    }
+
+    #[test]
+    fn notion_task_projection_snapshot_replaces_existing_rows() {
+        let (_directory, _path, store) = open_temp_store();
+        let first = [
+            fixture_notion_task("task-a", "Assembly", "Todo", "Alpha", None),
+            fixture_notion_task("task-b", "Assembly", "Todo", "Beta", Some("2026-08-25")),
+        ];
+        store
+            .replace_notion_task_projections(&first)
+            .expect("write first Notion task snapshot");
+
+        let second = [fixture_notion_task(
+            "task-c",
+            "Rental Command",
+            "Doing",
+            "Gamma",
+            Some("2026-08-24"),
+        )];
+        store
+            .replace_notion_task_projections(&second)
+            .expect("replace Notion task snapshot");
+
+        assert_eq!(
+            store
+                .list_notion_task_projections(0, 10)
+                .expect("read Notion task snapshot"),
+            second
+        );
+    }
+
+    #[test]
+    fn notion_task_projection_page_is_bounded_and_sql_ordered() {
+        let (_directory, _path, store) = open_temp_store();
+        let tasks = [
+            fixture_notion_task("task-4", "Rental Command", "Todo", "Zeta", None),
+            fixture_notion_task("task-2", "Assembly", "Doing", "Beta", Some("2026-08-24")),
+            fixture_notion_task("task-1", "Assembly", "Doing", "Alpha", Some("2026-08-24")),
+            fixture_notion_task("task-3", "Assembly", "Todo", "Gamma", None),
+        ];
+        store
+            .replace_notion_task_projections(&tasks)
+            .expect("write Notion task snapshot");
+
+        let first_page = store
+            .list_notion_task_projections(0, 2)
+            .expect("read first Notion task page");
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-1", "task-2"]
+        );
+
+        let second_page = store
+            .list_notion_task_projections(2, 2)
+            .expect("read second Notion task page");
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-3", "task-4"]
+        );
     }
 
     #[test]
