@@ -376,7 +376,12 @@
             {#each attachments as attachment (attachment.id)}
               <figure data-testid="conversation-attachment-preview">
                 <div class="attachment-preview">
-                  <AttachmentLightbox src={attachment.previewUrl} name={attachment.name} variant="composer" />
+                  <AttachmentLightbox
+                    src={attachment.previewUrl}
+                    fullSrc={attachment.originalUrl}
+                    name={attachment.name}
+                    variant="composer"
+                  />
                   <button class="attachment-remove" data-testid="conversation-attachment-remove" aria-label={`Remove ${attachment.name}`} type="button" onclick={() => void onRemoveAttachment?.(attachment.id)}><X size={13} /></button>
                 </div>
                 {#if onAnnotateAttachment}<button class="attachment-annotate" data-testid="conversation-attachment-annotate" type="button" onclick={() => onAnnotateAttachment?.(attachment.id)}>Annotate</button>{/if}

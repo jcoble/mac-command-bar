@@ -3,18 +3,26 @@
 
   let {
     src,
+    fullSrc = src,
     name,
     variant
   }: {
     src: string;
+    fullSrc?: string;
     name: string;
     variant: 'composer' | 'timeline';
   } = $props();
+
+  let open = $state(false);
 </script>
 
-<Dialog.Root>
+<Dialog.Root bind:open>
   <Dialog.Trigger class={`attachment-lightbox-thumbnail ${variant}`} aria-label={`Enlarge ${name}`}>
-    <img {src} alt={name} loading="lazy" decoding="async" />
+    {#if src}
+      <img {src} alt={name} loading="lazy" decoding="async" />
+    {:else}
+      <span>{name}</span>
+    {/if}
   </Dialog.Trigger>
   <Dialog.Content
     class="w-auto max-w-[calc(100vw-48px)] bg-transparent p-0 shadow-none ring-0 sm:max-w-[calc(100vw-48px)]"
@@ -22,7 +30,9 @@
   >
     <Dialog.Title class="sr-only">{name}</Dialog.Title>
     <Dialog.Close class="attachment-lightbox-full-image" aria-label={`Close enlarged ${name}`}>
-      <img {src} alt={name} />
+      {#if open && fullSrc}
+        <img src={fullSrc} alt={name} />
+      {/if}
     </Dialog.Close>
   </Dialog.Content>
 </Dialog.Root>

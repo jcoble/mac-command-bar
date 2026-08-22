@@ -205,6 +205,10 @@ export interface BrowserConversationAttachment {
   mimeType: string;
   path: string;
   previewUrl: string;
+  originalUrl?: string;
+  thumbnailMimeType?: string | null;
+  thumbnailPath?: string | null;
+  thumbnailByteLength?: number | null;
 }
 
 export interface BrowserConversationDraft {

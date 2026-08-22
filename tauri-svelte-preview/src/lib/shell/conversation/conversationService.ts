@@ -78,7 +78,6 @@ import {
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import {
-  createTrackedObjectUrl,
   revokeTrackedObjectUrl,
   trackTauriListener
 } from '../resourceDiagnostics.svelte.ts';
@@ -143,7 +142,7 @@ export async function readChildConversationTranscript(input: {
   applyChildConversationTranscript(input.ownedId, input.childSessionId, snapshot.messages);
 }
 
-type SavedAttachment = Omit<ConversationAttachment, 'previewUrl'> & { byteLength: number };
+type SavedAttachment = Omit<ConversationAttachment, 'previewUrl' | 'originalUrl'> & { byteLength: number };
 type AttachmentWithBytes = ConversationAttachment & { byteLength?: number; bytes?: number[] };
 
 export interface AgentPromptTextContent {
@@ -194,7 +193,7 @@ export async function saveConversationClipboardImage(
     mimeType: file.type,
     bytes
   });
-  return { ...saved, bytes, previewUrl: createTrackedObjectUrl(file, 'attachment') } as AttachmentWithBytes;
+  return restoreConversationAttachmentPreview({ ...saved, bytes }) as AttachmentWithBytes;
 }
 
 /** Revoke only URLs owned by this surface; the managed path never goes through the DOM. */
@@ -229,13 +228,34 @@ async function hydrateAttachmentBytes(attachment: AttachmentWithBytes): Promise<
   };
 }
 
+function attachmentDisplayMetadata(attachment: ConversationAttachment): ConversationAttachment {
+  const metadata: ConversationAttachment = {
+    id: attachment.id,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    path: attachment.path,
+    previewUrl: attachment.previewUrl
+  };
+  if (attachment.originalUrl !== undefined) metadata.originalUrl = attachment.originalUrl;
+  if (attachment.thumbnailMimeType !== undefined) metadata.thumbnailMimeType = attachment.thumbnailMimeType;
+  if (attachment.thumbnailPath !== undefined) metadata.thumbnailPath = attachment.thumbnailPath;
+  if (attachment.thumbnailByteLength !== undefined) {
+    metadata.thumbnailByteLength = attachment.thumbnailByteLength;
+  }
+  return metadata;
+}
+
 /** Rebuild a preview URL from a backend-owned attachment after a workspace restore. */
 export function restoreConversationAttachmentPreview(
   attachment: Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string }
 ): ConversationAttachment {
-  const previewUrl = attachment.previewUrl
+  const originalUrl = attachment.originalUrl
     ?? (isTauri() ? convertFileSrc(attachment.path) : attachment.path);
-  return { ...attachment, previewUrl };
+  const previewUrl = attachment.previewUrl
+    ?? (attachment.thumbnailPath
+      ? (isTauri() ? convertFileSrc(attachment.thumbnailPath) : attachment.thumbnailPath)
+      : '');
+  return { ...attachment, originalUrl, previewUrl };
 }
 
 /** Restore attachment metadata supplied by the existing owner-scoped vault. */
@@ -911,9 +931,9 @@ export async function sendStructuredMessage(
     // Recorded before the request because the backend records and dispatches
     // its own copy of the user message while the request is still running.
     // Recorded afterwards, the screenshots would arrive too late to be claimed.
-    // The preview URLs stay alive: the transcript now shows what went out, and
-    // no provider echoes the image back for it to render from.
-    recordSentConversationAttachments(ownedId, [...state.attachments]);
+    // The transcript keeps only display metadata: thumbnails show what went out,
+    // and no provider echoes the image back for it to render from.
+    recordSentConversationAttachments(ownedId, state.attachments.map(attachmentDisplayMetadata));
     await invoke('send_agent_conversation_message', {
       request: {
         ownedId,

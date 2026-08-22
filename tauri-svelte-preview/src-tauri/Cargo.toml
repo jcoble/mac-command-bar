@@ -14,6 +14,7 @@ axum = { version = "0.8", features = ["ws"] }
 chrono = "0.4"
 futures-util = "0.3"
 httpdate = "1"
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 libc = "0.2"
 mcb-core = { path = "../../core" }
 portable-pty = "0.9.0"

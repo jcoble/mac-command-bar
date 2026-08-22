@@ -1,12 +1,15 @@
 use mcb_core::session_store::{AttachmentRow, SessionStore};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(not(test))]
 use tauri::Manager;
 
 const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+const THUMBNAIL_MAX_EDGE: u32 = 360;
+const THUMBNAIL_MIME_TYPE: &str = "image/webp";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +19,9 @@ pub struct SavedConversationAttachment {
     pub mime_type: String,
     pub path: String,
     pub byte_length: usize,
+    pub thumbnail_mime_type: Option<String>,
+    pub thumbnail_path: Option<String>,
+    pub thumbnail_byte_length: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,23 +43,39 @@ pub fn save<R: tauri::Runtime>(
     let owned_id = safe_segment(owned_id, "Owned session id")?;
     let id = uuid::Uuid::new_v4().to_string();
     let name = format!("screenshot-{id}.{extension}");
+    let thumbnail_name = format!("screenshot-{id}-thumb.webp");
+    let thumbnail_bytes = thumbnail(bytes)?;
     let root = vault_root(app)?.join(owned_id);
     fs::create_dir_all(&root)
         .map_err(|error| format!("Could not create attachment folder: {error}"))?;
     let path = root.join(&name);
+    let thumbnail_path = root.join(&thumbnail_name);
     fs::write(&path, bytes).map_err(|error| format!("Could not save screenshot: {error}"))?;
+    if let Err(error) = fs::write(&thumbnail_path, &thumbnail_bytes) {
+        let _ = fs::remove_file(&path);
+        return Err(format!("Could not save screenshot thumbnail: {error}"));
+    }
     // The canonical form only proves the file landed inside the managed folder.
     // The reported path is the one the row rebuilds, so a save and a later read
     // name the same file the same way.
+    let canonical_root = canonical_root(&root)?;
     if !path
         .canonicalize()
         .map_err(|error| format!("Could not verify screenshot path: {error}"))?
-        .starts_with(canonical_root(&root)?)
+        .starts_with(&canonical_root)
+        || !thumbnail_path
+            .canonicalize()
+            .map_err(|error| format!("Could not verify screenshot thumbnail path: {error}"))?
+            .starts_with(&canonical_root)
     {
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&thumbnail_path);
         return Err("Saved screenshot escaped the managed attachment folder".to_string());
     }
     let byte_length =
         i64::try_from(bytes.len()).map_err(|_| "Attachment is too large to record".to_string())?;
+    let thumbnail_byte_length = i64::try_from(thumbnail_bytes.len())
+        .map_err(|_| "Attachment thumbnail is too large to record".to_string())?;
     if let Err(error) = store.add_attachment(&AttachmentRow {
         id: id.clone(),
         owned_id: owned_id.to_string(),
@@ -61,10 +83,14 @@ pub fn save<R: tauri::Runtime>(
         mime_type: mime_type.to_string(),
         byte_length,
         relative_path: format!("{owned_id}/{name}"),
+        thumbnail_mime_type: Some(THUMBNAIL_MIME_TYPE.to_string()),
+        thumbnail_byte_length: Some(thumbnail_byte_length),
+        thumbnail_relative_path: Some(format!("{owned_id}/{thumbnail_name}")),
         created_at_ms: now_ms(),
     }) {
         // A file with no row is invisible to every later read, so it leaves with the failure.
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&thumbnail_path);
         return Err(error.to_string());
     }
     Ok(SavedConversationAttachment {
@@ -73,6 +99,9 @@ pub fn save<R: tauri::Runtime>(
         mime_type: mime_type.to_string(),
         path: path.display().to_string(),
         byte_length: bytes.len(),
+        thumbnail_mime_type: Some(THUMBNAIL_MIME_TYPE.to_string()),
+        thumbnail_path: Some(thumbnail_path.display().to_string()),
+        thumbnail_byte_length: Some(thumbnail_bytes.len()),
     })
 }
 
@@ -94,6 +123,15 @@ pub fn read<R: tauri::Runtime>(
                 mime_type: row.mime_type,
                 byte_length: usize::try_from(row.byte_length)
                     .map_err(|_| "Attachment is too large to describe".to_string())?,
+                thumbnail_mime_type: row.thumbnail_mime_type,
+                thumbnail_path: row
+                    .thumbnail_relative_path
+                    .map(|path| root.join(path).display().to_string()),
+                thumbnail_byte_length: row
+                    .thumbnail_byte_length
+                    .map(usize::try_from)
+                    .transpose()
+                    .map_err(|_| "Attachment thumbnail is too large to describe".to_string())?,
             })
         })
         .collect()
@@ -108,11 +146,27 @@ pub fn delete<R: tauri::Runtime>(
         .map_err(|_| "Attachment id is invalid".to_string())?;
     let root = attachment_root(app, &request.owned_id)?;
     let root = canonical_root(&root)?;
+    let thumbnail = store
+        .list_attachments(&request.owned_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|row| row.id == attachment_id.to_string())
+        .and_then(|row| row.thumbnail_relative_path)
+        .map(|relative_path| vault_root(app).map(|vault| vault.join(relative_path)))
+        .transpose()?
+        .map(|path| validate_optional_managed_file(&root, &path))
+        .transpose()?
+        .flatten();
     let target = validate_delete_target(&root, attachment_id, Path::new(&request.path))?;
     store
         .delete_attachment(&attachment_id.to_string())
         .map_err(|error| error.to_string())?;
-    fs::remove_file(&target).map_err(|error| format!("Could not delete screenshot: {error}"))
+    fs::remove_file(&target).map_err(|error| format!("Could not delete screenshot: {error}"))?;
+    if let Some(thumbnail) = thumbnail {
+        fs::remove_file(thumbnail)
+            .map_err(|error| format!("Could not delete screenshot thumbnail: {error}"))?;
+    }
+    Ok(())
 }
 
 /// The folder that holds every session's attachments, and the root that stored
@@ -163,6 +217,17 @@ fn validate_image<'a>(mime_type: &str, bytes: &'a [u8]) -> Result<&'static str, 
     Ok(extension)
 }
 
+fn thumbnail(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let image = image::load_from_memory(bytes)
+        .map_err(|error| format!("Could not read screenshot image: {error}"))?;
+    let thumbnail = image.thumbnail(THUMBNAIL_MAX_EDGE, THUMBNAIL_MAX_EDGE);
+    let mut encoded = Cursor::new(Vec::new());
+    thumbnail
+        .write_to(&mut encoded, image::ImageFormat::WebP)
+        .map_err(|error| format!("Could not encode screenshot thumbnail: {error}"))?;
+    Ok(encoded.into_inner())
+}
+
 fn canonical_root(path: &Path) -> Result<PathBuf, String> {
     path.canonicalize()
         .map_err(|error| format!("Could not verify attachment folder: {error}"))
@@ -188,6 +253,18 @@ fn validate_delete_target(
         return Err("Attachment id does not match the managed screenshot path".to_string());
     }
     Ok(target)
+}
+
+fn validate_optional_managed_file(root: &Path, path: &Path) -> Result<Option<PathBuf>, String> {
+    let target = match path.canonicalize() {
+        Ok(target) => target,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Could not verify screenshot thumbnail path: {error}")),
+    };
+    if !target.starts_with(root) || target.parent() != Some(root) {
+        return Err("Attachment thumbnail path is outside the managed attachment folder".to_string());
+    }
+    Ok(Some(target))
 }
 
 fn safe_segment<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
@@ -220,6 +297,21 @@ mod tests {
     };
     use mcb_core::session_store::{SessionRow, SessionStore};
     use std::fs;
+
+    const PNG_1X1: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H',
+        b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+        0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, b'I', b'D', b'A', b'T', 0x78,
+        0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+        0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    const GIF_1X1: &[u8] = &[
+        b'G', b'I', b'F', b'8', b'9', b'a', 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00,
+        0x3b,
+    ];
 
     /// Attachment rows point at their session, so every test owns a stored session.
     fn store_with_session(owned_id: &str) -> SessionStore {
@@ -257,7 +349,7 @@ mod tests {
             &store,
             &owned_id,
             "image/png",
-            b"\x89PNG\r\n\x1a\nfirst",
+            PNG_1X1,
         )
         .unwrap();
         let second = save(
@@ -265,7 +357,7 @@ mod tests {
             &store,
             &owned_id,
             "image/gif",
-            b"GIF89asecond",
+            GIF_1X1,
         )
         .unwrap();
         let mut expected = vec![first.clone(), second.clone()];
@@ -298,7 +390,7 @@ mod tests {
     #[test]
     fn attachment_validation_accepts_supported_image_signatures() {
         assert_eq!(
-            validate_image("image/png", b"\x89PNG\r\n\x1a\nrest").unwrap(),
+            validate_image("image/png", PNG_1X1).unwrap(),
             "png"
         );
         assert_eq!(

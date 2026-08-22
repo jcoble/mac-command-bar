@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 
@@ -51,6 +51,9 @@ const ATTACHMENTS_SCHEMA: &str = "CREATE TABLE attachments (
     mime_type TEXT NOT NULL,
     byte_length INTEGER NOT NULL,
     relative_path TEXT NOT NULL,
+    thumbnail_mime_type TEXT,
+    thumbnail_byte_length INTEGER,
+    thumbnail_relative_path TEXT,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX attachments_owned_id_idx ON attachments(owned_id, file_name);";
@@ -185,6 +188,9 @@ pub struct AttachmentRow {
     pub byte_length: i64,
     /// Where the file sits under the application's attachment folder.
     pub relative_path: String,
+    pub thumbnail_mime_type: Option<String>,
+    pub thumbnail_byte_length: Option<i64>,
+    pub thumbnail_relative_path: Option<String>,
     pub created_at_ms: i64,
 }
 
@@ -374,6 +380,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the event cleanup", error)
                     })?;
+                add_attachment_thumbnail_schema(&transaction)?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
                 add_title_source_column(&transaction)?;
@@ -401,6 +408,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the title source upgrade", error)
                     })?;
+                add_attachment_thumbnail_schema(&transaction)?;
                 add_title_source_column(&transaction)?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
@@ -428,6 +436,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the broker upgrade", error)
                     })?;
+                add_attachment_thumbnail_schema(&transaction)?;
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
                 })?;
@@ -454,6 +463,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the tool event upgrade", error)
                     })?;
+                add_attachment_thumbnail_schema(&transaction)?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
@@ -477,6 +487,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the session workspace upgrade", error)
                     })?;
+                add_attachment_thumbnail_schema(&transaction)?;
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
@@ -498,6 +509,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the app settings upgrade", error)
                     })?;
+                add_attachment_thumbnail_schema(&transaction)?;
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
@@ -519,6 +531,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not begin the orchestration upgrade", error)
                     })?;
+                add_attachment_thumbnail_schema(&transaction)?;
                 transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the orchestration table", error)
                 })?;
@@ -529,6 +542,22 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the orchestration upgrade", error)
+                })?;
+            }
+            9 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the attachment thumbnail upgrade", error)
+                    })?;
+                add_attachment_thumbnail_schema(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the attachment thumbnail upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -1278,9 +1307,11 @@ impl SessionStore {
         let changed = connection
             .execute(
                 "INSERT INTO attachments (
-                    id, owned_id, file_name, mime_type, byte_length, relative_path, created_at
+                    id, owned_id, file_name, mime_type, byte_length, relative_path,
+                    thumbnail_mime_type, thumbnail_byte_length, thumbnail_relative_path,
+                    created_at
                  )
-                 SELECT ?, owned_id, ?, ?, ?, ?, ?
+                 SELECT ?, owned_id, ?, ?, ?, ?, ?, ?, ?, ?
                  FROM sessions
                  WHERE owned_id = ?",
                 params![
@@ -1289,6 +1320,9 @@ impl SessionStore {
                     row.mime_type,
                     row.byte_length,
                     row.relative_path,
+                    row.thumbnail_mime_type,
+                    row.thumbnail_byte_length,
+                    row.thumbnail_relative_path,
                     row.created_at_ms,
                     row.owned_id,
                 ],
@@ -1306,7 +1340,9 @@ impl SessionStore {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT id, owned_id, file_name, mime_type, byte_length, relative_path, created_at
+                "SELECT id, owned_id, file_name, mime_type, byte_length, relative_path,
+                    thumbnail_mime_type, thumbnail_byte_length, thumbnail_relative_path,
+                    created_at
                  FROM attachments
                  WHERE owned_id = ?
                  ORDER BY file_name ASC",
@@ -1399,6 +1435,53 @@ fn add_tool_item_schema(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(TOOL_ITEM_INDEX_SCHEMA)
         .map_err(|error| StoreError::sqlite("could not add the tool item index", error))
+}
+
+fn add_attachment_thumbnail_schema(connection: &Connection) -> Result<()> {
+    let table_present: bool = connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attachments'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| StoreError::sqlite("could not inspect the attachment table", error))?;
+    if !table_present {
+        connection
+            .execute_batch(ATTACHMENTS_SCHEMA)
+            .map_err(|error| StoreError::sqlite("could not create the attachment table", error))?;
+        return Ok(());
+    }
+    for (column, schema) in [
+        ("thumbnail_mime_type", "ALTER TABLE attachments ADD COLUMN thumbnail_mime_type TEXT"),
+        (
+            "thumbnail_byte_length",
+            "ALTER TABLE attachments ADD COLUMN thumbnail_byte_length INTEGER",
+        ),
+        (
+            "thumbnail_relative_path",
+            "ALTER TABLE attachments ADD COLUMN thumbnail_relative_path TEXT",
+        ),
+    ] {
+        let present: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('attachments') WHERE name = ?
+                )",
+                [column],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not inspect the attachment columns", error)
+            })?;
+        if !present {
+            connection.execute_batch(schema).map_err(|error| {
+                StoreError::sqlite("could not add the attachment thumbnail columns", error)
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Writes every persisted session field on the caller's connection or transaction.
@@ -1627,7 +1710,10 @@ fn attachment_from_row(row: &Row<'_>) -> rusqlite::Result<AttachmentRow> {
         mime_type: row.get(3)?,
         byte_length: row.get(4)?,
         relative_path: row.get(5)?,
-        created_at_ms: row.get(6)?,
+        thumbnail_mime_type: row.get(6)?,
+        thumbnail_byte_length: row.get(7)?,
+        thumbnail_relative_path: row.get(8)?,
+        created_at_ms: row.get(9)?,
     })
 }
 

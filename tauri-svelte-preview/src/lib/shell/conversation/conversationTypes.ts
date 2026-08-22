@@ -662,6 +662,10 @@ export interface ConversationAttachment {
   mimeType: string;
   path: string;
   previewUrl: string;
+  originalUrl?: string;
+  thumbnailMimeType?: string | null;
+  thumbnailPath?: string | null;
+  thumbnailByteLength?: number | null;
 }
 
 export interface ConversationSessionState {

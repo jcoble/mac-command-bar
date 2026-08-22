@@ -11,7 +11,12 @@
     <div class="sent-images" data-testid="timeline-user-attachments">
       {#each item.attachments as attachment (attachment.id)}
         <figure>
-          <AttachmentLightbox src={attachment.previewUrl} name={attachment.name} variant="timeline" />
+          <AttachmentLightbox
+            src={attachment.previewUrl}
+            fullSrc={attachment.originalUrl}
+            name={attachment.name}
+            variant="timeline"
+          />
           <figcaption>{attachment.name}</figcaption>
         </figure>
       {/each}
