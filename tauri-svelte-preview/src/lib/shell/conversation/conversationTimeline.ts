@@ -566,7 +566,8 @@ function toolKindForAgentItem(item: AgentItem): ConversationToolKind {
     metadata?.toolKind,
     metadata?.kind,
     metadata?.nativeType,
-    metadata?.category
+    metadata?.category,
+    metadata?.name
   );
   if (explicit !== 'tool') return explicit;
   if (typeof metadata?.diff === 'string' && metadata.diff.trim()) return 'file-edit';
@@ -586,7 +587,7 @@ function payloadHasFileChange(payload: StringRecord): boolean {
 
 function toolKindForPayload(payload: StringRecord, payloadKind: string): ConversationToolKind {
   if (payloadKind === 'turnDiff' || payloadHasFileChange(payload)) return 'file-edit';
-  return toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type, payload.kind);
+  return toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type, payload.kind, payload.name);
 }
 
 function toolTitleOf(value: unknown): string | null {
