@@ -127,7 +127,10 @@ export function patchOpenFile(
   path: string,
   patch: OpenEditorFilePatch
 ): OpenEditorFile[] {
-  return files.map((file) => (file.path === path ? { ...file, ...patch } : file));
+  const draftMutation = patch.draftContent !== undefined && patch.preview === undefined;
+  return files.map((file) => file.path === path
+    ? { ...file, ...patch, previewTab: file.previewTab && draftMutation ? false : patch.previewTab ?? file.previewTab }
+    : file);
 }
 
 /**

@@ -159,8 +159,7 @@ export function setEditorFileDraft(path: string, content: string): void {
   if (file.draftContent === content) return;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     draftContent: content,
-    dirty: content !== file.preview.content,
-    previewTab: false
+    dirty: content !== file.preview.content
   });
   publishOpenTabDocumentBytes();
 }
