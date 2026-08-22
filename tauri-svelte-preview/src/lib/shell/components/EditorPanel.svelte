@@ -775,9 +775,9 @@
     if (!rootAvailable) return false;
     const file = editorFileFor(path);
     if (!file?.dirty) return true;
-    if (!file.preview || file.saving || readOnlyByPath[path] || file.conflict) return false;
+    if (file.saving || readOnlyByPath[path] || file.draftContent === null || file.conflict) return false;
     const generation = sessionResourceGeneration;
-    const content = file.draftContent ?? file.preview.content;
+    const content = file.draftContent;
     setEditorFileSaving(file.path, true);
     try {
       const saved = await writeSourceToTauri(recordForPath(file.path), content);
