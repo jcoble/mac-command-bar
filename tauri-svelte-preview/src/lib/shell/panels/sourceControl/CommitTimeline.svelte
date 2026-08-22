@@ -97,8 +97,8 @@
 
   function pickFile(sha: string, file: GitCommitFileChange): void {
     commitFiles.activate(panel.root);
-    void commitFiles.selectCommitFile(sha, file);
     showCenterTab('diff');
+    void commitFiles.selectCommitFile(sha, file);
   }
 
   /** Everything the app told us about this commit, one fact per line. */

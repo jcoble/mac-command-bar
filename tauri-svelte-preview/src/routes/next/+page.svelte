@@ -1044,6 +1044,7 @@
 		const sessionRoot = activeRootAvailable ? readSelection().root.trim() : "";
 		const rememberedDiff = diffPathFor(snapshot, sessionRoot);
 		const restoringDiff = snapshot?.center?.activePanelId === "diff";
+		if (snapshot?.center) frameControls?.restoreCenterLayout(snapshot.center);
 		if (!restoringDiff || rememberedDiff === null) {
 			gitService.clearSelection();
 		} else {
@@ -1056,7 +1057,6 @@
 				setConversationMode(ownedId, "structured");
 			}
 		}
-		if (snapshot?.center) frameControls?.restoreCenterLayout(snapshot.center);
 		if (!activeRootAvailable) {
 			editorPanel?.restoreViewStates([]);
 			resetEditorState();
