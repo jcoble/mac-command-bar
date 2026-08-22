@@ -200,8 +200,11 @@ export function addCodeMirrorEditorView(delta: 1 | -1): void {
     0,
     resourceDiagnostics.codeMirrorEditorViews + delta
   );
-  // Each persistent source EditorView retains exactly one current EditorState.
-  resourceDiagnostics.codeMirrorEditorStates = resourceDiagnostics.codeMirrorEditorViews;
+}
+
+export function setCodeMirrorEditorStateCount(count: number): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.codeMirrorEditorStates = Math.max(0, Math.trunc(count));
 }
 
 export function setCodeMirrorDocBytes(bytes: number): void {

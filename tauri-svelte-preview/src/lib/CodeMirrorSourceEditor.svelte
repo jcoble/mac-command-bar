@@ -36,6 +36,7 @@
   import {
     addCodeMirrorEditorView,
     requestTrackedAnimationFrame,
+    setCodeMirrorEditorStateCount,
     setCodeMirrorDocBytes,
     setCodeMirrorUndoDepth,
     textBytes
@@ -104,6 +105,7 @@
   const language = new Compartment();
   const editing = new Compartment();
   const sessionViewStates = new Map<string, StoredViewState>();
+  const sessionEditorStates = new Map<string, EditorState>();
 
   function clearReferenceCountTimer(): void {
     if (referenceCountTimer !== null) clearTimeout(referenceCountTimer);
@@ -132,6 +134,8 @@
 
   function rememberCurrentView(): void {
     if (!view || !currentPath) return;
+    sessionEditorStates.set(currentPath, view.state);
+    setCodeMirrorEditorStateCount(sessionEditorStates.size);
     const selection = view.state.selection.main;
     sessionViewStates.set(currentPath, {
       anchor: selection.anchor,
@@ -291,6 +295,10 @@
     }),
     EditorView.updateListener.of((update) => {
       setCodeMirrorUndoDepth(undoDepth(update.state));
+      if (currentPath) {
+        sessionEditorStates.set(currentPath, update.state);
+        setCodeMirrorEditorStateCount(sessionEditorStates.size);
+      }
       if (!update.docChanged || applyingContent) return;
       const next = update.state.doc.toString();
       onContentChange?.(next);
@@ -311,13 +319,29 @@
     const restored = restoredState(currentPath);
     const doc = desiredContent();
     const max = doc.length;
-    view.setState(EditorState.create({
-      doc,
-      selection: restored
-        ? { anchor: Math.min(max, restored.anchor), head: Math.min(max, restored.head) }
-        : undefined,
-      extensions: editorExtensions
-    }));
+    const retained = sessionEditorStates.get(currentPath);
+    let nextState = retained;
+    if (!nextState) {
+      nextState = EditorState.create({
+        doc,
+        selection: restored
+          ? { anchor: Math.min(max, restored.anchor), head: Math.min(max, restored.head) }
+          : undefined,
+        extensions: editorExtensions
+      });
+    } else if (nextState.doc.toString() !== doc) {
+      applyingContent = true;
+      nextState = nextState.update({
+        changes: { from: 0, to: nextState.doc.length, insert: doc },
+        annotations: Transaction.addToHistory.of(false)
+      }).state;
+      applyingContent = false;
+    }
+    applyingContent = true;
+    view.setState(nextState);
+    applyingContent = false;
+    sessionEditorStates.set(currentPath, view.state);
+    setCodeMirrorEditorStateCount(sessionEditorStates.size);
     setCodeMirrorDocBytes(textBytes(doc));
     setCodeMirrorUndoDepth(undoDepth(view.state));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
@@ -344,12 +368,16 @@
 
   export function disposeTabModel(path: string): boolean {
     if (currentPath === path) currentPath = '';
+    sessionEditorStates.delete(path);
+    setCodeMirrorEditorStateCount(sessionEditorStates.size);
     return sessionViewStates.delete(path);
   }
 
   export function disposeAllTabModels(): void {
     currentPath = '';
     sessionViewStates.clear();
+    sessionEditorStates.clear();
+    setCodeMirrorEditorStateCount(0);
   }
 
   export function releaseSessionResources(): void {
@@ -357,7 +385,11 @@
     languageGeneration += 1;
     currentPath = '';
     sessionViewStates.clear();
+    sessionEditorStates.clear();
+    setCodeMirrorEditorStateCount(0);
+    applyingContent = true;
     view?.setState(EditorState.create());
+    applyingContent = false;
     setCodeMirrorDocBytes(0);
     setCodeMirrorUndoDepth(0);
   }
@@ -412,6 +444,7 @@
     view?.destroy();
     view = null;
     addCodeMirrorEditorView(-1);
+    setCodeMirrorEditorStateCount(0);
     setCodeMirrorDocBytes(0);
     setCodeMirrorUndoDepth(0);
   });
