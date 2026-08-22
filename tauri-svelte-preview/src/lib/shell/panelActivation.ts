@@ -123,8 +123,9 @@ export function createPanelActivation(
   activators: PanelActivators,
   readSelection: () => ProjectSelection
 ): PanelActivation {
-  /** Every center tab that has been on screen, whether or not it has loaded. */
-  const shownPanels = new Set<string>();
+  /** The center tab that is actually visible. Hidden tabs do not follow session
+   * roots: they are re-pointed when they come back to the front. */
+  let activePanelId: string | null = null;
   let panelLoadsAllowed = false;
   let sessionLoadsAllowed = false;
   let sessionPanelsShown = false;
@@ -235,15 +236,16 @@ export function createPanelActivation(
     },
 
     panelShown(id: string): void {
+      activePanelId = id;
       if (!LOADABLE_PANELS.has(id)) return;
       // Remembered even while loads are switched off. The tab the dock puts
       // back at launch announces itself before that gate opens, and it must
       // load nothing then — but it is on screen, and forgetting it altogether
       // is what left a restored editor tab never being told which project it
       // was in: the session picked next only points the tabs it knows about.
-      shownPanels.add(id);
       if (!panelLoadsAllowed) return;
-      loadPanel(id, currentSelection());
+      const selection = currentSelection();
+      if (panelLoadedFor.get(id) !== selectionKey(selection)) loadPanel(id, selection);
     },
 
     sessionPicked(rootAvailable = true): void {
@@ -252,15 +254,16 @@ export function createPanelActivation(
       const selection = currentSelection();
       sessionPanelsShown = true;
       loadSessionPanels(selection);
-      // Re-point the tabs that are open at the new project. A tab never opened
-      // stays untouched, so switching session costs nothing for it — and
-      // neither does a tab already pointed at this project, which is what makes
-      // switching between two sessions in one repository cheap. The browser tab
-      // is left out of both: it shows a web page rather than a project, so a
-      // session is nothing to it whether it has loaded or not.
-      for (const id of shownPanels) {
-        if (id === 'browser') continue;
-        if (panelLoadedFor.get(id) !== selectionKey(selection)) loadPanel(id, selection);
+      // Re-point only the center tab that is visible. Remembering every tab
+      // ever shown made a hidden editor change roots on every later session
+      // switch, which woke its language-service ownership even with zero files.
+      if (
+        activePanelId
+        && activePanelId !== 'browser'
+        && LOADABLE_PANELS.has(activePanelId)
+        && panelLoadedFor.get(activePanelId) !== selectionKey(selection)
+      ) {
+        loadPanel(activePanelId, selection);
       }
     },
 

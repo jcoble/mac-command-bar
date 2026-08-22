@@ -1156,6 +1156,10 @@
 
   export function releaseSessionResources(paths: readonly string[]): void {
     sessionResourceGeneration += 1;
+    ownerSelectionGeneration += 1;
+    inlayHintRequestCount += 1;
+    languageServerGate.releaseAll();
+    readsInFlight.clear();
     closeRequest = null;
     closeDialogOpen = false;
     if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);

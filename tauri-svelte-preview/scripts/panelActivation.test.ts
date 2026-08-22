@@ -33,3 +33,33 @@ test('files_panel_hidden_skips_explorer_on_session_pick', () => {
   panels.sessionPicked();
   assert.deepEqual(explorerCalls, ['/repo/one', '/repo/two'], 'a new visible root is loaded');
 });
+
+test('hidden_editor_does_not_follow_later_session_roots', () => {
+  let root = '/repo/one';
+  const editorCalls: Array<string | null> = [];
+  const panels = createPanelActivation(
+    {
+      editor: (selectedRoot) => editorCalls.push(selectedRoot),
+      git: () => {},
+      browser: () => {},
+      explorer: () => {},
+      worktrees: () => {},
+      stacks: () => {},
+      problems: () => {}
+    },
+    () => ({ root, projects: [] })
+  );
+
+  panels.allowPanelLoads();
+  panels.allowSessionLoads();
+  panels.panelShown('editor');
+  assert.deepEqual(editorCalls, ['/repo/one']);
+
+  panels.panelShown('session');
+  root = '/repo/two';
+  panels.sessionPicked();
+  assert.deepEqual(editorCalls, ['/repo/one'], 'a hidden editor keeps no session-root work');
+
+  panels.panelShown('editor');
+  assert.deepEqual(editorCalls, ['/repo/one', '/repo/two']);
+});

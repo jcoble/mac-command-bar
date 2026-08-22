@@ -1282,10 +1282,6 @@
 			await handleActiveRootUnavailable(selectedRoot, true);
 			if (!selectionIsCurrent()) return;
 		}
-		// Point the file tree, the context cards and any tab the user has already
-		// opened at this session's project. Ignored while start-up is still
-		// re-attaching sessions, so a reload still loads nothing on its own.
-		if (activeRootAvailable) shellPanels.sessionPicked(true);
 		// Clicking the session you are already on changes nothing. Putting the
 		// stored record back here would throw away every file opened since the last
 		// switch, which is the opposite of what a click on your own row means.
@@ -1302,6 +1298,10 @@
 			// it re-opened — the session's own remembered tab wins.
 			restoreTabsFor(activeWorkspaceSnapshot);
 		}
+		// Point only the surfaces restored for the arriving session at its root.
+		// Doing this before restore made a departing blank Editor tab wake editor
+		// and language-service ownership for an arriving chat-only session.
+		if (activeRootAvailable) shellPanels.sessionPicked(true);
 		if (switching && selectedRootAvailable && selected?.ptySessionId && service) {
 			const host = await hostFor(ownedId);
 			if (!selectionIsCurrent()) return;
