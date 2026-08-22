@@ -200,7 +200,8 @@
    * it pointed at, but the session does not own the file, so nothing here may
    * edit or save over it.
    */
-  let readOnlyByPath = $state<Record<string, boolean>>({});
+  /** Inspection root for read-only tabs; a path alone is not enough context. */
+  let readOnlyByPath = $state<Record<string, string>>({});
   const activeFileReadOnly = $derived(Boolean(activeFile && readOnlyByPath[activeFile.path]));
   const activeServerEnabled = $derived.by(() => {
     const language = activeFile?.language?.toLowerCase();
@@ -751,7 +752,7 @@
         return;
       }
       if (preview) {
-        setEditorFilePreview(record.path, preview);
+        setEditorFilePreview(record.path, preview, null, readOnly);
       } else {
         setEditorFileError(record.path, 'This file could not be read from here.');
       }
@@ -835,6 +836,7 @@
   ): boolean {
     if (closeActionBusy || !rootAvailable || !path.trim()) return false;
     if (editorState.activePath && editorState.activePath !== path) {
+      releaseReadOnlyEditorModel(editorState.activePath);
       releaseMarkdownView(editorState.activePath);
     }
     if (!readOnly) activateEditor(projectRoot);
@@ -867,7 +869,10 @@
     // record's path is the key: it is what the strip and the editor hold.
     const record = recordForPath(request.path, request.projectRoot);
     if (request.readOnly) {
-      readOnlyByPath = { ...readOnlyByPath, [record.path]: true };
+      readOnlyByPath = {
+        ...readOnlyByPath,
+        [record.path]: request.projectRoot?.trim() || 'outside the session workspace'
+      };
     } else if (readOnlyByPath[record.path]) {
       const { [record.path]: _wasReadOnly, ...remaining } = readOnlyByPath;
       readOnlyByPath = remaining;
@@ -892,6 +897,7 @@
   function selectOpenFile(path: string): void {
     if (closeActionBusy) return;
     if (editorState.activePath && editorState.activePath !== path) {
+      releaseReadOnlyEditorModel(editorState.activePath);
       releaseMarkdownView(editorState.activePath);
     }
     setActiveEditorFile(path);
@@ -904,6 +910,11 @@
     if (entry && needsRead(entry)) {
       void readFileIntoEditor(recordForPath(path));
     }
+  }
+
+  /** Read-only tabs must not leave an editable CodeMirror history behind. */
+  function releaseReadOnlyEditorModel(path: string | null): void {
+    if (path && readOnlyByPath[path]) codeEditor?.disposeTabModel(path);
   }
 
   function closeFileNow(path: string, discard = false): void {
@@ -1210,12 +1221,18 @@
                     type="button"
                     role="tab"
                     aria-selected={file.path === editorState.activePath}
+                    aria-label={readOnlyByPath[file.path]
+                      ? `${file.fileName} (read-only: ${readOnlyByPath[file.path]})`
+                      : file.fileName}
                     class="file-name"
-                    title={file.relativePath}
+                    title={readOnlyByPath[file.path]
+                      ? `Read-only inspection in ${readOnlyByPath[file.path]}\n${file.relativePath}`
+                      : file.relativePath}
                     onclick={() => selectOpenFile(file.path)}
                   >
                     <FileIcon fileName={file.fileName} size={13} />
                     {#if file.previewTab}<em>{file.fileName}</em>{:else}{file.fileName}{/if}
+                    {#if readOnlyByPath[file.path]}<span class="chip-note">read-only</span>{/if}
                     {#if file.loading}<span class="chip-note">reading</span>{/if}
                     {#if file.error}<span class="chip-note error">failed</span>{/if}
                     {#if file.conflict}<span class="chip-note error">conflict</span>{/if}

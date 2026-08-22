@@ -140,21 +140,30 @@ export function markEditorFileLoading(path: string): void {
 export function setEditorFilePreview(
   path: string,
   preview: SourcePreview,
-  committedContent: string | null = null
+  committedContent: string | null = null,
+  readOnly = false
 ): void {
   const file = editorFileFor(path);
   const currentDraft = file?.draftContent ?? null;
   const retainedDraft =
-    committedContent !== null && currentDraft === committedContent ? null : currentDraft;
+    readOnly
+      ? null
+      : committedContent !== null && currentDraft === committedContent
+        ? null
+        : currentDraft;
   const conflict =
-    committedContent === null && file?.dirty && retainedDraft !== null && retainedDraft !== preview.content
+    !readOnly
+      && committedContent === null
+      && file?.dirty
+      && retainedDraft !== null
+      && retainedDraft !== preview.content
       ? file.conflict
         ?? 'File changed on disk while this draft has unsaved edits.'
       : null;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     preview,
-    draftContent: retainedDraft ?? preview.content,
-    dirty: retainedDraft !== null && retainedDraft !== preview.content,
+    draftContent: readOnly ? null : retainedDraft ?? preview.content,
+    dirty: !readOnly && retainedDraft !== null && retainedDraft !== preview.content,
     conflict,
     saving: false,
     loading: false,
