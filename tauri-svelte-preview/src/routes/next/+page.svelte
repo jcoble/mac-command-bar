@@ -226,6 +226,7 @@
 	} | null = null;
 	let editorPanel: {
 		captureViewStates(paths: readonly string[]): Record<string, object>;
+		workspaceOwnedPaths(): string[];
 		restoreViewStates(files: readonly { path: string; viewState?: object }[]): void;
 		releaseSessionResources(paths: readonly string[]): void;
 	} | null = null;
@@ -799,11 +800,17 @@
 	 * Stored straight away: a reload can come at any moment, and the write is a
 	 * few hundred bytes. */
 	async function snapshotWorkspace(ownedId: string): Promise<boolean> {
-		const openPaths = editorState.openFiles.map((file) => file.path);
+		const ownedPaths = editorPanel?.workspaceOwnedPaths()
+			?? editorState.openFiles.map((file) => file.path);
+		const ownedPathSet = new Set(ownedPaths);
+		const openFiles = editorState.openFiles.filter((file) => ownedPathSet.has(file.path));
+		const activePath = editorState.activePath && ownedPathSet.has(editorState.activePath)
+			? editorState.activePath
+			: openFiles.at(-1)?.path ?? null;
 		const snapshot = captureWorkspace({
-				openFiles: editorState.openFiles,
-				activePath: editorState.activePath,
-				viewStates: editorPanel?.captureViewStates(openPaths),
+				openFiles,
+				activePath,
+				viewStates: editorPanel?.captureViewStates(ownedPaths),
 				selectedPath: explorer.selectedPath,
 				scrollTop: explorer.scrollTop,
 				diffPath: gitPanel.selectedPath || null,

@@ -876,6 +876,13 @@
     return codeEditor?.captureViewStates(paths) ?? {};
   }
 
+  /** Linked-worktree inspection tabs are live-only and never belong to SQLite. */
+  export function workspaceOwnedPaths(): string[] {
+    return editorState.openFiles
+      .filter((file) => !readOnlyByPath[file.path])
+      .map((file) => file.path);
+  }
+
   export function restoreViewStates(
     files: readonly { path: string; viewState?: object }[]
   ): void {
