@@ -58,6 +58,7 @@
     setLanguageIntelligenceSwitch
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
+  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import {
     activateEditor,
@@ -83,6 +84,7 @@
   } from '$lib/shell/editor/sourceIntelligence';
   import { settings } from '$lib/settingsStore.svelte';
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
+  import { openFileTimeline } from '$lib/shell/workbenchNavigation';
   import {
     isNativeTauriRuntime,
     readAssemblySettingFromTauri,
@@ -825,6 +827,12 @@
     onCloseAllEditors?.();
   }
 
+  function openTimelineFor(file: { relativePath: string }): void {
+    const projectRoot = editorState.projectRoot?.trim();
+    if (!projectRoot) return;
+    void openFileTimeline({ projectRoot, relativePath: file.relativePath });
+  }
+
   export function captureViewStates(paths: readonly string[]): Record<string, object> {
     return codeEditor?.captureViewStates(paths) ?? {};
   }
@@ -956,30 +964,44 @@
     <div class="editor-header">
       <div class="file-strip" role="tablist" aria-label="Open files">
         {#each editorState.openFiles as file (file.path)}
-          <div class="file-chip" class:active={file.path === editorState.activePath}>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={file.path === editorState.activePath}
-              class="file-name"
-              title={file.relativePath}
-              onclick={() => selectOpenFile(file.path)}
-            >
-              <FileIcon fileName={file.fileName} size={13} />
-              {file.fileName}
-              {#if file.loading}<span class="chip-note">reading</span>{/if}
-              {#if file.error}<span class="chip-note error">failed</span>{/if}
-            </button>
-            <IconButton
-              label={`Close ${file.fileName}`}
-              size="sm"
-              side="bottom"
-              class="file-close text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
-              onclick={() => closeOpenFileAt(file.path)}
-            >
-              <X class="size-3.5" aria-hidden="true" />
-            </IconButton>
-          </div>
+          <ContextMenu.Root>
+            <ContextMenu.Trigger>
+              {#snippet child({ props })}
+                <div {...props} class="file-chip" class:active={file.path === editorState.activePath}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={file.path === editorState.activePath}
+                    class="file-name"
+                    title={file.relativePath}
+                    onclick={() => selectOpenFile(file.path)}
+                  >
+                    <FileIcon fileName={file.fileName} size={13} />
+                    {file.fileName}
+                    {#if file.loading}<span class="chip-note">reading</span>{/if}
+                    {#if file.error}<span class="chip-note error">failed</span>{/if}
+                  </button>
+                  <IconButton
+                    label={`Close ${file.fileName}`}
+                    size="sm"
+                    side="bottom"
+                    class="file-close text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+                    onclick={() => closeOpenFileAt(file.path)}
+                  >
+                    <X class="size-3.5" aria-hidden="true" />
+                  </IconButton>
+                </div>
+              {/snippet}
+            </ContextMenu.Trigger>
+            <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${file.fileName}`}>
+              <ContextMenu.Item
+                onSelect={() => openTimelineFor(file)}
+              >Open Timeline</ContextMenu.Item>
+              <ContextMenu.Item
+                onSelect={() => openTimelineFor(file)}
+              >Git: View File History</ContextMenu.Item>
+            </ContextMenu.Content>
+          </ContextMenu.Root>
         {/each}
       </div>
 

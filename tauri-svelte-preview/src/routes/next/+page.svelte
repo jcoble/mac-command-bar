@@ -543,6 +543,10 @@
 			if (!activeRootAvailable) return;
 			await gitService.showStoredDiff(request.projectRoot, request.relativePath);
 		},
+		openFileTimeline: async (request) => {
+			if (!activeRootAvailable) return;
+			await gitService.showFileHistory(request.projectRoot, request.relativePath);
+		},
 		openUrl: (request) => {
 			openBrowserUrl(request.url);
 		},

@@ -35,8 +35,7 @@
   } from '$lib/shell/explorer/explorerStore.svelte';
   import type { ExplorerTreeNode } from '$lib/shell/explorer/explorerStore.svelte';
   import { projectRootLabel } from '$lib/shell/explorer/explorerTree';
-  import { gitService } from '$lib/shell/git/gitService';
-  import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation';
+  import { openFileInEditor, openFileTimeline } from '$lib/shell/workbenchNavigation';
   import { trackFileWatcher } from '$lib/shell/resourceDiagnostics.svelte';
   import {
     cancelSourceScanFromTauri,
@@ -466,13 +465,6 @@
     refreshChangedPath(target);
   }
 
-  async function openFileHistory(node: TreeItem): Promise<void> {
-    const projectRoot = (explorer.root ?? root).trim();
-    if (!projectRoot) return;
-    showCenterTab('git-history');
-    await gitService.showFileHistory(projectRoot, node.relativePath);
-  }
-
   async function toggleExcludedFiles(): Promise<void> {
     const include = !explorer.includeExcluded;
     if (!include) {
@@ -507,7 +499,8 @@
       } else if (id === 'paste') {
         await pasteInto(node);
       } else if (id === 'open-timeline' || id === 'git-file-history') {
-        await openFileHistory(node);
+        const projectRoot = (explorer.root ?? root).trim();
+        if (projectRoot) await openFileTimeline({ projectRoot, relativePath: node.relativePath });
       } else if (id === 'toggle-excluded') {
         await toggleExcludedFiles();
       }

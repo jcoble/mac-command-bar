@@ -85,6 +85,7 @@ export interface WorkbenchNavigationHandlers {
   showCenterTab(id: CenterTabId): void;
   showRightTab(id: RightTabId): void;
   openDiff(request: OpenDiffRequest): void | Promise<void>;
+  openFileTimeline(request: OpenDiffRequest): void | Promise<void>;
   openUrl(request: OpenUrlRequest): void | Promise<void>;
   focusComposer(handoff: ComposerHandoff): void | Promise<void>;
   sendToSession(request: SendToSessionRequest): Promise<void>;
@@ -123,6 +124,12 @@ export function openFileInEditor(request: OpenFileRequest): void {
 export async function openDiffForFile(request: OpenDiffRequest): Promise<void> {
   await handlers.openDiff?.(request);
   showCenterTab('diff');
+}
+
+/** Show the paged history for one repository-relative file. */
+export async function openFileTimeline(request: OpenDiffRequest): Promise<void> {
+  await handlers.openFileTimeline?.(request);
+  showCenterTab('git-history');
 }
 
 /** Point the browser panel at a URL. The panel is put on screen first: the
