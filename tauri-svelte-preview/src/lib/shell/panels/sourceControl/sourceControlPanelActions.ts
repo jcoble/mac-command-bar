@@ -8,9 +8,9 @@
  * off without a sentence teaches nobody anything.
  *
  * Fetch, pull and push all need a folder, a page allowed to change a
- * repository, nothing else already running, and a branch that has an upstream
- * — without one there is no remote to talk to, which is a plain fact about the
- * branch rather than a fault.
+ * repository, and nothing else already running. Pull and push also need a
+ * branch that has an upstream — without one there is no matching branch to
+ * bring commits from or send commits to.
  *
  * The scope picker lists the checkouts of the same repository so the panel can
  * be pointed at one and read it. Any folder other than the session's own is
@@ -44,7 +44,7 @@ export interface SourceControlRemoteContext {
 
 const NO_REPOSITORY = 'This panel is not pointed at a repository folder yet.';
 const NO_UPSTREAM =
-  'This branch has no upstream branch, so there is no remote to fetch from or push to.';
+  'This branch has no upstream branch, so there is no matching remote branch to pull from or push to.';
 const STILL_RUNNING = 'Wait for the current source-control action to finish.';
 
 /**
@@ -56,16 +56,14 @@ export function sourceControlRemoteActions(
   root: string,
   context: SourceControlRemoteContext
 ): SourceControlRemoteAction[] {
-  const reason =
+  const commonReason =
     root.trim() === ''
       ? NO_REPOSITORY
       : !context.canWrite
         ? context.readOnlyReason
         : context.busy
           ? STILL_RUNNING
-          : status?.hasUpstream
-            ? null
-            : NO_UPSTREAM;
+          : null;
 
   return (
     [
@@ -73,7 +71,10 @@ export function sourceControlRemoteActions(
       ['pull', 'Pull'],
       ['push', 'Push']
     ] as const
-  ).map(([id, label]) => ({ id, label, enabled: reason === null, disabledReason: reason }));
+  ).map(([id, label]) => {
+    const reason = commonReason ?? (id === 'fetch' || status?.hasUpstream ? null : NO_UPSTREAM);
+    return { id, label, enabled: reason === null, disabledReason: reason };
+  });
 }
 
 export interface SourceControlScopeOption {

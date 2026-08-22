@@ -42,6 +42,7 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
   import { buttonVariants } from '$lib/components/ui/button/variants.js';
+  import { Switch } from '$lib/components/ui/switch/index.js';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import GitBranch from '@lucide/svelte/icons/git-branch';
@@ -55,16 +56,17 @@
     type GitCommitFilesState
   } from '$lib/shell/git/gitCommitFilesStore.svelte';
   import {
-    describeGitBranch,
     describeGitBranchTitle,
     hasStagedChanges,
     isGitFileUntracked,
     isNotARepositoryError
   } from '$lib/shell/git/gitPanelStore.svelte';
   import { gitService as defaultService, type GitService } from '$lib/shell/git/gitService';
+  import BranchMenu from '$lib/shell/components/git/BranchMenu.svelte';
   import DiscardConfirmDialog from '$lib/shell/components/git/DiscardConfirmDialog.svelte';
   import {
     describeDiscardQuestion,
+    type DiscardQuestion,
     type DiscardTarget
   } from '$lib/shell/components/git/discardConfirm';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
@@ -215,6 +217,8 @@
   const diffstat = $derived(sourceControlDiffstat(panel.status));
   const staged = $derived(hasStagedChanges(panel.status));
   const busy = $derived(panel.actionBusy !== '');
+  const files = $derived(panel.status?.files ?? []);
+  let amend = $state(false);
 
   /** Can this panel change what it is looking at? Both answers have a sentence. */
   const canChange = $derived(canWrite && !readOnlyScope);
@@ -273,6 +277,8 @@
   );
   const canStageAll = $derived(canChange && !busy && stageablePaths.length > 0);
   const canCommit = $derived(canChange && !busy && staged && panel.commitMessage.trim() !== '');
+  const canAmend = $derived(canChange && !busy && panel.commitMessage.trim() !== '');
+  const canDiscardAll = $derived(canChange && !busy && files.length > 0);
 
   const stageHint = $derived.by(() => {
     if (!canChange) return cannotChangeReason;
@@ -284,6 +290,10 @@
   const commitHint = $derived.by(() => {
     if (!canChange) return cannotChangeReason;
     if (busy) return 'Wait for the current source-control action to finish.';
+    if (amend) {
+      if (panel.commitMessage.trim() === '') return 'Type the amended commit message first.';
+      return 'Rewrite the last commit. Do not amend a commit that is already pushed and shared.';
+    }
     if (!staged) return 'Stage something first — a commit takes what is staged.';
     if (panel.commitMessage.trim() === '') return 'Type a commit message first.';
     return 'Commit the staged files';
@@ -295,6 +305,11 @@
   }
 
   function commit(): void {
+    if (amend) {
+      if (!canAmend) return;
+      void service.amendCommit();
+      return;
+    }
     if (!canCommit) return;
     void service.commit();
   }
@@ -320,23 +335,36 @@
     void service.unstagePaths([file.relativePath]);
   }
 
-  /** The file whose changes are being asked about, or null while nothing is. */
-  let discarding = $state<DiscardTarget | null>(null);
-  const discardQuestion = $derived(
-    discarding === null ? null : describeDiscardQuestion({ scope: 'file', targets: [discarding] })
-  );
+  /** The changes being asked about, or null while nothing is. */
+  let pendingDiscard = $state<{ question: DiscardQuestion; run: () => void } | null>(null);
 
   function askToDiscard(file: ProjectGitFileStatus): void {
     if (!canChange || busy) return;
-    discarding = { relativePath: file.relativePath, untracked: isGitFileUntracked(file) };
+    const target: DiscardTarget = {
+      relativePath: file.relativePath,
+      untracked: isGitFileUntracked(file)
+    };
+    pendingDiscard = {
+      question: describeDiscardQuestion({ scope: 'file', targets: [target] }),
+      run: () => void service.discardPaths([target.relativePath])
+    };
+  }
+
+  function askToDiscardAll(): void {
+    if (!canDiscardAll) return;
+    const untrackedCount = files.filter(isGitFileUntracked).length;
+    pendingDiscard = {
+      question: describeDiscardQuestion({ scope: 'all', targets: [], untrackedCount }),
+      run: () => void service.discardAll(untrackedCount > 0)
+    };
   }
 
   /** The one route to a discard in this panel, and only from the dialog. */
   function confirmDiscard(): void {
-    const target = discarding;
-    discarding = null;
-    if (!target || !canChange) return;
-    void service.discardPaths([target.relativePath]);
+    const pending = pendingDiscard;
+    pendingDiscard = null;
+    if (!pending || !canChange) return;
+    pending.run();
   }
 </script>
 
@@ -346,35 +374,52 @@
 >
   <PanelHeader title="Source control" count={diffstat.filesChanged} data-testid="source-control-header">
     {#snippet actions()}
-      <!-- Fetch, pull and push. Each item that cannot run carries the sentence
-           saying why — usually a branch with no upstream. The whole menu is
-           gone while the panel is reading somebody else's checkout. -->
-      {#if !readOnlyScope}
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger
-            class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
-            aria-label="More source-control actions"
-            data-testid="source-control-more-actions"
+      <!-- Refresh, discard all, fetch, pull and push. Each item that cannot run
+           carries the sentence saying why — usually a read-only folder or a
+           branch with no upstream. -->
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger
+          class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
+          aria-label="More source-control actions"
+          data-testid="source-control-more-actions"
+        >
+          <Ellipsis aria-hidden="true" />
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content align="end">
+          <DropdownMenu.Item
+            data-testid="source-control-refresh"
+            disabled={panel.statusLoading || panel.historyLoading}
+            onSelect={() => void service.refresh()}
           >
-            <Ellipsis aria-hidden="true" />
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Content align="end">
-            {#each remoteActions as item (item.id)}
-              <DropdownMenu.Item
-                data-testid={`source-control-remote-${item.id}`}
-                disabled={!item.enabled}
-                title={item.enabled ? undefined : item.disabledReason}
-                onSelect={() => runRemote(item.id)}>{item.label}</DropdownMenu.Item
-              >
-            {/each}
-          </DropdownMenu.Content>
-        </DropdownMenu.Root>
-      {/if}
+            Refresh
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            data-testid="source-control-discard-all"
+            disabled={!canDiscardAll}
+            title={canDiscardAll
+              ? undefined
+              : canChange
+                ? 'There are no changes to discard.'
+                : cannotChangeReason}
+            onSelect={() => askToDiscardAll()}
+          >
+            Discard all…
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator />
+          {#each remoteActions as item (item.id)}
+            <DropdownMenu.Item
+              data-testid={`source-control-remote-${item.id}`}
+              disabled={!item.enabled}
+              title={item.enabled ? undefined : item.disabledReason}
+              onSelect={() => runRemote(item.id)}>{item.label}</DropdownMenu.Item
+            >
+          {/each}
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
     {/snippet}
 
-    <span class="flex min-w-0 items-center gap-1" title={describeGitBranchTitle(panel.status)}>
-      <GitBranch class="size-3.5 shrink-0" aria-hidden="true" />
-      <span class="min-w-0 truncate">{describeGitBranch(panel.status)}</span>
+    <span class="min-w-0" title={describeGitBranchTitle(panel.status)}>
+      <BranchMenu {panel} {service} canWrite={canChange} readOnlyReason={cannotChangeReason} />
     </span>
   </PanelHeader>
 
@@ -464,6 +509,18 @@
           </label>
 
           <div class="flex items-center gap-2">
+            <label
+              class="flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground"
+              title="Rewrite the last commit instead of adding one. Never do this to a commit that is already pushed and shared."
+            >
+              <Switch
+                size="sm"
+                disabled={!canChange}
+                bind:checked={amend}
+                data-testid="source-control-amend-toggle"
+              />
+              Amend
+            </label>
             <Button
               variant="secondary"
               size="sm"
@@ -476,10 +533,10 @@
             <Button
               size="sm"
               class="flex-1"
-              disabled={!canCommit}
+              disabled={amend ? !canAmend : !canCommit}
               title={commitHint}
               data-testid="source-control-commit"
-              onclick={commit}>Commit</Button
+              onclick={commit}>{amend ? 'Amend' : 'Commit'}</Button
             >
           </div>
         {/if}
@@ -550,10 +607,10 @@
 </div>
 
 <DiscardConfirmDialog
-  question={discardQuestion}
-  open={discarding !== null}
+  question={pendingDiscard?.question ?? null}
+  open={pendingDiscard !== null}
   onOpenChange={(next) => {
-    if (!next) discarding = null;
+    if (!next) pendingDiscard = null;
   }}
   onConfirm={confirmDiscard}
 />
