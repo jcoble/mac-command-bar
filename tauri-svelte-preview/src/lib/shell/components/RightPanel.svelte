@@ -34,8 +34,18 @@
     /** The active session's ownedId, or null. */
     ownedId: string | null;
     onRootUnavailable?(root: string): void | Promise<void>;
+    expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
+    onExpandedPathsChange?(root: string, paths: readonly string[]): void;
   }
-  let { activeId, onSelect, root, ownedId, onRootUnavailable }: Props = $props();
+  let {
+    activeId,
+    onSelect,
+    root,
+    ownedId,
+    onRootUnavailable,
+    expandedPathsByRoot,
+    onExpandedPathsChange
+  }: Props = $props();
 </script>
 
 <div class="right-panel">
@@ -43,7 +53,16 @@
 
   <div class="panel-bodies">
     {#if activeId === 'files'}
-      <div class="panel-body showing"><FilesPanel visible={true} {root} {ownedId} {onRootUnavailable} /></div>
+      <div class="panel-body showing">
+        <FilesPanel
+          visible={true}
+          {root}
+          {ownedId}
+          {onRootUnavailable}
+          {expandedPathsByRoot}
+          {onExpandedPathsChange}
+        />
+      </div>
     {:else if activeId === 'source-control'}
       <div class="panel-body showing"><SourceControlPanel visible={true} {root} {ownedId} /></div>
     {:else if activeId === 'worktrees'}

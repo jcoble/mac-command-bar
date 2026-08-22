@@ -66,6 +66,8 @@ export interface SessionWorkspaceFileState {
   viewState?: object;
 }
 
+export type SessionWorkspaceExpandedPathsByRoot = Record<string, string[]>;
+
 /** What one session had open, small enough to store for every session at once. */
 export interface SessionWorkspaceSnapshot {
   /** Editor tabs in strip order, newest at the end. */
@@ -101,6 +103,8 @@ export interface SessionWorkspaceSnapshot {
   center?: SessionCenterWorkspace;
   /** The selected tab in the right column. */
   rightTab: RightTabId;
+  /** Expanded lazy-tree directories, keyed by the root they belong to. */
+  expandedPathsByRoot?: SessionWorkspaceExpandedPathsByRoot;
 }
 
 /**
@@ -159,6 +163,7 @@ export function captureWorkspace(input: {
   browser?: SessionBrowserWorkspace;
   center?: SessionCenterWorkspace | null;
   rightTab: RightTabId;
+  expandedPathsByRoot?: SessionWorkspaceExpandedPathsByRoot;
 }): SessionWorkspaceSnapshot {
   const activePath = input.activePath ?? null;
   // A path with no folder cannot be checked against the session being restored,
@@ -201,6 +206,8 @@ export function captureWorkspace(input: {
   if (input.conversation) snapshot.conversation = normalizeConversation(input.conversation);
   if (input.browser) snapshot.browser = normalizeBrowser(input.browser);
   if (input.center) snapshot.center = normalizeCenter(input.center) ?? undefined;
+  const expandedPathsByRoot = normalizeExpandedPathsByRoot(input.expandedPathsByRoot);
+  if (expandedPathsByRoot) snapshot.expandedPathsByRoot = expandedPathsByRoot;
   return snapshot;
 }
 
@@ -347,6 +354,50 @@ function normalizeFileStates(
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function canonicalWorkspacePath(value: string): string {
+  const path = value.trim().replaceAll('\\', '/');
+  if (!path) return '';
+  const absolute = path.startsWith('/');
+  const parts: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (parts.length > 0 && parts[parts.length - 1] !== '..') parts.pop();
+      else if (!absolute) parts.push(part);
+      continue;
+    }
+    parts.push(part);
+  }
+  const joined = parts.join('/');
+  if (!joined) return absolute ? '/' : '.';
+  return absolute ? `/${joined}` : joined;
+}
+
+function isPathAtOrBelow(path: string, root: string): boolean {
+  if (path === root) return true;
+  if (root === '/') return path.startsWith('/');
+  return path.startsWith(`${root}/`);
+}
+
+function normalizeExpandedPathsByRoot(
+  value: unknown
+): SessionWorkspaceExpandedPathsByRoot | undefined {
+  if (!isRecord(value)) return undefined;
+  const normalized: SessionWorkspaceExpandedPathsByRoot = {};
+  for (const [rawRoot, rawPaths] of Object.entries(value)) {
+    const root = canonicalWorkspacePath(rawRoot);
+    if (!root || !Array.isArray(rawPaths)) continue;
+    const paths = [...new Set(
+      rawPaths
+        .filter((path): path is string => typeof path === 'string')
+        .map(canonicalWorkspacePath)
+        .filter((path) => path && path !== root && isPathAtOrBelow(path, root))
+    )].sort();
+    normalized[root] = paths;
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 /** One stored entry, or null if it is not a record at all. Fields of the wrong
  * type become their empty version rather than sinking the whole entry: a
  * half-corrupt record still restores most of a session. */
@@ -383,6 +434,8 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if ('browser' in entry) snapshot.browser = normalizeBrowser(entry.browser);
   const center = normalizeCenter(entry.center);
   if (center) snapshot.center = center;
+  const expandedPathsByRoot = normalizeExpandedPathsByRoot(entry.expandedPathsByRoot);
+  if (expandedPathsByRoot) snapshot.expandedPathsByRoot = expandedPathsByRoot;
   return snapshot;
 }
 

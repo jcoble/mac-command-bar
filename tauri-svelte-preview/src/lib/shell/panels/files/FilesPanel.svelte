@@ -30,6 +30,7 @@
     canonicalPath,
     explorer,
     explorerNodes,
+    loadedExplorerDirectoryDepth,
     selectPath,
     setIncludeExcluded
   } from '$lib/shell/explorer/explorerStore.svelte';
@@ -51,6 +52,8 @@
     root: string;
     ownedId: string | null;
     onRootUnavailable?(root: string): void | Promise<void>;
+    expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
+    onExpandedPathsChange?(root: string, paths: readonly string[]): void;
   }
 
   type PendingEntry = {
@@ -75,7 +78,13 @@
     searchResult?: boolean;
   };
 
-  let { visible, root, onRootUnavailable }: Props = $props();
+  let {
+    visible,
+    root,
+    onRootUnavailable,
+    expandedPathsByRoot,
+    onExpandedPathsChange
+  }: Props = $props();
   let expanded = $state.raw<Set<string>>(new Set());
   let treeData = $state.raw<TreeItem[]>([]);
   let sortDirection = $state<'ascending' | 'descending'>('ascending');
@@ -95,6 +104,9 @@
   let revealGeneration = 0;
   let activeSearchScanId: string | null = null;
   let notifiedUnavailableRoot = '';
+  let hydratedRoot = '';
+  let hydratedExpansionKey = '';
+  let expansionRestoreGeneration = 0;
 
   const loadedNodes = $derived(explorerNodes());
   const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
@@ -139,10 +151,41 @@
   $effect(() => {
     root;
     revealGeneration += 1;
+    const requestedRoot = canonicalPath(root);
+    if (requestedRoot === hydratedRoot) return;
+    hydratedRoot = '';
+    hydratedExpansionKey = '';
+    expansionRestoreGeneration += 1;
     expanded = new Set();
     pending = null;
     fileClipboard = null;
     searchText = '';
+  });
+
+  $effect(() => {
+    const requestedRoot = canonicalPath(root);
+    const activeRoot = canonicalPath(explorer.root ?? '');
+    const savedPaths = activeRoot
+      ? canonicalExpandedPaths(activeRoot, expandedPathsByRoot?.[activeRoot] ?? [])
+      : [];
+    const savedKey = expansionKey(savedPaths);
+    if (!listed || !explorer.activated || !requestedRoot || requestedRoot !== activeRoot) {
+      if (activeRoot !== hydratedRoot) {
+        hydratedRoot = activeRoot;
+        hydratedExpansionKey = '';
+        expansionRestoreGeneration += 1;
+        expanded = new Set();
+      }
+      return;
+    }
+    if (activeRoot === hydratedRoot && savedKey === hydratedExpansionKey) return;
+
+    hydratedRoot = activeRoot;
+    hydratedExpansionKey = savedKey;
+    expansionRestoreGeneration += 1;
+    expanded = new Set(savedPaths);
+    const generation = expansionRestoreGeneration;
+    void restoreExpandedDirectories(activeRoot, savedPaths, generation);
   });
 
   $effect(() => {
@@ -251,6 +294,65 @@
     return error instanceof Error ? error.message : String(error);
   }
 
+  function canonicalExpandedPaths(projectRoot: string, paths: readonly string[]): string[] {
+    return [...new Set(
+      paths
+        .map((path) => canonicalPath(path))
+        .filter((path) => path && path !== projectRoot && isPathAtOrBelow(path, projectRoot))
+    )].sort((left, right) => {
+      const depth = pathDepth(left) - pathDepth(right);
+      return depth !== 0 ? depth : left.localeCompare(right);
+    });
+  }
+
+  function pathDepth(path: string): number {
+    return path.split('/').filter(Boolean).length;
+  }
+
+  function isPathAtOrBelow(path: string, projectRoot: string): boolean {
+    if (path === projectRoot) return true;
+    if (projectRoot === '/') return path.startsWith('/');
+    return path.startsWith(`${projectRoot}/`);
+  }
+
+  function expansionKey(paths: readonly string[]): string {
+    return paths.join('\u0000');
+  }
+
+  function persistExpandedPaths(): void {
+    const projectRoot = canonicalPath(explorer.root ?? '');
+    if (!projectRoot || projectRoot !== hydratedRoot || !listed) return;
+    onExpandedPathsChange?.(projectRoot, canonicalExpandedPaths(projectRoot, [...expanded]));
+  }
+
+  async function restoreExpandedDirectories(
+    projectRoot: string,
+    paths: readonly string[],
+    generation: number
+  ): Promise<void> {
+    const directories = new Set<string>();
+    for (const path of paths) {
+      const relative = path.slice(projectRoot.length).replace(/^\/+/, '');
+      let directory = projectRoot;
+      for (const component of relative.split('/').filter(Boolean)) {
+        directory = `${directory}/${component}`;
+        directories.add(directory);
+      }
+    }
+    const ordered = [...directories].sort((left, right) => {
+      const depth = pathDepth(left) - pathDepth(right);
+      return depth !== 0 ? depth : left.localeCompare(right);
+    });
+    for (const directory of ordered) {
+      if (
+        generation !== expansionRestoreGeneration ||
+        canonicalPath(explorer.root ?? '') !== projectRoot
+      ) return;
+      if (loadedExplorerDirectoryDepth(directory) !== null) continue;
+      await loadDirectory(directory, pathDepth(directory) - pathDepth(projectRoot));
+    }
+  }
+
   function cancelActiveSearch(): void {
     const scanId = activeSearchScanId;
     activeSearchScanId = null;
@@ -316,6 +418,7 @@
     const ancestors = await revealExplorerPath(node.path);
     if (generation !== revealGeneration || canonicalPath(explorer.root ?? root) !== projectRoot) return;
     expanded = new Set([...expanded, ...ancestors]);
+    persistExpandedPaths();
     selectPath(node.path);
     if (!node.isDirectory) {
       openFileInEditor({ path: node.path, projectRoot });
@@ -347,6 +450,7 @@
     expanded = new Set(
       [...expanded].filter((candidate) => candidate !== path && !candidate.startsWith(`${path}/`))
     );
+    persistExpandedPaths();
   }
 
   function onTreeNodeClicked(treeNode: LTreeNode<TreeItem>): void {
@@ -360,6 +464,7 @@
       if (expanded.has(node.path)) collapsePath(node.path);
       else {
         expanded = new Set([...expanded, node.path]);
+        persistExpandedPaths();
         void loadDirectory(node.path, node.depth + 1);
       }
       return;
@@ -384,6 +489,7 @@
     actionError = null;
     if (kind !== 'rename' && !expanded.has(node.path)) {
       expanded = new Set([...expanded, node.path]);
+      persistExpandedPaths();
       void loadDirectory(node.path, node.depth + 1);
     }
     pending = { kind, path: node.path };

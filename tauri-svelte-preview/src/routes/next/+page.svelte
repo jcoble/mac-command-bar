@@ -763,6 +763,27 @@
 		return agent === "codex" || agent === "claude" || agent === "antigravity" ? agent : null;
 	}
 
+	function rememberFileTreeExpandedPaths(root: string, paths: readonly string[]): void {
+		const ownedId = rail.activeOwnedId;
+		const projectRoot = canonicalPath(root);
+		if (!ownedId || !projectRoot || activeWorkspaceSnapshot === null) return;
+		activeWorkspaceSnapshot = {
+			...activeWorkspaceSnapshot,
+			expandedPathsByRoot: {
+				...(activeWorkspaceSnapshot.expandedPathsByRoot ?? {}),
+				[projectRoot]: [...paths],
+			},
+		};
+		scheduleWorkspaceAutosave(
+			ownedId,
+			editorState.openFiles,
+			editorState.activePath,
+			centerTab,
+			rightTab,
+			captureBrowserState(),
+		);
+	}
+
 	/** Remember the editor tabs and file tree this session is leaving behind.
 	 * Stored straight away: a reload can come at any moment, and the write is a
 	 * few hundred bytes. */
@@ -780,7 +801,8 @@
 				browser: captureBrowserState(),
 				center: frameControls?.captureCenterLayout() ?? null,
 				rightTab,
-			});
+				expandedPathsByRoot: activeWorkspaceSnapshot?.expandedPathsByRoot,
+		});
 		activeWorkspaceSnapshot = snapshot;
 		try {
 			const write = workspaceWriteQueue.then(async () => {
@@ -1883,6 +1905,8 @@
 			root={activeRootAvailable ? readSelection().root : ""}
 			ownedId={rail.activeOwnedId}
 			onRootUnavailable={handleActiveRootUnavailable}
+			expandedPathsByRoot={activeWorkspaceSnapshot?.expandedPathsByRoot ?? {}}
+			onExpandedPathsChange={rememberFileTreeExpandedPaths}
 		/>
 {/snippet}
 {#snippet centerTabsArea()}
