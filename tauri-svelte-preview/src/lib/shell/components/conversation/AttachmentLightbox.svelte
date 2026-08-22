@@ -1,22 +1,63 @@
 <script lang="ts">
+  import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
+  import { onDestroy } from 'svelte';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
+  import {
+    createTrackedObjectUrl,
+    revokeTrackedObjectUrl
+  } from '$lib/shell/resourceDiagnostics.svelte';
 
   let {
     src,
-    fullSrc = src,
+    fullPath,
+    fullSrc,
     name,
     variant
   }: {
     src: string;
+    fullPath?: string;
     fullSrc?: string;
     name: string;
     variant: 'composer' | 'timeline';
   } = $props();
 
   let open = $state(false);
+  let fullObjectUrl = $state('');
+  let loadGeneration = 0;
+
+  function releaseFullObjectUrl(): void {
+    loadGeneration += 1;
+    if (fullObjectUrl) revokeTrackedObjectUrl(fullObjectUrl);
+    fullObjectUrl = '';
+  }
+
+  async function openChanged(next: boolean): Promise<void> {
+    open = next;
+    if (!next) {
+      releaseFullObjectUrl();
+      return;
+    }
+    const source = fullPath
+      ? (isTauri() ? convertFileSrc(fullPath) : fullPath)
+      : fullSrc;
+    if (!source) return;
+    const generation = ++loadGeneration;
+    try {
+      const response = await fetch(source);
+      if (!response.ok || generation !== loadGeneration) return;
+      const blob = await response.blob();
+      if (generation !== loadGeneration) return;
+      if (fullObjectUrl) revokeTrackedObjectUrl(fullObjectUrl);
+      fullObjectUrl = createTrackedObjectUrl(blob, 'attachment');
+    } catch {
+      if (generation === loadGeneration) fullObjectUrl = '';
+    }
+  }
+
+  onDestroy(releaseFullObjectUrl);
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(next) => void openChanged(next)}>
   <Dialog.Trigger class={`attachment-lightbox-thumbnail ${variant}`} aria-label={`Enlarge ${name}`}>
     {#if src}
       <img {src} alt={name} loading="lazy" decoding="async" />
@@ -30,8 +71,8 @@
   >
     <Dialog.Title class="sr-only">{name}</Dialog.Title>
     <Dialog.Close class="attachment-lightbox-full-image" aria-label={`Close enlarged ${name}`}>
-      {#if open && fullSrc}
-        <img src={fullSrc} alt={name} />
+      {#if open && fullObjectUrl}
+        <img src={fullObjectUrl} alt={name} />
       {/if}
     </Dialog.Close>
   </Dialog.Content>

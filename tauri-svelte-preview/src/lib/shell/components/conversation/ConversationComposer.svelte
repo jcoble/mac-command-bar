@@ -378,7 +378,7 @@
                 <div class="attachment-preview">
                   <AttachmentLightbox
                     src={attachment.previewUrl}
-                    fullSrc={attachment.originalUrl}
+                    fullPath={attachment.path}
                     name={attachment.name}
                     variant="composer"
                   />

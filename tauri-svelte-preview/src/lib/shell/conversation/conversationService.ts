@@ -260,7 +260,6 @@ function attachmentDisplayMetadata(attachment: ConversationAttachment): Conversa
     path: attachment.path,
     previewUrl: attachment.previewUrl
   };
-  if (attachment.originalUrl !== undefined) metadata.originalUrl = attachment.originalUrl;
   if (attachment.thumbnailMimeType !== undefined) metadata.thumbnailMimeType = attachment.thumbnailMimeType;
   if (attachment.thumbnailPath !== undefined) metadata.thumbnailPath = attachment.thumbnailPath;
   if (attachment.thumbnailByteLength !== undefined) {
@@ -273,13 +272,11 @@ function attachmentDisplayMetadata(attachment: ConversationAttachment): Conversa
 export function restoreConversationAttachmentPreview(
   attachment: Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string }
 ): ConversationAttachment {
-  const originalUrl = attachment.originalUrl
-    ?? (isTauri() ? convertFileSrc(attachment.path) : attachment.path);
   const previewUrl = attachment.previewUrl
     ?? (attachment.thumbnailPath
       ? (isTauri() ? convertFileSrc(attachment.thumbnailPath) : attachment.thumbnailPath)
       : '');
-  return { ...attachment, originalUrl, previewUrl };
+  return { ...attachment, previewUrl };
 }
 
 /** Restore attachment metadata supplied by the existing owner-scoped vault. */

@@ -13,7 +13,7 @@
         <figure>
           <AttachmentLightbox
             src={attachment.previewUrl}
-            fullSrc={attachment.originalUrl}
+            fullPath={attachment.path}
             name={attachment.name}
             variant="timeline"
           />
