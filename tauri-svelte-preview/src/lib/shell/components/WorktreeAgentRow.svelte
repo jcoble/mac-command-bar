@@ -10,7 +10,7 @@
    * working and on screen; the elapsed clock is the rail's one shared interval
    * rather than a timer per row.
    */
-  import { onDestroy } from 'svelte';
+  import { getContext, onDestroy } from 'svelte';
 
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import GitBranch from '@lucide/svelte/icons/git-branch';
@@ -42,7 +42,6 @@
   } from './railElapsedTicker.ts';
   import { observeElementVisibility } from '$lib/shell/elementVisibility.ts';
   import { sessionRowMenuItems, type SessionRowMenuAction } from './sessionRowMenu.ts';
-  import SessionHoverCard from './SessionHoverCard.svelte';
   import { sessionRowJump } from './sessionRowJump';
 
   interface Props {
@@ -235,11 +234,11 @@
     statusTone: RowPresence;
   }
 
-  let cardPlacement = $state<{ top: number; left: number } | null>(null);
-  let cardView = $state<HoverCardView | null>(null);
+  const hoverCard = getContext<{
+    show(view: HoverCardView, row: HTMLElement): void;
+    hide(): void;
+  }>('session-hover-card');
   let cardTimer: ReturnType<typeof setTimeout> | null = null;
-  const CARD_WIDTH = 336;
-  const CARD_HEIGHT = 300;
 
   function clearCardTimer(): void {
     if (cardTimer !== null) {
@@ -268,22 +267,7 @@
   }
 
   function placeCard(row: HTMLElement): void {
-    const rect = row.getBoundingClientRect();
-    const rightRoom = window.innerWidth - rect.right - 8;
-    cardView = takeCardView();
-    cardPlacement = {
-      top: Math.max(8, Math.min(rect.top, window.innerHeight - CARD_HEIGHT - 8)),
-      left: rightRoom >= CARD_WIDTH ? rect.right + 8 : Math.max(8, rect.left - CARD_WIDTH - 8)
-    };
-  }
-
-  function bodyPortal(node: HTMLElement): { destroy(): void } {
-    document.body.appendChild(node);
-    return {
-      destroy(): void {
-        node.remove();
-      }
-    };
+    hoverCard.show(takeCardView(), row);
   }
 
   function showOverlay(event: { currentTarget: EventTarget | null }): void {
@@ -319,8 +303,7 @@
 
   function hideOverlay(): void {
     clearCardTimer();
-    cardPlacement = null;
-    cardView = null;
+    hoverCard.hide();
   }
 
   /**
@@ -613,19 +596,6 @@
     {/if}
   </HoverActions>
 
-  <!-- Nothing here reads a store: the card renders the snapshot taken when it
-       opened, so a transcript event cannot repaint an open floating surface. -->
-  {#if cardPlacement && cardView}
-    <div
-      use:bodyPortal
-      data-testid="worktree-agent-hover-popover"
-      class="hover-popover"
-      role="tooltip"
-      style="top: {cardPlacement.top}px; left: {cardPlacement.left}px"
-    >
-      <SessionHoverCard {...cardView} />
-    </div>
-  {/if}
 </li>
 
 <style>
@@ -916,12 +886,6 @@
   .row.drop-before::after { top: -2px; }
   .row.drop-after::after { bottom: -2px; }
 
-  .hover-popover {
-    position: fixed;
-    z-index: 60;
-    pointer-events: none;
-  }
-
   /* Interaction motion: every one of these ends. The row's fill and the time in
      its corner answer a pointer or a selection and then stop; the working
      indicator remains static. */
@@ -931,11 +895,5 @@
     .thumb { transition: opacity 120ms ease; }
 
     .session-row { transition: background-color 140ms ease; }
-    .hover-popover { animation: card-in 160ms ease-out; }
-  }
-
-  @keyframes card-in {
-    from { opacity: 0; transform: translateX(-4px); }
-    to { opacity: 1; transform: none; }
   }
 </style>
