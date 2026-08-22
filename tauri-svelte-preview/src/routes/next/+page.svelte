@@ -110,6 +110,7 @@
 		isCenterTabId as isStoredCenterTabId,
 	} from "$lib/shell/layout/workbenchTabs";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
+	import { rememberLastUsed } from "$lib/shell/newSession/projectRootsStore.svelte";
 	import type { ThreadStartProviderConfig, ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow.ts";
 	import { deriveThreadStartProjects } from "$lib/shell/newSession/threadStartFlow.ts";
 	import {
@@ -1222,6 +1223,7 @@
 				approvalPolicy: request.approvalPolicy,
 			});
 			await persistOwnedMetadata(owned.ownedId);
+			rememberLastUsed(request.projectPath);
 			updateOwnedSession(owned.ownedId, { runtimeState: "ready", lastError: null });
 			return owned.ownedId;
 		} catch (error) {

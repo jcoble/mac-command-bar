@@ -82,8 +82,8 @@
     return initialRootPath() ?? knownRoots()[0]?.path ?? '';
   }
 
-  // The preset is applied on mount, once the stored roots have been read; this
-  // is only what the first frame paints.
+  // The preset is applied on mount after SQLite hydration; this is only what
+  // the first frame paints.
   let draft = $state<ThreadStartPickerState>(
     defaultThreadStartState({ projectPath: preferredRoot(null) })
   );
@@ -226,12 +226,19 @@
   }
 
   onMount(() => {
-    hydrate();
+    let active = true;
     setSessionRoots(sessionRoots);
-    const projectPath = preferredRoot(presetProjectPath);
-    draft = defaultThreadStartState({ projectPath, providerConfigs });
-    void loadRefs(projectPath);
-    composer?.focus();
+    void hydrate().then(() => {
+      if (!active) return;
+      const projectPath = preferredRoot(presetProjectPath);
+      draft = defaultThreadStartState({ projectPath, providerConfigs });
+      if (projectPath) void loadRefs(projectPath);
+      composer?.focus();
+    });
+    return () => {
+      active = false;
+      loadSequence += 1;
+    };
   });
 </script>
 
