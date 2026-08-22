@@ -658,6 +658,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-22 · “Replacement sessions release their adapter pool”</td><td>Replacing a changed or failed managed-session generation now releases the prior session’s adapter-pool membership instead of stopping the pooled transport directly. A shared adapter remains alive for its other members; a last-member detach removes the pool only after cleanup succeeds. If cleanup fails, the prior managed session and its durable row are restored instead of leaving a new runtime-less generation current.</td><td>07, 09</td></tr>
             <tr><td>2026-08-22 · “One LSP status event has one native owner”</td><td><code>sourceIntelligence.ts</code> now owns the sole lazy native <code>source-lsp-status-changed</code> listener. The visible editor registers a synchronous in-process subscriber and removes it when the panel unmounts; it no longer acquires a second Tauri listener. The existing capability check, generation guard, late-acquisition disposal, and root/language filtering remain in place, and disposing source intelligence stops the native listener and clears every subscriber.</td><td>13, 18</td></tr>
             <tr><td>2026-08-22 · “Git history reads bounded cursor pages”</td><td>Repository and file history now share a <code>GitHistoryPage</code> contract carrying the inspected root, optional relative path, at most 24 commits, a continuation cursor, and completion. Rust and the web development bridge read only the requested page with <code>git log --skip</code> plus one look-ahead row. Load More appends that page instead of rereading an ever-growing prefix; refresh, release, root changes, and path changes clear both rows and cursor.</td><td>13, 18, 20</td></tr>
             <tr><td>2026-08-22 · “A hidden Git graph releases its rows”</td><td>The center Git History graph and right Source Control timeline now share one explicit visibility owner. When neither is visible, in-flight history and commit-file reads are invalidated, commit rows and expanded-file payloads are released, and diagnostics return their Git-row count to zero. Session switches release the same state unconditionally. A commit diff intentionally opened from the graph survives the graph-to-Diff handoff only while the Diff surface owns it. Native history still uses bounded increasing-prefix reads; cursor paging remains a separate Phase 6 contract.</td><td>13, 18, 20</td></tr>
@@ -1009,6 +1010,9 @@
           </article>
         </div>
 
+        <p>A generation replacement follows the same ownership rule. It removes the prior session from its adapter pool rather than stopping that pool’s transport directly, so another session sharing the adapter is not interrupted. A last-member detach must finish before the pool entry is removed; if it fails, Rust restores the prior managed generation and durable row instead of leaving a replacement with no runtime.</p>
+        <span class="source"><code>agent_conversation/manager.rs:494-536,795-828,880-972</code></span>
+
         <h3>Why the stop is not immediate</h3>
         <p>The process supervisor sends <code>SIGTERM</code> to the adapter’s whole process group, waits up to three seconds, and then uses <code>SIGKILL</code> as a fallback. The grace period exists because Claude can write its durable transcript shortly after returning the answer; immediate killing previously lost completed turns.</p>
         <span class="source"><code>providers/process.rs:17-23,127-180,233-289</code></span>
@@ -1043,7 +1047,7 @@
             <tr><td>Provider-native storage</td><td>The conversation context Codex, Claude, or Agy resumes; often provider JSONL or its equivalent.</td><td>Yes, provider-controlled</td></tr>
             <tr><td><code>usage-history.sqlite3</code></td><td>Separate usage analytics: token/cost events, source cursors, rate versions, and daily rollups.</td><td>Yes</td></tr>
             <tr><td>localStorage</td><td>Legacy regression: small per-session UI workspace state still lives here. The approved migration removes these product-state reads and writes in favor of <code>sessions.db</code>; browser state is not an authority.</td><td>Temporarily, pending migration</td></tr>
-            <tr><td>Rust live maps</td><td>Attached runtimes, pending RPC calls, writer lease, active tools, recent-event cache, and process handles.</td><td>No; reconstructed</td></tr>
+            <tr><td>Rust live maps</td><td>Attached runtimes, pending RPC calls, writer lease, active tools/background work, ordered-event senders, and process handles.</td><td>No; reconstructed</td></tr>
             <tr><td>PTY scrollback</td><td>Bounded output for native terminal sessions.</td><td>Only for the live backend process</td></tr>
           </tbody>
         </table>

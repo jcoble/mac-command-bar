@@ -502,7 +502,6 @@ impl AgentRuntimeManager {
         let Some(pool) = pools.get_mut(pool_key) else {
             return Ok(());
         };
-        pool.members.remove(owned_id);
         if close_native_session {
             if let Some(native_session_id) = native_session_id {
                 pool.runtime
@@ -513,7 +512,8 @@ impl AgentRuntimeManager {
                     .map_err(|error| error.to_string())?;
             }
         }
-        if pool.members.is_empty() {
+        let last_member = pool.members.len() == 1 && pool.members.contains(owned_id);
+        if last_member {
             let runtime = Arc::clone(&pool.runtime);
             if close_native_session {
                 runtime
@@ -530,6 +530,9 @@ impl AgentRuntimeManager {
                     .await
                     .map_err(|error| error.to_string())?;
             }
+        }
+        pool.members.remove(owned_id);
+        if pool.members.is_empty() {
             pools.remove(pool_key);
         }
         Ok(())
@@ -792,13 +795,34 @@ impl AgentRuntimeManager {
         let owned_id = required_id(&request.owned_id, "Owned session id")?;
         let activation_lock = self.activation_lock(&owned_id)?;
         let _activation = activation_lock.lock().await;
-        let (connection, previous_runtime) = self.ensure_inner(request)?;
-        if let Some((runtime, transport)) = previous_runtime {
-            // Stop through the transport directly so a one-shot prompt holding
-            // the runtime mutex cannot prevent the old generation from being
-            // shut down before the replacement activates.
-            transport.stop().await;
-            drop(runtime);
+        let (connection, mut prior) = self.ensure_inner(request)?;
+        if let Some(previous) = prior.as_ref() {
+            if let Some(pool_key) = previous.pool_key.as_ref() {
+                let cleanup = self
+                    .release_pool_scope(pool_key, &owned_id, None, false)
+                    .await;
+                if let Err(error) = cleanup {
+                    let mut sessions = self
+                        .sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let previous = prior.take().expect("prior session disappeared");
+                    sessions.insert(owned_id.clone(), previous);
+                    let restored = sessions
+                        .get(&owned_id)
+                        .expect("prior session was not restored");
+                    persist_session(restored)?;
+                    return Err(error);
+                }
+            } else if let Some(transport) = previous.transport.as_ref() {
+                transport.stop().await;
+            }
+            if let Some(task) = prior
+                .as_mut()
+                .and_then(|session| session.child_rollout_scan.take())
+            {
+                task.abort();
+            }
         }
         Ok(connection)
     }
@@ -806,13 +830,7 @@ impl AgentRuntimeManager {
     fn ensure_inner(
         &self,
         request: EnsureAgentConversationRequest,
-    ) -> Result<
-        (
-            AgentConversationConnection,
-            Option<(Arc<AsyncMutex<StructuredRuntimeHandle>>, Arc<AcpTransport>)>,
-        ),
-        String,
-    > {
+    ) -> Result<(AgentConversationConnection, Option<ManagedAgentSession>), String> {
         let owned_id = required_id(&request.owned_id, "Owned session id")?;
         let cwd = validated_conversation_cwd(&request.cwd)?
             .display()
@@ -869,16 +887,7 @@ impl AgentRuntimeManager {
                 return Ok((current.connection.clone(), None));
             }
         }
-        let mut prior = sessions.remove(&owned_id);
-        if let Some(task) = prior
-            .as_mut()
-            .and_then(|session| session.child_rollout_scan.take())
-        {
-            task.abort();
-        }
-        let previous_runtime = prior
-            .as_ref()
-            .and_then(|session| Some((session.runtime.clone()?, session.transport.clone()?)));
+        let prior = sessions.remove(&owned_id);
         let generation = prior
             .as_ref()
             .map(|session| session.generation.saturating_add(1))
@@ -967,7 +976,7 @@ impl AgentRuntimeManager {
             .get(&connection.owned_id)
             .ok_or_else(|| "Conversation session was not inserted".to_string())?;
         persist_session(session)?;
-        Ok((connection, previous_runtime))
+        Ok((connection, prior))
     }
 
     pub async fn activate(
