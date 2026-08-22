@@ -27,17 +27,22 @@
    */
   import Zap from '@lucide/svelte/icons/zap';
   import ZapOff from '@lucide/svelte/icons/zap-off';
-
-  import {
-    languageShortLabel,
-    readLanguageServerState
-  } from './editor/languageServerStatus.ts';
   import { Switch } from '$lib/components/ui/switch/index.js';
-  import { languageIntelligenceLabel } from '$lib/shell/editor/languageIntelligenceMode';
+  import { settings } from '$lib/settingsStore.svelte';
+  import { setLanguageServersEnabled } from '$lib/shell/editor/sourceIntelligence';
   import {
-    languageIntelligenceBar,
-    requestLanguageIntelligence
+    languageIntelligenceBar
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
+
+  let busy = $state(false);
+
+  async function chooseMode(enabled: boolean): Promise<void> {
+    if (busy || enabled === settings.intelligence.languageServers) return;
+    busy = true;
+    const result = await setLanguageServersEnabled(enabled);
+    if (result.supported) settings.intelligence.languageServers = enabled;
+    busy = false;
+  }
 
   /**
    * Which of the three colours the control wears.
@@ -47,22 +52,13 @@
    * are servers on their way up, and a build that reports no state at all is a
    * build that cannot tell us — all of them are "asked for, not there yet".
    */
-  const tone = $derived.by((): 'running' | 'waiting' | 'off' => {
-    if (!languageIntelligenceBar.fullMode) return 'off';
-    return readLanguageServerState(languageIntelligenceBar.status) === 'ready'
-      ? 'running'
-      : 'waiting';
-  });
-
-  const shortLanguage = $derived(languageShortLabel(languageIntelligenceBar.language));
-
   /** The sentence on hover: the panel's own wording, plus the state word. With
    * no project the control says so itself rather than relying on a sentence the
    * panel may not have published yet — a disabled control with no reason on it
    * is just a broken one. */
   const hoverText = $derived(
     languageIntelligenceBar.hasProject
-      ? [languageIntelligenceBar.title, `Language intelligence: ${languageIntelligenceLabel(languageIntelligenceBar.fullMode)}`]
+      ? [languageIntelligenceBar.title, `Supercharged: ${settings.intelligence.languageServers ? 'on' : 'off'}`]
           .filter((part) => part.length > 0)
           .join(' · ')
       : 'No project is open, so there is no language server to switch on.'
@@ -75,29 +71,20 @@
 <div
   class="language-switch"
   class:no-project={!languageIntelligenceBar.hasProject}
-  data-tone={tone}
   title={hoverText}
 >
-  <!-- The glyph is the on-state mark: a bolt while the switch is on, a struck
-       bolt while it is off. It takes its colour from the tone, so it says the
-       same thing as the track without repeating the words. -->
-  {#if languageIntelligenceBar.fullMode}
+  {#if settings.intelligence.languageServers}
     <Zap class="size-3.5" strokeWidth={1.8} aria-hidden="true" />
   {:else}
     <ZapOff class="size-3.5" strokeWidth={1.8} aria-hidden="true" />
   {/if}
-
-  <!-- Which language the switch is about, in the two or three characters the
-       control has room for. With no file open there is no language, and the
-       badge shows a dash rather than a plausible-looking guess. -->
-  <span class="language-badge">{shortLanguage}</span>
-
+  <span class="language-badge">Editor | Supercharged</span>
   <Switch
     size="sm"
-    checked={languageIntelligenceBar.fullMode}
-    disabled={languageIntelligenceBar.busy || !languageIntelligenceBar.hasProject}
-    onCheckedChange={(checked) => requestLanguageIntelligence(checked)}
-    aria-label="Language intelligence"
+    checked={settings.intelligence.languageServers}
+    disabled={busy}
+    onCheckedChange={(checked) => void chooseMode(checked)}
+    aria-label="Editor or Supercharged"
   />
 </div>
 

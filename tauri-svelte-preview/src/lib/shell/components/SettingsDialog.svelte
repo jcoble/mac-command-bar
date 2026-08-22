@@ -46,7 +46,11 @@
     type ProblemsLocation,
     type SettingsSection
   } from '$lib/settingsStore.svelte';
-  import { setCsharpLanguageServerEnabled, setLanguageServersEnabled } from '$lib/shell/editor/sourceIntelligence';
+  import {
+    setLanguageServerEnabled,
+    setLanguageServersEnabled,
+    type LanguageServerId
+  } from '$lib/shell/editor/sourceIntelligence';
   import {
     readHelperSettingsFromTauri,
     setHelperKeyFromTauri,
@@ -256,20 +260,36 @@
     {
       id: 'language-servers',
       section: 'general',
-      card: 'Language support',
-      title: 'Language servers',
+      card: 'Supercharged',
+      title: 'Supercharged',
       description:
-        'One switch over every language server. Off stops the ones running and nothing starts until it is on again; files still open with colouring and the built-in index. Turning language intelligence on in an editor header only works while this is on.',
+        'One switch over every language server. Off stops the ones running and leaves files in Editor-only mode.',
       keywords: 'lsp intelligence typescript rust svelte roslyn memory off'
     },
     {
       id: 'csharp-language-server',
       section: 'general',
-      card: 'Language support',
-      title: 'C# language server',
+      card: 'Supercharged',
+      title: 'C#',
       description:
         'Off saves about 800MB of memory. Reference counts and project-wide search keep working. What you lose is the squiggles under mistakes, and the precision of go-to-definition when a name is used in more than one place.',
       keywords: 'roslyn omnisharp intellisense memory'
+    },
+    {
+      id: 'typescript-language-server',
+      section: 'general',
+      card: 'Supercharged',
+      title: 'TypeScript / JavaScript',
+      description: 'Allow the TypeScript language server while Supercharged is on.',
+      keywords: 'typescript javascript ts js lsp'
+    },
+    {
+      id: 'rust-language-server',
+      section: 'general',
+      card: 'Supercharged',
+      title: 'Rust',
+      description: 'Allow rust-analyzer while Supercharged is on.',
+      keywords: 'rust rust-analyzer lsp'
     },
     {
       id: 'helper-vendor',
@@ -377,10 +397,7 @@
    */
   let languageServersNote = $state<string | null>(null);
   let languageServersSupported = $state(true);
-  let csharpLanguageServerNote = $state<string | null>(null);
-  /** False once the app has said it cannot switch the server. The control is
-   * then switched off rather than left looking live and doing nothing. */
-  let csharpLanguageServerSupported = $state(true);
+  let languageServerNote = $state<string | null>(null);
 
   function moveProblems(location: ProblemsLocation): void {
     settings.panels.problemsLocation = location;
@@ -396,17 +413,12 @@
     if (!result.supported) settings.intelligence.languageServers = before;
   }
 
-  async function switchCsharpLanguageServer(enabled: boolean): Promise<void> {
-    const before = settings.intelligence.csharpLanguageServer;
-    settings.intelligence.csharpLanguageServer = enabled;
-    const result = await setCsharpLanguageServerEnabled(enabled);
-    csharpLanguageServerSupported = result.supported;
-    csharpLanguageServerNote = result.message;
-    // An app that cannot do this leaves the server exactly as it was, so the
-    // setting has to go back to saying so. Otherwise the switch reads "off"
-    // over a server that is still running — and since the control is disabled
-    // from here on, there would be no way to put it right.
-    if (!result.supported) settings.intelligence.csharpLanguageServer = before;
+  async function switchLanguageServer(id: LanguageServerId, enabled: boolean): Promise<void> {
+    const before = settings.intelligence.languageServerEnabled[id];
+    settings.intelligence.languageServerEnabled[id] = enabled;
+    const result = await setLanguageServerEnabled(id, enabled);
+    languageServerNote = result.message;
+    if (!result.supported) settings.intelligence.languageServerEnabled[id] = before;
   }
 
   /**
@@ -719,6 +731,10 @@
                       {@render settingRow(id, languageServersControl)}
                     {:else if id === 'csharp-language-server'}
                       {@render settingRow(id, csharpLanguageServerControl)}
+                    {:else if id === 'typescript-language-server'}
+                      {@render settingRow(id, typescriptLanguageServerControl)}
+                    {:else if id === 'rust-language-server'}
+                      {@render settingRow(id, rustLanguageServerControl)}
                     {:else if id === 'helper-vendor'}
                       {@render settingRow(id, helperVendorControl)}
                     {:else if id === 'helper-model'}
@@ -914,19 +930,22 @@
   </div>
 {/snippet}
 
-{#snippet csharpLanguageServerControl()}
+{#snippet languageServerControl(id: LanguageServerId)}
   <div class="flex flex-col items-end gap-1.5">
     <Switch
-      checked={settings.intelligence.csharpLanguageServer}
-      disabled={!csharpLanguageServerSupported}
-      onCheckedChange={(checked) => void switchCsharpLanguageServer(checked)}
-      aria-label="C# language server"
+      checked={settings.intelligence.languageServerEnabled[id]}
+      onCheckedChange={(checked) => void switchLanguageServer(id, checked)}
+      aria-label={`${id} language server`}
     />
-    {#if csharpLanguageServerNote}
-      <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">{csharpLanguageServerNote}</p>
+    {#if languageServerNote}
+      <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">{languageServerNote}</p>
     {/if}
   </div>
 {/snippet}
+
+{#snippet csharpLanguageServerControl()}{@render languageServerControl('csharp')}{/snippet}
+{#snippet typescriptLanguageServerControl()}{@render languageServerControl('typescript')}{/snippet}
+{#snippet rustLanguageServerControl()}{@render languageServerControl('rust')}{/snippet}
 
 {#snippet helperVendorControl()}
   <SettingsSelect

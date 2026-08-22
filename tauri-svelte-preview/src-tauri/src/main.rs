@@ -1090,8 +1090,12 @@ async fn set_csharp_language_server_enabled(
     let registry = registry.inner().clone();
     let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let previous = lsp::language_server_settings_snapshot().to_string();
         let changed = lsp::set_csharp_language_server_enabled(enabled);
-        persist_language_server_settings(&manager)?;
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
         let stopped_servers = if enabled {
             0
         } else {
@@ -1121,8 +1125,12 @@ async fn set_language_servers_enabled(
     let registry = registry.inner().clone();
     let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let previous = lsp::language_server_settings_snapshot().to_string();
         let changed = lsp::set_language_servers_enabled(enabled);
-        persist_language_server_settings(&manager)?;
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
         let stopped_servers = if enabled {
             0
         } else {
@@ -1149,8 +1157,12 @@ async fn set_language_server_enabled(
     let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let language = language.trim().to_ascii_lowercase();
+        let previous = lsp::language_server_settings_snapshot().to_string();
         let changed = lsp::set_language_server_enabled(&language, enabled)?;
-        persist_language_server_settings(&manager)?;
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
         let stop_languages: &[&str] = match language.as_str() {
             "typescript" | "tsx" | "javascript" | "jsx" =>
                 &["typescript", "tsx", "javascript", "jsx"],
@@ -1323,6 +1335,10 @@ fn describe_language_server_start(start: &Result<lsp::LanguageServerStart, Strin
         }
         Ok(lsp::LanguageServerStart::SwitchedOff) => {
             "Language servers are switched off in Settings, so nothing was started. Files open with colouring and the built-in index."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::ServerSwitchedOff) => {
+            "This language server is switched off in Settings, so the file stays in Editor-only mode."
                 .to_string()
         }
         Ok(lsp::LanguageServerStart::CsharpSwitchedOff) => {

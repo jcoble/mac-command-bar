@@ -196,13 +196,21 @@
    */
   let readOnlyByPath = $state<Record<string, boolean>>({});
   const activeFileReadOnly = $derived(Boolean(activeFile && readOnlyByPath[activeFile.path]));
+  const activeServerEnabled = $derived.by(() => {
+    const language = activeFile?.language?.toLowerCase();
+    if (language === 'csharp' || language === 'c#') return settings.intelligence.languageServerEnabled.csharp;
+    if (language === 'typescript' || language === 'javascript' || language === 'tsx' || language === 'jsx') {
+      return settings.intelligence.languageServerEnabled.typescript;
+    }
+    if (language === 'rust') return settings.intelligence.languageServerEnabled.rust;
+    return null;
+  });
   /** Is this project in full mode — language server allowed to run? Settings
    * can switch every server off at once, and then no project is, whatever its
    * own switch says: the switch reads Off, and its title says which one held. */
   const fullMode = $derived(
     !activeFileReadOnly
       && settings.intelligence.languageServers
-      && languageIntelligenceOn(languageIntelligenceChoices, editorState.projectRoot)
   );
   /**
    * The sentence on hover: what the mode means for this project, and the
@@ -211,7 +219,13 @@
   const languageIntelligenceTitle = $derived.by(() => {
     if (!editorState.projectRoot) return 'Open a file in a project to switch this on.';
     if (!settings.intelligence.languageServers) {
-      return 'Language servers are switched off in Settings → General → Language support. Turn them on there first.';
+      return 'Editor-only — Supercharged is switched off in Settings.';
+    }
+    if (activeServerEnabled === false) {
+      return 'Editor-only — this language server is switched off in Settings.';
+    }
+    if (activeFile?.language && activeServerEnabled === null) {
+      return `Editor-only — no language server for ${activeFile.language}.`;
     }
     const note =
       languageIntelligenceNote ??
@@ -538,7 +552,6 @@
         const answer = await queueLanguageIntelligenceOwner(
           root,
           settings.intelligence.languageServers
-            && languageIntelligenceOn(languageIntelligenceChoices, root)
         );
         if (destroyed || !answer) return;
         if (editorState.projectRoot && workspaceKey(editorState.projectRoot) === root) {
@@ -565,7 +578,7 @@
       }
       return;
     }
-    if (destroyed || !languageIntelligenceOn(languageIntelligenceChoices, projectRoot)) return;
+    if (destroyed || !settings.intelligence.languageServers) return;
     if (warmedProjectRoots.has(projectRoot)) return;
     warmedProjectRoots.add(projectRoot);
     countInvoke('warm_source_lsp_for_root');
@@ -680,7 +693,6 @@
       const enabled = Boolean(
         root
           && languageServersEnabled
-          && languageIntelligenceOn(languageIntelligenceChoices, root)
       );
       try {
         const answer = await queueLanguageIntelligenceOwner(root, enabled);

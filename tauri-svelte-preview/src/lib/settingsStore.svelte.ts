@@ -86,16 +86,12 @@ export interface IntelligenceSettings {
 	 * turn on and hard to find again to turn off.
 	 */
 	languageServers: boolean;
-	/**
-	 * Run the C# language server for C# projects.
-	 *
-	 * Turning it off frees the memory and processor time it uses; in exchange the
-	 * app can no longer underline mistakes in C# files or jump to a definition
-	 * precisely. Counting where something is used keeps working either way — that
-	 * comes from the app's own search of the project, not from the language
-	 * server.
-	 */
-	csharpLanguageServer: boolean;
+	/** Per-server policy applied while Supercharged is on. */
+	languageServerEnabled: {
+		csharp: boolean;
+		typescript: boolean;
+		rust: boolean;
+	};
 }
 
 /** The model, effort and access last chosen for one agent. */
@@ -163,7 +159,7 @@ export function defaultSettings(): Settings {
 		},
 		intelligence: {
 			languageServers: true,
-			csharpLanguageServer: true
+			languageServerEnabled: { csharp: true, typescript: true, rust: true }
 		},
 		agents: {
 			lastChoiceByProvider: {}

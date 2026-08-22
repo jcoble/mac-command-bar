@@ -318,6 +318,8 @@ pub(crate) enum LanguageServerStart {
     NativeCsharpClient,
     /// Every language server is switched off in Settings.
     SwitchedOff,
+    /// This language server is switched off in Settings.
+    ServerSwitchedOff,
     /// C# is switched off in Settings.
     CsharpSwitchedOff,
     /// Nothing under this workspace is a C# project.
@@ -2791,6 +2793,9 @@ impl SourceLspRegistry {
         let Some(spec) = server_spec_for_language(language) else {
             return Ok(LanguageServerStart::NoServerForLanguage);
         };
+        if !language_server_enabled(spec.language_id) {
+            return Ok(LanguageServerStart::ServerSwitchedOff);
+        }
         if spec.language_id == "csharp" {
             // C# belongs to the native language client, and starting a second
             // Roslyn here beside it is exactly what the legacy pool must not do.

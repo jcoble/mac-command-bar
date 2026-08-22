@@ -1307,6 +1307,32 @@ export interface CsharpLanguageServerToggleResult {
   supported: boolean;
 }
 
+export type LanguageServerId = 'csharp' | 'typescript' | 'rust';
+
+export async function setLanguageServerEnabled(
+  language: LanguageServerId,
+  enabled: boolean
+): Promise<CsharpLanguageServerToggleResult> {
+  const unsupported: CsharpLanguageServerToggleResult = {
+    enabled: !enabled,
+    stoppedServers: 0,
+    supported: false,
+    message: 'This build of the app cannot configure individual language servers yet.'
+  };
+  if (!isNativeTauriRuntime()) return unsupported;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    countInvoke('set_language_server_enabled');
+    const result = await invoke<Omit<CsharpLanguageServerToggleResult, 'supported'>>(
+      'set_language_server_enabled',
+      { language, enabled }
+    );
+    return { ...result, supported: true };
+  } catch {
+    return unsupported;
+  }
+}
+
 /**
  * Turn every language server off or on. Off stops each one that is running,
  * every language and every workspace. Call it on start-up with the saved
@@ -1357,34 +1383,3 @@ export async function setLanguageServersEnabled(
  * switch is flipped: the desktop app forgets between launches and starts the
  * server allowed.
  */
-export async function setCsharpLanguageServerEnabled(
-  enabled: boolean
-): Promise<CsharpLanguageServerToggleResult> {
-  const unsupported: CsharpLanguageServerToggleResult = {
-    enabled: true,
-    stoppedServers: 0,
-    supported: false,
-    message:
-      'This build of the app cannot do this yet — restart the desktop app after updating.'
-  };
-
-  if (!isNativeTauriRuntime()) return unsupported;
-  if (!(await hasBackendCapability('csharpLanguageServerToggle'))) return unsupported;
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    countInvoke('set_csharp_language_server_enabled');
-    const result = await invoke<Omit<CsharpLanguageServerToggleResult, 'supported'>>(
-      'set_csharp_language_server_enabled',
-      { enabled }
-    );
-    return { ...result, supported: true };
-  } catch {
-    return {
-      enabled: !enabled,
-      stoppedServers: 0,
-      supported: true,
-      message: 'The C# language server setting could not be changed just now. Please try again.'
-    };
-  }
-}

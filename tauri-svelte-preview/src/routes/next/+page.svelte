@@ -89,7 +89,7 @@
 		type ExtensionApiProbeObservation,
 	} from "$lib/shell/editor/extensionApiProbeController";
 	import {
-		setCsharpLanguageServerEnabled,
+		setLanguageServerEnabled,
 		setLanguageServersEnabled,
 		sourceIntelligence,
 	} from "$lib/shell/editor/sourceIntelligence";
@@ -1759,11 +1759,11 @@
 				applyStoredTheme();
 				applyStoredFonts();
 				applyProblemsLocation(settings.panels.problemsLocation);
-				if (!settings.intelligence.csharpLanguageServer) {
-					void setCsharpLanguageServerEnabled(false);
-				}
 				if (!settings.intelligence.languageServers) {
 					void setLanguageServersEnabled(false);
+				}
+				for (const [language, enabled] of Object.entries(settings.intelligence.languageServerEnabled)) {
+					if (!enabled) void setLanguageServerEnabled(language as 'csharp' | 'typescript' | 'rust', false);
 				}
 			})
 			.catch(() => undefined);
@@ -1809,15 +1809,6 @@
 		// controls by now. Without it the bottom strip comes back open on every
 		// launch however it was left.
 		applyProblemsLocation(settings.panels.problemsLocation);
-		// The C# language server switch lives in the desktop process, which forgets
-		// it between launches and starts with the server allowed. Without this,
-		// someone who turned it off last week silently gets the 800MB back.
-		if (!settings.intelligence.csharpLanguageServer) {
-			void setCsharpLanguageServerEnabled(false);
-		}
-		if (!settings.intelligence.languageServers) {
-			void setLanguageServersEnabled(false);
-		}
 		// The stacks pane never spawns or kills anything itself — the page owns the
 		// rail, the terminal service and the terminal hosts, so it does the work and
 		// the pane asks for it. Pure bookkeeping; nothing runs until a click.
