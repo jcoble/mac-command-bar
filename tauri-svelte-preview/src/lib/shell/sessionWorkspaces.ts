@@ -120,6 +120,26 @@ export interface SessionWorkspaceSnapshot {
   sourceControlInspectionRoot?: string | null;
 }
 
+/** Current checkout ownership as the /next route hands it to inspection panels. */
+export interface CheckoutScope {
+  /** Durable session checkout, or '' while it is unavailable or no session is active. */
+  durableSessionRoot: string;
+  /** Files panel checkout being inspected, or null for the session checkout. */
+  filesInspectionRoot: string | null;
+  /** Source-control checkout being inspected, or null for the session checkout. */
+  gitInspectionRoot: string | null;
+  /** True when Files is reading a checkout other than the durable session root. */
+  filesReadOnly: boolean;
+  /** True when Source Control is reading a checkout other than the durable session root. */
+  gitReadOnly: boolean;
+  /** Existing restore generation guarding stale workspace/root requests. */
+  workspaceRestoreGeneration: number;
+  /** Existing selection generation guarding stale session/root requests. */
+  sessionSelectionGeneration: number;
+  /** Active conversation generation, used by agent-backed source-control requests. */
+  conversationGeneration: number | null;
+}
+
 /**
  * How many tabs a session's record keeps. Twelve is more than anyone has open
  * at once and far less than the hundreds a long session can accumulate. The

@@ -13,6 +13,7 @@
    * click goes straight back out.
    */
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
+  import type { CheckoutScope } from '$lib/shell/sessionWorkspaces';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
   import BrowserPanel from '$lib/shell/panels/browser/BrowserPanel.svelte';
@@ -33,6 +34,8 @@
     root: string;
     /** False when the active session's checkout has disappeared. */
     rootAvailable?: boolean;
+    /** Current route-owned checkout roots and stale-request generations. */
+    checkoutScope?: CheckoutScope;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
     onRootUnavailable?(root: string): void | Promise<void>;
@@ -49,6 +52,7 @@
     onSelect,
     root,
     rootAvailable = true,
+    checkoutScope,
     ownedId,
     onRootUnavailable,
     expandedPathsByRoot,
@@ -85,6 +89,7 @@
           {root}
           {ownedId}
           {rootAvailable}
+          {checkoutScope}
           inspectionRoot={sourceControlInspectionRoot}
           onInspectionRootChange={onSourceControlInspectionRootChange}
           {onUseSessionCheckout}

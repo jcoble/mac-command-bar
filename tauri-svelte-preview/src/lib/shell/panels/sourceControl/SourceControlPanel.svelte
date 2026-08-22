@@ -73,6 +73,7 @@
   import { canonicalPath } from '$lib/shell/explorer/explorerStore.svelte';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
+  import type { CheckoutScope } from '$lib/shell/sessionWorkspaces';
   import { validateProjectRootFromTauri, type ProjectGitFileStatus } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
 
@@ -96,6 +97,8 @@
     ownedId: string | null;
     /** False when the active session's checkout has disappeared. */
     rootAvailable?: boolean;
+    /** Route-owned checkout roots and generations for this source-control read. */
+    checkoutScope?: CheckoutScope;
     /** The working-copy service. The shell's singleton unless a test says otherwise. */
     service?: GitService;
     /** The per-commit file service, likewise. */
@@ -113,6 +116,7 @@
     root,
     ownedId,
     rootAvailable = true,
+    checkoutScope,
     service = defaultService,
     commitFiles = defaultCommitFilesService,
     commitFilesState = defaultCommitFilesState,
@@ -255,8 +259,11 @@
   }
 
   $effect(() => {
-    const target = scopeRoot === '' ? sessionRoot : scopeRoot;
-    const readableTarget = rootAvailable || scopeRoot !== '' ? target : '';
+    const scopedRoot = checkoutScope?.gitInspectionRoot ?? null;
+    const target = scopedRoot && canonicalPath(scopedRoot) === canonicalPath(scopeRoot)
+      ? scopedRoot
+      : scopeRoot === '' ? sessionRoot : scopeRoot;
+    const readableTarget = rootAvailable || checkoutScope?.gitReadOnly === true ? target : '';
     if (!visible || readableTarget === '') {
       releaseHistorySurface();
       return;

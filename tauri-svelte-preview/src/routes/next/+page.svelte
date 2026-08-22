@@ -139,6 +139,7 @@
 		DEFAULT_DIFF_MODE,
 		diffPathFor,
 		planWorkspaceRestore,
+		type CheckoutScope,
 		type DiffMode,
 		type SessionWorkspaceSnapshot,
 	} from "$lib/shell/sessionWorkspaces";
@@ -220,6 +221,24 @@
 			? null
 			: conversationSessions[rail.activeOwnedId] ?? null,
 		activeWorkspace: activeWorkspaceSnapshot,
+	});
+	const checkoutScope = $derived.by<CheckoutScope>(() => {
+		const durableSessionRoot = activeRootAvailable ? readSelection().root : "";
+		const filesInspectionRoot = sessionProjection.activeWorkspace?.filesInspectionRoot ?? null;
+		const gitInspectionRoot = sessionProjection.activeWorkspace?.sourceControlInspectionRoot ?? null;
+		const canonicalSessionRoot = canonicalPath(durableSessionRoot);
+		return {
+			durableSessionRoot,
+			filesInspectionRoot,
+			gitInspectionRoot,
+			filesReadOnly: Boolean(filesInspectionRoot)
+				&& canonicalPath(filesInspectionRoot ?? "") !== canonicalSessionRoot,
+			gitReadOnly: Boolean(gitInspectionRoot)
+				&& canonicalPath(gitInspectionRoot ?? "") !== canonicalSessionRoot,
+			workspaceRestoreGeneration,
+			sessionSelectionGeneration,
+			conversationGeneration: sessionProjection.activeConversation?.generation ?? null,
+		};
 	});
 	let service: ReturnType<typeof createTerminalService> | null = null;
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
@@ -2056,14 +2075,15 @@
 		<RightPanel
 			activeId={rightTab}
 			onSelect={selectRightTab}
-			root={activeRootAvailable ? readSelection().root : ""}
+			root={checkoutScope.durableSessionRoot}
 			rootAvailable={activeRootAvailable}
+			{checkoutScope}
 			ownedId={sessionProjection.activeOwnedId}
 			onRootUnavailable={handleActiveRootUnavailable}
 			expandedPathsByRoot={sessionProjection.activeWorkspace?.expandedPathsByRoot ?? {}}
 			onExpandedPathsChange={rememberFileTreeExpandedPaths}
-			filesInspectionRoot={sessionProjection.activeWorkspace?.filesInspectionRoot ?? null}
-			sourceControlInspectionRoot={sessionProjection.activeWorkspace?.sourceControlInspectionRoot ?? null}
+			filesInspectionRoot={checkoutScope.filesInspectionRoot}
+			sourceControlInspectionRoot={checkoutScope.gitInspectionRoot}
 			onFilesInspectionRootChange={(root) => rememberInspectionRoot('files', root)}
 			onSourceControlInspectionRootChange={(root) => rememberInspectionRoot('source-control', root)}
 			onUseSessionCheckout={async (root) => {
