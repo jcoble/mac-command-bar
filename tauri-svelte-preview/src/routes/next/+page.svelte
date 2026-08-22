@@ -162,6 +162,7 @@
 		setActiveOwned,
 		setAvailable,
 		updateOwnedSession,
+		type SessionProjection,
 	} from "$lib/shell/stores/sessionRailStore.svelte";
 	import { createTerminalService, tauriTerminalBackend } from "$lib/shell/terminalService";
 	import { applyStoredFonts, clearFonts } from "$lib/shell/themes/fontService";
@@ -212,6 +213,14 @@
 	let workspaceWriteQueue: Promise<void> = Promise.resolve();
 	let workspaceAutosaveEnabled = false;
 	let clearAllEditorsInFlight = false;
+	const sessionProjection = $derived<SessionProjection>({
+		activeOwnedId: rail.activeOwnedId,
+		rail: rail.owned,
+		activeConversation: rail.activeOwnedId === null
+			? null
+			: conversationSessions[rail.activeOwnedId] ?? null,
+		activeWorkspace: activeWorkspaceSnapshot,
+	});
 	let service: ReturnType<typeof createTerminalService> | null = null;
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
 	let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
@@ -2028,7 +2037,7 @@
 			<SessionsColumn
 				bind:this={sessionsColumn}
 				owned={rail.owned}
-				activeOwnedId={rail.activeOwnedId}
+				activeOwnedId={sessionProjection.activeOwnedId}
 				collapsed={sessionsCollapsed}
 				onSelect={selectOwned}
 				onRestart={restartOwned}
@@ -2049,16 +2058,16 @@
 			onSelect={selectRightTab}
 			root={activeRootAvailable ? readSelection().root : ""}
 			rootAvailable={activeRootAvailable}
-			ownedId={rail.activeOwnedId}
+			ownedId={sessionProjection.activeOwnedId}
 			onRootUnavailable={handleActiveRootUnavailable}
-			expandedPathsByRoot={activeWorkspaceSnapshot?.expandedPathsByRoot ?? {}}
+			expandedPathsByRoot={sessionProjection.activeWorkspace?.expandedPathsByRoot ?? {}}
 			onExpandedPathsChange={rememberFileTreeExpandedPaths}
-			filesInspectionRoot={activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
-			sourceControlInspectionRoot={activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
+			filesInspectionRoot={sessionProjection.activeWorkspace?.filesInspectionRoot ?? null}
+			sourceControlInspectionRoot={sessionProjection.activeWorkspace?.sourceControlInspectionRoot ?? null}
 			onFilesInspectionRootChange={(root) => rememberInspectionRoot('files', root)}
 			onSourceControlInspectionRootChange={(root) => rememberInspectionRoot('source-control', root)}
 			onUseSessionCheckout={async (root) => {
-				const ownedId = rail.activeOwnedId;
+				const ownedId = sessionProjection.activeOwnedId;
 				if (ownedId !== null) await changeCodexCheckout(ownedId, root);
 			}}
 		/>
@@ -2081,8 +2090,8 @@
 			<ConversationSurface
 			bind:this={conversationSurface}
 			owned={rail.owned}
-			activeOwnedId={rail.activeOwnedId}
-				activeOrigin={rail.owned.find((session) => session.ownedId === rail.activeOwnedId)?.origin}
+			activeOwnedId={sessionProjection.activeOwnedId}
+			activeOrigin={rail.owned.find((session) => session.ownedId === sessionProjection.activeOwnedId)?.origin}
 				rootAvailable={activeRootAvailable}
 			{registerHost}
 			onHostLayout={scheduleRefit}
@@ -2199,7 +2208,7 @@
 				setTimeout(() => shellPanels.allowPanelLoads(), 0);
 				// Open on the tabs the shell was left on. The frame is what shows a
 				// center surface, so this cannot happen any earlier than here.
-				restoreTabsFor(activeWorkspaceSnapshot);
+				restoreTabsFor(sessionProjection.activeWorkspace);
 			}}
 			onError={(message) => (layoutError = `layout failed: ${message}`)}
 		/>

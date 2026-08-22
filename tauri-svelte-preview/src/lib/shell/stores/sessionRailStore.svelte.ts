@@ -6,7 +6,17 @@
  * snapshots/events; this module performs no I/O.
  */
 import type { AgentSession } from '../../tauriSource.ts';
+import type { ConversationWorkspaceState } from '../conversation/conversationStore.svelte.ts';
 import type { OwnedSession } from '../ownedSessions.ts';
+import type { SessionWorkspaceSnapshot } from '../sessionWorkspaces.ts';
+
+/** The rail stays compact while SQLite hydrates only the selected session. */
+export interface SessionProjection {
+  activeOwnedId: string | null;
+  rail: readonly OwnedSession[];
+  activeConversation: ConversationWorkspaceState | null;
+  activeWorkspace: SessionWorkspaceSnapshot | null;
+}
 
 export const rail = $state<{
   owned: OwnedSession[];
