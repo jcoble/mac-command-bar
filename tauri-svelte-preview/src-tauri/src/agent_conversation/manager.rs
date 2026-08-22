@@ -1578,27 +1578,31 @@ impl AgentRuntimeManager {
         model: Option<String>,
         approval_policy: Option<String>,
     ) -> Result<(), String> {
-        self.activate(owned_id, generation).await?;
-        if model.is_some() || approval_policy.is_some() {
-            self.apply_conversation_config(SetAgentConversationConfigRequest {
-                owned_id: owned_id.to_string(),
-                generation,
-                model,
-                reasoning_effort: None,
-                approval_policy,
-            })
-            .await?;
-        }
-        // Keep prompt acceptance and checkout switching in one lifecycle
-        // critical section. Otherwise checkout switching can observe a
-        // quiescent row after activation releases the guard but before
-        // `prompt` marks the turn active, then detach the runtime under an
-        // outgoing send.
+        // Activation, configuration, and durable prompt acceptance are one
+        // lifecycle operation. Checkout switching uses this same guard, so it
+        // cannot detach the runtime between any of those steps. The guard is
+        // released as soon as `prompt` records the active turn; streaming keeps
+        // running independently.
+        let lifecycle = self.lifecycle_guard(owned_id).await?;
         let sent = async {
-            let _lifecycle = self.lifecycle_guard(owned_id).await?;
+            self.activate_locked(owned_id, generation).await?;
+            if model.is_some() || approval_policy.is_some() {
+                self.apply_conversation_config(
+                    SetAgentConversationConfigRequest {
+                        owned_id: owned_id.to_string(),
+                        generation,
+                        model,
+                        reasoning_effort: None,
+                        approval_policy,
+                    },
+                    false,
+                )
+                .await?;
+            }
             self.prompt(owned_id, generation, input).await
         }
         .await;
+        drop(lifecycle);
         if sent.is_err() {
             if let Err(error) = self.suspend_if_quiescent(owned_id, generation).await {
                 crate::debug_log::stderr_log!(
@@ -2062,7 +2066,7 @@ impl AgentRuntimeManager {
     ) -> Result<AgentConversationConfigState, String> {
         let owned_id = request.owned_id.clone();
         let generation = request.generation;
-        let config = self.apply_conversation_config(request).await?;
+        let config = self.apply_conversation_config(request, true).await?;
         // An accepted change ends the same way a refused one does: the adapter
         // was started only to be asked, no turn is running, and the teardown
         // that keeps process trees from lingering runs when a turn ends. A
@@ -2080,6 +2084,7 @@ impl AgentRuntimeManager {
     async fn apply_conversation_config(
         &self,
         request: SetAgentConversationConfigRequest,
+        suspend_on_error: bool,
     ) -> Result<AgentConversationConfigState, String> {
         let update = AgentConversationConfigUpdate {
             model: normalized_optional_id(request.model),
@@ -2164,14 +2169,16 @@ impl AgentRuntimeManager {
         let config = match applied {
             Ok(config) => config,
             Err(error) => {
-                if let Err(suspend_error) = self
-                    .suspend_if_quiescent(&request.owned_id, request.generation)
-                    .await
-                {
-                    let owned_id = &request.owned_id;
-                    crate::debug_log::stderr_log!(
-                        "{owned_id}: could not stop the adapter after a refused settings change: {suspend_error}"
-                    );
+                if suspend_on_error {
+                    if let Err(suspend_error) = self
+                        .suspend_if_quiescent(&request.owned_id, request.generation)
+                        .await
+                    {
+                        let owned_id = &request.owned_id;
+                        crate::debug_log::stderr_log!(
+                            "{owned_id}: could not stop the adapter after a refused settings change: {suspend_error}"
+                        );
+                    }
                 }
                 return Err(error);
             }

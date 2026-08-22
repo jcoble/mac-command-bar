@@ -847,10 +847,12 @@
 		}
 		const conversationGeneration = conversation.generation;
 		const restoreGeneration = workspaceRestoreGeneration;
+		const selectionGeneration = sessionSelectionGeneration;
 		const checkoutStillCurrent = (): boolean =>
 			!disposed
 			&& rail.activeOwnedId === ownedId
 			&& workspaceRestoreGeneration === restoreGeneration
+			&& sessionSelectionGeneration === selectionGeneration
 			&& getConversationSession(ownedId)?.generation === conversationGeneration
 			&& conversationProviderFor(ownedId) === 'codex';
 		const root = requestedRoot.trim();
