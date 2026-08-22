@@ -487,9 +487,12 @@ export function rollbackConversationHandoff(input: HandoffInput): Promise<AgentC
  * replay does no disk work at all. */
 async function hydrateSentConversationAttachments(
   ownedId: string,
+  generation: number,
   events: readonly AgentConversationEvent[]
 ): Promise<void> {
-  const alreadyShown = getConversationSession(ownedId)?.sentAttachments ?? {};
+  const current = getConversationSession(ownedId);
+  if (!current || current.generation !== generation) return;
+  const alreadyShown = current.sentAttachments;
   const wanted = new Map<string, string[]>();
   for (const event of events) {
     const payload = event.payload;
@@ -522,7 +525,7 @@ async function hydrateSentConversationAttachments(
       .filter((attachment): attachment is ConversationAttachment => !!attachment);
     if (attachments.length) resolved[itemId] = attachments;
   }
-  if (Object.keys(resolved).length) restoreSentConversationAttachments(ownedId, resolved);
+  if (Object.keys(resolved).length) restoreSentConversationAttachments(ownedId, resolved, generation);
 }
 
 async function resyncConversation(ownedId: string): Promise<void> {
@@ -536,7 +539,7 @@ async function resyncConversation(ownedId: string): Promise<void> {
       if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
       const sequenceBeforeApply = getConversationSession(ownedId)?.lastSequence ?? 0;
       applyAgentConversationSnapshot(snapshot);
-      void hydrateSentConversationAttachments(ownedId, snapshot.events);
+      void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
       if (sequenceBeforeApply <= snapshot.lastSequence) return;
     }
   })().finally(() => {
@@ -562,7 +565,7 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
       || current?.generation !== generation
     ) return;
     applyAgentConversationSnapshot(snapshot);
-    void hydrateSentConversationAttachments(ownedId, snapshot.events);
+    void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
   })().finally(() => {
     if (resyncing.get(ownedId) === work) resyncing.delete(ownedId);
   });
@@ -613,6 +616,11 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     }
     if (page.events.length || page.hasMore) {
       prependOlderConversationEvents(ownedId, page);
+      void hydrateSentConversationAttachments(
+        ownedId,
+        generation,
+        getConversationSession(ownedId)?.loadedEvents ?? []
+      );
       return;
     }
     // The database is exhausted, which is not the same as the conversation
@@ -663,6 +671,11 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
       events: grown?.events ?? [],
       hasMore: grown?.hasMore || !extended.reachedStart
     });
+    void hydrateSentConversationAttachments(
+      ownedId,
+      generation,
+      getConversationSession(ownedId)?.loadedEvents ?? []
+    );
   } catch {
     failLoadingOlderConversationEvents(ownedId);
   }
@@ -695,6 +708,11 @@ export async function loadNewerConversationEvents(ownedId: string): Promise<void
       return;
     }
     appendNewerConversationEvents(ownedId, page);
+    void hydrateSentConversationAttachments(
+      ownedId,
+      generation,
+      getConversationSession(ownedId)?.loadedEvents ?? []
+    );
   } catch {
     failLoadingNewerConversationEvents(ownedId);
   }

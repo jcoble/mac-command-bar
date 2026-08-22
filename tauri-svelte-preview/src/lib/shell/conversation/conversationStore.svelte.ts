@@ -56,6 +56,7 @@ import {
   type SessionConversationWorkspace
 } from '../sessionWorkspaces.ts';
 import {
+  revokeTrackedObjectUrl,
   setConversationProjectionDiagnostics,
   textBytes
 } from '../resourceDiagnostics.svelte.ts';
@@ -181,6 +182,43 @@ function serializedEventBytes(event: AgentConversationEvent): number {
 
 function serializedEventsBytes(events: readonly AgentConversationEvent[]): number {
   return events.reduce((total, event) => total + serializedEventBytes(event), 0);
+}
+
+function userItemIds(events: readonly AgentConversationEvent[]): Set<string> {
+  const ids = new Set<string>();
+  for (const event of events) {
+    const displayEvent = displayEventFrom(event);
+    const payload = displayEvent.payload as { kind?: unknown; itemId?: unknown };
+    if (payload.kind === 'userMessage' && typeof payload.itemId === 'string') ids.add(payload.itemId);
+  }
+  return ids;
+}
+
+function revokeUnretainedPreviewUrls(
+  candidates: readonly ConversationAttachment[],
+  retained: readonly ConversationAttachment[]
+): void {
+  const retainedUrls = new Set(retained.map((attachment) => attachment.previewUrl));
+  for (const attachment of candidates) {
+    if (attachment.previewUrl.startsWith('blob:') && !retainedUrls.has(attachment.previewUrl)) {
+      revokeTrackedObjectUrl(attachment.previewUrl);
+    }
+  }
+}
+
+function retainSentAttachments(
+  sentAttachments: Readonly<Record<string, ConversationAttachment[]>>,
+  events: readonly AgentConversationEvent[]
+): Record<string, ConversationAttachment[]> {
+  const ids = userItemIds(events);
+  const retained: Record<string, ConversationAttachment[]> = {};
+  const discarded: ConversationAttachment[] = [];
+  for (const [itemId, attachments] of Object.entries(sentAttachments)) {
+    if (ids.has(itemId)) retained[itemId] = attachments;
+    else discarded.push(...attachments);
+  }
+  revokeUnretainedPreviewUrls(discarded, Object.values(retained).flat());
+  return retained;
 }
 
 const timelineIndexBySession = new WeakMap<ConversationWorkspaceState, Map<string, number>>();
@@ -787,6 +825,7 @@ export function applyAgentConversationSnapshot(
     && rebuilt.lastSequence < current.lastSequence
     && !window
   ) return;
+  const sentAttachments = retainSentAttachments(current.sentAttachments, sourceEvents);
   // Build the complete snapshot off the reactive graph. Publishing this object
   // before replay made every event traverse Svelte's deep proxy machinery and
   // invalidated subscribers 2,000 times during a read-only load.
@@ -821,7 +860,7 @@ export function applyAgentConversationSnapshot(
     writerLease: { ...current.writerLease, generation },
     writerLeaseTransition: current.writerLeaseTransition,
     attachmentIds: current.attachmentIds,
-    sentAttachments: current.sentAttachments,
+    sentAttachments,
     unclaimedSentAttachments: current.unclaimedSentAttachments,
     config: current.config,
     telemetry: current.telemetry,
@@ -1369,13 +1408,22 @@ export function recordSentConversationAttachments(
  * that already carries its screenshots keeps them. */
 export function restoreSentConversationAttachments(
   ownedId: string,
-  byItemId: Record<string, ConversationAttachment[]>
+  byItemId: Record<string, ConversationAttachment[]>,
+  generation: number
 ): void {
   const current = conversationSessions[ownedId];
-  if (!current) return;
-  for (const [itemId, attachments] of Object.entries(byItemId)) {
-    if (!current.sentAttachments[itemId]?.length) current.sentAttachments[itemId] = attachments;
+  const incoming = Object.values(byItemId).flat();
+  if (!current || current.generation !== generation) {
+    revokeUnretainedPreviewUrls(incoming, current ? Object.values(current.sentAttachments).flat() : []);
+    return;
   }
+  const ids = userItemIds(current.loadedEvents);
+  const discarded: ConversationAttachment[] = [];
+  for (const [itemId, attachments] of Object.entries(byItemId)) {
+    if (!ids.has(itemId)) discarded.push(...attachments);
+    else if (!current.sentAttachments[itemId]?.length) current.sentAttachments[itemId] = attachments;
+  }
+  revokeUnretainedPreviewUrls(discarded, Object.values(current.sentAttachments).flat());
 }
 
 export function setConversationCapabilities(
