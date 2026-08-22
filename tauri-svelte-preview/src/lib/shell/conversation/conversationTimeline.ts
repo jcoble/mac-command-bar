@@ -254,12 +254,7 @@ function fileEditOf(item: ConversationDisplayItem): ConversationFileEdit | null 
     return { itemId: item.itemId, path, diff, ...diffLineCounts(diff) };
   };
   if (item.kind === 'file') return read(item.metadata?.path, item.metadata?.diff ?? item.text);
-  // A tool call that also printed something did more than change the file, and
-  // folding it away would take that output with it. Only a call whose whole
-  // result is the patch belongs in the group.
-  if (item.kind === 'tool' && (!item.output || item.output === item.diff)) {
-    return read(item.path, item.diff);
-  }
+  if (item.kind === 'tool' && item.toolKind === 'file-edit') return read(item.path, item.diff);
   return null;
 }
 
@@ -565,6 +560,35 @@ function toolKindOf(...values: unknown[]): ConversationToolKind {
   return 'tool';
 }
 
+function toolKindForAgentItem(item: AgentItem): ConversationToolKind {
+  const metadata = item.providerMetadata;
+  const explicit = toolKindOf(
+    metadata?.toolKind,
+    metadata?.kind,
+    metadata?.nativeType,
+    metadata?.category
+  );
+  if (explicit !== 'tool') return explicit;
+  if (typeof metadata?.diff === 'string' && metadata.diff.trim()) return 'file-edit';
+  switch (item.type) {
+    case 'command': return 'command';
+    case 'file-change': return 'file-edit';
+    case 'web-search': return 'search';
+    case 'image-view': return 'fetch';
+    default: return 'tool';
+  }
+}
+
+function payloadHasFileChange(payload: StringRecord): boolean {
+  return (typeof payload.diff === 'string' && payload.diff.trim().length > 0)
+    || firstNestedString(payload.content, ['diff', 'patch']).length > 0;
+}
+
+function toolKindForPayload(payload: StringRecord, payloadKind: string): ConversationToolKind {
+  if (payloadKind === 'turnDiff' || payloadHasFileChange(payload)) return 'file-edit';
+  return toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type);
+}
+
 function toolTitleOf(value: unknown): string | null {
   const title = stringOf(value).trim();
   return title || null;
@@ -644,7 +668,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     const fencedSummary = fenceIndex < 0 ? '' : toolSummaryLine(rawTitle);
     const title = fenceIndex < 0 ? rawTitle : fencedSummary || rawTitle.slice(0, fenceIndex).trim() || 'Tool';
     const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : undefined;
-    const toolKind = toolKindOf(metadata?.toolKind, metadata?.kind, metadata?.nativeType, metadata?.category, item.type);
+    const toolKind = toolKindForAgentItem(item);
     const output = toolKind === 'file-edit' ? '' : textOf(item.content) || stringOf(metadata?.output);
     const diff = stringOf(metadata?.diff);
     return {
@@ -862,7 +886,7 @@ export function turnFileChanges(
     if (item.kind === 'file') {
       paths.add(typeof item.metadata?.path === 'string' ? item.metadata.path : item.itemId);
       diff = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
-    } else if (item.kind === 'tool' && item.toolKind === 'file-edit') {
+    } else if (item.kind === 'tool' && (item.diff || (item.toolKind === 'file-edit' && item.path))) {
       paths.add(item.path ?? item.itemId);
       diff = item.diff ?? '';
     } else continue;
@@ -1032,7 +1056,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
   // `output` is what a stored call answered; `content` is what a live ACP
   // update carries. A row reads whichever it was given.
   const contentText = textFromValue(payload.output) || textFromValue(payload.content);
-  const toolKind = toolKindOf(payload.toolKind, payload.kind, payload.nativeType, payload.category, payload.type);
+  const toolKind = toolKindForPayload(payload, payloadKind);
   const title = givenTitle || plainToolTitle(toolKind, name);
   const diff = stringOf(payload.diff) || firstNestedString(payload.content, ['diff', 'patch']);
   const output = toolKind === 'file-edit' ? '' : contentText;
