@@ -176,6 +176,7 @@
     "@keenmate/svelte-treeview": "^4.8.0",
     "@lezer/highlight": "1.2.3",
     "@lucide/svelte": "^1.17.0",
+    "@replit/codemirror-vscode-keymap": "6.0.2",
     "@tanstack/svelte-virtual": "3.13.35",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",

@@ -2,21 +2,18 @@
   import {
     autocompletion,
     closeBrackets,
-    closeBracketsKeymap,
-    completionKeymap,
     type CompletionContext
   } from '@codemirror/autocomplete';
-  import { defaultKeymap, history, historyKeymap, undoDepth } from '@codemirror/commands';
+  import { history, undoDepth } from '@codemirror/commands';
   import {
     bracketMatching,
     defaultHighlightStyle,
     foldGutter,
-    foldKeymap,
     indentOnInput,
     syntaxHighlighting
   } from '@codemirror/language';
-  import { lintGutter, lintKeymap, setDiagnostics, type Diagnostic } from '@codemirror/lint';
-  import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
+  import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
+  import { highlightSelectionMatches } from '@codemirror/search';
   import { EditorState, Compartment, Transaction, type Extension } from '@codemirror/state';
   import {
     crosshairCursor,
@@ -31,6 +28,7 @@
     lineNumbers,
     rectangularSelection
   } from '@codemirror/view';
+  import { vscodeKeymap } from '@replit/codemirror-vscode-keymap';
   import { onDestroy, onMount } from 'svelte';
 
   import {
@@ -310,18 +308,10 @@
     crosshairCursor(),
     highlightActiveLine(),
     highlightSelectionMatches(),
-    keymap.of([
-      ...closeBracketsKeymap,
-      ...defaultKeymap,
-      ...searchKeymap,
-      ...historyKeymap,
-      ...foldKeymap,
-      ...completionKeymap,
-      ...lintKeymap
-    ]),
+    keymap.of(vscodeKeymap),
     codeMirrorTheme,
     lintGutter(),
-    autocompletion({ override: [completionSource], activateOnTypingDelay: 180 }),
+    autocompletion({ defaultKeymap: false, override: [completionSource], activateOnTypingDelay: 180 }),
     hover,
     language.of([]),
     editing.of(editingExtensions()),
