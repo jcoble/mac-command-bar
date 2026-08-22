@@ -314,6 +314,7 @@
   // ── The page ───────────────────────────────────────────────────────────────
 
   function navigate(): void {
+    if (!root) return;
     const next = normalizeBrowserUrl(addressValue);
     if (!next) {
       failure = 'Enter an address that starts with http or https';

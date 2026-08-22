@@ -561,6 +561,7 @@
 			return true;
 		},
 		openUrl: (request) => {
+			if (!activeRootAvailable || !readSelection().root.trim()) return;
 			openBrowserUrl(request.url);
 		},
 		focusComposer: async (handoff) => {
