@@ -221,10 +221,10 @@
     return `${note} ${noun} ${numbers}.`;
   });
   /**
-   * Which view each Markdown file is on. A file is written in here the first
-   * time it opens — rendered when it was reached from a jump, source when it
-   * was picked in the strip — and the toggle in the header writes it again.
-   * Keyed by path so switching tabs comes back to what was on screen.
+   * Which view each Markdown file is on. Markdown opens source-first; the only
+   * way to write `rendered` here is the active file's explicit Preview toggle.
+   * Leaving a file releases that preview choice instead of keeping rendered DOM
+   * logically hidden behind the strip.
    */
   let markdownViewByPath = $state<Record<string, MarkdownView>>({});
   const activeFileIsMarkdown = $derived(isMarkdownFile(activeFile?.fileName));
@@ -249,6 +249,12 @@
     const path = activeFile?.path;
     if (!path) return;
     markdownViewByPath = { ...markdownViewByPath, [path]: view };
+  }
+
+  function releaseMarkdownView(path: string): void {
+    if (!markdownViewByPath[path]) return;
+    const { [path]: _released, ...rest } = markdownViewByPath;
+    markdownViewByPath = rest;
   }
 
   /**
@@ -785,6 +791,9 @@
     readOnly = false
   ): boolean {
     if (!rootAvailable || !path.trim()) return false;
+    if (editorState.activePath && editorState.activePath !== path) {
+      releaseMarkdownView(editorState.activePath);
+    }
     if (!readOnly) activateEditor(projectRoot);
     const record = recordForPath(path, projectRoot);
     const entry = openEditorFile(record);
@@ -813,6 +822,9 @@
   }
 
   function selectOpenFile(path: string): void {
+    if (editorState.activePath && editorState.activePath !== path) {
+      releaseMarkdownView(editorState.activePath);
+    }
     setActiveEditorFile(path);
     syncIntelligenceWithActiveFile();
     if (!activeFileReadOnly) void refreshEditorIntelligenceForActiveFile();
@@ -828,6 +840,7 @@
   function closeOpenFileAt(path: string): void {
     const disposePath = modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
+    releaseMarkdownView(path);
     if (disposePath) codeEditor?.disposeTabModel(disposePath);
     sourceIntelligence.releasePreview(path);
     syncIntelligenceWithActiveFile();
@@ -847,6 +860,7 @@
     for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
     codeEditor?.disposeAllTabModels();
     resetEditorState();
+    markdownViewByPath = {};
     diagnosticsByPath = {};
     readOnlyByPath = {};
     onCloseAllEditors?.();
@@ -885,6 +899,7 @@
     for (const path of paths) {
       readsInFlight.delete(path);
       sourceIntelligence.releasePreview(path);
+      releaseMarkdownView(path);
     }
     const departing = new Set(paths);
     diagnosticsByPath = Object.fromEntries(
