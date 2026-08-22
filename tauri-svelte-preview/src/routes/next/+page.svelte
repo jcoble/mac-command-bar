@@ -1208,7 +1208,7 @@
 			service?.releaseView(previous);
 			await disposeExtensionApiProbeResources();
 			if (!selectionIsCurrent()) return;
-			if (workspaceCaptured) releaseConversationForRead(previous);
+			releaseConversationForRead(previous);
 			gitService.releaseHistorySurface();
 			gitCommitFilesService.release();
 			gitService.clearSelection();
