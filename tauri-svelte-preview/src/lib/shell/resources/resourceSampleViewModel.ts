@@ -8,10 +8,11 @@ import type {
 } from './resourceSampleTypes.ts';
 
 /** A row with no history yet still has to render, so it gets empty series. */
-export const emptyResourceHistory: ResourceSampleHistory = { cpuPercent: [], rssBytes: [] };
+export const emptyResourceHistory: ResourceSampleHistory = { cpuPercent: [], physicalFootprintBytes: [] };
 
 export type ResourceTotals = {
   cpuPercent: number;
+  physicalFootprintBytes: number;
   rssBytes: number;
   processCount: number;
 };
@@ -34,9 +35,12 @@ export type ResourceSampleView = {
   appHistory: ResourceSampleHistory;
 };
 
-function totalsFor(rows: Array<Pick<ResourceSampleProcess, 'cpuPercent' | 'rssBytes'>>): ResourceTotals {
+function totalsFor(
+  rows: Array<Pick<ResourceSampleProcess, 'cpuPercent' | 'physicalFootprintBytes' | 'rssBytes'>>
+): ResourceTotals {
   return {
     cpuPercent: rows.reduce((total, row) => total + row.cpuPercent, 0),
+    physicalFootprintBytes: rows.reduce((total, row) => total + row.physicalFootprintBytes, 0),
     rssBytes: rows.reduce((total, row) => total + row.rssBytes, 0),
     processCount: rows.length
   };
@@ -52,7 +56,7 @@ export function shapeResourceSample(sample: ResourceSample): ResourceSampleView 
       const sessions = group.sessions
         .map((session, sessionIndex) => {
           const processes = [...session.processes].sort(
-            (left, right) => right.rssBytes - left.rssBytes || left.pid - right.pid
+            (left, right) => right.physicalFootprintBytes - left.physicalFootprintBytes || left.pid - right.pid
           );
           return {
             ...session,
@@ -76,7 +80,7 @@ export function shapeResourceSample(sample: ResourceSample): ResourceSampleView 
   const appParts = [...sample.app.parts].sort(
     (left, right) =>
       Number(left.label !== 'Main process') - Number(right.label !== 'Main process') ||
-      right.rssBytes - left.rssBytes ||
+      right.physicalFootprintBytes - left.physicalFootprintBytes ||
       left.pid - right.pid
   );
   return {

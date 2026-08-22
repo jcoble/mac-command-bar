@@ -132,10 +132,11 @@
     </div>
     <div class="header-actions">
       {#if resourceSampleState.sample}
-        <p class="headline-totals" aria-label="Combined CPU and memory usage">
+        <p class="headline-totals" aria-label="Combined CPU, physical footprint and resident RSS usage">
           <span>{formatResourceCpu(resourceSampleState.sample.totals.cpuPercent)}</span>
           <span aria-hidden="true">·</span>
-          <strong>{formatResourceBytes(resourceSampleState.sample.totals.rssBytes)} Σ Memory</strong>
+          <strong>{formatResourceBytes(resourceSampleState.sample.totals.physicalFootprintBytes)} Σ Physical footprint</strong>
+          <span>RSS {formatResourceBytes(resourceSampleState.sample.totals.rssBytes)}</span>
         </p>
       {/if}
       <button
@@ -159,7 +160,7 @@
     <span>Workspace / session / process</span>
     <span class="trend">Trend</span>
     <span>CPU%</span>
-    <span>Memory</span>
+    <span>Physical footprint</span>
     <span></span>
   </div>
 
@@ -173,9 +174,9 @@
       <p class="message receipt">{resourceStopState.receipt}</p>
     {/if}
     {#if resourceSampleState.sample}
-      <section class="diagnostic-strip" aria-label="Assembly process footprint">
+      <section class="diagnostic-strip" aria-label="Assembly physical process footprint">
         {#each resourceSampleState.sample.processCategories as category (category.label)}
-          <span><strong>{formatResourceBytes(category.rssBytes)}</strong> {category.label}</span>
+          <span><strong>{formatResourceBytes(category.physicalFootprintBytes)}</strong> {category.label}</span>
         {/each}
       </section>
       <section class="diagnostic-strip" aria-label="Assembly lifecycle counts">
@@ -247,9 +248,9 @@
                     <span class:collapsed={collapsed[group.id]} class="disclosure" aria-hidden="true">▾</span>
                     <span><small>Workspace</small><strong>{group.workspace}</strong></span>
                   </span>
-                  <span class="trend"><Sparkline values={group.history.rssBytes} unit="memory" /></span>
+                  <span class="trend"><Sparkline values={group.history.physicalFootprintBytes} unit="memory" /></span>
                   <span class="metric">{formatResourceCpu(group.totals.cpuPercent)}</span>
-                  <span class="metric">{formatResourceBytes(group.totals.rssBytes)}</span>
+                  <span class="metric">{formatResourceBytes(group.totals.physicalFootprintBytes)}</span>
                 </button>
               </div>
 
@@ -272,7 +273,7 @@
                         </span>
                         <span class="trend"><Sparkline values={session.history.cpuPercent} unit="cpu" /></span>
                         <span class="metric">{formatResourceCpu(session.totals.cpuPercent)}</span>
-                        <span class="metric">{formatResourceBytes(session.totals.rssBytes)}</span>
+                        <span class="metric">{formatResourceBytes(session.totals.physicalFootprintBytes)}</span>
                       </button>
                       <span class="row-action">
                         <IconButton
@@ -295,7 +296,7 @@
                             </span>
                             <span class="trend"></span>
                             <span class="metric">{formatResourceCpu(process.cpuPercent)}</span>
-                            <span class="metric">{formatResourceBytes(process.rssBytes)}</span>
+                            <span class="metric">{formatResourceBytes(process.physicalFootprintBytes)}</span>
                           </div>
                           <span class="row-action">
                             <IconButton
@@ -323,9 +324,9 @@
             <span class="app-mark" aria-hidden="true"></span>
             <span><small>Application</small><strong id="this-app-title">This app</strong></span>
           </span>
-          <span class="trend"><Sparkline values={view.appHistory.rssBytes} unit="memory" /></span>
+          <span class="trend"><Sparkline values={view.appHistory.physicalFootprintBytes} unit="memory" /></span>
           <span class="metric">{formatResourceCpu(view.appTotals.cpuPercent)}</span>
-          <span class="metric">{formatResourceBytes(view.appTotals.rssBytes)}</span>
+          <span class="metric">{formatResourceBytes(view.appTotals.physicalFootprintBytes)}</span>
         </div>
         {#if view.appParts.length === 0}
           <p class="message app-empty">The app process tree is not available in this sample.</p>
@@ -335,7 +336,7 @@
               <span class="process-name"><strong>{part.label}</strong><small>PID {part.pid}</small></span>
               <span class="trend"></span>
               <span class="metric">{formatResourceCpu(part.cpuPercent)}</span>
-              <span class="metric">{formatResourceBytes(part.rssBytes)}</span>
+              <span class="metric">{formatResourceBytes(part.physicalFootprintBytes)}</span>
             </div>
           {/each}
         {/if}

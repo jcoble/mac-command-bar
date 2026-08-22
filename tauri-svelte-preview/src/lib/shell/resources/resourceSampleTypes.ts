@@ -2,6 +2,7 @@ export type ResourceSampleProcess = {
   pid: number;
   name: string;
   cpuPercent: number;
+  physicalFootprintBytes: number;
   rssBytes: number;
 };
 
@@ -9,12 +10,14 @@ export type ResourceSampleAppPart = {
   label: string;
   pid: number;
   cpuPercent: number;
+  physicalFootprintBytes: number;
   rssBytes: number;
 };
 
 export type ResourceSampleCategory = {
   label: string;
   cpuPercent: number;
+  physicalFootprintBytes: number;
   rssBytes: number;
   processCount: number;
 };
@@ -22,7 +25,7 @@ export type ResourceSampleCategory = {
 /** The last sixty readings of one row, oldest first. */
 export type ResourceSampleHistory = {
   cpuPercent: number[];
-  rssBytes: number[];
+  physicalFootprintBytes: number[];
 };
 
 export type ResourceDiagnostics = {
@@ -87,6 +90,7 @@ export type ResourceSample = {
   generatedAtMs: number;
   totals: {
     cpuPercent: number;
+    physicalFootprintBytes: number;
     rssBytes: number;
     processCount: number;
   };

@@ -58,7 +58,7 @@ impl Default for ResourceRegistry {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSampleHistory {
     pub cpu_percent: Vec<f32>,
-    pub rss_bytes: Vec<u64>,
+    pub physical_footprint_bytes: Vec<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -73,10 +73,10 @@ pub struct ResourceHistoryStore {
 }
 
 impl ResourceHistoryStore {
-    fn record(&mut self, key: &str, cpu_percent: f32, rss_bytes: u64, now_ms: u128) {
+    fn record(&mut self, key: &str, cpu_percent: f32, physical_footprint_bytes: u64, now_ms: u128) {
         let series = self.series.entry(key.to_string()).or_default();
         series.last_seen_ms = now_ms;
-        series.points.push_back((cpu_percent, rss_bytes));
+        series.points.push_back((cpu_percent, physical_footprint_bytes));
         while series.points.len() > RESOURCE_HISTORY_CAPACITY {
             series.points.pop_front();
         }
@@ -88,7 +88,11 @@ impl ResourceHistoryStore {
         };
         ResourceSampleHistory {
             cpu_percent: series.points.iter().map(|(cpu, _)| *cpu).collect(),
-            rss_bytes: series.points.iter().map(|(_, rss)| *rss).collect(),
+            physical_footprint_bytes: series
+                .points
+                .iter()
+                .map(|(_, footprint)| *footprint)
+                .collect(),
         }
     }
 
@@ -123,32 +127,37 @@ fn attach_resource_history(sample: &mut ResourceSample, store: &mut ResourceHist
         .iter()
         .map(|part| part.cpu_percent)
         .sum::<f32>();
-    let app_rss = sample.app.parts.iter().map(|part| part.rss_bytes).sum();
-    store.record(&app_history_key(), app_cpu, app_rss, now_ms);
+    let app_footprint = sample
+        .app
+        .parts
+        .iter()
+        .map(|part| part.physical_footprint_bytes)
+        .sum();
+    store.record(&app_history_key(), app_cpu, app_footprint, now_ms);
     sample.app.history = store.read(&app_history_key());
 
     for group in &mut sample.groups {
         let mut workspace_cpu = 0.0f32;
-        let mut workspace_rss = 0u64;
+        let mut workspace_footprint = 0u64;
         for session in &mut group.sessions {
             let cpu = session
                 .processes
                 .iter()
                 .map(|process| process.cpu_percent)
                 .sum::<f32>();
-            let rss = session
+            let footprint = session
                 .processes
                 .iter()
-                .map(|process| process.rss_bytes)
+                .map(|process| process.physical_footprint_bytes)
                 .sum::<u64>();
             workspace_cpu += cpu;
-            workspace_rss += rss;
+            workspace_footprint += footprint;
             let key = session_history_key(&group.workspace, session);
-            store.record(&key, cpu, rss, now_ms);
+            store.record(&key, cpu, footprint, now_ms);
             session.history = store.read(&key);
         }
         let key = workspace_history_key(&group.workspace);
-        store.record(&key, workspace_cpu, workspace_rss, now_ms);
+        store.record(&key, workspace_cpu, workspace_footprint, now_ms);
         group.history = store.read(&key);
     }
 
@@ -213,6 +222,8 @@ pub struct BrowserResourceDiagnostics {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceSampleTotals {
     pub cpu_percent: f32,
+    pub physical_footprint_bytes: u64,
+    /// Resident set size, kept separate from Activity Monitor's footprint.
     pub rss_bytes: u64,
     pub process_count: usize,
 }
@@ -230,6 +241,7 @@ pub struct ResourceSampleAppPart {
     pub label: String,
     pub pid: u32,
     pub cpu_percent: f32,
+    pub physical_footprint_bytes: u64,
     pub rss_bytes: u64,
 }
 
@@ -238,6 +250,7 @@ pub struct ResourceSampleAppPart {
 pub struct ResourceSampleCategory {
     pub label: &'static str,
     pub cpu_percent: f32,
+    pub physical_footprint_bytes: u64,
     pub rss_bytes: u64,
     pub process_count: usize,
 }
@@ -278,6 +291,7 @@ pub struct ResourceSampleProcess {
     pub pid: u32,
     pub name: String,
     pub cpu_percent: f32,
+    pub physical_footprint_bytes: u64,
     pub rss_bytes: u64,
 }
 
@@ -287,6 +301,7 @@ struct ObservedProcess {
     parent_pid: Option<u32>,
     name: String,
     cpu_percent: f32,
+    physical_footprint_bytes: u64,
     rss_bytes: u64,
 }
 
@@ -769,13 +784,15 @@ fn observe_processes(system: &mut System, app_pid: u32) -> Vec<ObservedProcess> 
             {
                 parent_pid = Some(app_pid);
             }
+            let rss_bytes = process.memory();
             ObservedProcess {
                 pid,
                 parent_pid,
                 name,
                 cpu_percent: process.cpu_usage(),
-                rss_bytes: mcb_core::scanners::resources::phys_footprint_bytes(pid)
-                    .unwrap_or_else(|| process.memory()),
+                physical_footprint_bytes: mcb_core::scanners::resources::phys_footprint_bytes(pid)
+                    .unwrap_or(rss_bytes),
+                rss_bytes,
             }
         })
         .collect()
@@ -880,6 +897,7 @@ fn sample_process(process: &ObservedProcess) -> ResourceSampleProcess {
             process.name.clone()
         },
         cpu_percent: process.cpu_percent,
+        physical_footprint_bytes: process.physical_footprint_bytes,
         rss_bytes: process.rss_bytes,
     }
 }
@@ -955,7 +973,7 @@ fn resource_process_categories(
 ) -> Vec<ResourceSampleCategory> {
     let mut totals = RESOURCE_PROCESS_CATEGORIES
         .into_iter()
-        .map(|label| (label, (0.0f32, 0u64, 0usize)))
+        .map(|label| (label, (0.0f32, 0u64, 0u64, 0usize)))
         .collect::<BTreeMap<_, _>>();
     for process in processes {
         let Some(category) = claims
@@ -973,19 +991,21 @@ fn resource_process_categories(
             .get_mut(category)
             .expect("every process category has a serialized row");
         entry.0 += process.cpu_percent;
-        entry.1 += process.rss_bytes;
-        entry.2 += 1;
+        entry.1 += process.physical_footprint_bytes;
+        entry.2 += process.rss_bytes;
+        entry.3 += 1;
     }
     RESOURCE_PROCESS_CATEGORIES
         .into_iter()
         .map(|label| {
-            let (cpu_percent, rss_bytes, process_count) = totals
+            let (cpu_percent, physical_footprint_bytes, rss_bytes, process_count) = totals
                 .get(label)
                 .copied()
                 .expect("every process category has a serialized row");
             ResourceSampleCategory {
                 label,
                 cpu_percent,
+                physical_footprint_bytes,
                 rss_bytes,
                 process_count,
             }
@@ -1034,8 +1054,8 @@ fn build_resource_sample(
             .collect::<Vec<_>>();
         owned_processes.sort_by(|left, right| {
             right
-                .rss_bytes
-                .cmp(&left.rss_bytes)
+                .physical_footprint_bytes
+                .cmp(&left.physical_footprint_bytes)
                 .then_with(|| left.pid.cmp(&right.pid))
         });
         if owned_processes.is_empty() {
@@ -1073,13 +1093,14 @@ fn build_resource_sample(
             label: app_part_label(process, app_pid),
             pid: process.pid,
             cpu_percent: process.cpu_percent,
+            physical_footprint_bytes: process.physical_footprint_bytes,
             rss_bytes: process.rss_bytes,
         })
         .collect::<Vec<_>>();
     app_parts.sort_by(|left, right| {
         (left.pid != app_pid)
             .cmp(&(right.pid != app_pid))
-            .then_with(|| right.rss_bytes.cmp(&left.rss_bytes))
+            .then_with(|| right.physical_footprint_bytes.cmp(&left.physical_footprint_bytes))
             .then_with(|| left.pid.cmp(&right.pid))
     });
 
@@ -1100,6 +1121,10 @@ fn build_resource_sample(
         generated_at_ms,
         totals: ResourceSampleTotals {
             cpu_percent: included.iter().map(|process| process.cpu_percent).sum(),
+            physical_footprint_bytes: included
+                .iter()
+                .map(|process| process.physical_footprint_bytes)
+                .sum(),
             rss_bytes: included.iter().map(|process| process.rss_bytes).sum(),
             process_count: included.len(),
         },
@@ -1755,14 +1780,15 @@ mod tests {
         parent_pid: Option<u32>,
         name: &str,
         cpu_percent: f32,
-        rss_bytes: u64,
+        physical_footprint_bytes: u64,
     ) -> ObservedProcess {
         ObservedProcess {
             pid,
             parent_pid,
             name: name.to_string(),
             cpu_percent,
-            rss_bytes,
+            physical_footprint_bytes,
+            rss_bytes: physical_footprint_bytes,
         }
     }
 
@@ -1923,7 +1949,7 @@ mod tests {
 
         assert_eq!(sample.generated_at_ms, 123);
         assert_eq!(sample.totals.process_count, 6);
-        assert_eq!(sample.totals.rss_bytes, 450);
+        assert_eq!(sample.totals.physical_footprint_bytes, 450);
         assert_eq!(sample.totals.cpu_percent, 21.0);
         assert_eq!(sample.app.parts.len(), 2);
         assert_eq!(sample.app.parts[0].label, "Main process");
@@ -2124,7 +2150,7 @@ mod tests {
             .find(|process| process.pid == std::process::id())
             .expect("the running process is observed");
         assert_eq!(
-            Some(this.rss_bytes),
+            Some(this.physical_footprint_bytes),
             mcb_core::scanners::resources::phys_footprint_bytes(std::process::id()),
             "the footprint is what is reported"
         );
@@ -2159,17 +2185,17 @@ mod tests {
         attach_resource_history(&mut sample, &mut store);
         let session = &sample.groups[0].sessions[0];
         assert_eq!(session.history.cpu_percent.len(), RESOURCE_HISTORY_CAPACITY);
-        assert_eq!(session.history.rss_bytes.len(), RESOURCE_HISTORY_CAPACITY);
-        assert_eq!(session.history.rss_bytes.last(), Some(&200));
-        assert_eq!(sample.groups[0].history.rss_bytes.last(), Some(&200));
-        assert_eq!(sample.app.history.rss_bytes.last(), Some(&100));
+        assert_eq!(session.history.physical_footprint_bytes.len(), RESOURCE_HISTORY_CAPACITY);
+        assert_eq!(session.history.physical_footprint_bytes.last(), Some(&200));
+        assert_eq!(sample.groups[0].history.physical_footprint_bytes.last(), Some(&200));
+        assert_eq!(sample.app.history.physical_footprint_bytes.last(), Some(&100));
 
         // A row nobody has sampled for longer than the idle window is dropped.
         let mut later = build_resource_sample(RESOURCE_HISTORY_IDLE_MS + 10_000, 1, &[], &[]);
         attach_resource_history(&mut later, &mut store);
         assert!(store
             .read(&session_history_key("workspace", session))
-            .rss_bytes
+            .physical_footprint_bytes
             .is_empty());
     }
 }
