@@ -2112,7 +2112,9 @@
 			showing={centerTab === "editor"}
 			rootAvailable={activeRootAvailable}
 		onCloseAllEditors={clearAllEditorWorkspaceRecords}
-		onRunDotnetWorkspace={async (request) => { await onStartStack({ stackId: request.id, ...request }); }}
+		onStartWorkspaceCommand={(request) => {
+			void onStartStack({ stackId: request.id, ...request });
+		}}
 		onFileOpened={() => {
 			selectCenterTab("editor");
 		}}

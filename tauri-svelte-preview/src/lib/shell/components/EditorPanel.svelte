@@ -136,14 +136,14 @@
     /** Clears every session's saved editor strip after the close outcome succeeds. */
     onCloseAllEditors?: () => void | Promise<boolean | void>;
     /** Starts a fixed .NET workspace action in the page-owned terminal rail. */
-    onRunDotnetWorkspace?: (request: WorkspaceCommandSessionRequest) => void | Promise<void>;
+    onStartWorkspaceCommand?: (request: WorkspaceCommandSessionRequest) => void | Promise<void>;
   }
   let {
     onFileOpened,
     showing = false,
     rootAvailable = true,
     onCloseAllEditors,
-    onRunDotnetWorkspace
+    onStartWorkspaceCommand
   }: Props = $props();
 
   type CodeEditorComponent = typeof CodeMirrorSourceEditor;
@@ -1199,8 +1199,8 @@
 
   function runDotnetWorkspace(action: DotnetWorkspaceAction): void | Promise<void> {
     const root = editorState.projectRoot;
-    if (!root || activeFileReadOnly || !onRunDotnetWorkspace) return;
-    return onRunDotnetWorkspace(dotnetWorkspaceSessionRequest(action, root));
+    if (!root || activeFileReadOnly || !onStartWorkspaceCommand) return;
+    return onStartWorkspaceCommand(dotnetWorkspaceSessionRequest(action, root));
   }
 
   /**
