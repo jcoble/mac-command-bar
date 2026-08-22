@@ -761,6 +761,7 @@
     sessionResourceGeneration += 1;
     if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
     diagnosticsTimer = null;
+    sourceIntelligence.setActivePreview(null);
     codeEditor?.releaseSessionResources();
     for (const path of paths) {
       readsInFlight.delete(path);
