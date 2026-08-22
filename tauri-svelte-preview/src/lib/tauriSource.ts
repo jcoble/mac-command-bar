@@ -35,6 +35,7 @@ import type {
   WorkflowDefinitionV1,
   WorkflowRunRecord
 } from './shell/workflows/workflowTypes';
+import { trackTauriListener } from './shell/resourceDiagnostics.svelte.ts';
 
 export const defaultSourceScanLimit = 10_000;
 export const expandedSourceScanLimit = 25_000;
@@ -602,9 +603,11 @@ export async function listenToSourceScanProgress(
   }
 
   const { listen } = await import('@tauri-apps/api/event');
-  return listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
-    handler(event.payload);
-  });
+  return trackTauriListener(
+    await listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
+      handler(event.payload);
+    })
+  );
 }
 
 export async function startTerminalSessionFromTauri(
@@ -851,9 +854,11 @@ export async function listenToTerminalOutput(
   }
 
   const { listen } = await import('@tauri-apps/api/event');
-  return listen<TerminalOutputPayload>(terminalOutputEvent, (event) => {
-    handler(event.payload);
-  });
+  return trackTauriListener(
+    await listen<TerminalOutputPayload>(terminalOutputEvent, (event) => {
+      handler(event.payload);
+    })
+  );
 }
 
 export async function readSourceFromTauri(record: SourceRecord): Promise<SourcePreview | null> {

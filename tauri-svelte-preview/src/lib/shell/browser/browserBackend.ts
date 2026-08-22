@@ -7,6 +7,7 @@ import type {
   BrowserViewport
 } from './browserTypes.ts';
 import { invokeBrowserCommandFromTauri, isTauriRuntime } from '../../tauriSource.ts';
+import { trackTauriListener } from '../resourceDiagnostics.svelte.ts';
 
 export type BrowserBackendResult<T> = T | Promise<T>;
 
@@ -86,7 +87,7 @@ export async function listenToBrowserNavigation(
   const stop = await listen<BrowserTabNavigationEvent>('browser-tab-navigation', (event) => {
     handler(event.payload);
   });
-  return () => stop();
+  return trackTauriListener(stop);
 }
 
 interface FakeTabRecord extends BrowserBackendTarget {

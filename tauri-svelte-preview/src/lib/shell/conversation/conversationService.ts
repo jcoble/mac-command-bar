@@ -68,6 +68,7 @@ import {
 } from './conversationActivation.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
+import { trackTauriListener } from '../resourceDiagnostics.svelte.ts';
 
 let unlisten: UnlistenFn | null = null;
 let unlistenTitles: UnlistenFn | null = null;
@@ -558,7 +559,7 @@ export async function startConversationEvents(): Promise<void> {
   conversationEventsDisposed = false;
   if (conversationEventsSetup) return conversationEventsSetup;
   conversationEventsSetup = (async () => {
-    const stop = await listen<AgentConversationEvent>('agent-conversation-event', ({ payload }) => {
+    const stopEvents = await listen<AgentConversationEvent>('agent-conversation-event', ({ payload }) => {
       const active = rail.activeOwnedId === payload.ownedId;
       if (active) applyAgentConversationEvent(payload);
       else recordAgentConversationPresenceEvent(payload);
@@ -579,13 +580,15 @@ export async function startConversationEvents(): Promise<void> {
         setConversationSending(payload.ownedId, false);
       }
     });
+    const stop = trackTauriListener(stopEvents);
     // A session starts out named after the first words of its prompt. Once
     // its first turn is done the app writes a short summary over that, and this
     // is how the rail row hears about it.
-    const stopTitles = await listen<{ ownedId: string; title: string }>(
+    const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
       'session-title-changed',
       ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
     );
+    const stopTitles = trackTauriListener(stopTitleEvents);
     if (conversationEventsDisposed) {
       stop();
       stopTitles();

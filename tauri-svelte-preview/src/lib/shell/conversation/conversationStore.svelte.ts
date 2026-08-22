@@ -55,6 +55,10 @@ import {
   SESSION_CONVERSATION_WORKSPACE_VERSION,
   type SessionConversationWorkspace
 } from '../sessionWorkspaces.ts';
+import {
+  setConversationProjectionDiagnostics,
+  textBytes
+} from '../resourceDiagnostics.svelte.ts';
 
 /**
  * What an Antigravity session says about itself the first time it is opened.
@@ -134,6 +138,9 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   loadingOlder: boolean;
   /** Nothing older than what is on screen exists, so stop asking. */
   reachedTranscriptStart: boolean;
+  /** Serialized bytes of the normalized event window currently represented by
+   * this projection. The raw events themselves remain owned by SQLite. */
+  loadedEventBytes: number;
 }
 
 const emptyMetadata = (): ConversationMetadata => ({
@@ -145,6 +152,24 @@ const emptyMetadata = (): ConversationMetadata => ({
 });
 
 export const conversationSessions = $state<Record<string, ConversationWorkspaceState>>({});
+
+function publishConversationProjectionDiagnostics(): void {
+  if (!import.meta.env.DEV) return;
+  const projections = Object.values(conversationSessions);
+  setConversationProjectionDiagnostics(
+    projections.length,
+    projections.reduce((total, projection) => total + projection.loadedEventBytes, 0)
+  );
+}
+
+function serializedEventBytes(event: AgentConversationEvent): number {
+  if (!import.meta.env.DEV) return 0;
+  return textBytes(JSON.stringify(event));
+}
+
+function serializedEventsBytes(events: readonly AgentConversationEvent[]): number {
+  return events.reduce((total, event) => total + serializedEventBytes(event), 0);
+}
 
 const timelineIndexBySession = new WeakMap<ConversationWorkspaceState, Map<string, number>>();
 const agentItemIndexBySession = new WeakMap<ConversationWorkspaceState, Map<string, number>>();
@@ -194,7 +219,8 @@ function freshState(
     recentEvents: [],
     oldestLoadedSequence: 0,
     loadingOlder: false,
-    reachedTranscriptStart: false
+    reachedTranscriptStart: false,
+    loadedEventBytes: 0
   };
 }
 
@@ -210,6 +236,7 @@ export function ensureConversationSession(
   if (current?.provider === provider) return current;
   const created = freshState(ownedId, provider);
   conversationSessions[ownedId] = created;
+  publishConversationProjectionDiagnostics();
   return created;
 }
 
@@ -250,6 +277,7 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   appendRecentEvent(current, event);
   const applied = applyLegacyEventInPlace(current, event);
   if (!applied) return false;
+  current.loadedEventBytes += serializedEventBytes(event);
   const displayEvent = displayEventFrom(event);
   const typedItem = agentItemFromEvent(displayEvent);
   if (typedItem) {
@@ -260,6 +288,7 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   }
   applyTypedEventPayload(current, displayEvent);
   if (!current.desynchronized) recordConversationPresenceEvent(displayEvent);
+  publishConversationProjectionDiagnostics();
   return true;
 }
 
@@ -701,7 +730,8 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
     // for what came before its first event.
     oldestLoadedSequence: firstEvent?.sequence ?? 0,
     loadingOlder: false,
-    reachedTranscriptStart: false
+    reachedTranscriptStart: false,
+    loadedEventBytes: serializedEventsBytes(events)
   };
   for (const event of events) {
     const displayEvent = displayEventFrom(event);
@@ -719,6 +749,7 @@ export function applyAgentConversationSnapshot(snapshot: AgentConversationSnapsh
   }));
   // One reactive publication: subscribers see only the finished snapshot.
   conversationSessions[snapshot.connection.ownedId] = restored;
+  publishConversationProjectionDiagnostics();
 }
 
 /**
@@ -776,7 +807,9 @@ export function prependOlderConversationEvents(
   if (firstEvent) current.oldestLoadedSequence = firstEvent.sequence;
   current.reachedTranscriptStart = !page.hasMore;
   current.loadingOlder = false;
+  current.loadedEventBytes += serializedEventsBytes(events);
   current.timelineRevision += 1;
+  publishConversationProjectionDiagnostics();
 }
 
 /** Marks a backward page as in flight so only one is ever asked for. */
@@ -1443,6 +1476,7 @@ export function evictConversationSession(ownedId: string): void {
   agentItemIndexBySession.delete(current);
   activeReasoningBySession.delete(current);
   delete conversationSessions[ownedId];
+  publishConversationProjectionDiagnostics();
 }
 
 export function removeConversationSession(ownedId: string): void {

@@ -5,6 +5,9 @@
  * whose lifecycle is explicit enough to count from create/dispose points.
  */
 export const resourceDiagnostics = $state({
+  loadedConversationProjections: 0,
+  loadedConversationEventBytes: 0,
+  tauriRootListeners: 0,
   xtermViews: 0,
   codeMirrorEditorViews: 0,
   codeMirrorDocBytes: 0,
@@ -24,6 +27,33 @@ export const resourceDiagnostics = $state({
   sourcePreviewCacheEntries: 0,
   rememberedReferenceCountEntries: 0
 });
+
+export function setConversationProjectionDiagnostics(
+  projections: number,
+  eventBytes: number
+): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.loadedConversationProjections = Math.max(0, projections);
+  resourceDiagnostics.loadedConversationEventBytes = Math.max(0, Math.trunc(eventBytes));
+}
+
+export function trackTauriListener(unlisten: () => void): () => void {
+  if (!import.meta.env.DEV) return unlisten;
+  resourceDiagnostics.tauriRootListeners += 1;
+  let listening = true;
+  return () => {
+    if (!listening) return;
+    listening = false;
+    try {
+      unlisten();
+    } finally {
+      resourceDiagnostics.tauriRootListeners = Math.max(
+        0,
+        resourceDiagnostics.tauriRootListeners - 1
+      );
+    }
+  };
+}
 
 export function textBytes(text: string): number {
   if (!import.meta.env.DEV) return 0;

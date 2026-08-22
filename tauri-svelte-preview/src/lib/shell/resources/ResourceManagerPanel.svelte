@@ -186,6 +186,9 @@
     {/if}
     {#if import.meta.env.DEV}
       <section class="diagnostic-strip" aria-label="Frontend lifecycle counts">
+        <span><strong>{resourceDiagnostics.loadedConversationProjections}</strong> loaded conversations</span>
+        <span><strong>{resourceDiagnostics.loadedConversationEventBytes}</strong> conversation bytes</span>
+        <span><strong>{resourceDiagnostics.tauriRootListeners}</strong> Tauri listeners</span>
         <span><strong>{resourceDiagnostics.xtermViews}</strong> xterm views</span>
         <span><strong>{resourceDiagnostics.codeMirrorEditorViews}</strong> editor views</span>
         <span><strong>{resourceDiagnostics.codeMirrorDocBytes}</strong> editor bytes</span>

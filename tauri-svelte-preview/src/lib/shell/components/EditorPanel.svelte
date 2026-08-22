@@ -62,6 +62,7 @@
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import { hasBackendCapability } from '$lib/shell/backendCapabilities';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
+  import { trackTauriListener } from '$lib/shell/resourceDiagnostics.svelte';
   import {
     activateEditor,
     activeEditorFile,
@@ -338,7 +339,7 @@
     if (!(await hasBackendCapability('lspStatusEvents'))) return null;
 
     const { listen } = await import('@tauri-apps/api/event');
-    return listen<LanguageServerStatusMessage>('source-lsp-status-changed', (event) => {
+    const stop = await listen<LanguageServerStatusMessage>('source-lsp-status-changed', (event) => {
       const root = editorState.projectRoot;
       const language = activeFileLanguage();
       if (!root || !language) return;
@@ -347,6 +348,7 @@
       if (!statusMessageIsAboutThisFile(event.payload, root, language)) return;
       applyLanguageServerStatus(event.payload, { root, language });
     });
+    return trackTauriListener(stop);
   }
 
   /** Ask what is wrong with the file on screen, and remember it against that file. */

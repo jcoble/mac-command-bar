@@ -14,6 +14,7 @@
  * is in.
  */
 import { isTauriRuntime } from '../../tauriSource.ts';
+import { trackTauriListener } from '../resourceDiagnostics.svelte.ts';
 import type { BrowserRect } from './browserTypes.ts';
 
 export const BROWSER_ELEMENT_SELECTED_EVENT = 'browser-element-selected';
@@ -55,5 +56,5 @@ export async function listenToBrowserElementSelected(
       handler(event.payload);
     }
   );
-  return () => stop();
+  return trackTauriListener(stop);
 }

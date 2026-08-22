@@ -20,6 +20,7 @@ import {
   startWorkflowRunFromTauri,
   submitWorkflowResultFromTauri
 } from '$lib/tauriSource';
+import { trackTauriListener } from '$lib/shell/resourceDiagnostics.svelte';
 import type {
   ApproveWorkflowGateDto,
   CancelWorkflowRunDto,
@@ -124,9 +125,10 @@ export async function subscribeWorkflowSnapshots(
   }
 
   try {
-    unlisten = await listen<WorkflowSnapshotPayload>(workflowSnapshotEvent, ({ payload }) => {
+    const stop = await listen<WorkflowSnapshotPayload>(workflowSnapshotEvent, ({ payload }) => {
       for (const current of listeners) current(payload);
     });
+    unlisten = trackTauriListener(stop);
   } catch {
     // An older controller has no event channel; commands remain authoritative.
     unlisten = null;
@@ -146,4 +148,3 @@ export function stopWorkflowSnapshotSubscription(): void {
   unlisten = null;
   listeners.clear();
 }
-

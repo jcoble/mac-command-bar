@@ -88,7 +88,10 @@ import {
   replacePersistedReferenceCounts
 } from './referenceCountPersistence.ts';
 import { statusMessageIsAboutThisFile } from '../components/editor/languageServerStatus.ts';
-import { setSourceIntelligenceDiagnostics } from '../resourceDiagnostics.svelte.ts';
+import {
+  setSourceIntelligenceDiagnostics,
+  trackTauriListener
+} from '../resourceDiagnostics.svelte.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────
@@ -830,7 +833,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       if (!(await hasBackendCapability('lspStatusEvents'))) return false;
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        const stop = await listen<{ state?: string; root: string; language: string }>(
+        const stopStatusEvents = await listen<{ state?: string; root: string; language: string }>(
           'source-lsp-status-changed',
           (event) => {
             // Whatever we last worked out about the server is now out of date.
@@ -847,6 +850,7 @@ export function createSourceIntelligence(): SourceIntelligence {
             }
           }
         );
+        const stop = trackTauriListener(stopStatusEvents);
         if (generation !== statusWatchGeneration) {
           stop();
           return false;
