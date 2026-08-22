@@ -1926,7 +1926,7 @@
 		 * reload would come back to an empty editor. `pagehide` is the event
 		 * browsers still fire for both a reload and a close. */
 		const saveOnLeaving = (): void => {
-			if (rail.activeOwnedId !== null) void snapshotWorkspace(rail.activeOwnedId);
+			if (rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") void snapshotWorkspace(rail.activeOwnedId);
 		};
 		window.addEventListener("pagehide", saveOnLeaving);
 		disposers.push(() => window.removeEventListener("pagehide", saveOnLeaving));
@@ -1935,7 +1935,7 @@
 			cancelWorkspaceAutosave();
 			// Navigating away inside the app ends here instead, and it is the same
 			// last chance to remember what the session on screen had open.
-			if (!disposed && rail.activeOwnedId !== null) void snapshotWorkspace(rail.activeOwnedId);
+			if (!disposed && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") void snapshotWorkspace(rail.activeOwnedId);
 			disposed = true;
 			for (const dispose of disposers.splice(0)) dispose();
 			// Probe teardown closes only its disposable PTY first. The product
