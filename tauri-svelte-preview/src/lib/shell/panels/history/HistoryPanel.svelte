@@ -15,6 +15,7 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import History from '@lucide/svelte/icons/history';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Server from '@lucide/svelte/icons/server';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { onDestroy } from 'svelte';
 
@@ -27,14 +28,17 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
+  import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import {
     buildSessionHistoryViewModel,
     createSessionHistoryCollapseState,
     createSessionHistoryWindowState,
     extendSessionHistoryWindow,
+    filterSessionHistoryRecords,
     isSessionHistoryGroupOpen,
     resetSessionHistoryWindowOnFilterChange,
+    sessionHistoryProjectPath,
     toggleSessionHistoryGroup,
     type SessionHistoryProjectGroup,
     type SessionHistoryRow,
@@ -46,8 +50,7 @@
   } from '$lib/shell/history/sessionHistoryLoad.ts';
   import {
     buildSessionLibrary,
-    filterSessionHistory,
-    sessionProjectPath,
+    type SessionHistoryScope,
     type SessionHistoryFilters,
     type SessionLibraryRecord
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
@@ -71,6 +74,12 @@
     type RepositoryCheckout
   } from '$lib/tauriSource.ts';
   import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation.ts';
+
+  const SCOPE_OPTIONS: readonly { value: SessionHistoryScope; label: string }[] = [
+    { value: 'workspace', label: 'Workspace' },
+    { value: 'project', label: 'Project' },
+    { value: 'all', label: 'All' }
+  ];
 
   import SessionHistoryCard from './SessionHistoryCard.svelte';
   import {
@@ -106,7 +115,7 @@
   const summaryLibrary = $derived(buildSessionLibrary(rail.owned, rail.available));
   const activeRecord = $derived(summaryLibrary.find((record) => record.ownedId === ownedId) ?? null);
   const projectPath = $derived(
-    activeRecord ? sessionProjectPath(activeRecord) : root.trim()
+    activeRecord ? sessionHistoryProjectPath(activeRecord) : root.trim()
   );
   const historyFilters = $derived<SessionHistoryFilters>({
     query: sessionLibraryState.query,
@@ -129,7 +138,7 @@
     historyFilters.projectPath
   ].join('\0'));
   const summaryRecords = $derived(
-    visible ? filterSessionHistory(summaryLibrary, historyFilters) : []
+    visible ? filterSessionHistoryRecords(summaryLibrary, historyFilters) : []
   );
   let loadedRecords = $state<SessionLibraryRecord[]>([]);
   let loadOutcome = $state<SessionHistoryLoadOutcome | null>(null);
@@ -175,11 +184,23 @@
     buildSessionHistoryViewModel(summaryRecords, { query, windowState })
   );
   const loadedProjects = $derived(new Map(
-    buildSessionHistoryViewModel(
-      filterSessionHistory(loadedRecords, historyFilters),
-      { query, windowState, checkouts }
-    )
-      .projects.map((project) => [project.key, project])
+    buildSessionHistoryViewModel(summaryRecords, { query, windowState, checkouts })
+      .projects.flatMap((project) => {
+        const loadedKeys = new Set(loadedRecords.map((record) => record.key));
+        const worktrees = project.worktrees.map((worktree) => {
+          const rows = worktree.rows.filter((row) => loadedKeys.has(row.record.key));
+          return {
+            ...worktree,
+            rows,
+            olderCount: worktree.olderCount + worktree.rows.length - rows.length
+          };
+        });
+        const hasRows = worktrees.some((worktree) => worktree.rows.length > 0);
+        if (!hasRows && !isSessionHistoryGroupOpen(collapseState, 'project', project.key)) {
+          return [];
+        }
+        return [[project.key, { ...project, worktrees }] as const];
+      })
   ));
 
   /** A new search starts every checkout back at its first page of cards. */
@@ -191,6 +212,15 @@
     loadOutcome = null;
     checkouts = {};
     collapseState = createSessionHistoryCollapseState();
+  }
+
+  function setScope(value: string): void {
+    if (!SCOPE_OPTIONS.some((option) => option.value === value)) return;
+    sessionLibraryState.scope = value as SessionHistoryScope;
+    windowState = createSessionHistoryWindowState({
+      query,
+      provider: sessionLibraryState.provider
+    });
   }
 
   $effect(() => {
@@ -283,8 +313,37 @@
     collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
   }
 
-  function showOlder(worktreeKey: string): void {
-    windowState = extendSessionHistoryWindow(windowState, worktreeKey);
+  async function showOlder(worktreeKey: string): Promise<void> {
+    if (!visible) return;
+    const project = summaryViewModel.projects.find((candidate) =>
+      candidate.worktrees.some((worktree) => worktree.key === worktreeKey)
+    );
+    const worktree = project?.worktrees.find((candidate) => candidate.key === worktreeKey);
+    if (!project || !worktree) return;
+    const loadedKeys = new Set(loadedRecords.map((record) => record.key));
+    const nextWindowState = extendSessionHistoryWindow(windowState, worktreeKey);
+    windowState = nextWindowState;
+    const nextProject = buildSessionHistoryViewModel(summaryRecords, {
+      query,
+      windowState: nextWindowState
+    }).projects.find((candidate) => candidate.key === project.key);
+    const nextWorktree = nextProject?.worktrees.find((candidate) => candidate.key === worktreeKey);
+    const keys = new Set((nextWorktree?.rows ?? [])
+      .filter((row) => !loadedKeys.has(row.record.key))
+      .map((row) => row.record.key));
+    if (keys.size === 0) return;
+    const version = ++loadVersion;
+    try {
+      const refreshed = await host.service.refresh(keys, { projectPath: project.path });
+      if (!visible || version !== loadVersion) return;
+      loadedRecords = [...new Map(
+        [...loadedRecords, ...refreshed].map((record) => [record.key, record])
+      ).values()];
+    } catch (error) {
+      if (version === loadVersion) console.error('[history] could not load older sessions', error);
+    } finally {
+      if (version === loadVersion) host.service.release(keys);
+    }
   }
 
   async function copyText(value: string | null): Promise<void> {
@@ -494,6 +553,19 @@
     {/snippet}
   </PanelHeader>
 
+  <div data-testid="session-history-host-line" class="flex items-center gap-1.5 px-3 pt-1 text-xs text-muted-foreground">
+    <Server class="size-3.5" aria-hidden="true" />
+    <span data-testid="session-history-host">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from Local Mac</span>
+  </div>
+  <div data-testid="session-history-scope" class="px-3 py-1">
+    <SegmentedControl
+      items={SCOPE_OPTIONS}
+      value={sessionLibraryState.scope}
+      size="sm"
+      aria-label="Session history scope"
+      onValueChange={setScope}
+    />
+  </div>
   <div class="px-3 py-2">
     <Input
       class="h-7"
@@ -525,7 +597,7 @@
     {/each}
     {#if worktree.olderCount > 0}
       <div class="px-3 py-1.5">
-        <Button size="sm" variant="ghost" onclick={() => showOlder(worktree.key)}>
+        <Button size="sm" variant="ghost" onclick={() => void showOlder(worktree.key)}>
           Show {worktree.olderCount} older
         </Button>
       </div>

@@ -1,5 +1,9 @@
 import type { RepositoryCheckout } from '../../tauriSource.ts';
-import type { SessionLibraryRecord } from '../sessionLibrary/sessionLibraryModel.ts';
+import {
+  filterSessionLibrary,
+  type SessionHistoryFilters,
+  type SessionLibraryRecord
+} from '../sessionLibrary/sessionLibraryModel.ts';
 
 export interface SessionHistoryFilterOptions {
   query?: string;
@@ -136,6 +140,32 @@ function canonicalPath(value: string | null | undefined): string {
   const raw = (value ?? '').trim().replaceAll('\\', '/').replace(/\/+/g, '/');
   if (!raw || raw === '/') return raw;
   return raw.replace(/\/$/, '');
+}
+
+/** Apply history scopes without collapsing a repository to one worktree path. */
+export function filterSessionHistoryRecords(
+  records: readonly SessionLibraryRecord[],
+  filters: SessionHistoryFilters = {}
+): SessionLibraryRecord[] {
+  const { scope = 'all', workspacePath, projectPath, ...libraryFilters } = filters;
+  const filtered = filterSessionLibrary(records, libraryFilters);
+  if (scope === 'workspace') {
+    const workspace = canonicalPath(workspacePath);
+    return workspace
+      ? filtered.filter((record) => canonicalPath(record.canonicalCwd) === workspace)
+      : [];
+  }
+  if (scope === 'project') {
+    const project = canonicalPath(projectPath);
+    return project
+      ? filtered.filter((record) => identifyPaths(record).projectPath === project)
+      : [];
+  }
+  return filtered;
+}
+
+export function sessionHistoryProjectPath(record: SessionLibraryRecord): string {
+  return identifyPaths(record).projectPath;
 }
 
 function pathName(path: string, fallback: string): string {
