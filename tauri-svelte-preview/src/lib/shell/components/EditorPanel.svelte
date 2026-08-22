@@ -916,6 +916,7 @@
       Object.entries(readOnlyByPath).filter(([path]) => !departing.has(path))
     );
     restoredViewStates = {};
+    resetEditorState();
   }
 
   function retryRead(path: string): void {
@@ -998,6 +999,7 @@
       // With no panel there is nothing truthful to show in the top strip.
       clearLanguageIntelligenceBar();
       unsubscribe();
+      resetEditorState();
     };
   });
 </script>
