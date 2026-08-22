@@ -2253,11 +2253,21 @@ impl AgentRuntimeManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
-            session.state = AgentRuntimeState::Interrupting;
-            session
-                .native_session_id
-                .clone()
-                .ok_or_else(|| "Structured provider session has not started".to_string())?
+            if session.active_turn_id.is_none() {
+                None
+            } else {
+                session.state = AgentRuntimeState::Interrupting;
+                Some(
+                    session
+                        .native_session_id
+                        .clone()
+                        .ok_or_else(|| "Structured provider session has not started".to_string())?,
+                )
+            }
+        };
+        let Some(native_session_id) = native_session_id else {
+            self.suspend_if_quiescent(owned_id, generation).await?;
+            return Ok(());
         };
         transport
             .notify(
