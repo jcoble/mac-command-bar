@@ -804,6 +804,7 @@
 	 * Stored straight away: a reload can come at any moment, and the write is a
 	 * few hundred bytes. */
 	async function snapshotWorkspace(ownedId: string): Promise<boolean> {
+		if (clearAllEditorsInFlight) return false;
 		const ownedPaths = editorPanel?.workspaceOwnedPaths()
 			?? editorState.openFiles.map((file) => file.path);
 		const ownedPathSet = new Set(ownedPaths);

@@ -726,7 +726,7 @@
 
   /** EXPLICIT IO: read one file and show it. */
   async function readFileIntoEditor(record: SourceRecord): Promise<void> {
-    if (!rootAvailable) return;
+    if (closeActionBusy || !rootAvailable) return;
     if (readsInFlight.has(record.path)) return;
     const generation = sessionResourceGeneration;
     const readOnly = Boolean(readOnlyByPath[record.path]);
@@ -860,6 +860,7 @@
   }
 
   function handleOpenFileRequest(request: OpenFileRequest): void {
+    if (closeActionBusy) return;
     // Marked before the open, so the file is never editable for a frame. The
     // record's path is the key: it is what the strip and the editor hold.
     const record = recordForPath(request.path, request.projectRoot);
@@ -887,6 +888,7 @@
   }
 
   function selectOpenFile(path: string): void {
+    if (closeActionBusy) return;
     if (editorState.activePath && editorState.activePath !== path) {
       releaseMarkdownView(editorState.activePath);
     }
@@ -1094,7 +1096,7 @@
   }
 
   function retryRead(path: string): void {
-    if (!rootAvailable) return;
+    if (closeActionBusy || !rootAvailable) return;
     void readFileIntoEditor(recordForPath(path));
   }
 
