@@ -47,6 +47,8 @@
     readOnlyReason: string;
     /** True while another source-control action is still running. */
     busy: boolean;
+    /** False while reading a linked worktree, so editor ownership stays with the session. */
+    canOpenInEditor?: boolean;
     onStage(file: ProjectGitFileStatus): void;
     onUnstage(file: ProjectGitFileStatus): void;
     /** Ask for this file's changes to be thrown away. The panel asks the person. */
@@ -59,6 +61,7 @@
     canWrite,
     readOnlyReason,
     busy,
+    canOpenInEditor = true,
     onStage,
     onUnstage,
     onRequestDiscard
@@ -66,7 +69,7 @@
 
   const parts = $derived(splitRepositoryPath(file.relativePath));
   const actions = $derived(
-    sourceControlFileActions(file, root, { canWrite, readOnlyReason, busy })
+    sourceControlFileActions(file, root, { canWrite, readOnlyReason, busy, canOpenInEditor })
   );
   const absolutePath = $derived(root === '' ? '' : absolutePathWithin(root, file.relativePath));
 

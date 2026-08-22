@@ -600,6 +600,7 @@
                     root={folder}
                     selected={panel.selectedPath === file.relativePath}
                     canWrite={canChange}
+                    canOpenInEditor={!readOnlyScope}
                     readOnlyReason={cannotChangeReason}
                     {busy}
                     onStage={stageOne}

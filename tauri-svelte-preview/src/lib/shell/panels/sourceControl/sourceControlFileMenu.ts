@@ -65,6 +65,8 @@ export interface SourceControlFileActionContext {
   readOnlyReason: string;
   /** True while another source-control action is still running. */
   busy: boolean;
+  /** Opening an inspected worktree must not transfer editor ownership to it. */
+  canOpenInEditor?: boolean;
 }
 
 /**
@@ -88,6 +90,7 @@ export function sourceControlFileActions(
       : null
     : context.readOnlyReason;
   const write = noRoot ?? cannotWrite;
+  const cannotOpenInEditor = context.canOpenInEditor === false ? context.readOnlyReason : null;
 
   return [
     action('view', 'View changes', noRoot ?? gone),
@@ -104,7 +107,7 @@ export function sourceControlFileActions(
     action('discard', 'Discard changes…', write),
     action('copy-path', 'Copy path', noRoot),
     action('copy-relative-path', 'Copy relative path', null),
-    action('open-in-editor', 'Open in editor', noRoot ?? gone),
+    action('open-in-editor', 'Open in editor', noRoot ?? gone ?? cannotOpenInEditor),
     action('reveal-in-finder', 'Reveal in Finder', noRoot ?? gone)
   ];
 }
