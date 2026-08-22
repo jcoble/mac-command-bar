@@ -139,11 +139,13 @@ export function createGitCommitFilesService(
     const root = currentRoot();
     if (!root || sha.trim() === '') return;
 
+    const revision = state.revision;
     const id = (fileRequests.get(sha) ?? 0) + 1;
     fileRequests.set(sha, id);
     writeEntry(sha, { loading: true, error: '' });
 
-    const stillCurrent = () => fileRequests.get(sha) === id && state.root === root;
+    const stillCurrent = () =>
+      fileRequests.get(sha) === id && state.root === root && state.revision === revision;
 
     try {
       const top = await repositoryTopFor(root);
@@ -169,6 +171,7 @@ export function createGitCommitFilesService(
   async function selectCommitFile(sha: string, file: GitCommitFileChange): Promise<void> {
     const root = currentRoot();
     if (!root) return;
+    const revision = state.revision;
 
     // Whatever the working-copy side was showing is let go of first, so its own
     // in-flight read cannot land on top of this one.
@@ -189,7 +192,8 @@ export function createGitCommitFilesService(
     diffRequest += 1;
     const id = diffRequest;
     panel.diffLoading = true;
-    const stillCurrent = () => diffRequest === id && state.root === root;
+    const stillCurrent = () =>
+      diffRequest === id && state.root === root && state.revision === revision;
 
     try {
       const top = await repositoryTopFor(root);

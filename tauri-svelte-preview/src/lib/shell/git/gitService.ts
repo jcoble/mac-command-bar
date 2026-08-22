@@ -62,6 +62,7 @@ import {
   type GitActionKind,
   type GitPanelState
 } from './gitPanelStore.svelte.ts';
+import { gitCommitFiles, resetGitCommitFilesState } from './gitCommitFilesStore.svelte.ts';
 
 /** Fixed commit count for the first and every later cursor page. */
 export const COMMIT_HISTORY_LIMIT = 24;
@@ -443,6 +444,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     const targetRoot = root.trim();
     const targetPath = relativePath.trim();
     if (!targetRoot || !targetPath) return;
+    const pathChanged = state.root !== targetRoot || state.historyPath !== targetPath;
     if (state.root !== targetRoot) resetGitPanelState(state, targetRoot);
     state.activated = true;
     state.historyPath = targetPath;
@@ -451,6 +453,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyNextCursor = null;
     state.historyComplete = false;
     state.historyPaged = false;
+    if (pathChanged) {
+      resetGitCommitFilesState(gitCommitFiles, targetRoot);
+      clearSelection();
+    }
     if (!historySurfaceVisible) return;
     await loadHistory(null, false);
   }
@@ -463,6 +469,8 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyNextCursor = null;
     state.historyComplete = false;
     state.historyPaged = false;
+    resetGitCommitFilesState(gitCommitFiles, state.root);
+    clearSelection();
     await loadHistory(null, false);
   }
 
