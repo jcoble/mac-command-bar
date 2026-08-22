@@ -472,6 +472,7 @@
           [key]: { firstPrompt: detail.firstPrompt, latestTurns: detail.latestTurns }
         };
       }
+      host.service.release(new Set([key]));
     } catch (error) {
       if (version === loadVersion) console.error('[history] could not load session details', error);
     } finally {
