@@ -216,7 +216,8 @@ export async function saveConversationClipboardImage(
     mimeType: file.type,
     bytes
   });
-  return restoreConversationAttachmentPreview({ ...saved, bytes }) as AttachmentWithBytes;
+  const attachment = { ...saved, bytes };
+  return restoreConversationAttachmentPreview(attachment) as AttachmentWithBytes;
 }
 
 /** Revoke only URLs owned by this surface; the managed path never goes through the DOM. */

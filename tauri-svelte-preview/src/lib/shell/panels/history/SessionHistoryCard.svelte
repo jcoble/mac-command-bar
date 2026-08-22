@@ -60,7 +60,7 @@
     /** One line of what was last said, or the session's first prompt. */
     excerpt: string;
     expanded: boolean;
-    detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'>;
+    detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'> | null;
     detailsLoading?: boolean;
     /** The clock, passed down so forty cards do not keep forty of them. */
     now: Date;

@@ -37,7 +37,7 @@
     statusMessageIsAboutThisFile
   } from './editor/languageServerStatus.ts';
   import FileIcon from './explorer/FileIcon.svelte';
-  import { canonicalPath } from './explorer/explorerStore.svelte';
+  import { canonicalPath } from '$lib/shell/explorer/explorerStore.svelte';
   import {
     isMarkdownFile,
     markdownPreviewDefault,

@@ -203,8 +203,8 @@
 	 * view keeps 80x24 and wraps its replay wrong. */
 	const livePtySizes = new Map<string, { cols: number; rows: number }>();
 
-	let activeWorkspaceSnapshot: SessionWorkspaceSnapshot | null = null;
-	let diffMode: DiffMode = DEFAULT_DIFF_MODE;
+	let activeWorkspaceSnapshot = $state<SessionWorkspaceSnapshot | null>(null);
+	let diffMode = $state<DiffMode>(DEFAULT_DIFF_MODE);
 	let workspaceRestoreGeneration = 0;
 	let sessionSelectionGeneration = 0;
 	let sessionProjectionOwner: "selection" | "checkout" | null = null;
@@ -233,6 +233,7 @@
 		workspaceOwnedPaths(): string[];
 		restoreViewStates(files: readonly { path: string; viewState?: object }[]): void;
 		releaseSessionResources(paths: readonly string[]): void;
+		requestCloseActive(): void;
 	} | null = null;
 	/** Which panel the right column is showing, and which surface the center
 	 * pane is on. The PAGE owns both, because both are remembered per session and

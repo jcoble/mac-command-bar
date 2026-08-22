@@ -108,6 +108,7 @@
   let {
     visible,
     root,
+    ownedId,
     rootAvailable = true,
     service = defaultService,
     commitFiles = defaultCommitFilesService,
