@@ -5218,6 +5218,94 @@ mod tests {
     }
 
     #[test]
+    fn supercharged_off_allows_no_server() {
+        let root = unique_lsp_temp_root("mcb-lsp-supercharged-off");
+        let root_text = root.display().to_string();
+        set_language_intelligence(&root_text, true);
+        set_language_servers_enabled(false);
+
+        let registry = SourceLspRegistry::default();
+        assert_eq!(
+            registry
+                .start_server_for_language(&root_text, "rust")
+                .unwrap(),
+            LanguageServerStart::SwitchedOff
+        );
+        assert_eq!(
+            registry.warm_running_servers_for_root(&root_text).unwrap(),
+            0
+        );
+        assert_eq!(registry.session_count().unwrap(), 0);
+        assert!(registry.running_language_server_processes().is_empty());
+
+        set_language_servers_enabled(true);
+        set_language_intelligence(&root_text, false);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn supercharged_on_respects_per_server_off() {
+        let root = unique_lsp_temp_root("mcb-lsp-rust-off");
+        let root_text = root.display().to_string();
+        set_language_servers_enabled(true);
+        set_language_server_enabled("rust", false).unwrap();
+        set_language_intelligence(&root_text, true);
+
+        let registry = SourceLspRegistry::default();
+        assert_eq!(
+            registry
+                .start_server_for_language(&root_text, "rust")
+                .unwrap(),
+            LanguageServerStart::ServerSwitchedOff
+        );
+        assert_eq!(registry.session_count().unwrap(), 0);
+        assert!(registry.running_language_server_processes().is_empty());
+
+        set_language_server_enabled("rust", true).unwrap();
+        set_language_intelligence(&root_text, false);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn turning_supercharged_off_stops_running_servers() {
+        let root = unique_lsp_temp_root("mcb-lsp-supercharged-stop");
+        let root_text = root.display().to_string();
+        let root_key = normalized_lsp_root(&root_text).expect("canonical temp root");
+        set_language_servers_enabled(true);
+        set_language_server_enabled("rust", true).unwrap();
+        assert_eq!(
+            set_language_intelligence(&root_text, true),
+            LanguageIntelligenceChange::TurnedOn
+        );
+
+        let registry = SourceLspRegistry::default();
+        registry
+            .set_active_root(&root_text, true)
+            .expect("active root should be accepted");
+        let (connection, _server) = connect_to_a_fake_language_server("rust");
+        locked(&registry.sessions).insert(
+            SourceLspSessionKey {
+                language: "rust".to_string(),
+                root: root_key,
+            },
+            Arc::new(Mutex::new(SourceLspSession {
+                root: root.clone(),
+                connection,
+                last_used: 1,
+            })),
+        );
+        assert_eq!(registry.session_count().unwrap(), 1);
+
+        let changed = set_language_intelligence(&root_text, false);
+        assert_eq!(changed, LanguageIntelligenceChange::TurnedOff);
+        assert!(changed.must_stop_servers());
+        assert_eq!(registry.set_active_root(&root_text, false).unwrap(), 1);
+        assert_eq!(registry.session_count().unwrap(), 0);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn command_search_paths_include_cargo_bin_so_rust_analyzer_resolves() {
         // Regression: rust-analyzer commonly lives ONLY at ~/.cargo/bin (a rustup proxy),
         // which is on the login PATH but NOT the launchd PATH a Finder-launched .app
