@@ -527,13 +527,9 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   function activate(root: string | null): void {
-    if (
-      root === state.root &&
-      state.activated &&
-      (state.status !== null || state.statusLoading || state.statusError !== '' || state.desktopOnly)
-    ) {
-      return;
-    }
+    // Status is intentionally absent in history-only mode. Repository identity,
+    // not the presence of one optional projection, makes activation idempotent.
+    if (root === state.root && state.activated) return;
     statusGuard.invalidate();
     historyGuard.invalidate();
     diffGuard.invalidate();
