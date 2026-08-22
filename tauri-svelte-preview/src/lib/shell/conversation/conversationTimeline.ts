@@ -586,7 +586,7 @@ function payloadHasFileChange(payload: StringRecord): boolean {
 
 function toolKindForPayload(payload: StringRecord, payloadKind: string): ConversationToolKind {
   if (payloadKind === 'turnDiff' || payloadHasFileChange(payload)) return 'file-edit';
-  return toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type);
+  return toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type, payload.kind);
 }
 
 function toolTitleOf(value: unknown): string | null {
