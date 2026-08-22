@@ -64,6 +64,7 @@
     preview: SourcePreview;
     content?: string;
     editable?: boolean;
+    visible?: boolean;
     externalDiagnostics?: SourceDiagnostic[];
     restoredViewStates?: Record<string, object>;
     loading?: boolean;
@@ -80,6 +81,7 @@
     preview,
     content,
     editable = false,
+    visible = true,
     externalDiagnostics = [],
     restoredViewStates = {},
     targetLine = null,
@@ -101,6 +103,8 @@
   let currentPath = '';
   let applyingContent = false;
   let languageGeneration = 0;
+  let requestedLanguageKey = '';
+  let loadedLanguageKey = '';
   let referenceCountTimer: ReturnType<typeof setTimeout> | null = null;
   const language = new Compartment();
   const editing = new Compartment();
@@ -118,6 +122,44 @@
 
   function editingExtensions(): Extension {
     return [EditorState.readOnly.of(!editable), EditorView.editable.of(editable)];
+  }
+
+  function languageKey(path: string, languageId: string): string {
+    return `${path}\0${languageId}`;
+  }
+
+  function clearLanguageSupport(): void {
+    languageGeneration += 1;
+    requestedLanguageKey = '';
+    loadedLanguageKey = '';
+    if (view) view.dispatch({ effects: language.reconfigure([]) });
+  }
+
+  function loadVisibleLanguageSupport(): void {
+    if (!view || !visible || !currentPath || currentPath !== preview.path) return;
+    const path = currentPath;
+    const languageId = preview.language;
+    const key = languageKey(path, languageId);
+    if (key === loadedLanguageKey || key === requestedLanguageKey) return;
+    requestedLanguageKey = key;
+    const generation = ++languageGeneration;
+    void loadCodeMirrorLanguage(languageId)
+      .then((extension) => {
+        if (
+          !view ||
+          !visible ||
+          generation !== languageGeneration ||
+          currentPath !== path ||
+          preview.path !== path ||
+          preview.language !== languageId
+        ) return;
+        requestedLanguageKey = '';
+        loadedLanguageKey = key;
+        view.dispatch({ effects: language.reconfigure(extension) });
+      })
+      .catch(() => {
+        if (generation === languageGeneration && requestedLanguageKey === key) requestedLanguageKey = '';
+      });
   }
 
   function restoredState(path: string): StoredViewState | null {
@@ -346,11 +388,8 @@
     setCodeMirrorUndoDepth(undoDepth(view.state));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
-    const generation = ++languageGeneration;
-    void loadCodeMirrorLanguage(preview.language).then((extension) => {
-      if (!view || generation !== languageGeneration || currentPath !== preview.path) return;
-      view.dispatch({ effects: language.reconfigure(extension) });
-    });
+    clearLanguageSupport();
+    loadVisibleLanguageSupport();
     if (restored) {
       requestTrackedAnimationFrame(() => {
         if (!view || currentPath !== preview.path) return;
@@ -382,7 +421,7 @@
 
   export function releaseSessionResources(): void {
     clearReferenceCountTimer();
-    languageGeneration += 1;
+    clearLanguageSupport();
     currentPath = '';
     sessionViewStates.clear();
     sessionEditorStates.clear();
@@ -415,6 +454,11 @@
   $effect(() => {
     editable;
     if (view) view.dispatch({ effects: editing.reconfigure(editingExtensions()) });
+  });
+
+  $effect(() => {
+    if (visible) loadVisibleLanguageSupport();
+    else clearLanguageSupport();
   });
 
   $effect(() => {

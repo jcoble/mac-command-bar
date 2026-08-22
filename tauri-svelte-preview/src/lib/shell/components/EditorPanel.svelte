@@ -1107,6 +1107,7 @@
             preview={activeFile.preview}
             content={activeFile.draftContent ?? activeFile.preview.content}
             editable={rootAvailable && !activeFileReadOnly}
+            visible={showing}
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}
