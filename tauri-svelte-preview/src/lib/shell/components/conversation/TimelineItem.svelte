@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
-  import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import {
+    conversationFileLinkProvenance,
+    type ConversationDisplayItem,
+    type ConversationFileLinkProvenance
+  } from '$lib/shell/conversation/conversationTimeline.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import UserMessageItem from './UserMessageItem.svelte';
   import AssistantMessageItem from './AssistantMessageItem.svelte';
@@ -21,7 +25,7 @@
     assistantLabel?: string;
     onApprovalDecision?(requestId: string, decision: string): void;
     onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
-    onFileLink?(path: string): void;
+    onFileLink?(path: string, provenance?: ConversationFileLinkProvenance): void;
     /** Opens the plan chip above the composer. The transcript only notes that
      * the plan moved; the plan itself lives in one place. */
     onPlanOpen?(): void;
@@ -31,19 +35,21 @@
   // it keeps type-checking; the container drops it in its own pass.
   let { item, onApprovalDecision, onInputSubmit, onFileLink, onPlanOpen }: Props = $props();
   const visible = $derived(conversationItemHasVisibleContent(item));
+  const fileLinkProvenance = $derived(conversationFileLinkProvenance(item));
+  const openFileLink = (path: string): void => onFileLink?.(path, fileLinkProvenance);
 </script>
 
 {#if visible}
   <div class="timeline-item" data-testid="conversation-timeline-item" data-item-id={item.itemId} data-kind={item.kind}>
-    {#if item.kind === 'user'}<UserMessageItem {item} {onFileLink} />
-    {:else if item.kind === 'assistant'}<AssistantMessageItem {item} {onFileLink} />
-    {:else if item.kind === 'reasoning'}<ReasoningItem {item} {onFileLink} />
+    {#if item.kind === 'user'}<UserMessageItem {item} onFileLink={openFileLink} />
+    {:else if item.kind === 'assistant'}<AssistantMessageItem {item} onFileLink={openFileLink} />
+    {:else if item.kind === 'reasoning'}<ReasoningItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'plan'}<button class="plan-line" data-testid="timeline-plan-item" type="button" onclick={() => onPlanOpen?.()}>Plan updated · {item.steps.length} {item.steps.length === 1 ? 'step' : 'steps'}</button>
     {:else if item.kind === 'tasks'}<TaskListItem {item} />
-    {:else if item.kind === 'command'}<CommandItem {item} {onFileLink} />
-    {:else if item.kind === 'file'}<FileChangeItem {item} {onFileLink} />
-    {:else if item.kind === 'fileEdits'}<FileEditsItem {item} {onFileLink} />
-    {:else if item.kind === 'tool'}<ToolItem {item} {onFileLink} />
+    {:else if item.kind === 'command'}<CommandItem {item} onFileLink={openFileLink} />
+    {:else if item.kind === 'file'}<FileChangeItem {item} onFileLink={openFileLink} />
+    {:else if item.kind === 'fileEdits'}<FileEditsItem {item} onFileLink={openFileLink} />
+    {:else if item.kind === 'tool'}<ToolItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'subagent'}<SubagentSection {item} />
     {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />
     {:else if item.kind === 'input'}<UserInputItem {item} onSubmit={onInputSubmit} />

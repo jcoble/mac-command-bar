@@ -108,6 +108,41 @@ export interface ConversationTurnGroup {
   readonly elapsedMs: number | null;
 }
 
+/**
+ * The path information carried by the event that rendered a file link. A
+ * provider may record a workspace root, or only the file the event concerned;
+ * both are useful when the reader has since pointed the source panels at a
+ * different checkout.
+ */
+export interface ConversationFileLinkProvenance {
+  readonly root?: string;
+  readonly path?: string;
+}
+
+function metadataString(
+  metadata: Record<string, AgentConfigValue> | undefined,
+  keys: readonly string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = metadata?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/** Preserve the event/provider path instead of borrowing the selected checkout. */
+export function conversationFileLinkProvenance(
+  item: ConversationDisplayItem
+): ConversationFileLinkProvenance | undefined {
+  const metadata = 'metadata' in item ? item.metadata : undefined;
+  const root = metadataString(metadata, ['root', 'cwd', 'projectPath', 'worktree']);
+  if (root) return { root };
+  const path = item.kind === 'tool'
+    ? item.path ?? metadataString(metadata, ['path'])
+    : metadataString(metadata, ['path']);
+  return path ? { path } : undefined;
+}
+
 const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'reasoning',
   'fileEdits',
@@ -952,6 +987,7 @@ function eventMetadata(
   const values = {
     ...(metadataRecord('providerMetadata' in event ? event.providerMetadata : undefined) ?? {}),
     ...(metadataRecord(payload.providerMetadata) ?? {}),
+    ...(metadataRecord(payload._meta) ?? {}),
     ...extra,
     startedAtMs: eventStartedAt(event, payload),
     replay: eventReplay(payload)

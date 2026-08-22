@@ -54,7 +54,8 @@
     latestPlan,
     turnFileChanges,
     typedConversationTimeline,
-    type ConversationDisplayItem
+    type ConversationDisplayItem,
+    type ConversationFileLinkProvenance
   } from '$lib/shell/conversation/conversationTimeline.ts';
   import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
@@ -387,17 +388,33 @@
     });
   }
 
-  function openConversationFile(reference: string): void {
+  function openConversationFile(
+    reference: string,
+    provenance?: ConversationFileLinkProvenance
+  ): void {
     if (!active) return;
-    const root = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
+    const sessionRoot = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
     const { path, line } = splitConversationFileReference(reference);
     const candidate = normalizeConversationFileHref(path);
+    const recordedPath = provenance?.path ? normalizeConversationFileHref(provenance.path) : '';
+    const linkIsRecordedFile = Boolean(recordedPath && (
+      recordedPath === candidate
+      || recordedPath.endsWith(`/${candidate.replace(/^\.\//, '')}`)
+    ));
+    const recordedRoot = provenance?.root
+      ? normalizeConversationFileHref(provenance.root)
+      : !linkIsRecordedFile && recordedPath.includes('/')
+        ? recordedPath.slice(0, recordedPath.lastIndexOf('/'))
+        : '';
+    const root = resolveConversationFilePath(recordedRoot, sessionRoot).replace(/\/+$/, '') || sessionRoot;
     if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
       // Nothing here resolves to a file, so there is nothing to open.
       setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
       return;
     }
-    const absolute = resolveConversationFilePath(candidate, root);
+    const absolute = linkIsRecordedFile && (recordedPath.startsWith('/') || recordedPath.startsWith('~'))
+      ? recordedPath
+      : resolveConversationFilePath(candidate, root);
     // A link that lands outside the workspace still opens, read-only: reading a
     // file this session does not own is safe, and refusing it left the reader
     // with a notice and no way to see what the link pointed at.

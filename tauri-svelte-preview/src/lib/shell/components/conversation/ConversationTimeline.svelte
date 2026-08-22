@@ -8,7 +8,8 @@
     conversationTurnGroups,
     formatWorkedFor,
     type ConversationTurnGroup,
-    type ConversationDisplayItem
+    type ConversationDisplayItem,
+    type ConversationFileLinkProvenance
   } from '$lib/shell/conversation/conversationTimeline.ts';
   import {
     decideConversationScroll,
@@ -47,7 +48,7 @@
     onScroll?(scrollTop: number): void;
     onApprovalDecision?(requestId: string, decision: string): void;
     onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
-    onFileLink?(path: string): void;
+    onFileLink?(path: string, provenance?: ConversationFileLinkProvenance): void;
     /** Opens the plan chip above the composer, for the transcript's plan line. */
     onPlanOpen?(): void;
   }
