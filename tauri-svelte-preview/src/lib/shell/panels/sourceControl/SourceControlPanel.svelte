@@ -222,6 +222,7 @@
   const staged = $derived(hasStagedChanges(panel.status));
   const busy = $derived(panel.actionBusy !== '');
   const files = $derived(panel.status?.files ?? []);
+  const scopeAvailable = $derived(rootAvailable || readOnlyScope);
   let amend = $state(false);
 
   /** Can this panel change what it is looking at? Both answers have a sentence. */
@@ -396,7 +397,8 @@
         <DropdownMenu.Content align="end">
           <DropdownMenu.Item
             data-testid="source-control-refresh"
-            disabled={panel.statusLoading || panel.historyLoading}
+            disabled={!scopeAvailable || panel.statusLoading || panel.historyLoading}
+            title={scopeAvailable ? undefined : cannotChangeReason}
             onSelect={() => void service.refresh()}
           >
             Refresh
@@ -598,10 +600,10 @@
                 {#each section.files as file (file.relativePath)}
                   <ChangedFileRow
                     {file}
-                    root={folder}
+                    root={scopeAvailable ? folder : ''}
                     selected={panel.selectedPath === file.relativePath}
                     canWrite={canChange}
-                    canOpenInEditor={!readOnlyScope}
+                    canOpenInEditor={scopeAvailable && !readOnlyScope}
                     readOnlyReason={cannotChangeReason}
                     {busy}
                     onStage={stageOne}
