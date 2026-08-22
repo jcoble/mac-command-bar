@@ -726,11 +726,6 @@ export async function startConversationEvents(): Promise<void> {
   conversationEventsSetup = (async () => {
     const registration = await registerAgentConversationStream((envelope: StreamEnvelope<AgentConversationEvent>) => {
       if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-      if (envelope.resync || !envelope.chunk) {
-        const activeOwnedId = rail.activeOwnedId;
-        if (activeOwnedId) void resyncConversation(activeOwnedId);
-        return;
-      }
       const payload = envelope.chunk;
       const active = rail.activeOwnedId === payload.ownedId;
       if (active) applyAgentConversationEvent(payload);
@@ -751,6 +746,10 @@ export async function startConversationEvents(): Promise<void> {
       if (active && shouldClearConversationSending(payload)) {
         setConversationSending(payload.ownedId, false);
       }
+    }, () => {
+      if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+      const activeOwnedId = rail.activeOwnedId;
+      if (activeOwnedId) void resyncConversation(activeOwnedId);
     });
     // A session starts out named after the first words of its prompt. Once
     // its first turn is done the app writes a short summary over that, and this

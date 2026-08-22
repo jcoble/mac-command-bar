@@ -21,7 +21,8 @@
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
   listTerminalSessionsFromTauri,
-  readTerminalSessionScrollbackFromTauri
+  readTerminalSessionScrollbackFromTauri,
+  type SessionSubscription
 } from '../../tauriSource.ts';
 import { appendOutputTail } from '../panels/run/runOutputTail.ts';
 import { subscribeToTerminalOutput } from '../terminalService.ts';
@@ -51,12 +52,12 @@ export async function watchRunOutput(
   onTail: (ownedId: string, tail: string[]) => void
 ): Promise<RunOutputWatch> {
   let stopped = false;
-  let unlisten: (() => void) | null = null;
+  let unlisten: SessionSubscription | null = null;
 
   const watch: RunOutputWatch = {
     stop(): void {
       stopped = true;
-      unlisten?.();
+      unlisten?.unsubscribe();
       unlisten = null;
     }
   };
@@ -98,7 +99,7 @@ export async function watchRunOutput(
   // The panel may have been closed while the subscription was being set up, in
   // which case it is dropped immediately rather than left running unseen.
   if (stopped) {
-    stopListening?.();
+    stopListening.unsubscribe();
     return watch;
   }
   unlisten = stopListening;

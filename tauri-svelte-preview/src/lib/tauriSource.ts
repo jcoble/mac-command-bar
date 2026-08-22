@@ -50,6 +50,7 @@ import {
 export const defaultSourceScanLimit = 10_000;
 export const expandedSourceScanLimit = 25_000;
 export const nativeSourceScanProgressEvent = 'source_scan_progress';
+export const terminalOutputEvent = 'terminal_output';
 
 export type NativeSourceScanProgress = {
   scanId: string;
@@ -128,18 +129,31 @@ export type TerminalOutputPayload = {
   signal: string | null;
 };
 
-export type StreamEnvelope<T> = {
+type ProjectionStreamWireEnvelope<T> = {
   session: string;
   generation: number;
   sequence: number;
   bytes: number;
-  kind: 'agent-conversation-event' | 'terminal_output';
+  kind: 'agent-conversation-event' | typeof terminalOutputEvent;
   resync: boolean;
   chunk: T | null;
 };
 
+export type StreamEnvelope<T> = {
+  sessionId: string;
+  generation: number;
+  sequence: number;
+  byteLength: number;
+  kind: 'agent-conversation-event' | typeof terminalOutputEvent;
+  chunk: T;
+};
+
 export type ProjectionStreamRegistration = {
   unregister(): Promise<void>;
+};
+
+export type SessionSubscription = {
+  unsubscribe(): void;
 };
 
 export type ProjectGitFileStatus = {
@@ -927,6 +941,7 @@ async function registerProjectionStream<T>(input: {
   acknowledgeCommand: string;
   unregisterCommand: string;
   onEnvelope: (envelope: StreamEnvelope<T>) => void;
+  onResync?: () => void;
 }): Promise<ProjectionStreamRegistration | null> {
   if (!isTauriRuntime()) return null;
 
@@ -941,10 +956,21 @@ async function registerProjectionStream<T>(input: {
       bytes
     }).then(() => undefined);
   };
-  const channel = new Channel<StreamEnvelope<T>>((envelope) => {
+  const channel = new Channel<ProjectionStreamWireEnvelope<T>>((envelope) => {
     if (!active) return;
     try {
-      input.onEnvelope(envelope);
+      if (envelope.resync || envelope.chunk === null) {
+        input.onResync?.();
+      } else {
+        input.onEnvelope({
+          sessionId: envelope.session,
+          generation: envelope.generation,
+          sequence: envelope.sequence,
+          byteLength: envelope.bytes,
+          kind: envelope.kind,
+          chunk: envelope.chunk
+        });
+      }
     } finally {
       void ack(1, envelope.bytes).catch(() => undefined);
     }
@@ -968,13 +994,15 @@ async function registerProjectionStream<T>(input: {
 }
 
 export function registerAgentConversationStream(
-  onEnvelope: (envelope: StreamEnvelope<AgentConversationEvent>) => void
+  onEnvelope: (envelope: StreamEnvelope<AgentConversationEvent>) => void,
+  onResync?: () => void
 ): Promise<ProjectionStreamRegistration | null> {
   return registerProjectionStream({
     registerCommand: 'register_agent_conversation_stream',
     acknowledgeCommand: 'acknowledge_agent_conversation_stream',
     unregisterCommand: 'unregister_agent_conversation_stream',
-    onEnvelope
+    onEnvelope,
+    onResync
   });
 }
 
@@ -991,11 +1019,13 @@ export function registerTerminalOutputStream(
 
 export async function listenToTerminalOutput(
   handler: (payload: TerminalOutputPayload) => void
-): Promise<(() => void) | null> {
+): Promise<SessionSubscription | null> {
   const registration = await registerTerminalOutputStream((envelope) => {
-    if (!envelope.resync && envelope.chunk) handler(envelope.chunk);
+    handler(envelope.chunk);
   });
-  return registration ? () => void registration.unregister() : null;
+  return registration
+    ? { unsubscribe: () => void registration.unregister() }
+    : null;
 }
 
 export async function readSourceFromTauri(record: SourceRecord): Promise<SourcePreview | null> {

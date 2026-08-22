@@ -32,6 +32,7 @@ import {
   resizeTerminalSessionFromTauri,
   startTerminalSessionFromTauri,
   writeTerminalSessionFromTauri,
+  type SessionSubscription,
   type TerminalOutputPayload,
   type TerminalSessionInfo,
   type TerminalStartRequest
@@ -42,18 +43,20 @@ import { trackTauriSubscriber } from './resourceDiagnostics.svelte.ts';
 export type TerminalOutputSubscriber = (payload: TerminalOutputPayload) => void;
 
 const terminalOutputSubscribers = new Set<TerminalOutputSubscriber>();
-let terminalOutputUnlisten: (() => void) | null = null;
+let terminalOutputUnlisten: SessionSubscription | null = null;
 let terminalOutputSetup: Promise<void> | null = null;
 let terminalOutputGeneration = 0;
 
 /** Subscribe to the one terminal-output stream without opening another Tauri listener. */
-export function subscribeToTerminalOutput(subscriber: TerminalOutputSubscriber): () => void {
+export function subscribeToTerminalOutput(subscriber: TerminalOutputSubscriber): SessionSubscription {
   terminalOutputSubscribers.add(subscriber);
   ensureTerminalOutputListener();
-  return trackTauriSubscriber(() => {
-    terminalOutputSubscribers.delete(subscriber);
-    if (terminalOutputSubscribers.size === 0) stopTerminalOutputListener();
-  });
+  return {
+    unsubscribe: trackTauriSubscriber(() => {
+      terminalOutputSubscribers.delete(subscriber);
+      if (terminalOutputSubscribers.size === 0) stopTerminalOutputListener();
+    })
+  };
 }
 
 function ensureTerminalOutputListener(): void {
@@ -64,7 +67,7 @@ function ensureTerminalOutputListener(): void {
       for (const subscriber of terminalOutputSubscribers) subscriber(payload);
     });
     if (generation !== terminalOutputGeneration || terminalOutputSubscribers.size === 0) {
-      stop?.();
+      stop?.unsubscribe();
       return;
     }
     terminalOutputUnlisten = stop;
@@ -76,7 +79,7 @@ function ensureTerminalOutputListener(): void {
 
 function stopTerminalOutputListener(): void {
   terminalOutputGeneration += 1;
-  terminalOutputUnlisten?.();
+  terminalOutputUnlisten?.unsubscribe();
   terminalOutputUnlisten = null;
   terminalOutputSetup = null;
 }
@@ -255,7 +258,8 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
     },
     listen(handler: (payload: TerminalOutputPayload) => void): Promise<(() => void) | null> {
       count('listen:terminal_output');
-      return Promise.resolve(subscribeToTerminalOutput(handler));
+      const subscription = subscribeToTerminalOutput(handler);
+      return Promise.resolve(() => subscription.unsubscribe());
     }
   };
 }
