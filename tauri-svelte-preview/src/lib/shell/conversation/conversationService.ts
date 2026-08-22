@@ -754,18 +754,27 @@ export async function startConversationEvents(): Promise<void> {
     // A session starts out named after the first words of its prompt. Once
     // its first turn is done the app writes a short summary over that, and this
     // is how the rail row hears about it.
-    const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
-      'session-title-changed',
-      ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
-    );
-    const stopTitles = trackTauriListener(stopTitleEvents);
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
+    let stopTitles: (() => void) | null = null;
+    try {
+      const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
+        'session-title-changed',
+        ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
+      );
+      stopTitles = trackTauriListener(stopTitleEvents);
+      if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
+        await registration?.unregister();
+        stopTitles();
+        stopTitles = null;
+        return;
+      }
+      conversationStream = registration;
+      unlistenTitles = stopTitles;
+      stopTitles = null;
+    } catch (error) {
+      stopTitles?.();
       await registration?.unregister();
-      stopTitles();
-      return;
+      throw error;
     }
-    conversationStream = registration;
-    unlistenTitles = stopTitles;
   })();
   try {
     await conversationEventsSetup;
