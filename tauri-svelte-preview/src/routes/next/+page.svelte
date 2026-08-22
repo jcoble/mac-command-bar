@@ -91,6 +91,7 @@
 	} from "$lib/shell/editor/sourceIntelligence";
 	import { explorer, selectPath, setScrollTop } from "$lib/shell/explorer/explorerStore.svelte";
 	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
+	import { gitCommitFilesService } from "$lib/shell/git/gitCommitFilesService";
 	import { gitService } from "$lib/shell/git/gitService";
 	import type { CenterDockSnapshot } from "$lib/shell/layout/centerDock";
 	import {
@@ -230,6 +231,7 @@
 	let centerTab = $state<CenterTabId>(
 		typeof window === "undefined" ? "session" : readCenterTab(window.localStorage, null),
 	);
+	let restoringTabs = false;
 	/** Which of the two bottom-strip surfaces is open, so its button reads as on. */
 	let openUtility = $state<UtilityId | null>(null);
 	/** The overlay layer, for opening the dialogs and surfaces it owns. */
@@ -308,24 +310,27 @@
 	 * page adopts the answer, so the tabs and the dock can never disagree.
 	 */
 	function handleCenterPanelShown(id: string): void {
-		if (isCenterTabId(id)) centerTab = id;
+		if (isCenterTabId(id)) adoptCenterTab(id);
 		shellPanels.panelShown(id);
+		syncGitSurfaceVisibility();
 	}
 
 	function isCenterTabId(value: string): value is CenterTabId {
 		return value === "session" || value === "editor" || value === "diff" || value === "git-history";
 	}
 
+	function adoptCenterTab(id: CenterTabId): void {
+		const previous = centerTab;
+		centerTab = id;
+		if (previous === "diff" && id !== "diff") gitService.clearSelection();
+	}
+
 	/** Show a center surface. The dock owns which panel is active, so the tab
 	 * state follows its announcement rather than being set here twice. */
 	function applyCenterTab(id: CenterTabId): void {
-		centerTab = id;
+		adoptCenterTab(id);
 		frameControls?.showCenterPanel(id);
-		// The Git History surface reads the same repository source control does, so
-		// it asks for the same load rather than owning a second one. Looking away
-		// is not reported: the panel in the right column owns that answer, and a
-		// centre tab switch must not switch it off underneath it.
-		if (id === "git-history") shellPanels.sourceControlVisible(true);
+		syncGitSurfaceVisibility();
 	}
 
 	/** A center tab the user clicked: shown, and remembered for this session. */
@@ -345,10 +350,25 @@
 	function applyRightTab(id: RightTabId): void {
 		rightTab = id;
 		shellPanels.filesVisible(id === "files");
-		shellPanels.sourceControlVisible(id === "source-control");
 		shellPanels.worktreesVisible(id === "worktrees");
 		shellPanels.stacksVisible(id === "run");
 		if (id === "browser") shellPanels.panelShown("browser");
+		syncGitSurfaceVisibility();
+	}
+
+	function syncGitSurfaceVisibility(): void {
+		if (restoringTabs) return;
+		const graphVisible = centerTab === "git-history" || rightTab === "source-control";
+		shellPanels.sourceControlVisible(graphVisible);
+		if (graphVisible) {
+			gitService.ensureHistorySurface();
+			return;
+		}
+		gitService.releaseHistorySurface();
+		gitCommitFilesService.release();
+		// A commit-file click intentionally moves from History to Diff. That visible
+		// diff owns its payload until the Diff tab itself is left.
+		if (centerTab !== "diff") gitService.clearSelection();
 	}
 
 	/** A right tab the user clicked: shown, and remembered for this session. */
@@ -359,8 +379,14 @@
 
 	/** Put both columns back on the tabs this session was left on. */
 	function restoreTabsFor(ownedId: string | null): void {
-		applyCenterTab(readCenterTab(window.localStorage, ownedId));
-		applyRightTab(readRightTab(window.localStorage, ownedId));
+		restoringTabs = true;
+		try {
+			applyCenterTab(readCenterTab(window.localStorage, ownedId));
+			applyRightTab(readRightTab(window.localStorage, ownedId));
+		} finally {
+			restoringTabs = false;
+		}
+		syncGitSurfaceVisibility();
 	}
 
 	/** The tool column used to be the vocabulary the palette, the rail rows and
@@ -774,15 +800,13 @@
 		// end of start-up calls this itself once the gate is open.
 		if (!shellPanels.loadsAllowed()) return;
 		restoreBrowserState(readBrowserSessionSnapshot(ownedId).browser);
-		// The Diff tab is one tab for the whole shell — it is always mounted, and
-		// source control only re-points itself while it is the view in front. So
-		// what the tab shows must be decided here, on every switch: the diff THIS
-		// session remembered comes back, and anything else — including the file
-		// the last session was looking at, which otherwise survives because the
-		// panel's own root only updates while its view is in front — is cleared.
+		// A remembered diff is read only when this session is returning to the Diff
+		// surface. Restoring it before the remembered center tab is applied would do
+		// hidden status and diff work for sessions returning to Chat or Editor.
 		const sessionRoot = activeRootAvailable ? readSelection().root.trim() : "";
 		const rememberedDiff = diffPathFor(workspaces[ownedId] ?? null, sessionRoot);
-		if (rememberedDiff === null) {
+		const restoringDiff = readCenterTab(window.localStorage, ownedId) === "diff";
+		if (!restoringDiff || rememberedDiff === null) {
 			gitService.clearSelection();
 		} else {
 			void gitService.showStoredDiff(sessionRoot, rememberedDiff);
@@ -851,6 +875,10 @@
 			stopConversationTerminalProjection(previous);
 			service?.releaseView(previous);
 			if (workspaceCaptured) releaseConversationForRead(previous);
+			gitService.releaseHistorySurface();
+			gitCommitFilesService.release();
+			gitService.clearSelection();
+			shellPanels.sourceControlVisible(false);
 		}
 		setActiveOwned(ownedId);
 		activeRootAvailable = selectedRootAvailable;

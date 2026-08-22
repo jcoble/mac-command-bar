@@ -135,8 +135,12 @@
   /** The one place a scope becomes a real read. `activate` ignores a repeat. */
   $effect(() => {
     const target = scopeRoot === '' ? sessionRoot : scopeRoot;
-    if (target === '') return;
+    if (target === '') {
+      commitFiles.release();
+      return;
+    }
     service.activate(target);
+    commitFiles.activate(target);
   });
 
   /** A folder with no repository in it is an ordinary thing to be looking at,

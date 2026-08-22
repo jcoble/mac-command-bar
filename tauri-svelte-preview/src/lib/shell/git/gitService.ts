@@ -256,6 +256,10 @@ export interface GitService {
   refreshHistory(): Promise<void>;
   /** Ask for another page of older commits. Does nothing once the list is whole. */
   loadMoreHistory(): Promise<void>;
+  /** Read the first history page if a visible graph has no rows yet. */
+  ensureHistorySurface(): void;
+  /** Release commit rows when no graph surface owns them. */
+  releaseHistorySurface(): void;
   /** Show only commits which touched one repository-relative file. */
   showFileHistory(root: string, relativePath: string): Promise<void>;
   /** Return the history surface to the repository's complete history. */
@@ -437,6 +441,26 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     await loadHistory(limit, true);
   }
 
+  function ensureHistorySurface(): void {
+    if (!state.root || state.historyLoading || state.historyLoadingMore) return;
+    if (state.history.length > 0 || state.historyComplete) return;
+    void loadHistory(COMMIT_HISTORY_LIMIT, false);
+  }
+
+  function releaseHistorySurface(): void {
+    historyGuard.invalidate();
+    state.history = [];
+    state.historyPath = '';
+    state.historyLoading = false;
+    state.historyError = '';
+    state.historyRequested = 0;
+    state.historyLoadingMore = false;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    state.historyCeiling = false;
+    publishGitDiagnostics();
+  }
+
   async function refresh(): Promise<void> {
     await Promise.all([refreshStatus(), refreshHistory()]);
   }
@@ -602,6 +626,8 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     refreshStatus,
     refreshHistory,
     loadMoreHistory,
+    ensureHistorySurface,
+    releaseHistorySurface,
     showFileHistory,
     clearHistoryPath,
     selectFile,

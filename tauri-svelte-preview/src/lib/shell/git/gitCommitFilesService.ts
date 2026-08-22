@@ -71,6 +71,8 @@ export interface GitCommitFilesService {
   readonly state: GitCommitFilesState;
   /** Point at a repository. Calling it again with the same folder does nothing. */
   activate(root: string | null): void;
+  /** Release expanded commit rows and their loaded file payloads. */
+  release(): void;
   /** Open or close one commit, reading its file list the first time it opens. */
   toggleCommit(sha: string, isMerge: boolean): Promise<void>;
   /** Read one commit's file list, whether or not the row is open. */
@@ -215,6 +217,13 @@ export function createGitCommitFilesService(
       fileRequests.clear();
       diffRequest += 1;
       resetGitCommitFilesState(state, root);
+    },
+
+    release(): void {
+      topRequest = null;
+      fileRequests.clear();
+      diffRequest += 1;
+      resetGitCommitFilesState(state, null);
     },
 
     async toggleCommit(sha: string, isMerge: boolean): Promise<void> {
