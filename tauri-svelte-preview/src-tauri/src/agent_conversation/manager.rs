@@ -1777,6 +1777,7 @@ impl AgentRuntimeManager {
         generation: u64,
         input: AgentPrompt,
     ) -> Result<GeneratedText, String> {
+        let lifecycle = self.lifecycle_guard(owned_id).await?;
         let runtime = self.runtime(owned_id, generation)?;
         let native_session_id = {
             let mut sessions = self
@@ -1813,6 +1814,12 @@ impl AgentRuntimeManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) {
             session.prompt_once_active = false;
+        }
+        drop(lifecycle);
+        if let Err(error) = self.suspend_if_quiescent(owned_id, generation).await {
+            crate::debug_log::stderr_log!(
+                "{owned_id}: could not stop the adapter after one-shot generation: {error}"
+            );
         }
         result.map_err(|error| error.to_string())
     }
