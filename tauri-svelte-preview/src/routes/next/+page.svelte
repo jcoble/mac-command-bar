@@ -125,7 +125,6 @@
 		createSessionLibraryService,
 		registerSessionLibraryHost,
 	} from "$lib/shell/sessionLibrary/sessionLibraryService";
-	import { readSessionsCollapsed, writeSessionsCollapsed } from "$lib/shell/sessionStrip";
 	import {
 		captureWorkspace,
 		diffPathFor,
@@ -173,8 +172,10 @@
 		listAgentSessionsFromLocalBridge,
 		listAgentSessionsFromTauri,
 		openMainDevtoolsFromTauri,
+		readAssemblySettingFromTauri,
 		updateAgentConversationSessionMetaFromTauri,
 		validateProjectRootFromTauri,
+		writeAssemblySettingFromTauri,
 		writeAgentConversationWorkspaceFromTauri,
 		type AgentSession,
 	} from "$lib/tauriSource";
@@ -598,9 +599,11 @@
 	 * than the column, because folding is a WIDTH: the column says it wants to
 	 * fold, and the frame is what actually makes the region 52px wide.
 	 *
-	 * Read once here, at component init — an explicit read, not an effect.
+	 * SQLite owns the durable choice; this is only the live projection.
 	 */
-	let sessionsCollapsed = $state(typeof window === "undefined" ? false : readSessionsCollapsed(window.localStorage));
+	const SESSIONS_COLLAPSED_SETTING_KEY = "shell.sessions-collapsed";
+	let sessionsCollapsed = $state(false);
+	let sessionsCollapsedVersion = 0;
 
 	/** Tell the frame how wide the sessions column is now. The limits go with
 	 * the width: folded, the column is fixed at strip width so the divider
@@ -621,12 +624,12 @@
 	 * so widening the page is this and nothing else, and narrowing it again puts
 	 * the seam back where the user had dragged it rather than at a default.
 	 */
-	/** Fold the sessions column up, or open it out. Remembered under its own
-	 * key so the next launch comes back the way it was left. */
+	/** Fold the sessions column up, or open it out. SQLite remembers the choice. */
 	function collapseSessions(collapsed: boolean): void {
+		sessionsCollapsedVersion += 1;
 		sessionsCollapsed = collapsed;
-		writeSessionsCollapsed(window.localStorage, collapsed);
 		applySessionsWidth(collapsed);
+		void writeAssemblySettingFromTauri(SESSIONS_COLLAPSED_SETTING_KEY, collapsed).catch(() => undefined);
 	}
 
 	/**
@@ -660,7 +663,7 @@
 		frameControls?.resetLayout();
 		restoreTabsFor(null);
 		void clearAllWorkspaceTabRecords();
-		if (sessionsCollapsed) collapseSessions(false);
+		collapseSessions(false);
 		// A reset builds the default arrangement, which has the bottom strip open.
 		// Where the Problems list goes is a setting rather than part of the
 		// arrangement, so it is said again here — a reset must not quietly undo it.
@@ -1517,6 +1520,15 @@
 		applyStoredTheme();
 		applyStoredFonts();
 		disposed = false;
+		const collapsedRestoreVersion = sessionsCollapsedVersion;
+		void readAssemblySettingFromTauri(SESSIONS_COLLAPSED_SETTING_KEY)
+			.then((stored) => {
+				if (disposed || sessionsCollapsedVersion !== collapsedRestoreVersion) return;
+				const collapsed = stored === true;
+				sessionsCollapsed = collapsed;
+				if (collapsed) applySessionsWidth(true);
+			})
+			.catch(() => undefined);
 		// A file dropped anywhere but a drop zone would otherwise navigate the
 		// window to that file and take the whole shell with it. Anything a zone
 		// has already claimed arrives here with its default prevented.
@@ -1840,15 +1852,9 @@
 				// Say what the sessions column is, once, here, where the frame first
 				// exists — in BOTH cases, not only the folded one.
 				//
-				// Two separate things remember the column: the stored grid layout, which
-				// carries its width AND the limits it may be dragged between, and the
-				// fold flag under its own key. They are written at different moments —
-				// the flag straight away, the grid a quarter of a second later — so a
-				// reload in between leaves the flag saying "open" and the grid still
-				// holding the folded 52px with its minimum and maximum both pinned there.
-				// Saying nothing in the open case is what let that stand: the column came
-				// back as an unreadable 52px sliver whose divider could not be dragged,
-				// with the button that would unfold it clipped out of reach.
+				// The grid layout remembers width and drag limits while SQLite remembers
+				// whether the column is folded. Re-state both cases so an interrupted save
+				// cannot leave open content pinned into the folded 52px geometry.
 				if (sessionsCollapsed) {
 					applySessionsWidth(true);
 				} else {

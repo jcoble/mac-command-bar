@@ -98,7 +98,6 @@ export function usagePercent(window: { usedPercent: number }): number {
 export type UsageDisplayMode = 'used' | 'remaining';
 
 export const USAGE_DISPLAY_SETTING_KEY = 'usage.display-mode';
-let usageDisplayWriteQueue: Promise<void> = Promise.resolve();
 
 /** The number a quota shows, 0–100, in whichever direction is being read. */
 export function usageDisplayPercent(
@@ -118,7 +117,6 @@ export function usageDisplayLabel(
 
 export async function readUsageDisplayMode(): Promise<UsageDisplayMode> {
   try {
-    await usageDisplayWriteQueue;
     const stored = await readAssemblySettingFromTauri(USAGE_DISPLAY_SETTING_KEY);
     return stored === 'remaining' ? 'remaining' : 'used';
   } catch {
@@ -127,9 +125,5 @@ export async function readUsageDisplayMode(): Promise<UsageDisplayMode> {
 }
 
 export function writeUsageDisplayMode(mode: UsageDisplayMode): Promise<void> {
-  const write = usageDisplayWriteQueue.then(() =>
-    writeAssemblySettingFromTauri(USAGE_DISPLAY_SETTING_KEY, mode)
-  );
-  usageDisplayWriteQueue = write.catch(() => undefined);
-  return usageDisplayWriteQueue;
+  return writeAssemblySettingFromTauri(USAGE_DISPLAY_SETTING_KEY, mode).catch(() => undefined);
 }

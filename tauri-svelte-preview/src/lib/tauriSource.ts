@@ -1544,20 +1544,35 @@ export async function clearAgentConversationWorkspaceTabsFromTauri(): Promise<vo
   await invoke<void>('clear_agent_conversation_workspace_tabs');
 }
 
-export async function writeAssemblySettingFromTauri(
+const assemblySettingWriteQueues = new Map<string, Promise<void>>();
+
+export function writeAssemblySettingFromTauri(
   settingKey: string,
   value: unknown
 ): Promise<void> {
-  if (!isTauriRuntime() || !settingKey.trim()) return;
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke<void>('write_assembly_setting', {
-    settingKey,
-    valueJson: JSON.stringify(value)
+  if (!isTauriRuntime() || !settingKey.trim()) return Promise.resolve();
+  const previous = assemblySettingWriteQueues.get(settingKey) ?? Promise.resolve();
+  const write = previous.catch(() => undefined).then(async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke<void>('write_assembly_setting', {
+      settingKey,
+      valueJson: JSON.stringify(value)
+    });
   });
+  assemblySettingWriteQueues.set(settingKey, write);
+  void write
+    .finally(() => {
+      if (assemblySettingWriteQueues.get(settingKey) === write) {
+        assemblySettingWriteQueues.delete(settingKey);
+      }
+    })
+    .catch(() => undefined);
+  return write;
 }
 
 export async function readAssemblySettingFromTauri(settingKey: string): Promise<unknown> {
   if (!isTauriRuntime() || !settingKey.trim()) return null;
+  await assemblySettingWriteQueues.get(settingKey)?.catch(() => undefined);
   const { invoke } = await import('@tauri-apps/api/core');
   const valueJson = await invoke<string | null>('read_assembly_setting', { settingKey });
   return valueJson === null ? null : JSON.parse(valueJson) as unknown;
