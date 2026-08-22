@@ -36,6 +36,7 @@
     statusMessageIsAboutThisFile
   } from './editor/languageServerStatus.ts';
   import FileIcon from './explorer/FileIcon.svelte';
+  import { canonicalPath } from './explorer/explorerStore.svelte';
   import {
     isMarkdownFile,
     markdownPreviewDefault,
@@ -867,7 +868,7 @@
   }
 
   function openTimelineFor(file: { relativePath: string }): void {
-    const projectRoot = editorState.projectRoot?.trim();
+    const projectRoot = canonicalPath(editorState.projectRoot ?? '');
     if (!projectRoot) return;
     void openFileTimeline({ projectRoot, relativePath: file.relativePath });
   }
@@ -1046,7 +1047,7 @@
             <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${file.fileName}`}>
               <ContextMenu.Item
                 onSelect={() => openTimelineFor(file)}
-              >Open Timeline</ContextMenu.Item>
+              >File Timeline</ContextMenu.Item>
             </ContextMenu.Content>
           </ContextMenu.Root>
         {/each}

@@ -551,6 +551,7 @@
 			const root = readSelection().root.trim();
 			const generation = workspaceRestoreGeneration;
 			if (!activeRootAvailable || !ownedId || !root) return false;
+			selectCenterTab("git-history");
 			await gitService.showFileHistory(request.projectRoot, request.relativePath);
 			if (
 				disposed ||
