@@ -64,6 +64,7 @@
   import {
     activateEditor,
     activeEditorFile,
+    clearEditorFileLoading,
     closeEditorFile,
     editorFileFor,
     editorState,
@@ -710,6 +711,7 @@
     if (readsInFlight.has(record.path)) return;
     const generation = sessionResourceGeneration;
     const readOnly = Boolean(readOnlyByPath[record.path]);
+    const projectRoot = editorState.projectRoot;
     readsInFlight.add(record.path);
     markEditorFileLoading(record.path);
     if (!readOnly) void warmLanguageServer(editorState.projectRoot);
@@ -718,7 +720,16 @@
       // path, language and size back out of it onto the preview it returns.
       countInvoke('read_source_file');
       const preview = await readSourceFromTauri(record);
-      if (destroyed || generation !== sessionResourceGeneration || !editorFileFor(record.path)) return;
+      if (
+        destroyed
+        || generation !== sessionResourceGeneration
+        || editorState.activePath !== record.path
+        || (!readOnly && editorState.projectRoot !== projectRoot)
+        || !editorFileFor(record.path)
+      ) {
+        clearEditorFileLoading(record.path);
+        return;
+      }
       if (preview) {
         setEditorFilePreview(record.path, preview);
       } else {
@@ -746,6 +757,7 @@
     const file = activeEditorFile();
     if (!file?.preview || !file.dirty || file.saving) return;
     if (readOnlyByPath[file.path]) return;
+    if (file.conflict) return;
     const generation = sessionResourceGeneration;
     const content = file.draftContent ?? file.preview.content;
     setEditorFileSaving(file.path, true);
@@ -753,7 +765,7 @@
       const saved = await writeSourceToTauri(recordForPath(file.path), content);
       if (!saved) throw new Error('The file could not be written from here.');
       if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
-        setEditorFilePreview(file.path, saved);
+        setEditorFilePreview(file.path, saved, true);
       }
     } catch (error) {
       if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
@@ -1058,6 +1070,7 @@
                     {#if file.previewTab}<em>{file.fileName}</em>{:else}{file.fileName}{/if}
                     {#if file.loading}<span class="chip-note">reading</span>{/if}
                     {#if file.error}<span class="chip-note error">failed</span>{/if}
+                    {#if file.conflict}<span class="chip-note error">conflict</span>{/if}
                   </button>
                   <IconButton
                     label={`Close ${file.fileName}`}
@@ -1164,7 +1177,7 @@
 
     <div class="editor-status">
       <span class="status-path">{activeFile?.relativePath ?? ''}</span>
-      <span class="status-detail">
+      <span class="status-detail" title={activeFile?.conflict ?? undefined}>
         {activeFile?.language ?? ''}
         {#if editorState.symbols.length > 0}
           · {editorState.symbols.length}
@@ -1174,6 +1187,8 @@
           · read-only
         {:else if activeFile?.saving}
           · saving
+        {:else if activeFile?.conflict}
+          · conflict
         {:else if activeFile?.dirty}
           · unsaved
         {:else}

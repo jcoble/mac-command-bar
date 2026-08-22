@@ -29,6 +29,8 @@ export interface OpenEditorFile {
   dirty: boolean;
   /** A single-click file tab that becomes permanent on edit, double-click or pin. */
   previewTab: boolean;
+  /** A dirty draft and the file on disk both changed since the last clean baseline. */
+  conflict: string | null;
   /** A native write is in flight. */
   saving: boolean;
   /** A read is in flight. */
@@ -49,6 +51,7 @@ export interface OpenEditorFilePatch {
   preview?: SourcePreview | null;
   draftContent?: string | null;
   dirty?: boolean;
+  conflict?: string | null;
   saving?: boolean;
   loading?: boolean;
   error?: string | null;
@@ -74,6 +77,7 @@ export function openEditorFileFromRecord(record: SourceRecord): OpenEditorFile {
     draftContent: null,
     dirty: false,
     previewTab: false,
+    conflict: null,
     saving: false,
     loading: false,
     error: null,

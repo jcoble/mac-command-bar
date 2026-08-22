@@ -137,17 +137,36 @@ export function markEditorFileLoading(path: string): void {
 }
 
 /** A read finished: store the contents. */
-export function setEditorFilePreview(path: string, preview: SourcePreview): void {
-  const retainedDraft = editorFileFor(path)?.draftContent ?? null;
+export function setEditorFilePreview(
+  path: string,
+  preview: SourcePreview,
+  committed = false
+): void {
+  const file = editorFileFor(path);
+  const retainedDraft = committed ? null : file?.draftContent ?? null;
+  const conflict =
+    !committed && file?.dirty
+      ? file.conflict
+        ?? (file.preview && file.preview.content !== preview.content
+          ? 'File changed on disk while this draft has unsaved edits.'
+          : null)
+      : null;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     preview,
     draftContent: retainedDraft ?? preview.content,
     dirty: retainedDraft !== null && retainedDraft !== preview.content,
+    conflict,
     saving: false,
     loading: false,
     error: null
   });
   publishOpenTabDocumentBytes();
+}
+
+export function clearEditorFileLoading(path: string): void {
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
+    loading: false
+  });
 }
 
 /** Keep an unsaved Monaco edit with the session that owns this editor tab. */
@@ -159,7 +178,8 @@ export function setEditorFileDraft(path: string, content: string): void {
   if (file.draftContent === content) return;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     draftContent: content,
-    dirty: content !== file.preview.content
+    dirty: content !== file.preview.content,
+    conflict: content !== file.preview.content ? file.conflict : null
   });
   publishOpenTabDocumentBytes();
 }
@@ -197,7 +217,8 @@ export function restoreEditorFiles(
   editorState.openFiles = files.map((file) => ({
     ...openEditorFileFromRecord(sourceRecordFromPath(editorState.projectRoot, file.path)),
     draftContent: file.draftContent ?? null,
-    dirty: file.draftContent !== undefined
+    dirty: file.draftContent !== undefined,
+    conflict: null
   }));
   editorState.activePath = editorState.openFiles.some((file) => file.path === activePath)
     ? activePath
