@@ -1,6 +1,6 @@
 /**
  * languageIntelligenceMode.ts — which projects the editor runs a language
- * server for, and what is remembered between launches.
+ * server for, and how the persisted SQLite value is normalized.
  *
  * Two editor modes, per project:
  *
@@ -14,20 +14,13 @@
  * The choice belongs to the project, not to a session or a view: one server
  * serves them all. Everything here is plain data and plain functions so the
  * rules can be tested without a browser, a desktop app, or a language server.
- * The storage object is passed in for the same reason.
  */
 
-/** Where the remembered choices live. Versioned: an unreadable shape is dropped. */
-export const LANGUAGE_INTELLIGENCE_STORAGE_KEY = 'mcb.next.editor.languageIntelligence.v1';
+/** The global SQLite setting that owns the remembered per-project choices. */
+export const LANGUAGE_INTELLIGENCE_SETTING_KEY = 'editor.language-intelligence';
 
 /** Project root → is full mode on. A project not listed is in read mode. */
 export type LanguageIntelligenceChoices = Readonly<Record<string, boolean>>;
-
-/** The little of `localStorage` this file needs. */
-export interface ModeStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
 
 /**
  * One spelling per project, so the same folder written two ways is one entry.
@@ -40,48 +33,18 @@ export function workspaceKey(root: string): string {
   return trimmed.replace(/\/+$/, '');
 }
 
-/** Read the stored choices out of their text. Anything unreadable is no choices. */
-export function parseStoredLanguageIntelligence(raw: string | null): LanguageIntelligenceChoices {
-  if (!raw) return {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const choices: Record<string, boolean> = {};
-    for (const [root, enabled] of Object.entries(parsed as Record<string, unknown>)) {
-      const key = workspaceKey(root);
-      if (key.length === 0 || typeof enabled !== 'boolean') continue;
-      choices[key] = enabled;
-    }
-    return choices;
-  } catch {
-    return {};
-  }
-}
-
-/** The stored choices, or none at all when there is nowhere to read them from. */
-export function readLanguageIntelligenceChoices(
-  storage: ModeStorage | null | undefined
+/** Normalize the JSON value read from SQLite. Anything unreadable is no choices. */
+export function normalizeLanguageIntelligenceChoices(
+  value: unknown
 ): LanguageIntelligenceChoices {
-  if (!storage) return {};
-  try {
-    return parseStoredLanguageIntelligence(storage.getItem(LANGUAGE_INTELLIGENCE_STORAGE_KEY));
-  } catch {
-    return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const choices: Record<string, boolean> = {};
+  for (const [root, enabled] of Object.entries(value as Record<string, unknown>)) {
+    const key = workspaceKey(root);
+    if (key.length === 0 || typeof enabled !== 'boolean') continue;
+    choices[key] = enabled;
   }
-}
-
-/** Write the choices down; `false` when they could not be saved. */
-export function writeLanguageIntelligenceChoices(
-  choices: LanguageIntelligenceChoices,
-  storage: ModeStorage | null | undefined
-): boolean {
-  if (!storage) return false;
-  try {
-    storage.setItem(LANGUAGE_INTELLIGENCE_STORAGE_KEY, JSON.stringify(choices));
-    return true;
-  } catch {
-    return false;
-  }
+  return choices;
 }
 
 /** Is full mode on for this project? Unknown projects are in read mode. */

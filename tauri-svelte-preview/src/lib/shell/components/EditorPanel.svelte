@@ -47,9 +47,9 @@
   import {
     languageIntelligenceOn,
     launchRestoreFor,
-    readLanguageIntelligenceChoices,
+    LANGUAGE_INTELLIGENCE_SETTING_KEY,
+    normalizeLanguageIntelligenceChoices,
     withLanguageIntelligenceChoice,
-    writeLanguageIntelligenceChoices,
     workspaceKey,
     type LanguageIntelligenceChoices
   } from '$lib/shell/editor/languageIntelligenceMode';
@@ -86,10 +86,12 @@
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
   import {
     isNativeTauriRuntime,
+    readAssemblySettingFromTauri,
     readSourceFromTauri,
     readSourceLspStatusFromTauri,
     setWorkspaceLanguageIntelligenceFromTauri,
     warmSourceLspForRootFromTauri,
+    writeAssemblySettingFromTauri,
     writeSourceToTauri
   } from '$lib/tauriSource';
   import type CodeMirrorSourceEditor from '$lib/CodeMirrorSourceEditor.svelte';
@@ -138,15 +140,10 @@
   /** Projects whose language server has already been pointed at the project. */
   const warmedProjectRoots = new Set<string>();
 
-  /** Where the remembered per-project choices live, when there is anywhere. */
-  function modeStorage(): Storage | null {
-    return typeof localStorage === 'undefined' ? null : localStorage;
-  }
-
-  /** The remembered choices. Read once; every change writes them back. */
-  let languageIntelligenceChoices = $state<LanguageIntelligenceChoices>(
-    readLanguageIntelligenceChoices(modeStorage())
-  );
+  /** The remembered choices. SQLite hydrates them once; every change writes them back. */
+  let languageIntelligenceChoices = $state<LanguageIntelligenceChoices>({});
+  let languageIntelligenceHydrated = false;
+  let languageIntelligenceHydration: Promise<void> | null = null;
   /** What the desktop app last said about this project's mode. */
   let languageIntelligenceNote = $state<string | null>(null);
   /** True while a switch is being acted on, so it cannot be flipped twice. */
@@ -162,6 +159,25 @@
   const modeRestores = new Map<string, Promise<void>>();
 
   let destroyed = false;
+
+  function hydrateLanguageIntelligenceChoices(): Promise<void> {
+    if (languageIntelligenceHydrated) return Promise.resolve();
+    if (languageIntelligenceHydration) return languageIntelligenceHydration;
+    const hydration = readAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY)
+      .then((stored) => {
+        if (!destroyed) {
+          languageIntelligenceChoices = normalizeLanguageIntelligenceChoices(stored);
+        }
+        languageIntelligenceHydrated = true;
+      })
+      .finally(() => {
+        if (languageIntelligenceHydration === hydration) {
+          languageIntelligenceHydration = null;
+        }
+      });
+    languageIntelligenceHydration = hydration;
+    return hydration;
+  }
 
   const activeFile = $derived(activeEditorFile());
   const activeFileMissing = $derived(
@@ -467,6 +483,8 @@
     const already = modeRestores.get(root);
     if (already) return already;
     const restore = (async () => {
+      await hydrateLanguageIntelligenceChoices();
+      if (destroyed) return;
       const decision = launchRestoreFor(languageIntelligenceChoices, root);
       if (!decision || !isNativeTauriRuntime()) return;
       countInvoke('set_workspace_language_intelligence');
@@ -485,6 +503,9 @@
       }
     })();
     modeRestores.set(root, restore);
+    void restore.catch(() => {
+      if (modeRestores.get(root) === restore) modeRestores.delete(root);
+    });
     return restore;
   }
 
@@ -495,7 +516,14 @@
    */
   async function warmLanguageServer(projectRoot: string | null): Promise<void> {
     if (!projectRoot) return;
-    await applySavedModeForProject(projectRoot);
+    try {
+      await applySavedModeForProject(projectRoot);
+    } catch (error) {
+      if (!destroyed) {
+        languageIntelligenceNote = `The saved editor mode could not be read: ${describeError(error)}`;
+      }
+      return;
+    }
     if (destroyed || !languageIntelligenceOn(languageIntelligenceChoices, projectRoot)) return;
     if (warmedProjectRoots.has(projectRoot)) return;
     warmedProjectRoots.add(projectRoot);
@@ -523,14 +551,18 @@
     if (!root || languageIntelligenceBusy) return;
     languageIntelligenceBusy = true;
     try {
-      // Remembered first, so the switch keeps its position even if the desktop
-      // app is an older build that cannot act on it.
-      languageIntelligenceChoices = withLanguageIntelligenceChoice(
+      await hydrateLanguageIntelligenceChoices();
+      if (destroyed) return;
+      // Persisted before the desktop call, so the next launch keeps the choice
+      // even if an older desktop build cannot act on it.
+      const nextChoices = withLanguageIntelligenceChoice(
         languageIntelligenceChoices,
         root,
         enabled
       );
-      writeLanguageIntelligenceChoices(languageIntelligenceChoices, modeStorage());
+      await writeAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY, nextChoices);
+      if (destroyed) return;
+      languageIntelligenceChoices = nextChoices;
       modeRestores.set(workspaceKey(root), Promise.resolve());
       if (!enabled) {
         warmedProjectRoots.delete(root);
@@ -819,6 +851,8 @@
   });
 
   onMount(() => {
+    void hydrateLanguageIntelligenceChoices().catch(() => undefined);
+
     // Subscribing costs nothing and loads nothing; it just means a click in the
     // explorer made before this panel was ever shown still opens its file.
     const unsubscribe = onOpenFile(handleOpenFileRequest);

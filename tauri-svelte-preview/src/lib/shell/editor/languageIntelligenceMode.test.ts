@@ -10,8 +10,8 @@
  *     a language server, whatever is stored or missing.
  *  2. The choice belongs to the project, so one project's server is not
  *     another's business.
- *  3. The choice survives a restart, and unreadable storage loses it quietly
- *     rather than breaking the editor.
+ *  3. The SQLite value is normalized, and unreadable data loses the choice
+ *     quietly rather than breaking the editor.
  *  4. Launch restores ONE project — the open one. Restoring the whole list is
  *     exactly the "every server wakes at once" behaviour this replaces.
  */
@@ -19,31 +19,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  LANGUAGE_INTELLIGENCE_STORAGE_KEY,
   languageIntelligenceLabel,
   languageIntelligenceOn,
   launchRestoreFor,
   mayUseLanguageServer,
-  parseStoredLanguageIntelligence,
-  readLanguageIntelligenceChoices,
+  normalizeLanguageIntelligenceChoices,
   withLanguageIntelligenceChoice,
-  workspaceKey,
-  writeLanguageIntelligenceChoices,
-  type ModeStorage
+  workspaceKey
 } from './languageIntelligenceMode.ts';
-
-function fakeStorage(initial: Record<string, string> = {}): ModeStorage & {
-  written: Record<string, string>;
-} {
-  const written: Record<string, string> = { ...initial };
-  return {
-    written,
-    getItem: (key) => written[key] ?? null,
-    setItem: (key, value) => {
-      written[key] = value;
-    }
-  };
-}
 
 test('a project nobody has switched on is in read mode', () => {
   assert.equal(languageIntelligenceOn({}, '/projects/one'), false);
@@ -74,21 +57,15 @@ test('the same folder written two ways is one project', () => {
   assert.equal(languageIntelligenceOn(choices, '/projects/one'), true);
 });
 
-test('the choice survives a restart', () => {
-  const storage = fakeStorage();
-  const choices = withLanguageIntelligenceChoice({}, '/projects/one', true);
-  assert.equal(writeLanguageIntelligenceChoices(choices, storage), true);
-  assert.ok(storage.written[LANGUAGE_INTELLIGENCE_STORAGE_KEY]);
-  assert.deepEqual(readLanguageIntelligenceChoices(storage), { '/projects/one': true });
-});
-
-test('unreadable storage loses the choice quietly', () => {
-  assert.deepEqual(parseStoredLanguageIntelligence(null), {});
-  assert.deepEqual(parseStoredLanguageIntelligence('not json'), {});
-  assert.deepEqual(parseStoredLanguageIntelligence('[1,2,3]'), {});
-  assert.deepEqual(parseStoredLanguageIntelligence('{"/projects/one":"yes"}'), {});
-  assert.deepEqual(readLanguageIntelligenceChoices(null), {});
-  assert.equal(writeLanguageIntelligenceChoices({}, null), false);
+test('the SQLite value is normalized and unreadable values are ignored', () => {
+  assert.deepEqual(normalizeLanguageIntelligenceChoices(null), {});
+  assert.deepEqual(normalizeLanguageIntelligenceChoices('not an object'), {});
+  assert.deepEqual(normalizeLanguageIntelligenceChoices([1, 2, 3]), {});
+  assert.deepEqual(normalizeLanguageIntelligenceChoices({ '/projects/one': 'yes' }), {});
+  assert.deepEqual(
+    normalizeLanguageIntelligenceChoices({ '/projects/one/': true, '': false }),
+    { '/projects/one': true }
+  );
 });
 
 test('launch restores the open project only', () => {
