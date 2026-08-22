@@ -765,7 +765,7 @@
       const saved = await writeSourceToTauri(recordForPath(file.path), content);
       if (!saved) throw new Error('The file could not be written from here.');
       if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
-        setEditorFilePreview(file.path, saved, true);
+        setEditorFilePreview(file.path, saved, content);
       }
     } catch (error) {
       if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
