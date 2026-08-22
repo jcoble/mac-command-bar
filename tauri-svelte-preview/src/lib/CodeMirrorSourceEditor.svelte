@@ -1,9 +1,36 @@
 <script lang="ts">
-  import { autocompletion, type CompletionContext } from '@codemirror/autocomplete';
-  import { EditorState, Compartment, type Extension } from '@codemirror/state';
-  import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
-  import { EditorView, hoverTooltip, keymap } from '@codemirror/view';
-  import { basicSetup } from 'codemirror';
+  import {
+    autocompletion,
+    closeBrackets,
+    closeBracketsKeymap,
+    completionKeymap,
+    type CompletionContext
+  } from '@codemirror/autocomplete';
+  import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+  import {
+    bracketMatching,
+    defaultHighlightStyle,
+    foldGutter,
+    foldKeymap,
+    indentOnInput,
+    syntaxHighlighting
+  } from '@codemirror/language';
+  import { lintGutter, lintKeymap, setDiagnostics, type Diagnostic } from '@codemirror/lint';
+  import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
+  import { EditorState, Compartment, Transaction, type Extension } from '@codemirror/state';
+  import {
+    crosshairCursor,
+    drawSelection,
+    dropCursor,
+    EditorView,
+    highlightActiveLine,
+    highlightActiveLineGutter,
+    highlightSpecialChars,
+    hoverTooltip,
+    keymap,
+    lineNumbers,
+    rectangularSelection
+  } from '@codemirror/view';
   import { onDestroy, onMount } from 'svelte';
 
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
@@ -208,43 +235,65 @@
     });
   }
 
-  function baseExtensions(): Extension[] {
-    return [
-      keymap.of([
-        { key: 'Mod-s', run: () => { onSaveRequest?.(); return true; } },
-        { key: 'F12', run: () => { void navigate('definition'); return true; } },
-        { key: 'Shift-F12', run: () => { void navigate('references'); return true; } }
-      ]),
-      basicSetup,
-      codeMirrorTheme,
-      lintGutter(),
-      autocompletion({ override: [completionSource], activateOnTypingDelay: 180 }),
-      hover,
-      language.of([]),
-      editing.of(editingExtensions()),
-      EditorView.domEventHandlers({
-        mousedown: (event, editor) => {
-          if (!(event.metaKey || event.ctrlKey) || event.button !== 0) return false;
-          const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
-          if (position === null) return false;
-          event.preventDefault();
-          void navigate('definition', position);
-          return true;
-        }
-      }),
-      EditorView.updateListener.of((update) => {
-        if (!update.docChanged || applyingContent) return;
-        const next = update.state.doc.toString();
-        onContentChange?.(next);
-        onSymbolsChange?.(extractSourceSymbols(preview, next));
-        if (referenceCountTimer !== null) clearTimeout(referenceCountTimer);
-        referenceCountTimer = setTimeout(() => {
-          referenceCountTimer = null;
-          onReferenceCountsOutOfDate?.(preview.path);
-        }, 600);
-      })
-    ];
-  }
+  const editorExtensions: Extension[] = [
+    keymap.of([
+      { key: 'Mod-s', run: () => { onSaveRequest?.(); return true; } },
+      { key: 'F12', run: () => { void navigate('definition'); return true; } },
+      { key: 'Shift-F12', run: () => { void navigate('references'); return true; } }
+    ]),
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightSpecialChars(),
+    history({ minDepth: 5 }),
+    foldGutter(),
+    drawSelection(),
+    dropCursor(),
+    EditorState.allowMultipleSelections.of(true),
+    indentOnInput(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    bracketMatching(),
+    closeBrackets(),
+    rectangularSelection(),
+    crosshairCursor(),
+    highlightActiveLine(),
+    highlightSelectionMatches(),
+    keymap.of([
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      ...searchKeymap,
+      ...historyKeymap,
+      ...foldKeymap,
+      ...completionKeymap,
+      ...lintKeymap
+    ]),
+    codeMirrorTheme,
+    lintGutter(),
+    autocompletion({ override: [completionSource], activateOnTypingDelay: 180 }),
+    hover,
+    language.of([]),
+    editing.of(editingExtensions()),
+    EditorView.domEventHandlers({
+      mousedown: (event, editor) => {
+        if (!(event.metaKey || event.ctrlKey) || event.button !== 0) return false;
+        const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
+        if (position === null) return false;
+        event.preventDefault();
+        void navigate('definition', position);
+        return true;
+      }
+    }),
+    EditorView.updateListener.of((update) => {
+      if (!update.docChanged || applyingContent) return;
+      const next = update.state.doc.toString();
+      onContentChange?.(next);
+      onSymbolsChange?.(extractSourceSymbols(preview, next));
+      if (referenceCountTimer !== null) clearTimeout(referenceCountTimer);
+      referenceCountTimer = setTimeout(() => {
+        referenceCountTimer = null;
+        onReferenceCountsOutOfDate?.(preview.path);
+      }, 600);
+    })
+  ];
 
   function showFile(): void {
     if (!view) return;
@@ -259,7 +308,7 @@
       selection: restored
         ? { anchor: Math.min(max, restored.anchor), head: Math.min(max, restored.head) }
         : undefined,
-      extensions: baseExtensions()
+      extensions: editorExtensions
     }));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
@@ -310,7 +359,10 @@
     const next = desiredContent();
     if (!view || preview.path !== currentPath || view.state.doc.toString() === next) return;
     applyingContent = true;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: next } });
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: next },
+      annotations: Transaction.addToHistory.of(false)
+    });
     applyingContent = false;
   });
 
@@ -335,7 +387,7 @@
   });
 
   onMount(() => {
-    view = new EditorView({ parent: host, state: EditorState.create({ extensions: baseExtensions() }) });
+    view = new EditorView({ parent: host, state: EditorState.create({ extensions: editorExtensions }) });
     showFile();
   });
 

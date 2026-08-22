@@ -24,6 +24,7 @@ export const explorer = $state<{
   includeExcluded: boolean;
   scanning: boolean;
   error: string | null;
+  unavailable: 'checkout-deleted' | null;
   lastScanFinishedAt: number | null;
 }>({
   root: null,
@@ -35,6 +36,7 @@ export const explorer = $state<{
   includeExcluded: false,
   scanning: false,
   error: null,
+  unavailable: null,
   lastScanFinishedAt: null
 });
 
@@ -68,6 +70,7 @@ export function resetExplorer(): void {
   explorer.includeExcluded = false;
   explorer.scanning = false;
   explorer.error = null;
+  explorer.unavailable = null;
   explorer.lastScanFinishedAt = null;
 }
 
@@ -76,6 +79,7 @@ export function beginScan(root: string): void {
   explorer.activated = true;
   explorer.scanning = true;
   explorer.error = null;
+  explorer.unavailable = null;
 }
 
 export function applyDirectoryResult(
@@ -135,10 +139,18 @@ export function discardDirectory(directory: string): void {
   }
 }
 
-export function failScan(message: string): void {
+export function failScan(message: string, unavailable: 'checkout-deleted' | null = null): void {
   treeNodes = [];
   loadedDirectoryDepths.clear();
   explorer.error = message;
+  explorer.unavailable = unavailable;
+}
+
+export function markCheckoutDeleted(): void {
+  resetExplorer();
+  explorer.activated = true;
+  explorer.error = 'This session\u2019s checkout/worktree no longer exists.';
+  explorer.unavailable = 'checkout-deleted';
 }
 
 export function setExplorerError(message: string | null): void {

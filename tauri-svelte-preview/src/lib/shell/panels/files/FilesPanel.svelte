@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Tree, type ContextMenuItem, type LTreeNode } from '@keenmate/svelte-treeview';
+  import { Tree, type LTreeNode } from '@keenmate/svelte-treeview';
   import ArrowDownAZ from '@lucide/svelte/icons/arrow-down-a-z';
   import ArrowUpZA from '@lucide/svelte/icons/arrow-up-z-a';
   import Eye from '@lucide/svelte/icons/eye';
@@ -10,8 +10,10 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Square from '@lucide/svelte/icons/square';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import { onMount } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
+  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -74,16 +76,36 @@
   let entryField = $state<HTMLInputElement | null>(null);
   let actionError = $state<string | null>(null);
   let fileClipboard = $state.raw<FileClipboard | null>(null);
+  let treeHost = $state<HTMLDivElement | null>(null);
+  let treeHeight = $state(400);
 
   const loadedNodes = $derived(explorerNodes());
   const rootLabel = $derived(projectRootLabel(explorer.root ?? root));
   const listedCount = $derived(loadedNodes.length);
   const listed = $derived(explorer.lastScanFinishedAt !== null);
 
+  function searchedNodes(): ExplorerTreeNode[] {
+    const query = explorer.query.trim().toLowerCase();
+    if (!query) return loadedNodes;
+
+    const byPath = new Map(loadedNodes.map((node) => [node.path, node]));
+    const shown = new Set<string>();
+    for (const node of loadedNodes) {
+      const path = relativePath((explorer.root ?? root).replace(/\/+$/, ''), node.path);
+      if (!path.toLowerCase().includes(query)) continue;
+      let current: ExplorerTreeNode | undefined = node;
+      while (current) {
+        shown.add(current.path);
+        current = byPath.get(current.parentPath);
+      }
+    }
+    return loadedNodes.filter((node) => shown.has(node.path));
+  }
+
   $effect(() => {
     const projectRoot = (explorer.root ?? root).replace(/\/+$/, '');
     sortDirection;
-    treeData = loadedNodes.map((node) => ({
+    treeData = searchedNodes().map((node) => ({
       ...node,
       treePath: relativePath(projectRoot, node.path),
       treeParentPath: node.parentPath === projectRoot ? '' : relativePath(projectRoot, node.parentPath),
@@ -137,6 +159,18 @@
     if (!field) return;
     field.focus();
     field.select();
+  });
+
+  onMount(() => {
+    const updateTreeHeight = () => {
+      if (treeHost) treeHeight = Math.max(1, Math.floor(treeHost.clientHeight));
+    };
+    const frame = requestAnimationFrame(updateTreeHeight);
+    window.addEventListener('resize', updateTreeHeight);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', updateTreeHeight);
+    };
   });
 
   const UNLISTED_FOLDERS = ['/node_modules/', '/target/', '/.git/', '/.svelte-kit/'];
@@ -207,9 +241,11 @@
     openFileInEditor({ path: node.path, projectRoot: projectRoot || undefined });
   }
 
-  function onTreeWrapperPointerDown(event: PointerEvent): void {
+  function onTreeWrapperClick(event: MouseEvent): void {
     const target = event.target;
     if (!(target instanceof Element) || !target.closest('.ltree-toggle-icon')) return;
+    event.preventDefault();
+    event.stopPropagation();
     const row = target.closest<HTMLElement>('[data-tree-path]');
     const node = treeData.find((item) => item.treePath === row?.dataset.treePath);
     if (node) onTreeNodeClicked({ data: node } as LTreeNode<TreeItem>);
@@ -350,57 +386,52 @@
     }
   }
 
-  function menuAction(
-    node: TreeItem,
-    closeMenu: () => void,
-    title: string,
-    id: string,
-    className?: string,
-    isDisabled = false
-  ): ContextMenuItem {
-    return {
-      title,
-      className,
-      isDisabled,
-      callback: async () => {
-        closeMenu();
-        await runAction(node, id);
-      }
-    };
-  }
-
-  function contextMenuFor(
-    treeNode: LTreeNode<TreeItem>,
-    closeMenu: () => void
-  ): ContextMenuItem[] {
-    const node = treeNode.data;
-    if (!node) return [];
+  function contextMenuItems(node: TreeItem) {
     return [
       ...(node.isDirectory
         ? [
-            menuAction(node, closeMenu, 'New File', 'new-file'),
-            menuAction(node, closeMenu, 'New Folder', 'new-folder'),
-            menuAction(node, closeMenu, 'Paste', 'paste', undefined, !fileClipboard),
-            { title: '', isDivider: true, callback: () => undefined }
+            { id: 'new-file', label: 'New File', onselect: () => void runAction(node, 'new-file') },
+            { id: 'new-folder', label: 'New Folder', onselect: () => void runAction(node, 'new-folder') },
+            {
+              id: 'paste',
+              label: 'Paste',
+              disabled: !fileClipboard,
+              onselect: () => void runAction(node, 'paste')
+            }
           ]
         : []),
-      menuAction(node, closeMenu, 'Open Timeline', 'open-timeline'),
-      menuAction(node, closeMenu, 'Git: View File History', 'git-file-history'),
-      { title: '', isDivider: true, callback: () => undefined },
-      menuAction(node, closeMenu, 'Cut', 'cut'),
-      menuAction(node, closeMenu, 'Copy', 'copy'),
-      menuAction(node, closeMenu, 'Copy Path', 'copy-path'),
-      { title: '', isDivider: true, callback: () => undefined },
-      menuAction(node, closeMenu, 'Rename', 'rename'),
-      menuAction(node, closeMenu, 'Delete', 'delete', 'danger'),
-      { title: '', isDivider: true, callback: () => undefined },
-      menuAction(node, closeMenu, 'Reveal in Finder', 'reveal-in-finder'),
-      menuAction(
-        node,
-        closeMenu,
-        explorer.includeExcluded ? 'Hide Excluded Files' : 'Show Excluded Files',
-        'toggle-excluded'
-      )
+      {
+        id: 'open-timeline',
+        label: 'Open Timeline',
+        separatorBefore: node.isDirectory,
+        onselect: () => void runAction(node, 'open-timeline')
+      },
+      {
+        id: 'git-file-history',
+        label: 'Git: View File History',
+        onselect: () => void runAction(node, 'git-file-history')
+      },
+      { id: 'cut', label: 'Cut', separatorBefore: true, onselect: () => void runAction(node, 'cut') },
+      { id: 'copy', label: 'Copy', onselect: () => void runAction(node, 'copy') },
+      { id: 'copy-path', label: 'Copy Path', onselect: () => void runAction(node, 'copy-path') },
+      { id: 'rename', label: 'Rename', separatorBefore: true, onselect: () => void runAction(node, 'rename') },
+      {
+        id: 'delete',
+        label: 'Delete',
+        danger: true,
+        onselect: () => void runAction(node, 'delete')
+      },
+      {
+        id: 'reveal-in-finder',
+        label: 'Reveal in Finder',
+        separatorBefore: true,
+        onselect: () => void runAction(node, 'reveal-in-finder')
+      },
+      {
+        id: 'toggle-excluded',
+        label: explorer.includeExcluded ? 'Hide Excluded Files' : 'Show Excluded Files',
+        onselect: () => void runAction(node, 'toggle-excluded')
+      }
     ];
   }
 </script>
@@ -408,7 +439,7 @@
 <div class="files-panel flex h-full min-h-0 w-full flex-col text-foreground">
   <PanelHeader title="Files" count={explorer.activated ? listedCount : null}>
     {#snippet actions()}
-      {#if explorer.activated}
+      {#if explorer.activated && explorer.unavailable === null}
         <Input
           type="search"
           class="h-7 w-32"
@@ -429,17 +460,17 @@
         >
           {#if explorer.includeExcluded}<EyeOff />{:else}<Eye />{/if}
         </IconButton>
-      {/if}
-      {#if explorer.scanning}
-        <IconButton label="Stop listing files" onclick={() => stopScan()}><Square /></IconButton>
-      {:else}
-        <IconButton
-          label="List this project's files again"
-          disabled={!explorer.root}
-          onclick={() => refresh()}
-        >
-          <RefreshCw />
-        </IconButton>
+        {#if explorer.scanning}
+          <IconButton label="Stop listing files" onclick={() => stopScan()}><Square /></IconButton>
+        {:else}
+          <IconButton
+            label="List this project's files again"
+            disabled={!explorer.root}
+            onclick={() => refresh()}
+          >
+            <RefreshCw />
+          </IconButton>
+        {/if}
       {/if}
     {/snippet}
     {rootLabel}
@@ -448,6 +479,13 @@
   {#if !explorer.activated}
     <EmptyState title="No session selected" body="Pick a session and its files appear here.">
       {#snippet icon()}<FolderTree />{/snippet}
+    </EmptyState>
+  {:else if explorer.unavailable === 'checkout-deleted'}
+    <EmptyState
+      title="Checkout/Worktree deleted"
+      body="The conversation is still available, but this session’s project files no longer exist."
+    >
+      {#snippet icon()}<TriangleAlert />{/snippet}
     </EmptyState>
   {:else if explorer.error && loadedNodes.length === 0}
     <EmptyState title="Could not list the files" body={explorer.error}>
@@ -486,12 +524,14 @@
         />
       </div>
     {/if}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div
       class="tree-host"
       role="tree"
       tabindex="0"
       aria-label="Project files"
-      onpointerdown={onTreeWrapperPointerDown}
+      bind:this={treeHost}
+      onclickcapture={onTreeWrapperClick}
     >
       <Tree
         data={treeData}
@@ -514,7 +554,8 @@
         virtualScroll={true}
         virtualRowHeight={28}
         virtualOverscan={6}
-        virtualContainerHeight="100%"
+        virtualContainerHeight={`${treeHeight}px`}
+        bodyClass="mcb-tree-body"
         dragDropMode="none"
         expandLevel={0}
         selectedNodeClass="mcb-tree-selected"
@@ -522,28 +563,43 @@
         collapseIconClass="mcb-tree-collapse"
         leafIconClass="mcb-tree-leaf"
         onNodeClicked={onTreeNodeClicked}
-        contextMenuCallback={contextMenuFor}
       >
         {#snippet nodeTemplate(treeNode: LTreeNode<TreeItem>)}
           {@const node = treeNode.data}
           {#if node}
-            <span class="tree-row" class:excluded={node.ignored} title={node.path}>
-              <span class="tree-file-icon" aria-hidden="true">
-                {#if node.isDirectory}
-                  {#if expanded.has(node.path)}
-                    <FolderOpen size={14} strokeWidth={1.75} />
-                  {:else}
-                    <Folder size={14} strokeWidth={1.75} />
-                  {/if}
-                {:else}
-                  <FileIcon fileName={node.name} size={14} />
-                {/if}
-              </span>
-              <span class="tree-name">{node.name}</span>
-              {#if fileClipboard?.path === node.path}
-                <span class="clipboard-mark">{fileClipboard.operation}</span>
-              {/if}
-            </span>
+            <ContextMenu.Root>
+              <ContextMenu.Trigger>
+                {#snippet child({ props })}
+                  <span {...props} class="tree-row" class:excluded={node.ignored} title={node.path}>
+                    <span class="tree-file-icon" aria-hidden="true">
+                      {#if node.isDirectory}
+                        {#if expanded.has(node.path)}
+                          <FolderOpen size={14} strokeWidth={1.75} />
+                        {:else}
+                          <Folder size={14} strokeWidth={1.75} />
+                        {/if}
+                      {:else}
+                        <FileIcon fileName={node.name} size={14} />
+                      {/if}
+                    </span>
+                    <span class="tree-name">{node.name}</span>
+                    {#if fileClipboard?.path === node.path}
+                      <span class="clipboard-mark">{fileClipboard.operation}</span>
+                    {/if}
+                  </span>
+                {/snippet}
+              </ContextMenu.Trigger>
+              <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${node.name}`}>
+                {#each contextMenuItems(node) as item (item.id)}
+                  {#if item.separatorBefore}<ContextMenu.Separator />{/if}
+                  <ContextMenu.Item
+                    disabled={item.disabled}
+                    variant={item.danger ? 'destructive' : 'default'}
+                    onSelect={item.onselect}
+                  >{item.label}</ContextMenu.Item>
+                {/each}
+              </ContextMenu.Content>
+            </ContextMenu.Root>
           {/if}
         {/snippet}
         {#snippet noDataFound()}
@@ -555,7 +611,7 @@
 </div>
 
 <style>
-  .tree-host{--tree-node-indent-per-level:12px;min-height:0;flex:1;overflow:hidden;padding:0 4px 4px}
+  .tree-host{--tree-node-indent-per-level:12px;display:flex;height:0;min-height:0;flex:1;overflow:hidden;padding:0 4px 4px}
   .entry-bar{padding:4px 8px;border-bottom:1px solid var(--color-border)}
   .tree-row{display:flex;align-items:center;min-width:0;width:100%;gap:6px;color:var(--color-text)}
   .tree-row.excluded{opacity:.55}
@@ -565,6 +621,9 @@
   .tree-empty{padding:16px 10px;color:var(--color-text-3);text-align:center}
 
   :global(.files-panel .ltree-tree){position:relative;font:inherit;color:inherit;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
+  :global(.files-panel .ltree-container){width:100%;height:100%;min-width:0;min-height:0}
+  :global(.files-panel .mcb-tree-body){height:100%;min-height:0}
+  :global(.files-panel .ltree-tree.ltree-virtual-scroll){height:100%!important;overflow-x:hidden!important;overflow-y:auto!important}
   :global(.files-panel .ltree-node){position:relative;height:28px;font:inherit}
   :global(.files-panel .ltree-node-row){display:flex;height:28px;align-items:center;min-width:0}
   :global(.files-panel .ltree-toggle-icon){display:flex;width:16px;height:28px;flex:0 0 16px;align-items:center;justify-content:center;color:var(--color-text-3);font-size:13px;cursor:pointer}
@@ -574,10 +633,4 @@
   :global(.files-panel .ltree-node-content){display:flex;height:28px;min-width:0;flex:1;align-items:center;padding:0 6px;border-radius:4px;user-select:none;cursor:pointer}
   :global(.files-panel .ltree-node-content:hover){background:var(--color-surface-hover)}
   :global(.files-panel .ltree-node-content.mcb-tree-selected){background:color-mix(in srgb,var(--color-accent) 18%,transparent)}
-  :global(.ltree-context-menu){position:fixed;z-index:1000;min-width:220px;padding:4px;border:1px solid var(--color-border);border-radius:7px;background:var(--color-surface);box-shadow:0 12px 32px rgba(0,0,0,.38);color:var(--color-text)}
-  :global(.ltree-context-menu-item){display:flex;align-items:center;min-height:28px;padding:4px 8px;border-radius:4px;font-size:12px;cursor:pointer}
-  :global(.ltree-context-menu-item:hover){background:var(--color-surface-hover)}
-  :global(.ltree-context-menu-item.danger){color:var(--color-bad)}
-  :global(.ltree-context-menu-item-disabled){opacity:.45;pointer-events:none}
-  :global(.ltree-context-menu-divider){height:1px;margin:4px;background:var(--color-border)}
 </style>

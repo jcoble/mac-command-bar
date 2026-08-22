@@ -18,6 +18,27 @@ Enforced by `.githooks/commit-msg`: a commit that neither stages the page nor ca
 refused. One-time setup per clone: `git config core.hooksPath .githooks` (already set for this
 repository's worktrees). Paste this rule into every dispatch that may commit.
 
+## ⛔ ACP runtimes stop when quiescent; Assembly sessions do not own model context (2026-08-21, owner)
+
+Keep these three lifetimes separate in every diagnosis and implementation:
+
+- The Assembly session (`ownedId`) is the durable SQLite/UI record: normalized journal, draft,
+  attachments, workspace state and rail metadata.
+- The provider-native session (`nativeSessionId`) is the resumable conversation/context authority.
+  The provider owns its transcript and context; Assembly stores the ID and does not replay its
+  SQLite journal as model context on every prompt.
+- The ACP runtime is the expendable adapter transport and process. An active turn may continue when
+  the user selects another Assembly session, but once that turn and all related prompts,
+  permissions, inputs, tools and background work are quiescent, `suspend_if_quiescent` detaches the
+  ACP session and stops the sidecar process group when its pool has no other members. The next send
+  launches the adapter and resumes or loads the same provider-native ID.
+
+Never describe suspended/disconnected rows as live ACP sessions or leave idle ACP runtimes resident
+for quick switching. Session selection changes only the large frontend projection; it neither
+interrupts a live turn nor pins an idle adapter. A resource audit must distinguish lightweight
+suspended records from actual adapter/agent process trees and should expect the latter to return to
+zero when every turn is quiescent.
+
 ## ⛔ Every UI dispatch carries the Notion task and the screenshot paths (2026-08-17, owner)
 
 A sub-agent starts cold. It cannot see the conversation, the owner's messages, or any image the

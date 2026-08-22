@@ -25,6 +25,11 @@ type Listener = (request: OpenFileRequest) => void;
 
 const listeners = new Set<Listener>();
 let pending: OpenFileRequest | null = null;
+let unavailableRoot: string | null = null;
+
+export function setUnavailableOpenFileRoot(root: string | null): void {
+  unavailableRoot = root?.trim().replace(/\/+$/, '') || null;
+}
 
 export function resolveConversationFilePath(path: string, sessionCwd: string): string {
   const candidate = path.trim();
@@ -33,6 +38,12 @@ export function resolveConversationFilePath(path: string, sessionCwd: string): s
 }
 
 export function requestOpenFile(request: OpenFileRequest): void {
+  if (
+    unavailableRoot &&
+    (request.path === unavailableRoot || request.path.startsWith(`${unavailableRoot}/`))
+  ) {
+    return;
+  }
   if (listeners.size === 0) {
     pending = request;
     return;

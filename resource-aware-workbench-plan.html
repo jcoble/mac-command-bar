@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Resource-aware Assembly workbench — live delivery plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #070b0d;
+      --rail: #0d1316;
+      --surface: #121a1e;
+      --raised: #192328;
+      --hover: #223038;
+      --line: #29383f;
+      --text: #f0f5f4;
+      --muted: #9baaaa;
+      --teal: #6fc6d0;
+      --amber: #f2b35d;
+      --green: #81c99f;
+      --red: #ef9a8e;
+      --blue: #8db8ec;
+      --mono: "SFMono-Regular", Consolas, monospace;
+      --sans: "Avenir Next", Inter, system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--canvas); color: var(--text); font: 15px/1.48 var(--sans); }
+    button, input { font: inherit; }
+    a { color: var(--teal); text-underline-offset: 0.18em; }
+    a:focus-visible, summary:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+    code { font-family: var(--mono); font-size: 0.9em; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: 270px minmax(0, 1fr); }
+    aside { position: sticky; top: 0; height: 100vh; overflow: auto; padding: 28px 18px; background: var(--rail); border-right: 1px solid var(--line); }
+    aside h1 { margin: 0; font-size: 21px; letter-spacing: -0.025em; }
+    aside p { margin: 8px 0 22px; color: var(--muted); font-size: 12px; }
+    nav a { display: block; padding: 7px 9px; border-radius: 6px; color: var(--muted); font-size: 12px; font-weight: 650; text-decoration: none; }
+    nav a:hover { color: var(--text); background: var(--hover); }
+    .progress-card { margin: 22px 0; padding: 14px; border-radius: 12px; background: var(--raised); }
+    .progress-card strong { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+    progress { width: 100%; height: 7px; margin-top: 11px; accent-color: var(--teal); }
+    .counts { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 12px; color: var(--muted); font: 10px/1.4 var(--mono); }
+    main { width: min(1180px, 100%); padding: 42px clamp(22px, 4vw, 64px) 120px; }
+    .hero { padding: 22px 0 46px; border-bottom: 1px solid var(--line); }
+    .eyebrow { margin: 0 0 9px; color: var(--teal); font: 700 11px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
+    .hero h2 { max-width: 820px; margin: 0; font-size: clamp(35px, 5vw, 68px); line-height: 0.98; letter-spacing: -0.055em; }
+    .hero .lede { max-width: 780px; margin: 20px 0 0; color: var(--muted); font-size: 17px; }
+    .rule { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-top: 30px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--line); }
+    .rule div { min-height: 94px; padding: 15px; background: var(--surface); }
+    .rule b { display: block; margin-bottom: 6px; color: var(--text); font-size: 12px; }
+    .rule span { color: var(--muted); font-size: 12px; }
+    section.phase { margin-top: 64px; scroll-margin-top: 24px; }
+    .phase-head, .milestone-head { display: flex; align-items: flex-start; gap: 11px; }
+    .phase-head { padding-bottom: 15px; border-bottom: 1px solid var(--line); }
+    .phase-head h2 { margin: 0; font-size: 30px; letter-spacing: -0.035em; }
+    .milestone { margin-top: 25px; padding: 18px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); }
+    .milestone-head h3 { flex: 1; margin: 0; font-size: 18px; }
+    .status { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; color: var(--muted); background: var(--raised); font: 700 9px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+    [data-status="in-progress"] > .phase-head .status,
+    [data-status="in-progress"] > .milestone-head .status { color: #071013; background: var(--amber); }
+    [data-status="complete"] > .phase-head .status,
+    [data-status="complete"] > .milestone-head .status { color: #071013; background: var(--green); }
+    [data-status="blocked"] > .phase-head .status,
+    [data-status="blocked"] > .milestone-head .status { color: #071013; background: var(--red); }
+    .phase-check, .milestone-check, .task input { width: 17px; height: 17px; margin: 3px 0 0; accent-color: var(--green); }
+    .tasks { margin: 14px 0 0; padding: 0; list-style: none; }
+    .task { position: relative; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 7px; padding: 8px 7px; border-radius: 7px; }
+    .task:hover { background: var(--hover); }
+    .task label { min-width: 0; }
+    .task[data-status="complete"] label { color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 55%, transparent); }
+    .task[data-status="in-progress"] { background: color-mix(in srgb, var(--amber) 9%, transparent); }
+    .task[data-status="blocked"] { background: color-mix(in srgb, var(--red) 9%, transparent); }
+    .task .status { align-self: start; margin-top: 1px; }
+    .task[data-status="in-progress"] > .status { color: var(--amber); }
+    .task[data-status="complete"] > .status { color: var(--green); }
+    .task[data-status="blocked"] > .status { color: var(--red); }
+    .meta { grid-column: 2 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px 12px; padding: 7px 0 2px; color: var(--muted); font: 9px/1.4 var(--mono); }
+    .meta b { color: #c7d2d1; font-weight: 650; }
+    details.meta-drawer { grid-column: 2 / -1; }
+    details.meta-drawer summary { width: max-content; cursor: pointer; color: var(--muted); font: 10px/1.4 var(--mono); }
+    .note { margin: 16px 0 0; padding: 12px 14px; border-left: 3px solid var(--teal); background: var(--raised); color: var(--muted); font-size: 12px; }
+    .assumptions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0; list-style: none; }
+    .assumptions li { padding: 13px 14px; border-radius: 10px; background: var(--surface); color: var(--muted); font-size: 12px; }
+    .legend { margin-top: 22px; color: var(--muted); font: 10px/1.5 var(--mono); }
+    @media (max-width: 850px) {
+      .shell { display: block; }
+      aside { position: static; width: auto; height: auto; }
+      nav { columns: 2; }
+      .rule, .assumptions { grid-template-columns: 1fr; }
+      .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <h1>Assembly delivery</h1>
+      <p>Live source-controlled checklist. Browser storage is never used.</p>
+      <div class="progress-card">
+        <strong><span>Overall progress</span><span id="progress-label">0%</span></strong>
+        <progress id="progress" max="100" value="0"></progress>
+        <div class="counts">
+          <span id="complete-count">0 complete</span>
+          <span id="active-count">0 active</span>
+          <span id="blocked-count">0 blocked</span>
+          <span id="pending-count">0 pending</span>
+        </div>
+      </div>
+      <nav aria-label="Plan phases">
+        <a href="#delivery">Delivery rules</a>
+        <a href="#phase-0">0 · Baseline</a>
+        <a href="#phase-1">1 · Diagnostics</a>
+        <a href="#phase-2">2 · SQLite</a>
+        <a href="#phase-3">3 · Runtime</a>
+        <a href="#phase-4">4 · Conversation</a>
+        <a href="#phase-5">5 · Files</a>
+        <a href="#phase-6">6 · Git</a>
+        <a href="#phase-7">7 · CodeMirror</a>
+        <a href="#phase-8">8 · Supercharged</a>
+        <a href="#phase-9">9 · Stretch</a>
+        <a href="#interfaces">Interfaces</a>
+        <a href="#verification">Verification</a>
+        <a href="#assumptions">Assumptions</a>
+      </nav>
+      <div class="legend">The checked attribute and data-status in this file are durable truth. The script only reads markup to calculate progress.</div>
+    </aside>
+
+    <main>
+      <header class="hero">
+        <p class="eyebrow">TSK-808 · resource-aware workbench</p>
+        <h2>One large live projection. Durable state stays in SQLite.</h2>
+        <p class="lede">This plan makes repeated session switching resource-flat, keeps active turns running without pinning idle ACP runtimes, and rebuilds the workbench around bounded, lazy projections.</p>
+        <div class="rule">
+          <div><b>Behavioral reference</b><span>Codex-style conversation paging, anchor stability, virtualization, and bounded two-ended history.</span></div>
+          <div><b>Visual reference</b><span>Spotify-like hierarchy and dark surfaces with Assembly colors; density is decided per component.</span></div>
+          <div><b>Proof surface</b><span>A development-only JSON fixture route lets headless Playwright and styling workers see populated real components.</span></div>
+        </div>
+      </header>
+
+      <section class="phase" id="delivery" data-status="in-progress" data-owner="Codex" data-notion="TSK-808" data-dependencies="None" data-evidence="This HTML file" data-updated="2026-08-22" data-notes="Preserve unrelated dirty work" data-commit="Pending checkpoint">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Live plan and delivery rules</h2><span class="status">in progress</span></div>
+        <div class="milestone" data-status="in-progress">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Delivery control</h3><span class="status">in progress</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="complete" data-evidence="resource-aware-workbench-plan.html created" data-updated="2026-08-22"><input type="checkbox" checked disabled><label>Create this live HTML checklist beside <code>main-architecture-explained.html</code>.</label><span class="status">complete</span></li>
+            <li class="task" data-status="complete" data-evidence="Phase, milestone, and task controls are present" data-updated="2026-08-22"><input type="checkbox" checked disabled><label>Give every phase, milestone, and task a checkbox and explicit status.</label><span class="status">complete</span></li>
+            <li class="task" data-status="complete" data-evidence="Metadata is derived from task and ancestor markup" data-updated="2026-08-22"><input type="checkbox" checked disabled><label>Record owner, Notion task, dependencies, verification, timestamp, notes, and milestone commit for every task.</label><span class="status">complete</span></li>
+            <li class="task" data-status="in-progress"><input type="checkbox" disabled><label>Update this HTML when work starts, findings change the plan, and work completes.</label><span class="status">in progress</span></li>
+            <li class="task" data-status="complete" data-evidence="One-time DOM calculation; no persistence APIs" data-updated="2026-08-22"><input type="checkbox" checked disabled><label>Derive progress from checked HTML markup without localStorage, sessionStorage, or IndexedDB.</label><span class="status">complete</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Update the architecture authority and changelog whenever a boundary changes.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Finish each phase with a scoped milestone commit ending in <code>Committed-by: Codex</code>; backfill its hash in the next checklist update.</label><span class="status">pending</span></li>
+            <li class="task" data-status="complete" data-evidence="16-file diff audited; whitespace-only tauri.dev.next.conf.json excluded" data-updated="2026-08-22" data-notes="15 coherent files plus this checklist selected"><input type="checkbox" checked disabled><label>Preserve unrelated dirty work, review the current diff, and stage only intended files.</label><span class="status">complete</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-0" data-status="in-progress" data-owner="Codex" data-notion="TSK-808" data-dependencies="Delivery control" data-evidence="Pending" data-updated="2026-08-22" data-notes="No architecture changes before checkpoint" data-commit="Pending M0">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 0 · Baseline and checkpoint</h2><span class="status">in progress</span></div>
+        <div class="milestone" data-status="in-progress">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 0 · Preserve and measure the current implementation</h3><span class="status">in progress</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="complete" data-evidence="This document" data-updated="2026-08-22"><input type="checkbox" checked disabled><label>Add the live checklist containing every approved task.</label><span class="status">complete</span></li>
+            <li class="task" data-status="complete" data-evidence="Read-only diff classification with file/line receipts; config whitespace excluded" data-updated="2026-08-22" data-notes="All-files native tree behavior confirmed as owner-requested"><input type="checkbox" checked disabled><label>Review existing CodeMirror, file-tree, ACP lifecycle, architecture, dependency, and instruction changes.</label><span class="status">complete</span></li>
+            <li class="task" data-status="complete" data-evidence="pnpm check:svelte and Rust cargo check passed; explicit staged file list" data-updated="2026-08-22" data-notes="Commit hash will be backfilled in the next checklist update" data-commit="This checkpoint"><input type="checkbox" checked disabled><label>Commit the reviewed current work as the starting checkpoint.</label><span class="status">complete</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Capture a warmed baseline for WebContent physical footprint, the full Assembly process group, frontend heap when available, Rust footprint, and live resource counts.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Record separate baselines for conversation, Files, Source Control/History, source editor, both diff modes, terminal, and browser.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Record a repeatable circuit across 10–12 already-open sessions without opening new files or capabilities.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending" data-notes="Added 2026-08-22 at owner request"><input type="checkbox" disabled><label>Add a development-only JSON fixture route that renders populated real components for headless Playwright and styling work without a backend.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-1" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="M0" data-evidence="Pending" data-updated="—" data-notes="Diagnostics retain no history" data-commit="Pending M1">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 1 · Resource instrumentation and lifecycle audit</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 1 · Make every expensive owner countable</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add Resource Diagnostics for the active projection and loaded conversation bytes.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Count root Tauri listeners, per-session subscribers, Channels, and queued frames/bytes.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Count timers, animation loops, workers, observers, file watchers, object URLs, and evidence attachments.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Count CodeMirror views/states, tab bytes, undo depth, terminals, PTYs, browser views, LSPs, and ACP process groups.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Count loaded tree nodes, Git rows, active diffs, and loaded child-agent transcript bytes.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add Rust counts distinguishing durable Assembly rows from live ACP runtimes, turns, sidecars, PTYs, LSPs, watchers, channel backlog, and database activity.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Audit every listener, mount/effect, timer, observer, worker, watcher, channel, URL, and asynchronous acquisition.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Remove asynchronous mount/effect cleanup races; late acquisitions self-dispose when ownership changed.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Give every resource one explicit owner, creation point, and cleanup path.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Prove diagnostics have no permanent polling timer and retain no historical snapshots.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-2" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="M1" data-evidence="Pending" data-updated="—" data-notes="SQLite is Assembly state authority" data-commit="Pending M2">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 2 · SQLite-only durable state</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 2 · Remove competing persistence systems</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Extend sessions.db for session projection metadata, scroll anchors, editor tabs/active tab/drafts/cursor/selection/scroll.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add panel/layout/diff/browser/tree/settings, orchestration/workflow/proof, and read-only Notion cache metadata.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Keep external/binary data as managed files and store authoritative relationships in SQLite.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Remove all Assembly product-state localStorage, sessionStorage, and IndexedDB reads/writes without importing old browser state.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Move helper-settings.json into SQLite.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Idempotently import orchestration-events.jsonl by stable ID and delete it only after a successful transaction.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Checkpoint the departing session transactionally before switching; block and explain a failed checkpoint.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Keep website cookies/storage in one persistent WebKit profile while inactive Assembly sessions retain compact rail metadata only.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-3" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="M1, M2" data-evidence="Pending" data-updated="—" data-notes="Running turns survive navigation; idle ACP does not" data-commit="Pending M3">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 3 · Runtime and event ownership</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 3 · Continue work without pinning idle runtimes</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Preserve distinct Assembly-session, provider-native-session, and disposable ACP-runtime lifetimes.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Let an active turn continue after another Assembly session is selected.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Persist background events to SQLite and update only compact inactive-rail status.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Suspend the ACP session and stop its unowned sidecar group as soon as all related work is quiescent.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>On the next prompt, launch the adapter and resume the provider-native session ID without replaying Assembly SQLite as provider context.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Keep the removed 1,000-event managed-session buffer removed.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Register one root listener per low-volume event type and route through session-scoped handler sets.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Use ordered Tauri Channels for agent output, terminals, LSP traffic, and an opened child-agent transcript.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Persist high-volume events before projecting only their new chunks.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Bound channels by frames and bytes, apply backpressure, and expose queue depth.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add generation/cancellation tokens to session, root, file, diff, tree, and history requests.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Destroy inactive xterm/WebGL views while preserving bounded backend scrollback.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Destroy inactive native browser views and retain only SQLite restoration metadata.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Run one LSP per language for the active Supercharged root; replace overlays and stop it on root/mode exit.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-4" data-status="pending" data-owner="Codex" data-notion="TSK-928, TSK-808" data-dependencies="M2, M3" data-evidence="Pending" data-updated="—" data-notes="Eight-MiB two-ended window" data-commit="Pending M4">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 4 · Active conversation and sub-agents</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 4 · Keep one bounded conversation projection</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Load the newest SQLite conversation window at the existing 512-KiB/2,000-row boundary.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Page one MiB of older history at the top.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Virtualize visible messages with small overscan.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Bound serialized frontend events to eight MiB, release the far end, and refetch from SQLite when revisited.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Preserve the viewport anchor when either end is added or released.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Render historical code as highlighted pre blocks, never editor instances.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Restore TSK-928 turn, reasoning, tool, search, command, approval, file, error, plan, attachment, action, and inline-diff components.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Classify tool calls only from structured provider fields.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Always show a turn-footer files-changed chip when a turn changed files.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Hydrate the newest transcript immediately without a scroll trick.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Collapse long user messages to about ten lines and reset composer height after send.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Store original images plus WebP thumbnails; chat loads thumbnails and lightbox loads originals.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Normalize Codex, Claude Code, and agy children into one lightweight list without conflating workflow nodes.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Load child transcripts only while opened and release them on close or parent-session change.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-5" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="M1, M2" data-evidence="Pending" data-updated="—" data-notes="Immediate children only" data-commit="Pending M5">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 5 · Files and deleted worktrees</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 5 · Finish the lazy virtual file explorer</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Keep Keenmate’s virtual tree as the renderer.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Load only immediate root children initially and immediate directory children on expansion.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Key expansion by canonical path and generation so children cannot attach to the wrong parent.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Cancel stale expansion and drop descendants on collapse.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Preserve fixed-height virtualization, overscan, deep scrolling, natural directory-first sorting, reverse sorting, and excluded-file toggling.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Replace full-tree indexing with paged Rust search, flat matches, and lazy ancestor loading for Reveal in Tree.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Capability-check requestIdleCallback, fall back to a timer, and clean up either scheduler.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Complete New File/Folder, Cut/Copy/Paste, Copy Path, Rename, Trash, Reveal, excluded files, Timeline, and file-history menus.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>For a missing checkout, retain conversation, clear filesystem projections, and show exactly “Checkout/Worktree deleted.”</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Disable editor, diff, terminal-root, and Git actions requiring the missing checkout.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-6" data-status="pending" data-owner="Codex" data-notion="TSK-904, TSK-938, TSK-808" data-dependencies="M1, M2, M5" data-evidence="Pending" data-updated="—" data-notes="Hidden panels perform no Git work" data-commit="Pending M6">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 6 · Source control, History, and file Timeline</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 6 · Restore Git without retaining repository history</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Attribute and eliminate TSK-904’s source-control freeze before presentation work.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Never query status, history, or diffs while their panels are hidden.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Wire stage/unstage/all, commit/amend/discard, fetch/pull/push, branch, stash/pop, refresh, open, and reveal commands.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Restore Source Control grouping and TSK-904 graph/timeline presentation with lazy commit files and Open All Changes.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Replace increasing-prefix rereads with a backend cursor page.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Retain only visible History pages and release them on close, root change, or session activation.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Load commit files only on expansion and diffs only on selection; destroy a deselected diff.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Make file Timeline a core command from tree and editor tab.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Show only commits touching the path with author/date/message/hash/graph and lazy details.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Unify Open Timeline and Git: View File History behavior while retaining familiar labels.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Complete TSK-938 lazy root grouping, improved query, bounded results, release, and visual cleanup.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Keep read-only browsing across worktrees; only Codex may change composer worktree and other providers explain why disabled.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-7" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="M1, M2, M5, M6" data-evidence="Pending" data-updated="—" data-notes="Open tabs in active session are the only multi-state exception" data-commit="Pending M7">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 7 · CodeMirror, tabs, Markdown, and diffs</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 7 · Make CodeMirror canonical</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Promote the current /next shell to /.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>After parity, delete the legacy Monaco route, packages, runtime, and workers.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Keep one persistent EditorView per visible source pane and one MergeView only while a diff is visible.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Retain EditorStates only for open tabs in the active Assembly session so undo survives tab switches.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Destroy all retained EditorStates and undo stacks on Assembly-session switch.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Never persist editor history or retain it across Assembly sessions.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Start with native grouped history and fresh states for reset.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Benchmark a one-MiB document, 100 groups, and representative tabs; use a five-group stack only beyond max(16 MiB, 2× edited bytes).</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Exclude external whole-document refreshes from undo.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Persist only tab metadata, drafts, cursor/selection, and scroll in SQLite.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Implement reusable italic preview tabs promoted by double-click, edit, or pin.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Implement horizontal scrolling, active reveal, close, close others/saved, and Close All across sessions.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Use Save/Discard/Cancel for dirty close and Save All/Discard All/Cancel for Close All.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Preserve external-file conflicts without overwriting either the SQLite draft or disk file.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Make Markdown source-first in CodeMirror.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>On Preview, reuse safe marked tokens and lazy code highlighting without chat-only observers.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Destroy Markdown tokens/components/observers/DOM on close, file change, or session change.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Use unified diff by default with an SQLite-persisted optional side-by-side mode.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Dynamically load CodeMirror languages and diff support only while visible.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add the VS Code keymap without duplicate defaults.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Offer System, JetBrains Mono, Fira Code, and Geist Mono.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Load ThemeMirror themes dynamically and preserve Houston.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-8" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="M7" data-evidence="Pending" data-updated="—" data-notes="Semantic tokens/inlays gated on memory" data-commit="Pending M8">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 8 · Supercharged IDE behavior</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 8 · Bounded native IDE services</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Use official @codemirror/lsp-client; keep Marimo as reference only.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Implement completion, hover, signatures, definition, references, rename, formatting, code actions, diagnostics, and workspace edits.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add Supercharged CodeLens for honest reference counts, populated Peek, .NET Build Workspace, and .NET Test Workspace.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Do not cache CodeLens/reference results across files or sessions.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Keep Emergence Tools deferred because its core is ProseMirror-oriented.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add semantic tokens/inlay hints only after the memory gate passes.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Stop language services and release overlays when Supercharged disables or the root changes.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="phase-9" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="M0–M8 resource gates" data-evidence="Pending" data-updated="—" data-notes="Post-core only" data-commit="Pending M9">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Phase 9 · Post-core stretch</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending" data-notes="Managed library; 30-day unpinned retention">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 9A · Managed UI proof library</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Extend existing workflow artifact receipts rather than create another run model.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Register run/task/agent/scenario/commit/branch/worktree/time/kind/status/bytes/source metadata.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Copy originals into app-managed evidence storage independent of worktrees.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Generate image thumbnails and load only thumbnails in the gallery.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add a lazy virtual gallery grouped/filterable by task, commit, run, agent, date, and scenario.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Support quick scroll, lightbox/full-file load, reveal/open, pin, Delete selected, and Delete run.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Allow runs or artifacts to be pinned as regression baselines.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Transactionally remove unpinned proof files/rows after 30 days.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Show total and per-run disk use.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Do not add automated pixel comparison in v1.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+        <div class="milestone" data-status="pending" data-notes="Read-only; Keychain token; no generic extension system">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Milestone 9B · Optional read-only Notion Tasks panel</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Add a lazily mounted Tasks panel with filters, search, refresh, and Open in Notion.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Query Notion from Rust only on open or explicit refresh.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Store the integration token in macOS Keychain.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Store non-secret mapping and the latest offline task projection in SQLite.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Treat Notion as authority and SQLite as the last successful projection only.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Release full API responses after producing visible rows.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Never invoke the quarantined list-tasks.sh.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Do not build a marketplace, OAuth flow, or two-way task editing.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="interfaces" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="Owning milestones" data-evidence="Pending" data-updated="—" data-notes="Minimal public surface" data-commit="Owning milestone">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Public interfaces and schema contracts</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Contract completion</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>ResourceSnapshot reports current frontend/Rust counts and bytes without retained history.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>SessionProjection holds compact rail records plus one SQLite-loaded active projection.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>SessionSubscription routes a root listener by session ID with synchronous unsubscribe.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>StreamEnvelope carries session, generation, sequence, bytes, kind, and new chunk only.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>GitHistoryPage carries root, optional path, commits, continuation cursor, and completion.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>EvidenceArtifact carries stable proof metadata, references, size, time, pin, and expiry.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>NotionTaskProjection contains only rendered fields, source URL, and fetch time.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Migrations are transactional/idempotent, work from version six, and leave conversation/event rows unchanged.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="verification" data-status="pending" data-owner="Codex" data-notion="TSK-808" data-dependencies="Implemented milestone" data-evidence="Pending" data-updated="—" data-notes="Headless 1710×990 browser proof; real desktop proof where required" data-commit="Final milestone">
+        <div class="phase-head"><input class="phase-check" type="checkbox" disabled><h2>Verification and acceptance</h2><span class="status">pending</span></div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Resource acceptance</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Warm every capability, then repeat the same 10–12-session circuit ten times without opening new files.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>After each circuit, wait for quiescence and record the full Assembly process group.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Prove all listener/observer/timer/view/state/channel/URL/PTY/webview/LSP/ACP counts return to expected stable values.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Prove quiescent ACP adapter/sidecar groups return to zero.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>After 60 seconds, keep total process-group memory within 10% of warmed baseline with no cycle-over-cycle slope.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Separate one-time module/process growth from repeated-switch retention.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Prove a running turn continues offscreen and its ACP runtime stops when quiescent.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Prove revisiting sessions does not reconstruct hidden Files/Git/editor/diff/Markdown/terminal/browser/child projections.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Functional acceptance</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Restore drafts/tabs/cursor/scroll/layout/browser/tree from SQLite after full restart.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Prove no product-state browser persistence access remains.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify tree expansion/collapse/deep scroll/search/reveal/sort/exclusions and every desktop context-menu action.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify Source Control, repository History, file Timeline, lazy files, and lazy diffs.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify undo across tabs within one session and complete undo release on session switch.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify Markdown allocates only while preview is visible.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Traverse conversation backward and forward while the frontend byte window stays bounded.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify thumbnails survive restart and originals load only on request.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify consistent Codex/Claude/agy lists and unloaded closed child transcripts.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify deleted-worktree behavior and exact message.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify proof expiry never deletes pinned artifacts.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Verify Notion works from its offline projection and never polls in the background.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+        <div class="milestone" data-status="pending">
+          <div class="milestone-head"><input class="milestone-check" type="checkbox" disabled><h3>Test policy and completion</h3><span class="status">pending</span></div>
+          <ul class="tasks">
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>During the spike, add no automated UI regression suite; use focused data/lifecycle checks and real desktop manual proof.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Store manual screenshots and traces in the proof library after 9A exists.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>After the spike is explicitly complete, automate stable switching/tree/editor/Timeline/conversation scenarios.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Run final build and focused checks without concurrent rebuilds of the same project.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Update both architecture documents/instructions where required.</label><span class="status">pending</span></li>
+            <li class="task" data-status="pending"><input type="checkbox" disabled><label>Complete this checklist with final evidence and commit hashes before declaring completion.</label><span class="status">pending</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="phase" id="assumptions" data-status="complete" data-owner="Owner + Codex" data-notion="TSK-808" data-dependencies="Approved plan" data-evidence="Owner-approved contract" data-updated="2026-08-22" data-notes="Revisit only when evidence changes" data-commit="N/A">
+        <div class="phase-head"><input class="phase-check" type="checkbox" checked disabled><h2>Assumptions and locked decisions</h2><span class="status">complete</span></div>
+        <ul class="assumptions">
+          <li>The dirty worktree is preserved and reviewed; unrelated work is never reverted or swept into a commit.</li>
+          <li>SQLite owns Assembly-created durable state; external systems keep their own authority.</li>
+          <li>Managed image/proof binaries stay on disk with authoritative SQLite metadata.</li>
+          <li>Only open tabs in the active Assembly session intentionally retain multiple EditorStates.</li>
+          <li>Monaco leaves after CodeMirror parity; the Notion panel is native and optional.</li>
+          <li>Tree-sitter is not added; CodeMirror parsers and LSPs provide language behavior.</li>
+          <li>Codex chat is the interaction benchmark; Spotify supplies hierarchy, not branding or universal spacing.</li>
+          <li>Visible UI styling tries a verified Opus 5 lane first, then Codex/native agents, always against populated fixtures and final real-app proof.</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const fields = ['owner', 'notion', 'dependencies', 'evidence', 'updated', 'notes', 'commit'];
+      const labels = { owner: 'Owner', notion: 'Notion', dependencies: 'Depends', evidence: 'Evidence', updated: 'Updated', notes: 'Notes', commit: 'Commit' };
+      const nearestValue = (node, field) => {
+        let current = node;
+        while (current) {
+          if (current.dataset && current.dataset[field]) return current.dataset[field];
+          current = current.parentElement;
+        }
+        return 'Pending';
+      };
+      document.querySelectorAll('.task').forEach((task) => {
+        const details = document.createElement('details');
+        details.className = 'meta-drawer';
+        const summary = document.createElement('summary');
+        summary.textContent = 'task record';
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        fields.forEach((field) => {
+          const item = document.createElement('span');
+          const key = document.createElement('b');
+          key.textContent = `${labels[field]}: `;
+          item.append(key, document.createTextNode(nearestValue(task, field)));
+          meta.append(item);
+        });
+        details.append(summary, meta);
+        task.append(details);
+      });
+
+      const checks = [...document.querySelectorAll('input[type="checkbox"]')];
+      const complete = checks.filter((check) => check.checked).length;
+      const percent = checks.length ? Math.round((complete / checks.length) * 100) : 0;
+      document.querySelector('#progress').value = percent;
+      document.querySelector('#progress-label').textContent = `${percent}%`;
+      document.querySelector('#complete-count').textContent = `${complete} complete`;
+      document.querySelector('#active-count').textContent = `${document.querySelectorAll('[data-status="in-progress"]').length} active`;
+      document.querySelector('#blocked-count').textContent = `${document.querySelectorAll('[data-status="blocked"]').length} blocked`;
+      document.querySelector('#pending-count').textContent = `${checks.length - complete} pending`;
+    })();
+  </script>
+</body>
+</html>

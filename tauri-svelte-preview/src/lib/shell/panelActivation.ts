@@ -73,7 +73,7 @@ export interface PanelActivators {
   editor(root: string | null): void;
   git(root: string | null): void;
   browser(): void;
-  explorer(root: string): void;
+  explorer(root: string | null, checkoutDeleted: boolean): void;
   worktrees(selection: ProjectSelection): void;
   stacks(root: string | null): void;
   problems(root: string | null): void;
@@ -91,7 +91,7 @@ export interface PanelActivation {
   /** A center tab came to the front. */
   panelShown(id: string): void;
   /** The user picked a session in the rail. */
-  sessionPicked(): void;
+  sessionPicked(rootAvailable?: boolean): void;
   /** Files came into view, or went out of it. Same contract as source control. */
   filesVisible(visible: boolean): void;
   /** Source control came into view, or went out of it. Report where it stands
@@ -128,6 +128,7 @@ export function createPanelActivation(
   let panelLoadsAllowed = false;
   let sessionLoadsAllowed = false;
   let sessionPanelsShown = false;
+  let selectedRootAvailable = true;
   /** Can the user see the file tree right now? */
   let filesInView = false;
   /** The folder the file tree was last loaded for. */
@@ -154,9 +155,12 @@ export function createPanelActivation(
    * loaded is absent, which is different from one loaded for no folder. */
   const panelLoadedFor = new Map<string, string>();
 
+  const selectionKey = (selection: ProjectSelection): string =>
+    selectedRootAvailable ? selection.root.trim() : '\0checkout-deleted';
+
   const loadPanel = (id: string, selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    panelLoadedFor.set(id, root);
+    panelLoadedFor.set(id, selectionKey(selection));
     if (id === 'editor') activators.editor(root || null);
     else if (id === 'browser') activators.browser();
   };
@@ -164,16 +168,20 @@ export function createPanelActivation(
   /** Point the file tree at this folder. There is nothing to list without one. */
   const loadFiles = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    if (!root) return;
-    filesLoadedFor = root;
-    activators.explorer(root);
+    filesLoadedFor = selectionKey(selection);
+    activators.explorer(root || null, !selectedRootAvailable);
+  };
+
+  const currentSelection = (): ProjectSelection => {
+    const selection = readSelection();
+    return selectedRootAvailable ? selection : { ...selection, root: '' };
   };
 
   /** Point source control at this folder. A session with no folder still calls
    * it, which is what tells the panel there is no repository to show. */
   const loadSourceControl = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    gitLoadedFor = root;
+    gitLoadedFor = selectionKey(selection);
     activators.git(root || null);
   };
 
@@ -181,21 +189,21 @@ export function createPanelActivation(
    * rather than a bare folder: it lists the checkouts of the project the session
    * is in, and joins the shell's own sessions onto them. */
   const loadWorktrees = (selection: ProjectSelection): void => {
-    worktreesLoadedFor = selection.root.trim();
+    worktreesLoadedFor = selectionKey(selection);
     activators.worktrees({ root: selection.root, projects: selection.projects });
   };
 
   /** Point the stacks pane at this folder. The saved stacks are per project. */
   const loadStacks = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    stacksLoadedFor = root;
+    stacksLoadedFor = selectionKey(selection);
     activators.stacks(root || null);
   };
 
   /** Point the Problems panel at this folder. */
   const loadProblems = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    problemsLoadedFor = root;
+    problemsLoadedFor = selectionKey(selection);
     activators.problems(root || null);
   };
 
@@ -203,12 +211,12 @@ export function createPanelActivation(
    * folder — the same "coming back to it is not a reason to read it again" rule
    * the visibility reports below have always used. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
-    const root = selection.root.trim();
-    if (filesInView && filesLoadedFor !== root) loadFiles(selection);
-    if (sourceControlInView && gitLoadedFor !== root) loadSourceControl(selection);
-    if (worktreesInView && worktreesLoadedFor !== root) loadWorktrees(selection);
-    if (stacksInView && stacksLoadedFor !== root) loadStacks(selection);
-    if (problemsInView && problemsLoadedFor !== root) loadProblems(selection);
+    const key = selectionKey(selection);
+    if (filesInView && filesLoadedFor !== key) loadFiles(selection);
+    if (sourceControlInView && gitLoadedFor !== key) loadSourceControl(selection);
+    if (worktreesInView && worktreesLoadedFor !== key) loadWorktrees(selection);
+    if (stacksInView && stacksLoadedFor !== key) loadStacks(selection);
+    if (problemsInView && problemsLoadedFor !== key) loadProblems(selection);
   };
 
   return {
@@ -233,12 +241,13 @@ export function createPanelActivation(
       // was in: the session picked next only points the tabs it knows about.
       shownPanels.add(id);
       if (!panelLoadsAllowed) return;
-      loadPanel(id, readSelection());
+      loadPanel(id, currentSelection());
     },
 
-    sessionPicked(): void {
+    sessionPicked(rootAvailable = true): void {
       if (!sessionLoadsAllowed) return;
-      const selection = readSelection();
+      selectedRootAvailable = rootAvailable;
+      const selection = currentSelection();
       sessionPanelsShown = true;
       loadSessionPanels(selection);
       // Re-point the tabs that are open at the new project. A tab never opened
@@ -249,15 +258,15 @@ export function createPanelActivation(
       // session is nothing to it whether it has loaded or not.
       for (const id of shownPanels) {
         if (id === 'browser') continue;
-        if (panelLoadedFor.get(id) !== selection.root.trim()) loadPanel(id, selection);
+        if (panelLoadedFor.get(id) !== selectionKey(selection)) loadPanel(id, selection);
       }
     },
 
     filesVisible(visible: boolean): void {
       filesInView = visible;
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      if (filesLoadedFor === selection.root.trim()) return;
+      const selection = currentSelection();
+      if (filesLoadedFor === selectionKey(selection)) return;
       loadFiles(selection);
     },
 
@@ -267,34 +276,34 @@ export function createPanelActivation(
       // session has been picked — there is no folder to read yet, and the pick
       // that follows will load it.
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
+      const selection = currentSelection();
       // Already showing this folder: coming back to it is not a reason to read
       // the repository again.
-      if (gitLoadedFor === selection.root.trim()) return;
+      if (gitLoadedFor === selectionKey(selection)) return;
       loadSourceControl(selection);
     },
 
     worktreesVisible(visible: boolean): void {
       worktreesInView = visible;
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      if (worktreesLoadedFor === selection.root.trim()) return;
+      const selection = currentSelection();
+      if (worktreesLoadedFor === selectionKey(selection)) return;
       loadWorktrees(selection);
     },
 
     stacksVisible(visible: boolean): void {
       stacksInView = visible;
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      if (stacksLoadedFor === selection.root.trim()) return;
+      const selection = currentSelection();
+      if (stacksLoadedFor === selectionKey(selection)) return;
       loadStacks(selection);
     },
 
     problemsVisible(visible: boolean): void {
       problemsInView = visible;
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      if (problemsLoadedFor === selection.root.trim()) return;
+      const selection = currentSelection();
+      if (problemsLoadedFor === selectionKey(selection)) return;
       loadProblems(selection);
     },
 

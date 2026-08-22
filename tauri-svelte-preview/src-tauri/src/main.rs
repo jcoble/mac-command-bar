@@ -2152,9 +2152,7 @@ fn list_source_directory_sync(
             let name = entry.file_name().to_string_lossy().to_string();
             let is_directory = file_type.is_dir();
             let excluded = is_directory && skip_dir_reason(&name).is_some();
-            if (excluded && !include_excluded)
-                || (!is_directory && (!file_type.is_file() || !is_source_file(&entry.path())))
-            {
+            if (excluded && !include_excluded) || (!is_directory && !file_type.is_file()) {
                 return None;
             }
             Some(SourceDirectoryEntry {

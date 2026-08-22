@@ -124,6 +124,7 @@
 		ownedSessionMetaForBackend,
 		reconcileOwnedSessions,
 	} from "$lib/shell/ownedSessions";
+	import { setUnavailableOpenFileRoot } from "$lib/shell/openFileBus";
 	import type { SessionLibraryRecord } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import {
 		createSessionLibraryService,
@@ -179,6 +180,7 @@
 		listAgentSessionsFromTauri,
 		openMainDevtoolsFromTauri,
 		updateAgentConversationSessionMetaFromTauri,
+		validateProjectRootFromTauri,
 		type AgentSession,
 	} from "$lib/tauriSource";
 
@@ -203,6 +205,7 @@
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
 	let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
 	let disposed = false;
+	let activeRootAvailable = $state(true);
 	let frameControls: {
 		resetLayout(): void;
 		showCenterPanel(id: string): void;
@@ -508,6 +511,7 @@
 		showCenterTab: (id) => selectCenterTab(id),
 		showRightTab: (id) => selectRightTab(id),
 		openDiff: async (request) => {
+			if (!activeRootAvailable) return;
 			await gitService.showStoredDiff(request.projectRoot, request.relativePath);
 		},
 		openUrl: (request) => {
@@ -776,7 +780,7 @@
 		// session remembered comes back, and anything else — including the file
 		// the last session was looking at, which otherwise survives because the
 		// panel's own root only updates while its view is in front — is cleared.
-		const sessionRoot = readSelection().root.trim();
+		const sessionRoot = activeRootAvailable ? readSelection().root.trim() : "";
 		const rememberedDiff = diffPathFor(workspaces[ownedId] ?? null, sessionRoot);
 		if (rememberedDiff === null) {
 			gitService.clearSelection();
@@ -792,6 +796,13 @@
 			}
 		}
 		if (snapshot?.center) frameControls?.restoreCenterLayout(snapshot.center);
+		if (!activeRootAvailable) {
+			editorPanel?.restoreViewStates([]);
+			resetEditorState();
+			selectPath(null);
+			setScrollTop(0);
+			return;
+		}
 		const plan = planWorkspaceRestore(snapshot ?? null);
 		// Every restore starts from THIS session's tabs and no others. A session
 		// that has never had a file open starts from an empty editor, and that
@@ -812,6 +823,15 @@
 		const previous = rail.activeOwnedId;
 		const switching = previous !== ownedId;
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
+		let selectedRootAvailable = true;
+		if (selected && shellPanels.loadsAllowed()) {
+			const root = selected.cwd.trim() || (selected.projectPath ?? "").trim();
+			if (root) {
+				countInvoke("validate_project_root");
+				const validation = await validateProjectRootFromTauri(root);
+				selectedRootAvailable = validation === null || (validation.exists && validation.isDirectory);
+			}
+		}
 		let workspaceCaptured = previous === null || !switching;
 		// The strip along the bottom reports the last thing that went wrong. Left
 		// up, a start that failed in one session was still being reported while
@@ -833,14 +853,16 @@
 			if (workspaceCaptured) releaseConversationForRead(previous);
 		}
 		setActiveOwned(ownedId);
-		if (switching && selected) {
-			const root = selected.cwd.trim() || (selected.projectPath ?? "").trim();
-			if (root) await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root });
+		activeRootAvailable = selectedRootAvailable;
+		const selectedRoot = selected ? selected.cwd.trim() || (selected.projectPath ?? "").trim() : "";
+		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
+		if (switching && selected && selectedRoot && activeRootAvailable) {
+			await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root: selectedRoot });
 		}
 		// Point the file tree, the context cards and any tab the user has already
 		// opened at this session's project. Ignored while start-up is still
 		// re-attaching sessions, so a reload still loads nothing on its own.
-		shellPanels.sessionPicked();
+		shellPanels.sessionPicked(activeRootAvailable);
 		// Clicking the session you are already on changes nothing. Putting the
 		// stored record back here would throw away every file opened since the last
 		// switch, which is the opposite of what a click on your own row means.
@@ -1507,7 +1529,17 @@
 				// A session re-attached during start-up was "picked" before the gate was
 				// open, so its pick was ignored. Repeat it now that loads are allowed, or
 				// a reload comes back with empty panes until the user clicks a session.
-				if (!disposed && rail.activeOwnedId !== null) shellPanels.sessionPicked();
+				if (!disposed && rail.activeOwnedId !== null) {
+					const selected = rail.owned.find((session) => session.ownedId === rail.activeOwnedId);
+					const root = selected ? selected.cwd.trim() || (selected.projectPath ?? "").trim() : "";
+					if (root) {
+						countInvoke("validate_project_root");
+						const validation = await validateProjectRootFromTauri(root);
+						activeRootAvailable = validation === null || (validation.exists && validation.isDirectory);
+					}
+					setUnavailableOpenFileRoot(activeRootAvailable ? null : root);
+					shellPanels.sessionPicked(activeRootAvailable);
+				}
 				// Same story for the files that session had open: the pick that would
 				// have restored them happened before the gate opened, so a reload would
 				// otherwise come back with an empty editor.
@@ -1580,7 +1612,12 @@
 	</div>
 {/snippet}
 {#snippet toolsArea()}
-	<RightPanel activeId={rightTab} onSelect={selectRightTab} root={readSelection().root} ownedId={rail.activeOwnedId} />
+	<RightPanel
+		activeId={rightTab}
+		onSelect={selectRightTab}
+		root={activeRootAvailable ? readSelection().root : ""}
+		ownedId={rail.activeOwnedId}
+	/>
 {/snippet}
 {#snippet centerTabsArea()}
 	<CenterCornerTabs activeId={centerTab} onSelect={selectCenterTab} />

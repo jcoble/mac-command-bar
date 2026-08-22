@@ -94,7 +94,7 @@ export const shellPanels = createPanelActivation(
     editor: (root) => activateEditor(root),
     git: (root) => gitService.activate(root),
     browser: () => activateBrowser(),
-    explorer: (root) => activateExplorer(root),
+    explorer: (root, checkoutDeleted) => activateExplorer(root, checkoutDeleted),
     worktrees: (selection) =>
       activateWorktrees({
         root: selection.root.trim() || null,

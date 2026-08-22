@@ -25,6 +25,7 @@ import {
   failScan,
   loadedExplorerDirectories,
   loadedExplorerDirectoryDepth,
+  markCheckoutDeleted,
   resetExplorer,
   setExplorerError
 } from './explorerStore.svelte.ts';
@@ -37,6 +38,11 @@ const directoryRequests = new Map<string, number>();
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function checkoutWasDeleted(message: string): boolean {
+  return message.includes('Could not read source root metadata:') &&
+    (message.includes('No such file or directory') || message.includes('os error 2'));
 }
 
 function publishLoadedFiles(root: string): void {
@@ -75,8 +81,11 @@ export async function loadDirectory(directory: string, depth: number): Promise<b
     return true;
   } catch (error) {
     if (directoryRequests.get(directory) !== requestId || explorer.root !== root) return false;
-    const message = `Could not list this folder: ${describeError(error)}`;
-    if (directory === root) failScan(message);
+    const detail = describeError(error);
+    const message = `Could not list this folder: ${detail}`;
+    if (directory === root && checkoutWasDeleted(detail)) {
+      failScan('This session’s checkout/worktree no longer exists.', 'checkout-deleted');
+    } else if (directory === root) failScan(message);
     else setExplorerError(message);
     return false;
   } finally {
@@ -104,9 +113,15 @@ export async function scanRoot(root: string): Promise<void> {
   }
 }
 
-export function activate(root: string): void {
-  const target = root.trim();
-  if (!target) return;
+export function activate(root: string | null, checkoutDeleted = false): void {
+  const target = (root ?? '').trim();
+  if (!target) {
+    directoryRequests.clear();
+    forgetAllProjectSourceRecords();
+    if (checkoutDeleted) markCheckoutDeleted();
+    else resetExplorer();
+    return;
+  }
   if (explorer.activated && explorer.root === target && explorer.error === null) return;
   void scanRoot(target);
 }

@@ -16,6 +16,9 @@ importers:
       '@codemirror/autocomplete':
         specifier: 6.20.3
         version: 6.20.3
+      '@codemirror/commands':
+        specifier: 6.11.0
+        version: 6.11.0
       '@codemirror/lang-cpp':
         specifier: 6.0.3
         version: 6.0.3
@@ -64,6 +67,9 @@ importers:
       '@codemirror/merge':
         specifier: 6.12.2
         version: 6.12.2
+      '@codemirror/search':
+        specifier: 6.7.1
+        version: 6.7.1
       '@codemirror/state':
         specifier: 6.7.1
         version: 6.7.1

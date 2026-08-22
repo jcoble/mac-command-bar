@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,12 +17,12 @@ use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor,
     AgentConversationConfigState, AgentConversationConnection, AgentConversationEvent,
     AgentConversationEventPage, AgentConversationPayload, AgentConversationProvider,
-    AgentConversationSessionMeta,
-    AgentConversationSessionRecord, AgentConversationSnapshot, AgentEvent, AgentEventType,
-    AgentExecutionOwner, AgentImplementation, AgentInteractionCapabilities, AgentNativeSessionMode,
-    AgentPromptCapabilities, AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities,
-    AgentUserInputResponse, AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition,
-    ApprovalState, ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
+    AgentConversationSessionMeta, AgentConversationSessionRecord, AgentConversationSnapshot,
+    AgentEvent, AgentEventType, AgentExecutionOwner, AgentImplementation,
+    AgentInteractionCapabilities, AgentNativeSessionMode, AgentPromptCapabilities,
+    AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputResponse,
+    AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
+    ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
     SetAgentConversationConfigRequest, TerminalProjectionPayload, ToolState,
     UpdateAgentConversationSessionMetaRequest,
 };
@@ -44,8 +44,6 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 /// different amount of reading in every session, and it is the bytes that cost
 /// the fetch, the hop to the front end and the parse at the other end.
 const SNAPSHOT_WINDOW_BYTES: u32 = 512 * 1024;
-/// How many recent events a live session keeps in memory for its own use.
-const SESSION_RECENT_EVENT_CAP: usize = 1_000;
 /// The most events one catch-up read will hand back after a missed update.
 ///
 /// A bound on a single fetch, not on what a session keeps. Nothing trims a
@@ -155,7 +153,6 @@ pub struct ManagedAgentSession {
     pub runtime: Option<Arc<AsyncMutex<StructuredRuntimeHandle>>>,
     pool_key: Option<AdapterPoolKey>,
     transport: Option<Arc<AcpTransport>>,
-    pub recent_events: VecDeque<AgentEvent>,
     pub writer_lease: AgentWriterLease,
     pub writer_lease_transition: Option<AgentWriterLeaseTransition>,
     permission_requests: HashMap<String, PendingPermission>,
@@ -860,7 +857,6 @@ impl AgentRuntimeManager {
                 runtime: None,
                 pool_key: None,
                 transport: None,
-                recent_events: VecDeque::new(),
                 writer_lease: AgentWriterLease {
                     owned_id,
                     generation,
@@ -3191,7 +3187,6 @@ fn recovered_session_from_row(
         runtime: None,
         pool_key: None,
         transport: None,
-        recent_events: VecDeque::new(),
         writer_lease: AgentWriterLease {
             owned_id: row.owned_id.clone(),
             generation: stored.generation,
@@ -3469,10 +3464,6 @@ fn record_payload_for_session_with_lifecycle(
         .upsert_session_with_event(&row, Some(&event_row))
         .map_err(|error| error.to_string())?;
     candidate.apply(session);
-    session.recent_events.push_back(canonical);
-    while session.recent_events.len() > SESSION_RECENT_EVENT_CAP {
-        session.recent_events.pop_front();
-    }
     Ok(frontend_event)
 }
 
@@ -8236,27 +8227,6 @@ mod tests {
                 "history-agent-2"
             ]
         );
-        let recent_item_ids = manager
-            .sessions
-            .lock()
-            .unwrap()
-            .get(owned_id)
-            .unwrap()
-            .recent_events
-            .iter()
-            .filter_map(|event| {
-                event
-                    .payload
-                    .get("itemId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            recent_item_ids, item_ids,
-            "the canonical journal feed and frontend snapshot must contain one copy per item"
-        );
-
         manager
             .close(owned_id, connection.generation)
             .await
