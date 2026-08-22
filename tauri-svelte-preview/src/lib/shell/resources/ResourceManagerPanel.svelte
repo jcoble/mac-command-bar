@@ -21,7 +21,6 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
-  import { resourceDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import { activate as activatePlaywright } from '$lib/shell/processes/playwrightService';
 
   import PlaywrightCard from '$lib/shell/components/processes/PlaywrightCard.svelte';
@@ -63,9 +62,12 @@
   let collapsed = $state<Record<string, boolean>>({});
   let diskOpen = $state(false);
   let nowMs = $state(Date.now());
+  let snapshot = $derived(resourceSampleState.snapshot);
+  let native = $derived(snapshot?.native ?? null);
+  let frontend = $derived(snapshot?.frontend ?? null);
 
   let view = $derived(
-    resourceSampleState.sample ? shapeResourceSample(resourceSampleState.sample) : null
+    native ? shapeResourceSample(native) : null
   );
   let diskView = $derived(
     resourceDiskState.report ? shapeDiskReport(resourceDiskState.report) : null
@@ -132,12 +134,12 @@
       <h2 id="resource-manager-title">Resource Manager</h2>
     </div>
     <div class="header-actions">
-      {#if resourceSampleState.sample}
+      {#if native}
         <p class="headline-totals" aria-label="Combined CPU, physical footprint and resident RSS usage">
-          <span>{formatResourceCpu(resourceSampleState.sample.totals.cpuPercent)}</span>
+          <span>{formatResourceCpu(native.totals.cpuPercent)}</span>
           <span aria-hidden="true">·</span>
-          <strong>{formatResourceBytes(resourceSampleState.sample.totals.physicalFootprintBytes)} Σ Physical footprint</strong>
-          <span>RSS {formatResourceBytes(resourceSampleState.sample.totals.rssBytes)}</span>
+          <strong>{formatResourceBytes(native.totals.physicalFootprintBytes)} Σ Physical footprint</strong>
+          <span>RSS {formatResourceBytes(native.totals.rssBytes)}</span>
         </p>
       {/if}
       <button
@@ -173,65 +175,65 @@
     {:else if resourceStopState.receipt}
       <p class="message receipt">{resourceStopState.receipt}</p>
     {/if}
-    {#if resourceSampleState.sample}
+    {#if native}
       <section class="diagnostic-strip" aria-label="Assembly physical process footprint">
-        {#each resourceSampleState.sample.processCategories as category (category.label)}
+        {#each native.processCategories as category (category.label)}
           <span><strong>{formatResourceBytes(category.physicalFootprintBytes)}</strong> {category.label}</span>
         {/each}
       </section>
       <section class="diagnostic-strip" aria-label="Assembly lifecycle counts">
-        <span><strong>{resourceSampleState.sample.diagnostics.conversations.durableSessionRows}</strong> SQLite sessions</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.conversations.liveSessionOverlays}</strong> overlays</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.conversations.liveRuntimeHandles}</strong> ACP runtimes</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.conversations.sidecarProcesses}</strong> sidecars</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.conversations.activeTurns}</strong> active turns</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.database.sessionStoreOpenHandles}</strong> DB handles</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.database.sessionStoreActiveReads}</strong> DB reads</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.database.sessionStoreActiveWrites}</strong> DB writes</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.terminals.userPtys}</strong> user PTYs</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.terminals.agentToolPtys}</strong> tool PTYs</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.terminals.transcriptProjections}</strong> transcript projections</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.streams.workers}</strong> stream workers</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.streams.channels}</strong> projection channels</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.streams.queuedFrames}</strong> queued frames</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.streams.queuedBytes}</strong> queued bytes</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.languageServers.runningProcesses}</strong> LSPs</span>
-        <span><strong>{resourceSampleState.sample.diagnostics.browser.nativeViews}</strong> browser views</span>
+        <span><strong>{native.diagnostics.conversations.durableSessionRows}</strong> SQLite sessions</span>
+        <span><strong>{native.diagnostics.conversations.liveSessionOverlays}</strong> overlays</span>
+        <span><strong>{native.diagnostics.conversations.liveRuntimeHandles}</strong> ACP runtimes</span>
+        <span><strong>{native.diagnostics.conversations.sidecarProcesses}</strong> sidecars</span>
+        <span><strong>{native.diagnostics.conversations.activeTurns}</strong> active turns</span>
+        <span><strong>{native.diagnostics.database.sessionStoreOpenHandles}</strong> DB handles</span>
+        <span><strong>{native.diagnostics.database.sessionStoreActiveReads}</strong> DB reads</span>
+        <span><strong>{native.diagnostics.database.sessionStoreActiveWrites}</strong> DB writes</span>
+        <span><strong>{native.diagnostics.terminals.userPtys}</strong> user PTYs</span>
+        <span><strong>{native.diagnostics.terminals.agentToolPtys}</strong> tool PTYs</span>
+        <span><strong>{native.diagnostics.terminals.transcriptProjections}</strong> transcript projections</span>
+        <span><strong>{native.diagnostics.streams.workers}</strong> stream workers</span>
+        <span><strong>{native.diagnostics.streams.channels}</strong> projection channels</span>
+        <span><strong>{native.diagnostics.streams.queuedFrames}</strong> queued frames</span>
+        <span><strong>{native.diagnostics.streams.queuedBytes}</strong> queued bytes</span>
+        <span><strong>{native.diagnostics.languageServers.runningProcesses}</strong> LSPs</span>
+        <span><strong>{native.diagnostics.browser.nativeViews}</strong> browser views</span>
       </section>
     {/if}
-    {#if import.meta.env.DEV}
+    {#if import.meta.env.DEV && frontend}
       <section class="diagnostic-strip" aria-label="Frontend lifecycle counts">
-        <span><strong>{resourceDiagnostics.loadedConversationProjections}</strong> loaded conversations</span>
-        <span><strong>{resourceDiagnostics.loadedConversationEventBytes}</strong> conversation bytes</span>
-        <span><strong>{resourceDiagnostics.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
-        <span><strong>{resourceDiagnostics.conversationRenderedRows}</strong> rendered turn rows</span>
-        <span><strong>{resourceDiagnostics.conversationVirtualRows}</strong> virtual turn rows</span>
-        <span><strong>{resourceDiagnostics.conversationMeasuredElementCacheEntries}</strong> measured-element cache entries</span>
-        <span><strong>{resourceDiagnostics.sentAttachmentMapEntries}</strong> sent attachment map entries</span>
-        <span><strong>{resourceDiagnostics.sentAttachmentCount}</strong> sent attachments</span>
-        <span><strong>{resourceDiagnostics.tauriRootListeners}</strong> Tauri listeners</span>
-        <span><strong>{resourceDiagnostics.tauriEventSubscribers}</strong> JS event subscribers</span>
-        <span><strong>{resourceDiagnostics.tauriChannels}</strong> Tauri Channels</span>
-        <span><strong>{resourceDiagnostics.fileWatchers}</strong> file watchers</span>
-        <span><strong>{resourceDiagnostics.objectUrls}</strong> object URLs</span>
-        <span><strong>{resourceDiagnostics.attachmentObjectUrls}</strong> attachment URLs</span>
-        <span><strong>{resourceDiagnostics.animationFrames}</strong> animation frames</span>
-        <span><strong>{resourceDiagnostics.loadedTreeNodes}</strong> tree nodes</span>
-        <span><strong>{resourceDiagnostics.loadedGitHistoryRows}</strong> Git rows</span>
-        <span><strong>{resourceDiagnostics.activeDiffs}</strong> active diffs</span>
-        <span><strong>{resourceDiagnostics.xtermViews}</strong> xterm views</span>
-        <span><strong>{resourceDiagnostics.codeMirrorEditorViews}</strong> mounted EditorViews</span>
-        <span><strong>{resourceDiagnostics.codeMirrorEditorStates}</strong> retained EditorStates</span>
-        <span><strong>{resourceDiagnostics.codeMirrorDocBytes}</strong> editor bytes</span>
-        <span><strong>{resourceDiagnostics.codeMirrorUndoDepth}</strong> active undo depth</span>
-        <span><strong>{resourceDiagnostics.openTabDocumentBytes}</strong> active open-tab document bytes</span>
-        <span><strong>{resourceDiagnostics.mergeViews}</strong> mounted MergeViews</span>
-        <span><strong>{resourceDiagnostics.mergeDocBytes}</strong> diff bytes</span>
-        <span><strong>{resourceDiagnostics.elementVisibilityWatchers}</strong> visibility watchers</span>
-        <span><strong>{resourceDiagnostics.railElapsedWatchers}</strong> rail watchers</span>
-        <span><strong>{resourceDiagnostics.semanticWaitingSpots}</strong> semantic waits</span>
-        <span><strong>{resourceDiagnostics.semanticSchedulerInFlight}</strong> semantic inflight</span>
-        <span><strong>{resourceDiagnostics.semanticRetryTimers}</strong> semantic retries</span>
+        <span><strong>{frontend.loadedConversationProjections}</strong> loaded conversations</span>
+        <span><strong>{frontend.loadedConversationEventBytes}</strong> conversation bytes</span>
+        <span><strong>{frontend.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
+        <span><strong>{frontend.conversationRenderedRows}</strong> rendered turn rows</span>
+        <span><strong>{frontend.conversationVirtualRows}</strong> virtual turn rows</span>
+        <span><strong>{frontend.conversationMeasuredElementCacheEntries}</strong> measured-element cache entries</span>
+        <span><strong>{frontend.sentAttachmentMapEntries}</strong> sent attachment map entries</span>
+        <span><strong>{frontend.sentAttachmentCount}</strong> sent attachments</span>
+        <span><strong>{frontend.tauriRootListeners}</strong> Tauri listeners</span>
+        <span><strong>{frontend.tauriEventSubscribers}</strong> JS event subscribers</span>
+        <span><strong>{frontend.tauriChannels}</strong> Tauri Channels</span>
+        <span><strong>{frontend.fileWatchers}</strong> file watchers</span>
+        <span><strong>{frontend.objectUrls}</strong> object URLs</span>
+        <span><strong>{frontend.attachmentObjectUrls}</strong> attachment URLs</span>
+        <span><strong>{frontend.animationFrames}</strong> animation frames</span>
+        <span><strong>{frontend.loadedTreeNodes}</strong> tree nodes</span>
+        <span><strong>{frontend.loadedGitHistoryRows}</strong> Git rows</span>
+        <span><strong>{frontend.activeDiffs}</strong> active diffs</span>
+        <span><strong>{frontend.xtermViews}</strong> xterm views</span>
+        <span><strong>{frontend.codeMirrorEditorViews}</strong> mounted EditorViews</span>
+        <span><strong>{frontend.codeMirrorEditorStates}</strong> retained EditorStates</span>
+        <span><strong>{frontend.codeMirrorDocBytes}</strong> editor bytes</span>
+        <span><strong>{frontend.codeMirrorUndoDepth}</strong> active undo depth</span>
+        <span><strong>{frontend.openTabDocumentBytes}</strong> active open-tab document bytes</span>
+        <span><strong>{frontend.mergeViews}</strong> mounted MergeViews</span>
+        <span><strong>{frontend.mergeDocBytes}</strong> diff bytes</span>
+        <span><strong>{frontend.elementVisibilityWatchers}</strong> visibility watchers</span>
+        <span><strong>{frontend.railElapsedWatchers}</strong> rail watchers</span>
+        <span><strong>{frontend.semanticWaitingSpots}</strong> semantic waits</span>
+        <span><strong>{frontend.semanticSchedulerInFlight}</strong> semantic inflight</span>
+        <span><strong>{frontend.semanticRetryTimers}</strong> semantic retries</span>
       </section>
     {/if}
 

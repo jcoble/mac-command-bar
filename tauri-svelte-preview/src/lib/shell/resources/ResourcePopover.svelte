@@ -24,7 +24,7 @@
     onclick={toggle}
   >
     Resources
-    {#if resourceSampleState.sample}<span>{resourceSampleState.sample.totals.processCount}</span>{/if}
+    {#if resourceSampleState.snapshot}<span>{resourceSampleState.snapshot.native.totals.processCount}</span>{/if}
   </button>
 </aside>
 

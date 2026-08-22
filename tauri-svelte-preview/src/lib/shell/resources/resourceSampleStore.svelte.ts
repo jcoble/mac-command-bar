@@ -1,20 +1,29 @@
 import { readResourceSample, stopResourceProcessTree } from './resourceSampleBackend.ts';
 import type { ResourceSample } from './resourceSampleTypes.ts';
 import { buildStopRequest, type ResourceStopTarget } from './resourceStopModel.ts';
+import { resourceDiagnostics } from '../resourceDiagnostics.svelte.ts';
+
+/** One current native sample plus the frontend counters at that same read.
+ * Neither side stores prior readings or a history list. */
+export type ResourceSnapshot = {
+  capturedAtMs: number;
+  native: ResourceSample;
+  frontend: typeof resourceDiagnostics;
+};
 
 export const resourceSampleState = $state<{
-  sample: ResourceSample | null;
+  snapshot: ResourceSnapshot | null;
   loading: boolean;
   error: string | null;
 }>({
-  sample: null,
+  snapshot: null,
   loading: false,
   error: null
 });
 
 export const resourceManagerState = $state({ open: false });
 
-let refreshInFlight: Promise<ResourceSample | null> | null = null;
+let refreshInFlight: Promise<ResourceSnapshot | null> | null = null;
 
 export function setResourceManagerOpen(open: boolean): void {
   resourceManagerState.open = open;
@@ -24,14 +33,21 @@ export function toggleResourceManager(): void {
   resourceManagerState.open = !resourceManagerState.open;
 }
 
-export function refreshResourceSample(): Promise<ResourceSample | null> {
+export function refreshResourceSample(): Promise<ResourceSnapshot | null> {
   if (refreshInFlight) return refreshInFlight;
   resourceSampleState.loading = true;
   resourceSampleState.error = null;
   refreshInFlight = readResourceSample()
-    .then((sample) => {
-      resourceSampleState.sample = sample;
-      return sample;
+    .then((native) => {
+      const snapshot = native
+        ? ({
+            capturedAtMs: native.generatedAtMs,
+            native,
+            frontend: resourceDiagnostics
+          } satisfies ResourceSnapshot)
+        : null;
+      resourceSampleState.snapshot = snapshot;
+      return snapshot;
     })
     .catch((error: unknown) => {
       resourceSampleState.error =

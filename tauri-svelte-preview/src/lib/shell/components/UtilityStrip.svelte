@@ -47,12 +47,12 @@
   }
 
   const summary = $derived.by(() => {
-    const sample = resourceSampleState.sample;
-    if (sample) {
-      const processes = sample.totals.processCount === 1 ? 'process' : 'processes';
-      return `${formatResourceBytes(sample.totals.physicalFootprintBytes)} Σ · ${formatResourceCpu(
-        sample.totals.cpuPercent
-      )} CPU · ${sample.totals.processCount} ${processes}`;
+    const snapshot = resourceSampleState.snapshot;
+    if (snapshot) {
+      const processes = snapshot.native.totals.processCount === 1 ? 'process' : 'processes';
+      return `${formatResourceBytes(snapshot.native.totals.physicalFootprintBytes)} Σ · ${formatResourceCpu(
+        snapshot.native.totals.cpuPercent
+      )} CPU · ${snapshot.native.totals.processCount} ${processes}`;
     }
     if (resourceSampleState.loading) return 'Reading process usage…';
     return resourceSampleState.error ?? 'Process usage is not available';
