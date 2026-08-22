@@ -62,7 +62,7 @@
   import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
   import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
-  import { UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
+  import { getMonoFont, UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
 
   interface Props {
     /** Whether the settings screen is showing. */
@@ -83,6 +83,7 @@
   /** The faces the app ships, from the same kind of registry. */
   const uiFontItems = UI_FONTS.map((font) => ({ value: font.id, label: font.label }));
   const monoFontItems = MONO_FONTS.map((font) => ({ value: font.id, label: font.label }));
+  const editorFontFamilyItems = MONO_FONTS.map((font) => ({ value: font.id, label: font.label }));
 
   const fontFamilyItems = [
     { value: 'Google Sans Mono', label: 'Google Sans Mono' },
@@ -404,6 +405,19 @@
     onProblemsLocationChange?.(location);
   }
 
+  function paintEditorFont(stack: string): void {
+    if (typeof document === 'undefined') return;
+    for (const scroller of document.querySelectorAll<HTMLElement>('.cm-scroller')) {
+      scroller.style.fontFamily = stack;
+    }
+  }
+
+  function setEditorFontFamily(id: string): void {
+    const font = getMonoFont(id);
+    settings.editor.fontFamily = font.id;
+    paintEditorFont(font.stack);
+  }
+
   async function switchLanguageServers(enabled: boolean): Promise<void> {
     const before = settings.intelligence.languageServers;
     settings.intelligence.languageServers = enabled;
@@ -578,6 +592,10 @@
   // removed elsewhere is not shown stale.
   $effect(() => {
     if (open) void loadHelper();
+  });
+
+  $effect(() => {
+    paintEditorFont(getMonoFont(settings.editor.fontFamily).stack);
   });
 </script>
 
@@ -804,10 +822,10 @@
 
 {#snippet editorFontFamilyControl()}
   <SettingsSelect
-    items={fontFamilyItems}
-    value={settings.editor.fontFamily}
+    items={editorFontFamilyItems}
+    value={getMonoFont(settings.editor.fontFamily).id}
     ariaLabel="Editor font family"
-    onChange={(value) => (settings.editor.fontFamily = value)}
+    onChange={setEditorFontFamily}
   />
 {/snippet}
 

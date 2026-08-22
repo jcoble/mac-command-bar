@@ -3,6 +3,9 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { EditorView } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 
+import { settings } from '../../settingsStore.svelte';
+import { getMonoFont } from '../themes/fontRegistry';
+
 const syntax = HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier], color: '#c792ea' },
   { tag: [tags.name, tags.variableName], color: '#d8dee9' },
@@ -16,6 +19,8 @@ const syntax = HighlightStyle.define([
   { tag: tags.invalid, color: '#ff5370', textDecoration: 'underline' }
 ]);
 
+const editorFontFamily = getMonoFont(settings.editor.fontFamily).stack;
+
 export const codeMirrorTheme = [
   EditorView.theme(
     {
@@ -27,7 +32,7 @@ export const codeMirrorTheme = [
       },
       '.cm-scroller': {
         overflow: 'auto',
-        fontFamily: 'var(--font-mono)',
+        fontFamily: editorFontFamily,
         lineHeight: '19px'
       },
       '.cm-content': { caretColor: 'var(--color-accent, #82aaff)' },

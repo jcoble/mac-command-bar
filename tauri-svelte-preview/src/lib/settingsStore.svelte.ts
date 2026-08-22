@@ -6,7 +6,7 @@
  * app-settings row and writes changes through the shared Tauri bridge.
  *
  * Defaults mirror the app's current hardcoded values:
- *   - editor:   src/lib/sourcePreviewAppearance.ts (Google Sans Mono / 13 / 21)
+ *   - editor:   System code-face id / 13 / 21
  *   - terminal: the xterm config in +page.svelte (Google Sans Mono / 15 / 1.2,
  *               dracula theme)
  *   - general:  the source terminal app default ('Warp')
@@ -19,6 +19,7 @@ import {
 	readAssemblySettingFromTauri,
 	writeAssemblySettingFromTauri
 } from './tauriSource';
+import { DEFAULT_MONO_FONT_ID, MONO_FONTS } from './shell/themes/fontRegistry';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,7 @@ export interface AppearanceSettings {
 }
 
 export interface EditorSettings {
+	/** A code-face id from fontRegistry.ts. */
 	fontFamily: string;
 	fontSize: number;
 	/** Absolute line height in px (Monaco-style). */
@@ -138,7 +140,7 @@ export function defaultSettings(): Settings {
 			monoFontId: 'system'
 		},
 		editor: {
-			fontFamily: 'Google Sans Mono',
+			fontFamily: DEFAULT_MONO_FONT_ID,
 			fontSize: 13,
 			lineHeight: 21
 		},
@@ -212,6 +214,9 @@ function mergeWithDefaults(raw: unknown): Settings {
 	// always been.
 	if (!PROBLEMS_LOCATIONS.includes(base.panels.problemsLocation)) {
 		base.panels.problemsLocation = 'hidden';
+	}
+	if (!MONO_FONTS.some((font) => font.id === base.editor.fontFamily)) {
+		base.editor.fontFamily = DEFAULT_MONO_FONT_ID;
 	}
 
 	return base;
