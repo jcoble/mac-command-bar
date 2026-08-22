@@ -57,10 +57,12 @@ import {
   listAgentConversationEventsAfterFromTauri,
   extendAgentConversationImportFromTauri,
   readAgentConversationSnapshotFromTauri,
+  changeAgentConversationCheckoutFromTauri,
   writeTerminalSessionFromTauri,
   registerAgentConversationStream,
   type StreamEnvelope,
-  type ProjectionStreamRegistration
+  type ProjectionStreamRegistration,
+  type AgentConversationSessionRecord
 } from '$lib/tauriSource';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
@@ -743,6 +745,36 @@ export async function ensureStructuredConversation(input: {
   });
   ensuring.set(input.ownedId, { signature, work });
   return work;
+}
+
+/** Changes a quiescent Codex session's durable checkout without changing its
+ * generation. The native command owns the gate and the SQLite transaction. */
+export async function changeStructuredConversationCheckout(
+  ownedId: string,
+  cwd: string
+): Promise<AgentConversationSessionRecord | null> {
+  const state = getConversationSession(ownedId);
+  if (!state || state.provider !== 'codex' || !cwd.trim()) return null;
+  const record = await changeAgentConversationCheckoutFromTauri({
+    ownedId,
+    generation: state.generation,
+    cwd
+  });
+  if (!record) return null;
+  updateOwnedSession(ownedId, {
+    cwd: record.cwd,
+    nativeSessionId: record.nativeSessionId,
+    runtimeState: record.state
+  });
+  setConversationConnection({
+    ownedId,
+    provider: state.provider,
+    generation: state.generation,
+    nativeSessionId: record.nativeSessionId ?? state.nativeSessionId,
+    state: record.suspended ? 'disconnected' : state.connectionState,
+    suspended: record.suspended
+  });
+  return record;
 }
 
 /** Sends one message through the current writer while preserving attachment recovery. */

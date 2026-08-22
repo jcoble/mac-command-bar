@@ -789,6 +789,12 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
     postTokens: entry.postTokens,
     timestampMs: entry.timestampMs
   };
+  if (entry.kind === 'checkoutChanged') return {
+    kind: 'unknown',
+    itemId: entry.itemId,
+    text: `Checkout changed\n${entry.fromCwd}\n${entry.toCwd}`,
+    timestampMs: entry.timestampMs
+  };
   if (entry.kind === 'turn') return {
     kind: 'unknown',
     itemId: entry.itemId,

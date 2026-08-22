@@ -1581,6 +1581,18 @@ export async function listAgentConversationSessionsFromTauri(): Promise<AgentCon
   return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
 }
 
+export async function changeAgentConversationCheckoutFromTauri(input: {
+  ownedId: string;
+  generation: number;
+  cwd: string;
+}): Promise<AgentConversationSessionRecord | null> {
+  if (!isTauriRuntime() || !input.ownedId.trim() || !input.cwd.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationSessionRecord>('change_agent_conversation_checkout', {
+    request: input
+  });
+}
+
 export async function listAgentConversationEventsFromTauri(
   ownedId: string,
   fromSequence = 0

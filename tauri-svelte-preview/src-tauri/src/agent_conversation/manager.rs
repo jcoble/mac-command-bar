@@ -22,9 +22,9 @@ use super::protocol::{
     AgentInteractionCapabilities, AgentNativeSessionMode, AgentPromptCapabilities,
     AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputResponse,
     AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
-    ConversationConnectionState, EnsureAgentConversationRequest, PlanItem,
-    SetAgentConversationConfigRequest, TerminalProjectionPayload, ToolState,
-    UpdateAgentConversationSessionMetaRequest,
+    ChangeAgentConversationCheckoutRequest, ConversationConnectionState,
+    EnsureAgentConversationRequest, PlanItem, SetAgentConversationConfigRequest,
+    TerminalProjectionPayload, ToolState, UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
@@ -871,6 +871,155 @@ impl AgentRuntimeManager {
             }
         }
         Ok(connection)
+    }
+
+    /// Changes the durable checkout for one Codex session without replacing
+    /// its generation or native session. A running adapter is detached only
+    /// after the quiescent gate passes; the checkout marker and the resulting
+    /// suspended session row are then committed in the same SQLite transaction.
+    pub async fn change_checkout(
+        &self,
+        request: ChangeAgentConversationCheckoutRequest,
+    ) -> Result<AgentConversationSessionRecord, String> {
+        let owned_id = required_id(&request.owned_id, "Owned session id")?;
+        let new_cwd = validated_conversation_cwd(&request.cwd)?
+            .display()
+            .to_string();
+        let _lifecycle = self.lifecycle_guard(&owned_id).await?;
+        let (
+            runtime,
+            transport,
+            ordered_events,
+            pool_key,
+            native_session_id,
+            child_rollout_scan,
+            from_cwd,
+        ) = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = lifecycle_session_mut(&mut sessions, &owned_id, request.generation)?;
+            if session.provider != AgentConversationProvider::Codex {
+                return Err("Only Codex sessions can change checkout".to_string());
+            }
+            if session.cwd == new_cwd {
+                return Err("Session is already using this checkout".to_string());
+            }
+            if !session_can_change_checkout(session) {
+                return Err(
+                    "Checkout changes are available only while the Codex session is quiescent"
+                        .to_string(),
+                );
+            }
+            let from_cwd = session.cwd.clone();
+            if session.runtime.is_some() {
+                session.suspending = true;
+            }
+            (
+                session.runtime.take(),
+                session.transport.take(),
+                session.ordered_events.take(),
+                session.pool_key.take(),
+                session.native_session_id.clone(),
+                session.child_rollout_scan.take(),
+                from_cwd,
+            )
+        };
+
+        let had_runtime = runtime.is_some();
+        if let Some(runtime) = runtime.as_ref() {
+            let detach_result = if let Some(pool_key) = &pool_key {
+                self.release_pool_scope(
+                    pool_key,
+                    &owned_id,
+                    native_session_id.as_deref(),
+                    false,
+                )
+                .await
+            } else {
+                runtime
+                    .lock()
+                    .await
+                    .detach_session()
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            if let Err(error) = detach_result {
+                let mut sessions = self
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Ok(session) =
+                    lifecycle_session_mut(&mut sessions, &owned_id, request.generation)
+                {
+                    session.suspending = false;
+                    session.runtime = Some(Arc::clone(runtime));
+                    session.transport = transport;
+                    session.ordered_events = ordered_events;
+                    session.pool_key = pool_key;
+                    session.child_rollout_scan = child_rollout_scan;
+                }
+                return Err(error);
+            }
+        }
+        if let Some(task) = child_rollout_scan {
+            task.abort();
+        }
+
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let session = lifecycle_session_mut(&mut sessions, &owned_id, request.generation)?;
+        if had_runtime && (!session.suspending || session.state != AgentRuntimeState::Ready) {
+            session.suspending = false;
+            session.state = AgentRuntimeState::Suspended;
+            session.connection.state = ConversationConnectionState::Disconnected;
+            session.owner = AgentExecutionOwner::Stopped;
+            session.writer_lease.owner = AgentWriterLeaseOwner::None;
+            session.native_session_mode = AgentNativeSessionMode::Resume;
+            let _ = persist_session(session);
+            return Err("Conversation lifecycle changed while checkout was preparing".to_string());
+        }
+        let previous_worktree = session.rail_meta.worktree.clone();
+        session.suspending = false;
+        session.cwd = new_cwd.clone();
+        session.rail_meta.worktree = Some(new_cwd.clone());
+        let lifecycle = had_runtime.then_some(SessionLifecycleUpdate {
+            state: AgentRuntimeState::Suspended,
+            connection_state: ConversationConnectionState::Disconnected,
+            owner: AgentExecutionOwner::Stopped,
+            writer_owner: AgentWriterLeaseOwner::None,
+            native_session_mode: Some(AgentNativeSessionMode::Resume),
+        });
+        let event = record_payload_for_session_and_dispatch_with_lifecycle(
+            session,
+            &self.emitter,
+            AgentConversationPayload::CheckoutChanged {
+                from_cwd: from_cwd.clone(),
+                to_cwd: new_cwd,
+            },
+            lifecycle,
+        );
+        if let Err(error) = event {
+            session.cwd = from_cwd;
+            session.rail_meta.worktree = previous_worktree;
+            if had_runtime {
+                session.state = AgentRuntimeState::Suspended;
+                session.connection.state = ConversationConnectionState::Disconnected;
+                session.owner = AgentExecutionOwner::Stopped;
+                session.writer_lease.owner = AgentWriterLeaseOwner::None;
+                session.native_session_mode = AgentNativeSessionMode::Resume;
+                let _ = persist_session(session);
+            }
+            return Err(error);
+        }
+        drop(sessions);
+        self.list_sessions()?
+            .into_iter()
+            .find(|session| session.owned_id == owned_id)
+            .ok_or_else(|| "Conversation session disappeared after checkout change".to_string())
     }
 
     fn ensure_inner(
@@ -4785,6 +4934,7 @@ fn canonical_event(
         AgentConversationPayload::Turn { .. } => AgentEventType::TurnCompleted,
         AgentConversationPayload::Usage { .. } => AgentEventType::UsageUpdated,
         AgentConversationPayload::ContextCompaction { .. } => AgentEventType::ItemCompleted,
+        AgentConversationPayload::CheckoutChanged { .. } => AgentEventType::RuntimeWarning,
         AgentConversationPayload::TerminalProjection(projection) => projection.event_type,
         AgentConversationPayload::Error { .. } => AgentEventType::RuntimeError,
     };
@@ -5573,6 +5723,30 @@ fn session_can_suspend(session: &ManagedAgentSession) -> bool {
         && session_is_quiescent(session)
 }
 
+fn session_can_change_checkout(session: &ManagedAgentSession) -> bool {
+    matches!(
+        session.owner,
+        AgentExecutionOwner::Structured | AgentExecutionOwner::Stopped
+    ) && !session.suspending
+        && session.native_session_id.is_some()
+        && session.capabilities.session.resume
+        && (session.runtime.is_some() || session.state == AgentRuntimeState::Suspended)
+        && session_is_checkout_quiescent(session)
+}
+
+fn session_is_checkout_quiescent(session: &ManagedAgentSession) -> bool {
+    matches!(
+        session.state,
+        AgentRuntimeState::Ready | AgentRuntimeState::Suspended
+    ) && session.active_turn_id.is_none()
+        && !session.prompt_once_active
+        && session.permission_requests.is_empty()
+        && session.user_input_requests.is_empty()
+        && session.writer_lease_transition.is_none()
+        && session.live_tool_calls.is_empty()
+        && session.background_work.is_empty()
+}
+
 fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
     session.state == AgentRuntimeState::Ready
         && session.active_turn_id.is_none()
@@ -6082,6 +6256,7 @@ mod tests {
             AgentConversationPayload::AvailableCommandsUpdate { .. } => "availableCommandsUpdate",
             AgentConversationPayload::Usage { .. } => "usage",
             AgentConversationPayload::ContextCompaction { .. } => "contextCompaction",
+            AgentConversationPayload::CheckoutChanged { .. } => "checkoutChanged",
             AgentConversationPayload::TerminalProjection(_) => "terminalProjection",
             AgentConversationPayload::Error { .. } => "error",
         }

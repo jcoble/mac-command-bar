@@ -47,6 +47,7 @@
 	import { rememberedAgentConfigChoice } from "$lib/shell/conversation/agentConfigMemory";
 	import {
 		commitConversationHandoff,
+		changeStructuredConversationCheckout,
 		ensureStructuredConversation,
 		flushConversationSessionDraft,
 		loadConversationForRead,
@@ -793,6 +794,65 @@
 		} catch (error) {
 			rail.error = `workspace checkpoint failed: ${describeError(error)}`;
 			return false;
+		}
+	}
+
+	/** Move one active Codex session to another checkout after preserving and
+	 * releasing every projection rooted in the departing folder. The backend
+	 * owns the quiescent gate and durable event; this page only re-points the
+	 * checkout-backed surfaces once that transaction succeeds. */
+	async function changeCodexCheckout(ownedId: string, requestedRoot: string): Promise<boolean> {
+		const selected = rail.owned.find((session) => session.ownedId === ownedId);
+		if (!selected || rail.activeOwnedId !== ownedId || conversationProviderFor(ownedId) !== 'codex') {
+			rail.error = 'Only the active Codex session can change checkout.';
+			return false;
+		}
+		const root = requestedRoot.trim();
+		if (!root) {
+			rail.error = 'A checkout folder is required.';
+			return false;
+		}
+		countInvoke('validate_project_root');
+		const validation = await validateProjectRootFromTauri(root);
+		if (validation && (!validation.exists || !validation.isDirectory)) {
+			rail.error = 'That checkout folder is not available.';
+			return false;
+		}
+
+		workspaceAutosaveEnabled = false;
+		cancelWorkspaceAutosave();
+		try {
+			await flushConversationSessionDraft(ownedId);
+			if (!(await snapshotWorkspace(ownedId))) return false;
+			const oldPaths = editorState.openFiles.map((file) => file.path);
+			const record = await changeStructuredConversationCheckout(ownedId, root);
+			if (!record) return false;
+
+			stopConversationTerminalProjection(ownedId);
+			service?.releaseView(ownedId);
+			await disposeExtensionApiProbeResources();
+			editorPanel?.releaseSessionResources(oldPaths);
+			gitService.releaseHistorySurface();
+			gitCommitFilesService.release();
+			gitService.clearSelection();
+			shellPanels.sourceControlVisible(false);
+			resetEditorState();
+			selectPath(null);
+			setScrollTop(0);
+
+			updateOwnedSession(ownedId, { cwd: record.cwd, runtimeState: record.state });
+			activeRootAvailable = true;
+			setUnavailableOpenFileRoot(null);
+			activeWorkspaceSnapshot = null;
+			shellPanels.sessionPicked(true);
+			syncGitSurfaceVisibility();
+			await setExtensionApiProbeWorkspace({ ownedId, root: record.cwd });
+			return await snapshotWorkspace(ownedId);
+		} catch (error) {
+			rail.error = `Checkout change failed: ${describeError(error)}`;
+			return false;
+		} finally {
+			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
 		}
 	}
 

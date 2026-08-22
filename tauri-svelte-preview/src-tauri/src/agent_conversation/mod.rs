@@ -21,7 +21,8 @@ use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
     AgentConversationEvent, AgentConversationEventPage, AgentConversationSessionRecord,
     AgentConversationSnapshot,
-    CommandResult, EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
+    ChangeAgentConversationCheckoutRequest, CommandResult, EnsureAgentConversationRequest,
+    RespondAgentConversationApprovalRequest,
     RespondAgentConversationInputRequest, RespondAgentConversationPermissionRequest,
     SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
     StopAgentConversationTurnRequest, UpdateAgentConversationSessionMetaRequest,
@@ -301,6 +302,20 @@ pub async fn stop_agent_conversation_turn(
         manager
             .cancel_turn(&request.owned_id, request.generation)
             .await,
+    )
+}
+
+#[tauri::command]
+/// Changes a Codex session's durable checkout while it is quiescent.
+pub async fn change_agent_conversation_checkout(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    request: ChangeAgentConversationCheckoutRequest,
+) -> CommandResult<AgentConversationSessionRecord> {
+    let owned_id = request.owned_id.clone();
+    log_command_error(
+        "change_agent_conversation_checkout",
+        &owned_id,
+        manager.change_checkout(request).await,
     )
 }
 

@@ -6514,6 +6514,7 @@ fn main() {
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,
             agent_conversation::stop_agent_conversation_turn,
+            agent_conversation::change_agent_conversation_checkout,
             agent_conversation::set_agent_conversation_config,
             agent_conversation::set_agent_conversation_config_option,
             agent_conversation::read_agent_conversation_config,

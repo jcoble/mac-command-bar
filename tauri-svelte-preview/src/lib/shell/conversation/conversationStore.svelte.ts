@@ -522,6 +522,17 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
       displayChanged = true;
       break;
     }
+    case 'checkoutChanged': {
+      appendTimelineEntry(current, {
+        kind: 'checkoutChanged',
+        itemId: `checkout:${event.sequence}`,
+        fromCwd: payload.fromCwd,
+        toCwd: payload.toCwd,
+        timestampMs: event.timestampMs
+      });
+      displayChanged = true;
+      break;
+    }
     case 'usage': {
       // Claude says nothing when it compacts; the only sign is the reported
       // occupancy falling off a cliff. A full window dropping to a fraction of
@@ -1588,7 +1599,7 @@ export function setConversationConnection(connection: AgentConversationConnectio
   current.generation = connection.generation;
   current.writerLease.generation = connection.generation;
   current.connectionState = connection.state;
-  current.suspended = false;
+  current.suspended = connection.suspended ?? false;
   if (connection.nativeSessionId) current.nativeSessionId = connection.nativeSessionId;
   // A connection always carries a config object, even when nobody has asked an
   // adapter anything — every field null, every list empty. Applying that on its

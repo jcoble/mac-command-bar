@@ -272,6 +272,20 @@ export function applyConversationEvent(
       };
     }
 
+    case 'checkoutChanged': {
+      const itemId = `checkout:${event.sequence}`;
+      return {
+        ...next,
+        timeline: replaceOrAppend(next.timeline, itemId, () => ({
+          kind: 'checkoutChanged',
+          itemId,
+          fromCwd: payload.fromCwd,
+          toCwd: payload.toCwd,
+          timestampMs: event.timestampMs
+        }))
+      };
+    }
+
     case 'usage': {
       const previous = next.usage?.usedTokens;
       // A drop already announced by the provider is not announced twice.

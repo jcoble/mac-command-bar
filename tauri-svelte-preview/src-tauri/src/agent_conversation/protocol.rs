@@ -541,6 +541,13 @@ pub enum AgentConversationPayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         post_tokens: Option<u64>,
     },
+    /// Records the durable Codex checkout change separately from provider
+    /// transcript content. The old root is retained so the timeline explains
+    /// which projection was released and where the session now runs.
+    CheckoutChanged {
+        from_cwd: String,
+        to_cwd: String,
+    },
     TerminalProjection(TerminalProjectionPayload),
     Error {
         code: String,
@@ -635,6 +642,14 @@ pub struct RespondAgentConversationInputRequest {
 pub struct StopAgentConversationTurnRequest {
     pub owned_id: String,
     pub generation: u64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeAgentConversationCheckoutRequest {
+    pub owned_id: String,
+    pub generation: u64,
+    pub cwd: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

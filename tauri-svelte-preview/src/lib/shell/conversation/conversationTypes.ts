@@ -457,6 +457,7 @@ export type AgentConversationPayload =
   /** The agent threw away the older part of the conversation to make room.
    * The sizes are absent when the provider does not say what it cost. */
   | { kind: 'contextCompaction'; trigger?: string | null; preTokens?: number | null; postTokens?: number | null }
+  | { kind: 'checkoutChanged'; fromCwd: string; toCwd: string }
   | {
       kind: 'terminalProjection';
       eventType: AgentEventType;
@@ -607,6 +608,13 @@ export type ConversationTimelineEntry =
       preTokens?: number;
       postTokens?: number;
       timestampMs: number;
+    }
+  | {
+      kind: 'checkoutChanged';
+      itemId: string;
+      fromCwd: string;
+      toCwd: string;
+      timestampMs: number;
     };
 
 export interface ConversationUsage {
@@ -678,6 +686,7 @@ export interface AgentConversationConnection {
   generation: number;
   nativeSessionId?: string;
   state: ConversationConnectionState;
+  suspended?: boolean;
   config?: import('./conversationConfig').AgentConversationConfigState;
 }
 
