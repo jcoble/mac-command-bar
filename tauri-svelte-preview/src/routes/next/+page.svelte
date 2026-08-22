@@ -545,8 +545,18 @@
 			await gitService.showStoredDiff(request.projectRoot, request.relativePath);
 		},
 		openFileTimeline: async (request) => {
-			if (!activeRootAvailable) return;
+			const ownedId = rail.activeOwnedId;
+			const root = readSelection().root.trim();
+			const generation = workspaceRestoreGeneration;
+			if (!activeRootAvailable || !ownedId || !root) return false;
 			await gitService.showFileHistory(request.projectRoot, request.relativePath);
+			if (
+				disposed ||
+				rail.activeOwnedId !== ownedId ||
+				workspaceRestoreGeneration !== generation ||
+				canonicalPath(readSelection().root) !== canonicalPath(root)
+			) return false;
+			return true;
 		},
 		openUrl: (request) => {
 			openBrowserUrl(request.url);

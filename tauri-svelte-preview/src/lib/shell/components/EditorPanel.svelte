@@ -997,9 +997,6 @@
               <ContextMenu.Item
                 onSelect={() => openTimelineFor(file)}
               >Open Timeline</ContextMenu.Item>
-              <ContextMenu.Item
-                onSelect={() => openTimelineFor(file)}
-              >Git: View File History</ContextMenu.Item>
             </ContextMenu.Content>
           </ContextMenu.Root>
         {/each}

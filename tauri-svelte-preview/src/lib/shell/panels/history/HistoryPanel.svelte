@@ -46,9 +46,13 @@
   } from '$lib/shell/history/sessionHistoryLoad.ts';
   import {
     buildSessionLibrary,
+    filterSessionHistory,
+    sessionProjectPath,
+    type SessionHistoryFilters,
     type SessionLibraryRecord
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
   import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
+  import { sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/sessionLibrary/sessionLibraryStore.svelte.ts';
   import {
     ensureStructuredConversation,
     loadConversationForRead
@@ -91,7 +95,7 @@
   // body, which runs before this panel is created.
   const host = sessionLibraryHost();
 
-  let query = $state('');
+  const query = $derived(sessionLibraryState.query);
   let expandedKey = $state<string | null>(null);
   let collapseState = $state(createSessionHistoryCollapseState());
   let windowState = $state(createSessionHistoryWindowState());
@@ -99,7 +103,34 @@
   /** Redrawn only while the panel is on screen, so ages do not go stale in it. */
   let now = $state(new Date());
 
-  const summaryRecords = $derived(visible ? buildSessionLibrary(rail.owned, rail.available) : []);
+  const summaryLibrary = $derived(buildSessionLibrary(rail.owned, rail.available));
+  const activeRecord = $derived(summaryLibrary.find((record) => record.ownedId === ownedId) ?? null);
+  const projectPath = $derived(
+    activeRecord ? sessionProjectPath(activeRecord) : root.trim()
+  );
+  const historyFilters = $derived<SessionHistoryFilters>({
+    query: sessionLibraryState.query,
+    provider: sessionLibraryState.provider,
+    model: sessionLibraryState.model,
+    dateFrom: sessionLibraryState.dateFrom || null,
+    dateTo: sessionLibraryState.dateTo || null,
+    scope: sessionLibraryState.scope,
+    workspacePath: root.trim() || null,
+    projectPath: projectPath || null
+  });
+  const historyFilterKey = $derived([
+    historyFilters.query,
+    historyFilters.provider,
+    historyFilters.model,
+    historyFilters.dateFrom,
+    historyFilters.dateTo,
+    historyFilters.scope,
+    historyFilters.workspacePath,
+    historyFilters.projectPath
+  ].join('\0'));
+  const summaryRecords = $derived(
+    visible ? filterSessionHistory(summaryLibrary, historyFilters) : []
+  );
   let loadedRecords = $state<SessionLibraryRecord[]>([]);
   let loadOutcome = $state<SessionHistoryLoadOutcome | null>(null);
   /** The project whose sessions are being read, so the row can say it is working.
@@ -144,14 +175,17 @@
     buildSessionHistoryViewModel(summaryRecords, { query, windowState })
   );
   const loadedProjects = $derived(new Map(
-    buildSessionHistoryViewModel(loadedRecords, { query, windowState, checkouts })
+    buildSessionHistoryViewModel(
+      filterSessionHistory(loadedRecords, historyFilters),
+      { query, windowState, checkouts }
+    )
       .projects.map((project) => [project.key, project])
   ));
 
   /** A new search starts every checkout back at its first page of cards. */
   function search(value: string): void {
-    query = value;
-    windowState = resetSessionHistoryWindowOnFilterChange(windowState, { query });
+    setSessionLibraryQuery(value);
+    windowState = resetSessionHistoryWindowOnFilterChange(windowState, { query: value });
     releaseDetails();
     loadedRecords = [];
     loadOutcome = null;
@@ -172,7 +206,13 @@
   $effect(() => {
     root;
     ownedId;
+    historyFilterKey;
     releaseDetails();
+    loadedRecords = [];
+    loadOutcome = null;
+    checkouts = {};
+    collapseState = createSessionHistoryCollapseState();
+    loadingProjectKey = null;
     expandedKey = null;
   });
 
