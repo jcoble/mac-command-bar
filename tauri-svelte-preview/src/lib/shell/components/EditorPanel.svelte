@@ -33,8 +33,7 @@
   import {
     createLanguageServerGate,
     readLanguageServerState,
-    statusMessageIsAboutThisFile,
-    type LanguageServerStatusMessage
+    statusMessageIsAboutThisFile
   } from './editor/languageServerStatus.ts';
   import FileIcon from './explorer/FileIcon.svelte';
   import {
@@ -60,9 +59,7 @@
     setLanguageIntelligenceSwitch
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
-  import { hasBackendCapability } from '$lib/shell/backendCapabilities';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
-  import { trackTauriListener } from '$lib/shell/resourceDiagnostics.svelte';
   import {
     activateEditor,
     activeEditorFile,
@@ -264,7 +261,7 @@
   /**
    * The last thing the desktop app said about the open file's language server —
    * either the answer to `read_source_lsp_status` or a pushed
-   * `source-lsp-status-changed` message. Both carry the same `state` and
+   * pushed status message. Both carry the same `state` and
    * `detail` fields, so either one can be shown as-is.
    *
    * `null` means nobody has said anything: a browser tab (there is no language
@@ -331,24 +328,15 @@
     applyLanguageServerStatus(answer, { root, language });
   }
 
-  /** Listen for the desktop app telling us the server moved on. */
-  async function listenForLanguageServerStatus(): Promise<(() => void) | null> {
-    if (!isNativeTauriRuntime()) return null;
-    // An older desktop build never sends these, and asking it to listen would
-    // leave the panel waiting for a message that cannot arrive.
-    if (!(await hasBackendCapability('lspStatusEvents'))) return null;
-
-    const { listen } = await import('@tauri-apps/api/event');
-    const stop = await listen<LanguageServerStatusMessage>('source-lsp-status-changed', (event) => {
-      const root = editorState.projectRoot;
-      const language = activeFileLanguage();
-      if (!root || !language) return;
-      // Several servers can be running at once, so a message about another
-      // project or another language must not move this file's chip.
-      if (!statusMessageIsAboutThisFile(event.payload, root, language)) return;
-      applyLanguageServerStatus(event.payload, { root, language });
-    });
-    return trackTauriListener(stop);
+  /** Apply status updates fanned out by the shared source-intelligence listener. */
+  function handleLanguageServerStatus(status: unknown): void {
+    const root = editorState.projectRoot;
+    const language = activeFileLanguage();
+    if (!root || !language) return;
+    // Several servers can be running at once, so a message about another
+    // project or another language must not move this file's chip.
+    if (!statusMessageIsAboutThisFile(status, root, language)) return;
+    applyLanguageServerStatus(status, { root, language });
   }
 
   /** Ask what is wrong with the file on screen, and remember it against that file. */
@@ -841,19 +829,15 @@
 
     // Listening for status updates is likewise free, and it is the only way the
     // chip ever changes after a file opens — nothing here polls.
-    let stopStatusUpdates: (() => void) | null = null;
-    let panelClosed = false;
-    void listenForLanguageServerStatus().then((stop) => {
-      if (panelClosed) stop?.();
-      else stopStatusUpdates = stop;
-    });
+    const unsubscribeStatus = sourceIntelligence.subscribeToLanguageServerStatus(
+      handleLanguageServerStatus
+    );
 
     return () => {
       destroyed = true;
-      panelClosed = true;
       if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
       diagnosticsTimer = null;
-      stopStatusUpdates?.();
+      unsubscribeStatus();
       // Anything still waiting on the server has nowhere to go now.
       languageServerGate.releaseAll();
       // With no panel there is nothing truthful to show in the top strip.

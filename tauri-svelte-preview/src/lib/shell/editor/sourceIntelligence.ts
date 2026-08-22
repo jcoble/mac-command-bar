@@ -87,7 +87,10 @@ import {
   loadPersistedReferenceCounts,
   replacePersistedReferenceCounts
 } from './referenceCountPersistence.ts';
-import { statusMessageIsAboutThisFile } from '../components/editor/languageServerStatus.ts';
+import {
+  statusMessageIsAboutThisFile,
+  type LanguageServerStatusMessage
+} from '../components/editor/languageServerStatus.ts';
 import {
   setSourceIntelligenceDiagnostics,
   trackTauriListener
@@ -260,6 +263,10 @@ export interface SourceIntelligenceCallbacks {
 export interface SourceIntelligence {
   /** Stop event subscriptions owned by this service. */
   dispose(): void;
+  /** Subscribe to pushed language-server status updates. */
+  subscribeToLanguageServerStatus(
+    listener: (status: LanguageServerStatusMessage) => void
+  ): () => void;
   /** Project the open files belong to; language-server lookups need it. */
   setProjectRoot(projectRoot: string | null): void;
   /** The file on screen (its contents are what lookups are resolved against). */
@@ -826,6 +833,7 @@ export function createSourceIntelligence(): SourceIntelligence {
   let statusWatch: Promise<boolean> | null = null;
   let stopStatusWatch: (() => void) | null = null;
   let statusWatchGeneration = 0;
+  const statusSubscribers = new Set<(status: LanguageServerStatusMessage) => void>();
 
   function watchLanguageServerStatus(): Promise<boolean> {
     const generation = statusWatchGeneration;
@@ -833,7 +841,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       if (!(await hasBackendCapability('lspStatusEvents'))) return false;
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        const stopStatusEvents = await listen<{ state?: string; root: string; language: string }>(
+        const stopStatusEvents = await listen<LanguageServerStatusMessage>(
           'source-lsp-status-changed',
           (event) => {
             // Whatever we last worked out about the server is now out of date.
@@ -848,6 +856,7 @@ export function createSourceIntelligence(): SourceIntelligence {
             ) {
               releaseHeldQuestions();
             }
+            for (const subscriber of statusSubscribers) subscriber(event.payload);
           }
         );
         const stop = trackTauriListener(stopStatusEvents);
@@ -1234,6 +1243,14 @@ export function createSourceIntelligence(): SourceIntelligence {
       stopStatusWatch?.();
       stopStatusWatch = null;
       statusWatch = null;
+      statusSubscribers.clear();
+    },
+    subscribeToLanguageServerStatus(
+      listener: (status: LanguageServerStatusMessage) => void
+    ): () => void {
+      statusSubscribers.add(listener);
+      if (isNativeTauriRuntime()) void watchLanguageServerStatus();
+      return () => statusSubscribers.delete(listener);
     },
     setProjectRoot(nextProjectRoot: string | null): void {
       const normalized =
