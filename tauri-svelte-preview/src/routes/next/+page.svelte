@@ -136,8 +136,10 @@
 	} from "$lib/shell/sessionLibrary/sessionLibraryService";
 	import {
 		captureWorkspace,
+		DEFAULT_DIFF_MODE,
 		diffPathFor,
 		planWorkspaceRestore,
+		type DiffMode,
 		type SessionWorkspaceSnapshot,
 	} from "$lib/shell/sessionWorkspaces";
 	import { registerShellCommands } from "$lib/shell/shellCommands";
@@ -202,6 +204,7 @@
 	const livePtySizes = new Map<string, { cols: number; rows: number }>();
 
 	let activeWorkspaceSnapshot: SessionWorkspaceSnapshot | null = null;
+	let diffMode: DiffMode = DEFAULT_DIFF_MODE;
 	let workspaceRestoreGeneration = 0;
 	let sessionSelectionGeneration = 0;
 	let sessionProjectionOwner: "selection" | "checkout" | null = null;
@@ -820,6 +823,7 @@
 				scrollTop: explorer.scrollTop,
 				diffPath: gitPanel.selectedPath || null,
 				diffRoot: gitPanel.root,
+				diffMode,
 				conversation: captureConversationWorkspace(ownedId),
 				browser: captureBrowserState(),
 				center: frameControls?.captureCenterLayout() ?? null,
@@ -840,6 +844,12 @@
 			if (!disposed && !clearAllEditorsInFlight) rail.error = `workspace checkpoint failed: ${describeError(error)}`;
 			return false;
 		}
+	}
+
+	function handleDiffModeChange(mode: DiffMode): void {
+		diffMode = mode;
+		const ownedId = rail.activeOwnedId;
+		if (workspaceAutosaveEnabled && ownedId !== null) void snapshotWorkspace(ownedId);
 	}
 
 	/** Move one active Codex session to another checkout after preserving and
@@ -1046,6 +1056,7 @@
 		}
 		if (disposed || generation !== workspaceRestoreGeneration || rail.activeOwnedId !== ownedId || clearAllEditorsInFlight) return;
 		activeWorkspaceSnapshot = snapshot;
+		diffMode = snapshot?.diffMode ?? DEFAULT_DIFF_MODE;
 		restoreBrowserState(snapshot?.browser);
 		// A remembered diff is read only when this session is returning to the Diff
 		// surface. Restoring it before the remembered center tab is applied would do
@@ -2057,10 +2068,9 @@
 	/>
 {/snippet}
 <!-- The changes to whichever file source control has selected. `GitDiffView`
-     reads that selection itself and takes no props, so it can simply live here
-     as a tab of its own — which is what gives a diff the width of the middle
-     instead of a column. -->
-	{#snippet diffArea()}{#if centerTab === "diff"}<GitDiffView showing={true} rootAvailable={activeRootAvailable} />{/if}{/snippet}
+     reads the selected file itself and lives here as a tab of its own — which
+     is what gives a diff the width of the middle instead of a column. -->
+	{#snippet diffArea()}{#if centerTab === "diff"}<GitDiffView showing={true} rootAvailable={activeRootAvailable} mode={diffMode} onModeChange={handleDiffModeChange} />{/if}{/snippet}
 
 <!-- The whole commit history as a table, given the width of the middle. It reads
      `gitPanel` itself; the active root only tells its lazy surface when to point

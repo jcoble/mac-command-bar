@@ -9,13 +9,12 @@
    * measured while hidden, so it is safe inside a parked (display:none) host.
    *
    * Text files use CodeMirror's merge view with full bounded models supplied
-   * by Rust. The unified-text renderer stays only as a fallback for an older
-   * backend or a file whose full models are intentionally unavailable — and for
-   * a diff that is loaded but not in front, because no editor should mount for
-   * a comparison nobody is looking at.
+   * by Rust when side-by-side mode is selected. Unified text is the default and
+   * remains the fallback when full models are unavailable or the tab is hidden.
    */
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { parseUnifiedDiff, summarizeParsedDiff } from '$lib/shell/git/parseUnifiedDiff';
+  import type { DiffMode } from '$lib/shell/sessionWorkspaces';
   import type CodeMirrorGitDiffEditor from '$lib/shell/components/git/CodeMirrorGitDiffEditor.svelte';
   import { requestOpenFile } from '$lib/shell/openFileBus';
 
@@ -25,8 +24,10 @@
      * for a comparison nobody is looking at. */
     showing?: boolean;
     rootAvailable?: boolean;
+    mode?: DiffMode;
+    onModeChange?: (mode: DiffMode) => void;
   }
-  let { showing = false, rootAvailable = true }: Props = $props();
+  let { showing = false, rootAvailable = true, mode = 'unified', onModeChange }: Props = $props();
 
   type DiffEditorComponent = typeof CodeMirrorGitDiffEditor;
   let DiffEditor = $state<DiffEditorComponent | null>(null);
@@ -65,7 +66,7 @@
   }
 
   $effect(() => {
-    if (showing && hasNativeModels) void ensureDiffEditor();
+    if (showing && mode === 'side-by-side' && hasNativeModels) void ensureDiffEditor();
   });
 
   /** Hunks cut down to the render cap, in order. */
@@ -142,8 +143,25 @@
       <p class="notice">This is a binary file, so there is no line-by-line comparison.</p>
     {:else if parsed.isEmpty}
       <p class="notice">This file has no line changes compared with the last commit.</p>
-    {:else if showing && hasNativeModels && diff && gitPanel.root}
-      <div class="native-body">
+    {:else}
+      {#if hasNativeModels}
+        <div class="mode-row" role="group" aria-label="Diff view mode">
+          <button
+            type="button"
+            class:active={mode === 'unified'}
+            aria-pressed={mode === 'unified'}
+            onclick={() => onModeChange?.('unified')}
+          >Unified</button>
+          <button
+            type="button"
+            class:active={mode === 'side-by-side'}
+            aria-pressed={mode === 'side-by-side'}
+            onclick={() => onModeChange?.('side-by-side')}
+          >Side by side</button>
+        </div>
+      {/if}
+      {#if showing && mode === 'side-by-side' && hasNativeModels && diff && gitPanel.root}
+        <div class="native-body">
         {#if DiffEditor}
           <DiffEditor
             root={gitPanel.root}
@@ -157,9 +175,9 @@
         {:else}
           <p class="notice">Starting the diff editor…</p>
         {/if}
-      </div>
-    {:else}
-      <div class="body">
+        </div>
+      {:else}
+        <div class="body">
         {#each sections as section, sectionIndex (sectionIndex)}
           {#if section.label}
             <p class="section-label">{section.label}</p>
@@ -195,7 +213,8 @@
             Showing the first {MAX_RENDERED_LINES} lines of this diff, out of {renderedLineCount}.
           </p>
         {/if}
-      </div>
+        </div>
+      {/if}
     {/if}
   {/if}
 </div>
@@ -236,6 +255,28 @@
     color: #6d6d7d;
     font-size: 12px;
     white-space: nowrap;
+  }
+
+  .mode-row {
+    display: flex;
+    gap: 4px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #22222c;
+  }
+
+  .mode-row button {
+    padding: 3px 8px;
+    border: 1px solid #30303c;
+    border-radius: 4px;
+    background: transparent;
+    color: #8d8d9c;
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .mode-row button.active {
+    border-color: #6666a0;
+    color: #e6e6ee;
   }
 
   .notice {

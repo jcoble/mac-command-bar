@@ -28,6 +28,13 @@ import type { RightTabId } from './workbenchNavigation.ts';
 
 export const SESSION_CONVERSATION_WORKSPACE_VERSION = 1;
 
+export type DiffMode = 'unified' | 'side-by-side';
+export const DEFAULT_DIFF_MODE: DiffMode = 'unified';
+
+export function isDiffMode(value: unknown): value is DiffMode {
+  return value === 'unified' || value === 'side-by-side';
+}
+
 export interface SessionConversationWorkspace {
   mode: 'structured' | 'raw';
   version?: number;
@@ -95,6 +102,8 @@ export interface SessionWorkspaceSnapshot {
    * project's file that happens to have the same name".
    */
   diffRoot: string | null;
+  /** How the active Diff tab renders its comparison. Legacy captures omit it. */
+  diffMode?: DiffMode;
   /** Small conversation UI state only. Provider history is never stored here. */
   conversation?: SessionConversationWorkspace;
   /** The embedded Browser state owned by this session. */
@@ -159,6 +168,7 @@ export function captureWorkspace(input: {
   diffPath?: string | null;
   /** The project folder that diff came from. See `diffRoot` on the record. */
   diffRoot?: string | null;
+  diffMode?: DiffMode;
   conversation?: SessionConversationWorkspace;
   browser?: SessionBrowserWorkspace;
   center?: SessionCenterWorkspace | null;
@@ -202,6 +212,7 @@ export function captureWorkspace(input: {
     diffRoot: bothKnown ? diffRoot : null,
     rightTab: input.rightTab
   };
+  if (isDiffMode(input.diffMode)) snapshot.diffMode = input.diffMode;
   if (Object.keys(fileStates).length > 0) snapshot.fileStates = fileStates;
   if (input.conversation) snapshot.conversation = normalizeConversation(input.conversation);
   if (input.browser) snapshot.browser = normalizeBrowser(input.browser);
@@ -426,6 +437,7 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
     scrollTop,
     diffPath: bothKnown ? diffPath : null,
     diffRoot: bothKnown ? diffRoot : null,
+    diffMode: isDiffMode(entry.diffMode) ? entry.diffMode : DEFAULT_DIFF_MODE,
     rightTab: isRightTabId(entry.rightTab) ? entry.rightTab : DEFAULT_RIGHT_TAB
   };
   const fileStates = normalizeFileStates(entry.fileStates, openPaths);
