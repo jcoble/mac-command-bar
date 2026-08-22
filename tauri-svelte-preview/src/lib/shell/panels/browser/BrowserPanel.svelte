@@ -393,7 +393,9 @@
     tool = snapshot.tool;
     capture = snapshot.capture;
     backdrop = capture
-      ? createTrackedObjectUrl(new Blob([Uint8Array.from(capture.bytes)], { type: capture.mimeType || 'image/png' }))
+      ? createTrackedObjectUrl(
+          new Blob([Uint8Array.from(capture.bytes)], { type: capture.mimeType || 'image/png' })
+        )
       : null;
     editingId = snapshot.editingId;
     expanded = snapshot.expanded;

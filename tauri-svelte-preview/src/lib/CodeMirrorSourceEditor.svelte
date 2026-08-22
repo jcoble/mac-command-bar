@@ -35,6 +35,7 @@
 
   import {
     addCodeMirrorEditorView,
+    requestTrackedAnimationFrame,
     setCodeMirrorDocBytes,
     setCodeMirrorUndoDepth,
     textBytes
@@ -327,7 +328,7 @@
       view.dispatch({ effects: language.reconfigure(extension) });
     });
     if (restored) {
-      requestAnimationFrame(() => {
+      requestTrackedAnimationFrame(() => {
         if (!view || currentPath !== preview.path) return;
         view.scrollDOM.scrollTop = restored.scrollTop;
         if (restoredViewStates[currentPath]) onRestoredViewStateConsumed?.(currentPath);

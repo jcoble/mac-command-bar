@@ -24,6 +24,10 @@
 	} from "./workspaceCodeLens";
 	import { sourcePreviewAppearance } from "./sourcePreviewAppearance";
 	import { animateWhenVisible } from "$lib/shell/elementVisibility";
+	import {
+		cancelTrackedAnimationFrame,
+		requestTrackedAnimationFrame,
+	} from "$lib/shell/resourceDiagnostics.svelte";
 	import { listThemes } from "$lib/shell/themes/themeRegistry";
 	import { currentTheme, registerMonacoApplier } from "$lib/shell/themes/themeService";
 	import {
@@ -2021,8 +2025,8 @@
 		const position = { lineNumber, column: 1 };
 		editor.setPosition(position);
 		editor.revealPositionInCenter(position);
-		if (targetLineRevealFrame) window.cancelAnimationFrame(targetLineRevealFrame);
-		targetLineRevealFrame = window.requestAnimationFrame(() => {
+		if (targetLineRevealFrame) cancelTrackedAnimationFrame(targetLineRevealFrame);
+		targetLineRevealFrame = requestTrackedAnimationFrame(() => {
 			targetLineRevealFrame = 0;
 			if (editor?.getModel() !== model) return;
 			editor.setPosition(position);
@@ -2546,7 +2550,7 @@
 			isConnected: () => mountHost.isConnected,
 			isWanted: () => !componentDestroyed && !gaveUpStarting && host === mountHost,
 			nextFrame: () =>
-				new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+				new Promise<void>((resolve) => requestTrackedAnimationFrame(() => resolve()))
 		});
 	}
 
@@ -2919,8 +2923,8 @@
 		];
 
 		layoutObserver = new ResizeObserver(() => {
-			if (layoutFrame) window.cancelAnimationFrame(layoutFrame);
-			layoutFrame = window.requestAnimationFrame(() => {
+			if (layoutFrame) cancelTrackedAnimationFrame(layoutFrame);
+			layoutFrame = requestTrackedAnimationFrame(() => {
 				layoutFrame = 0;
 				editor?.layout();
 			});
@@ -3008,11 +3012,11 @@
 		// a dead Monaco in its set for the life of the page.
 		disposeThemeApplier();
 		if (layoutFrame) {
-			window.cancelAnimationFrame(layoutFrame);
+			cancelTrackedAnimationFrame(layoutFrame);
 			layoutFrame = 0;
 		}
 		if (targetLineRevealFrame) {
-			window.cancelAnimationFrame(targetLineRevealFrame);
+			cancelTrackedAnimationFrame(targetLineRevealFrame);
 			targetLineRevealFrame = 0;
 		}
 		window.removeEventListener("error", handleMonacoCancellationWindowError);

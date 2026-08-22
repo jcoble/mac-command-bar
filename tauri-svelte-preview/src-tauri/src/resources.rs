@@ -169,10 +169,17 @@ pub struct ResourceSample {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceDiagnostics {
     pub conversations: crate::agent_conversation::manager::AgentRuntimeDiagnostics,
+    pub database: DatabaseResourceDiagnostics,
     pub terminals: TerminalResourceDiagnostics,
     pub streams: crate::projection_streams::ProjectionStreamDiagnostics,
     pub language_servers: LanguageServerResourceDiagnostics,
     pub browser: BrowserResourceDiagnostics,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseResourceDiagnostics {
+    pub session_store_open_handles: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -604,6 +611,9 @@ fn resource_diagnostics(
         .collect::<Vec<_>>();
     Ok(ResourceDiagnostics {
         conversations: agent_runtime.resource_diagnostics()?,
+        database: DatabaseResourceDiagnostics {
+            session_store_open_handles: mcb_core::session_store::session_store_open_handles(),
+        },
         terminals: TerminalResourceDiagnostics {
             live_sessions: live_terminal_sessions.len(),
             transcript_projections,

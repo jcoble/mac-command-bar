@@ -32,6 +32,9 @@ export type ResourceDiagnostics = {
     suspendableSessions: number;
     adapterPools?: number;
   };
+  database: {
+    sessionStoreOpenHandles: number;
+  };
   terminals: {
     liveSessions: number;
     transcriptProjections: number;
@@ -42,6 +45,7 @@ export type ResourceDiagnostics = {
     exitedSessionsRetained: number;
   };
   streams: {
+    workers: number;
     channels: number;
     queuedFrames: number;
     queuedBytes: number;

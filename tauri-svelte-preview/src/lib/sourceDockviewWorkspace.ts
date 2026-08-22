@@ -21,6 +21,7 @@ import {
   type SourceDockLayout,
   type SourceDockPanelID
 } from './sourceDockLayout.ts';
+import { requestTrackedAnimationFrame } from './shell/resourceDiagnostics.svelte.ts';
 
 export const sourceDockviewStorageKey = 'mac-command-bar.source-browser.dockview-layout';
 export const sourceWorkbenchStorageKey = 'mac-command-bar.source-browser.workbench-layout';
@@ -909,7 +910,7 @@ export async function createSourcePaneviewStackWorkspace<PanelID extends string>
       host.replaceChildren(element);
     }
     queueMicrotask(() => dispatchSourceDockviewLayout(element));
-    window.requestAnimationFrame(() => dispatchSourceDockviewLayout(element));
+    requestTrackedAnimationFrame(() => dispatchSourceDockviewLayout(element));
   };
 
   const api = createPaneview(container, {

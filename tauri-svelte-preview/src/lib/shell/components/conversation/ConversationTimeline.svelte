@@ -21,6 +21,10 @@
     type ConversationSendAnchorRequest
   } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
+  import {
+    cancelTrackedAnimationFrame,
+    requestTrackedAnimationFrame
+  } from '$lib/shell/resourceDiagnostics.svelte';
   import TimelineItem from './TimelineItem.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
 
@@ -224,7 +228,7 @@
     void tick().then(() => {
       if (!host) return;
       host.scrollTop = target;
-      requestAnimationFrame(() => {
+      requestTrackedAnimationFrame(() => {
         if (host) host.scrollTop = target;
       });
     });
@@ -290,7 +294,7 @@
   }
 
   function cancelProgrammaticScroll(): void {
-    if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+    if (animationFrame !== null) cancelTrackedAnimationFrame(animationFrame);
     animationFrame = null;
   }
 
@@ -322,7 +326,7 @@
       const progress = Math.min(1, (now - startedAt) / durationMs);
       const eased = 1 - Math.pow(1 - progress, 3);
       host.scrollTop = start + distance * eased;
-      if (progress < 1) animationFrame = requestAnimationFrame(step);
+      if (progress < 1) animationFrame = requestTrackedAnimationFrame(step);
       else {
         if (settleItemId) {
           const settledTop = itemTop(settleItemId, settleOffsetPx ?? 0);
@@ -331,7 +335,7 @@
         finishAnimation();
       }
     };
-    animationFrame = requestAnimationFrame(step);
+    animationFrame = requestTrackedAnimationFrame(step);
   }
 
   function itemTop(itemId: string, offsetPx: number): number | null {
@@ -378,7 +382,7 @@
       const rowIndex = renderedGroups.findIndex((group) => group.items.some((item) => item.itemId === itemId));
       if (rowIndex >= 0) $virtualizer.scrollToIndex(rowIndex, { align: 'start' });
     }
-    animationFrame = requestAnimationFrame(() => {
+    animationFrame = requestTrackedAnimationFrame(() => {
       animationFrame = null;
       anchorUser(itemId, motion, offsetPx, framesLeft - 1);
     });
@@ -440,7 +444,7 @@
     }
     requestOlderHistory();
     if (framesLeft === 0 || loadingOlder || !hasOlder) return;
-    hydrationFrame = requestAnimationFrame(() => hydrateVisibleWindow(framesLeft - 1));
+    hydrationFrame = requestTrackedAnimationFrame(() => hydrateVisibleWindow(framesLeft - 1));
   }
 
   let hydratedRevision = -1;
@@ -452,8 +456,8 @@
     if (revision === hydratedRevision && windowId === hydratedWindowId) return;
     hydratedRevision = revision;
     hydratedWindowId = windowId;
-    if (hydrationFrame !== null) cancelAnimationFrame(hydrationFrame);
-    hydrationFrame = requestAnimationFrame(() => hydrateVisibleWindow());
+    if (hydrationFrame !== null) cancelTrackedAnimationFrame(hydrationFrame);
+    hydrationFrame = requestTrackedAnimationFrame(() => hydrateVisibleWindow());
   });
 
   $effect(() => {
@@ -469,7 +473,7 @@
         group.items.some((item) => item.itemId === anchor.itemId)
       );
       if (rowIndex >= 0) $virtualizer.scrollToIndex(rowIndex, { align: 'start' });
-      requestAnimationFrame(() => {
+      requestTrackedAnimationFrame(() => {
         if (!host) return;
         const item = host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(anchor.itemId)}"]`);
         if (item) host.scrollTop += item.getBoundingClientRect().top - anchor.viewportTop;
@@ -616,7 +620,7 @@
         node.removeEventListener('touchstart', handleUserInput);
         window.removeEventListener('keydown', handleKeydown);
         cancelProgrammaticScroll();
-        if (hydrationFrame !== null) cancelAnimationFrame(hydrationFrame);
+        if (hydrationFrame !== null) cancelTrackedAnimationFrame(hydrationFrame);
       }
     };
   }

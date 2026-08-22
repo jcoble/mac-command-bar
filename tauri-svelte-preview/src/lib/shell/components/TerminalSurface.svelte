@@ -15,6 +15,10 @@
    */
   import '@xterm/xterm/css/xterm.css';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import {
+    cancelTrackedAnimationFrame,
+    requestTrackedAnimationFrame
+  } from '$lib/shell/resourceDiagnostics.svelte';
 
   interface Props {
     /** Sessions CommandBar owns (rail.owned). */
@@ -94,9 +98,9 @@
       const step = (): void => {
         onHostLayout?.(ownedId);
         framesLeft -= 1;
-        frame = framesLeft > 0 ? requestAnimationFrame(step) : 0;
+        frame = framesLeft > 0 ? requestTrackedAnimationFrame(step) : 0;
       };
-      frame = requestAnimationFrame(step);
+      frame = requestTrackedAnimationFrame(step);
     }
 
     const sizes = new ResizeObserver(() => remeasure());
@@ -111,7 +115,7 @@
 
     return {
       destroy(): void {
-        if (frame !== 0) cancelAnimationFrame(frame);
+        if (frame !== 0) cancelTrackedAnimationFrame(frame);
         sizes.disconnect();
         shownOrHidden.disconnect();
         fonts?.removeEventListener('loadingdone', onFontsLoaded);

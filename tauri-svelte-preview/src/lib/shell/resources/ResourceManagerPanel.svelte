@@ -179,9 +179,11 @@
         <span><strong>{resourceSampleState.sample.diagnostics.conversations.liveRuntimeHandles}</strong> ACP runtimes</span>
         <span><strong>{resourceSampleState.sample.diagnostics.conversations.sidecarProcesses}</strong> sidecars</span>
         <span><strong>{resourceSampleState.sample.diagnostics.conversations.activeTurns}</strong> active turns</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.database.sessionStoreOpenHandles}</strong> DB handles</span>
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.userPtys}</strong> user PTYs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.agentToolPtys}</strong> tool PTYs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.transcriptProjections}</strong> transcript projections</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.streams.workers}</strong> stream workers</span>
         <span><strong>{resourceSampleState.sample.diagnostics.streams.channels}</strong> projection channels</span>
         <span><strong>{resourceSampleState.sample.diagnostics.streams.queuedFrames}</strong> queued frames</span>
         <span><strong>{resourceSampleState.sample.diagnostics.streams.queuedBytes}</strong> queued bytes</span>
@@ -199,6 +201,8 @@
         <span><strong>{resourceDiagnostics.tauriChannels}</strong> Tauri Channels</span>
         <span><strong>{resourceDiagnostics.fileWatchers}</strong> file watchers</span>
         <span><strong>{resourceDiagnostics.objectUrls}</strong> object URLs</span>
+        <span><strong>{resourceDiagnostics.attachmentObjectUrls}</strong> attachment URLs</span>
+        <span><strong>{resourceDiagnostics.animationFrames}</strong> animation frames</span>
         <span><strong>{resourceDiagnostics.loadedTreeNodes}</strong> tree nodes</span>
         <span><strong>{resourceDiagnostics.loadedGitHistoryRows}</strong> Git rows</span>
         <span><strong>{resourceDiagnostics.activeDiffs}</strong> active diffs</span>

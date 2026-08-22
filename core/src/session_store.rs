@@ -1,10 +1,13 @@
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
 const SCHEMA_VERSION: i64 = 9;
+
+static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 
 const DURABLE_UI_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS session_workspaces (
     owned_id TEXT PRIMARY KEY REFERENCES sessions(owned_id) ON DELETE CASCADE,
@@ -197,6 +200,10 @@ pub struct AnnotationRow {
 
 pub struct SessionStore {
     connection: Mutex<Connection>,
+}
+
+pub fn session_store_open_handles() -> usize {
+    SESSION_STORE_OPEN_HANDLES.load(Ordering::Relaxed)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -535,6 +542,7 @@ impl SessionStore {
             .execute_batch(ORCHESTRATION_SCHEMA)
             .map_err(|error| StoreError::sqlite("could not create the orchestration table", error))?;
 
+        SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -1323,6 +1331,12 @@ impl SessionStore {
         self.connection
             .lock()
             .map_err(|_| StoreError::message("the session database lock is unavailable"))
+    }
+}
+
+impl Drop for SessionStore {
+    fn drop(&mut self) {
+        SESSION_STORE_OPEN_HANDLES.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

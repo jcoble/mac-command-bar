@@ -29,6 +29,7 @@ pub struct StreamEnvelope<T> {
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectionStreamDiagnostics {
+    pub workers: usize,
     pub channels: usize,
     pub queued_frames: usize,
     pub queued_bytes: u64,
@@ -156,6 +157,7 @@ impl<T: Serialize + Send + 'static> BoundedProjectionStream<T> {
             return ProjectionStreamDiagnostics::default();
         };
         ProjectionStreamDiagnostics {
+            workers: 1,
             channels: usize::from(state.channel.is_some()),
             queued_frames: state.queue.len()
                 + state.in_flight.len()
@@ -433,6 +435,7 @@ impl ProjectionStreams {
         let agent = self.agent_conversation.diagnostics();
         let terminal = self.terminal_output.diagnostics();
         ProjectionStreamDiagnostics {
+            workers: agent.workers + terminal.workers,
             channels: agent.channels + terminal.channels,
             queued_frames: agent.queued_frames + terminal.queued_frames,
             queued_bytes: agent.queued_bytes.saturating_add(terminal.queued_bytes),

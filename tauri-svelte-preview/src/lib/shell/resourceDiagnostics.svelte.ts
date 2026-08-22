@@ -13,6 +13,8 @@ export const resourceDiagnostics = $state({
   tauriChannels: 0,
   fileWatchers: 0,
   objectUrls: 0,
+  attachmentObjectUrls: 0,
+  animationFrames: 0,
   loadedTreeNodes: 0,
   loadedGitHistoryRows: 0,
   activeDiffs: 0,
@@ -128,13 +130,24 @@ export function trackFileWatcher(unwatch: () => void): () => void {
   };
 }
 
-const trackedObjectUrls = new Set<string>();
+type ObjectUrlOwner = 'attachment' | 'other';
 
-export function createTrackedObjectUrl(value: Blob | MediaSource): string {
+const trackedObjectUrls = new Map<string, ObjectUrlOwner>();
+
+function publishObjectUrlDiagnostics(): void {
+  resourceDiagnostics.objectUrls = trackedObjectUrls.size;
+  resourceDiagnostics.attachmentObjectUrls = [...trackedObjectUrls.values()]
+    .filter((owner) => owner === 'attachment').length;
+}
+
+export function createTrackedObjectUrl(
+  value: Blob | MediaSource,
+  owner: ObjectUrlOwner = 'other'
+): string {
   const url = URL.createObjectURL(value);
   if (import.meta.env.DEV) {
-    trackedObjectUrls.add(url);
-    resourceDiagnostics.objectUrls = trackedObjectUrls.size;
+    trackedObjectUrls.set(url, owner);
+    publishObjectUrlDiagnostics();
   }
   return url;
 }
@@ -143,7 +156,31 @@ export function revokeTrackedObjectUrl(url: string): void {
   URL.revokeObjectURL(url);
   if (!import.meta.env.DEV) return;
   trackedObjectUrls.delete(url);
-  resourceDiagnostics.objectUrls = trackedObjectUrls.size;
+  publishObjectUrlDiagnostics();
+}
+
+const trackedAnimationFrames = new Set<number>();
+
+export function requestTrackedAnimationFrame(callback: FrameRequestCallback): number {
+  const frame = requestAnimationFrame((now) => {
+    if (import.meta.env.DEV) {
+      trackedAnimationFrames.delete(frame);
+      resourceDiagnostics.animationFrames = trackedAnimationFrames.size;
+    }
+    callback(now);
+  });
+  if (import.meta.env.DEV) {
+    trackedAnimationFrames.add(frame);
+    resourceDiagnostics.animationFrames = trackedAnimationFrames.size;
+  }
+  return frame;
+}
+
+export function cancelTrackedAnimationFrame(frame: number): void {
+  cancelAnimationFrame(frame);
+  if (!import.meta.env.DEV) return;
+  trackedAnimationFrames.delete(frame);
+  resourceDiagnostics.animationFrames = trackedAnimationFrames.size;
 }
 
 export function textBytes(text: string): number {

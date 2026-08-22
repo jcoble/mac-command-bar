@@ -192,7 +192,7 @@ export async function saveConversationClipboardImage(
     mimeType: file.type,
     bytes
   });
-  return { ...saved, bytes, previewUrl: createTrackedObjectUrl(file) } as AttachmentWithBytes;
+  return { ...saved, bytes, previewUrl: createTrackedObjectUrl(file, 'attachment') } as AttachmentWithBytes;
 }
 
 /** Revoke only URLs owned by this surface; the managed path never goes through the DOM. */

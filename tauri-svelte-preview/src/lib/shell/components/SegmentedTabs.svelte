@@ -14,6 +14,10 @@
 -->
 <script lang="ts">
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+  import {
+    cancelTrackedAnimationFrame,
+    requestTrackedAnimationFrame
+  } from '$lib/shell/resourceDiagnostics.svelte';
 
   import { indicatorFrame, type SegmentedTabItem } from './segmentedTabs';
 
@@ -54,8 +58,8 @@
 
   $effect(() => {
     if (widths.length === 0 || placed) return;
-    const frameId = requestAnimationFrame(() => (placed = true));
-    return () => cancelAnimationFrame(frameId);
+    const frameId = requestTrackedAnimationFrame(() => (placed = true));
+    return () => cancelTrackedAnimationFrame(frameId);
   });
 
   /** Left and right walk the strip and choose as they go, wrapping at the ends. */
