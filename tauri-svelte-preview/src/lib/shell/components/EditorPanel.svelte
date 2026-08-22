@@ -88,6 +88,11 @@
   } from '$lib/shell/editor/sourceIntelligence';
   import { settings } from '$lib/settingsStore.svelte';
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
+  import {
+    dotnetWorkspaceSessionRequest,
+    type DotnetWorkspaceAction,
+    type WorkspaceCommandSessionRequest
+  } from '$lib/workspaceCodeLens';
   import { openFileTimeline } from '$lib/shell/workbenchNavigation';
   import {
     findSourceLspCodeActionsFromTauri,
@@ -130,8 +135,16 @@
     rootAvailable?: boolean;
     /** Clears every session's saved editor strip after the close outcome succeeds. */
     onCloseAllEditors?: () => void | Promise<boolean | void>;
+    /** Starts a fixed .NET workspace action in the page-owned terminal rail. */
+    onRunDotnetWorkspace?: (request: WorkspaceCommandSessionRequest) => void | Promise<void>;
   }
-  let { onFileOpened, showing = false, rootAvailable = true, onCloseAllEditors }: Props = $props();
+  let {
+    onFileOpened,
+    showing = false,
+    rootAvailable = true,
+    onCloseAllEditors,
+    onRunDotnetWorkspace
+  }: Props = $props();
 
   type CodeEditorComponent = typeof CodeMirrorSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
@@ -1184,6 +1197,12 @@
     setEditorSymbols(symbols);
   }
 
+  function runDotnetWorkspace(action: DotnetWorkspaceAction): void | Promise<void> {
+    const root = editorState.projectRoot;
+    if (!root || activeFileReadOnly || !onRunDotnetWorkspace) return;
+    return onRunDotnetWorkspace(dotnetWorkspaceSessionRequest(action, root));
+  }
+
   /**
    * Fetch and start the code editor for the file on screen.
    *
@@ -1402,6 +1421,8 @@
             onRestoredViewStateConsumed={consumeRestoredViewState}
             onSaveRequest={() => void saveActiveFile()}
             onSymbolsChange={handleSymbolsChange}
+            onDotnetBuildRequest={() => runDotnetWorkspace('build')}
+            onDotnetTestRequest={() => runDotnetWorkspace('test')}
           />
         {:else}
           <p class="canvas-message">Starting the code editor…</p>

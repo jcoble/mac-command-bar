@@ -49,6 +49,7 @@
     textBytes
   } from '$lib/shell/resourceDiagnostics.svelte';
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
+  import { codeMirrorCodeLens } from '$lib/shell/editor/codeMirrorCodeLens';
   import { codeMirrorTheme, loadCodeMirrorTheme } from '$lib/shell/editor/codeMirrorTheme';
   import {
     connectCodeMirrorCsharpClient,
@@ -95,6 +96,8 @@
     onExternalNavigation?: (request: { path: string; line: number; column: number }) => void | Promise<void>;
     onSaveRequest?: () => void;
     onSymbolsChange?: (symbols: SourceSymbol[]) => void;
+    onDotnetBuildRequest?: () => void | Promise<void>;
+    onDotnetTestRequest?: () => void | Promise<void>;
   }
 
   let {
@@ -114,11 +117,15 @@
     onDefinitionLookup,
     onExternalNavigation,
     onHoverLookup,
+    onCodeLensAnchorLookup,
     onReferenceLookup,
+    onReferenceCountLookup,
     onReferenceCountsOutOfDate,
     onSaveRequest,
     onSymbolsChange,
-    onWorkspaceEditAction
+    onWorkspaceEditAction,
+    onDotnetBuildRequest,
+    onDotnetTestRequest
   }: Props = $props();
 
   let host: HTMLDivElement;
@@ -137,12 +144,14 @@
   const intelligence = new Compartment();
   const themeExtension = new Compartment();
   const editing = new Compartment();
+  const codeLens = new Compartment();
   const sessionViewStates = new Map<string, StoredViewState>();
   const sessionEditorStates = new Map<string, EditorState>();
   let themeGeneration = 0;
   let requestedThemeKey = '';
   let loadedThemeKey = '';
   let codeActionGeneration = 0;
+  let codeLensGeneration = 0;
 
   type CodeActionMenu = { path: string; root: string; pos: number; actions: SourceCodeAction[] };
   const setCodeActionMenu = StateEffect.define<CodeActionMenu | null>();
@@ -185,6 +194,35 @@
   function clearCodeActions(): void {
     codeActionGeneration += 1;
     if (view) view.dispatch({ effects: setCodeActionMenu.of(null) });
+  }
+
+  function configureCodeLens(): void {
+    if (!view || !currentPath || currentPath !== preview.path) return;
+    const generation = ++codeLensGeneration;
+    const extension = codeMirrorCodeLens({
+      preview: { ...preview, content: view.state.doc.toString() },
+      enabled: Boolean(visible && languageServerRoot && onCodeLensAnchorLookup && onReferenceCountLookup),
+      onAnchorLookup: onCodeLensAnchorLookup,
+      onCount: onReferenceCountLookup,
+      onReferences: onReferenceLookup,
+      onOpenReference: async (target) => {
+        if (!view || generation !== codeLensGeneration || currentPath !== preview.path) return;
+        if (target.path === preview.path) {
+          const at = linePosition(view.state, target.line, target.column);
+          view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: 'center' }) });
+          view.focus();
+        } else {
+          await onExternalNavigation?.({ path: target.path, line: target.line, column: target.column });
+        }
+      },
+      onDotnetAction: (action) => action === 'build' ? onDotnetBuildRequest?.() : onDotnetTestRequest?.()
+    });
+    view.dispatch({ effects: codeLens.reconfigure(extension) });
+  }
+
+  function clearCodeLens(): void {
+    codeLensGeneration += 1;
+    if (view) view.dispatch({ effects: codeLens.reconfigure([]) });
   }
 
   function clearReferenceCountTimer(): void {
@@ -600,6 +638,7 @@
     language.of([]),
     editing.of(editingExtensions()),
     codeActionMenuState,
+    codeLens.of([]),
     EditorView.domEventHandlers({
       mousedown: (event, editor) => {
         if (!(event.metaKey || event.ctrlKey) || event.button !== 0) return false;
@@ -673,6 +712,7 @@
     loadVisibleLanguageSupport();
     loadVisibleThemeSupport();
     loadVisibleLspSupport();
+    configureCodeLens();
     if (restored) {
       requestTrackedAnimationFrame(() => {
         if (!view || currentPath !== preview.path) return;
@@ -692,6 +732,7 @@
     const wasCurrent = currentPath === path;
     if (wasCurrent) {
       clearLspSupport(false);
+      clearCodeLens();
       currentPath = '';
     }
     sessionEditorStates.delete(path);
@@ -704,6 +745,7 @@
 
   export function disposeAllTabModels(): void {
     clearLspSupport();
+    clearCodeLens();
     currentPath = '';
     sessionViewStates.clear();
     sessionEditorStates.clear();
@@ -716,6 +758,7 @@
     clearReferenceCountTimer();
     clearLspSupport();
     clearLanguageSupport();
+    clearCodeLens();
     currentPath = '';
     sessionViewStates.clear();
     sessionEditorStates.clear();
@@ -760,6 +803,7 @@
       clearLanguageSupport();
       clearLspSupport();
     }
+    if (view && currentPath === preview.path) configureCodeLens();
   });
 
   $effect(() => {
@@ -794,6 +838,7 @@
   onDestroy(() => {
     clearReferenceCountTimer();
     clearLspSupport();
+    clearCodeLens();
     languageGeneration += 1;
     themeGeneration += 1;
     view?.destroy();
