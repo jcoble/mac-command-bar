@@ -786,14 +786,21 @@
 	function rememberFileTreeExpandedPaths(root: string, paths: readonly string[]): void {
 		const ownedId = rail.activeOwnedId;
 		const projectRoot = canonicalPath(root);
-		if (!ownedId || !projectRoot || activeWorkspaceSnapshot === null) return;
-		activeWorkspaceSnapshot = {
-			...activeWorkspaceSnapshot,
-			expandedPathsByRoot: {
-				...(activeWorkspaceSnapshot.expandedPathsByRoot ?? {}),
-				[projectRoot]: [...paths],
-			},
+		if (!ownedId || !projectRoot) return;
+		const expandedPathsByRoot = {
+			...(activeWorkspaceSnapshot?.expandedPathsByRoot ?? {}),
+			[projectRoot]: [...paths],
 		};
+		activeWorkspaceSnapshot = activeWorkspaceSnapshot
+			? { ...activeWorkspaceSnapshot, expandedPathsByRoot }
+			: captureWorkspace({
+				openFiles: [],
+				activePath: null,
+				selectedPath: explorer.selectedPath,
+				scrollTop: explorer.scrollTop,
+				rightTab,
+				expandedPathsByRoot,
+			});
 		scheduleWorkspaceAutosave(
 			ownedId,
 			editorState.openFiles,
@@ -1181,6 +1188,9 @@
 		// Publish the new owner only after every async precondition is current. A
 		// second click during the probe setup must still checkpoint the session that
 		// is actually on screen, not this one whose setup has not finished.
+		// Do not expose the departing session's tree projection while the arriving
+		// session's SQLite workspace is still being restored.
+		if (switching) activeWorkspaceSnapshot = null;
 		setActiveOwned(ownedId);
 		activeRootAvailable = selectedRootAvailable;
 		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);

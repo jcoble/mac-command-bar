@@ -34,6 +34,7 @@
     explorer,
     explorerNodes,
     loadedExplorerDirectoryDepth,
+    loadedExplorerDirectories,
     selectPath,
     setIncludeExcluded
   } from '$lib/shell/explorer/explorerStore.svelte';
@@ -224,6 +225,12 @@
     pending = null;
     fileClipboard = null;
     searchText = '';
+    const nextRoot = canonicalPath(sessionRoot);
+    if (nextRoot && canonicalPath(explorer.root ?? '') === nextRoot) {
+      for (const directory of loadedExplorerDirectories()) {
+        if (directory.path !== nextRoot) unloadDirectory(directory.path);
+      }
+    }
     activateExplorer(sessionRoot || null);
     void loadCheckouts(sessionRoot, checkoutGeneration);
   });
@@ -861,7 +868,7 @@
     searchGeneration += 1;
     revealGeneration += 1;
     cancelActiveSearch();
-    if (inspectedRoot) activateExplorer(null);
+    activateExplorer(null);
   });
 </script>
 
