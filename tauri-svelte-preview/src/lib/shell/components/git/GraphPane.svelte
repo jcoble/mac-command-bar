@@ -59,7 +59,7 @@
     describeGitHistoryFooter,
     type GitPanelState
   } from '$lib/shell/git/gitPanelStore.svelte';
-  import { COMMIT_HISTORY_PAGE, type GitService } from '$lib/shell/git/gitService';
+  import { COMMIT_HISTORY_LIMIT, type GitService } from '$lib/shell/git/gitService';
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { cn } from '$lib/utils';
   import {
@@ -489,12 +489,12 @@
                 SECONDARY_ACTION
               )}
               disabled={!canLoadMore}
-              title="Read another {COMMIT_HISTORY_PAGE} commits further back in this branch's history"
+              title="Read another {COMMIT_HISTORY_LIMIT} commits further back in this branch's history"
               onclick={() => void service.loadMoreHistory()}
             >
               {panel.historyLoadingMore
                 ? 'Reading older commits…'
-                : `Load ${COMMIT_HISTORY_PAGE} more`}
+                : `Load ${COMMIT_HISTORY_LIMIT} more`}
             </button>
           {/if}
         </div>

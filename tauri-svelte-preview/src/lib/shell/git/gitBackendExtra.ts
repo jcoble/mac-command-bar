@@ -38,7 +38,7 @@ import type { GitBackend } from './gitService.ts';
 import { validateProjectRootFromTauri } from '../../tauriSource.ts';
 import type {
   GitActionResult,
-  GitCommitHistoryEntry,
+  GitHistoryPage,
   ProjectGitStatus,
   SourceGitDiff
 } from '../../tauriSource.ts';
@@ -235,8 +235,8 @@ export function bridgeGitBackend(): GitBackend {
     readStatus: (root) => postGitBridge<ProjectGitStatus>('status', { root }),
     readDiff: (root, absolutePath) =>
       postGitBridge<SourceGitDiff>('file-diff', { root, path: absolutePath }),
-    readHistory: (root, limit, relativePath) =>
-      postGitBridge<GitCommitHistoryEntry[]>('history', { root, limit, relativePath }),
+    readHistory: (root, cursor, relativePath) =>
+      postGitBridge<GitHistoryPage>('history', { root, cursor, relativePath }),
     stage: refuse,
     unstage: refuse,
     commit: refuse,

@@ -67,12 +67,6 @@ const DEFAULT_REFERENCE_COUNT_DEADLINE_MS: u64 = 1_500;
 const MAX_REFERENCE_COUNT_DEADLINE_MS: u64 = 10_000;
 const MAX_SOURCE_SCAN_SKIPPED_DIRECTORY_SAMPLES: usize = 16;
 const DEFAULT_GIT_HISTORY_LIMIT: usize = 24;
-/// Most commits one history request will read. The commits list pages: it opens
-/// with a couple of dozen and asks for another hundred each time the reader
-/// wants more, so this is the ceiling on the accumulated ask rather than a page
-/// size. Five hundred entries of subject-and-author is a small read for git and
-/// still a list a person can scroll.
-const MAX_GIT_HISTORY_LIMIT: usize = 500;
 const SOURCE_SCAN_PROGRESS_EVENT: &str = "source_scan_progress";
 const SOURCE_SCAN_PROGRESS_INTERVAL: usize = 64;
 
@@ -453,6 +447,16 @@ struct GitCommitHistoryEntry {
     #[serde(rename = "taskID")]
     task_id: Option<String>,
     task_source: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitHistoryPage {
+    root: String,
+    relative_path: Option<String>,
+    commits: Vec<GitCommitHistoryEntry>,
+    next_cursor: Option<String>,
+    complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1570,11 +1574,11 @@ async fn push_git_repository(root: String) -> Result<GitActionResult, String> {
 #[tauri::command]
 async fn read_git_commit_history(
     root: String,
-    limit: Option<usize>,
+    cursor: Option<String>,
     relative_path: Option<String>,
-) -> Result<Vec<GitCommitHistoryEntry>, String> {
+) -> Result<GitHistoryPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        read_git_commit_history_sync(PathBuf::from(root), limit, relative_path)
+        read_git_commit_history_page_sync(PathBuf::from(root), cursor, relative_path)
     })
     .await
     .map_err(|error| format!("Git history task failed: {error}"))?
@@ -3246,22 +3250,38 @@ fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
     })
 }
 
-fn read_git_commit_history_sync(
+fn git_history_cursor_offset(cursor: Option<String>) -> Result<usize, String> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let trimmed = cursor.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    trimmed
+        .parse::<usize>()
+        .map_err(|_| "Git history cursor was not recognized".to_string())
+}
+
+fn read_git_commit_history_page_sync(
     root: PathBuf,
-    limit: Option<usize>,
+    cursor: Option<String>,
     relative_path: Option<String>,
-) -> Result<Vec<GitCommitHistoryEntry>, String> {
+) -> Result<GitHistoryPage, String> {
     validate_git_root(&root)?;
 
-    let limit = limit
-        .unwrap_or(DEFAULT_GIT_HISTORY_LIMIT)
-        .clamp(1, MAX_GIT_HISTORY_LIMIT);
-    let limit_arg = format!("-n{limit}");
+    let page_root = root.to_string_lossy().into_owned();
+    let page_relative_path = relative_path.clone();
+    let offset = git_history_cursor_offset(cursor)?;
+    let page_size = DEFAULT_GIT_HISTORY_LIMIT;
+    let limit_arg = format!("-n{}", page_size + 1);
+    let skip_arg = format!("--skip={offset}");
     let base_args = [
         "log",
         "--decorate=short",
         "--date=iso-strict",
         "--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D%x1f%P",
+        skip_arg.as_str(),
         limit_arg.as_str(),
     ];
     let history_output = if let Some(relative_path) = relative_path {
@@ -3274,8 +3294,31 @@ fn read_git_commit_history_sync(
     };
 
     match history_output {
-        Ok(output) => parse_git_commit_history(&output),
-        Err(error) if error.contains("does not have any commits") => Ok(Vec::new()),
+        Ok(output) => {
+            let mut commits = parse_git_commit_history(&output)?;
+            let complete = commits.len() <= page_size;
+            if !complete {
+                commits.truncate(page_size);
+            }
+            Ok(GitHistoryPage {
+                root: page_root,
+                relative_path: page_relative_path,
+                commits,
+                next_cursor: if complete {
+                    None
+                } else {
+                    Some((offset + page_size).to_string())
+                },
+                complete,
+            })
+        }
+        Err(error) if error.contains("does not have any commits") => Ok(GitHistoryPage {
+            root: page_root,
+            relative_path: page_relative_path,
+            commits: Vec::new(),
+            next_cursor: None,
+            complete: true,
+        }),
         Err(error) => Err(error),
     }
 }
@@ -7788,7 +7831,9 @@ mod tests {
         std::fs::write(root.join("README.md"), "history\n").unwrap();
         run_git_for_test(&root, &["commit", "-am", "history panel"]);
 
-        let history = read_git_commit_history_sync(root.clone(), Some(4), None).unwrap();
+        let history = read_git_commit_history_page_sync(root.clone(), None, None)
+            .unwrap()
+            .commits;
 
         assert_eq!(history.len(), 4);
         assert_eq!(history[0].subject, "history panel");
@@ -9419,7 +9464,9 @@ mod tests {
         run_git_for_test(&root, &["add", "-A"]);
         run_git_for_test(&root, &["commit", "-m", "second"]);
 
-        let history = read_git_commit_history_sync(root.clone(), Some(1), None).unwrap();
+        let history = read_git_commit_history_page_sync(root.clone(), None, None)
+            .unwrap()
+            .commits;
         let sha = history[0].sha.clone();
 
         let mut files = read_git_commit_files_sync(root.clone(), sha.clone()).unwrap();

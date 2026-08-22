@@ -64,21 +64,17 @@ export interface GitPanelState {
   historyPath: string;
   historyLoading: boolean;
   historyError: string;
-  /** How many commits the last history read asked the app for. 0 before any read.
-   *  The backend always answers with the whole list from the top, so this grows
-   *  and the list is replaced — never appended to — which keeps the graph's
-   *  columns correct across pages. */
+  /** How many commits are currently on screen. 0 before any read. */
   historyRequested: number;
+  /** Opaque cursor for the next older commit page, or null once history is complete. */
+  historyNextCursor: string | null;
   /** True while "Load more" is running. Separate from `historyLoading` so the
    *  list stays on screen instead of flipping back to "Reading the history…". */
   historyLoadingMore: boolean;
-  /** True once a read came back with fewer commits than it asked for. Asking the
-   *  same way again would return the same list, so there is nothing more to load. */
+  /** True once the backend says there is nothing more to load. */
   historyComplete: boolean;
   /** True once "Load more" has been used for this repository. */
   historyPaged: boolean;
-  /** True once we have asked for the most this app will ask for in one go. */
-  historyCeiling: boolean;
 
   // ── the file whose diff is on screen ──────────────────────────────────────
   /** Repository-relative path of the selected file, or '' when none is selected. */
@@ -112,10 +108,10 @@ export function createGitPanelState(): GitPanelState {
     historyLoading: false,
     historyError: '',
     historyRequested: 0,
+    historyNextCursor: null,
     historyLoadingMore: false,
     historyComplete: false,
     historyPaged: false,
-    historyCeiling: false,
     selectedPath: '',
     selectedDiff: null,
     diffLoading: false,
@@ -228,21 +224,9 @@ export function describeGitFileChange(file: ProjectGitFileStatus): string {
 }
 
 // ── how much of the history is on screen ────────────────────────────────────
-// The history is read in pages: a short first list, then more on request. These
-// four functions are the whole of the panel's honesty about that — they are
-// pure over the state above so a node test can check every wording, including
-// the ones that only appear against an app build that reads fewer commits than
-// this panel asks for.
-
-/**
- * A read that came back with fewer commits than it asked for has nothing more to
- * give: asking again the same way returns the same list. That is true whether
- * the repository ran out of commits or the app build stopped early, which is why
- * the sentences below never claim to know which.
- */
-export function isGitHistoryComplete(requested: number, received: number): boolean {
-  return received < requested;
-}
+// The history is read in cursor pages: a short first list, then one older page
+// on request. These functions are pure over the state above so a node test can
+// check every wording.
 
 /** Should the "Load more" button be offered right now? */
 export function canLoadMoreGitHistory(state: GitPanelState): boolean {
@@ -251,7 +235,7 @@ export function canLoadMoreGitHistory(state: GitPanelState): boolean {
     !state.desktopOnly &&
     state.history.length > 0 &&
     !state.historyComplete &&
-    !state.historyCeiling &&
+    state.historyNextCursor !== null &&
     !state.historyLoading &&
     !state.historyLoadingMore
   );
@@ -264,7 +248,7 @@ export function canLoadMoreGitHistory(state: GitPanelState): boolean {
 export function describeGitHistoryCount(state: GitPanelState): string {
   const shown = state.history.length;
   if (shown === 0) return '';
-  if (state.historyComplete || state.historyCeiling) return String(shown);
+  if (state.historyComplete) return String(shown);
   return `${shown} so far`;
 }
 
@@ -277,15 +261,9 @@ export function describeGitHistoryCount(state: GitPanelState): string {
 export function describeGitHistoryFooter(state: GitPanelState): string {
   const shown = state.history.length;
   if (shown === 0) return '';
-  if (state.historyCeiling) {
-    return `Showing ${shown} commits — the most this app reads at one time. Older commits are not in this list.`;
-  }
   if (!state.historyComplete) return `Showing ${shown} so far.`;
   if (!state.historyPaged) return `Showing all ${shown} commits.`;
-  return (
-    `Showing ${shown} commits. We asked for ${state.historyRequested} and this is all that came ` +
-    `back, so it is everything this app will show for this repository.`
-  );
+  return `Showing all ${shown} commits loaded across pages.`;
 }
 
 /** "main · 2 ahead · 1 behind", or why there is no branch line to show. */

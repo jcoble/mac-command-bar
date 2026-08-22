@@ -51,7 +51,6 @@ export const GIT_BRIDGE_ROUTE_PREFIX = '/__mcb/git/';
 
 /** How many commits the history returns when nobody says. Matches the Rust default. */
 const DEFAULT_HISTORY_LIMIT = 24;
-const MAX_HISTORY_LIMIT = 200;
 
 /** Room for a big `git show`; beyond this the answer is refused rather than truncated silently. */
 const MAX_GIT_OUTPUT_BYTES = 24 * 1024 * 1024;
@@ -85,6 +84,14 @@ export interface GitBridgeCommit {
   parentCount: number;
   taskID: string | null;
   taskSource: string | null;
+}
+
+export interface GitBridgeHistoryPage {
+  root: string;
+  relativePath: string | null;
+  commits: GitBridgeCommit[];
+  nextCursor: string | null;
+  complete: boolean;
 }
 
 export interface GitBridgeCommitFile {
@@ -387,6 +394,13 @@ export function parseGitCommitHistory(output: string): GitBridgeCommit[] {
   return entries;
 }
 
+function historyCursorOffset(cursor?: string | null): number {
+  const trimmed = (cursor ?? '').trim();
+  if (trimmed === '') return 0;
+  if (!/^\d+$/.test(trimmed)) throw new Error('Git history cursor was not recognized');
+  return Number.parseInt(trimmed, 10);
+}
+
 /**
  * `git show --name-status --format=` prints a status letter and a path per
  * line. A merge commit prints nothing at all, which is the honest answer: a
@@ -447,14 +461,12 @@ export async function readGitStatus(root: string): Promise<GitBridgeStatus> {
 /** Mirrors `read_git_commit_history`. */
 export async function readGitCommitHistory(
   root: string,
-  limit?: number | null,
+  cursor?: string | null,
   relativePath?: string | null
-): Promise<GitBridgeCommit[]> {
+): Promise<GitBridgeHistoryPage> {
   const folder = await repositoryTop(root);
-  const wanted = Math.min(
-    Math.max(Math.trunc(limit ?? DEFAULT_HISTORY_LIMIT) || DEFAULT_HISTORY_LIMIT, 1),
-    MAX_HISTORY_LIMIT
-  );
+  const offset = historyCursorOffset(cursor);
+  const pageRelativePath = relativePath?.trim() || null;
 
   try {
     const args = [
@@ -462,16 +474,33 @@ export async function readGitCommitHistory(
       '--decorate=short',
       '--date=iso-strict',
       '--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D%x1f%P',
-      `-n${wanted}`
+      `--skip=${offset}`,
+      `-n${DEFAULT_HISTORY_LIMIT + 1}`
     ];
-    if (relativePath?.trim()) args.push('--follow', '--', relativePath.trim());
+    if (pageRelativePath) args.push('--follow', '--', pageRelativePath);
     const output = await runGit(folder, args);
-    return parseGitCommitHistory(output);
+    const commits = parseGitCommitHistory(output);
+    const complete = commits.length <= DEFAULT_HISTORY_LIMIT;
+    return {
+      root: folder,
+      relativePath: pageRelativePath,
+      commits: complete ? commits : commits.slice(0, DEFAULT_HISTORY_LIMIT),
+      nextCursor: complete ? null : String(offset + DEFAULT_HISTORY_LIMIT),
+      complete
+    };
   } catch (error) {
     // A brand-new repository has no commits yet. That is an empty list, not a
     // failure.
     const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('does not have any commits')) return [];
+    if (message.includes('does not have any commits')) {
+      return {
+        root: folder,
+        relativePath: pageRelativePath,
+        commits: [],
+        nextCursor: null,
+        complete: true
+      };
+    }
     throw error;
   }
 }
@@ -602,10 +631,6 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function numberOrNull(value: unknown): number | null {
-  return typeof value === 'number' ? value : null;
-}
-
 /**
  * Answer one bridge request. Kept separate from the HTTP plumbing so the test
  * can drive the routes without a socket.
@@ -628,7 +653,7 @@ export async function handleGitBridgeRequest(
           statusCode: 200,
           body: await readGitCommitHistory(
             text(body.root),
-            numberOrNull(body.limit),
+            text(body.cursor) || null,
             text(body.relativePath) || null
           )
         };

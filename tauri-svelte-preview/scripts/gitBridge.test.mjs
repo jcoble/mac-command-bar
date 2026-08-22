@@ -57,8 +57,11 @@ const root = path.resolve(scriptsDir, '..', '..');
 }
 
 // ── the commit history, and its parents ─────────────────────────────────────
-const history = await readGitCommitHistory(root, 40);
+const firstHistoryPage = await readGitCommitHistory(root);
+const history = firstHistoryPage.commits;
 {
+  assert.equal(firstHistoryPage.root, root);
+  assert.equal(firstHistoryPage.relativePath, null);
   assert.ok(history.length > 5, 'this repository has a history to read');
   for (const entry of history) {
     assert.match(entry.sha, /^[0-9a-f]{40}$/, 'a full commit id');
@@ -71,12 +74,14 @@ const history = await readGitCommitHistory(root, 40);
     assert.ok(entry.taskID === null || /^TSK-\d+$/.test(entry.taskID));
   }
 
-  // The number asked for is a cap, not a promise, and it is honoured.
-  const short = await readGitCommitHistory(root, 3);
-  assert.equal(short.length, 3);
-  assert.deepEqual(
-    short.map((entry) => entry.sha),
-    history.slice(0, 3).map((entry) => entry.sha)
+  assert.equal(history.length, 24, 'one bounded page is returned');
+  assert.equal(firstHistoryPage.nextCursor, '24');
+  const secondHistoryPage = await readGitCommitHistory(root, firstHistoryPage.nextCursor);
+  assert.equal(secondHistoryPage.commits.length, 24);
+  assert.notEqual(
+    secondHistoryPage.commits[0].sha,
+    history.at(-1).sha,
+    'the continuation reads the next page instead of repeating the first'
   );
 }
 

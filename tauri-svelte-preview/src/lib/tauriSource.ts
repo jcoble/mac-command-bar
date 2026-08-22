@@ -271,6 +271,14 @@ export type GitCommitHistoryEntry = {
   taskSource: string | null;
 };
 
+export type GitHistoryPage = {
+  root: string;
+  relativePath: string | null;
+  commits: GitCommitHistoryEntry[];
+  nextCursor: string | null;
+  complete: boolean;
+};
+
 export type AgentSession = {
   provider: string;
   id: string;
@@ -1318,15 +1326,15 @@ export async function readPullRequestStatusFromTauri(
 
 export async function readGitCommitHistoryFromTauri(
   root: string,
-  limit = 24,
+  cursor: string | null = null,
   relativePath: string | null = null
-): Promise<GitCommitHistoryEntry[] | null> {
+): Promise<GitHistoryPage | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<GitCommitHistoryEntry[]>('read_git_commit_history', { root, limit, relativePath });
+  return invoke<GitHistoryPage>('read_git_commit_history', { root, cursor, relativePath });
 }
 
 export async function listProjectWorktreesFromTauri(

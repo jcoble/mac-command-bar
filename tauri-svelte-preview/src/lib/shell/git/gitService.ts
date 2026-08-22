@@ -48,7 +48,7 @@ import {
   unstageGitPathsFromTauri,
   type GitActionResult,
   type GitBranchList,
-  type GitCommitHistoryEntry,
+  type GitHistoryPage,
   type GitStashEntry,
   type ProjectGitFileStatus,
   type ProjectGitStatus,
@@ -58,34 +58,13 @@ import {
   clearSelectedGitFile,
   gitPanel,
   isGitFileDeleted,
-  isGitHistoryComplete,
   resetGitPanelState,
   type GitActionKind,
   type GitPanelState
 } from './gitPanelStore.svelte.ts';
 
-/** How many commits the history list asks for first. The backend caps the limit. */
+/** Fixed commit count for the first and every later cursor page. */
 export const COMMIT_HISTORY_LIMIT = 24;
-
-/** How many more commits each "Load more" asks for on top of what is on screen. */
-export const COMMIT_HISTORY_PAGE = 100;
-
-/**
- * The most this panel will ever ask for in one read. The desktop app clamps the
- * limit its own way, so asking past its clamp only wastes a call — and a list of
- * 500 commits is already more than the graph can usefully draw.
- */
-export const COMMIT_HISTORY_CEILING = 500;
-
-/**
- * The next limit to ask for, given the one already asked for. Never past the
- * ceiling, so a repository with more history than that stops asking rather than
- * spinning on a request that answers the same thing every time.
- */
-export function nextCommitHistoryLimit(requested: number): number {
-  const current = requested > 0 ? requested : COMMIT_HISTORY_LIMIT;
-  return Math.min(current + COMMIT_HISTORY_PAGE, COMMIT_HISTORY_CEILING);
-}
 
 /** Shown whenever a wrapper returns `null` — i.e. we are not in the desktop app. */
 export const DESKTOP_ONLY_MESSAGE =
@@ -112,9 +91,9 @@ export interface GitBackend {
   readDiff(root: string, absolutePath: string): Promise<SourceGitDiff | null>;
   readHistory(
     root: string,
-    limit: number,
+    cursor?: string | null,
     relativePath?: string | null
-  ): Promise<GitCommitHistoryEntry[] | null>;
+  ): Promise<GitHistoryPage | null>;
   stage(root: string, paths: string[]): Promise<GitActionResult | null>;
   unstage(root: string, paths: string[]): Promise<GitActionResult | null>;
   commit(root: string, message: string): Promise<GitActionResult | null>;
@@ -173,9 +152,9 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
       count('read_source_git_diff');
       return readSourceGitDiffFromTauri(root, absolutePath);
     },
-    readHistory(root, limit, relativePath) {
+    readHistory(root, cursor, relativePath) {
       count('read_git_commit_history');
-      return readGitCommitHistoryFromTauri(root, limit, relativePath);
+      return readGitCommitHistoryFromTauri(root, cursor, relativePath);
     },
     stage(root, paths) {
       count('stage_git_paths');
@@ -338,9 +317,9 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.status = null;
     state.history = [];
     state.historyRequested = 0;
+    state.historyNextCursor = null;
     state.historyComplete = false;
     state.historyPaged = false;
-    state.historyCeiling = false;
     publishGitDiagnostics();
     publishSourceControl();
   }
@@ -373,19 +352,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   /**
-   * Read the history at `limit` commits.
-   *
-   * The backend answers with the whole list from the newest commit down, not
-   * with the slice past what we already have, so a bigger limit REPLACES the
-   * list rather than adding to it. That is what keeps the graph honest: the
-   * columns are worked out from every commit's parents at once, so feeding the
-   * lane assignment a stitched-together list would draw lines to commits it had
-   * never seen.
-   *
-   * `loadingMore` decides which flag the wait shows on. A "Load more" leaves the
-   * list on screen and lights the button; a plain refresh replaces it.
+   * Read one cursor page. A plain load replaces the graph; "Load more" appends
+   * exactly the next page the backend returned a cursor for.
    */
-  async function loadHistory(limit: number, loadingMore: boolean): Promise<void> {
+  async function loadHistory(cursor: string | null, loadingMore: boolean): Promise<void> {
     const root = state.root;
     if (!root) return;
     const id = historyGuard.next();
@@ -394,17 +364,17 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyError = '';
 
     try {
-      const history = await backend.readHistory(root, limit, state.historyPath || null);
+      const page = await backend.readHistory(root, cursor, state.historyPath || null);
       if (!stillCurrent(historyGuard, id, root)) return;
-      if (!history) {
+      if (!page) {
         markDesktopOnly();
         return;
       }
       state.desktopOnly = false;
-      state.history = history;
-      state.historyRequested = limit;
-      state.historyComplete = isGitHistoryComplete(limit, history.length);
-      state.historyCeiling = !state.historyComplete && limit >= COMMIT_HISTORY_CEILING;
+      state.history = loadingMore ? [...state.history, ...page.commits] : page.commits;
+      state.historyRequested = state.history.length;
+      state.historyNextCursor = page.nextCursor;
+      state.historyComplete = page.complete;
     } catch (error) {
       if (!stillCurrent(historyGuard, id, root)) return;
       // A failed "Load more" keeps what is already on screen; only a failed
@@ -421,30 +391,29 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   /**
-   * Re-read the history at the size it has grown to, so refreshing after two
-   * pages of "Load more" does not silently drop back to the first 24.
+   * Re-read the first page. Refresh is a new visible graph projection, not a
+   * reread of every older page the user had loaded before.
    */
   async function refreshHistory(): Promise<void> {
-    const limit = state.historyRequested > 0 ? state.historyRequested : COMMIT_HISTORY_LIMIT;
-    await loadHistory(limit, false);
+    state.history = [];
+    state.historyRequested = 0;
+    state.historyNextCursor = null;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    await loadHistory(null, false);
   }
 
   async function loadMoreHistory(): Promise<void> {
     if (!state.root || state.historyLoading || state.historyLoadingMore) return;
-    if (state.historyComplete || state.historyCeiling) return;
-    const limit = nextCommitHistoryLimit(state.historyRequested);
-    if (limit <= state.historyRequested) {
-      state.historyCeiling = true;
-      return;
-    }
+    if (state.historyComplete || state.historyNextCursor === null) return;
     state.historyPaged = true;
-    await loadHistory(limit, true);
+    await loadHistory(state.historyNextCursor, true);
   }
 
   function ensureHistorySurface(): void {
     if (!state.root || state.historyLoading || state.historyLoadingMore) return;
     if (state.history.length > 0 || state.historyComplete) return;
-    void loadHistory(COMMIT_HISTORY_LIMIT, false);
+    void loadHistory(null, false);
   }
 
   function releaseHistorySurface(): void {
@@ -454,10 +423,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyLoading = false;
     state.historyError = '';
     state.historyRequested = 0;
+    state.historyNextCursor = null;
     state.historyLoadingMore = false;
     state.historyComplete = false;
     state.historyPaged = false;
-    state.historyCeiling = false;
     publishGitDiagnostics();
   }
 
@@ -472,15 +441,23 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     if (state.root !== targetRoot) resetGitPanelState(state, targetRoot);
     state.activated = true;
     state.historyPath = targetPath;
+    state.history = [];
     state.historyRequested = 0;
-    await loadHistory(COMMIT_HISTORY_LIMIT, false);
+    state.historyNextCursor = null;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    await loadHistory(null, false);
   }
 
   async function clearHistoryPath(): Promise<void> {
     if (!state.historyPath) return;
     state.historyPath = '';
+    state.history = [];
     state.historyRequested = 0;
-    await loadHistory(COMMIT_HISTORY_LIMIT, false);
+    state.historyNextCursor = null;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    await loadHistory(null, false);
   }
 
   async function selectFile(file: ProjectGitFileStatus): Promise<void> {
