@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::RuntimeContextProject;
+use mcb_core::session_store::{OrchestrationEventRow, SessionStore};
 
 const ORCHESTRATION_SCHEMA_VERSION: u16 = 1;
 const ASSEMBLY_ORCHESTRATION_EVENTS_ENV: &str = "ASSEMBLY_ORCHESTRATION_EVENTS";
@@ -216,9 +215,10 @@ struct OrchestrationRunDraft {
 }
 
 pub(crate) fn list_orchestration_runs_sync(
+    store: &SessionStore,
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<OrchestrationRun>, String> {
-    let events = read_orchestration_events()?;
+    let events = read_orchestration_events(store)?;
     let recorded = reduce_orchestration_events(events);
     let mut runs = orchestration_runs_or_samples(
         recorded,
@@ -257,6 +257,7 @@ fn demo_orchestration_runs_requested(value: Option<&str>) -> bool {
 }
 
 pub(crate) fn record_orchestration_event_sync(
+    store: &SessionStore,
     mut event: OrchestrationEvent,
 ) -> Result<OrchestrationRun, String> {
     if event.workflow_id.is_some() || event.kind.starts_with("workflow.") {
@@ -266,9 +267,9 @@ pub(crate) fn record_orchestration_event_sync(
         .lock()
         .map_err(|_| "Orchestration event writer is unavailable".to_string())?;
     normalize_orchestration_event(&mut event)?;
-    append_orchestration_event(&event)?;
+    append_orchestration_event(store, &event)?;
 
-    let runs = reduce_orchestration_events(read_orchestration_events()?);
+    let runs = reduce_orchestration_events(read_orchestration_events(store)?);
     runs.into_iter()
         .find(|run| run.id == event.run_id)
         .ok_or_else(|| "Recorded orchestration event, but could not rebuild its run".to_string())
@@ -282,6 +283,7 @@ fn orchestration_writer_lock() -> &'static Mutex<()> {
 /// Append a WorkflowEngine transition to the one orchestration ledger. Sequence allocation and
 /// idempotency are guarded by the same writer lock so a single app process has one total order.
 pub(crate) fn append_workflow_event_value(
+    store: &SessionStore,
     value: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let _writer = orchestration_writer_lock()
@@ -300,21 +302,18 @@ pub(crate) fn append_workflow_event_value(
         return Err("Workflow event requires workflowId and a workflow.* kind".to_string());
     }
     normalize_orchestration_event(&mut event)?;
-    let existing = read_orchestration_events()?;
     if let Some(key) = event.idempotency_key.as_deref() {
-        if let Some(prior) = existing.iter().find(|candidate| {
-            candidate.run_id == event.run_id && candidate.idempotency_key.as_deref() == Some(key)
-        }) {
-            return serde_json::to_value(prior)
+        if let Some(prior) = store
+            .find_orchestration_event_by_idempotency_key(&event.run_id, key)
+            .map_err(|error| error.to_string())?
+        {
+            return serde_json::from_str(&prior.payload_json)
                 .map_err(|error| format!("Could not serialize workflow event: {error}"));
         }
     }
-    let current_sequence = existing
-        .iter()
-        .filter(|candidate| candidate.run_id == event.run_id)
-        .filter_map(|candidate| candidate.sequence)
-        .max()
-        .unwrap_or_default();
+    let current_sequence = store
+        .latest_orchestration_sequence(&event.run_id)
+        .map_err(|error| error.to_string())? as u64;
     let expected_sequence = event
         .workflow_payload
         .as_ref()
@@ -328,17 +327,20 @@ pub(crate) fn append_workflow_event_value(
         ));
     }
     event.sequence = Some(current_sequence.saturating_add(1));
-    append_orchestration_event(&event)?;
+    append_orchestration_event(store, &event)?;
     serde_json::to_value(event)
         .map_err(|error| format!("Could not serialize workflow event: {error}"))
 }
 
-pub(crate) fn read_workflow_event_values() -> Result<Vec<serde_json::Value>, String> {
-    read_orchestration_events()?
+pub(crate) fn read_workflow_event_values(
+    store: &SessionStore,
+) -> Result<Vec<serde_json::Value>, String> {
+    store
+        .list_workflow_orchestration_events()
+        .map_err(|error| error.to_string())?
         .into_iter()
-        .filter(|event| event.workflow_id.is_some() && event.kind.starts_with("workflow."))
-        .map(|event| {
-            serde_json::to_value(event)
+        .map(|row| {
+            serde_json::from_str(&row.payload_json)
                 .map_err(|error| format!("Could not serialize workflow event: {error}"))
         })
         .collect()
@@ -406,20 +408,43 @@ fn orchestration_event_store_override() -> Option<PathBuf> {
     .map(PathBuf::from)
 }
 
-fn read_orchestration_events() -> Result<Vec<OrchestrationEvent>, String> {
+pub(crate) fn import_legacy_orchestration_events(store: &SessionStore) -> Result<(), String> {
     let path = orchestration_event_store_path()?;
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let contents = std::fs::read_to_string(&path).map_err(|error| {
         format!(
-            "Could not read orchestration event store {}: {error}",
+            "Could not read legacy orchestration event store {}: {error}",
             path.display()
         )
     })?;
+    let rows = parse_orchestration_events_jsonl(&contents)?
+        .iter()
+        .map(orchestration_event_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    store
+        .import_orchestration_events(&rows)
+        .map_err(|error| error.to_string())?;
+    std::fs::remove_file(&path).map_err(|error| {
+        format!(
+            "Could not remove imported legacy orchestration event store {}: {error}",
+            path.display()
+        )
+    })
+}
 
-    parse_orchestration_events_jsonl(&contents)
+fn read_orchestration_events(store: &SessionStore) -> Result<Vec<OrchestrationEvent>, String> {
+    store
+        .list_orchestration_events()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|row| {
+            serde_json::from_str::<OrchestrationEvent>(&row.payload_json)
+                .map_err(|error| format!("Could not read orchestration event {}: {error}", row.id))
+        })
+        .collect()
 }
 
 fn parse_orchestration_events_jsonl(input: &str) -> Result<Vec<OrchestrationEvent>, String> {
@@ -443,31 +468,33 @@ fn parse_orchestration_events_jsonl(input: &str) -> Result<Vec<OrchestrationEven
     Ok(events)
 }
 
-fn append_orchestration_event(event: &OrchestrationEvent) -> Result<(), String> {
-    let path = orchestration_event_store_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "Could not create orchestration event store directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
+fn append_orchestration_event(
+    store: &SessionStore,
+    event: &OrchestrationEvent,
+) -> Result<(), String> {
+    store
+        .append_orchestration_event(&orchestration_event_row(event)?)
+        .map_err(|error| error.to_string())
+}
 
-    let line = serde_json::to_string(event)
+fn orchestration_event_row(event: &OrchestrationEvent) -> Result<OrchestrationEventRow, String> {
+    let payload_json = serde_json::to_string(event)
         .map_err(|error| format!("Could not serialize orchestration event: {error}"))?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| {
-            format!(
-                "Could not open orchestration event store {}: {error}",
-                path.display()
-            )
-        })?;
-    writeln!(file, "{line}")
-        .map_err(|error| format!("Could not append orchestration event: {error}"))
+    let sequence = event
+        .sequence
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "Orchestration event sequence is too large".to_string())?;
+    Ok(OrchestrationEventRow {
+        id: event.id.clone(),
+        run_id: event.run_id.clone(),
+        kind: event.kind.clone(),
+        timestamp: event.timestamp.clone(),
+        sequence,
+        workflow_id: event.workflow_id.clone(),
+        idempotency_key: event.idempotency_key.clone(),
+        payload_json,
+    })
 }
 
 fn reduce_orchestration_events(events: Vec<OrchestrationEvent>) -> Vec<OrchestrationRun> {

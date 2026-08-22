@@ -658,6 +658,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-22 · “Orchestration and visible projections gain single owners”</td><td>Schema version 9 moves orchestration and workflow events into <code>sessions.db</code>; startup imports the former JSONL ledger transactionally by stable ID and removes it only after the commit. The active Files tree rejects stale directory reads by normalized path and root generation, invalidates descendant reads on collapse, and sizes Keenmate from a live <code>ResizeObserver</code>. Run output now subscribes to the terminal service’s existing root event stream instead of opening a second Tauri listener. Opened child transcripts use owner-scoped read tokens that disappear on completion or cancellation.</td><td>05, 10, 13, 18, 20</td></tr>
             <tr><td>2026-08-22 · “Bound active conversation memory and finish helper persistence”</td><td>The selected conversation now holds one serialized event window capped at eight MiB. Older and newer one-MiB SQLite pages use exact sequence cursors and stale-result guards; reaching either end trims the opposite end and leaves it refetchable. The existing virtual timeline preserves its item anchor while rows change. Helper vendor/model settings now use <code>app_settings['helper.settings']</code>, and tool rows classify only explicit provider kind fields rather than guessing from titles.</td><td>05, 12, 18, 19</td></tr>
             <tr><td>2026-08-22 · “Workbench browser persistence leaves the active shell”</td><td>Global workbench settings, Run configurations and their terminal tags, plus active grid and center layout now use JSON-validated <code>app_settings</code> rows without importing browser values. Reference-count answers no longer survive in IndexedDB: they are bounded to the current file/view and late answers are generation-guarded.</td><td>05, 10, 13, 16</td></tr>
             <tr><td>2026-08-22 · “Language-intelligence choices belong to SQLite”</td><td>The per-project Read/Full choices now use one JSON-validated <code>app_settings</code> row. The visible editor shares one hydration, waits for it before restoring or changing a project, and still applies only the project being opened. The former localStorage value is neither read nor imported.</td><td>05, 10, 16</td></tr>
@@ -669,7 +670,7 @@
             <tr><td>2026-08-22 · “Session column state belongs to SQLite”</td><td>The sessions column no longer reads or writes its collapsed state through localStorage. One global <code>app_settings</code> row owns the choice, a late restore cannot overwrite a newer click, and Reset Layout durably opens the column. The shared setting bridge orders writes by key across component remounts, so the final choice remains durable. The serialized grid still owns its geometry until the remaining layout migration.</td><td>05, 10, 12</td></tr>
             <tr><td>2026-08-22 · “Usage preferences belong to SQLite”</td><td>Schema v8 adds a JSON-validated <code>app_settings</code> table for global Assembly preferences. The Usage surface is its first owner: it defaults to Used, hydrates asynchronously from SQLite without overwriting a newer click, shares one live choice between the popover and full workspace, and orders writes so the final choice is durable. It does not read or import the former localStorage key.</td><td>05, 10</td></tr>
             <tr><td>2026-08-22 · “Browser and workbench tabs have one durable owner”</td><td>The embedded browser no longer mirrors its active URL into localStorage, and center/right workbench tabs no longer keep a second per-session browser map. Restoring a session takes the URL and both tab selections from its SQLite workspace; browser navigation and tab changes schedule the shared workspace checkpoint. Reset Layout returns every saved session’s tab pair to the defaults with one database update. Opening the visible Browser panel consumes the restored URL lazily.</td><td>05, 10, 12</td></tr>
-            <tr><td>2026-08-22 · “Session workspaces belong to SQLite”</td><td>Schema v7 adds one normalized JSON workspace snapshot per Assembly session. The frontend keeps only the active snapshot, reloads another session from SQLite, saves the active session at most every 30 seconds, and awaits an immediate checkpoint before changing sessions; a failed checkpoint leaves the departing session selected. Close All Editors clears editor state in every saved workspace with one database statement. No legacy browser workspace state is imported.</td><td>05, 10, 12</td></tr>
+            <tr><td>2026-08-22 · “Session workspaces belong to SQLite”</td><td>Schema v7 adds one normalized JSON workspace snapshot per Assembly session. The frontend keeps only the active snapshot, reloads another session from SQLite, coalesces live workspace changes, and awaits an immediate checkpoint before changing sessions; a failed checkpoint leaves the departing session selected. Close All Editors clears editor state in every saved workspace with one database statement. No legacy browser workspace state is imported.</td><td>05, 10, 12</td></tr>
             <tr><td>2026-08-22 · “Replacement sessions release their adapter pool”</td><td>Replacing a changed or failed managed-session generation now releases the prior session’s adapter-pool membership instead of stopping the pooled transport directly. A shared adapter remains alive for its other members; a last-member detach removes the pool only after cleanup succeeds. If cleanup fails, the prior managed session and its durable row are restored instead of leaving a new runtime-less generation current.</td><td>07, 09</td></tr>
             <tr><td>2026-08-22 · “One LSP status event has one native owner”</td><td><code>sourceIntelligence.ts</code> now owns the sole lazy native <code>source-lsp-status-changed</code> listener. The visible editor registers a synchronous in-process subscriber and removes it when the panel unmounts; it no longer acquires a second Tauri listener. The existing capability check, generation guard, late-acquisition disposal, and root/language filtering remain in place, and disposing source intelligence stops the native listener and clears every subscriber.</td><td>13, 18</td></tr>
             <tr><td>2026-08-22 · “Git history reads bounded cursor pages”</td><td>Repository and file history now share a <code>GitHistoryPage</code> contract carrying the inspected root, optional relative path, at most 24 commits, a continuation cursor, and completion. Rust and the web development bridge read only the requested page with <code>git log --skip</code> plus one look-ahead row. Load More appends that page instead of rereading an ever-growing prefix; refresh, release, root changes, and path changes clear both rows and cursor.</td><td>13, 18, 20</td></tr>
@@ -805,7 +806,7 @@
         </div>
 
         <div class="callout current">
-          <p><strong>The Workflow Engine reuses this same runtime.</strong> Startup constructs <code>WorkflowEngine::managed(agent_runtime.clone())</code>. Workflows are orchestration above the ACP manager, not a second hidden way of talking to agents.</p>
+          <p><strong>The Workflow Engine reuses this same runtime and store.</strong> Startup gives it a clone of the ACP manager and the manager’s existing <code>Arc&lt;SessionStore&gt;</code>. Workflows are orchestration above the ACP manager, not a second hidden way of talking to agents or a second database connection.</p>
           <span class="source"><code>src-tauri/src/main.rs:5891-5903</code></span>
         </div>
       </section>
@@ -1054,7 +1055,7 @@
           <caption>Durability map</caption>
           <thead><tr><th>Store</th><th>What it owns</th><th>Survives restart?</th></tr></thead>
           <tbody>
-            <tr><td><code>sessions.db</code></td><td>Assembly sessions, ordered normalized events/messages, conversation drafts, annotations, attachment metadata, per-session UI workspace snapshots, and global <code>app_settings</code> for active shell preferences, Run configurations, and layout.</td><td>Yes</td></tr>
+            <tr><td><code>sessions.db</code></td><td>Assembly sessions, ordered normalized events/messages, conversation drafts, annotations, attachment metadata, per-session UI workspace snapshots, global <code>app_settings</code>, and orchestration/workflow events.</td><td>Yes</td></tr>
             <tr><td>Attachment vault</td><td>Validated image bytes under app data <code>conversation-attachments/&lt;ownedId&gt;/</code>.</td><td>Yes</td></tr>
             <tr><td>Provider-native storage</td><td>The conversation context Codex, Claude, or Agy resumes; often provider JSONL or its equivalent.</td><td>Yes, provider-controlled</td></tr>
             <tr><td><code>usage-history.sqlite3</code></td><td>Separate usage analytics: token/cost events, source cursors, rate versions, and daily rollups.</td><td>Yes</td></tr>
@@ -1064,7 +1065,7 @@
           </tbody>
         </table>
 
-        <h3><code>sessions.db</code> schema version 8</h3>
+        <h3><code>sessions.db</code> schema version 9</h3>
         <div class="two-up">
           <article class="card">
             <span class="badge current">Table</span>
@@ -1088,6 +1089,11 @@
           </article>
           <article class="card">
             <span class="badge current">Table</span>
+            <h3><code>orchestration_events</code></h3>
+            <p>One durable row per stable event ID, with indexed run, workflow and idempotency identity plus the complete normalized payload JSON. Runtime listing, workflow reduction and appends read this table only. Startup parses the former JSONL ledger once, inserts every row in one immediate transaction, and deletes the file only after that transaction succeeds.</p>
+          </article>
+          <article class="card">
+            <span class="badge current">Table</span>
             <h3><code>drafts</code></h3>
             <p>One current composer draft per owned session, with an update timestamp.</p>
           </article>
@@ -1100,7 +1106,7 @@
 
         <p>SQLite runs in WAL mode with <code>synchronous=NORMAL</code> and foreign keys enabled. A live event write uses an immediate transaction to upsert the session and append the event before anything is emitted to the UI. Deleting a session cascades its events, draft, annotations, and attachment rows; the rail’s Remove does that through <code>delete_agent_conversation_session</code>, so a removed session does not come back at the next launch. The attachment files in the vault are not removed yet (tracked follow-up).</p>
         <span class="source"><code>core/src/session_store.rs:7,155-223,304-345,388-435</code></span>
-        <p>The version ladder upgrades in place and never rewrites a row. A version 1, 2 or 3 database goes straight to 4, each of those steps adding the <code>title_source</code> column if it is not already there.</p>
+        <p>The version ladder upgrades in place and never rewrites a conversation row. Every supported prior version creates the orchestration table and advances to version 9 in the same immediate transaction.</p>
         <span class="source"><code>core/src/session_store.rs:7,179-314,957-972</code></span>
 
         <div class="callout current">

@@ -22,6 +22,7 @@
     setConversationSelectedChild
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
+    cancelChildConversationTranscriptRead,
     cleanupConversationAttachment,
     clearConversationSessionDraft,
     flushConversationSessionDraft,
@@ -293,6 +294,7 @@
 
   async function selectChild(childId: string | null): Promise<void> {
     if (!active || !conversation || !active.nativeSessionId) return;
+    cancelChildConversationTranscriptRead(active.ownedId);
     setConversationSelectedChild(active.ownedId, childId);
     if (!childId) return;
     await readChildConversationTranscript({
@@ -302,6 +304,13 @@
       childSessionId: childId
     }).catch(() => undefined);
   }
+
+  $effect(() => {
+    const ownedId = active?.ownedId;
+    return () => {
+      if (ownedId) cancelChildConversationTranscriptRead(ownedId);
+    };
+  });
 
   /** Cmd+V checks files first; text paste is untouched when there are no files. */
   async function paste(event: ClipboardEvent): Promise<void> {

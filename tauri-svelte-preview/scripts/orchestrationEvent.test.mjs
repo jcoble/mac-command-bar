@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import {
   appendOrchestrationEvent,
   appendOrchestrationEventPayload,
@@ -15,17 +17,27 @@ import {
   readOrchestrationEventPayloadFile
 } from './orchestrationEvent.mjs';
 
+const execFileAsync = promisify(execFile);
+
+async function readStoredEvents(storePath) {
+  const { stdout } = await execFileAsync('sqlite3', [
+    storePath,
+    'SELECT payload_json FROM orchestration_events ORDER BY rowid ASC'
+  ]);
+  return stdout.trim() ? stdout.trim().split('\n').map((line) => JSON.parse(line)) : [];
+}
+
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mcb-orch-event-test-'));
 try {
   assert.equal(
     defaultOrchestrationEventStorePath('/tmp/home'),
-    '/tmp/home/Library/Application Support/MacCommandBar/orchestration-events.jsonl'
+    '/tmp/home/Library/Application Support/MacCommandBar/sessions.db'
   );
   assert.equal(
     orchestrationEventStorePath({
-      MAC_COMMAND_BAR_ORCHESTRATION_EVENTS: '/tmp/custom-events.jsonl'
+      MAC_COMMAND_BAR_ORCHESTRATION_DB: '/tmp/custom-sessions.db'
     }),
-    '/tmp/custom-events.jsonl'
+    '/tmp/custom-sessions.db'
   );
 
   const parsed = parseOrchestrationEventArgs([
@@ -615,7 +627,7 @@ try {
   assert.equal(sampleEvents.some((event) => event.blockerReason === 'Manual sign-off required before merge'), true);
   assert.equal(sampleEvents.some((event) => event.artifactKind === 'handoff'), true);
 
-  const storePath = path.join(tempRoot, 'events.jsonl');
+  const storePath = path.join(tempRoot, 'events.db');
   const { event } = await appendOrchestrationEvent(
     {
       runId: 'run-tsk-127',
@@ -625,9 +637,9 @@ try {
     },
     { storePath }
   );
-  const lines = (await fs.readFile(storePath, 'utf8')).trim().split('\n');
-  assert.equal(lines.length, 1);
-  assert.deepEqual(JSON.parse(lines[0]), event);
+  const storedEvents = await readStoredEvents(storePath);
+  assert.equal(storedEvents.length, 1);
+  assert.deepEqual(storedEvents[0], event);
   assert.equal(event.schemaVersion, 1);
   assert.equal(event.runId, 'run-tsk-127');
   assert.equal(event.taskID, 'TSK-127');
@@ -636,7 +648,7 @@ try {
   assert.equal(event.stepKind, 'retest');
   assert.equal(event.artifactPath, null);
 
-  const sampleStorePath = path.join(tempRoot, 'sample-events.jsonl');
+  const sampleStorePath = path.join(tempRoot, 'sample-events.db');
   const sampleResult = await appendOrchestrationSample(
     'run-e2e-loop',
     {
@@ -649,12 +661,12 @@ try {
     },
     { storePath: sampleStorePath }
   );
-  const sampleLines = (await fs.readFile(sampleStorePath, 'utf8')).trim().split('\n');
-  assert.equal(sampleLines.length, sampleResult.events.length);
-  assert.equal(JSON.parse(sampleLines[0]).kind, 'run.started');
-  assert.equal(JSON.parse(sampleLines.at(-1)).kind, 'handoff.available');
+  const storedSampleEvents = await readStoredEvents(sampleStorePath);
+  assert.equal(storedSampleEvents.length, sampleResult.events.length);
+  assert.equal(storedSampleEvents[0].kind, 'run.started');
+  assert.equal(storedSampleEvents.at(-1).kind, 'handoff.available');
 
-  const payloadStorePath = path.join(tempRoot, 'payload-events.jsonl');
+  const payloadStorePath = path.join(tempRoot, 'payload-events.db');
   const payloadResult = await appendOrchestrationEventPayload(
     {
       run_id: 'run-tsk-127',
@@ -681,11 +693,11 @@ try {
     },
     { storePath: payloadStorePath }
   );
-  const payloadLines = (await fs.readFile(payloadStorePath, 'utf8')).trim().split('\n');
+  const storedPayloadEvents = await readStoredEvents(payloadStorePath);
   assert.equal(payloadResult.events.length, 2);
-  assert.equal(payloadLines.length, 2);
-  assert.equal(JSON.parse(payloadLines[0]).kind, 'agent.started');
-  assert.equal(JSON.parse(payloadLines[1]).kind, 'handoff.available');
+  assert.equal(storedPayloadEvents.length, 2);
+  assert.equal(storedPayloadEvents[0].kind, 'agent.started');
+  assert.equal(storedPayloadEvents[1].kind, 'handoff.available');
 
   const payloadFilePath = path.join(tempRoot, 'import-events.jsonl');
   await fs.writeFile(

@@ -12,6 +12,7 @@ use crate::agent_conversation::protocol::{
 };
 use crate::agent_conversation::providers::AgentPrompt;
 use crate::orchestration::{append_workflow_event_value, read_workflow_event_values};
+use mcb_core::session_store::SessionStore;
 
 pub(crate) const WORKFLOW_DEFINITION_VERSION: u16 = 1;
 
@@ -999,6 +1000,7 @@ pub(crate) struct WorkflowEngine {
     leases: Arc<dyn WorktreeLeasePort>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
+    store: Arc<SessionStore>,
 }
 
 impl WorkflowEngine {
@@ -1007,21 +1009,24 @@ impl WorkflowEngine {
         leases: Arc<dyn WorktreeLeasePort>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGenerator>,
+        store: Arc<SessionStore>,
     ) -> Self {
         Self {
             runtime,
             leases,
             clock,
             ids,
+            store,
         }
     }
 
-    pub fn managed(runtime: AgentRuntimeManager) -> Self {
+    pub fn managed(runtime: AgentRuntimeManager, store: Arc<SessionStore>) -> Self {
         Self::new(
             Arc::new(runtime),
             Arc::new(InMemoryWorktreeLeasePort::default()),
             Arc::new(SystemClock),
             Arc::new(UuidGenerator),
+            store,
         )
     }
 
@@ -1712,7 +1717,9 @@ impl WorkflowEngine {
     }
 
     pub fn list_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
-        WorkflowReducer::reduce(read_workflow_event_values().map_err(WorkflowError::Ledger)?)
+        WorkflowReducer::reduce(
+            read_workflow_event_values(&self.store).map_err(WorkflowError::Ledger)?,
+        )
     }
 
     fn require_run(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
@@ -1775,7 +1782,7 @@ impl WorkflowEngine {
         if key.trim().is_empty() {
             return Ok(None);
         }
-        let events = read_workflow_event_values().map_err(WorkflowError::Ledger)?;
+        let events = read_workflow_event_values(&self.store).map_err(WorkflowError::Ledger)?;
         let duplicate = events.iter().any(|event| {
             event.get("runId").and_then(Value::as_str) == Some(run_id)
                 && event.get("idempotencyKey").and_then(Value::as_str) == Some(key)
@@ -1795,7 +1802,7 @@ impl WorkflowEngine {
         if key.trim().is_empty() {
             return Ok(None);
         }
-        let events = read_workflow_event_values().map_err(WorkflowError::Ledger)?;
+        let events = read_workflow_event_values(&self.store).map_err(WorkflowError::Ledger)?;
         Ok(events.into_iter().find_map(|event| {
             if event.get("workflowId").and_then(Value::as_str) == Some(workflow_id)
                 && event.get("idempotencyKey").and_then(Value::as_str) == Some(key)
@@ -1835,7 +1842,8 @@ impl WorkflowEngine {
             "providerInstanceId": node.and_then(|value| value.provider_instance_id.clone()),
             "idempotencyKey": idempotency_key, "provenance": "workflow-agent", "workflowPayload": { "run": run }
         });
-        let stored = append_workflow_event_value(event).map_err(WorkflowError::Ledger)?;
+        let stored =
+            append_workflow_event_value(&self.store, event).map_err(WorkflowError::Ledger)?;
         run.last_sequence = stored
             .get("sequence")
             .and_then(Value::as_u64)
@@ -2390,11 +2398,13 @@ mod tests {
         };
         std::env::set_var(STORE_ENV, &path);
         let runtime = Arc::new(FakeRuntime::default());
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
         let engine = WorkflowEngine::new(
             runtime.clone(),
             Arc::new(InMemoryWorktreeLeasePort::default()),
             Arc::new(FakeClock(AtomicU64::new(100))),
             Arc::new(FakeIds(AtomicU64::new(1))),
+            store.clone(),
         );
         let created = engine
             .create_run(
@@ -2418,7 +2428,7 @@ mod tests {
             "status":"paused","workflowId":stale.workflow_id,"idempotencyKey":"stale-write",
             "workflowPayload":{"run":stale}
         });
-        assert!(append_workflow_event_value(stale_event)
+        assert!(append_workflow_event_value(&store, stale_event)
             .unwrap_err()
             .contains("Stale workflow transition"));
         let started = tauri::async_runtime::block_on(engine.start(&created.id, "start-1")).unwrap();
@@ -2426,7 +2436,7 @@ mod tests {
             tauri::async_runtime::block_on(engine.start(&created.id, "start-1")).unwrap();
         assert_eq!(started, repeated);
         assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
-        let events = read_workflow_event_values().unwrap();
+        let events = read_workflow_event_values(&store).unwrap();
         let sequences: Vec<_> = events
             .iter()
             .filter_map(|event| event.get("sequence").and_then(Value::as_u64))

@@ -43,6 +43,31 @@ export const explorer = $state<{
 
 let treeNodes = $state.raw<ExplorerTreeNode[]>([]);
 const loadedDirectoryDepths = new Map<string, number>();
+let scanGeneration = 0;
+
+export function canonicalPath(path: string): string {
+  const value = path.trim().replaceAll('\\', '/');
+  if (!value) return '';
+
+  const absolute = value.startsWith('/');
+  const parts: string[] = [];
+  for (const part of value.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (parts.length > 0 && parts[parts.length - 1] !== '..') parts.pop();
+      else if (!absolute) parts.push(part);
+      continue;
+    }
+    parts.push(part);
+  }
+  const joined = parts.join('/');
+  if (!joined) return absolute ? '/' : '.';
+  return absolute ? `/${joined}` : joined;
+}
+
+export function explorerScanGeneration(): number {
+  return scanGeneration;
+}
 
 function publishLoadedNodes(): void {
   setLoadedTreeNodes(treeNodes.length);
@@ -53,18 +78,27 @@ export function explorerNodes(): ExplorerTreeNode[] {
 }
 
 export function loadedExplorerDirectoryDepth(path: string): number | null {
-  return loadedDirectoryDepths.get(path) ?? null;
+  return loadedDirectoryDepths.get(canonicalPath(path)) ?? null;
 }
 
 export function loadedExplorerDirectories(): Array<{ path: string; depth: number }> {
   return [...loadedDirectoryDepths].map(([path, depth]) => ({ path, depth }));
 }
 
-function atOrBelow(path: string, directory: string): boolean {
-  return path === directory || path.startsWith(`${directory.replace(/\/+$/, '')}/`);
+export function isExplorerPathAtOrBelow(path: string, directory: string): boolean {
+  const target = canonicalPath(directory);
+  const candidate = canonicalPath(path);
+  if (target === '.') return !candidate.startsWith('/');
+  return candidate === target || candidate.startsWith(`${target.replace(/\/+$/, '')}/`);
+}
+
+export function isExplorerDirectoryPresent(path: string): boolean {
+  const target = canonicalPath(path);
+  return target === explorer.root || treeNodes.some((node) => node.path === target && node.isDirectory);
 }
 
 export function resetExplorer(): void {
+  scanGeneration += 1;
   treeNodes = [];
   publishLoadedNodes();
   loadedDirectoryDepths.clear();
@@ -81,7 +115,8 @@ export function resetExplorer(): void {
 }
 
 export function beginScan(root: string): void {
-  explorer.root = root;
+  scanGeneration += 1;
+  explorer.root = canonicalPath(root);
   explorer.activated = true;
   explorer.scanning = true;
   explorer.error = null;
@@ -93,8 +128,10 @@ export function applyDirectoryResult(
   depth: number,
   entries: readonly SourceDirectoryEntry[]
 ): void {
-  const previousChildren = treeNodes.filter((node) => node.parentPath === directory);
-  const nextByPath = new Map(entries.map((entry) => [entry.path, entry]));
+  const target = canonicalPath(directory);
+  const normalizedEntries = entries.map((entry) => ({ ...entry, path: canonicalPath(entry.path) }));
+  const previousChildren = treeNodes.filter((node) => node.parentPath === target);
+  const nextByPath = new Map(normalizedEntries.map((entry) => [entry.path, entry]));
   const removedPaths = previousChildren
     .filter((node) => {
       const next = nextByPath.get(node.path);
@@ -104,31 +141,31 @@ export function applyDirectoryResult(
 
   const retained = treeNodes.filter(
     (node) =>
-      node.parentPath !== directory &&
-      !removedPaths.some((removedPath) => atOrBelow(node.path, removedPath))
+      node.parentPath !== target &&
+      !removedPaths.some((removedPath) => isExplorerPathAtOrBelow(node.path, removedPath))
   );
   const previousByPath = new Map(previousChildren.map((node) => [node.path, node]));
-  const children = entries.map<ExplorerTreeNode>((entry) => {
+  const children = normalizedEntries.map<ExplorerTreeNode>((entry) => {
     const previous = previousByPath.get(entry.path);
     return {
       ...entry,
-      parentPath: directory,
+      parentPath: target,
       depth,
       childCount: previous?.isDirectory === entry.isDirectory ? previous.childCount : 0,
       ignored: entry.excluded
     };
   });
   treeNodes = [...retained, ...children].map((node) =>
-    node.path === directory ? { ...node, childCount: entries.length } : node
+    node.path === target ? { ...node, childCount: normalizedEntries.length } : node
   );
   publishLoadedNodes();
 
   for (const loadedPath of [...loadedDirectoryDepths.keys()]) {
-    if (removedPaths.some((removedPath) => atOrBelow(loadedPath, removedPath))) {
+    if (removedPaths.some((removedPath) => isExplorerPathAtOrBelow(loadedPath, removedPath))) {
       loadedDirectoryDepths.delete(loadedPath);
     }
   }
-  loadedDirectoryDepths.set(directory, depth);
+  loadedDirectoryDepths.set(target, depth);
   explorer.error = null;
   explorer.lastScanFinishedAt = Date.now();
   if (explorer.selectedPath && !treeNodes.some((node) => node.path === explorer.selectedPath)) {
@@ -137,10 +174,13 @@ export function applyDirectoryResult(
 }
 
 export function discardDirectory(directory: string): void {
-  treeNodes = treeNodes.filter((node) => !atOrBelow(node.path, directory) || node.path === directory);
+  const target = canonicalPath(directory);
+  treeNodes = treeNodes.filter(
+    (node) => !isExplorerPathAtOrBelow(node.path, target) || node.path === target
+  );
   publishLoadedNodes();
   for (const loadedPath of [...loadedDirectoryDepths.keys()]) {
-    if (atOrBelow(loadedPath, directory)) loadedDirectoryDepths.delete(loadedPath);
+    if (isExplorerPathAtOrBelow(loadedPath, target)) loadedDirectoryDepths.delete(loadedPath);
   }
   if (explorer.selectedPath && !treeNodes.some((node) => node.path === explorer.selectedPath)) {
     explorer.selectedPath = null;

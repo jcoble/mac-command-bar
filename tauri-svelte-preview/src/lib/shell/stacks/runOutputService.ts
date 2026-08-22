@@ -21,10 +21,10 @@
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
   listTerminalSessionsFromTauri,
-  listenToTerminalOutput,
   readTerminalSessionScrollbackFromTauri
 } from '../../tauriSource.ts';
 import { appendOutputTail } from '../panels/run/runOutputTail.ts';
+import { subscribeToTerminalOutput } from '../terminalService.ts';
 
 /**
  * How much of a saved scrollback is read into a fresh tail. The ring behind it
@@ -87,8 +87,7 @@ export async function watchRunOutput(
     onTail(ownedId, seed);
   }
 
-  countInvoke('listen:terminal_output');
-  const stopListening = await listenToTerminalOutput((payload) => {
+  const stopListening = subscribeToTerminalOutput((payload) => {
     const ownedId = ownedByTerminal.get(payload.sessionId);
     if (!ownedId || !payload.data) return;
     const next = appendOutputTail(tails.get(ownedId) ?? [], payload.data);

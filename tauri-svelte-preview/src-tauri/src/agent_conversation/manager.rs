@@ -382,6 +382,10 @@ impl AgentRuntimeManager {
         &self.store
     }
 
+    pub(crate) fn store_handle(&self) -> Arc<SessionStore> {
+        Arc::clone(&self.store)
+    }
+
     pub fn set_session_draft(&self, owned_id: &str, text: &str) -> Result<(), String> {
         self.store
             .set_draft(owned_id, text)

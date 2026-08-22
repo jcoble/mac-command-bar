@@ -20,8 +20,8 @@ use mcb_core::scanners::sessions::{
 };
 use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 use orchestration::{
-    list_orchestration_runs_sync, record_orchestration_event_sync, OrchestrationEvent,
-    OrchestrationRun,
+    import_legacy_orchestration_events, list_orchestration_runs_sync,
+    record_orchestration_event_sync, OrchestrationEvent, OrchestrationRun,
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
@@ -1848,16 +1848,22 @@ async fn kill_process(
 
 #[tauri::command]
 async fn list_orchestration_runs(
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<OrchestrationRun>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_orchestration_runs_sync(projects))
+    let store = manager.store_handle();
+    tauri::async_runtime::spawn_blocking(move || list_orchestration_runs_sync(&store, projects))
         .await
         .map_err(|error| format!("Orchestration run task failed: {error}"))?
 }
 
 #[tauri::command]
-async fn record_orchestration_event(event: OrchestrationEvent) -> Result<OrchestrationRun, String> {
-    tauri::async_runtime::spawn_blocking(move || record_orchestration_event_sync(event))
+async fn record_orchestration_event(
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
+    event: OrchestrationEvent,
+) -> Result<OrchestrationRun, String> {
+    let store = manager.store_handle();
+    tauri::async_runtime::spawn_blocking(move || record_orchestration_event_sync(&store, event))
         .await
         .map_err(|error| format!("Orchestration event task failed: {error}"))?
 }
@@ -6119,17 +6125,20 @@ fn main() {
                 )
             })?;
             debug_log::install_file_mirror(app_data_dir.join("logs/backend.log"));
+            let session_db_path = app_data_dir.join("sessions.db");
             let agent_runtime = agent_conversation::manager::AgentRuntimeManager::open(
                 agent_conversation::providers::ProviderRegistry::bundled_from_environment()
                     .map_err(|error| {
                         format!("Packaged ACP adapter configuration is invalid: {error}")
                     })?,
-                &app_data_dir.join("sessions.db"),
+                &session_db_path,
             )?;
+            import_legacy_orchestration_events(agent_runtime.store())?;
             // Validate the store-backed list and its runtime overlay before any
             // frontend activation can observe the manager.
             agent_runtime.list_sessions()?;
-            let workflow_engine = WorkflowEngine::managed(agent_runtime.clone());
+            let workflow_store = agent_runtime.store_handle();
+            let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
             let live_session_ids = agent_runtime
                 .resource_roots()
                 .into_iter()

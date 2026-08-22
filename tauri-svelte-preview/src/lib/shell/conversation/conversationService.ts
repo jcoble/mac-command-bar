@@ -113,17 +113,27 @@ export async function clearConversationSessionDraft(ownedId: string): Promise<vo
 }
 
 /** Loads one child transcript through the typed conversation command boundary. */
+const childTranscriptReads = new Map<string, object>();
+
+export function cancelChildConversationTranscriptRead(ownedId: string): void {
+  childTranscriptReads.delete(ownedId);
+}
+
 export async function readChildConversationTranscript(input: {
   ownedId: string;
   provider: AgentConversationProvider;
   nativeSessionId: string;
   childSessionId: string;
 }): Promise<void> {
+  const readToken = {};
+  childTranscriptReads.set(input.ownedId, readToken);
   const snapshot = await invoke<ConversationTranscriptSnapshot>('read_agent_conversation_transcript', {
     provider: input.provider,
     nativeSessionId: input.nativeSessionId,
     childSessionId: input.childSessionId
   });
+  if (childTranscriptReads.get(input.ownedId) !== readToken) return;
+  childTranscriptReads.delete(input.ownedId);
   applyChildConversationTranscript(input.ownedId, input.childSessionId, snapshot.messages);
 }
 

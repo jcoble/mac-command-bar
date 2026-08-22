@@ -77,10 +77,10 @@ Count flags such as `--issue-count`, `--fix-count`, `--resolved-count`, and
 `--verified-count` feed the run tally directly, so a batched agent update can
 represent more than one issue or fix.
 
-Events are appended to
-`~/Library/Application Support/MacCommandBar/orchestration-events.jsonl` by
-default. Set `MAC_COMMAND_BAR_ORCHESTRATION_EVENTS=/path/to/events.jsonl` to
-redirect them for tests or isolated sessions.
+Events are appended to the `orchestration_events` table in
+`~/Library/Application Support/MacCommandBar/sessions.db` by default. Set
+`MAC_COMMAND_BAR_ORCHESTRATION_DB=/path/to/sessions.db` to redirect the command
+for an isolated session.
 
 ## Profiles
 

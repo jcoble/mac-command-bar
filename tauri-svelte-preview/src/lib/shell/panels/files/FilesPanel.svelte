@@ -10,8 +10,6 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Square from '@lucide/svelte/icons/square';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import { onMount } from 'svelte';
-
   import { Button } from '$lib/components/ui/button/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
@@ -163,15 +161,18 @@
     field.select();
   });
 
-  onMount(() => {
+  $effect(() => {
+    const host = treeHost;
+    if (!host) return;
+
     const updateTreeHeight = () => {
-      if (treeHost) treeHeight = Math.max(1, Math.floor(treeHost.clientHeight));
+      treeHeight = Math.max(1, Math.floor(host.clientHeight));
     };
-    const frame = requestAnimationFrame(updateTreeHeight);
-    window.addEventListener('resize', updateTreeHeight);
+    updateTreeHeight();
+    const observer = new ResizeObserver(updateTreeHeight);
+    observer.observe(host);
     return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('resize', updateTreeHeight);
+      observer.disconnect();
     };
   });
 
@@ -216,7 +217,7 @@
   }
 
   function sortTreeNodes(items: LTreeNode<TreeItem>[]): LTreeNode<TreeItem>[] {
-    return items.sort(compareTreeNodes);
+    return [...items].sort(compareTreeNodes);
   }
 
   function collapsePath(path: string): void {
@@ -484,7 +485,7 @@
     </EmptyState>
   {:else if explorer.unavailable === 'checkout-deleted'}
     <EmptyState
-      title="Checkout/Worktree deleted"
+      title="Checkout/Worktree deleted."
       body="The conversation is still available, but this session’s project files no longer exist."
     >
       {#snippet icon()}<TriangleAlert />{/snippet}

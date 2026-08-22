@@ -38,6 +38,22 @@ import {
 } from '../tauriSource.ts';
 import { hasBackendCapability } from './backendCapabilities.ts';
 
+export type TerminalOutputSubscriber = (payload: TerminalOutputPayload) => void;
+
+const terminalOutputSubscribers = new Set<TerminalOutputSubscriber>();
+
+/** Subscribe to the one terminal-output stream without opening another Tauri listener. */
+export function subscribeToTerminalOutput(subscriber: TerminalOutputSubscriber): () => void {
+  terminalOutputSubscribers.add(subscriber);
+  return () => {
+    terminalOutputSubscribers.delete(subscriber);
+  };
+}
+
+function publishTerminalOutput(payload: TerminalOutputPayload): void {
+  for (const subscriber of terminalOutputSubscribers) subscriber(payload);
+}
+
 /**
  * The PTY transport, injected so the service can be tested without Tauri.
  * `tauriTerminalBackend` is the production implementation.
@@ -588,6 +604,7 @@ export function createTerminalService(opts: {
           // no view here; its backend scrollback ring remains the authority.
           manager.feedSession(payload.sessionId, payload.data);
         }
+        publishTerminalOutput(payload);
         if (!payload.terminated) {
           return;
         }
@@ -901,6 +918,7 @@ export function createTerminalService(opts: {
       probe.disposed = true;
     }
     probesByOwned.clear();
+    terminalOutputSubscribers.clear();
     // The PTYs live on but the VIEWS do not: the next mount rebuilds them from
     // scratch, and a remembered size would suppress the resize that new view
     // legitimately needs.

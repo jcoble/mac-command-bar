@@ -18,13 +18,17 @@ import { sourceRecordFromPath } from '../editor/sourceRecordFromPath.ts';
 import {
   applyDirectoryResult,
   beginScan,
+  canonicalPath,
   discardDirectory,
   endScan,
   explorer,
+  explorerScanGeneration,
   explorerNodes,
   failScan,
   loadedExplorerDirectories,
   loadedExplorerDirectoryDepth,
+  isExplorerDirectoryPresent,
+  isExplorerPathAtOrBelow,
   markCheckoutDeleted,
   resetExplorer,
   setExplorerError
@@ -35,6 +39,18 @@ export const SCANNER_UNAVAILABLE_MESSAGE =
 
 let nextRequestId = 0;
 const directoryRequests = new Map<string, number>();
+
+function isCurrentDirectoryRequest(
+  directory: string,
+  root: string,
+  generation: number,
+  requestId: number
+): boolean {
+  return directoryRequests.get(directory) === requestId &&
+    explorerScanGeneration() === generation &&
+    canonicalPath(explorer.root ?? '') === root &&
+    isExplorerDirectoryPresent(directory);
+}
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -56,51 +72,51 @@ function publishLoadedFiles(root: string): void {
 }
 
 export async function loadDirectory(directory: string, depth: number): Promise<boolean> {
-  const root = explorer.root;
-  if (!root) return false;
+  const root = canonicalPath(explorer.root ?? '');
+  const target = canonicalPath(directory);
+  if (!root || !target) return false;
+  const generation = explorerScanGeneration();
   const requestId = ++nextRequestId;
-  directoryRequests.set(directory, requestId);
+  directoryRequests.set(target, requestId);
   setExplorerError(null);
 
   try {
     countInvoke(isNativeTauriRuntime() ? 'list_source_directory' : 'bridge:list-source-directory');
-    const entries = await listSourceDirectoryFromTauri(root, directory, explorer.includeExcluded);
-    if (
-      directoryRequests.get(directory) !== requestId ||
-      explorer.root !== root
-    ) {
-      return false;
-    }
+    const entries = await listSourceDirectoryFromTauri(root, target, explorer.includeExcluded);
+    if (!isCurrentDirectoryRequest(target, root, generation, requestId)) return false;
     if (!entries) {
-      if (directory === root) failScan(SCANNER_UNAVAILABLE_MESSAGE);
+      if (target === root) failScan(SCANNER_UNAVAILABLE_MESSAGE);
       else setExplorerError(SCANNER_UNAVAILABLE_MESSAGE);
       return false;
     }
-    applyDirectoryResult(directory, depth, entries);
+    applyDirectoryResult(target, depth, entries);
     publishLoadedFiles(root);
     return true;
   } catch (error) {
-    if (directoryRequests.get(directory) !== requestId || explorer.root !== root) return false;
+    if (!isCurrentDirectoryRequest(target, root, generation, requestId)) return false;
     const detail = describeError(error);
     const message = `Could not list this folder: ${detail}`;
-    if (directory === root && checkoutWasDeleted(detail)) {
+    if (target === root && checkoutWasDeleted(detail)) {
       failScan('This session’s checkout/worktree no longer exists.', 'checkout-deleted');
-    } else if (directory === root) failScan(message);
+    } else if (target === root) failScan(message);
     else setExplorerError(message);
     return false;
   } finally {
-    if (directoryRequests.get(directory) === requestId) directoryRequests.delete(directory);
+    if (directoryRequests.get(target) === requestId) directoryRequests.delete(target);
   }
 }
 
 export function unloadDirectory(directory: string): void {
-  directoryRequests.delete(directory);
-  discardDirectory(directory);
+  const target = canonicalPath(directory);
+  for (const pendingPath of directoryRequests.keys()) {
+    if (isExplorerPathAtOrBelow(pendingPath, target)) directoryRequests.delete(pendingPath);
+  }
+  discardDirectory(target);
   if (explorer.root) publishLoadedFiles(explorer.root);
 }
 
 export async function scanRoot(root: string): Promise<void> {
-  const target = root.trim();
+  const target = canonicalPath(root);
   if (!target) return;
   directoryRequests.clear();
   resetExplorer();
@@ -114,7 +130,7 @@ export async function scanRoot(root: string): Promise<void> {
 }
 
 export function activate(root: string | null, checkoutDeleted = false): void {
-  const target = (root ?? '').trim();
+  const target = canonicalPath(root ?? '');
   if (!target) {
     directoryRequests.clear();
     forgetAllProjectSourceRecords();
@@ -136,8 +152,11 @@ export function refresh(): void {
 }
 
 export function refreshChangedPath(path: string): void {
-  const cut = path.lastIndexOf('/');
-  const parent = cut < 0 ? '' : path.slice(0, cut);
+  const root = canonicalPath(explorer.root ?? '');
+  if (!root) return;
+  const target = canonicalPath(path);
+  const cut = target.lastIndexOf('/');
+  const parent = cut <= 0 ? root : target.slice(0, cut);
   const depth = loadedExplorerDirectoryDepth(parent);
   if (depth !== null) void loadDirectory(parent, depth);
 }

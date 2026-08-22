@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 const DURABLE_UI_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS session_workspaces (
     owned_id TEXT PRIMARY KEY REFERENCES sessions(owned_id) ON DELETE CASCADE,
@@ -72,6 +72,24 @@ CREATE TABLE IF NOT EXISTS workflow_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_messages_group
     ON workflow_messages(group_id, created_at_ms);";
+
+const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    sequence INTEGER,
+    workflow_id TEXT,
+    idempotency_key TEXT,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
+);
+CREATE INDEX IF NOT EXISTS orchestration_events_run_idx
+    ON orchestration_events(run_id);
+CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idx
+    ON orchestration_events(workflow_id, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS orchestration_events_idempotency_idx
+    ON orchestration_events(run_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;";
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
@@ -181,6 +199,18 @@ pub struct SessionStore {
     connection: Mutex<Connection>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrchestrationEventRow {
+    pub id: String,
+    pub run_id: String,
+    pub kind: String,
+    pub timestamp: String,
+    pub sequence: Option<i64>,
+    pub workflow_id: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub payload_json: String,
+}
+
 impl SessionStore {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)
@@ -281,6 +311,9 @@ impl SessionStore {
                     StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
                 add_tool_item_schema(&transaction)?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -316,6 +349,9 @@ impl SessionStore {
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -339,6 +375,9 @@ impl SessionStore {
                 })?;
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the durable UI tables", error)
+                })?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
                 })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -364,6 +403,9 @@ impl SessionStore {
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -387,6 +429,9 @@ impl SessionStore {
                 })?;
                 add_tool_item_schema(&transaction)?;
                 clear_superseded_events(&transaction)?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -407,6 +452,9 @@ impl SessionStore {
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -424,6 +472,9 @@ impl SessionStore {
                     })?;
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the durable UI tables", error)
+                })?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
                 })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -443,6 +494,9 @@ impl SessionStore {
                 transaction.execute_batch(DURABLE_UI_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the durable UI tables", error)
                 })?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
+                })?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -452,6 +506,24 @@ impl SessionStore {
                     StoreError::sqlite("could not finish the app settings upgrade", error)
                 })?;
             }
+            8 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the orchestration upgrade", error)
+                    })?;
+                transaction.execute_batch(ORCHESTRATION_SCHEMA).map_err(|error| {
+                    StoreError::sqlite("could not create the orchestration table", error)
+                })?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the orchestration upgrade", error)
+                })?;
+            }
             SCHEMA_VERSION => {}
             _ => {
                 return Err(StoreError::message(
@@ -459,6 +531,9 @@ impl SessionStore {
                 ));
             }
         }
+        connection
+            .execute_batch(ORCHESTRATION_SCHEMA)
+            .map_err(|error| StoreError::sqlite("could not create the orchestration table", error))?;
 
         Ok(Self {
             connection: Mutex::new(connection),
@@ -669,6 +744,103 @@ impl SessionStore {
             )
             .optional()
             .map_err(|error| StoreError::sqlite("could not read the app setting", error))
+    }
+
+    pub fn append_orchestration_event(&self, row: &OrchestrationEventRow) -> Result<()> {
+        let connection = self.lock()?;
+        insert_orchestration_event_on(&connection, row)
+    }
+
+    pub fn import_orchestration_events(&self, rows: &[OrchestrationEventRow]) -> Result<()> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the orchestration import", error)
+            })?;
+        for row in rows {
+            insert_orchestration_event_or_ignore_on(&transaction, row)?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| StoreError::sqlite("could not finish the orchestration import", error))
+    }
+
+    pub fn list_orchestration_events(&self) -> Result<Vec<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key,
+                        payload_json
+                 FROM orchestration_events
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not prepare the orchestration event list", error)
+            })?;
+        let rows = statement
+            .query_map([], orchestration_event_from_row)
+            .map_err(|error| StoreError::sqlite("could not list orchestration events", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read orchestration events", error))
+    }
+
+    pub fn list_workflow_orchestration_events(&self) -> Result<Vec<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key,
+                        payload_json
+                 FROM orchestration_events
+                 WHERE workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not prepare the workflow event list", error)
+            })?;
+        let rows = statement
+            .query_map([], orchestration_event_from_row)
+            .map_err(|error| StoreError::sqlite("could not list workflow events", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read workflow events", error))
+    }
+
+    pub fn find_orchestration_event_by_idempotency_key(
+        &self,
+        run_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key,
+                        payload_json
+                 FROM orchestration_events
+                 WHERE run_id = ? AND idempotency_key = ?
+                 ORDER BY rowid ASC
+                 LIMIT 1",
+                params![run_id, idempotency_key],
+                orchestration_event_from_row,
+            )
+            .optional()
+            .map_err(|error| {
+                StoreError::sqlite("could not read the idempotent orchestration event", error)
+            })
+    }
+
+    pub fn latest_orchestration_sequence(&self, run_id: &str) -> Result<i64> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0)
+                 FROM orchestration_events
+                 WHERE run_id = ?",
+                [run_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not read the latest orchestration sequence", error)
+            })
     }
 
     pub fn append_event(&self, row: &EventRow) -> Result<()> {
@@ -1372,6 +1544,67 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
     })
 }
 
+fn orchestration_event_from_row(row: &Row<'_>) -> rusqlite::Result<OrchestrationEventRow> {
+    Ok(OrchestrationEventRow {
+        id: row.get(0)?,
+        run_id: row.get(1)?,
+        kind: row.get(2)?,
+        timestamp: row.get(3)?,
+        sequence: row.get(4)?,
+        workflow_id: row.get(5)?,
+        idempotency_key: row.get(6)?,
+        payload_json: row.get(7)?,
+    })
+}
+
+fn insert_orchestration_event_on(
+    connection: &Connection,
+    row: &OrchestrationEventRow,
+) -> Result<()> {
+    connection
+        .execute(
+            "INSERT INTO orchestration_events
+             (id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key, payload_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                row.id,
+                row.run_id,
+                row.kind,
+                row.timestamp,
+                row.sequence,
+                row.workflow_id,
+                row.idempotency_key,
+                row.payload_json
+            ],
+        )
+        .map_err(|error| StoreError::sqlite("could not append the orchestration event", error))?;
+    Ok(())
+}
+
+fn insert_orchestration_event_or_ignore_on(
+    connection: &Connection,
+    row: &OrchestrationEventRow,
+) -> Result<()> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO orchestration_events
+             (id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key, payload_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                row.id,
+                row.run_id,
+                row.kind,
+                row.timestamp,
+                row.sequence,
+                row.workflow_id,
+                row.idempotency_key,
+                row.payload_json
+            ],
+        )
+        .map_err(|error| StoreError::sqlite("could not import the orchestration event", error))?;
+    Ok(())
+}
+
 fn attachment_from_row(row: &Row<'_>) -> rusqlite::Result<AttachmentRow> {
     Ok(AttachmentRow {
         id: row.get(0)?,
@@ -1663,7 +1896,7 @@ mod tests {
         let version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read schema version");
-        assert_eq!(version, 6);
+        assert_eq!(version, super::SCHEMA_VERSION);
     }
 
     #[test]
