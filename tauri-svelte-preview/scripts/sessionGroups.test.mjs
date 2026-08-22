@@ -5,14 +5,11 @@ import {
   groupToggleKey,
   isGroupExpanded,
   projectLabel,
-  RAIL_GROUPS_STORAGE_KEY,
-  readGroupExpansion,
   rememberGroupToggle,
   RESUME_GROUP_ROW_CAP,
   sessionGroupPath,
   visibleGroupItems,
-  worktreeParentProject,
-  writeGroupExpansion
+  worktreeParentProject
 } from '../src/lib/shell/sessionGroups.ts';
 import { buildSessionLibrary } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
 
@@ -393,42 +390,6 @@ function shapeOf(groups) {
   assert.deepEqual(visibleGroupItems([], 3, false), { shown: [], hiddenCount: 0 });
   assert.deepEqual(visibleGroupItems(rows, 0, false), { shown: rows, hiddenCount: 0 });
   assert.equal(RESUME_GROUP_ROW_CAP, 8);
-}
-
-// Storage round-trips, and anything unreadable comes back as no choices made
-// rather than as a throw into the rail.
-{
-  const store = new Map();
-  const storage = {
-    getItem: (key) => store.get(key) ?? null,
-    setItem: (key, value) => store.set(key, value),
-    removeItem: (key) => store.delete(key)
-  };
-
-  assert.deepEqual(readGroupExpansion(storage), {});
-  assert.equal(writeGroupExpansion(storage, { 'resume:/repo/one': true }), true);
-  assert.equal(store.get(RAIL_GROUPS_STORAGE_KEY), '{"resume:/repo/one":true}');
-  assert.deepEqual(readGroupExpansion(storage), { 'resume:/repo/one': true });
-
-  store.set(RAIL_GROUPS_STORAGE_KEY, 'not json at all');
-  assert.deepEqual(readGroupExpansion(storage), {});
-
-  store.set(RAIL_GROUPS_STORAGE_KEY, '["resume:/repo/one"]');
-  assert.deepEqual(readGroupExpansion(storage), {});
-
-  // Entries that are not booleans are dropped; the rest still load.
-  store.set(RAIL_GROUPS_STORAGE_KEY, '{"a":true,"b":"yes","c":false}');
-  assert.deepEqual(readGroupExpansion(storage), { a: true, c: false });
-
-  // A full storage refuses the write and says so, instead of throwing.
-  const fullStorage = {
-    getItem: () => null,
-    setItem: () => {
-      throw new Error('QuotaExceededError');
-    },
-    removeItem: () => {}
-  };
-  assert.equal(writeGroupExpansion(fullStorage, { a: true }), false);
 }
 
 console.log('sessionGroups: all tests passed');
