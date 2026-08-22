@@ -149,6 +149,11 @@
     return Math.ceil(characters / ROW_CHARS_PER_LINE) * ROW_LINE_HEIGHT + ROW_CHROME;
   }
 
+  function rowKey(group: ConversationTurnGroup | undefined, index: number): string {
+    const groupId = group?.turnId ?? group?.items[0]?.itemId ?? `row:${index}`;
+    return `${renderWindowId}:${groupId}`;
+  }
+
   let rowEstimates: number[] = [];
   $effect(() => {
     rowEstimates = renderedGroups.map(rowHeightEstimate);
@@ -157,6 +162,7 @@
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: 0,
     getScrollElement: () => host,
+    getItemKey: (index) => rowKey(renderedGroups[index], index),
     estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
     overscan: 6
   });
@@ -193,6 +199,7 @@
     $virtualizer.setOptions({
       count,
       getScrollElement: () => element,
+      getItemKey: (index) => rowKey(renderedGroups[index], index),
       estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
       overscan: 6
     });
