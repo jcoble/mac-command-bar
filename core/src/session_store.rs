@@ -1,13 +1,16 @@
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
 const SCHEMA_VERSION: i64 = 10;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
+static SESSION_STORE_ACTIVE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
+static SESSION_STORE_OPERATIONS: AtomicU64 = AtomicU64::new(0);
 
 const DURABLE_UI_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS session_workspaces (
     owned_id TEXT PRIMARY KEY REFERENCES sessions(owned_id) ON DELETE CASCADE,
@@ -210,6 +213,38 @@ pub struct SessionStore {
 
 pub fn session_store_open_handles() -> usize {
     SESSION_STORE_OPEN_HANDLES.load(Ordering::Relaxed)
+}
+
+pub fn session_store_active_operations() -> usize {
+    SESSION_STORE_ACTIVE_OPERATIONS.load(Ordering::Relaxed)
+}
+
+pub fn session_store_operations() -> u64 {
+    SESSION_STORE_OPERATIONS.load(Ordering::Relaxed)
+}
+
+pub(crate) struct SessionStoreConnection<'a> {
+    connection: MutexGuard<'a, Connection>,
+}
+
+impl Deref for SessionStoreConnection<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+impl DerefMut for SessionStoreConnection<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.connection
+    }
+}
+
+impl Drop for SessionStoreConnection<'_> {
+    fn drop(&mut self) {
+        SESSION_STORE_ACTIVE_OPERATIONS.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1387,10 +1422,14 @@ impl SessionStore {
         Ok(())
     }
 
-    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
-        self.connection
+    pub(crate) fn lock(&self) -> Result<SessionStoreConnection<'_>> {
+        let connection = self
+            .connection
             .lock()
-            .map_err(|_| StoreError::message("the session database lock is unavailable"))
+            .map_err(|_| StoreError::message("the session database lock is unavailable"))?;
+        SESSION_STORE_ACTIVE_OPERATIONS.fetch_add(1, Ordering::Relaxed);
+        SESSION_STORE_OPERATIONS.fetch_add(1, Ordering::Relaxed);
+        Ok(SessionStoreConnection { connection })
     }
 }
 

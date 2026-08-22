@@ -34,6 +34,8 @@ export type ResourceDiagnostics = {
   };
   database: {
     sessionStoreOpenHandles: number;
+    sessionStoreActiveOperations: number;
+    sessionStoreOperations: number;
   };
   terminals: {
     liveSessions: number;
