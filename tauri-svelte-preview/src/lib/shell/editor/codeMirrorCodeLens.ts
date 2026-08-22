@@ -80,7 +80,7 @@ class PeekWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    const panel = document.createElement('div');
+    const panel = document.createElement('span');
     panel.className = 'cm-code-lens-peek';
     const heading = document.createElement('strong');
     heading.textContent = this.targets === null
@@ -154,7 +154,7 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         if (!this.alive || token !== generation || load !== this.loadGeneration) return;
         if (!symbols) {
           this.rows = this.rows.filter((row) => row.key !== 'reference-anchors');
-          this.paint();
+          this.paint(true);
           return;
         }
         const requests = symbols.filter(isCodeLensSymbol).slice(0, 120)
@@ -169,7 +169,7 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
             state: 'loading' as const
           }))
         ];
-        this.paint();
+        this.paint(true);
         await Promise.all(requests.map(async (request) => {
           const key = sourceCodeLensCountKey(options.preview.path, request);
           let count: Count | null | undefined;
@@ -179,11 +179,14 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
             count = null;
           }
           if (!this.alive || token !== generation || load !== this.loadGeneration) return;
-          const row = this.rows.find((candidate) => candidate.key === key);
-          if (!row) return;
-          row.state = count ? 'ready' : 'unavailable';
-          row.title = count ? formatSourceCodeLensTitle(count.count, count.atLeast) : 'References unavailable';
-          this.paint();
+          const index = this.rows.findIndex((candidate) => candidate.key === key);
+          if (index < 0) return;
+          this.rows[index] = {
+            ...this.rows[index],
+            state: count ? 'ready' : 'unavailable',
+            title: count ? formatSourceCodeLensTitle(count.count, count.atLeast) : 'References unavailable'
+          };
+          this.paint(true);
         }));
       }
 
@@ -194,28 +197,28 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         }
         if (!row.request || !options.onReferences) return;
         this.peek = { request: row.request, targets: null };
-        this.paint();
+        this.paint(true);
         const request = row.request;
         void options.onReferences(request)
           .then((targets) => {
             if (!this.alive || this.peek?.request !== request) return;
             this.peek = { request, targets };
-            this.paint();
+            this.paint(true);
           })
           .catch(() => {
             if (!this.alive || this.peek?.request !== request) return;
             this.peek = { request, targets: [] };
-            this.paint();
+            this.paint(true);
           });
       };
 
-      private paint(): void {
+      private paint(refresh = false): void {
         if (!this.alive) return;
         const builder = new RangeSetBuilder<Decoration>();
         const items: { at: number; side: number; decoration: Decoration }[] = [];
         for (const row of this.rows) {
           const line = this.view.state.doc.line(Math.max(1, Math.min(row.line, this.view.state.doc.lines)));
-          items.push({ at: line.from, side: -1, decoration: Decoration.widget({ widget: new LensWidget(row, this.run), block: true, side: -1 }) });
+          items.push({ at: line.from, side: -1, decoration: Decoration.widget({ widget: new LensWidget(row, this.run), side: -1 }) });
         }
         if (this.peek) {
           const line = this.view.state.doc.line(Math.max(1, Math.min(this.peek.request.line, this.view.state.doc.lines)));
@@ -224,7 +227,6 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
             side: 1,
             decoration: Decoration.widget({
               widget: new PeekWidget(this.peek.request, this.peek.targets, (target) => void options.onOpenReference?.(target)),
-              block: true,
               side: 1
             })
           });
@@ -232,13 +234,13 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         items.sort((left, right) => left.at - right.at || left.side - right.side);
         for (const item of items) builder.add(item.at, item.at, item.decoration);
         this.decorations = builder.finish();
-        this.view.requestMeasure();
+        if (refresh) this.view.dispatch({});
       }
     }, { decorations: (plugin) => plugin.decorations }),
     EditorView.baseTheme({
       '.cm-code-lens': { border: '0', background: 'transparent', color: '#8aa9d6', cursor: 'pointer', padding: '0 8px 0 4px', fontSize: '11px' },
       '.cm-code-lens.loading': { color: '#8b909b', cursor: 'progress' },
-      '.cm-code-lens-peek': { display: 'grid', gap: '4px', padding: '8px 12px', borderBlock: '1px solid #343944', background: '#111318', fontSize: '12px' },
+      '.cm-code-lens-peek': { display: 'inline-grid', gap: '4px', padding: '8px 12px', borderBlock: '1px solid #343944', background: '#111318', fontSize: '12px' },
       '.cm-code-lens-peek button': { border: '0', background: 'transparent', color: '#c9d5e8', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }
     })
   ];
