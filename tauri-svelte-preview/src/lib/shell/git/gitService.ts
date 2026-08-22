@@ -229,7 +229,7 @@ export interface GitService {
    * different root wipes the panel and reloads its status.
    */
   activate(root: string | null): void;
-  /** Re-read status and commit history for the current repository. */
+  /** Re-read status and, when its surface is visible, commit history. */
   refresh(): Promise<void>;
   refreshStatus(): Promise<void>;
   /** Re-read the history at the size it has already grown to. */
@@ -294,6 +294,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   const statusGuard = createRequestGuard();
   const historyGuard = createRequestGuard();
   const diffGuard = createRequestGuard();
+  let historySurfaceVisible = false;
 
   function publishGitDiagnostics(): void {
     setGitSurfaceDiagnostics(state.history.length, state.selectedDiff ? 1 : 0);
@@ -396,6 +397,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
    * reread of every older page the user had loaded before.
    */
   async function refreshHistory(): Promise<void> {
+    if (!historySurfaceVisible) return;
     state.history = [];
     state.historyRequested = 0;
     state.historyNextCursor = null;
@@ -412,12 +414,14 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   function ensureHistorySurface(): void {
+    historySurfaceVisible = true;
     if (!state.root || state.historyLoading || state.historyLoadingMore) return;
     if (state.history.length > 0 || state.historyComplete) return;
     void loadHistory(null, false);
   }
 
   function releaseHistorySurface(): void {
+    historySurfaceVisible = false;
     historyGuard.invalidate();
     state.history = [];
     state.historyPath = '';
