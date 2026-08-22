@@ -2,7 +2,6 @@
  * Pure view-model for the My Work rail. Components own drawing and interaction;
  * this module owns the durable option shape plus filtering, sorting and grouping.
  */
-import { loadLayout, saveLayout, type LayoutStorage } from '../layout/layoutStorage.ts';
 import { resolveOwnedSessionProject, type OwnedSession } from '../ownedSessions.ts';
 
 export type MyWorkGrouping = 'none' | 'status' | 'project';
@@ -23,7 +22,6 @@ export interface MyWorkGroup {
   sessions: OwnedSession[];
 }
 
-export const MY_WORK_VIEW_OPTIONS_KEY = 'mac-command-bar.next.my-work-view-options';
 export const MY_WORK_STATUSES: readonly MyWorkStatus[] = ['working', 'done', 'settled'];
 /**
  * Which way round each sort starts.
@@ -174,15 +172,4 @@ export function normalizeMyWorkViewOptions(value: unknown): MyWorkViewOptions {
       : NATURAL_SORT_DIRECTION[sortBy],
     visibleStatuses
   };
-}
-
-export function readMyWorkViewOptions(storage: LayoutStorage): MyWorkViewOptions {
-  return normalizeMyWorkViewOptions(loadLayout<unknown>(storage, MY_WORK_VIEW_OPTIONS_KEY));
-}
-
-export function writeMyWorkViewOptions(
-  storage: LayoutStorage,
-  options: MyWorkViewOptions
-): boolean {
-  return saveLayout(storage, MY_WORK_VIEW_OPTIONS_KEY, normalizeMyWorkViewOptions(options));
 }

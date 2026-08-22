@@ -32,13 +32,15 @@
   import SegmentedTabs from './SegmentedTabs.svelte';
   import SessionRail from './SessionRail.svelte';
   import { sessionLabel, stripCells } from '$lib/shell/sessionStrip';
+  import {
+    readAssemblySettingFromTauri,
+    writeAssemblySettingFromTauri
+  } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
   import {
     DEFAULT_MY_WORK_VIEW_OPTIONS,
     MY_WORK_STATUSES,
     normalizeMyWorkViewOptions,
-    readMyWorkViewOptions,
-    writeMyWorkViewOptions,
     type MyWorkGrouping,
     type MyWorkSort,
     type MyWorkSortDirection,
@@ -83,6 +85,8 @@
     ...DEFAULT_MY_WORK_VIEW_OPTIONS,
     visibleStatuses: [...MY_WORK_STATUSES]
   });
+  const MY_WORK_VIEW_OPTIONS_SETTING_KEY = 'rail.my-work-view-options';
+  let viewOptionsVersion = 0;
 
   const GROUPING_ITEMS = [
     { id: 'none', label: 'None' },
@@ -99,12 +103,26 @@
   $effect(() => registerSessionRestart(onRestart, onSelect));
 
   onMount(() => {
-    viewOptions = readMyWorkViewOptions(window.localStorage);
+    let mounted = true;
+    const restoreVersion = viewOptionsVersion;
+    void readAssemblySettingFromTauri(MY_WORK_VIEW_OPTIONS_SETTING_KEY)
+      .then((stored) => {
+        if (mounted && viewOptionsVersion === restoreVersion) {
+          viewOptions = normalizeMyWorkViewOptions(stored);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
   });
 
   function setViewOptions(patch: Partial<MyWorkViewOptions>): void {
+    viewOptionsVersion += 1;
     viewOptions = normalizeMyWorkViewOptions({ ...viewOptions, ...patch });
-    writeMyWorkViewOptions(window.localStorage, viewOptions);
+    void writeAssemblySettingFromTauri(MY_WORK_VIEW_OPTIONS_SETTING_KEY, viewOptions).catch(
+      () => undefined
+    );
   }
 
   function toggleStatus(status: MyWorkStatus): void {

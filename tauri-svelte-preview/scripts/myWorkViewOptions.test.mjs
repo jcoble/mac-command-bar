@@ -3,12 +3,9 @@ import assert from 'node:assert/strict';
 import {
   buildMyWorkGroups,
   DEFAULT_MY_WORK_VIEW_OPTIONS,
-  MY_WORK_VIEW_OPTIONS_KEY,
   myWorkProject,
   normalizeMyWorkViewOptions,
-  prepareMyWorkSessions,
-  readMyWorkViewOptions,
-  writeMyWorkViewOptions
+  prepareMyWorkSessions
 } from '../src/lib/shell/components/myWorkViewOptions.ts';
 
 function session(ownedId, extra = {}) {
@@ -21,16 +18,6 @@ function session(ownedId, extra = {}) {
     settledAt: null,
     lastActivity: null,
     ...extra
-  };
-}
-
-function storage() {
-  const rows = new Map();
-  return {
-    rows,
-    getItem(key) { return rows.get(key) ?? null; },
-    setItem(key, value) { rows.set(key, value); },
-    removeItem(key) { rows.delete(key); }
   };
 }
 
@@ -112,26 +99,26 @@ function storage() {
   ]);
 }
 
-// Persistence is tolerant of corrupt fields, saves one normalized payload, and
-// preserves an intentional empty filter set.
+// Normalization tolerates corrupt fields and preserves an intentional empty filter set.
 {
-  const fake = storage();
-  fake.setItem(MY_WORK_VIEW_OPTIONS_KEY, JSON.stringify({ groupBy: 'wrong', sortBy: 'name' }));
-  assert.deepEqual(readMyWorkViewOptions(fake), {
+  assert.deepEqual(normalizeMyWorkViewOptions({ groupBy: 'wrong', sortBy: 'name' }), {
     groupBy: 'status',
     sortBy: 'name',
+    sortDirection: 'asc',
     visibleStatuses: ['working', 'done', 'settled']
   });
-  assert.equal(
-    writeMyWorkViewOptions(fake, { groupBy: 'project', sortBy: 'recent', visibleStatuses: [] }),
-    true
-  );
-  assert.deepEqual(readMyWorkViewOptions(fake), {
+  assert.deepEqual(normalizeMyWorkViewOptions({
     groupBy: 'project',
     sortBy: 'recent',
+    sortDirection: 'desc',
+    visibleStatuses: []
+  }), {
+    groupBy: 'project',
+    sortBy: 'recent',
+    sortDirection: 'desc',
     visibleStatuses: []
   });
   assert.deepEqual(normalizeMyWorkViewOptions(null), DEFAULT_MY_WORK_VIEW_OPTIONS);
 }
 
-console.log('myWorkViewOptions: grouping, sorting, filters, project identity, and persistence passed');
+console.log('myWorkViewOptions: grouping, sorting, filters, project identity, and normalization passed');
