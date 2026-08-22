@@ -13,9 +13,8 @@
    * for and hands over the rectangle of the button that was pressed.
    *
    * The one piece of IO here is the resource sample: it is read on mount, again
-   * whenever the window comes back to the front, and every three seconds while
-   * the Resource Manager is open. This is the strip's own readout — nothing
-   * else on screen shows it.
+   * whenever the window comes back to the front, and on a single cadence that
+   * slows down while the Resource Manager is closed.
    */
   import { onMount } from 'svelte';
   import ChartNoAxesCombined from '@lucide/svelte/icons/chart-no-axes-combined';
@@ -54,7 +53,7 @@
     const sample = resourceSampleState.sample;
     if (sample) {
       const processes = sample.totals.processCount === 1 ? 'process' : 'processes';
-      return `${formatResourceBytes(sample.totals.rssBytes)} · ${formatResourceCpu(
+      return `${formatResourceBytes(sample.totals.physicalFootprintBytes)} Σ · ${formatResourceCpu(
         sample.totals.cpuPercent
       )} CPU · ${sample.totals.processCount} ${processes}`;
     }
@@ -71,17 +70,20 @@
     return () => document.removeEventListener('visibilitychange', refreshWhenVisible);
   });
 
-  // The history lines exist only while the Resource Manager is open. Sampling a
-  // closed panel wastes a full process-tree read and keeps an otherwise idle
-  // shell waking every three seconds.
+  // One cadence owns the shared resource sample. The closed-panel readout is
+  // slower; the open panel keeps the existing history cadence.
   $effect(() => {
-    if (!resourceManagerState.open) return;
-    // The Playwright card lives at the bottom of this panel. Its own read runs
-    // once and then only when somebody presses its refresh, so it is switched
-    // on here rather than joining the three-second poll below.
-    activatePlaywright();
+    if (resourceManagerState.open) {
+      // The Playwright card lives at the bottom of this panel. Its own read runs
+      // once and then only when somebody presses its refresh, so it is switched
+      // on here rather than joining the process-tree poll below.
+      activatePlaywright();
+    }
     void refreshResourceSample();
-    const pollTimer = window.setInterval(() => void refreshResourceSample(), 3_000);
+    const pollTimer = window.setInterval(
+      () => void refreshResourceSample(),
+      resourceManagerState.open ? 3_000 : 5_000
+    );
     return () => window.clearInterval(pollTimer);
   });
 </script>
