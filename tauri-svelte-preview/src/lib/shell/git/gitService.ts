@@ -408,6 +408,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   async function loadMoreHistory(): Promise<void> {
+    if (!historySurfaceVisible) return;
     if (!state.root || state.historyLoading || state.historyLoadingMore) return;
     if (state.historyComplete || state.historyNextCursor === null) return;
     state.historyPaged = true;
