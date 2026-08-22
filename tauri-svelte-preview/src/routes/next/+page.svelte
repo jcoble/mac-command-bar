@@ -837,7 +837,7 @@
 			await write;
 			return true;
 		} catch (error) {
-			rail.error = `workspace checkpoint failed: ${describeError(error)}`;
+			if (!disposed) rail.error = `workspace checkpoint failed: ${describeError(error)}`;
 			return false;
 		}
 	}
