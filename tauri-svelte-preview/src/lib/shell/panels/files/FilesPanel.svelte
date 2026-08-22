@@ -535,7 +535,12 @@
     persistExpandedPaths();
     selectPath(node.path);
     if (!node.isDirectory) {
-      openFileInEditor({ path: node.path, projectRoot, readOnly: readOnlyInspection });
+      openFileInEditor({
+        path: node.path,
+        projectRoot,
+        readOnly: readOnlyInspection,
+        preview: true
+      });
     }
   }
 
@@ -589,7 +594,21 @@
     openFileInEditor({
       path: node.path,
       projectRoot: projectRoot || undefined,
-      readOnly: readOnlyInspection
+      readOnly: readOnlyInspection,
+      preview: true
+    });
+  }
+
+  function pinTreeNodeOpen(node: TreeItem, event: MouseEvent): void {
+    event.stopPropagation();
+    if (node.isDirectory) return;
+    selectPath(node.path);
+    const projectRoot = projectRootForView();
+    openFileInEditor({
+      path: node.path,
+      projectRoot: projectRoot || undefined,
+      readOnly: readOnlyInspection,
+      pin: true
     });
   }
 
@@ -994,7 +1013,13 @@
             <ContextMenu.Root>
               <ContextMenu.Trigger>
                 {#snippet child({ props })}
-                  <span {...props} class="tree-row" class:excluded={node.ignored} title={node.path}>
+                  <span
+                    {...props}
+                    class="tree-row"
+                    class:excluded={node.ignored}
+                    title={node.path}
+                    ondblclick={(event) => pinTreeNodeOpen(node, event)}
+                  >
                     <span class="tree-file-icon" aria-hidden="true">
                       {#if node.isDirectory}
                         {#if expanded.has(node.path)}

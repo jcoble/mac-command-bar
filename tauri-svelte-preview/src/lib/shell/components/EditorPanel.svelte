@@ -69,6 +69,7 @@
     editorState,
     markEditorFileLoading,
     openEditorFile,
+    pinEditorFile,
     resetEditorState,
     revealEditorLine,
     setActiveEditorFile,
@@ -789,7 +790,9 @@
     line?: number | null,
     projectRoot?: string,
     origin: 'jump' | 'strip' = 'jump',
-    readOnly = false
+    readOnly = false,
+    previewTab = false,
+    pinTab = false
   ): boolean {
     if (!rootAvailable || !path.trim()) return false;
     if (editorState.activePath && editorState.activePath !== path) {
@@ -797,7 +800,21 @@
     }
     if (!readOnly) activateEditor(projectRoot);
     const record = recordForPath(path, projectRoot);
-    const entry = openEditorFile(record);
+    const previewToReplace = editorState.openFiles.find(
+      (file) => file.previewTab && file.path !== record.path
+    );
+    const replacedPreviewPath =
+      previewTab && !pinTab ? previewToReplace?.path ?? null : null;
+    const entry = openEditorFile(record, { preview: previewTab, pin: pinTab });
+    if (replacedPreviewPath) {
+      releaseMarkdownView(replacedPreviewPath);
+      codeEditor?.disposeTabModel(replacedPreviewPath);
+      sourceIntelligence.releasePreview(replacedPreviewPath);
+      const { [replacedPreviewPath]: _closed, ...rest } = diagnosticsByPath;
+      diagnosticsByPath = rest;
+      const { [replacedPreviewPath]: _wasReadOnly, ...remaining } = readOnlyByPath;
+      readOnlyByPath = remaining;
+    }
     rememberMarkdownDefault(record.path, entry.fileName, origin);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
     syncIntelligenceWithActiveFile();
@@ -817,7 +834,17 @@
     }
     // Only once the file is in the strip. The read runs after this and may still
     // fail — the tab is the right place to show that, so it stays in front.
-    if (openPath(request.path, request.line, request.projectRoot, 'jump', Boolean(request.readOnly))) {
+    if (
+      openPath(
+        request.path,
+        request.line,
+        request.projectRoot,
+        'jump',
+        Boolean(request.readOnly),
+        Boolean(request.preview),
+        Boolean(request.pin)
+      )
+    ) {
       onFileOpened?.();
     }
   }
@@ -880,7 +907,7 @@
   /** Linked-worktree inspection tabs are live-only and never belong to SQLite. */
   export function workspaceOwnedPaths(): string[] {
     return editorState.openFiles
-      .filter((file) => !readOnlyByPath[file.path])
+      .filter((file) => !readOnlyByPath[file.path] && !file.previewTab)
       .map((file) => file.path);
   }
 
@@ -1028,7 +1055,7 @@
                     onclick={() => selectOpenFile(file.path)}
                   >
                     <FileIcon fileName={file.fileName} size={13} />
-                    {file.fileName}
+                    {#if file.previewTab}<em>{file.fileName}</em>{:else}{file.fileName}{/if}
                     {#if file.loading}<span class="chip-note">reading</span>{/if}
                     {#if file.error}<span class="chip-note error">failed</span>{/if}
                   </button>
@@ -1045,6 +1072,11 @@
               {/snippet}
             </ContextMenu.Trigger>
             <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${file.fileName}`}>
+              {#if file.previewTab}
+                <ContextMenu.Item
+                  onSelect={() => pinEditorFile(file.path)}
+                >Pin Tab</ContextMenu.Item>
+              {/if}
               <ContextMenu.Item
                 onSelect={() => openTimelineFor(file)}
               >File Timeline</ContextMenu.Item>

@@ -27,6 +27,8 @@ export interface OpenEditorFile {
   draftContent: string | null;
   /** Whether `draftContent` differs from the last content read or saved. */
   dirty: boolean;
+  /** A single-click file tab that becomes permanent on edit, double-click or pin. */
+  previewTab: boolean;
   /** A native write is in flight. */
   saving: boolean;
   /** A read is in flight. */
@@ -51,6 +53,14 @@ export interface OpenEditorFilePatch {
   loading?: boolean;
   error?: string | null;
   targetLine?: number | null;
+  previewTab?: boolean;
+}
+
+export interface OpenEditorFileOptions {
+  /** Reuse the current unpinned preview tab instead of opening a permanent tab. */
+  preview?: boolean;
+  /** Make the tab permanent even when it was opened as a preview before. */
+  pin?: boolean;
 }
 
 /** A fresh, not-yet-read entry for `record`. */
@@ -63,6 +73,7 @@ export function openEditorFileFromRecord(record: SourceRecord): OpenEditorFile {
     preview: null,
     draftContent: null,
     dirty: false,
+    previewTab: false,
     saving: false,
     loading: false,
     error: null,
@@ -91,10 +102,23 @@ export function isFileOpen(files: readonly OpenEditorFile[], path: string): bool
  */
 export function upsertOpenFile(
   files: readonly OpenEditorFile[],
-  record: SourceRecord
+  record: SourceRecord,
+  options: OpenEditorFileOptions = {}
 ): OpenEditorFile[] {
-  if (isFileOpen(files, record.path)) return [...files];
-  return [...files, openEditorFileFromRecord(record)];
+  const existing = findOpenFile(files, record.path);
+  if (existing) {
+    return options.pin || !options.preview
+      ? patchOpenFile(files, record.path, { previewTab: false })
+      : [...files];
+  }
+  const entry = {
+    ...openEditorFileFromRecord(record),
+    previewTab: Boolean(options.preview && !options.pin)
+  };
+  if (!entry.previewTab) return [...files, entry];
+  const previewIndex = files.findIndex((file) => file.previewTab);
+  if (previewIndex < 0) return [...files, entry];
+  return files.map((file, index) => (index === previewIndex ? entry : file));
 }
 
 /** Apply `patch` to the entry for `path`; unknown paths change nothing. */

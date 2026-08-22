@@ -24,7 +24,8 @@ import {
   patchOpenFile,
   revealLineInOpenFile,
   upsertOpenFile,
-  type OpenEditorFile
+  type OpenEditorFile,
+  type OpenEditorFileOptions
 } from './editorStoreOps.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 import {
@@ -96,11 +97,19 @@ export function editorFileFor(path: string): OpenEditorFile | null {
  * Put `record` in the strip (no-op if already there) and show it. Returns the
  * entry so the caller can decide whether it still needs reading.
  */
-export function openEditorFile(record: SourceRecord): OpenEditorFile {
-  editorState.openFiles = upsertOpenFile(editorState.openFiles, record);
+export function openEditorFile(
+  record: SourceRecord,
+  options: OpenEditorFileOptions = {}
+): OpenEditorFile {
+  editorState.openFiles = upsertOpenFile(editorState.openFiles, record, options);
   editorState.activePath = record.path;
   publishOpenTabDocumentBytes();
   return findOpenFile(editorState.openFiles, record.path)!;
+}
+
+/** Make a preview tab durable in the active-session strip. */
+export function pinEditorFile(path: string): void {
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, { previewTab: false });
 }
 
 /** Show an already-open file. */
@@ -150,7 +159,8 @@ export function setEditorFileDraft(path: string, content: string): void {
   if (file.draftContent === content) return;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     draftContent: content,
-    dirty: content !== file.preview.content
+    dirty: content !== file.preview.content,
+    previewTab: false
   });
   publishOpenTabDocumentBytes();
 }

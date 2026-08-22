@@ -15,6 +15,10 @@ export interface OpenFileRequest {
   /** Open for reading only: no editing, no saving. Set by producers that know
    * the file is not the active workspace's to change. */
   readOnly?: boolean;
+  /** Single-click explorer open: reuse the one unpinned preview tab. */
+  preview?: boolean;
+  /** Double-click or explicit open: keep this file as a durable tab. */
+  pin?: boolean;
   /** 1-based line to reveal, if any. */
   line?: number;
   /** 1-based column to reveal, if any. */
