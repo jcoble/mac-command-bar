@@ -1,3 +1,4 @@
+import { Channel } from '@tauri-apps/api/core';
 import type {
   ProjectRoot,
   SourceCodeAction,
@@ -42,13 +43,13 @@ import {
 } from './shell/sessionWorkspaces';
 import {
   trackTauriListener,
-  trackTauriSubscriber
+  trackTauriSubscriber,
+  trackTauriChannel
 } from './shell/resourceDiagnostics.svelte.ts';
 
 export const defaultSourceScanLimit = 10_000;
 export const expandedSourceScanLimit = 25_000;
 export const nativeSourceScanProgressEvent = 'source_scan_progress';
-export const terminalOutputEvent = 'terminal_output';
 
 export type NativeSourceScanProgress = {
   scanId: string;
@@ -125,6 +126,20 @@ export type TerminalOutputPayload = {
   terminated: boolean;
   exitCode: number | null;
   signal: string | null;
+};
+
+export type StreamEnvelope<T> = {
+  session: string;
+  generation: number;
+  sequence: number;
+  bytes: number;
+  kind: 'agent-conversation-event' | 'terminal_output';
+  resync: boolean;
+  chunk: T | null;
+};
+
+export type ProjectionStreamRegistration = {
+  unregister(): Promise<void>;
 };
 
 export type ProjectGitFileStatus = {
@@ -907,19 +922,80 @@ export async function closeTerminalSessionFromTauri(sessionId: string): Promise<
   return invoke<boolean>('close_terminal_session', { sessionId });
 }
 
+async function registerProjectionStream<T>(input: {
+  registerCommand: string;
+  acknowledgeCommand: string;
+  unregisterCommand: string;
+  onEnvelope: (envelope: StreamEnvelope<T>) => void;
+}): Promise<ProjectionStreamRegistration | null> {
+  if (!isTauriRuntime()) return null;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  const registrationId = globalThis.crypto.randomUUID();
+  let active = true;
+  const ack = (frames: number, bytes: number): Promise<void> => {
+    if (!active) return Promise.resolve();
+    return invoke(input.acknowledgeCommand, {
+      registrationId,
+      frames,
+      bytes
+    }).then(() => undefined);
+  };
+  const channel = new Channel<StreamEnvelope<T>>((envelope) => {
+    if (!active) return;
+    try {
+      input.onEnvelope(envelope);
+    } finally {
+      void ack(1, envelope.bytes).catch(() => undefined);
+    }
+  });
+  await invoke(input.registerCommand, { registrationId, channel });
+  const stopTracking = trackTauriChannel();
+  return {
+    async unregister(): Promise<void> {
+      if (!active) return;
+      active = false;
+      try {
+        await invoke(input.unregisterCommand, { registrationId });
+      } catch {
+        // The webview may already be closing. Rust still bounds the abandoned
+        // in-flight window, and a later registration atomically replaces it.
+      } finally {
+        stopTracking();
+      }
+    }
+  };
+}
+
+export function registerAgentConversationStream(
+  onEnvelope: (envelope: StreamEnvelope<AgentConversationEvent>) => void
+): Promise<ProjectionStreamRegistration | null> {
+  return registerProjectionStream({
+    registerCommand: 'register_agent_conversation_stream',
+    acknowledgeCommand: 'acknowledge_agent_conversation_stream',
+    unregisterCommand: 'unregister_agent_conversation_stream',
+    onEnvelope
+  });
+}
+
+export function registerTerminalOutputStream(
+  onEnvelope: (envelope: StreamEnvelope<TerminalOutputPayload>) => void
+): Promise<ProjectionStreamRegistration | null> {
+  return registerProjectionStream({
+    registerCommand: 'register_terminal_output_stream',
+    acknowledgeCommand: 'acknowledge_terminal_output_stream',
+    unregisterCommand: 'unregister_terminal_output_stream',
+    onEnvelope
+  });
+}
+
 export async function listenToTerminalOutput(
   handler: (payload: TerminalOutputPayload) => void
 ): Promise<(() => void) | null> {
-  if (!isTauriRuntime()) {
-    return null;
-  }
-
-  const { listen } = await import('@tauri-apps/api/event');
-  return trackTauriListener(
-    await listen<TerminalOutputPayload>(terminalOutputEvent, (event) => {
-      handler(event.payload);
-    })
-  );
+  const registration = await registerTerminalOutputStream((envelope) => {
+    if (!envelope.resync && envelope.chunk) handler(envelope.chunk);
+  });
+  return registration ? () => void registration.unregister() : null;
 }
 
 export async function readSourceFromTauri(record: SourceRecord): Promise<SourcePreview | null> {

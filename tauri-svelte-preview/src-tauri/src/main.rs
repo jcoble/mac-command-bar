@@ -38,6 +38,7 @@ mod helper;
 mod lsp;
 mod orchestration;
 mod product_identity;
+mod projection_streams;
 mod resources;
 mod resources_disk;
 mod terminal;
@@ -2071,11 +2072,15 @@ async fn submit_workflow_result(
 
 #[tauri::command]
 async fn start_terminal_session(
-    app: tauri::AppHandle,
     terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
+    projection_streams: tauri::State<'_, projection_streams::ProjectionStreams>,
     request: terminal::TerminalStartRequest,
 ) -> Result<terminal::TerminalSessionInfo, String> {
-    terminal::start_terminal_session(app, &terminal_registry, request)
+    terminal::start_terminal_session(
+        &terminal_registry,
+        projection_streams.inner().clone(),
+        request,
+    )
 }
 
 #[tauri::command]
@@ -6288,6 +6293,7 @@ fn main() {
         .manage(SourceScanRegistry::default())
         .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
+        .manage(projection_streams::ProjectionStreams::default())
         .manage(terminal::TerminalRegistry::default())
         .manage(browser::BrowserRegistry::default())
         .manage(resources::ResourceRegistry::default())
@@ -6329,9 +6335,12 @@ fn main() {
                 .map(|root| root.owned_id)
                 .collect();
             agent_conversation::reaper::start_startup_reaper(&app_data_dir, live_session_ids)?;
-            let handle = app.handle().clone();
+            let projection_streams = app
+                .state::<projection_streams::ProjectionStreams>()
+                .inner()
+                .clone();
             agent_runtime.set_emitter(Arc::new(move |event| {
-                let _ = handle.emit("agent-conversation-event", event);
+                projection_streams.publish_agent_event(event);
             }));
             let handle = app.handle().clone();
             agent_runtime.set_broker_emitter(Arc::new(move |event| {
@@ -6524,6 +6533,12 @@ fn main() {
             agent_conversation::extend_agent_conversation_import,
             agent_conversation::start_agent_conversation_terminal_projection,
             agent_conversation::stop_agent_conversation_terminal_projection,
+            projection_streams::register_agent_conversation_stream,
+            projection_streams::acknowledge_agent_conversation_stream,
+            projection_streams::unregister_agent_conversation_stream,
+            projection_streams::register_terminal_output_stream,
+            projection_streams::acknowledge_terminal_output_stream,
+            projection_streams::unregister_terminal_output_stream,
             agent_conversation::save_agent_conversation_attachment,
             agent_conversation::read_agent_conversation_attachments,
             agent_conversation::delete_agent_conversation_attachment,

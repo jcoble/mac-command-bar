@@ -170,6 +170,7 @@ pub struct ResourceSample {
 pub struct ResourceDiagnostics {
     pub conversations: crate::agent_conversation::manager::AgentRuntimeDiagnostics,
     pub terminals: TerminalResourceDiagnostics,
+    pub streams: crate::projection_streams::ProjectionStreamDiagnostics,
     pub language_servers: LanguageServerResourceDiagnostics,
     pub browser: BrowserResourceDiagnostics,
 }
@@ -437,6 +438,7 @@ pub async fn read_resource_sample(
         '_,
         crate::agent_conversation::terminal_projection::TerminalProjectionRegistry,
     >,
+    projection_streams: State<'_, crate::projection_streams::ProjectionStreams>,
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
     lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
     browser_registry: State<'_, crate::browser::BrowserRegistry>,
@@ -446,6 +448,7 @@ pub async fn read_resource_sample(
     let terminal_registry = terminal_registry.inner().clone();
     let agent_runtime = agent_runtime.inner().clone();
     let lsp_registry = lsp_registry.inner().clone();
+    let projection_streams = projection_streams.inner().clone();
     let native_browser_views = browser_registry.live_view_count()?;
     let transcript_projections = terminal_projection_registry.live_watcher_count()?;
 
@@ -457,6 +460,7 @@ pub async fn read_resource_sample(
             &lsp_registry,
             native_browser_views,
             transcript_projections,
+            projection_streams.clone(),
         )?;
         let mut system = system
             .lock()
@@ -591,6 +595,7 @@ fn resource_diagnostics(
     lsp_registry: &crate::lsp::SourceLspRegistry,
     native_browser_views: usize,
     transcript_projections: usize,
+    projection_streams: crate::projection_streams::ProjectionStreams,
 ) -> Result<ResourceDiagnostics, String> {
     let terminal_sessions = crate::terminal::list_terminal_sessions(terminal_registry)?;
     let live_terminal_sessions = terminal_sessions
@@ -623,6 +628,7 @@ fn resource_diagnostics(
                 .filter(|session| session.exited)
                 .count(),
         },
+        streams: projection_streams.diagnostics(),
         language_servers: LanguageServerResourceDiagnostics {
             running_processes: lsp_registry.running_language_server_processes().len(),
         },

@@ -1,5 +1,5 @@
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import {
   applyAgentConversationEvent,
   applyAgentConversationSnapshot,
@@ -57,7 +57,10 @@ import {
   listAgentConversationEventsAfterFromTauri,
   extendAgentConversationImportFromTauri,
   readAgentConversationSnapshotFromTauri,
-  writeTerminalSessionFromTauri
+  writeTerminalSessionFromTauri,
+  registerAgentConversationStream,
+  type StreamEnvelope,
+  type ProjectionStreamRegistration
 } from '$lib/tauriSource';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
@@ -78,10 +81,11 @@ import {
   trackTauriListener
 } from '../resourceDiagnostics.svelte.ts';
 
-let unlisten: UnlistenFn | null = null;
-let unlistenTitles: UnlistenFn | null = null;
+let conversationStream: ProjectionStreamRegistration | null = null;
+let unlistenTitles: (() => void) | null = null;
 let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
+let conversationEventsGeneration = 0;
 const resyncing = new Map<string, Promise<void>>();
 const ensuring = new Map<string, { signature: string; work: Promise<AgentConversationConnection | null> }>();
 const terminalProjections = new Map<string, string>();
@@ -635,11 +639,19 @@ export async function loadNewerConversationEvents(ownedId: string): Promise<void
 }
 
 export async function startConversationEvents(): Promise<void> {
-  if (!isTauri() || unlisten) return;
+  if (!isTauri() || conversationStream) return;
   conversationEventsDisposed = false;
   if (conversationEventsSetup) return conversationEventsSetup;
+  const streamGeneration = ++conversationEventsGeneration;
   conversationEventsSetup = (async () => {
-    const stopEvents = await listen<AgentConversationEvent>('agent-conversation-event', ({ payload }) => {
+    const registration = await registerAgentConversationStream((envelope: StreamEnvelope<AgentConversationEvent>) => {
+      if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+      if (envelope.resync || !envelope.chunk) {
+        const activeOwnedId = rail.activeOwnedId;
+        if (activeOwnedId) void resyncConversation(activeOwnedId);
+        return;
+      }
+      const payload = envelope.chunk;
       const active = rail.activeOwnedId === payload.ownedId;
       if (active) applyAgentConversationEvent(payload);
       else recordAgentConversationPresenceEvent(payload);
@@ -660,7 +672,6 @@ export async function startConversationEvents(): Promise<void> {
         setConversationSending(payload.ownedId, false);
       }
     });
-    const stop = trackTauriListener(stopEvents);
     // A session starts out named after the first words of its prompt. Once
     // its first turn is done the app writes a short summary over that, and this
     // is how the rail row hears about it.
@@ -669,12 +680,12 @@ export async function startConversationEvents(): Promise<void> {
       ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
     );
     const stopTitles = trackTauriListener(stopTitleEvents);
-    if (conversationEventsDisposed) {
-      stop();
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
+      await registration?.unregister();
       stopTitles();
       return;
     }
-    unlisten = stop;
+    conversationStream = registration;
     unlistenTitles = stopTitles;
   })();
   try {
@@ -686,8 +697,9 @@ export async function startConversationEvents(): Promise<void> {
 
 export function stopConversationEvents(): void {
   conversationEventsDisposed = true;
-  unlisten?.();
-  unlisten = null;
+  conversationEventsGeneration += 1;
+  void conversationStream?.unregister();
+  conversationStream = null;
   unlistenTitles?.();
   unlistenTitles = null;
   for (const ownedId of [...terminalProjections.keys()]) stopConversationTerminalProjection(ownedId);

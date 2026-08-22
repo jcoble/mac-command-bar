@@ -10,6 +10,7 @@ export const resourceDiagnostics = $state({
   loadedChildTranscriptBytes: 0,
   tauriRootListeners: 0,
   tauriEventSubscribers: 0,
+  tauriChannels: 0,
   fileWatchers: 0,
   objectUrls: 0,
   loadedTreeNodes: 0,
@@ -96,6 +97,18 @@ export function trackTauriSubscriber(unsubscribe: () => void): () => void {
           resourceDiagnostics.tauriEventSubscribers - 1
         );
       }
+    }
+  };
+}
+
+export function trackTauriChannel(): () => void {
+  if (import.meta.env.DEV) resourceDiagnostics.tauriChannels += 1;
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    if (import.meta.env.DEV) {
+      resourceDiagnostics.tauriChannels = Math.max(0, resourceDiagnostics.tauriChannels - 1);
     }
   };
 }

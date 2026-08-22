@@ -182,6 +182,9 @@
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.userPtys}</strong> user PTYs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.agentToolPtys}</strong> tool PTYs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.terminals.transcriptProjections}</strong> transcript projections</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.streams.channels}</strong> projection channels</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.streams.queuedFrames}</strong> queued frames</span>
+        <span><strong>{resourceSampleState.sample.diagnostics.streams.queuedBytes}</strong> queued bytes</span>
         <span><strong>{resourceSampleState.sample.diagnostics.languageServers.runningProcesses}</strong> LSPs</span>
         <span><strong>{resourceSampleState.sample.diagnostics.browser.nativeViews}</strong> browser views</span>
       </section>
@@ -193,6 +196,7 @@
         <span><strong>{resourceDiagnostics.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
         <span><strong>{resourceDiagnostics.tauriRootListeners}</strong> Tauri listeners</span>
         <span><strong>{resourceDiagnostics.tauriEventSubscribers}</strong> JS event subscribers</span>
+        <span><strong>{resourceDiagnostics.tauriChannels}</strong> Tauri Channels</span>
         <span><strong>{resourceDiagnostics.fileWatchers}</strong> file watchers</span>
         <span><strong>{resourceDiagnostics.objectUrls}</strong> object URLs</span>
         <span><strong>{resourceDiagnostics.loadedTreeNodes}</strong> tree nodes</span>

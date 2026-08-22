@@ -3,14 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{Emitter, Runtime};
-
 pub use crate::agent_conversation::protocol::ToolTerminalIdentity;
-
-pub const TERMINAL_OUTPUT_EVENT: &str = "terminal_output";
 /// Per-session scrollback ring held by the backend. 16 MB is enough to survive a
 /// genuinely long agent run (256 KB was ~2 minutes of a chatty build), and it is
 /// the backend that has to hold it: a hidden view holds nothing, so a re-attach
@@ -77,6 +73,25 @@ pub struct TerminalOutputEvent {
     pub signal: Option<String>,
 }
 
+#[derive(Clone)]
+struct TerminalOutputOrdering {
+    generation: u64,
+    next_sequence: Arc<AtomicI64>,
+}
+
+impl TerminalOutputOrdering {
+    fn new() -> Self {
+        Self {
+            generation: TERMINAL_INSTANCE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
+            next_sequence: Arc::new(AtomicI64::new(0)),
+        }
+    }
+
+    fn next_sequence(&self) -> i64 {
+        self.next_sequence.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct TerminalRegistry {
     inner: Arc<Mutex<HashMap<String, TerminalSessionHandle>>>,
@@ -90,20 +105,26 @@ struct TerminalSessionHandle {
     scrollback: Arc<Mutex<String>>,
 }
 
-pub fn start_terminal_session<R: Runtime>(
-    app: tauri::AppHandle<R>,
+pub fn start_terminal_session(
     registry: &TerminalRegistry,
+    projection_streams: crate::projection_streams::ProjectionStreams,
     request: TerminalStartRequest,
 ) -> Result<TerminalSessionInfo, String> {
-    start_terminal_session_typed(app, registry, request, TerminalKind::UserPty, None)
+    start_terminal_session_typed(
+        registry,
+        request,
+        TerminalKind::UserPty,
+        None,
+        projection_streams,
+    )
 }
 
-fn start_terminal_session_typed<R: Runtime>(
-    app: tauri::AppHandle<R>,
+fn start_terminal_session_typed(
     registry: &TerminalRegistry,
     request: TerminalStartRequest,
     kind: TerminalKind,
     tool_terminal_identity: Option<ToolTerminalIdentity>,
+    projection_streams: crate::projection_streams::ProjectionStreams,
 ) -> Result<TerminalSessionInfo, String> {
     let cwd = terminal_cwd_from_request(&request.cwd)?;
     let shell = terminal_shell_from_request(request.shell);
@@ -158,6 +179,7 @@ fn start_terminal_session_typed<R: Runtime>(
         .map_err(|error| format!("Could not take terminal writer: {error}"))?;
     let killer = child.clone_killer();
     let scrollback = Arc::new(Mutex::new(String::new()));
+    let ordering = TerminalOutputOrdering::new();
     drop(pair.slave);
 
     let info = TerminalSessionInfo {
@@ -187,13 +209,21 @@ fn start_terminal_session_typed<R: Runtime>(
         },
     )?;
 
-    spawn_terminal_reader(
-        app.clone(),
+    let reader_done = spawn_terminal_reader(
         session_id.clone(),
         Arc::clone(&scrollback),
+        ordering.clone(),
+        projection_streams.clone(),
         reader,
     );
-    spawn_terminal_waiter(app, registry.clone(), session_id, child);
+    spawn_terminal_waiter(
+        registry.clone(),
+        session_id,
+        ordering,
+        projection_streams,
+        reader_done,
+        child,
+    );
 
     Ok(info)
 }
@@ -358,12 +388,13 @@ impl TerminalRegistry {
     }
 }
 
-fn spawn_terminal_reader<R: Runtime>(
-    app: tauri::AppHandle<R>,
+fn spawn_terminal_reader(
     session_id: String,
     scrollback: Arc<Mutex<String>>,
+    ordering: TerminalOutputOrdering,
+    projection_streams: crate::projection_streams::ProjectionStreams,
     mut reader: Box<dyn Read + Send>,
-) {
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
         loop {
@@ -374,8 +405,10 @@ fn spawn_terminal_reader<R: Runtime>(
                     if let Ok(mut stored_scrollback) = scrollback.lock() {
                         append_terminal_scrollback(&mut stored_scrollback, &data);
                     }
-                    let _ = app.emit(
-                        TERMINAL_OUTPUT_EVENT,
+                    projection_streams.publish_terminal_output(
+                        session_id.clone(),
+                        ordering.generation,
+                        ordering.next_sequence(),
                         TerminalOutputEvent {
                             session_id: session_id.clone(),
                             data,
@@ -388,7 +421,7 @@ fn spawn_terminal_reader<R: Runtime>(
                 Err(_) => break,
             }
         }
-    });
+    })
 }
 
 fn append_terminal_scrollback(scrollback: &mut String, data: &str) {
@@ -414,14 +447,19 @@ fn append_terminal_scrollback(scrollback: &mut String, data: &str) {
     scrollback.drain(..drain_end);
 }
 
-fn spawn_terminal_waiter<R: Runtime>(
-    app: tauri::AppHandle<R>,
+fn spawn_terminal_waiter(
     registry: TerminalRegistry,
     session_id: String,
+    ordering: TerminalOutputOrdering,
+    projection_streams: crate::projection_streams::ProjectionStreams,
+    reader_done: std::thread::JoinHandle<()>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
 ) {
     std::thread::spawn(move || {
         let status = child.wait().ok();
+        // The PTY reader owns the final bytes. Wait for it before publishing
+        // the termination frame so consumers never see exit before output.
+        let _ = reader_done.join();
         let exit_code = status.as_ref().map(|value| value.exit_code());
         let signal = status
             .as_ref()
@@ -429,8 +467,10 @@ fn spawn_terminal_waiter<R: Runtime>(
         // Keep the session as a tombstone: the rail shows "finished — read final
         // output", and the scrollback stays readable. Only an explicit close purges it.
         let _ = registry.mark_exited(&session_id, exit_code, signal.clone());
-        let _ = app.emit(
-            TERMINAL_OUTPUT_EVENT,
+        projection_streams.publish_terminal_output(
+            session_id.clone(),
+            ordering.generation,
+            ordering.next_sequence(),
             TerminalOutputEvent {
                 session_id,
                 data: String::new(),
@@ -544,6 +584,7 @@ fn default_terminal_shell() -> String {
 }
 
 static TERMINAL_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TERMINAL_INSTANCE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn new_terminal_session_id() -> String {
     let seq = TERMINAL_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -751,15 +792,15 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn terminal_session_lifecycle_accepts_padded_ids_writes_resizes_reads_and_closes_native_pty() {
-        let app = tauri::test::mock_app();
         let registry = TerminalRegistry::default();
+        let projection_streams = crate::projection_streams::ProjectionStreams::default();
         let expected_cwd = std::fs::canonicalize(std::env::temp_dir())
             .expect("temp dir should canonicalize")
             .display()
             .to_string();
         let session = start_terminal_session(
-            app.handle().clone(),
             &registry,
+            projection_streams,
             TerminalStartRequest {
                 cwd: std::env::temp_dir().display().to_string(),
                 shell: Some("/bin/sh".to_string()),

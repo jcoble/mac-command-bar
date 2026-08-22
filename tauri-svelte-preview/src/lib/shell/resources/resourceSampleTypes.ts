@@ -41,6 +41,11 @@ export type ResourceDiagnostics = {
     browserAutomations: number;
     exitedSessionsRetained: number;
   };
+  streams: {
+    channels: number;
+    queuedFrames: number;
+    queuedBytes: number;
+  };
   languageServers: {
     runningProcesses: number;
   };
