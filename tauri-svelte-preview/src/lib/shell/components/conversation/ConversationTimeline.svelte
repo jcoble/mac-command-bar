@@ -207,6 +207,7 @@
   $effect(() => {
     if (openedConversationId === renderWindowId) return;
     openedConversationId = renderWindowId;
+    pageAnchor = null;
     anchoredUserItemId = null;
     foldConversationId = renderWindowId;
     expandedTurns = new Map();
@@ -477,6 +478,8 @@
         if (!host) return;
         const item = host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(anchor.itemId)}"]`);
         if (item) host.scrollTop += item.getBoundingClientRect().top - anchor.viewportTop;
+        if (follow) pageAnchor = null;
+        else captureViewportAnchor();
       });
     });
   }
@@ -504,6 +507,10 @@
   function handleScroll(): void {
     if (!host) return;
     follow = distanceBelowReader() <= 80;
+    // Keep the anchor fresh while reading so a live append that trims the top
+    // can restore the same visible item instead of moving the reader.
+    if (follow) pageAnchor = null;
+    else captureViewportAnchor();
     onScroll?.(host.scrollTop);
     requestOlderHistory();
     requestNewerHistory();
