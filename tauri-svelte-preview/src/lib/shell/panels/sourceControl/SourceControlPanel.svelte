@@ -93,6 +93,8 @@
     root: string;
     /** The active session, when there is one. Unused: this panel is per folder. */
     ownedId: string | null;
+    /** False when the active session's checkout has disappeared. */
+    rootAvailable?: boolean;
     /** The working-copy service. The shell's singleton unless a test says otherwise. */
     service?: GitService;
     /** The per-commit file service, likewise. */
@@ -106,6 +108,7 @@
   let {
     visible,
     root,
+    rootAvailable = true,
     service = defaultService,
     commitFiles = defaultCommitFilesService,
     commitFilesState = defaultCommitFilesState,
@@ -221,9 +224,13 @@
   let amend = $state(false);
 
   /** Can this panel change what it is looking at? Both answers have a sentence. */
-  const canChange = $derived(canWrite && !readOnlyScope);
+  const canChange = $derived(rootAvailable && canWrite && !readOnlyScope);
   const cannotChangeReason = $derived(
-    readOnlyScope ? READ_ONLY_SCOPE_MESSAGE : READ_ONLY_IN_BROWSER_MESSAGE
+    !rootAvailable
+      ? 'Checkout/Worktree deleted.'
+      : readOnlyScope
+        ? READ_ONLY_SCOPE_MESSAGE
+        : READ_ONLY_IN_BROWSER_MESSAGE
   );
 
   const remoteActions = $derived(
@@ -423,7 +430,7 @@
     </span>
   </PanelHeader>
 
-  {#if !panel.activated}
+  {#if !panel.activated && rootAvailable}
     <EmptyState
       title="No project selected yet"
       body="Pick a session and this panel shows that folder's source control."
@@ -452,7 +459,13 @@
     {#if visible}
     <ScrollArea bind:viewportRef={scrollViewport} class="min-h-0 flex-1">
       <div class="flex flex-col gap-2 p-2">
-        {#if scopeOptions.length > 1}
+        {#if !rootAvailable}
+          <p class="text-sm text-muted-foreground" data-testid="source-control-checkout-deleted">
+            Checkout/Worktree deleted.
+          </p>
+        {/if}
+
+        {#if scopeOptions.length > 1 || (!rootAvailable && scopeOptions.length > 0)}
           <Select.Root
             type="single"
             value={scopeValue}

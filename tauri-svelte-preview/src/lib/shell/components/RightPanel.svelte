@@ -31,6 +31,8 @@
     onSelect(id: RightTabId): void;
     /** The active session's working folder, or '' when nothing is selected. */
     root: string;
+    /** False when the active session's checkout has disappeared. */
+    rootAvailable?: boolean;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
     onRootUnavailable?(root: string): void | Promise<void>;
@@ -42,6 +44,7 @@
     activeId,
     onSelect,
     root,
+    rootAvailable = true,
     ownedId,
     onRootUnavailable,
     expandedPathsByRoot,
@@ -67,7 +70,13 @@
       </div>
     {:else if activeId === 'source-control'}
       <div class="panel-body showing">
-        <SourceControlPanel visible={true} {root} {ownedId} {onUseSessionCheckout} />
+        <SourceControlPanel
+          visible={true}
+          {root}
+          {ownedId}
+          {rootAvailable}
+          {onUseSessionCheckout}
+        />
       </div>
     {:else if activeId === 'worktrees'}
       <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>

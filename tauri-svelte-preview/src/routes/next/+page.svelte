@@ -1135,10 +1135,14 @@
 		setActiveOwned(ownedId);
 		activeRootAvailable = selectedRootAvailable;
 		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
+		if (!activeRootAvailable) {
+			await handleActiveRootUnavailable(selectedRoot, true);
+			if (!selectionIsCurrent()) return;
+		}
 		// Point the file tree, the context cards and any tab the user has already
 		// opened at this session's project. Ignored while start-up is still
 		// re-attaching sessions, so a reload still loads nothing on its own.
-		shellPanels.sessionPicked(activeRootAvailable);
+		if (activeRootAvailable) shellPanels.sessionPicked(true);
 		// Clicking the session you are already on changes nothing. Putting the
 		// stored record back here would throw away every file opened since the last
 		// switch, which is the opposite of what a click on your own row means.
@@ -1155,7 +1159,7 @@
 			// it re-opened — the session's own remembered tab wins.
 			restoreTabsFor(activeWorkspaceSnapshot);
 		}
-		if (switching && selected?.ptySessionId && service) {
+		if (switching && selectedRootAvailable && selected?.ptySessionId && service) {
 			const host = await hostFor(ownedId);
 			if (!selectionIsCurrent()) return;
 			if (!host) {
@@ -1172,7 +1176,7 @@
 				}
 			}
 		}
-		if (!switching) service?.show(ownedId);
+		if (!switching && activeRootAvailable) service?.show(ownedId);
 		const provider = conversationProviderFor(ownedId);
 		if (selected && provider) {
 			ensureConversationSession(ownedId, provider);
@@ -1193,11 +1197,11 @@
 		}
 	}
 
-	async function handleActiveRootUnavailable(root: string): Promise<void> {
+	async function handleActiveRootUnavailable(root: string, force = false): Promise<void> {
 		const selectedRoot = readSelection().root.trim();
 		const ownedId = rail.activeOwnedId;
 		if (
-			!activeRootAvailable ||
+			(!force && !activeRootAvailable) ||
 			!selectedRoot ||
 			canonicalPath(root) !== canonicalPath(selectedRoot)
 		) return;
@@ -1863,8 +1867,11 @@
 						const validation = await validateProjectRootFromTauri(root);
 						activeRootAvailable = validation === null || (validation.exists && validation.isDirectory);
 					}
-					setUnavailableOpenFileRoot(activeRootAvailable ? null : root);
-					shellPanels.sessionPicked(activeRootAvailable);
+					if (!activeRootAvailable && root) await handleActiveRootUnavailable(root, true);
+					else {
+						setUnavailableOpenFileRoot(null);
+						shellPanels.sessionPicked(true);
+					}
 				}
 				// Same story for the files that session had open: the pick that would
 				// have restored them happened before the gate opened, so a reload would
@@ -1944,6 +1951,7 @@
 			activeId={rightTab}
 			onSelect={selectRightTab}
 			root={activeRootAvailable ? readSelection().root : ""}
+			rootAvailable={activeRootAvailable}
 			ownedId={rail.activeOwnedId}
 			onRootUnavailable={handleActiveRootUnavailable}
 			expandedPathsByRoot={activeWorkspaceSnapshot?.expandedPathsByRoot ?? {}}
