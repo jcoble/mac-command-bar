@@ -3329,10 +3329,10 @@ pub(crate) fn read_source_lsp_status_sync(
         command,
         args: spec.args.iter().map(|arg| (*arg).to_string()).collect(),
         reason: if switched_off {
-            Some(
-                "The C# language server is switched off in Settings. Reference counts and project search still work; mistake squiggles and precise go-to-definition do not."
-                    .to_string(),
-            )
+            Some(format!(
+                "The {} language server is switched off in Settings. Reference counts and project search still work; mistake squiggles and precise go-to-definition do not.",
+                spec.server_name
+            ))
         } else if !root_exists {
             Some("Project root is not a directory".to_string())
         } else if !available {
@@ -3359,7 +3359,10 @@ fn describe_language_server_activity(
     if switched_off {
         return (
             LanguageServerState::Disabled,
-            Some("The C# language server is switched off in Settings.".to_string()),
+            Some(format!(
+                "The {} language server is switched off in Settings.",
+                spec.server_name
+            )),
         );
     }
     if !root_exists {

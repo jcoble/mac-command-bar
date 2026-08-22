@@ -1363,7 +1363,7 @@ export async function setLanguageServersEnabled(
     return {
       enabled: !enabled,
       stoppedServers: 0,
-      supported: true,
+      supported: false,
       message: 'The language servers setting could not be changed just now. Please try again.'
     };
   }

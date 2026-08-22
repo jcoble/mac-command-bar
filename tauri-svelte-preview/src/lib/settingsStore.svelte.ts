@@ -188,11 +188,19 @@ function mergeWithDefaults(raw: unknown): Settings {
 		if (!isRecord(incoming)) continue;
 		const target = base[section] as unknown as Record<string, unknown>;
 		for (const key of Object.keys(target)) {
+			if (section === 'intelligence' && key === 'languageServerEnabled') continue;
 			const next = incoming[key];
 			if (next !== undefined && typeof next === typeof target[key]) {
 				target[key] = next;
 			}
 		}
+	}
+	const intelligence = isRecord(raw.intelligence) ? raw.intelligence : {};
+	const storedServers = isRecord(intelligence.languageServerEnabled)
+		? intelligence.languageServerEnabled
+		: {};
+	for (const id of ['csharp', 'typescript', 'rust'] as const) {
+		if (typeof storedServers[id] === 'boolean') base.intelligence.languageServerEnabled[id] = storedServers[id];
 	}
 
 	// The type check above only asks "is it a string?", which is not enough for a
