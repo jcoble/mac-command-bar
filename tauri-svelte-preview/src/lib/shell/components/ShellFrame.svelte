@@ -25,6 +25,10 @@
     readAssemblySettingFromTauri,
     writeAssemblySettingFromTauri
   } from '$lib/tauriSource';
+  import {
+    cancelTrackedAnimationFrame,
+    requestTrackedAnimationFrame
+  } from '$lib/shell/resourceDiagnostics.svelte.ts';
 
   const GRID_LAYOUT_SETTING_KEY = 'shell.grid-layout';
   const CENTER_LAYOUT_SETTING_KEY = 'shell.center-layout';
@@ -101,6 +105,7 @@
 
   onMount(() => {
     let observer: ResizeObserver | null = null;
+    let layoutRequest: number | null = null;
     let mounted = true;
     let laidOutWidth = -1;
     let laidOutHeight = -1;
@@ -111,6 +116,13 @@
       laidOutWidth = width;
       laidOutHeight = height;
       frame?.layout(width, height);
+    };
+    const scheduleFrameLayout = () => {
+      if (layoutRequest !== null) return;
+      layoutRequest = requestTrackedAnimationFrame(() => {
+        layoutRequest = null;
+        layoutFrame();
+      });
     };
     void (async () => {
       try {
@@ -163,7 +175,7 @@
         });
         await centerDock.ready;
         if (!mounted || !centerDock) return;
-        observer = new ResizeObserver(layoutFrame);
+        observer = new ResizeObserver(scheduleFrameLayout);
         observer.observe(gridHost);
         ready = true;
         onReady?.({
@@ -188,6 +200,7 @@
     return () => {
       mounted = false;
       observer?.disconnect();
+      if (layoutRequest !== null) cancelTrackedAnimationFrame(layoutRequest);
       centerDock?.dispose();
       centerDock = null;
       frame?.dispose();

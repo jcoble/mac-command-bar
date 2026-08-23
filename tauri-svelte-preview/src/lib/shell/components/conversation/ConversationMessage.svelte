@@ -4,6 +4,10 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { userMessageOverflowsFold } from '$lib/shell/conversation/conversationTimeline.ts';
   import { parseSafeMarkdown, type SafeInlinePart, type SafeMarkdownBlock } from '$lib/shell/conversation/conversationMessageSafety.ts';
+  import {
+    cancelTrackedAnimationFrame,
+    requestTrackedAnimationFrame
+  } from '$lib/shell/resourceDiagnostics.svelte.ts';
   import CodeBlock from './CodeBlock.svelte';
 
   interface Props {
@@ -29,18 +33,30 @@
     const host = bodyHost;
     if (role !== 'user' || !host) return;
     void blocks;
+    let frame: number | null = null;
     const measure = (): void => {
-      folded = userMessageOverflowsFold(
+      const nextFolded = userMessageOverflowsFold(
         host.scrollHeight,
         Number.parseFloat(getComputedStyle(host).lineHeight)
       );
+      if (folded !== nextFolded) folded = nextFolded;
     };
-    measure();
+    const scheduleMeasure = (): void => {
+      if (frame !== null) return;
+      frame = requestTrackedAnimationFrame(() => {
+        frame = null;
+        measure();
+      });
+    };
+    scheduleMeasure();
     // The message rewraps as the column changes width, so what was nine lines
     // becomes eleven without a word of it changing.
-    const observer = new ResizeObserver(measure);
+    const observer = new ResizeObserver(scheduleMeasure);
     observer.observe(host);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelTrackedAnimationFrame(frame);
+    };
   });
 </script>
 
