@@ -102,7 +102,6 @@
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
   let ready = $state(false);
-  let centerHovered = $state(false);
 
   onMount(() => {
     let observer: ResizeObserver | null = null;
@@ -217,14 +216,8 @@
      can be measured — see the note on `.parking-stage` in the styles below. -->
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
-  <div
-    class="slot center-region"
-    role="presentation"
-    bind:this={centerRegionSlot}
-    onmouseenter={() => (centerHovered = true)}
-    onmouseleave={() => (centerHovered = false)}
-  >
-    <div class="center-tabs" class:hovered={centerHovered}>{@render centerTabs()}</div>
+  <div class="slot center-region" bind:this={centerRegionSlot}>
+    <div class="center-tabs">{@render centerTabs()}</div>
     <div class="center-dock-host" bind:this={centerSlot}></div>
   </div>
   <div class="slot tools-region" bind:this={toolsSlot}>{@render tools()}</div>
@@ -282,14 +275,6 @@
     /* Transparent on purpose: the card behind it paints the surface and its
        gradient, and an opaque fill here would cover both. */
     background: transparent;
-  }
-
-  /* Entering or leaving the centre changes only this small overlay. Inherited
-     custom properties on `.center-region:hover` invalidated the whole editor
-     or conversation subtree whenever WebKit reevaluated pointer hover. */
-  .center-tabs.hovered :global(.center-pills) {
-    opacity: 1;
-    pointer-events: auto;
   }
 
   .center-tabs {

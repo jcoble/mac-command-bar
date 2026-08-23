@@ -3,20 +3,14 @@
    * One session in the rail: project and status, title and model, branch.
    *
    * The row is presentational. Selecting, jumping, and every menu action arrive
-   * through props. Hover only reveals controls that are already in the page;
-   * nothing about hover moves the title or the branch.
+   * through props. Hover changes only the row highlight; secondary actions live
+   * in the right-click menu instead of mounting buttons on every rail row.
    *
    * The working indicator is static and only shown while this row is genuinely
    * working and on screen; the elapsed clock is the rail's one shared interval
    * rather than a timer per row.
    */
-  import FileCode2 from '@lucide/svelte/icons/file-code-2';
-  import GitBranch from '@lucide/svelte/icons/git-branch';
-  import MessageCircle from '@lucide/svelte/icons/message-circle';
-  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
-
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
-  import { HoverActionButton, HoverActions } from '$lib/components/ui/hover-actions/index.js';
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
@@ -197,11 +191,6 @@
     }
   }
 
-  function jump(event: MouseEvent, surface: 'session' | 'editor' | 'source-control'): void {
-    event.stopPropagation();
-    if (!sessionRowJump(session.ownedId, surface)) onSelect?.();
-  }
-
   // ── The right-click menu ───────────────────────────────────────────────────
   const sessionIdForCopy = $derived(session.nativeSessionId || session.ownedId);
   const menuItems = $derived(
@@ -342,103 +331,10 @@
     </ContextMenu.Content>
   </ContextMenu.Root>
 
-  <!-- The kit cluster is always in the page and only fades. It sits in line
-       one's right corner, over the space the time vacates as the pointer
-       arrives, so it lands on no text and nothing in the row moves: the lines
-       keep their places and only the title's clip width changes. -->
-  <HoverActions
-    data-testid="worktree-agent-overlay"
-    label="Session actions"
-    class="absolute top-[5px] right-[17px] z-[2]"
-  >
-    <!-- Three, not four. The three surfaces a session is worked in; settling
-         stays on the row's right-click menu, because every button here costs
-         the title width while the pointer is on the row. -->
-    <span data-testid="worktree-agent-jump" class="contents">
-      <span data-testid="worktree-agent-jump-session" class="contents">
-        <HoverActionButton
-          label="Open session"
-          tone="primary"
-          size="sm"
-          onclick={(event) => jump(event, 'session')}
-        >
-          <MessageCircle aria-hidden="true" />
-        </HoverActionButton>
-      </span>
-      <span data-testid="worktree-agent-jump-editor" class="contents">
-        <HoverActionButton
-          label="Open editor"
-          tone="info"
-          size="sm"
-          onclick={(event) => jump(event, 'editor')}
-        >
-          <FileCode2 aria-hidden="true" />
-        </HoverActionButton>
-      </span>
-      <span data-testid="worktree-agent-jump-source-control" class="contents">
-        <HoverActionButton
-          label="Open source control"
-          tone="success"
-          size="sm"
-          onclick={(event) => jump(event, 'source-control')}
-        >
-          <GitBranch aria-hidden="true" />
-        </HoverActionButton>
-      </span>
-    </span>
-
-    <!-- A hole the width of the spinner, so the buttons stop to its left and a
-         running session keeps saying so while the pointer is on the row. -->
-    {#if isWorking}
-      <span class="spinner-gap" aria-hidden="true"></span>
-    {/if}
-
-    <!-- The step back, last in the cluster and therefore over the time itself:
-         the corner the time was using is the corner this move lands in. Done
-         goes back to Settled, Settled goes back to Working — one rung a click,
-         which is why a settled row clears both stamps rather than one. -->
-    {#if shelf === 'done'}
-      <span data-testid="worktree-agent-unsettle" class="contents">
-        <HoverActionButton
-          label="Move back to Settled"
-          size="sm"
-          onclick={(event) => {
-            event.stopPropagation();
-            onSettle?.();
-          }}
-        >
-          <RotateCcw aria-hidden="true" />
-        </HoverActionButton>
-      </span>
-    {:else if shelf === 'settled'}
-      <span data-testid="worktree-agent-reopen" class="contents">
-        <HoverActionButton
-          label="Move back to Working"
-          size="sm"
-          onclick={(event) => {
-            event.stopPropagation();
-            onUnsettle?.();
-            onReopen?.();
-          }}
-        >
-          <RotateCcw aria-hidden="true" />
-        </HoverActionButton>
-      </span>
-    {/if}
-  </HoverActions>
-
 </li>
 
 <style>
   .row {
-    /* How much room the action cluster needs: three buttons and the 4px gaps
-       between them, measured at 81px. It is claimed only while the pointer is
-       on the row, out of line one's right corner, which the time occupies the
-       rest of the time. Nothing is held empty at rest — the title runs all the
-       way to the time — and nothing moves when the buttons arrive, because the
-       corner they land in is the one the time just left. A row that can step
-       back carries a fourth button and reserves 28px more for it. */
-    --rail-action-gutter: 81px;
     position: relative;
     display: block;
     box-sizing: border-box;
@@ -601,11 +497,7 @@
   .failed,
   .needs-you { margin-left: auto; }
 
-  /* Last activity, dim, in line one's right corner — the corner the buttons
-     take over while the pointer is on the row. The slot holds its contents
-     against its right edge, so the time fades out exactly where it stood and
-     the buttons fade in over the same spot; only the space to its left grows,
-     which is space the title was using and gives back. */
+  /* Last activity stays in line one's right corner while the row is hovered. */
   .age {
     display: inline-flex;
     flex: 0 0 auto;
@@ -620,12 +512,6 @@
     white-space: nowrap;
   }
 
-  /* The cluster's width plus the gap that keeps the title clear of it. The
-     row's own :hover and :focus-within are what the action cluster answers to,
-     so the slot and the buttons open and close together. */
-  .row:hover .age,
-  .row:focus-within .age { min-width: calc(var(--rail-action-gutter) + 8px); }
-
   /* One button wide, always: the spinner beside it must sit the same distance
      from the row's right edge whether the time reads "now" or "12m", because
      the cluster's gap for it is measured from that edge. */
@@ -634,18 +520,7 @@
     text-align: right;
   }
 
-  .row:hover .age-text,
-  .row:focus-within .age-text { opacity: 0; }
-
   .row[data-presence='working'] .age { color: var(--color-text-2); }
-
-  /* Exactly the working indicator's footprint: 12px and the 6px that separates
-     it from the time. It paints nothing — it only stops the buttons here, so a
-     session that is running says so whether or not the pointer is on the row. */
-  .spinner-gap {
-    flex: 0 0 auto;
-    width: 18px;
-  }
 
   .needs-you {
     display: inline-flex;
@@ -693,11 +568,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  /* A 16px glyph inside a 25px button: the disc that appears on hover needs
-     the margin around the icon in order to read as a disc. */
-  .row :global([data-slot='hover-actions'] svg) { width: 16px; height: 16px; }
-
 
   .row.dragging { opacity: 0.48; }
   .row.drop-before::after,

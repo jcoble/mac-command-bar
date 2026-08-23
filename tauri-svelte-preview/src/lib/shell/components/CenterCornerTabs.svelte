@@ -13,20 +13,11 @@
    * WHY IT FLOATS. A permanent bar charged every surface the same strip of
    * height to answer a question that is only asked now and then, and on the
    * Editor there was already a bar — its file tabs. So the group is laid OVER
-   * the pane, invisible until it is wanted:
-   *
-   *   the pointer anywhere in the centre pane, or the keyboard focus inside it,
-   *   fades it in (the pane marks only this overlay hovered in `ShellFrame`);
-   *   a tab switch holds it on screen for a moment afterwards, so the surface
-   *   you just chose is confirmed before it disappears again.
-   *
-   * Both endings are definite: the fade is a plain CSS transition and the hold
-   * is a single timer that is cancelled when the component goes away.
+   * the pane and stays visible without occupying layout height.
    *
    * PRESENTATIONAL ONLY: no state beyond that hold, no IO. The selected tab is
    * handed in and every click is handed back out.
    */
-  import { onDestroy } from 'svelte';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import GitCompareArrows from '@lucide/svelte/icons/git-compare-arrows';
   import GitBranch from '@lucide/svelte/icons/git-branch';
@@ -49,42 +40,12 @@
     { id: 'git-history', label: 'Git History', icon: GitBranch }
   ];
 
-  /** Long enough to read the pill that just filled, short enough that the group
-   * is gone before it becomes furniture. */
-  const HOLD_AFTER_SWITCH_MS = 1000;
-
-  let heldAfterSwitch = $state(false);
-  let holdTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function releaseHold(): void {
-    if (holdTimer !== null) clearTimeout(holdTimer);
-    holdTimer = null;
-  }
-
-  function choose(id: CenterTabId, event: MouseEvent): void {
+  function choose(id: CenterTabId): void {
     onSelect(id);
-    // A pointer click leaves focus sitting on the button it hit, and focus is
-    // what keeps the group on screen — so a mouse user would never see it fade
-    // again, however far away the pointer went. Hand focus back and let hover
-    // plus the hold below do the work. `detail` is 0 when a click came from the
-    // keyboard, so Tab-and-Enter keeps both its focus and its reveal.
-    if (event.detail > 0 && event.currentTarget instanceof HTMLElement) {
-      event.currentTarget.blur();
-    }
-    releaseHold();
-    heldAfterSwitch = true;
-    holdTimer = setTimeout(() => {
-      heldAfterSwitch = false;
-      holdTimer = null;
-    }, HOLD_AFTER_SWITCH_MS);
   }
-
-  // The hold is one timer with one ending. Leaving the shell before it fires
-  // must not leave it running.
-  onDestroy(releaseHold);
 </script>
 
-<nav class="center-pills" class:held={heldAfterSwitch} aria-label="Center surfaces">
+<nav class="center-pills" aria-label="Center surfaces">
   <!-- The project's language server, at the head of the group, and only while
        the Editor is the surface on screen: it describes the file being edited,
        so on a transcript it has nothing to say. It leads the group rather than
@@ -109,7 +70,7 @@
         side="bottom"
         variant="ghost"
         data-testid={`center-tab-${tab.id}`}
-        onclick={(event) => choose(tab.id, event)}
+        onclick={() => choose(tab.id)}
       >
         <Icon class="size-4" strokeWidth={1.6} aria-hidden="true" />
       </IconButton>
@@ -144,27 +105,6 @@
     background: var(--pill-surface);
     box-shadow: var(--shadow-sm);
     user-select: none;
-    opacity: 0;
-    pointer-events: none;
-    /* Quick, and finished: one transition with a stated duration, nothing that
-       keeps running once it has arrived. */
-    transition: opacity 120ms ease-out;
-  }
-
-  /* Just switched: on screen regardless of where the pointer is, until the one
-     timer in the script above lets go. */
-  .center-pills.held {
-    opacity: 1;
-    pointer-events: auto;
-  }
-
-  /* The group's OWN keyboard focus, and only its own. The pane used to answer
-     for this, which meant typing in the composer or the editor held the group
-     open the whole time. Scoped here it does what it should: reach the pills by
-     Tab and they appear; focus anything else and they do not. */
-  .center-pills:focus-within {
-    opacity: 1;
-    pointer-events: auto;
   }
 
   .tab {
