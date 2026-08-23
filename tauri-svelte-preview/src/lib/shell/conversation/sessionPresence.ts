@@ -206,6 +206,9 @@ export function synchronizeSessionPresenceWork(
 export function acknowledgeSessionPresence(ownedId: string, at = Date.now()): void {
   sessionPresenceHistory.update((records) => {
     const current = records[ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY;
+    if (current.lastAttentionAt === null || current.lastAttentionAt <= (current.lastAckedAt ?? -1)) {
+      return records;
+    }
     return { ...records, [ownedId]: acknowledgePresenceHistory(current, at) };
   });
 }

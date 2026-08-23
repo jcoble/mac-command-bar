@@ -1236,7 +1236,6 @@
 			service?.releaseView(previous);
 			await disposeExtensionApiProbeResources();
 			if (!selectionIsCurrent()) return;
-			releaseConversationForRead(previous);
 			gitService.releaseHistorySurface();
 			gitCommitFilesService.release();
 			gitService.clearSelection();
@@ -1248,6 +1247,13 @@
 			if (!selectionIsCurrent()) return;
 		}
 		if (!selectionIsCurrent()) return;
+		const provider = conversationProviderFor(ownedId);
+		if (selected && provider) ensureConversationSession(ownedId, provider);
+		// Hand the persistent conversation surface directly from the old compact
+		// projection to the new one. Clearing the old projection before the
+		// awaited workspace setup made the timeline and composer unmount and mount
+		// again on every session click.
+		if (switching && previous !== null) releaseConversationForRead(previous);
 		// Publish the new owner only after every async precondition is current. A
 		// second click during the probe setup must still checkpoint the session that
 		// is actually on screen, not this one whose setup has not finished.
@@ -1257,7 +1263,6 @@
 		setActiveOwned(ownedId);
 		activeRootAvailable = selectedRootAvailable;
 		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
-		const provider = conversationProviderFor(ownedId);
 		let structuredHydration: Promise<void> | null = null;
 		if (selected && provider) {
 			ensureConversationSession(ownedId, provider);

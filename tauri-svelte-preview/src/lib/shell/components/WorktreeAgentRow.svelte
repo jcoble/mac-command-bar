@@ -10,7 +10,6 @@
    * working and on screen; the elapsed clock is the rail's one shared interval
    * rather than a timer per row.
    */
-  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
@@ -20,7 +19,7 @@
     sessionPresenceHistory
   } from '$lib/shell/conversation/sessionPresence.ts';
   import { presentAgentError } from '$lib/shell/errorPresentation';
-  import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
+  import { deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import {
     resolveOwnedSessionProject,
     type OwnedSession
@@ -32,8 +31,6 @@
     watchRailElapsed
   } from './railElapsedTicker.ts';
   import { observeElementVisibility } from '$lib/shell/elementVisibility.ts';
-  import { sessionRowMenuItems, type SessionRowMenuAction } from './sessionRowMenu.ts';
-  import { sessionRowJump } from './sessionRowJump';
 
   interface Props {
     session: OwnedSession;
@@ -41,11 +38,7 @@
     dragging?: boolean;
     dropPosition?: 'before' | 'after' | null;
     onSelect?(): void;
-    onComplete?(): void;
-    onReopen?(): void;
-    onSettle?(): void;
-    onUnsettle?(): void;
-    onAskRemove?(): void;
+    onContextMenu?(event: MouseEvent): void;
     onDragStart?(event: DragEvent): void;
     onDragOver?(event: DragEvent): void;
     onDrop?(event: DragEvent): void;
@@ -59,11 +52,7 @@
     dragging = false,
     dropPosition = null,
     onSelect,
-    onComplete,
-    onReopen,
-    onSettle,
-    onUnsettle,
-    onAskRemove,
+    onContextMenu,
     onDragStart,
     onDragOver,
     onDrop,
@@ -74,7 +63,6 @@
   const shelf = $derived(deriveOwnedLibraryState(session));
   const projectInfo = $derived(resolveOwnedSessionProject(session));
   const project = $derived(projectInfo.label);
-  const worktree = $derived(canonicalCwd(session.cwd || session.projectPath) || projectInfo.path || project);
   const conversation = $derived(
     session.state === 'exited' ? null : conversationSessions[session.ownedId] ?? null
   );
@@ -191,35 +179,6 @@
     }
   }
 
-  // ── The right-click menu ───────────────────────────────────────────────────
-  const sessionIdForCopy = $derived(session.nativeSessionId || session.ownedId);
-  const menuItems = $derived(
-    sessionRowMenuItems({
-      status: shelf,
-      sessionId: sessionIdForCopy,
-      worktreePath: worktree || null
-    })
-  );
-
-  function copyText(value: string | null): void {
-    if (!value || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
-    void navigator.clipboard.writeText(value);
-  }
-
-  function runMenuAction(action: SessionRowMenuAction): void {
-    if (action === 'mark-done') onComplete?.();
-    else if (action === 'reopen') onReopen?.();
-    else if (action === 'archive') onSettle?.();
-    else if (action === 'unsettle') onUnsettle?.();
-    else if (action === 'copy-session-id') copyText(sessionIdForCopy);
-    else if (action === 'copy-worktree-path') copyText(worktree || null);
-    else if (action === 'open-in-editor') {
-      if (!sessionRowJump(session.ownedId, 'editor')) onSelect?.();
-    } else if (action === 'open-source-control') {
-      if (!sessionRowJump(session.ownedId, 'source-control')) onSelect?.();
-    } else if (action === 'delete') onAskRemove?.();
-  }
-
 </script>
 
 <li
@@ -239,17 +198,14 @@
   ondrop={onDrop}
   ondragend={onDragEnd}
 >
-  <ContextMenu.Root>
-    <ContextMenu.Trigger>
-      {#snippet child({ props })}
         <button
-          {...props}
           data-testid="worktree-agent-select"
           type="button"
           class="session-row"
           aria-current={active ? 'true' : undefined}
           aria-label={`Open session: ${label}`}
           onclick={selectRow}
+          oncontextmenu={onContextMenu}
         >
           <!-- The mark, at the height of the three lines beside it. It carries
                the provider and whether this session is working, and nothing
@@ -308,28 +264,6 @@
             </span>
           </span>
         </button>
-      {/snippet}
-    </ContextMenu.Trigger>
-
-    <ContextMenu.Content
-      data-testid="worktree-agent-context-menu"
-      class="w-[216px]"
-      aria-label="Session actions"
-    >
-      {#each menuItems as item (item.id)}
-        {#if item.startsGroup}
-          <ContextMenu.Separator />
-        {/if}
-        <ContextMenu.Item
-          data-testid={`session-row-menu-${item.id}`}
-          disabled={!item.enabled}
-          variant={item.destructive ? 'destructive' : 'default'}
-          title={item.enabled ? undefined : item.disabledReason}
-          onSelect={() => runMenuAction(item.id)}
-        >{item.label}</ContextMenu.Item>
-      {/each}
-    </ContextMenu.Content>
-  </ContextMenu.Root>
 
 </li>
 
@@ -413,8 +347,6 @@
   .thumb[data-agent='claude'] { color: var(--agent-mark-claude); }
   .thumb[data-agent='codex'] { color: var(--agent-mark-codex); }
 
-  .row:hover .thumb { opacity: 1; }
-
   /* TWO fixed line boxes, not three. The heights are declared rather than left
      to the font so the row is the same height on every machine and the mark can
      be sized against it. */
@@ -426,20 +358,9 @@
     gap: 0;
   }
 
-  /* Four states, one neutral scale, each step brighter than the last: rest is
-     the card showing through, hover answers the pointer, selected sits above
-     both because it persists, and a selected row under the pointer lifts once
-     more so hovering it still says something. No stripe down the rail's edge
-     and no accent tint — accent means "this session is working", and a row
-     that happens to be the one on screen has not earned that signal. */
-  .row:hover .session-row { background: var(--color-hover); }
-
+  /* Selection is persistent state. Pointer movement does not change row paint. */
   .active .session-row {
     background: color-mix(in srgb, var(--color-elevated) 88%, var(--color-text));
-  }
-
-  .row.active:hover .session-row {
-    background: color-mix(in srgb, var(--color-elevated) 84%, var(--color-text));
   }
 
   .session-row:focus-visible { box-shadow: inset 0 0 0 2px var(--color-focus); }
@@ -585,14 +506,11 @@
   .row.drop-before::after { top: -2px; }
   .row.drop-after::after { bottom: -2px; }
 
-  /* Interaction motion: every one of these ends. The row's fill and the time in
-     its corner answer a pointer or a selection and then stop; the working
-     indicator remains static. */
+  /* Presence changes may fade their own small labels; pointer movement owns no
+     transition or animation in a session row. */
   @media (prefers-reduced-motion: no-preference) {
     .age-text,
     .idle-label,
     .thumb { transition: opacity 120ms ease; }
-
-    .session-row { transition: background-color 140ms ease; }
   }
 </style>

@@ -11,11 +11,14 @@
   import { onMount } from 'svelte';
 
   import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import {
     readAssemblySettingFromTauri,
     writeAssemblySettingFromTauri
   } from '$lib/tauriSource';
   import { buildMyWorkGroups, type MyWorkViewOptions } from './myWorkViewOptions.ts';
+  import { sessionRowMenuItems, type SessionRowMenuAction } from './sessionRowMenu.ts';
+  import { sessionRowJump } from './sessionRowJump';
   import WorktreeAgentRow from './WorktreeAgentRow.svelte';
 
   interface Props {
@@ -51,6 +54,7 @@
     ownedId: string;
     position: 'before' | 'after';
   } | null>(null);
+  let contextMenu = $state<{ ownedId: string; x: number; y: number } | null>(null);
   const loadedOrderKeys = new Set<string>();
   const groupOrderVersions = new Map<string, number>();
   let destroyed = false;
@@ -175,6 +179,49 @@
 
   function handleWindowKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape' && dragState) clearDrag();
+    if (event.key === 'Escape') contextMenu = null;
+  }
+
+  const contextMenuSession = $derived(
+    contextMenu ? sessions.find((session) => session.ownedId === contextMenu?.ownedId) ?? null : null
+  );
+  const contextMenuItems = $derived(
+    contextMenuSession
+      ? sessionRowMenuItems({
+          status: deriveOwnedLibraryState(contextMenuSession),
+          sessionId: contextMenuSession.nativeSessionId || contextMenuSession.ownedId,
+          worktreePath: canonicalCwd(contextMenuSession.cwd || contextMenuSession.projectPath) || null
+        })
+      : []
+  );
+
+  function openContextMenu(event: MouseEvent, ownedId: string): void {
+    event.preventDefault();
+    contextMenu = { ownedId, x: event.clientX, y: event.clientY };
+  }
+
+  function copyText(value: string | null): void {
+    if (!value || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+    void navigator.clipboard.writeText(value);
+  }
+
+  function runContextMenuAction(action: SessionRowMenuAction): void {
+    const session = contextMenuSession;
+    contextMenu = null;
+    if (!session) return;
+    const sessionId = session.nativeSessionId || session.ownedId;
+    const worktree = canonicalCwd(session.cwd || session.projectPath) || null;
+    if (action === 'mark-done') onComplete?.(session.ownedId);
+    else if (action === 'reopen') onReopen?.(session.ownedId);
+    else if (action === 'archive') onSettle?.(session.ownedId);
+    else if (action === 'unsettle') onUnsettle?.(session.ownedId);
+    else if (action === 'copy-session-id') copyText(sessionId);
+    else if (action === 'copy-worktree-path') copyText(worktree);
+    else if (action === 'open-in-editor') {
+      if (!sessionRowJump(session.ownedId, 'editor')) onSelect?.(session.ownedId);
+    } else if (action === 'open-source-control') {
+      if (!sessionRowJump(session.ownedId, 'source-control')) onSelect?.(session.ownedId);
+    } else if (action === 'delete') onAskRemove?.(session.ownedId);
   }
 
   function isOpen(key: string): boolean {
@@ -186,7 +233,7 @@
   }
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} />
+<svelte:window onkeydown={handleWindowKeydown} onpointerdown={() => (contextMenu = null)} />
 
 <div data-testid="session-rail" class="session-scroll">
   {#each groups as group (group.key)}
@@ -229,11 +276,7 @@
                 ? dropTarget.position
                 : null}
               onSelect={() => onSelect?.(session.ownedId)}
-              onComplete={() => onComplete?.(session.ownedId)}
-              onReopen={() => onReopen?.(session.ownedId)}
-              onSettle={() => onSettle?.(session.ownedId)}
-              onUnsettle={() => onUnsettle?.(session.ownedId)}
-              onAskRemove={() => onAskRemove?.(session.ownedId)}
+              onContextMenu={(event) => openContextMenu(event, session.ownedId)}
               onDragStart={(event) => handleDragStart(event, group.key, session.ownedId)}
               onDragOver={(event) => handleDragOver(event, group.key, session.ownedId)}
               onDrop={(event) => handleDrop(event, group.key, session.ownedId)}
@@ -251,6 +294,32 @@
 
   <div class="scroll-spacer" aria-hidden="true"></div>
 </div>
+
+{#if contextMenu && contextMenuSession}
+  <div
+    data-testid="worktree-agent-context-menu"
+    class="session-row-menu"
+    role="menu"
+    tabindex="-1"
+    aria-label="Session actions"
+    style={`--menu-x:${contextMenu.x}px;--menu-y:${contextMenu.y}px`}
+    onpointerdown={(event) => event.stopPropagation()}
+    oncontextmenu={(event) => event.preventDefault()}
+  >
+    {#each contextMenuItems as item (item.id)}
+      {#if item.startsGroup}<span class="menu-separator" aria-hidden="true"></span>{/if}
+      <button
+        data-testid={`session-row-menu-${item.id}`}
+        type="button"
+        role="menuitem"
+        class:destructive={item.destructive}
+        disabled={!item.enabled}
+        title={item.enabled ? undefined : item.disabledReason}
+        onclick={() => runContextMenuAction(item.id)}
+      >{item.label}</button>
+    {/each}
+  </div>
+{/if}
 
 <style>
   /* One scroll area for the whole list, with the scrollbar in its own gutter so
@@ -273,6 +342,44 @@
     border-radius: var(--radius-sm);
     background: var(--color-text-3);
   }
+
+  .session-row-menu {
+    position: fixed;
+    top: clamp(8px, var(--menu-y), calc(100vh - min(460px, 80vh)));
+    left: clamp(8px, var(--menu-x), calc(100vw - 224px));
+    z-index: 1000;
+    display: flex;
+    width: 216px;
+    max-height: 80vh;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 5px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .session-row-menu button {
+    width: 100%;
+    padding: 7px 9px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text);
+    font: inherit;
+    text-align: left;
+  }
+
+  .session-row-menu button:hover:not(:disabled),
+  .session-row-menu button:focus-visible:not(:disabled) {
+    background: var(--color-elevated);
+    outline: none;
+  }
+
+  .session-row-menu button:disabled { color: var(--color-disabled-text); }
+  .session-row-menu button.destructive { color: var(--color-bad); }
+  .menu-separator { height: 1px; margin: 4px -5px; background: var(--color-border); }
 
   .section-heading {
     position: sticky;

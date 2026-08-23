@@ -4,57 +4,44 @@ import { once } from 'node:events';
 import { createPerfHarnessMockPayload, type PerfHarnessMockPayload } from './perfHarnessMock.ts';
 
 const HOST = '127.0.0.1';
-const PORT = 5181;
+const PORT = Number(process.env.MCB_PERF_PORT ?? '5181');
 const APP_URL = `http://${HOST}:${PORT}/next`;
 const VIEWPORT = { width: 1710, height: 990 };
 const PLAYWRIGHT_PATH = '/Users/blackcolours/.nvm/versions/node/v24.12.0/lib/node_modules/@playwright/cli/node_modules/playwright/index.mjs';
-const SESSION_TAG = 'perfharness20-chrome';
-const HOVER_SAMPLE_COUNT = 10;
-const IDLE_MS = 15_000;
-const TIMER_WINDOW_MS = 10_000;
-const SCREENSHOT_PATH = '../.superpowers/sdd/2026-08-09-phase1-acp-foundation/centerwindow21-show-earlier.png';
+const SESSION_TAG = process.env.MCB_PERF_SESSION_TAG ?? 'perfharness20-chrome';
+const CIRCUIT_SESSION_COUNT = 12;
+const CIRCUIT_COUNT = Number(process.env.MCB_PERF_CIRCUITS ?? '10');
 
-interface HoverReceipt {
+interface MemoryReceipt {
   phase: string;
-  row: string;
-  highlightMs: number;
-  buttonsMs: number;
+  circuit: number;
+  heapMiB: number;
+  documents: number;
+  nodes: number;
+  listeners: number;
+  tauriCallbacks: number;
 }
 
-interface LongTaskReceipt {
-  startTime: number;
-  duration: number;
-  name: string;
-}
-
-interface TimerCallsiteReceipt {
-  kind: 'interval' | 'timeout';
-  callsite: string;
-  active: number;
-  scheduled: number;
-  fired: number;
-}
-
-interface BrowserHarnessApi {
-  resetIdleWindow(): void;
-  longTasks(): LongTaskReceipt[];
-  timerCensus(): TimerCallsiteReceipt[];
-}
-
-interface ProfileNode {
-  id: number;
+interface SamplingNode {
   callFrame: { functionName: string; url: string; lineNumber: number };
+  selfSize: number;
+  children: SamplingNode[];
 }
 
-interface CpuProfile {
-  nodes: ProfileNode[];
-  samples?: number[];
+interface HeapSnapshot {
+  snapshot: {
+    meta: {
+      node_fields: string[];
+      node_types: unknown[][];
+    };
+  };
+  nodes: number[];
+  strings: string[];
 }
 
-function percentile(values: number[], fraction: number): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)];
+interface HeapCount {
+  count: number;
+  selfSize: number;
 }
 
 function round(value: number): number {
@@ -64,6 +51,76 @@ function round(value: number): number {
 function printTable<T extends Record<string, unknown>>(title: string, rows: T[]): void {
   process.stdout.write(`\n${title}\n`);
   console.table(rows);
+}
+
+function retainedAllocationSites(head: SamplingNode): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown> & { bytes: number }> = [];
+  const visit = (node: SamplingNode): void => {
+    if (node.selfSize > 0) {
+      rows.push({
+        function: node.callFrame.functionName || '(anonymous)',
+        file: node.callFrame.url
+          ? `${node.callFrame.url.split('/').at(-1)}:${node.callFrame.lineNumber + 1}`
+          : '(runtime)',
+        bytes: node.selfSize
+      });
+    }
+    for (const child of node.children) visit(child);
+  };
+  visit(head);
+  return rows.sort((left, right) => right.bytes - left.bytes).slice(0, 20).map((row) => ({
+    function: row.function,
+    file: row.file,
+    'retained KiB': round(row.bytes / 1024)
+  }));
+}
+
+async function takeHeapSnapshot(cdp: { on(event: string, handler: (payload: { chunk: string }) => void): void; off(event: string, handler: (payload: { chunk: string }) => void): void; send(method: string, params?: Record<string, unknown>): Promise<unknown> }): Promise<HeapSnapshot> {
+  const chunks: string[] = [];
+  const onChunk = (payload: { chunk: string }): void => { chunks.push(payload.chunk); };
+  cdp.on('HeapProfiler.addHeapSnapshotChunk', onChunk);
+  try {
+    await cdp.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false });
+  } finally {
+    cdp.off('HeapProfiler.addHeapSnapshotChunk', onChunk);
+  }
+  return JSON.parse(chunks.join('')) as HeapSnapshot;
+}
+
+function aggregateHeapSnapshot(snapshot: HeapSnapshot): Map<string, HeapCount> {
+  const fields = snapshot.snapshot.meta.node_fields;
+  const fieldCount = fields.length;
+  const typeOffset = fields.indexOf('type');
+  const nameOffset = fields.indexOf('name');
+  const selfSizeOffset = fields.indexOf('self_size');
+  const typeNames = snapshot.snapshot.meta.node_types[typeOffset] as string[];
+  const rows = new Map<string, HeapCount>();
+  for (let offset = 0; offset < snapshot.nodes.length; offset += fieldCount) {
+    const type = typeNames[snapshot.nodes[offset + typeOffset]] ?? 'unknown';
+    const name = snapshot.strings[snapshot.nodes[offset + nameOffset]] ?? '';
+    const key = `${type}:${name || '(anonymous)'}`;
+    const row = rows.get(key) ?? { count: 0, selfSize: 0 };
+    row.count += 1;
+    row.selfSize += snapshot.nodes[offset + selfSizeOffset] ?? 0;
+    rows.set(key, row);
+  }
+  return rows;
+}
+
+function heapCountDiff(before: Map<string, HeapCount>, after: Map<string, HeapCount>): Array<Record<string, unknown>> {
+  const keys = new Set([...before.keys(), ...after.keys()]);
+  return [...keys].map((key) => {
+    const left = before.get(key) ?? { count: 0, selfSize: 0 };
+    const right = after.get(key) ?? { count: 0, selfSize: 0 };
+    return {
+      node: key,
+      'count delta': right.count - left.count,
+      'self KiB delta': round((right.selfSize - left.selfSize) / 1024)
+    };
+  })
+    .filter((row) => row['count delta'] !== 0 || row['self KiB delta'] !== 0)
+    .sort((left, right) => Math.abs(Number(right['self KiB delta'])) - Math.abs(Number(left['self KiB delta'])))
+    .slice(0, 30);
 }
 
 async function waitForVite(child: ChildProcess): Promise<void> {
@@ -108,6 +165,11 @@ async function stopProcessGroup(child: ChildProcess): Promise<void> {
       child.kill('SIGKILL');
     }
   }
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if ((await processGroupMembers(child.pid)).length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 async function processGroupMembers(processGroupId: number | undefined): Promise<string[]> {
@@ -129,69 +191,7 @@ function mockInitSource(payload: PerfHarnessMockPayload): string {
     const payload = ${JSON.stringify(payload)};
     const callbacks = new Map();
     let callbackId = 1;
-    const timerRows = new Map();
-    const intervalSites = new Map();
-    const longTasks = [];
-    let idleStart = 0;
-    const stackSite = () => {
-      const lines = String(new Error().stack || '').split('\\n').slice(3);
-      return lines.find((line) => !line.includes('perfHarness'))?.trim() || lines[0]?.trim() || 'unknown';
-    };
-    const note = (kind, site, field) => {
-      const key = kind + ':' + site;
-      const row = timerRows.get(key) || { kind, callsite: site, active: 0, scheduled: 0, fired: 0 };
-      row[field] += 1;
-      timerRows.set(key, row);
-    };
-    const nativeSetTimeout = window.setTimeout.bind(window);
-    const nativeSetInterval = window.setInterval.bind(window);
-    const nativeClearInterval = window.clearInterval.bind(window);
-    window.setTimeout = (handler, delay = 0, ...args) => {
-      const site = stackSite();
-      note('timeout', site, 'scheduled');
-      const wrapped = typeof handler === 'function'
-        ? (...inner) => { note('timeout', site, 'fired'); return handler(...inner); }
-        : handler;
-      return nativeSetTimeout(wrapped, delay, ...args);
-    };
-    window.setInterval = (handler, delay = 0, ...args) => {
-      const site = stackSite();
-      note('interval', site, 'scheduled');
-      const wrapped = typeof handler === 'function'
-        ? (...inner) => { note('interval', site, 'fired'); return handler(...inner); }
-        : handler;
-      const handle = nativeSetInterval(wrapped, delay, ...args);
-      intervalSites.set(handle, site);
-      const row = timerRows.get('interval:' + site);
-      row.active += 1;
-      return handle;
-    };
-    window.clearInterval = (handle) => {
-      const site = intervalSites.get(handle);
-      if (site) {
-        const row = timerRows.get('interval:' + site);
-        row.active = Math.max(0, row.active - 1);
-        intervalSites.delete(handle);
-      }
-      nativeClearInterval(handle);
-    };
-    new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        longTasks.push({ startTime: entry.startTime, duration: entry.duration, name: entry.name });
-      }
-    }).observe({ type: 'longtask', buffered: true });
-    window.__perfHarness = {
-      resetIdleWindow() {
-        idleStart = performance.now();
-        for (const [key, row] of timerRows) {
-          row.scheduled = 0;
-          row.fired = 0;
-          if (row.active === 0) timerRows.delete(key);
-        }
-      },
-      longTasks() { return longTasks.filter((entry) => entry.startTime >= idleStart); },
-      timerCensus() { return [...timerRows.values()].sort((a, b) => b.fired - a.fired || b.scheduled - a.scheduled); }
-    };
+    window.__perfHarnessMock = { callbackCount: () => callbacks.size };
     window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
     window.__TAURI_INTERNALS__ = {
       transformCallback(callback, once = false) {
@@ -212,6 +212,17 @@ function mockInitSource(payload: PerfHarnessMockPayload): string {
           case 'list_agent_conversation_events': return payload.snapshots[args.ownedId]?.events || [];
           case 'read_agent_conversation_draft': return null;
           case 'read_session_browser_annotations': return [];
+          case 'read_agent_conversation_config': {
+            const session = payload.sessions.find((item) => item.ownedId === args.ownedId);
+            return {
+              model: session?.model || null,
+              availableModels: session ? [session.model] : [],
+              reasoningEffort: session?.effort || null,
+              availableEfforts: ['low', 'medium', 'high'],
+              approvalPolicy: 'on-request',
+              availableApprovalPolicies: ['on-request', 'never']
+            };
+          }
           case 'read_agent_conversation_capabilities': return null;
           case 'list_runtime_contexts': return [];
           case 'read_resource_snapshot': return null;
@@ -227,61 +238,42 @@ function mockInitSource(payload: PerfHarnessMockPayload): string {
   })();`;
 }
 
-async function measureHover(page: { locator(selector: string): { count(): Promise<number>; nth(index: number): { hover(): Promise<void>; evaluate<T>(fn: (element: HTMLElement) => Promise<T>): Promise<T>; getAttribute(name: string): Promise<string | null> } }; mouse: { move(x: number, y: number): Promise<void> } }, phase: string): Promise<HoverReceipt[]> {
+async function sweepRail(page: { locator(selector: string): { count(): Promise<number>; nth(index: number): { hover(): Promise<void> } }; mouse: { move(x: number, y: number): Promise<void> } }): Promise<void> {
   const rows = page.locator('[data-testid="worktree-agent-row"]');
   const count = await rows.count();
-  if (count < HOVER_SAMPLE_COUNT) throw new Error(`Expected ${HOVER_SAMPLE_COUNT} rows, found ${count}`);
-  const indexes = Array.from({ length: count }, (_, index) => index)
-    .sort((left, right) => ((left * 7 + 3) % count) - ((right * 7 + 3) % count))
-    .slice(0, HOVER_SAMPLE_COUNT);
-  const receipts: HoverReceipt[] = [];
-  for (const index of indexes) {
+  if (count < CIRCUIT_SESSION_COUNT) throw new Error(`Expected ${CIRCUIT_SESSION_COUNT} rows, found ${count}`);
+  for (let index = 0; index < CIRCUIT_SESSION_COUNT; index += 1) {
     await page.mouse.move(1700, 980);
-    const row = rows.nth(index);
-    const pending = row.evaluate(async (element): Promise<{ highlightMs: number; buttonsMs: number }> => {
-      const button = element.querySelector<HTMLElement>('[data-testid="worktree-agent-select"]');
-      const actions = element.querySelector<HTMLElement>('[data-testid="worktree-agent-overlay"]');
-      if (!button || !actions) throw new Error('row measurement targets are missing');
-      const before = getComputedStyle(button).backgroundColor;
-      return new Promise((resolve) => {
-        element.addEventListener('mouseenter', () => {
-          const started = performance.now();
-          let highlightMs: number | null = null;
-          const sample = (): void => {
-            const elapsed = performance.now() - started;
-            if (highlightMs === null && getComputedStyle(button).backgroundColor !== before) highlightMs = elapsed;
-            const visible = Number.parseFloat(getComputedStyle(actions).opacity) >= 0.95;
-            if (highlightMs !== null && visible) resolve({ highlightMs, buttonsMs: elapsed });
-            else if (elapsed > 1_000) resolve({ highlightMs: highlightMs ?? elapsed, buttonsMs: elapsed });
-            else requestAnimationFrame(sample);
-          };
-          requestAnimationFrame(sample);
-        }, { once: true });
-      });
-    });
-    await row.hover();
-    const measured = await pending;
-    receipts.push({ phase, row: String(index + 1), highlightMs: round(measured.highlightMs), buttonsMs: round(measured.buttonsMs) });
+    await rows.nth(index).hover();
   }
-  return receipts;
+  for (let index = CIRCUIT_SESSION_COUNT - 1; index >= 0; index -= 1) {
+    await page.mouse.move(1700, 980);
+    await rows.nth(index).hover();
+  }
+  await page.mouse.move(1700, 980);
 }
 
-function profileAttribution(profile: CpuProfile): Array<Record<string, unknown>> {
-  const counts = new Map<number, number>();
-  for (const id of profile.samples ?? []) counts.set(id, (counts.get(id) ?? 0) + 1);
-  return profile.nodes
-    .map((node) => ({
-      function: node.callFrame.functionName || '(anonymous)',
-      file: node.callFrame.url ? `${node.callFrame.url.split('/').at(-1)}:${node.callFrame.lineNumber + 1}` : '(runtime)',
-      samples: counts.get(node.id) ?? 0
-    }))
-    .filter((row) => row.samples > 0 && !String(row.file).includes('(runtime)'))
-    .sort((left, right) => right.samples - left.samples)
-    .slice(0, 12);
+async function switchSessions(page: { waitForTimeout(ms: number): Promise<void>; locator(selector: string): { count(): Promise<number>; nth(index: number): { locator(selector: string): { click(): Promise<void>; waitFor(options: { state: 'attached'; timeout: number }): Promise<void> } } } }): Promise<void> {
+  const rows = page.locator('[data-testid="worktree-agent-row"]');
+  const count = await rows.count();
+  if (count < CIRCUIT_SESSION_COUNT) throw new Error(`Expected ${CIRCUIT_SESSION_COUNT} rows, found ${count}`);
+  for (let index = 0; index < CIRCUIT_SESSION_COUNT; index += 1) {
+    await rows.nth(index).locator('[data-testid="worktree-agent-select"]').click();
+    await rows.nth(index).locator('[data-testid="worktree-agent-select"][aria-current="true"]')
+      .waitFor({ state: 'attached', timeout: 30_000 });
+    await page.waitForTimeout(25);
+  }
+  await rows.nth(0).locator('[data-testid="worktree-agent-select"]').click();
+  await rows.nth(0).locator('[data-testid="worktree-agent-select"][aria-current="true"]')
+    .waitFor({ state: 'attached', timeout: 30_000 });
+  await page.waitForTimeout(25);
 }
 
 async function main(): Promise<number> {
-  const vite = spawn('node_modules/.bin/vite', ['--host', HOST, '--port', String(PORT), '--strictPort'], {
+  const viteArgs = process.env.MCB_PERF_PRODUCTION === '1'
+    ? ['preview', '--host', HOST, '--port', String(PORT), '--strictPort']
+    : ['--host', HOST, '--port', String(PORT), '--strictPort'];
+  const vite = spawn('node_modules/.bin/vite', viteArgs, {
     cwd: process.cwd(),
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe']
@@ -290,16 +282,38 @@ async function main(): Promise<number> {
   try {
     await waitForVite(vite);
     const playwright = await import(PLAYWRIGHT_PATH);
-    browser = await playwright.chromium.launch({ headless: true, channel: 'chrome', args: [`--${SESSION_TAG}`] });
+    browser = await playwright.chromium.launch({
+      headless: true,
+      channel: 'chrome',
+      args: [`--${SESSION_TAG}`, '--enable-precise-memory-info', '--js-flags=--expose-gc']
+    });
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
-    await page.addInitScript({ content: mockInitSource(createPerfHarnessMockPayload()) });
+    const mockPayload = createPerfHarnessMockPayload();
+    if (process.env.MCB_PERF_EMPTY_SNAPSHOTS === '1') mockPayload.snapshots = {};
+    if (process.env.MCB_PERF_RAIL_ONLY === '1') {
+      for (const session of mockPayload.sessions) {
+        (session as { provider: string }).provider = 'other';
+      }
+      mockPayload.snapshots = {};
+    }
+    await page.addInitScript({ content: mockInitSource(mockPayload) });
     const consoleErrors: string[] = [];
     page.on('console', (message: { type(): string; text(): string }) => {
       if (message.type() === 'error') consoleErrors.push(message.text());
     });
     await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
-    await page.locator('[data-testid="worktree-agent-row"]').first().waitFor({ state: 'visible', timeout: 30_000 });
+    const initialRow = page.locator('[data-testid="worktree-agent-row"]').first();
+    await initialRow.waitFor({ state: 'visible', timeout: 30_000 });
+    await initialRow.locator('[data-testid="worktree-agent-select"]').click();
+    await page.locator('[data-testid="worktree-agent-select"][aria-current="true"]')
+      .waitFor({ state: 'attached', timeout: 30_000 });
+    await initialRow.locator('[data-testid="worktree-agent-select"]').click({ button: 'right' });
+    await page.locator('[data-testid="worktree-agent-context-menu"]')
+      .waitFor({ state: 'visible', timeout: 30_000 });
+    await page.keyboard.press('Escape');
+    await page.locator('[data-testid="worktree-agent-context-menu"]')
+      .waitFor({ state: 'detached', timeout: 30_000 });
     const actualViewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
     if (actualViewport.width !== VIEWPORT.width || actualViewport.height !== VIEWPORT.height) {
       await page.setViewportSize(VIEWPORT);
@@ -309,75 +323,100 @@ async function main(): Promise<number> {
       throw new Error(`Viewport verification failed: ${JSON.stringify(verifiedViewport)}`);
     }
 
-    const beforeHover = await measureHover(page, 'before snapshot');
     const cdp = await context.newCDPSession(page);
-    await cdp.send('Profiler.enable');
-    await cdp.send('Profiler.setSamplingInterval', { interval: 1_000 });
-    await cdp.send('Profiler.start');
-    const largeRow = page.locator('[data-testid="worktree-agent-row"]').nth(0);
-    await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.resetIdleWindow());
-    const clickStarted = await page.evaluate(() => performance.now());
-    await largeRow.locator('[data-testid="worktree-agent-select"]').click({ position: { x: 12, y: 38 } });
-    await page.locator('[data-testid="conversation-composer-input"]').waitFor({ state: 'visible', timeout: 30_000 });
-    await page.locator('[data-testid="conversation-timeline-item"]').last().waitFor({ state: 'attached', timeout: 30_000 });
-    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    const clickInteractiveMs = round((await page.evaluate(() => performance.now())) - clickStarted);
-    // Every stored row is drawn now, so this count IS the transcript size. It
-    // used to be capped by a render window, which made the number a measure of
-    // the window rather than of the work the transcript actually costs.
-    const timelineDomCount = await page.locator('[data-testid="conversation-timeline-item"]').count();
-    const snapshotLongTasks = await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.longTasks());
-    const afterHover = await measureHover(page, 'after 2k events');
-
-    await page.mouse.move(1700, 980);
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.waitForTimeout(250);
-    await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.resetIdleWindow());
-    await page.waitForTimeout(TIMER_WINDOW_MS);
-    const timerCensus = await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.timerCensus());
-    await page.waitForTimeout(IDLE_MS - TIMER_WINDOW_MS);
-    const idleLongTasks = await page.evaluate(() => (window as unknown as { __perfHarness: BrowserHarnessApi }).__perfHarness.longTasks());
-    const animationCount = await page.evaluate(() => document.getAnimations().length);
-    const profileResult = await cdp.send('Profiler.stop') as { profile: CpuProfile };
-    await page.screenshot({ path: SCREENSHOT_PATH, fullPage: false });
-
-    const hoverRows = [...beforeHover, ...afterHover];
-    printTable('Hover latency (10 deterministic rows per phase)', hoverRows.map((row) => ({
-      phase: row.phase,
-      row: row.row,
-      'highlight ms': row.highlightMs,
-      'buttons visible ms': row.buttonsMs
-    })));
-    printTable('Hover summary', ['before snapshot', 'after 2k events'].map((phase) => {
-      const phaseRows = hoverRows.filter((row) => row.phase === phase);
-      return {
-        phase,
-        'highlight p95 ms': round(percentile(phaseRows.map((row) => row.highlightMs), 0.95)),
-        'buttons p95 ms': round(percentile(phaseRows.map((row) => row.buttonsMs), 0.95))
+    await cdp.send('HeapProfiler.enable');
+    const exceptionStacks: Array<Record<string, unknown>> = [];
+    if (process.env.MCB_PERF_TRACE_EXCEPTIONS === '1') {
+      await cdp.send('Debugger.enable');
+      await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
+      cdp.on('Debugger.paused', async (event: {
+        reason: string;
+        data?: { description?: string };
+        callFrames: Array<{ functionName: string; url: string; location: { lineNumber: number; columnNumber: number } }>;
+      }) => {
+        if (exceptionStacks.length < 12) {
+          exceptionStacks.push({
+            reason: event.reason,
+            error: event.data?.description ?? '(no description)',
+            stack: event.callFrames.slice(0, 12).map((frame) =>
+              `${frame.functionName || '(anonymous)'} @ ${frame.url}:${frame.location.lineNumber + 1}:${frame.location.columnNumber + 1}`
+            ).join('\n')
+          });
+        }
+        await cdp.send('Debugger.resume');
+      });
+    }
+    const memoryReceipts: MemoryReceipt[] = [];
+    const recordMemory = async (phase: string, circuit: number): Promise<void> => {
+      await cdp.send('HeapProfiler.collectGarbage');
+      await page.waitForTimeout(500);
+      await cdp.send('HeapProfiler.collectGarbage');
+      const heap = await cdp.send('Runtime.getHeapUsage') as { usedSize: number };
+      const dom = await cdp.send('Memory.getDOMCounters') as {
+        documents: number;
+        nodes: number;
+        jsEventListeners: number;
       };
-    }));
-    printTable('Click to transcript interactive', [{ events: 2_000, 'latency ms': clickInteractiveMs }]);
-    printTable('Transcript DOM count', [{ events: 2_000, rows: timelineDomCount }]);
-    printTable('Verified viewport', [{ width: verifiedViewport.width, height: verifiedViewport.height }]);
-    printTable('Snapshot-load long tasks >50ms', snapshotLongTasks.length > 0
-      ? snapshotLongTasks.map((entry) => ({ start: round(entry.startTime), duration: round(entry.duration), name: entry.name }))
-      : [{ start: '-', duration: 0, name: 'none' }]);
-    printTable('Idle long tasks >50ms (15s)', idleLongTasks.length > 0
-      ? idleLongTasks.map((entry) => ({ start: round(entry.startTime), duration: round(entry.duration), name: entry.name }))
-      : [{ start: '-', duration: 0, name: 'none' }]);
-    printTable('CDP CPU profile attribution', profileAttribution(profileResult.profile));
-    printTable('Animation census at rest', [{ animations: animationCount }]);
-    printTable('Timer census (first 10s of idle)', timerCensus.slice(0, 20).map((row) => ({
-      kind: row.kind,
-      active: row.active,
-      scheduled: row.scheduled,
-      fired: row.fired,
-      callsite: row.callsite
+      const tauriCallbacks = await page.evaluate(() => (
+        window as unknown as { __perfHarnessMock: { callbackCount(): number } }
+      ).__perfHarnessMock.callbackCount());
+      memoryReceipts.push({
+        phase,
+        circuit,
+        heapMiB: round(heap.usedSize / 1024 / 1024),
+        documents: dom.documents,
+        nodes: dom.nodes,
+        listeners: dom.jsEventListeners,
+        tauriCallbacks
+      });
+    };
+    // Acceptance starts after every session in the circuit has been visited
+    // once. Otherwise the first measured circuit includes one-time lazy module
+    // and component initialization that repeated switching cannot reproduce.
+    await sweepRail(page);
+    await switchSessions(page);
+    await recordMemory('warmed baseline', 0);
+    for (let circuit = 1; circuit <= CIRCUIT_COUNT; circuit += 1) {
+      await sweepRail(page);
+      await recordMemory('mouse sweep', circuit);
+    }
+    const sampleAllocations = process.env.MCB_PERF_SAMPLE === '1';
+    const snapshotDiff = process.env.MCB_PERF_SNAPSHOT_DIFF === '1';
+    if (sampleAllocations) {
+      await cdp.send('HeapProfiler.startSampling', {
+        samplingInterval: 16_384,
+        includeObjectsCollectedByMajorGC: false,
+        includeObjectsCollectedByMinorGC: false
+      });
+    }
+    const heapBefore = snapshotDiff ? aggregateHeapSnapshot(await takeHeapSnapshot(cdp)) : null;
+    for (let circuit = 1; circuit <= CIRCUIT_COUNT; circuit += 1) {
+      await switchSessions(page);
+      await recordMemory('session switch', circuit);
+    }
+    const heapAfter = snapshotDiff ? aggregateHeapSnapshot(await takeHeapSnapshot(cdp)) : null;
+    const sampling = sampleAllocations
+      ? await cdp.send('HeapProfiler.stopSampling') as { profile: { head: SamplingNode } }
+      : null;
+
+    printTable('Forced-GC memory after deterministic rail circuits', memoryReceipts.map((receipt) => ({
+      phase: receipt.phase,
+      circuit: receipt.circuit,
+      'heap MiB': receipt.heapMiB,
+      documents: receipt.documents,
+      nodes: receipt.nodes,
+      listeners: receipt.listeners,
+      'Tauri callbacks': receipt.tauriCallbacks
     })));
+    if (heapBefore && heapAfter) printTable('Heap object-count diff after session switches', heapCountDiff(heapBefore, heapAfter));
+    if (sampling) printTable('Live allocation sites after forced GC', retainedAllocationSites(sampling.profile.head));
+    if (exceptionStacks.length > 0) printTable('Thrown exception stacks', exceptionStacks);
+    printTable('Verified viewport', [{ width: verifiedViewport.width, height: verifiedViewport.height }]);
     if (consoleErrors.length > 0) printTable('Browser console errors', consoleErrors.map((message) => ({ message })));
 
-    const afterP95 = percentile(afterHover.map((row) => row.highlightMs), 0.95);
-    const failed = afterP95 > 100 || idleLongTasks.length > 0 || animationCount > 0;
+    const baselineHeap = memoryReceipts[0]?.heapMiB ?? 0;
+    const finalHeap = memoryReceipts.at(-1)?.heapMiB ?? baselineHeap;
+    const failed = finalHeap > baselineHeap * 1.1;
     return failed ? 1 : 0;
   } finally {
     await browser?.close();
