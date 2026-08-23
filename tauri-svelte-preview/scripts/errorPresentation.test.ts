@@ -162,12 +162,8 @@ test('the rail row shows the error summary in its status slot, never the raw tex
 
   assert.match(worktreeRow, /presentAgentError\(session\.lastError\)/);
   assert.doesNotMatch(worktreeRow, /\{session\.lastError\}|title=\{session\.lastError\}/);
-  // The row has three lines and no disclosure of its own: the summary is the
-  // status text, the technical detail is its tooltip, and the hover card
-  // repeats the summary.
+  // The row has no disclosure of its own: it renders only the safe summary.
   assert.match(worktreeRow, /presentedError\?\.summary/);
-  assert.match(worktreeRow, /title=\{presentedError\?\.detail \?\? presentedError\?\.summary\}/);
-  // The hover card gets the summary through the snapshot taken when it opens.
-  assert.match(worktreeRow, /error: presentedError\?\.summary \?\? null/);
+  assert.doesNotMatch(worktreeRow, /presentedError\?\.detail/);
   assert.doesNotMatch(worktreeRow, /<details/);
 });

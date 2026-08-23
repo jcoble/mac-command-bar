@@ -3,15 +3,13 @@
    * One session in the rail: project and status, title and model, branch.
    *
    * The row is presentational. Selecting, jumping, and every menu action arrive
-   * through props. Hover only reveals controls that are already in the page and
-   * a read-only detail card; nothing about hover moves the title or the branch.
+   * through props. Hover only reveals controls that are already in the page;
+   * nothing about hover moves the title or the branch.
    *
    * The working indicator is static and only shown while this row is genuinely
    * working and on screen; the elapsed clock is the rail's one shared interval
    * rather than a timer per row.
    */
-  import { getContext, onDestroy } from 'svelte';
-
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
@@ -21,7 +19,6 @@
   import { HoverActionButton, HoverActions } from '$lib/components/ui/hover-actions/index.js';
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
-  import { modelLabel } from '$lib/shell/conversation/agentConfigLabels.ts';
   import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
     deriveSessionPresence,
@@ -62,8 +59,6 @@
   }
 
   type RowPresence = 'working' | 'attention' | 'idle' | 'done' | 'failed';
-  type SessionRecordExtras = OwnedSession & { hostname?: string | null; machine?: string | null };
-
   let {
     session,
     active = false,
@@ -143,20 +138,8 @@
       failed: 'Error'
     }[presence]
   );
-  const presenceDetail = $derived(suspended ? 'Idle — resumes on send' : presenceLabel);
-  const modelValue = $derived(conversation?.metadata.model ?? session.model ?? null);
-  const modelText = $derived(modelValue ? modelLabel(modelValue) : null);
-  // The row marks the provider with its glyph; the name and the model belong to
-  // the hover card, where there is room to read them.
   const ProviderIcon = $derived(AGENT_ICONS[session.agent]);
   const providerName = $derived(agentDisplayName(session.agent, session.viaCmux));
-  const machine = $derived(
-    (session as SessionRecordExtras).hostname?.trim()
-      || (session as SessionRecordExtras).machine?.trim()
-      || null
-  );
-  const activity = $derived(formatActivity(session.lastActivity));
-  const usage = $derived(formatUsage(conversation?.metadata.usedTokens, conversation?.usage));
 
   // ── The age, and the working indicator in the rail ─────────────────────────
   let rowElement = $state<HTMLLIElement | null>(null);
@@ -194,8 +177,6 @@
    * mark rather than on every tick. */
   const cadence = $derived(railElapsedCadenceFor(ageMs ?? 0, isWorking));
 
-  // Diagnostic A/B (owner request): keep the snapshot popout on while the ticker stays isolated.
-  const POPOUT_DIAG_DISABLED = false;
   const TICKER_DIAG_DISABLED = true;
 
   // A row off screen needs no clock at all; one on screen asks for seconds only
@@ -209,127 +190,6 @@
     }, wanted);
   });
 
-  // ── The read-only detail card ──────────────────────────────────────────────
-  /**
-   * Everything the card shows, read once when it opens.
-   *
-   * The card is a still picture of the row at the moment a person paused on it.
-   * Reading the live conversation while it is open would repaint a floating
-   * surface on every transcript event, so nothing here is a store read: the
-   * snapshot is plain values, and the card renders only from them.
-   */
-  interface HoverCardView {
-    title: string;
-    statusLabel: string;
-    statusDetail: string;
-    project: string;
-    worktree: string;
-    machine: string | null;
-    branch: string | null;
-    provider: string;
-    model: string | null;
-    lastActivity: string | null;
-    usage: string | null;
-    error: string | null;
-    statusTone: RowPresence;
-  }
-
-  const hoverCard = getContext<{
-    show(view: HoverCardView, row: HTMLElement): void;
-    hide(): void;
-  }>('session-hover-card');
-  let cardTimer: ReturnType<typeof setTimeout> | null = null;
-
-  function clearCardTimer(): void {
-    if (cardTimer !== null) {
-      clearTimeout(cardTimer);
-      cardTimer = null;
-    }
-  }
-
-  /** Read the row's current values into plain data, once, on the way open. */
-  function takeCardView(): HoverCardView {
-    return {
-      title: label,
-      statusLabel: presenceLabel,
-      statusDetail: presenceDetail,
-      project,
-      worktree,
-      machine,
-      branch: session.branch,
-      provider: providerName,
-      model: modelText,
-      lastActivity: activity,
-      usage,
-      error: presentedError?.summary ?? null,
-      statusTone: presence
-    };
-  }
-
-  function placeCard(row: HTMLElement): void {
-    hoverCard.show(takeCardView(), row);
-  }
-
-  function showOverlay(event: { currentTarget: EventTarget | null }): void {
-    if (POPOUT_DIAG_DISABLED) return;
-    // The right-click menu is the thing being read while it is open. The card
-    // would sit over it, and the pointer is inside the row the whole time it
-    // is up, so this guard is what keeps it from coming straight back.
-    if (menuOpen) return;
-    const row = event.currentTarget;
-    if (!(row instanceof HTMLElement)) return;
-    clearCardTimer();
-    cardTimer = setTimeout(() => {
-      cardTimer = null;
-      placeCard(row);
-    }, 160);
-  }
-
-  /** Whether this row's right-click menu is up. */
-  let menuOpen = $state(false);
-
-  /**
-   * Opening the menu takes the card down and keeps it down. Both surfaces
-   * answer the same row, and two of them at once is one too many — the menu is
-   * the one that was asked for, so it wins. Closing takes it down as well: the
-   * menu gives focus back to the row on the way out, and without this the card
-   * would arrive as an answer to that, with the pointer somewhere else
-   * entirely.
-   */
-  function menuOpenChanged(open: boolean): void {
-    menuOpen = open;
-    hideOverlay();
-  }
-
-  function hideOverlay(): void {
-    clearCardTimer();
-    hoverCard.hide();
-  }
-
-  /**
-   * The card on keyboard focus, and only keyboard focus.
-   *
-   * `:focus-visible` is the browser's own answer to "did a person Tab here, or
-   * did something hand focus back?" — and handing focus back is exactly what a
-   * closing menu does. Asking the platform is what keeps that from looking
-   * like someone arriving at the row.
-   */
-  function showOverlayFromFocus(event: FocusEvent): void {
-    const focused = event.target;
-    if (!(focused instanceof HTMLElement) || !focused.matches(':focus-visible')) return;
-    showOverlay(event);
-  }
-
-  function handleFocusOut(event: FocusEvent): void {
-    const next = event.relatedTarget;
-    if (
-      next instanceof Node
-      && event.currentTarget instanceof Node
-      && event.currentTarget.contains(next)
-    ) return;
-    hideOverlay();
-  }
-
   function selectRow(event: MouseEvent): void {
     onSelect?.();
     if (event.detail > 0 && event.currentTarget instanceof HTMLButtonElement) {
@@ -341,8 +201,6 @@
     event.stopPropagation();
     if (!sessionRowJump(session.ownedId, surface)) onSelect?.();
   }
-
-  onDestroy(clearCardTimer);
 
   // ── The right-click menu ───────────────────────────────────────────────────
   const sessionIdForCopy = $derived(session.nativeSessionId || session.ownedId);
@@ -360,7 +218,6 @@
   }
 
   function runMenuAction(action: SessionRowMenuAction): void {
-    hideOverlay();
     if (action === 'mark-done') onComplete?.();
     else if (action === 'reopen') onReopen?.();
     else if (action === 'archive') onSettle?.();
@@ -374,28 +231,6 @@
     } else if (action === 'delete') onAskRemove?.();
   }
 
-  function formatActivity(value: string | null): string | null {
-    if (!value) return null;
-    const timestamp = Date.parse(value);
-    if (!Number.isFinite(timestamp)) return value;
-    const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-    if (seconds < 60) return 'now';
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h`;
-    const days = Math.floor(hours / 24);
-    return `${days}d`;
-  }
-
-  function formatUsage(
-    metadataTokens: number | null | undefined,
-    eventUsage: { inputTokens?: number; outputTokens?: number } | undefined
-  ): string | null {
-    const total = metadataTokens
-      ?? ((eventUsage?.inputTokens ?? 0) + (eventUsage?.outputTokens ?? 0) || null);
-    return total && total > 0 ? `${total.toLocaleString()} tokens` : null;
-  }
 </script>
 
 <li
@@ -414,12 +249,8 @@
   ondragover={onDragOver}
   ondrop={onDrop}
   ondragend={onDragEnd}
-  onmouseenter={showOverlay}
-  onmouseleave={hideOverlay}
-  onfocusin={showOverlayFromFocus}
-  onfocusout={handleFocusOut}
 >
-  <ContextMenu.Root onOpenChange={menuOpenChanged}>
+  <ContextMenu.Root>
     <ContextMenu.Trigger>
       {#snippet child({ props })}
         <button
@@ -688,11 +519,9 @@
 
   .row:hover .thumb { opacity: 1; }
 
-  /* TWO fixed line boxes, not three. A third line meant every line had to be
-     small enough to fit, which is the whole reason the rail read badly; the
-     branch and the worktree path say what they have to say on the hover card
-     instead. The heights are declared rather than left to the font so the row
-     is the same height on every machine and the mark can be sized against it. */
+  /* TWO fixed line boxes, not three. The heights are declared rather than left
+     to the font so the row is the same height on every machine and the mark can
+     be sized against it. */
   .lines {
     display: flex;
     min-width: 0;

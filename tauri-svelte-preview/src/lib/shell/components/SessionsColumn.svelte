@@ -14,7 +14,7 @@
   import Plus from '@lucide/svelte/icons/plus';
   import Search from '@lucide/svelte/icons/search';
   import List from '@lucide/svelte/icons/list';
-  import { onMount, setContext, type ComponentProps } from 'svelte';
+  import { onMount } from 'svelte';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -31,7 +31,6 @@
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
   import SegmentedTabs from './SegmentedTabs.svelte';
   import SessionRail from './SessionRail.svelte';
-  import SessionHoverCard from './SessionHoverCard.svelte';
   import { sessionLabel, stripCells } from '$lib/shell/sessionStrip';
   import {
     readAssemblySettingFromTauri,
@@ -88,34 +87,6 @@
   });
   const MY_WORK_VIEW_OPTIONS_SETTING_KEY = 'rail.my-work-view-options';
   let viewOptionsVersion = 0;
-
-  const CARD_WIDTH = 336;
-  const CARD_HEIGHT = 300;
-  let cardPlacement = $state<{ top: number; left: number } | null>(null);
-  let cardView = $state<ComponentProps<typeof SessionHoverCard> | null>(null);
-
-  function bodyPortal(node: HTMLElement): { destroy(): void } {
-    document.body.appendChild(node);
-    return { destroy: () => node.remove() };
-  }
-
-  setContext<{
-    show(view: ComponentProps<typeof SessionHoverCard>, row: HTMLElement): void;
-    hide(): void;
-  }>('session-hover-card', {
-    show(view, row) {
-      const rect = row.getBoundingClientRect();
-      const rightRoom = window.innerWidth - rect.right - 8;
-      cardView = view;
-      cardPlacement = {
-        top: Math.max(8, Math.min(rect.top, window.innerHeight - CARD_HEIGHT - 8)),
-        left: rightRoom >= CARD_WIDTH ? rect.right + 8 : Math.max(8, rect.left - CARD_WIDTH - 8)
-      };
-    },
-    hide() {
-      cardPlacement = null;
-    }
-  });
 
   const GROUPING_ITEMS = [
     { id: 'none', label: 'None' },
@@ -456,20 +427,6 @@
     </AlertDialog.Content>
   </AlertDialog.Root>
 
-  <!-- One body-level surface serves every row. After its first use the Svelte
-       subtree and fixed layer stay allocated, hidden between row hovers. -->
-  {#if cardView}
-    <div
-      use:bodyPortal
-      data-testid="worktree-agent-hover-popover"
-      class="fixed z-[60] pointer-events-none"
-      role="tooltip"
-      hidden={cardPlacement === null}
-      style="top: {cardPlacement?.top ?? 0}px; left: {cardPlacement?.left ?? 0}px"
-    >
-      <SessionHoverCard {...cardView} />
-    </div>
-  {/if}
 </Tooltip.Provider>
 
 <style>

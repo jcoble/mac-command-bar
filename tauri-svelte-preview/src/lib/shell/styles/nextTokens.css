@@ -286,14 +286,8 @@
   --agent-mark-claude: #d97757;
   --agent-mark-codex: #0080f7;
 
-  /* A floating card reads as floating by being DARKER than the rail it
-     covers, not lighter: the rail is already a raised surface, so another
-     step up flattens the two together. */
-  --popout-surface: color-mix(in srgb, var(--color-bg) 85%, var(--color-surface));
-
-  /* A right-click menu goes the other way, and on purpose: it is LIGHTER than
-     everything under it, so it reads as a sheet laid on top rather than a hole
-     cut into the surface. The two are meant to differ. */
+  /* A right-click menu is lighter than everything under it, so it reads as a
+     sheet laid on top rather than a hole cut into the surface. */
   --menu-surface: #282828;
 
   /* Scrollbars — one thin style for every scrolling surface in the shell.
