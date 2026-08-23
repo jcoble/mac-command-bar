@@ -232,7 +232,7 @@
   class:drop-before={dropPosition === 'before'}
   class:drop-after={dropPosition === 'after'}
   class:needs-you-row={needsYou}
-  class="row"
+  class="row group"
   draggable="true"
   ondragstart={onDragStart}
   ondragover={onDragOver}
@@ -413,6 +413,8 @@
   .thumb[data-agent='claude'] { color: var(--agent-mark-claude); }
   .thumb[data-agent='codex'] { color: var(--agent-mark-codex); }
 
+  .row:hover .thumb { opacity: 1; }
+
   /* TWO fixed line boxes, not three. The heights are declared rather than left
      to the font so the row is the same height on every machine and the mark can
      be sized against it. */
@@ -430,13 +432,13 @@
      more so hovering it still says something. No stripe down the rail's edge
      and no accent tint — accent means "this session is working", and a row
      that happens to be the one on screen has not earned that signal. */
-  .session-row:hover { background: var(--color-hover); }
+  .row:hover .session-row { background: var(--color-hover); }
 
   .active .session-row {
     background: color-mix(in srgb, var(--color-elevated) 88%, var(--color-text));
   }
 
-  .active .session-row:hover {
+  .row.active:hover .session-row {
     background: color-mix(in srgb, var(--color-elevated) 84%, var(--color-text));
   }
 
@@ -495,7 +497,7 @@
   .failed,
   .needs-you { margin-left: auto; }
 
-  /* Last activity stays in line one's right corner. */
+  /* Last activity stays in line one's right corner while the row is hovered. */
   .age {
     display: inline-flex;
     flex: 0 0 auto;
@@ -583,4 +585,14 @@
   .row.drop-before::after { top: -2px; }
   .row.drop-after::after { bottom: -2px; }
 
+  /* Interaction motion: every one of these ends. The row's fill and the time in
+     its corner answer a pointer or a selection and then stop; the working
+     indicator remains static. */
+  @media (prefers-reduced-motion: no-preference) {
+    .age-text,
+    .idle-label,
+    .thumb { transition: opacity 120ms ease; }
+
+    .session-row { transition: background-color 140ms ease; }
+  }
 </style>
