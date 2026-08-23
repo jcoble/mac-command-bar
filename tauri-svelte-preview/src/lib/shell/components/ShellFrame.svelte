@@ -102,6 +102,16 @@
   onMount(() => {
     let observer: ResizeObserver | null = null;
     let mounted = true;
+    let laidOutWidth = -1;
+    let laidOutHeight = -1;
+    const layoutFrame = () => {
+      const width = gridHost.clientWidth;
+      const height = gridHost.clientHeight;
+      if (width === laidOutWidth && height === laidOutHeight) return;
+      laidOutWidth = width;
+      laidOutHeight = height;
+      frame?.layout(width, height);
+    };
     void (async () => {
       try {
         frame = createShellFrame(gridHost, {
@@ -121,7 +131,7 @@
         // its host before calling `fromJSON`; doing that while the Gridview is
         // still at 0×0 leaves always-rendered panels with stale overlay bounds
         // until the next activation.
-        frame.layout(gridHost.clientWidth, gridHost.clientHeight);
+        layoutFrame();
         centerDock = createCenterDock(centerSlot, {
           readLayout: () => readAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY),
           writeLayout: (layout) => writeAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY, layout),
@@ -134,8 +144,7 @@
             {
               id: 'editor',
               title: 'Editor',
-              element: editorSlot,
-              renderer: 'onlyWhenVisible'
+              element: editorSlot
             },
             {
               id: 'diff',
@@ -154,9 +163,7 @@
         });
         await centerDock.ready;
         if (!mounted || !centerDock) return;
-        observer = new ResizeObserver(() => {
-          frame?.layout(gridHost.clientWidth, gridHost.clientHeight);
-        });
+        observer = new ResizeObserver(layoutFrame);
         observer.observe(gridHost);
         ready = true;
         onReady?.({
