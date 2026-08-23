@@ -41,20 +41,11 @@
       );
       if (folded !== nextFolded) folded = nextFolded;
     };
-    const scheduleMeasure = (): void => {
-      if (frame !== null) return;
-      frame = requestTrackedAnimationFrame(() => {
-        frame = null;
-        measure();
-      });
-    };
-    scheduleMeasure();
-    // The message rewraps as the column changes width, so what was nine lines
-    // becomes eleven without a word of it changing.
-    const observer = new ResizeObserver(scheduleMeasure);
-    observer.observe(host);
+    frame = requestTrackedAnimationFrame(() => {
+      frame = null;
+      measure();
+    });
     return () => {
-      observer.disconnect();
       if (frame !== null) cancelTrackedAnimationFrame(frame);
     };
   });
