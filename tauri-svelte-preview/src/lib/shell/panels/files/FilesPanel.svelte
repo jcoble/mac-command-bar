@@ -41,7 +41,11 @@
   import type { ExplorerTreeNode } from '$lib/shell/explorer/explorerStore.svelte';
   import { projectRootLabel } from '$lib/shell/explorer/explorerTree';
   import { openFileInEditor, openFileTimeline } from '$lib/shell/workbenchNavigation';
-  import { trackFileWatcher } from '$lib/shell/resourceDiagnostics.svelte';
+  import {
+    cancelTrackedAnimationFrame,
+    requestTrackedAnimationFrame,
+    trackFileWatcher
+  } from '$lib/shell/resourceDiagnostics.svelte';
   import {
     cancelSourceScanFromTauri,
     createSourceScanId,
@@ -378,14 +382,20 @@
     const host = treeHost;
     if (!host) return;
 
+    let frame: number | null = null;
     const updateTreeHeight = () => {
-      treeHeight = Math.max(1, Math.floor(host.clientHeight));
+      frame = null;
+      const nextHeight = Math.max(1, Math.floor(host.clientHeight));
+      if (treeHeight !== nextHeight) treeHeight = nextHeight;
     };
     updateTreeHeight();
-    const observer = new ResizeObserver(updateTreeHeight);
+    const observer = new ResizeObserver(() => {
+      if (frame === null) frame = requestTrackedAnimationFrame(updateTreeHeight);
+    });
     observer.observe(host);
     return () => {
       observer.disconnect();
+      if (frame !== null) cancelTrackedAnimationFrame(frame);
     };
   });
 

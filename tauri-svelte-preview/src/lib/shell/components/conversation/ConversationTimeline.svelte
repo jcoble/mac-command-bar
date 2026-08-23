@@ -222,13 +222,21 @@
 
   $effect(() => {
     if (!host) return;
+    let frame: number | null = null;
     const publish = (): void => {
-      viewportHeight = host?.clientHeight ?? 0;
+      frame = null;
+      const nextHeight = host?.clientHeight ?? 0;
+      if (viewportHeight !== nextHeight) viewportHeight = nextHeight;
     };
-    const observer = new ResizeObserver(publish);
+    const observer = new ResizeObserver(() => {
+      if (frame === null) frame = requestTrackedAnimationFrame(publish);
+    });
     observer.observe(host);
     publish();
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelTrackedAnimationFrame(frame);
+    };
   });
 
   $effect(() => {
@@ -270,28 +278,25 @@
     // rather than animated: nobody asked to watch a transcript they have not read
     // scroll past.
     if (renderedItems.length === 0 || !scrollState.openingToLatest) return;
-    void tick().then(() => {
-      if (!host || !scrollState.openingToLatest) return;
-      host.scrollTop = latestWritingScrollTop();
+    let cancelled = false;
+    let frame: number | null = null;
+    let framesLeft = 4;
+    const settleAtLatest = (): void => {
+      frame = null;
+      if (cancelled || !host || !scrollState.openingToLatest) return;
+      const target = latestWritingScrollTop();
+      if (Math.abs(host.scrollTop - target) > 1) host.scrollTop = target;
       follow = true;
+      framesLeft -= 1;
+      if (framesLeft > 0) frame = requestTrackedAnimationFrame(settleAtLatest);
+    };
+    void tick().then(() => {
+      if (!cancelled) frame = requestTrackedAnimationFrame(settleAtLatest);
     });
-  });
-
-  $effect(() => {
-    // The scroll above happens one tick after the items exist, and one tick is
-    // too early: a restored transcript publishes every item in a single update,
-    // then keeps growing as markdown, code blocks and images lay themselves out.
-    // Landing on the end and stopping there left the reader stranded near the
-    // top of a page that got taller underneath them. So the end is held, not
-    // aimed at once — until the reader takes the view back, which is what drops
-    // `openingToLatest`.
-    if (!list || !host) return;
-    const observer = new ResizeObserver(() => {
-      if (!host || !scrollState.openingToLatest) return;
-      host.scrollTop = latestWritingScrollTop();
-    });
-    observer.observe(list);
-    return () => observer.disconnect();
+    return () => {
+      cancelled = true;
+      if (frame !== null) cancelTrackedAnimationFrame(frame);
+    };
   });
 
   $effect(() => {
