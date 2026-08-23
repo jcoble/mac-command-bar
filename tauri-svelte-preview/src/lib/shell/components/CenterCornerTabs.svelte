@@ -16,7 +16,7 @@
    * the pane, invisible until it is wanted:
    *
    *   the pointer anywhere in the centre pane, or the keyboard focus inside it,
-   *   fades it in (the pane sets `--center-pills-reveal`, see `ShellFrame`);
+   *   fades it in (the pane marks only this overlay hovered in `ShellFrame`);
    *   a tab switch holds it on screen for a moment afterwards, so the surface
    *   you just chose is confirmed before it disappears again.
    *
@@ -144,8 +144,8 @@
     background: var(--pill-surface);
     box-shadow: var(--shadow-sm);
     user-select: none;
-    opacity: var(--center-pills-reveal, 0);
-    pointer-events: var(--center-pills-events, none);
+    opacity: 0;
+    pointer-events: none;
     /* Quick, and finished: one transition with a stated duration, nothing that
        keeps running once it has arrived. */
     transition: opacity 120ms ease-out;
