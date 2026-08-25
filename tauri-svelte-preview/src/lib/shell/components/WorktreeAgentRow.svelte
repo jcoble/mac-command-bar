@@ -9,10 +9,13 @@
    * The working indicator is static and only shown while this row is genuinely
    * working and on screen; the elapsed clock is the rail's one shared interval
    * rather than a timer per row.
-   */
+  */
+  import FileCode2 from '@lucide/svelte/icons/file-code-2';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
+  import MessageCircle from '@lucide/svelte/icons/message-circle';
+
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
-  import { conversationSessions } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
     deriveSessionPresence,
     EMPTY_SESSION_PRESENCE_HISTORY,
@@ -30,6 +33,7 @@
     railElapsedCadenceFor,
     watchRailElapsed
   } from './railElapsedTicker.ts';
+  import { sessionRowJump } from './sessionRowJump';
   import { observeElementVisibility } from '$lib/shell/elementVisibility.ts';
 
   interface Props {
@@ -63,9 +67,6 @@
   const shelf = $derived(deriveOwnedLibraryState(session));
   const projectInfo = $derived(resolveOwnedSessionProject(session));
   const project = $derived(projectInfo.label);
-  const conversation = $derived(
-    session.state === 'exited' ? null : conversationSessions[session.ownedId] ?? null
-  );
   const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
 
   const presenceHistory = $derived(
@@ -89,7 +90,7 @@
         terminalState: session.state,
         suspended,
         activeTurnId,
-        sending: conversation?.sending,
+        sending: false,
         pendingApprovalCount,
         runtimeState
       },
@@ -147,6 +148,10 @@
   const ageText = $derived(ageMs === null ? null : formatRailElapsed(ageMs));
 
   $effect(() => {
+    if (!isWorking) {
+      onScreen = true;
+      return;
+    }
     const element = rowElement;
     if (!element) return;
     return observeElementVisibility(element, (visible) => {
@@ -159,12 +164,10 @@
    * mark rather than on every tick. */
   const cadence = $derived(railElapsedCadenceFor(ageMs ?? 0, isWorking));
 
-  const TICKER_DIAG_DISABLED = true;
-
-  // A row off screen needs no clock at all; one on screen asks for seconds only
-  // while it is working or still in its first minute, and minutes after that.
+  // Every row shares this one clock. Most rows ask for one update per minute;
+  // only genuinely working or newly-created rows make it tick each second.
   $effect(() => {
-    if (TICKER_DIAG_DISABLED || !onScreen || !hasAge) return;
+    if (!hasAge) return;
     const wanted = cadence;
     nowMs = Date.now();
     return watchRailElapsed((tick) => {
@@ -177,6 +180,11 @@
     if (event.detail > 0 && event.currentTarget instanceof HTMLButtonElement) {
       event.currentTarget.blur();
     }
+  }
+
+  function jump(event: MouseEvent, surface: 'session' | 'editor' | 'source-control'): void {
+    event.stopPropagation();
+    if (!sessionRowJump(session.ownedId, surface)) onSelect?.();
   }
 
 </script>
@@ -265,6 +273,18 @@
           </span>
         </button>
 
+        <span class="row-actions" aria-label="Session shortcuts">
+          <button data-slot="icon-button" type="button" title="Open session" aria-label="Open session" onclick={(event) => jump(event, 'session')}>
+            <MessageCircle aria-hidden="true" />
+          </button>
+          <button data-slot="icon-button" type="button" title="Open editor" aria-label="Open editor" onclick={(event) => jump(event, 'editor')}>
+            <FileCode2 aria-hidden="true" />
+          </button>
+          <button data-slot="icon-button" type="button" title="Open source control" aria-label="Open source control" onclick={(event) => jump(event, 'source-control')}>
+            <GitBranch aria-hidden="true" />
+          </button>
+        </span>
+
 </li>
 
 <style>
@@ -280,8 +300,6 @@
     color: var(--color-text);
     font-size: 13px;
     line-height: 1.4;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 58px;
   }
 
   /* What else line one's corner is holding. A row that can step back carries a
@@ -358,10 +376,60 @@
     gap: 0;
   }
 
-  /* Selection is persistent state. Pointer movement does not change row paint. */
+  /* Selection is persistent state; hover is a local paint-only response. */
+  .row:hover .session-row {
+    background: var(--color-hover);
+  }
+
   .active .session-row {
     background: color-mix(in srgb, var(--color-elevated) 88%, var(--color-text));
   }
+
+  .row.active:hover .session-row {
+    background: color-mix(in srgb, var(--color-elevated) 84%, var(--color-text));
+  }
+
+  .row-actions {
+    position: absolute;
+    top: 5px;
+    right: 17px;
+    z-index: 2;
+    display: flex;
+    gap: 3px;
+    visibility: hidden;
+  }
+
+  .row:hover .row-actions,
+  .row:focus-within .row-actions { visibility: visible; }
+
+  .row:hover .line-title,
+  .row:focus-within .line-title { padding-right: 82px; }
+
+  .row:hover .age,
+  .row:focus-within .age { visibility: hidden; }
+
+  .row-actions button {
+    display: grid;
+    width: 25px;
+    height: 25px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-pill);
+    place-items: center;
+    background: var(--color-elevated);
+    color: var(--color-text-2);
+    cursor: pointer;
+  }
+
+  .row-actions button:hover,
+  .row-actions button:focus-visible {
+    background: var(--color-hover);
+    color: var(--color-text);
+    outline: none;
+  }
+
+  .row-actions button:focus-visible { box-shadow: var(--focus-ring); }
+  .row-actions :global(svg) { width: 15px; height: 15px; }
 
   .session-row:focus-visible { box-shadow: inset 0 0 0 2px var(--color-focus); }
 

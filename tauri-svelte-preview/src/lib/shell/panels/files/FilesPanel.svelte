@@ -190,6 +190,9 @@
   const listed = $derived(explorer.lastScanFinishedAt !== null);
   const searching = $derived(searchText.trim().length > 0);
   const treeVisible = $derived(explorer.activated && explorer.unavailable === null && loadedNodes.length > 0);
+  const treeRendererKey = $derived(
+    `${ownedId ?? ''}:${canonicalPath(inspectedRoot || sessionRoot)}`
+  );
   const searchTreeData = $derived(
     searchMatches.map<TreeItem>((match) => ({
       path: match.path,
@@ -1111,7 +1114,7 @@
     {/if}
   {/if}
 
-  <!-- Keep one renderer instance across root changes; only its bounded data projection changes. -->
+  <!-- Destroy Keenmate's branch/effect graph when this session or inspected root releases ownership. -->
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="tree-host"
@@ -1123,69 +1126,71 @@
     bind:this={treeHost}
     onclickcapture={onTreeWrapperClick}
   >
-    <Tree
-      data={displayedTreeData}
-      treeId="project-files"
-      treePathSeparator="/"
-      idMember="path"
-      pathMember="treePath"
-      parentPathMember="treeParentPath"
-      hasChildrenMember="hasChildren"
-      isExpandedMember="expanded"
-      isSelectedMember="selected"
-      displayValueMember="name"
-      searchValueMember="relativePath"
-      searchText=""
-      sortCallback={sortTreeNodes}
-      shouldToggleOnNodeClick={false}
-      shouldUseInternalSearchIndex={false}
-      useFlatRendering={true}
-      progressiveRender={false}
-      virtualScroll={true}
-      virtualRowHeight={28}
-      virtualOverscan={6}
-      virtualContainerHeight={`${treeHeight}px`}
-      bodyClass="mcb-tree-body"
-      expandLevel={0}
-      selectedNodeClass="mcb-tree-selected"
-      expandIconClass="mcb-tree-expand"
-      collapseIconClass="mcb-tree-collapse"
-      leafIconClass="mcb-tree-leaf"
-      onNodeClicked={onTreeNodeClicked}
-    >
-      {#snippet nodeTemplate(treeNode: LTreeNode<TreeItem>)}
-        {@const node = treeNode.data}
-        {#if node}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <span
-            class="tree-row"
-            class:excluded={node.ignored}
-            title={node.path}
-            ondblclick={(event) => pinTreeNodeOpen(node, event)}
-            oncontextmenu={(event) => openContextMenu(node, event)}
-          >
-            <span class="tree-file-icon" aria-hidden="true">
-              {#if node.isDirectory}
-                {#if expanded.has(node.path)}
-                  <FolderOpen size={14} strokeWidth={1.75} />
+    {#key treeRendererKey}
+      <Tree
+        data={displayedTreeData}
+        treeId="project-files"
+        treePathSeparator="/"
+        idMember="path"
+        pathMember="treePath"
+        parentPathMember="treeParentPath"
+        hasChildrenMember="hasChildren"
+        isExpandedMember="expanded"
+        isSelectedMember="selected"
+        displayValueMember="name"
+        searchValueMember="relativePath"
+        searchText=""
+        sortCallback={sortTreeNodes}
+        shouldToggleOnNodeClick={false}
+        shouldUseInternalSearchIndex={false}
+        useFlatRendering={true}
+        progressiveRender={false}
+        virtualScroll={true}
+        virtualRowHeight={28}
+        virtualOverscan={6}
+        virtualContainerHeight={`${treeHeight}px`}
+        bodyClass="mcb-tree-body"
+        expandLevel={0}
+        selectedNodeClass="mcb-tree-selected"
+        expandIconClass="mcb-tree-expand"
+        collapseIconClass="mcb-tree-collapse"
+        leafIconClass="mcb-tree-leaf"
+        onNodeClicked={onTreeNodeClicked}
+      >
+        {#snippet nodeTemplate(treeNode: LTreeNode<TreeItem>)}
+          {@const node = treeNode.data}
+          {#if node}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span
+              class="tree-row"
+              class:excluded={node.ignored}
+              title={node.path}
+              ondblclick={(event) => pinTreeNodeOpen(node, event)}
+              oncontextmenu={(event) => openContextMenu(node, event)}
+            >
+              <span class="tree-file-icon" aria-hidden="true">
+                {#if node.isDirectory}
+                  {#if expanded.has(node.path)}
+                    <FolderOpen size={14} strokeWidth={1.75} />
+                  {:else}
+                    <Folder size={14} strokeWidth={1.75} />
+                  {/if}
                 {:else}
-                  <Folder size={14} strokeWidth={1.75} />
+                  <FileIcon fileName={node.name} size={14} />
                 {/if}
-              {:else}
-                <FileIcon fileName={node.name} size={14} />
+              </span>
+              <span class="tree-name">{node.name}</span>
+              {#if fileClipboard?.path === node.path}
+                <span class="clipboard-mark">{fileClipboard.operation}</span>
               {/if}
             </span>
-            <span class="tree-name">{node.name}</span>
-            {#if fileClipboard?.path === node.path}
-              <span class="clipboard-mark">{fileClipboard.operation}</span>
-            {/if}
-          </span>
-        {/if}
-      {/snippet}
-      {#snippet noDataFound()}
-        <p class="tree-empty">Nothing matches that search.</p>
-      {/snippet}
-    </Tree>
+          {/if}
+        {/snippet}
+        {#snippet noDataFound()}
+          <p class="tree-empty">Nothing matches that search.</p>
+        {/snippet}
+      </Tree>
+    {/key}
   </div>
   {#if treeVisible && searching && searchNextCursor !== null}
     <div class="search-more">

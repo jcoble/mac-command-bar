@@ -217,6 +217,7 @@
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
   <div class="slot center-region" bind:this={centerRegionSlot}>
+    <div class="center-tab-reveal-zone" aria-hidden="true"></div>
     <div class="center-tabs">{@render centerTabs()}</div>
     <div class="center-dock-host" bind:this={centerSlot}></div>
   </div>
@@ -291,7 +292,28 @@
        it must not swallow clicks meant for the surface underneath. The pills
        themselves take the pointer back when they are on screen. */
     pointer-events: none;
+    opacity: 0;
   }
+
+  /* A small corner hit-zone reveals the controls without making the entire
+     editor or transcript subtree participate in hover matching. Focus keeps the
+     controls visible for keyboard navigation. */
+  .center-tab-reveal-zone {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 11;
+    width: min(320px, 45%);
+    height: calc(var(--editor-tab-row-height) + var(--center-head-row-height) + 12px);
+  }
+
+  .center-tab-reveal-zone:hover + .center-tabs,
+  .center-tabs:hover,
+  .center-tabs:focus-within {
+    opacity: 1;
+  }
+
+  .center-tabs :global(.center-pills) { pointer-events: auto; }
 
   .tools-region {
     min-width: 0;

@@ -1312,8 +1312,11 @@
 		// stored record back here would throw away every file opened since the last
 		// switch, which is the opposite of what a click on your own row means.
 		if (switching) {
-			// Departing models must be gone before replay can create the arriving session's model.
-			if (previous !== null && workspaceCaptured) {
+			// Persistence readiness does not own live editor resources. Departing models
+			// must be gone before replay can create the arriving session's model, even
+			// during startup or a superseded rapid selection where no workspace snapshot
+			// was captured.
+			if (previous !== null) {
 				editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
 			}
 			await restoreWorkspace(ownedId);
