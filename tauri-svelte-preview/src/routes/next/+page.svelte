@@ -209,6 +209,13 @@
 	let diffMode = $state<DiffMode>(DEFAULT_DIFF_MODE);
 	let workspaceRestoreGeneration = 0;
 	let sessionSelectionGeneration = 0;
+	let queuedSessionSelection: {
+		ownedId: string;
+		propagateStructuredFailure: boolean;
+		generation: number;
+	} | null = null;
+	let sessionSelectionDrain: Promise<void> | null = null;
+	const sessionSelectionQuietMs = 500;
 	let sessionProjectionOwner: "selection" | "checkout" | null = null;
 	let workspaceSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let workspaceWriteQueue: Promise<void> = Promise.resolve();
@@ -1168,17 +1175,31 @@
 		setScrollTop(snapshot.scrollTop);
 	}
 
-	async function selectOwned(ownedId: string, propagateStructuredFailure = false): Promise<void> {
-		if (sessionProjectionOwner === "checkout" || clearAllEditorsInFlight) return;
+	function selectOwned(ownedId: string, propagateStructuredFailure = false): Promise<void> {
+		if (sessionProjectionOwner === "checkout" || clearAllEditorsInFlight) return Promise.resolve();
 		const selectionGeneration = ++sessionSelectionGeneration;
+		queuedSessionSelection = { ownedId, propagateStructuredFailure, generation: selectionGeneration };
+		if (sessionSelectionDrain) return sessionSelectionDrain;
 		sessionProjectionOwner = "selection";
-		try {
-			await selectOwnedCurrent(ownedId, propagateStructuredFailure, selectionGeneration);
-		} finally {
-			if (selectionGeneration === sessionSelectionGeneration && sessionProjectionOwner === "selection") {
+		sessionSelectionDrain = (async () => {
+			while (queuedSessionSelection) {
+				const selection = queuedSessionSelection;
+				queuedSessionSelection = null;
+				await new Promise((resolve) => setTimeout(resolve, sessionSelectionQuietMs));
+				if (queuedSessionSelection) continue;
+				await selectOwnedCurrent(
+					selection.ownedId,
+					selection.propagateStructuredFailure,
+					selection.generation,
+				);
+			}
+		})().finally(() => {
+			sessionSelectionDrain = null;
+			if (sessionProjectionOwner === "selection") {
 				sessionProjectionOwner = null;
 			}
-		}
+		});
+		return sessionSelectionDrain;
 	}
 
 	async function selectOwnedCurrent(ownedId: string, propagateStructuredFailure: boolean, selectionGeneration: number): Promise<void> {
