@@ -29,6 +29,7 @@ pub struct ResourceRegistry {
     generation: AtomicU64,
     active_source_root: Arc<Mutex<Option<PathBuf>>>,
     sample_system: Arc<Mutex<System>>,
+    sampled_process_ids: Arc<Mutex<Vec<u32>>>,
 }
 
 impl Default for ResourceRegistry {
@@ -37,6 +38,7 @@ impl Default for ResourceRegistry {
             generation: AtomicU64::default(),
             active_source_root: Arc::new(Mutex::new(None)),
             sample_system: Arc::new(Mutex::new(System::new())),
+            sampled_process_ids: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -352,6 +354,7 @@ pub async fn read_resource_sample(
     browser_registry: State<'_, crate::browser::BrowserRegistry>,
 ) -> Result<ResourceSample, String> {
     let system = Arc::clone(&registry.sample_system);
+    let sampled_process_ids = Arc::clone(&registry.sampled_process_ids);
     let terminal_registry = terminal_registry.inner().clone();
     let agent_runtime = agent_runtime.inner().clone();
     let lsp_registry = lsp_registry.inner().clone();
@@ -379,11 +382,95 @@ pub async fn read_resource_sample(
             &processes,
             &owners,
         );
+        let mut process_ids = sample
+            .app
+            .parts
+            .iter()
+            .map(|part| part.pid)
+            .chain(sample.groups.iter().flat_map(|group| {
+                group
+                    .sessions
+                    .iter()
+                    .flat_map(|session| session.processes.iter().map(|process| process.pid))
+            }))
+            .collect::<Vec<_>>();
+        process_ids.sort_unstable();
+        process_ids.dedup();
+        *sampled_process_ids
+            .lock()
+            .map_err(|_| "Resource sampler is unavailable".to_string())? = process_ids;
         sample.diagnostics = diagnostics;
         Ok(sample)
     })
     .await
     .map_err(|error| format!("Resource sampling task failed: {error}"))?
+}
+
+/// Refresh only the process ids already attributed to Assembly. The gutter
+/// calls this frequently; the full machine inventory remains owned by the
+/// Resource Manager refresh above.
+#[tauri::command]
+pub async fn read_resource_totals(
+    registry: State<'_, ResourceRegistry>,
+    terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
+    agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
+    lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
+) -> Result<ResourceSampleTotals, String> {
+    let system = Arc::clone(&registry.sample_system);
+    let sampled_process_ids = Arc::clone(&registry.sampled_process_ids);
+    let terminal_registry = terminal_registry.inner().clone();
+    let agent_runtime = agent_runtime.inner().clone();
+    let lsp_registry = lsp_registry.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut process_ids = sampled_process_ids
+            .lock()
+            .map_err(|_| "Resource sampler is unavailable".to_string())?
+            .clone();
+        process_ids.extend(
+            resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?
+                .into_iter()
+                .map(|owner| owner.root_pid),
+        );
+        process_ids.sort_unstable();
+        process_ids.dedup();
+
+        let mut system = system
+            .lock()
+            .map_err(|_| "Resource sampler is unavailable".to_string())?;
+        let sysinfo_pids = process_ids
+            .iter()
+            .copied()
+            .map(Pid::from_u32)
+            .collect::<Vec<_>>();
+        system.refresh_processes(ProcessesToUpdate::Some(&sysinfo_pids), true);
+
+        let mut totals = ResourceSampleTotals {
+            cpu_percent: 0.0,
+            physical_footprint_bytes: 0,
+            rss_bytes: 0,
+            process_count: 0,
+        };
+        let mut alive_process_ids = Vec::with_capacity(process_ids.len());
+        for pid in process_ids {
+            let Some(process) = system.process(Pid::from_u32(pid)) else {
+                continue;
+            };
+            let rss_bytes = process.memory();
+            totals.cpu_percent += process.cpu_usage();
+            totals.physical_footprint_bytes +=
+                mcb_core::scanners::resources::phys_footprint_bytes(pid).unwrap_or(rss_bytes);
+            totals.rss_bytes += rss_bytes;
+            totals.process_count += 1;
+            alive_process_ids.push(pid);
+        }
+        *sampled_process_ids
+            .lock()
+            .map_err(|_| "Resource sampler is unavailable".to_string())? = alive_process_ids;
+        Ok(totals)
+    })
+    .await
+    .map_err(|error| format!("Resource totals task failed: {error}"))?
 }
 
 fn resource_sample_owners(

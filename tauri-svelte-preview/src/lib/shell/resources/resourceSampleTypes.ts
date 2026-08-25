@@ -22,6 +22,13 @@ export type ResourceSampleCategory = {
   processCount: number;
 };
 
+export type ResourceSampleTotals = {
+  cpuPercent: number;
+  physicalFootprintBytes: number;
+  rssBytes: number;
+  processCount: number;
+};
+
 export type ResourceDiagnostics = {
   conversations: {
     durableSessionRows: number;
@@ -80,12 +87,7 @@ export type ResourceSampleGroup = {
 
 export type ResourceSample = {
   generatedAtMs: number;
-  totals: {
-    cpuPercent: number;
-    physicalFootprintBytes: number;
-    rssBytes: number;
-    processCount: number;
-  };
+  totals: ResourceSampleTotals;
   diagnostics: ResourceDiagnostics;
   app: {
     parts: ResourceSampleAppPart[];

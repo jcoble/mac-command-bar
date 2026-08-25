@@ -6555,6 +6555,7 @@ fn main() {
             kill_playwright_sessions,
             kill_process,
             resources::read_resource_sample,
+            resources::read_resource_totals,
             resources::read_resource_snapshot,
             resources::read_resource_disk_scan,
             resources::cleanup_workspace_disk_entry,

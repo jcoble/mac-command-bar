@@ -26,8 +26,10 @@
   } from '$lib/shell/resources/resourceSampleViewModel';
   import {
     refreshResourceSample,
+    refreshResourceTotals,
     resourceSampleState
   } from '$lib/shell/resources/resourceSampleStore.svelte';
+  import { resourceDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
 
   import { utilityAnchorFor, type UtilityId } from './utilityStrip';
 
@@ -47,23 +49,33 @@
   }
 
   const summary = $derived.by(() => {
-    const snapshot = resourceSampleState.snapshot;
-    if (snapshot) {
-      return `${formatResourceCpu(snapshot.native.totals.cpuPercent)} · ${formatResourceBytes(
-        snapshot.native.totals.physicalFootprintBytes
-      )} Σ Physical footprint · RSS ${formatResourceBytes(snapshot.native.totals.rssBytes)}`;
+    const totals = resourceSampleState.totals ?? resourceSampleState.snapshot?.native.totals;
+    if (totals) {
+      return `${formatResourceCpu(totals.cpuPercent)} · ${formatResourceBytes(
+        totals.physicalFootprintBytes
+      )} Σ Physical footprint · RSS ${formatResourceBytes(totals.rssBytes)}`;
     }
     if (resourceSampleState.loading) return 'Reading process usage…';
     return resourceSampleState.error ?? 'Process usage is not available';
   });
 
+  const ownershipSummary = $derived.by(() => {
+    if (!import.meta.env.DEV) return '';
+    return [
+      `chat ${resourceDiagnostics.loadedConversationProjections}/${formatResourceBytes(resourceDiagnostics.loadedConversationEventBytes)}`,
+      `snap ${resourceDiagnostics.conversationSnapshotReadsInFlight}`,
+      `CM ${resourceDiagnostics.codeMirrorEditorStates}/${formatResourceBytes(resourceDiagnostics.openTabDocumentBytes)}`,
+      `source ${resourceDiagnostics.editorSourceReadsInFlight}/${formatResourceBytes(resourceDiagnostics.editorSourceReadBytesInFlight)}`
+    ].join(' · ');
+  });
+
   onMount(() => {
     void refreshResourceSample();
     const refreshWhenVisible = (): void => {
-      if (document.visibilityState === 'visible') void refreshResourceSample();
+      if (document.visibilityState === 'visible') void refreshResourceTotals();
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
-    const pollTimer = window.setInterval(() => void refreshResourceSample(), 5_000);
+    const pollTimer = window.setInterval(() => void refreshResourceTotals(), 5_000);
     return () => {
       document.removeEventListener('visibilitychange', refreshWhenVisible);
       window.clearInterval(pollTimer);
@@ -92,6 +104,9 @@
     <Cpu class="glyph" strokeWidth={1.6} aria-hidden="true" />
     <span class="label">Resources</span>
     <span class="summary">{summary}</span>
+    {#if ownershipSummary}
+      <span class="ownership-summary">· {ownershipSummary}</span>
+    {/if}
   </button>
   <button
     type="button"
@@ -185,6 +200,15 @@
   .summary {
     min-width: 0;
     overflow: hidden;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ownership-summary {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted-foreground);
     font-variant-numeric: tabular-nums;
     text-overflow: ellipsis;
     white-space: nowrap;

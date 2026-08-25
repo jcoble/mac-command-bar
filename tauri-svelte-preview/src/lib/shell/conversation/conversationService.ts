@@ -79,6 +79,7 @@ import { ConversationDraftPersistence } from './conversationDraftPersistence.ts'
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import {
   revokeTrackedObjectUrl,
+  setConversationSnapshotReadsInFlight,
   trackTauriListener
 } from '../resourceDiagnostics.svelte.ts';
 
@@ -87,7 +88,13 @@ let unlistenTitles: (() => void) | null = null;
 let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
 let conversationEventsGeneration = 0;
-const resyncing = new Map<string, Promise<void>>();
+type ConversationSnapshotRead = {
+  readVersion: number;
+  token: object;
+  work: Promise<void>;
+};
+
+const resyncing = new Map<string, ConversationSnapshotRead>();
 const ensuring = new Map<string, { signature: string; work: Promise<AgentConversationConnection | null> }>();
 const terminalProjections = new Map<string, string>();
 const readVersions = new Map<string, number>();
@@ -228,7 +235,6 @@ export function cleanupConversationAttachmentPreview(attachment: ConversationAtt
 /** Drop frontend-only conversation data after its workspace has been saved. */
 export function releaseConversationForRead(ownedId: string): void {
   readVersions.set(ownedId, (readVersions.get(ownedId) ?? 0) + 1);
-  resyncing.delete(ownedId);
   cancelChildConversationTranscriptRead(ownedId);
   const state = getConversationSession(ownedId);
   if (!state) return;
@@ -530,10 +536,11 @@ async function hydrateSentConversationAttachments(
 
 async function resyncConversation(ownedId: string): Promise<void> {
   const existing = resyncing.get(ownedId);
-  if (existing) return existing;
+  if (existing) return existing.work;
+  const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
+  readVersions.set(ownedId, readVersion);
+  const token = {};
   const work = (async () => {
-    const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
-    readVersions.set(ownedId, readVersion);
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
       if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
@@ -543,20 +550,35 @@ async function resyncConversation(ownedId: string): Promise<void> {
       if (sequenceBeforeApply <= snapshot.lastSequence) return;
     }
   })().finally(() => {
-    if (resyncing.get(ownedId) === work) resyncing.delete(ownedId);
+    if (resyncing.get(ownedId)?.token === token) {
+      resyncing.delete(ownedId);
+      setConversationSnapshotReadsInFlight(resyncing.size);
+    }
   });
-  resyncing.set(ownedId, work);
+  resyncing.set(ownedId, { readVersion, token, work });
+  setConversationSnapshotReadsInFlight(resyncing.size);
   return work;
 }
 
 export async function loadConversationForRead(ownedId: string): Promise<void> {
   const existing = resyncing.get(ownedId);
-  if (existing) return existing;
+  if (existing) {
+    try {
+      await existing.work;
+    } catch (error) {
+      if (!getConversationSession(ownedId)) return;
+      if (readVersions.get(ownedId) === existing.readVersion) throw error;
+      return loadConversationForRead(ownedId);
+    }
+    if (!getConversationSession(ownedId)) return;
+    if (readVersions.get(ownedId) === existing.readVersion) return;
+    return loadConversationForRead(ownedId);
+  }
   const generation = getConversationSession(ownedId)?.generation ?? 0;
   const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
   readVersions.set(ownedId, readVersion);
-  let work: Promise<void>;
-  work = (async () => {
+  const token = {};
+  const work = (async () => {
     const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
     const current = getConversationSession(ownedId);
     if (
@@ -567,9 +589,13 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
     applyAgentConversationSnapshot(snapshot);
     void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
   })().finally(() => {
-    if (resyncing.get(ownedId) === work) resyncing.delete(ownedId);
+    if (resyncing.get(ownedId)?.token === token) {
+      resyncing.delete(ownedId);
+      setConversationSnapshotReadsInFlight(resyncing.size);
+    }
   });
-  resyncing.set(ownedId, work);
+  resyncing.set(ownedId, { readVersion, token, work });
+  setConversationSnapshotReadsInFlight(resyncing.size);
   return work;
 }
 

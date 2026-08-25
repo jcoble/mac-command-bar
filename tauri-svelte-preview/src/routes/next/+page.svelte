@@ -79,6 +79,7 @@
 		AgentConversationProvider,
 	} from "$lib/shell/conversation/conversationTypes";
 	import { countInvoke } from "$lib/shell/devInvokeCounter.svelte";
+	import { profileResourceLifecycle } from "$lib/shell/resourceDiagnostics.svelte";
 	import { editorState, resetEditorState, restoreEditorFiles } from "$lib/shell/editor/editorStore.svelte";
 	import {
 		configureExtensionApiProbeRuntime,
@@ -1209,6 +1210,13 @@
 		draftOpen = false;
 		const previous = rail.activeOwnedId;
 		const switching = previous !== ownedId;
+		if (switching) {
+			profileResourceLifecycle("session-switch:start", {
+				from: previous,
+				to: ownedId,
+				generation: selectionGeneration,
+			});
+		}
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
 		let selectedRootAvailable = true;
 		if (selected && shellPanels.loadsAllowed()) {
@@ -1261,6 +1269,11 @@
 			gitCommitFilesService.release();
 			gitService.clearSelection();
 			shellPanels.sourceControlVisible(false);
+			profileResourceLifecycle("session-switch:departing-released", {
+				from: previous,
+				to: ownedId,
+				generation: selectionGeneration,
+			});
 		}
 		const selectedRoot = selected ? selected.cwd.trim() || (selected.projectPath ?? "").trim() : "";
 		if (switching && selected && selectedRoot && selectedRootAvailable) {
@@ -1282,6 +1295,13 @@
 		// session's SQLite workspace is still being restored.
 		if (switching) activeWorkspaceSnapshot = null;
 		setActiveOwned(ownedId);
+		if (switching) {
+			profileResourceLifecycle("session-switch:activated", {
+				from: previous,
+				to: ownedId,
+				generation: selectionGeneration,
+			});
+		}
 		activeRootAvailable = selectedRootAvailable;
 		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
 		let structuredHydration: Promise<void> | null = null;
@@ -1321,6 +1341,11 @@
 			}
 			await restoreWorkspace(ownedId);
 			if (!selectionIsCurrent()) return;
+			profileResourceLifecycle("session-switch:workspace-restored", {
+				from: previous,
+				to: ownedId,
+				generation: selectionGeneration,
+			});
 			workspaceAutosaveEnabled = shellPanels.loadsAllowed();
 			// Both columns go back to the tabs this session was left on. After the
 			// workspace restore, which may have brought the editor forward for a file
@@ -1356,6 +1381,13 @@
 		if (structuredHydration) {
 			await structuredHydration;
 			if (!selectionIsCurrent()) return;
+		}
+		if (switching) {
+			profileResourceLifecycle("session-switch:settled", {
+				from: previous,
+				to: ownedId,
+				generation: selectionGeneration,
+			});
 		}
 	}
 

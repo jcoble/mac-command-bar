@@ -205,6 +205,7 @@
       <section class="diagnostic-strip" aria-label="Frontend lifecycle counts">
         <span><strong>{frontend.loadedConversationProjections}</strong> loaded conversations</span>
         <span><strong>{frontend.loadedConversationEventBytes}</strong> conversation bytes</span>
+        <span><strong>{frontend.conversationSnapshotReadsInFlight}</strong> snapshot reads</span>
         <span><strong>{frontend.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
         <span><strong>{frontend.conversationRenderedRows}</strong> rendered turn rows</span>
         <span><strong>{frontend.conversationVirtualRows}</strong> virtual turn rows</span>
@@ -227,6 +228,8 @@
         <span><strong>{frontend.codeMirrorDocBytes}</strong> editor bytes</span>
         <span><strong>{frontend.codeMirrorUndoDepth}</strong> active undo depth</span>
         <span><strong>{frontend.openTabDocumentBytes}</strong> active open-tab document bytes</span>
+        <span><strong>{frontend.editorSourceReadsInFlight}</strong> source reads</span>
+        <span><strong>{frontend.editorSourceReadBytesInFlight}</strong> source-read bytes</span>
         <span><strong>{frontend.mergeViews}</strong> mounted MergeViews</span>
         <span><strong>{frontend.mergeDocBytes}</strong> diff bytes</span>
         <span><strong>{frontend.elementVisibilityWatchers}</strong> visibility watchers</span>

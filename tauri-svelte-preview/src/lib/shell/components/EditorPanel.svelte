@@ -62,6 +62,7 @@
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
+  import { setEditorSourceReadDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import {
     activateEditor,
     activeEditorFile,
@@ -161,8 +162,17 @@
   let closeDialogOpen = $state(false);
   let closeActionBusy = $state(false);
 
-  /** Paths whose read is in flight, so a double click cannot read twice. */
-  const readsInFlight = new Set<string>();
+  type EditorSourceRead = { byteCount: number; token: object; work: Promise<void> };
+
+  /** Native reads cannot be cancelled, so keep them owned until they settle. */
+  const readsInFlight = new Map<string, EditorSourceRead>();
+
+  function publishSourceReadDiagnostics(): void {
+    setEditorSourceReadDiagnostics(
+      readsInFlight.size,
+      [...readsInFlight.values()].reduce((total, read) => total + read.byteCount, 0)
+    );
+  }
   let sessionResourceGeneration = 0;
   let restoredViewStates = $state<Record<string, object>>({});
   /** Projects whose language server has already been pointed at the project. */
@@ -755,42 +765,60 @@
   /** EXPLICIT IO: read one file and show it. */
   async function readFileIntoEditor(record: SourceRecord): Promise<void> {
     if (closeActionBusy || !rootAvailable) return;
-    if (readsInFlight.has(record.path)) return;
+    const existing = readsInFlight.get(record.path);
+    if (existing) {
+      await existing.work;
+      const file = editorFileFor(record.path);
+      if (!file || !needsRead(file)) return;
+      return readFileIntoEditor(record);
+    }
     const generation = sessionResourceGeneration;
     const readOnly = Boolean(readOnlyByPath[record.path]);
     const projectRoot = editorState.projectRoot;
-    readsInFlight.add(record.path);
     markEditorFileLoading(record.path);
     if (!readOnly) void warmLanguageServer(editorState.projectRoot);
-    try {
-      // The record has to be built first: the read wrapper copies the relative
-      // path, language and size back out of it onto the preview it returns.
-      countInvoke('read_source_file');
-      const preview = await readSourceFromTauri(record);
-      if (
-        destroyed
-        || generation !== sessionResourceGeneration
-        || editorState.activePath !== record.path
-        || (!readOnly && editorState.projectRoot !== projectRoot)
-        || !editorFileFor(record.path)
-      ) {
-        clearEditorFileLoading(record.path);
-        return;
+    const token = {};
+    const work = (async () => {
+      try {
+        // The record has to be built first: the read wrapper copies the relative
+        // path, language and size back out of it onto the preview it returns.
+        countInvoke('read_source_file');
+        const preview = await readSourceFromTauri(record);
+        if (
+          destroyed
+          || generation !== sessionResourceGeneration
+          || editorState.activePath !== record.path
+          || (!readOnly && editorState.projectRoot !== projectRoot)
+          || !editorFileFor(record.path)
+        ) {
+          if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
+            clearEditorFileLoading(record.path);
+          }
+          return;
+        }
+        if (preview) {
+          setEditorFilePreview(record.path, preview, null, readOnly);
+        } else {
+          setEditorFileError(record.path, 'This file could not be read from here.');
+        }
+      } catch (error) {
+        if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
+          setEditorFileError(record.path, `Could not read this file: ${describeError(error)}`);
+        }
+      } finally {
+        if (readsInFlight.get(record.path)?.token === token) {
+          readsInFlight.delete(record.path);
+          publishSourceReadDiagnostics();
+        }
+        if (!destroyed && generation === sessionResourceGeneration) {
+          syncIntelligenceWithActiveFile();
+          if (!readOnly) void refreshEditorIntelligenceForActiveFile();
+        }
       }
-      if (preview) {
-        setEditorFilePreview(record.path, preview, null, readOnly);
-      } else {
-        setEditorFileError(record.path, 'This file could not be read from here.');
-      }
-    } catch (error) {
-      if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
-        setEditorFileError(record.path, `Could not read this file: ${describeError(error)}`);
-      }
-    } finally {
-      if (generation === sessionResourceGeneration) readsInFlight.delete(record.path);
-      syncIntelligenceWithActiveFile();
-      if (!readOnly) void refreshEditorIntelligenceForActiveFile();
-    }
+    })();
+    readsInFlight.set(record.path, { byteCount: record.byteCount, token, work });
+    publishSourceReadDiagnostics();
+    return work;
   }
 
   function updateActiveDraft(content: string): void {
@@ -1168,7 +1196,6 @@
     ownerSelectionGeneration += 1;
     inlayHintRequestCount += 1;
     languageServerGate.releaseAll();
-    readsInFlight.clear();
     closeRequest = null;
     closeDialogOpen = false;
     if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
@@ -1176,7 +1203,6 @@
     sourceIntelligence.setActivePreview(null);
     codeEditor?.releaseSessionResources();
     for (const path of paths) {
-      readsInFlight.delete(path);
       sourceIntelligence.releasePreview(path);
       releaseMarkdownView(path);
     }

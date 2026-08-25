@@ -7,6 +7,7 @@
 export const resourceDiagnostics = $state({
   loadedConversationProjections: 0,
   loadedConversationEventBytes: 0,
+  conversationSnapshotReadsInFlight: 0,
   loadedChildTranscriptBytes: 0,
   conversationRenderedRows: 0,
   conversationVirtualRows: 0,
@@ -29,6 +30,8 @@ export const resourceDiagnostics = $state({
   codeMirrorDocBytes: 0,
   codeMirrorUndoDepth: 0,
   openTabDocumentBytes: 0,
+  editorSourceReadsInFlight: 0,
+  editorSourceReadBytesInFlight: 0,
   mergeViews: 0,
   mergeDocBytes: 0,
   elementVisibilityWatchers: 0,
@@ -46,6 +49,80 @@ export const resourceDiagnostics = $state({
   rememberedReferenceCountEntries: 0
 });
 
+type ProfileMetadata = Record<string, string | number | boolean | null>;
+
+type AssemblyResourceProfiler = {
+  enable(): void;
+  disable(): void;
+  sample(label?: string): void;
+  heap(label?: string): void;
+  isEnabled(): boolean;
+};
+
+let resourceProfilingEnabled = import.meta.env.DEV;
+let resourceProfileSequence = 0;
+
+function profileLine(label: string, metadata: ProfileMetadata = {}): string {
+  return JSON.stringify({
+    sequence: ++resourceProfileSequence,
+    label,
+    ...metadata,
+    resources: resourceDiagnostics
+  });
+}
+
+/**
+ * A development-only lifecycle checkpoint. The console receives one serialized
+ * string rather than live objects, so Web Inspector cannot keep an old session
+ * projection reachable through its console history.
+ */
+export function profileResourceLifecycle(
+  label: string,
+  metadata: ProfileMetadata = {}
+): void {
+  if (!resourceProfilingEnabled) return;
+  console.info(`[Assembly profile] ${profileLine(label, metadata)}`);
+}
+
+/**
+ * WebKit performs a full GC before this snapshot. The call is inert when Web
+ * Inspector is closed, and the app stores no snapshots or sample history.
+ */
+export function takeResourceHeapSnapshot(label = 'manual'): void {
+  if (!resourceProfilingEnabled) return;
+  profileResourceLifecycle(`heap:${label}`);
+  const inspectorConsole = console as Console & {
+    takeHeapSnapshot?: (snapshotLabel?: string) => void;
+  };
+  inspectorConsole.takeHeapSnapshot?.(`Assembly ${resourceProfileSequence}: ${label}`);
+}
+
+if (typeof window !== 'undefined') {
+  const profiler: AssemblyResourceProfiler = Object.freeze({
+    enable() {
+      resourceProfilingEnabled = true;
+      profileResourceLifecycle('profiling:enabled');
+    },
+    disable() {
+      profileResourceLifecycle('profiling:disabled');
+      resourceProfilingEnabled = false;
+    },
+    sample(label = 'manual') {
+      profileResourceLifecycle(`sample:${label}`);
+    },
+    heap(label = 'manual') {
+      takeResourceHeapSnapshot(label);
+    },
+    isEnabled() {
+      return resourceProfilingEnabled;
+    }
+  });
+  Object.defineProperty(window, '__assemblyProfile', {
+    value: profiler,
+    configurable: true
+  });
+}
+
 export function setConversationProjectionDiagnostics(
   projections: number,
   eventBytes: number,
@@ -58,6 +135,11 @@ export function setConversationProjectionDiagnostics(
     0,
     Math.trunc(childTranscriptBytes)
   );
+}
+
+export function setConversationSnapshotReadsInFlight(count: number): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.conversationSnapshotReadsInFlight = Math.max(0, Math.trunc(count));
 }
 
 export function setConversationTimelineDiagnostics(
@@ -248,6 +330,12 @@ export function setCodeMirrorUndoDepth(depth: number): void {
 export function setOpenTabDocumentBytes(bytes: number): void {
   if (!import.meta.env.DEV) return;
   resourceDiagnostics.openTabDocumentBytes = Math.max(0, Math.trunc(bytes));
+}
+
+export function setEditorSourceReadDiagnostics(count: number, bytes: number): void {
+  if (!import.meta.env.DEV) return;
+  resourceDiagnostics.editorSourceReadsInFlight = Math.max(0, Math.trunc(count));
+  resourceDiagnostics.editorSourceReadBytesInFlight = Math.max(0, Math.trunc(bytes));
 }
 
 export function addMergeView(delta: 1 | -1): void {

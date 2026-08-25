@@ -5,6 +5,9 @@
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import AgentRow from '$lib/shell/panels/agents/AgentRow.svelte';
   import type { AgentActivityRow } from '$lib/shell/panels/agents/agentActivityModel.ts';
+  import SessionRail from '$lib/shell/components/SessionRail.svelte';
+  import { DEFAULT_MY_WORK_VIEW_OPTIONS } from '$lib/shell/components/myWorkViewOptions.ts';
+  import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import FileTreeRow from '$lib/shell/panels/files/FileTreeRow.svelte';
   import {
     visibleFileTreeNodes,
@@ -34,7 +37,33 @@
 
   const fixture = fixtureJson as unknown as FixtureData;
   const firstSession = fixture.sessions[0];
+  const fixtureOwnedSessions: OwnedSession[] = fixture.sessions.map((session, index) => ({
+    ownedId: session.id,
+    agent: index % 3 === 0 ? 'claude' : 'codex',
+    origin: 'app',
+    viaCmux: false,
+    source: 'fresh',
+    title: session.title,
+    model: null,
+    projectPath: '/fixtures/assembly',
+    cwd: '/fixtures/assembly',
+    resumeCommand: null,
+    nativeSessionId: null,
+    ptySessionId: null,
+    state: 'background',
+    runtimeState: 'suspended',
+    completedAt: null,
+    settledAt: null,
+    branch: index % 2 === 0 ? 'main' : `fixture-${index + 1}`,
+    taskId: null,
+    pullRequest: null,
+    messageCount: session.conversation.length,
+    latestTurnPreview: null,
+    lastActivity: null,
+    startedAtMs: Date.now() - ((index + 1) * 60 * 60 * 1000)
+  }));
   let activeSessionId = $state(firstSession.id);
+  let codeEditor = $state<{ releaseSessionResources(): void }>();
   const activeSession = $derived(
     fixture.sessions.find((session) => session.id === activeSessionId) ?? firstSession
   );
@@ -61,6 +90,12 @@
     else next.add(node.path);
     expandedPaths = next;
   }
+
+  function selectSession(sessionId: string): void {
+    if (sessionId === activeSessionId) return;
+    codeEditor?.releaseSessionResources();
+    activeSessionId = sessionId;
+  }
 </script>
 
 <svelte:head><title>Assembly development fixtures</title></svelte:head>
@@ -74,18 +109,27 @@
     <p class="fixture-note">Static JSON · {fixture.sessions.length} sessions · no application services</p>
   </header>
 
-  <nav class="session-rail" aria-label="Fixture sessions">
+  <nav class="fixture-session-picker" aria-label="Fixture sessions">
     {#each fixture.sessions as session (session.id)}
       <button
         class:active={session.id === activeSession.id}
         type="button"
         data-testid={`dev-fixture-session-row-${session.id}`}
-        onclick={() => activeSessionId = session.id}
+        onclick={() => selectSession(session.id)}
       >
         <span>{session.title}</span>
         <small>{session.subtitle}</small>
       </button>
     {/each}
+  </nav>
+
+  <nav class="session-rail" aria-label="Production session rail fixture">
+    <SessionRail
+      sessions={fixtureOwnedSessions}
+      options={DEFAULT_MY_WORK_VIEW_OPTIONS}
+      activeOwnedId={activeSession.id}
+      onSelect={selectSession}
+    />
   </nav>
 
   <p class="active-session" data-testid="dev-fixture-active-session" data-active-session-id={activeSession.id}>
@@ -171,7 +215,7 @@
       <span class="surface-tag">TypeScript</span>
     </div>
     <div class="editor-frame">
-      <CodeMirrorSourceEditor preview={activeSession.source} editable={false} />
+      <CodeMirrorSourceEditor bind:this={codeEditor} preview={activeSession.source} editable={false} />
     </div>
   </section>
 </main>
@@ -179,12 +223,13 @@
 <style>
   .fixture-page { min-height: 100vh; box-sizing: border-box; padding: 24px; background: var(--color-bg); color: var(--color-text); font-family: var(--font-sans); }
   .fixture-header { display: flex; align-items: end; justify-content: space-between; gap: 24px; max-width: 1500px; margin: 0 auto 16px; }
-  .session-rail { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; max-width: 1500px; margin: 0 auto 8px; }
-  .session-rail button { min-width: 0; border: 1px solid var(--color-border); border-radius: 7px; background: var(--color-surface); color: var(--color-text-2); padding: 7px 8px; text-align: left; }
-  .session-rail button:hover, .session-rail button.active { border-color: var(--color-accent); color: var(--color-text); background: var(--color-elevated); }
-  .session-rail span, .session-rail small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .session-rail span { font-size: 12px; font-weight: 650; }
-  .session-rail small { margin-top: 2px; color: var(--color-text-3); font-size: 11px; }
+  .fixture-session-picker { display: flex; gap: 6px; max-width: 1500px; margin: 0 auto 8px; overflow-x: auto; }
+  .fixture-session-picker button { width: 156px; min-width: 156px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--color-surface); color: var(--color-text-2); padding: 7px 8px; text-align: left; }
+  .fixture-session-picker button:hover, .fixture-session-picker button.active { border-color: var(--color-accent); color: var(--color-text); background: var(--color-elevated); }
+  .fixture-session-picker span, .fixture-session-picker small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fixture-session-picker span { font-size: 12px; font-weight: 650; }
+  .fixture-session-picker small { margin-top: 2px; color: var(--color-text-3); font-size: 11px; }
+  .session-rail { height: 280px; max-width: 420px; margin: 0 auto 8px 0; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
   .active-session { max-width: 1500px; margin: 0 auto 12px; color: var(--color-text-3); font-size: 12px; }
   .eyebrow { margin: 0 0 4px; color: var(--color-accent); font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
   h1, h2, p { margin: 0; }
@@ -205,7 +250,6 @@
   @media (max-width: 980px) {
     .fixture-page { padding: 16px; }
     .fixture-header { align-items: start; flex-direction: column; gap: 6px; }
-    .session-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .panel-grid { grid-template-columns: 1fr; }
   }
 </style>

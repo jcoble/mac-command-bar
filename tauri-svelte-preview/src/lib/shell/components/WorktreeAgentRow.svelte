@@ -39,28 +39,16 @@
   interface Props {
     session: OwnedSession;
     active?: boolean;
-    dragging?: boolean;
-    dropPosition?: 'before' | 'after' | null;
     onSelect?(): void;
     onContextMenu?(event: MouseEvent): void;
-    onDragStart?(event: DragEvent): void;
-    onDragOver?(event: DragEvent): void;
-    onDrop?(event: DragEvent): void;
-    onDragEnd?(event: DragEvent): void;
   }
 
   type RowPresence = 'working' | 'attention' | 'idle' | 'done' | 'failed';
   let {
     session,
     active = false,
-    dragging = false,
-    dropPosition = null,
     onSelect,
-    onContextMenu,
-    onDragStart,
-    onDragOver,
-    onDrop,
-    onDragEnd
+    onContextMenu
   }: Props = $props();
 
   const label = $derived(sessionLabel(session));
@@ -195,16 +183,8 @@
   data-presence={presence}
   data-shelf={shelf}
   class:active
-  class:dragging
-  class:drop-before={dropPosition === 'before'}
-  class:drop-after={dropPosition === 'after'}
   class:needs-you-row={needsYou}
   class="row group"
-  draggable="true"
-  ondragstart={onDragStart}
-  ondragover={onDragOver}
-  ondrop={onDrop}
-  ondragend={onDragEnd}
 >
         <button
           data-testid="worktree-agent-select"
@@ -557,22 +537,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  .row.dragging { opacity: 0.48; }
-  .row.drop-before::after,
-  .row.drop-after::after {
-    position: absolute;
-    right: 6px;
-    left: 6px;
-    z-index: 5;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--color-accent);
-    content: '';
-    pointer-events: none;
-  }
-  .row.drop-before::after { top: -2px; }
-  .row.drop-after::after { bottom: -2px; }
 
   /* Presence changes may fade their own small labels; pointer movement owns no
      transition or animation in a session row. */

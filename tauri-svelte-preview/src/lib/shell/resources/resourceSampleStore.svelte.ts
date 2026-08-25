@@ -1,5 +1,9 @@
-import { readResourceSample, stopResourceProcessTree } from './resourceSampleBackend.ts';
-import type { ResourceSample } from './resourceSampleTypes.ts';
+import {
+  readResourceSample,
+  readResourceTotals,
+  stopResourceProcessTree
+} from './resourceSampleBackend.ts';
+import type { ResourceSample, ResourceSampleTotals } from './resourceSampleTypes.ts';
 import { buildStopRequest, type ResourceStopTarget } from './resourceStopModel.ts';
 import { resourceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 
@@ -13,10 +17,12 @@ export type ResourceSnapshot = {
 
 export const resourceSampleState = $state<{
   snapshot: ResourceSnapshot | null;
+  totals: ResourceSampleTotals | null;
   loading: boolean;
   error: string | null;
 }>({
   snapshot: null,
+  totals: null,
   loading: false,
   error: null
 });
@@ -47,6 +53,7 @@ export function refreshResourceSample(): Promise<ResourceSnapshot | null> {
           } satisfies ResourceSnapshot)
         : null;
       resourceSampleState.snapshot = snapshot;
+      resourceSampleState.totals = native?.totals ?? null;
       return snapshot;
     })
     .catch((error: unknown) => {
@@ -59,6 +66,33 @@ export function refreshResourceSample(): Promise<ResourceSnapshot | null> {
       refreshInFlight = null;
     });
   return refreshInFlight;
+}
+
+let totalsRefreshInFlight: Promise<ResourceSampleTotals | null> | null = null;
+
+export function refreshResourceTotals(): Promise<ResourceSampleTotals | null> {
+  if (!resourceSampleState.snapshot) {
+    return refreshResourceSample().then(
+      (snapshot) => snapshot?.native.totals ?? null
+    );
+  }
+  if (totalsRefreshInFlight) return totalsRefreshInFlight;
+  totalsRefreshInFlight = readResourceTotals()
+    .then((totals) => {
+      if (totals) resourceSampleState.totals = totals;
+      return totals;
+    })
+    .catch((error: unknown) => {
+      resourceSampleState.error =
+        error instanceof Error
+          ? error.message
+          : 'Resource usage could not be read.';
+      return null;
+    })
+    .finally(() => {
+      totalsRefreshInFlight = null;
+    });
+  return totalsRefreshInFlight;
 }
 
 /**

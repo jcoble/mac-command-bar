@@ -198,10 +198,14 @@
 
   function configureCodeLens(): void {
     if (!view || !currentPath || currentPath !== preview.path) return;
+    if (!visible || !languageServerRoot || !onCodeLensAnchorLookup || !onReferenceCountLookup) {
+      clearCodeLens();
+      return;
+    }
     const generation = ++codeLensGeneration;
     const extension = codeMirrorCodeLens({
       preview: { ...preview, content: view.state.doc.toString() },
-      enabled: Boolean(visible && languageServerRoot && onCodeLensAnchorLookup && onReferenceCountLookup),
+      enabled: true,
       onAnchorLookup: onCodeLensAnchorLookup,
       onCount: onReferenceCountLookup,
       onReferences: onReferenceLookup,

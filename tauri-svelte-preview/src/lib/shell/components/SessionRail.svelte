@@ -8,14 +8,9 @@
    * from the view options, which is also how a person groups by project instead.
    */
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import { onMount } from 'svelte';
 
   import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { canonicalCwd, deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
-  import {
-    readAssemblySettingFromTauri,
-    writeAssemblySettingFromTauri
-  } from '$lib/tauriSource';
   import { buildMyWorkGroups, type MyWorkViewOptions } from './myWorkViewOptions.ts';
   import { sessionRowMenuItems, type SessionRowMenuAction } from './sessionRowMenu.ts';
   import { sessionRowJump } from './sessionRowJump';
@@ -47,59 +42,7 @@
 
   const groups = $derived(buildMyWorkGroups(sessions, options));
   let collapsedGroups = $state<Record<string, boolean>>({});
-  let groupOrders = $state<Record<string, string[]>>({});
-  let dragState = $state<{ groupKey: string; ownedId: string } | null>(null);
-  let dropTarget = $state<{
-    groupKey: string;
-    ownedId: string;
-    position: 'before' | 'after';
-  } | null>(null);
   let contextMenu = $state<{ ownedId: string; x: number; y: number } | null>(null);
-  const loadedOrderKeys = new Set<string>();
-  const groupOrderVersions = new Map<string, number>();
-  let destroyed = false;
-
-  function groupOrderSettingKey(groupKey: string): string {
-    return `rail.group-order.${groupKey}`;
-  }
-
-  function normalizeGroupOrder(value: unknown): string[] {
-    if (!Array.isArray(value)) return [];
-    return value.filter((ownedId): ownedId is string => typeof ownedId === 'string');
-  }
-
-  onMount(() => {
-    return () => {
-      destroyed = true;
-    };
-  });
-
-  $effect(() => {
-    for (const group of groups) {
-      if (loadedOrderKeys.has(group.key)) continue;
-      loadedOrderKeys.add(group.key);
-      const restoreVersion = groupOrderVersions.get(group.key) ?? 0;
-      void readAssemblySettingFromTauri(groupOrderSettingKey(group.key))
-        .then((stored) => {
-          if (!destroyed && (groupOrderVersions.get(group.key) ?? 0) === restoreVersion) {
-            groupOrders = { ...groupOrders, [group.key]: normalizeGroupOrder(stored) };
-          }
-        })
-        .catch(() => undefined);
-    }
-  });
-
-  function orderedSessions(groupKey: string, defaultSessions: OwnedSession[]): OwnedSession[] {
-    const byId = new Map(defaultSessions.map((session) => [session.ownedId, session]));
-    const savedIds = groupOrders[groupKey] ?? [];
-    const ordered = savedIds.flatMap((ownedId) => {
-      const session = byId.get(ownedId);
-      if (!session) return [];
-      byId.delete(ownedId);
-      return [session];
-    });
-    return [...ordered, ...byId.values()];
-  }
 
   function sessionNeedsYou(session: OwnedSession): boolean {
     return session.pendingPermission === true
@@ -108,77 +51,7 @@
       || session.runtimeState === 'waiting-input';
   }
 
-  function persistOrder(groupKey: string, ownedIds: string[]): void {
-    groupOrderVersions.set(groupKey, (groupOrderVersions.get(groupKey) ?? 0) + 1);
-    groupOrders = { ...groupOrders, [groupKey]: ownedIds };
-    void writeAssemblySettingFromTauri(groupOrderSettingKey(groupKey), ownedIds).catch(
-      () => undefined
-    );
-  }
-
-  function clearDrag(): void {
-    dragState = null;
-    dropTarget = null;
-  }
-
-  function handleDragStart(event: DragEvent, groupKey: string, ownedId: string): void {
-    const target = event.target;
-    if (target instanceof Element && target.closest("[data-slot='icon-button']")) {
-      event.preventDefault();
-      return;
-    }
-    if (!event.dataTransfer) return;
-    dragState = { groupKey, ownedId };
-    dropTarget = null;
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', ownedId);
-    const quietImage = new Image(1, 1);
-    quietImage.src = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
-    event.dataTransfer.setDragImage(quietImage, 0, 0);
-  }
-
-  function handleDragOver(event: DragEvent, groupKey: string, ownedId: string): void {
-    if (!dragState) return;
-    if (dragState.groupKey !== groupKey || dragState.ownedId === ownedId) {
-      if (dropTarget !== null) dropTarget = null;
-      return;
-    }
-    const row = event.currentTarget;
-    if (!(row instanceof HTMLElement)) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-    const bounds = row.getBoundingClientRect();
-    dropTarget = {
-      groupKey,
-      ownedId,
-      position: event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after'
-    };
-  }
-
-  function handleDrop(event: DragEvent, groupKey: string, ownedId: string): void {
-    const dragged = dragState;
-    if (!dragged || !dropTarget || dragged.groupKey !== groupKey || dropTarget.ownedId !== ownedId) {
-      clearDrag();
-      return;
-    }
-    event.preventDefault();
-    const group = groups.find((candidate) => candidate.key === groupKey);
-    if (!group) {
-      clearDrag();
-      return;
-    }
-    const reordered = orderedSessions(groupKey, group.sessions)
-      .map((session) => session.ownedId)
-      .filter((candidate) => candidate !== dragged.ownedId);
-    const targetIndex = reordered.indexOf(ownedId);
-    const insertAt = dropTarget.position === 'after' ? targetIndex + 1 : targetIndex;
-    reordered.splice(insertAt, 0, dragged.ownedId);
-    persistOrder(groupKey, reordered);
-    clearDrag();
-  }
-
   function handleWindowKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape' && dragState) clearDrag();
     if (event.key === 'Escape') contextMenu = null;
   }
 
@@ -267,20 +140,12 @@
 
       {#if isOpen(group.key)}
         <ul class="rows">
-          {#each orderedSessions(group.key, group.sessions) as session (session.ownedId)}
+          {#each group.sessions as session (session.ownedId)}
             <WorktreeAgentRow
               {session}
               active={session.ownedId === activeOwnedId}
-              dragging={dragState?.ownedId === session.ownedId && dragState?.groupKey === group.key}
-              dropPosition={dropTarget?.ownedId === session.ownedId && dropTarget?.groupKey === group.key
-                ? dropTarget.position
-                : null}
               onSelect={() => onSelect?.(session.ownedId)}
               onContextMenu={(event) => openContextMenu(event, session.ownedId)}
-              onDragStart={(event) => handleDragStart(event, group.key, session.ownedId)}
-              onDragOver={(event) => handleDragOver(event, group.key, session.ownedId)}
-              onDrop={(event) => handleDrop(event, group.key, session.ownedId)}
-              onDragEnd={clearDrag}
             />
           {/each}
         </ul>
