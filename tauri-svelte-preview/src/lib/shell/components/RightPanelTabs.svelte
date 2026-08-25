@@ -2,7 +2,7 @@
   /**
    * RightPanelTabs.svelte — the tab strip across the top of the right panel.
    *
-   * Eight tabs, one panel each, in a fixed order, drawn as one segmented
+   * Nine tabs, one panel each, in a fixed order, drawn as one segmented
    * control so the strip reads as a single set with one choice in it. The
    * panel is narrow, so each tab is its glyph and says its name on hover.
    * PRESENTATIONAL ONLY: no state, no IO, and no knowledge of what any panel
@@ -16,6 +16,7 @@
   import History from '@lucide/svelte/icons/history';
   import Layers from '@lucide/svelte/icons/layers';
   import Play from '@lucide/svelte/icons/play';
+  import ListTodo from '@lucide/svelte/icons/list-todo';
 
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
   import SegmentedTabs from './SegmentedTabs.svelte';
@@ -39,7 +40,8 @@
       { id: 'context', label: 'Context', icon: Activity },
       { id: 'agents', label: 'Agents', icon: Bot },
       { id: 'browser', label: 'Browser', icon: Globe2 },
-      { id: 'history', label: 'History', icon: History }
+      { id: 'history', label: 'History', icon: History },
+      { id: 'tasks', label: 'Tasks', icon: ListTodo }
     ] as const satisfies ReadonlyArray<{ id: RightTabId; label: string; icon: typeof Files }>
   ).map((tab) => ({ ...tab, testId: `right-tab-${tab.id}` }));
 </script>

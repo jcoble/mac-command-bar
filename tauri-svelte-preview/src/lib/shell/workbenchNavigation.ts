@@ -19,7 +19,7 @@ import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
 /** The four surfaces the center pane's corner tabs switch between. */
 export type CenterTabId = 'session' | 'editor' | 'diff' | 'git-history';
 
-/** The eight panels the right column's icon strip switches between. */
+/** The nine panels the right column's icon strip switches between. */
 export type RightTabId =
   | 'files'
   | 'source-control'
@@ -28,7 +28,8 @@ export type RightTabId =
   | 'context'
   | 'agents'
   | 'browser'
-  | 'history';
+  | 'history'
+  | 'tasks';
 
 export const CENTER_TAB_IDS: readonly CenterTabId[] = [
   'session',
@@ -45,7 +46,8 @@ export const RIGHT_TAB_IDS: readonly RightTabId[] = [
   'context',
   'agents',
   'browser',
-  'history'
+  'history',
+  'tasks'
 ];
 
 export interface OpenDiffRequest {

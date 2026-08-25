@@ -24,6 +24,7 @@
   import SessionContextPanel from '$lib/shell/panels/context/SessionContextPanel.svelte';
   import SourceControlPanel from '$lib/shell/panels/sourceControl/SourceControlPanel.svelte';
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
+  import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
 
   import RightPanelTabs from './RightPanelTabs.svelte';
 
@@ -112,6 +113,8 @@
       <div class="panel-body showing"><BrowserPanel visible={true} {root} {ownedId} /></div>
     {:else if activeId === 'history'}
       <div class="panel-body showing"><HistoryPanel visible={true} {root} {ownedId} /></div>
+    {:else if activeId === 'tasks'}
+      <div class="panel-body showing"><TasksPanel /></div>
     {/if}
   </div>
 </div>

@@ -37,6 +37,7 @@ mod git_pr;
 mod git_workspace;
 mod helper;
 mod lsp;
+mod notion_tasks;
 mod orchestration;
 mod product_identity;
 mod projection_streams;
@@ -6760,6 +6761,11 @@ fn main() {
             browser::capture_browser_viewport,
             browser::open_browser_tab_devtools,
             browser::open_browser_tab_external,
+            notion_tasks::read_notion_task_settings,
+            notion_tasks::save_notion_task_settings,
+            notion_tasks::clear_notion_task_settings,
+            notion_tasks::list_notion_tasks,
+            notion_tasks::refresh_notion_tasks,
             helper::run_helper_job,
             helper::set_helper_key,
             helper::read_helper_settings,
