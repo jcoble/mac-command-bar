@@ -93,7 +93,7 @@ export type TerminalBackend = {
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   close(sessionId: string): Promise<boolean>;
-  readScrollback(sessionId: string): Promise<string | null>;
+  readScrollback(sessionId: string, maxBytes?: number): Promise<string | null>;
   list(): Promise<TerminalSessionInfo[] | null>;
   listen(handler: (payload: TerminalOutputPayload) => void): Promise<(() => void) | null>;
 };
@@ -248,9 +248,9 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
       count('close_terminal_session');
       return closeTerminalSessionFromTauri(sessionId);
     },
-    readScrollback(sessionId: string): Promise<string | null> {
+    readScrollback(sessionId: string, maxBytes?: number): Promise<string | null> {
       count('read_terminal_session_scrollback');
-      return readTerminalSessionScrollbackFromTauri(sessionId);
+      return readTerminalSessionScrollbackFromTauri(sessionId, maxBytes);
     },
     list(): Promise<TerminalSessionInfo[] | null> {
       count('list_terminal_sessions');
@@ -747,7 +747,7 @@ export function createTerminalService(opts: {
         ? { cols: Math.trunc(size.cols), rows: Math.trunc(size.rows) }
         : null;
 
-    const scrollback = await backend.readScrollback(ptyId);
+    const scrollback = await backend.readScrollback(ptyId, REPLAY_TAIL_MAX_CHARS);
     // Session selection can change while that read is in flight. The PTY stays
     // tracked by `trackExisting`; only the stale frontend allocation is skipped.
     if (host.isConnected === false) return false;

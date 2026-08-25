@@ -173,7 +173,7 @@
     setConversationTimelineDiagnostics(
       renderedGroups.length,
       $virtualizer.getVirtualItems().length,
-      $virtualizer.elementsCache.size
+      $virtualizer.itemSizeCache.size
     );
   }
 
@@ -188,14 +188,18 @@
 
   let appliedRowCount = -1;
   let appliedHost: HTMLDivElement | null = null;
+  let appliedRenderWindowId = '';
   $effect(() => {
     // Guarded because setOptions publishes the store, and this effect reads it:
     // without the guard the two would drive each other in a loop.
     const count = renderedGroups.length;
     const element = host;
-    if (count === appliedRowCount && element === appliedHost) return;
+    const windowId = renderWindowId;
+    if (count === appliedRowCount && element === appliedHost && windowId === appliedRenderWindowId) return;
+    const windowChanged = windowId !== appliedRenderWindowId;
     appliedRowCount = count;
     appliedHost = element;
+    appliedRenderWindowId = windowId;
     $virtualizer.setOptions({
       count,
       getScrollElement: () => element,
@@ -203,6 +207,12 @@
       estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
       overscan: 6
     });
+    if (windowChanged) {
+      // Row keys include the session/child window. TanStack does not prune old
+      // measured sizes merely because getItemKey starts returning new keys.
+      $virtualizer.measure();
+      publishTimelineDiagnostics();
+    }
   });
   const anchoredUserIndex = $derived(anchoredUserItemId
     ? renderedItems.findIndex((item) => item.itemId === anchoredUserItemId)

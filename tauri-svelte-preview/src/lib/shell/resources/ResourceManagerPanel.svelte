@@ -208,7 +208,7 @@
         <span><strong>{frontend.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
         <span><strong>{frontend.conversationRenderedRows}</strong> rendered turn rows</span>
         <span><strong>{frontend.conversationVirtualRows}</strong> virtual turn rows</span>
-        <span><strong>{frontend.conversationMeasuredElementCacheEntries}</strong> measured-element cache entries</span>
+        <span><strong>{frontend.conversationMeasuredElementCacheEntries}</strong> measured-row cache entries</span>
         <span><strong>{frontend.sentAttachmentMapEntries}</strong> sent attachment map entries</span>
         <span><strong>{frontend.sentAttachmentCount}</strong> sent attachments</span>
         <span><strong>{frontend.tauriRootListeners}</strong> Tauri listeners</span>

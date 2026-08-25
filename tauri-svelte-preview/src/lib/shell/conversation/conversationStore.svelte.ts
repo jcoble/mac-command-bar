@@ -34,7 +34,7 @@ import {
   agentItemFromEvent,
   availableCommandsFromEvent,
   conversationEventAppendsItemContent,
-  mergeAgentItem,
+  mergeAgentItemValue,
   permissionRequestFromEvent,
   type AgentPlanStep,
   type ConversationTask
@@ -83,6 +83,7 @@ export interface ConversationRecentEvent {
 
 export const CONVERSATION_RECENT_EVENT_CAP = 200;
 const ACTIVE_EVENT_WINDOW_BYTES = 8 * 1024 * 1024;
+const ACTIVE_EVENT_WINDOW_TRIM_BYTES = 6 * 1024 * 1024;
 
 export interface ConversationWorkspaceState extends ConversationSessionState {
   draft: string;
@@ -379,11 +380,13 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   current.newestLoadedSequence = event.sequence;
   current.reachedTranscriptEnd = true;
   let trimmed = false;
-  while (current.loadedEventBytes > ACTIVE_EVENT_WINDOW_BYTES && current.loadedEvents.length > 0) {
-    const removed = current.loadedEvents.shift();
-    if (removed) {
-      current.loadedEventBytes -= serializedEventBytes(removed);
-      trimmed = true;
+  if (current.loadedEventBytes > ACTIVE_EVENT_WINDOW_BYTES) {
+    while (current.loadedEventBytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && current.loadedEvents.length > 0) {
+      const removed = current.loadedEvents.shift();
+      if (removed) {
+        current.loadedEventBytes -= serializedEventBytes(removed);
+        trimmed = true;
+      }
     }
   }
   current.oldestLoadedSequence = current.loadedEvents[0]?.sequence ?? event.sequence;
@@ -660,7 +663,7 @@ function mergeAgentItemInPlace(current: ConversationWorkspaceState, incoming: Ag
     return true;
   }
   const existing = current.agentItems[itemIndex];
-  const merged = mergeAgentItem([existing], incoming, append)[0];
+  const merged = mergeAgentItemValue(existing, incoming, append);
   if (merged === existing) return false;
   existing.type = merged.type;
   existing.turnId = merged.turnId;

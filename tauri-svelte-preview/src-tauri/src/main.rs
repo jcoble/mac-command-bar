@@ -2179,8 +2179,9 @@ async fn list_terminal_sessions(
 async fn read_terminal_session_scrollback(
     terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
     session_id: String,
+    max_bytes: Option<usize>,
 ) -> Result<Option<String>, String> {
-    terminal::read_terminal_session_scrollback(&terminal_registry, &session_id)
+    terminal::read_terminal_session_scrollback(&terminal_registry, &session_id, max_bytes)
 }
 
 #[tauri::command]

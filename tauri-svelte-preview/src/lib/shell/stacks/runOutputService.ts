@@ -81,9 +81,9 @@ export async function watchRunOutput(
 
   for (const [terminalId, ownedId] of ownedByTerminal) {
     countInvoke('read_terminal_session_scrollback');
-    const scrollback = await readTerminalSessionScrollbackFromTauri(terminalId);
+    const scrollback = await readTerminalSessionScrollbackFromTauri(terminalId, SEED_MAX_CHARS);
     if (stopped) return watch;
-    const seed = appendOutputTail([], (scrollback ?? '').slice(-SEED_MAX_CHARS));
+    const seed = appendOutputTail([], scrollback ?? '');
     tails.set(ownedId, seed);
     onTail(ownedId, seed);
   }

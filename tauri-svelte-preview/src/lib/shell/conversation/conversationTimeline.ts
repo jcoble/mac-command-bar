@@ -1228,14 +1228,14 @@ export function mergeAgentItem(items: readonly AgentItem[], incoming: AgentItem,
   const index = items.findIndex((item) => item.id === incoming.id);
   if (index < 0) return [...items, incoming];
   const existing = items[index];
-  const merged = mergedAgentItem(existing, incoming, append);
+  const merged = mergeAgentItemValue(existing, incoming, append);
   if (mergeLeftItemUnchanged(existing, merged)) return items as AgentItem[];
   const next = items.slice();
   next[index] = merged;
   return next;
 }
 
-function mergedAgentItem(existing: AgentItem, incoming: AgentItem, append: boolean): AgentItem {
+export function mergeAgentItemValue(existing: AgentItem, incoming: AgentItem, append: boolean): AgentItem {
   const replay = incoming.providerMetadata?.replay === true;
   let content = incoming.content.length ? incoming.content : existing.content;
   if (append && existing.content.length && incoming.content.length
@@ -1291,7 +1291,7 @@ export function mergeAgentItemForReplay(
     items.push(incoming);
     return;
   }
-  items[index] = mergedAgentItem(items[index], incoming, append);
+  items[index] = mergeAgentItemValue(items[index], incoming, append);
 }
 
 export function agentItemsFromEvents(events: readonly ConversationEvent[]): AgentItem[] {

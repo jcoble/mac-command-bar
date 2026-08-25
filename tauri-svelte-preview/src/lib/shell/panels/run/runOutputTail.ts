@@ -17,6 +17,8 @@
 
 /** How many lines of a run's output the panel keeps. */
 export const RUN_OUTPUT_TAIL_LINES = 200;
+/** A progress renderer may rewrite one line forever, so bytes need a ceiling too. */
+export const RUN_OUTPUT_TAIL_CHARS = 64 * 1024;
 
 /**
  * Escape sequences a terminal program emits. The pattern is built from strings
@@ -31,7 +33,7 @@ const ESCAPE_SEQUENCES = new RegExp(
   'g'
 );
 
-/** Appends a chunk to a tail, keeping at most `RUN_OUTPUT_TAIL_LINES` lines. */
+/** Appends a chunk to a tail, keeping only the bounded visible suffix. */
 export function appendOutputTail(tail: readonly string[], chunk: string): string[] {
   const text = String(chunk ?? '')
     .replace(ESCAPE_SEQUENCES, '')
@@ -40,5 +42,9 @@ export function appendOutputTail(tail: readonly string[], chunk: string): string
   const parts = text.split('\n');
   lines[lines.length - 1] += parts[0];
   for (let index = 1; index < parts.length; index += 1) lines.push(parts[index]);
-  return lines.length > RUN_OUTPUT_TAIL_LINES ? lines.slice(-RUN_OUTPUT_TAIL_LINES) : lines;
+  const lineBounded = lines.length > RUN_OUTPUT_TAIL_LINES ? lines.slice(-RUN_OUTPUT_TAIL_LINES) : lines;
+  const joined = lineBounded.join('\n');
+  return joined.length > RUN_OUTPUT_TAIL_CHARS
+    ? joined.slice(-RUN_OUTPUT_TAIL_CHARS).split('\n')
+    : lineBounded;
 }

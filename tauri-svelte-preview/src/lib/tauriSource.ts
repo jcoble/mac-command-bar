@@ -892,14 +892,15 @@ export async function runHelperJobFromTauri(
 }
 
 export async function readTerminalSessionScrollbackFromTauri(
-  sessionId: string
+  sessionId: string,
+  maxBytes?: number
 ): Promise<string | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<string | null>('read_terminal_session_scrollback', { sessionId });
+  return invoke<string | null>('read_terminal_session_scrollback', { sessionId, maxBytes });
 }
 
 export async function writeTerminalSessionFromTauri(

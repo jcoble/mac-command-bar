@@ -63,14 +63,14 @@ export function setConversationProjectionDiagnostics(
 export function setConversationTimelineDiagnostics(
   renderedRows: number,
   virtualRows: number,
-  measuredElementCacheEntries: number
+  measuredRowCacheEntries: number
 ): void {
   if (!import.meta.env.DEV) return;
   resourceDiagnostics.conversationRenderedRows = Math.max(0, Math.trunc(renderedRows));
   resourceDiagnostics.conversationVirtualRows = Math.max(0, Math.trunc(virtualRows));
   resourceDiagnostics.conversationMeasuredElementCacheEntries = Math.max(
     0,
-    Math.trunc(measuredElementCacheEntries)
+    Math.trunc(measuredRowCacheEntries)
   );
 }
 

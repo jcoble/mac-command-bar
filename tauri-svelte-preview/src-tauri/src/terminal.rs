@@ -244,6 +244,7 @@ pub fn list_terminal_sessions(
 pub fn read_terminal_session_scrollback(
     registry: &TerminalRegistry,
     session_id: &str,
+    max_bytes: Option<usize>,
 ) -> Result<Option<String>, String> {
     let Some(session_id) = normalize_terminal_session_id(session_id) else {
         return Ok(None);
@@ -261,7 +262,17 @@ pub fn read_terminal_session_scrollback(
     let scrollback = scrollback
         .lock()
         .map_err(|_| "Terminal scrollback is unavailable".to_string())?;
-    Ok(Some(scrollback.clone()))
+    let start = max_bytes
+        .filter(|max_bytes| scrollback.len() > *max_bytes)
+        .map(|max_bytes| {
+            let mut start = scrollback.len().saturating_sub(max_bytes);
+            while start < scrollback.len() && !scrollback.is_char_boundary(start) {
+                start += 1;
+            }
+            start
+        })
+        .unwrap_or(0);
+    Ok(Some(scrollback[start..].to_owned()))
 }
 
 pub fn write_terminal_session(
@@ -753,7 +764,7 @@ mod tests {
         let registry = TerminalRegistry::default();
 
         assert_eq!(
-            read_terminal_session_scrollback(&registry, "missing-terminal").unwrap(),
+            read_terminal_session_scrollback(&registry, "missing-terminal", None).unwrap(),
             None
         );
         assert!(!write_terminal_session(&registry, "missing-terminal", "echo nope\n").unwrap());
@@ -763,7 +774,7 @@ mod tests {
         assert!(!close_terminal_session(&registry, "missing-terminal").unwrap());
 
         assert_eq!(
-            read_terminal_session_scrollback(&registry, "   ").unwrap(),
+            read_terminal_session_scrollback(&registry, "   ", None).unwrap(),
             None
         );
         assert!(!write_terminal_session(&registry, "   ", "echo nope\n").unwrap());
@@ -844,7 +855,8 @@ mod tests {
 
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let scrollback = read_terminal_session_scrollback(&registry, &copied_session_id)
+                let scrollback =
+                    read_terminal_session_scrollback(&registry, &copied_session_id, None)
                     .expect("terminal scrollback should read")
                     .unwrap_or_default();
                 if scrollback.contains("mcb-terminal-ready") {
