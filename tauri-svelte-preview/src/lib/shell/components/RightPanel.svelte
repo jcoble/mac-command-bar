@@ -4,9 +4,10 @@
    *
    * Two rows: the icon tab strip along the top and one panel body filling the
    * rest. The Resources/Usage strip now runs the full width of the window as
-   * the shell's status bar, so it no longer lives here. Exactly one panel is
-   * mounted at a time; panel stores keep durable state while component-owned
-   * observers and DOM leave WebKit as soon as the tab is closed.
+   * the shell's status bar, so it no longer lives here. Files keeps one bounded
+   * panel instance for the active session because repeatedly reconstructing the
+   * virtual tree makes WebKit retain allocator pages. Every other panel mounts
+   * only while it is visible.
    *
    * No backend IO and no state of its own beyond the layout. Which tab is open
    * is decided by the page (it is remembered per session) and handed in; every
@@ -69,20 +70,19 @@
   <RightPanelTabs {activeId} {onSelect} />
 
   <div class="panel-bodies">
-    {#if activeId === 'files'}
-      <div class="panel-body showing">
-        <FilesPanel
-          visible={true}
-          {root}
-          {ownedId}
-          {onRootUnavailable}
-          {expandedPathsByRoot}
-          {onExpandedPathsChange}
-          inspectionRoot={filesInspectionRoot}
-          onInspectionRootChange={onFilesInspectionRootChange}
-        />
-      </div>
-    {:else if activeId === 'source-control'}
+    <div class="panel-body" class:showing={activeId === 'files'} aria-hidden={activeId !== 'files'}>
+      <FilesPanel
+        visible={activeId === 'files'}
+        {root}
+        {ownedId}
+        {onRootUnavailable}
+        {expandedPathsByRoot}
+        {onExpandedPathsChange}
+        inspectionRoot={filesInspectionRoot}
+        onInspectionRootChange={onFilesInspectionRootChange}
+      />
+    </div>
+    {#if activeId === 'source-control'}
       <div class="panel-body showing">
         <SourceControlPanel
           visible={true}
