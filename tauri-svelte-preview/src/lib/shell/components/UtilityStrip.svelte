@@ -49,10 +49,9 @@
   const summary = $derived.by(() => {
     const snapshot = resourceSampleState.snapshot;
     if (snapshot) {
-      const processes = snapshot.native.totals.processCount === 1 ? 'process' : 'processes';
-      return `${formatResourceBytes(snapshot.native.totals.physicalFootprintBytes)} Σ · ${formatResourceCpu(
-        snapshot.native.totals.cpuPercent
-      )} CPU · ${snapshot.native.totals.processCount} ${processes}`;
+      return `${formatResourceCpu(snapshot.native.totals.cpuPercent)} · ${formatResourceBytes(
+        snapshot.native.totals.physicalFootprintBytes
+      )} Σ Physical footprint · RSS ${formatResourceBytes(snapshot.native.totals.rssBytes)}`;
     }
     if (resourceSampleState.loading) return 'Reading process usage…';
     return resourceSampleState.error ?? 'Process usage is not available';
