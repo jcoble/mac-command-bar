@@ -100,6 +100,13 @@ class PeekWidget extends WidgetType {
   ignoreEvent(): boolean { return false; }
 }
 
+const codeLensBaseTheme = EditorView.baseTheme({
+  '.cm-code-lens': { border: '0', background: 'transparent', color: '#8aa9d6', cursor: 'pointer', padding: '0 8px 0 4px', fontSize: '11px' },
+  '.cm-code-lens.loading': { color: '#8b909b', cursor: 'progress' },
+  '.cm-code-lens-peek': { display: 'inline-grid', gap: '4px', padding: '8px 12px', borderBlock: '1px solid #343944', background: '#111318', fontSize: '12px' },
+  '.cm-code-lens-peek button': { border: '0', background: 'transparent', color: '#c9d5e8', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }
+});
+
 export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extension {
   const generation = Symbol(options.preview.path);
 
@@ -237,11 +244,6 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         if (refresh) this.view.dispatch({});
       }
     }, { decorations: (plugin) => plugin.decorations }),
-    EditorView.baseTheme({
-      '.cm-code-lens': { border: '0', background: 'transparent', color: '#8aa9d6', cursor: 'pointer', padding: '0 8px 0 4px', fontSize: '11px' },
-      '.cm-code-lens.loading': { color: '#8b909b', cursor: 'progress' },
-      '.cm-code-lens-peek': { display: 'inline-grid', gap: '4px', padding: '8px 12px', borderBlock: '1px solid #343944', background: '#111318', fontSize: '12px' },
-      '.cm-code-lens-peek button': { border: '0', background: 'transparent', color: '#c9d5e8', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }
-    })
+    codeLensBaseTheme
   ];
 }
