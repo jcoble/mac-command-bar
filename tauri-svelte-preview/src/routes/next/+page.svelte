@@ -86,6 +86,7 @@
 		resetEditorState,
 		restoreEditorFiles,
 	} from "$lib/shell/editor/editorStore.svelte";
+	import { bump, bumpBail, memprobe, memprobeSnapshot } from "$lib/shell/memprobe";
 	import {
 		configureExtensionApiProbeRuntime,
 		disposeExtensionApiProbeResources,
@@ -1447,6 +1448,12 @@
 
 	async function selectOwnedCurrent(ownedId: string, propagateStructuredFailure: boolean, selectionGeneration: number): Promise<void> {
 		const selectionIsCurrent = (): boolean => !disposed && !clearAllEditorsInFlight && selectionGeneration === sessionSelectionGeneration;
+		const bailAt = (label: string): boolean => {
+			if (selectionIsCurrent()) return false;
+			bumpBail(label);
+			return true;
+		};
+		bump("selectEntries");
 		// A draft is discarded the moment another session takes the Session tab.
 		// It never existed anywhere but this flag, so there is nothing to clean up.
 		draftOpen = false;
@@ -1468,7 +1475,7 @@
 			if (root) {
 				countInvoke("validate_project_root");
 				const validation = await validateProjectRootFromTauri(root);
-				if (!selectionIsCurrent()) return;
+				if (bailAt("after-validate-root")) return;
 				selectedRootAvailable = validation === null || (validation.exists && validation.isDirectory);
 			}
 		}
@@ -1488,27 +1495,27 @@
 			try {
 				await flushConversationSessionDraft(previous);
 			} catch (error) {
-				if (!selectionIsCurrent()) return;
+				if (bailAt("after-flush-draft-error")) return;
 				rail.error = `conversation draft checkpoint failed: ${describeError(error)}`;
 				workspaceAutosaveEnabled = true;
 				return;
 			}
-			if (!selectionIsCurrent()) return;
+			if (bailAt("after-flush-draft")) return;
 			workspaceCaptured = shellPanels.loadsAllowed();
 			if (workspaceCaptured && !(await snapshotWorkspace(previous))) {
-				if (!selectionIsCurrent()) return;
+				if (bailAt("after-snapshot-failed")) return;
 				workspaceAutosaveEnabled = true;
 				return;
 			}
-			if (!selectionIsCurrent()) return;
+			if (bailAt("after-snapshot")) return;
 			if (workspaceCaptured) releaseBrowserWorkspace();
 		}
-		if (!selectionIsCurrent()) return;
+		if (bailAt("after-workspace-release")) return;
 		if (switching && previous !== null) {
 			stopConversationTerminalProjection(previous);
 			service?.releaseView(previous);
 			await disposeExtensionApiProbeResources();
-			if (!selectionIsCurrent()) return;
+			if (bailAt("after-release")) return;
 			gitService.releaseHistorySurface();
 			gitCommitFilesService.release();
 			gitService.clearSelection();
@@ -1522,9 +1529,9 @@
 		const selectedRoot = selected ? selected.cwd.trim() || (selected.projectPath ?? "").trim() : "";
 		if (switching && selected && selectedRoot && selectedRootAvailable) {
 			await setExtensionApiProbeWorkspace({ ownedId: selected.ownedId, root: selectedRoot });
-			if (!selectionIsCurrent()) return;
+			if (bailAt("after-probe-workspace")) return;
 		}
-		if (!selectionIsCurrent()) return;
+		if (bailAt("after-probe-workspace-gate")) return;
 		const provider = conversationProviderFor(ownedId);
 		if (selected && provider) ensureConversationSession(ownedId, provider);
 		// Hand the persistent conversation surface directly from the old compact
@@ -1561,7 +1568,7 @@
 						loadConversationForRead(ownedId),
 						loadConversationSessionDraft(ownedId),
 					]).then(() => undefined).catch((error) => {
-						if (!selectionIsCurrent()) return;
+						if (bailAt("after-hydration-error")) return;
 						const message = describeError(error);
 						updateOwnedSession(ownedId, { lastError: message });
 						if (propagateStructuredFailure) throw error;
@@ -1571,7 +1578,7 @@
 		}
 		if (!activeRootAvailable && !activeRootRemote) {
 			await handleActiveRootUnavailable(selectedRoot, true);
-			if (!selectionIsCurrent()) return;
+			if (bailAt("after-root-unavailable")) return;
 		}
 		// Clicking the session you are already on changes nothing. Putting the
 		// stored record back here would throw away every file opened since the last
@@ -1585,7 +1592,7 @@
 				editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
 			}
 			await restoreWorkspace(ownedId);
-			if (!selectionIsCurrent()) return;
+			if (bailAt("after-restore")) return;
 			profileResourceLifecycle("session-switch:workspace-restored", {
 				from: previous,
 				to: ownedId,
@@ -1603,17 +1610,17 @@
 		if (activeRootAvailable) shellPanels.sessionPicked(true);
 		if (switching && selectedRootAvailable && selected?.ptySessionId && service) {
 			const host = await hostFor(ownedId);
-			if (!selectionIsCurrent()) return;
+			if (bailAt("after-host")) return;
 			if (!host) {
 				rail.error = `no terminal host for "${selected.title}"`;
 			} else {
 				const size = livePtySizes.get(selected.ptySessionId) ?? null;
 				try {
 					await service.adoptExisting(selected, host, size);
-					if (!selectionIsCurrent()) return;
+					if (bailAt("after-adopt")) return;
 					service.show(ownedId);
 				} catch (error) {
-					if (!selectionIsCurrent()) return;
+					if (bailAt("after-adopt-error")) return;
 					rail.error = `re-attach failed for "${selected.title}": ${describeError(error)}`;
 				}
 			}
@@ -1625,7 +1632,7 @@
 		}
 		if (structuredHydration) {
 			await structuredHydration;
-			if (!selectionIsCurrent()) return;
+			if (bailAt("after-hydration")) return;
 		}
 		if (switching) {
 			profileResourceLifecycle("session-switch:settled", {
@@ -2149,6 +2156,12 @@
 		void removeSession(ownedId);
 	}
 
+	// DEV-only reproduction driver for fast session switching, callable from
+	// Safari Web Inspector as `window.__fastSwitch(gapMs, count)`.
+	type FastSwitchWindow = Window & {
+		__fastSwitch?: (gapMs: number, count: number) => Promise<Record<string, unknown>>;
+	};
+
 	onMount(() => {
 		const disposers: Array<() => void> = [
 			releaseShellCommands,
@@ -2215,6 +2228,36 @@
 			extensionApiProbeObservation = observation;
 		});
 		disposers.push(stopExtensionApiProbeObservations);
+		if (import.meta.env.DEV) {
+			(window as FastSwitchWindow).__fastSwitch = async (gapMs: number, count: number) => {
+				const before = memprobeSnapshot();
+				const ids = rail.owned.map((session) => session.ownedId);
+				const activeIndex = ids.indexOf(rail.activeOwnedId ?? "");
+				const used = new Set<string>();
+				for (let i = 0; i < count; i++) {
+					const id = ids[(activeIndex + 1 + i) % ids.length];
+					used.add(id);
+					// Not awaited: selectOwned resolves only when the switch settles,
+					// and the point is to click again before that.
+					void selectOwned(id);
+					await new Promise((resolve) => setTimeout(resolve, gapMs));
+				}
+				await new Promise((resolve) => setTimeout(resolve, 60_000));
+				const result = {
+					before,
+					after: memprobeSnapshot(),
+					sizes: memprobe.sizes(),
+					gapMs,
+					count,
+					sessionsUsed: used.size,
+				};
+				console.log("[fastSwitch]", JSON.stringify(result));
+				return result;
+			};
+			disposers.push(() => {
+				delete (window as FastSwitchWindow).__fastSwitch;
+			});
+		}
 		void startConversationEvents();
 		// Honour where the reader last put the Problems list. The frame and the
 		// tool column both mount before this runs, so both have handed over their

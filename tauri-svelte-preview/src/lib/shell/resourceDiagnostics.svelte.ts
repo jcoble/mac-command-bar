@@ -1,3 +1,5 @@
+import { bump } from './memprobe.ts';
+
 /**
  * Current development-only resource counts.
  *
@@ -285,6 +287,7 @@ export function createTrackedObjectUrl(
   if (import.meta.env.DEV) {
     trackedObjectUrls.set(url, owner);
     publishObjectUrlDiagnostics();
+    bump('blobUrlsCreated');
   }
   return url;
 }
@@ -294,6 +297,7 @@ export function revokeTrackedObjectUrl(url: string): void {
   if (!import.meta.env.DEV) return;
   trackedObjectUrls.delete(url);
   publishObjectUrlDiagnostics();
+  bump('blobUrlsRevoked');
 }
 
 const trackedAnimationFrames = new Set<number>();

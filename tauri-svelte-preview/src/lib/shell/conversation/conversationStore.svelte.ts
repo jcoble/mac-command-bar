@@ -5,6 +5,7 @@
  * feeds normalized events into `applyAgentConversationEvent`.
  */
 import { applyConversationEvent, createConversationState, usageDropIsCompaction } from './conversationReducer.ts';
+import { bump } from '../memprobe.ts';
 import type {
   AgentApprovalRequest,
   AgentCapabilities,
@@ -307,6 +308,7 @@ export function ensureConversationSession(
   if (current?.provider === provider) return current;
   const created = freshState(ownedId, provider);
   conversationSessions[ownedId] = created;
+  bump('conversationCreates');
   publishConversationProjectionDiagnostics();
   return created;
 }
@@ -1756,6 +1758,7 @@ export function evictConversationSession(ownedId: string): void {
   agentItemIndexBySession.delete(current);
   activeReasoningBySession.delete(current);
   delete conversationSessions[ownedId];
+  bump('conversationEvicts');
   publishConversationProjectionDiagnostics();
 }
 

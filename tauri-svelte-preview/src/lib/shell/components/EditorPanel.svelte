@@ -63,6 +63,7 @@
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { setEditorSourceReadDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
+  import { bump } from '$lib/shell/memprobe';
   import {
     activateEditor,
     activeEditorFile,
@@ -1234,6 +1235,7 @@
     );
     restoredViewStates = {};
     resetEditorState();
+    bump('editorReleases');
   }
 
   function retryRead(path: string): void {

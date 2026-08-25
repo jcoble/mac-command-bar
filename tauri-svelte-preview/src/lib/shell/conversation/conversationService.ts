@@ -29,6 +29,7 @@ import {
   prependOlderConversationEvents,
   appendNewerConversationEvents
 } from './conversationStore.svelte.ts';
+import { bump } from '../memprobe.ts';
 import type {
   AgentCapabilities,
   AgentConversationConnection,
@@ -598,13 +599,17 @@ export async function loadConversationForRead(
   readVersions.set(ownedId, readVersion);
   const token = {};
   const work = (async () => {
+    bump('hydrationsStarted');
     const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
     const current = getConversationSession(ownedId);
     if (
       !snapshot
       || readVersions.get(ownedId) !== readVersion
       || current?.generation !== generation
-    ) return;
+    ) {
+      bump('hydrationsLandedStale');
+      return;
+    }
     applyAgentConversationSnapshot(snapshot);
     if (includeAttachments) {
       void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
