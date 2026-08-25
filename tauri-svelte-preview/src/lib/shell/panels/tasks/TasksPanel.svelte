@@ -26,9 +26,12 @@
 
   let settings = $state<NotionTaskSettings | null>(null);
   let tasks = $state<NotionTaskRow[]>([]);
-  let query = $state('');
-  let statusFilter = $state('all');
-  let projectFilter = $state('all');
+  let projects = $state<string[]>([]);
+  let statuses = $state<string[]>([]);
+  let searchDraft = $state('');
+  let search = $state('');
+  let statusFilter = $state('');
+  let projectFilter = $state('');
   let loading = $state(true);
   let refreshing = $state(false);
   let saving = $state(false);
@@ -38,27 +41,42 @@
   let dataSourceId = $state('');
   let token = $state('');
   let generation = 0;
-
-  const statuses = $derived([...new Set(tasks.map((task) => task.status))].sort());
-  const projects = $derived([...new Set(tasks.map((task) => task.project))].sort());
-  const visibleTasks = $derived.by(() => {
-    const needle = query.trim().toLocaleLowerCase();
-    return tasks.filter((task) => {
-      if (statusFilter !== 'all' && task.status !== statusFilter) return false;
-      if (projectFilter !== 'all' && task.project !== projectFilter) return false;
-      if (!needle) return true;
-      return [task.title, task.project, task.status, task.priority, task.assignee]
-        .filter(Boolean)
-        .some((value) => value!.toLocaleLowerCase().includes(needle));
-    });
-  });
+  let readGeneration = 0;
 
   async function loadCached(owner: number, append = false): Promise<void> {
+    const readOwner = append ? readGeneration : ++readGeneration;
     const offset = append ? tasks.length : 0;
-    const rows = await listNotionTasks(offset, PAGE_SIZE);
-    if (owner !== generation) return;
-    tasks = append ? [...tasks, ...rows] : rows;
-    hasMore = rows.length === PAGE_SIZE;
+    const page = await listNotionTasks(
+      offset,
+      PAGE_SIZE,
+      search,
+      projectFilter,
+      statusFilter
+    );
+    if (owner !== generation || readOwner !== readGeneration) return;
+    tasks = append ? [...tasks, ...page.tasks] : page.tasks;
+    projects = page.projects;
+    statuses = page.statuses;
+    hasMore = page.hasMore;
+  }
+
+  async function reloadCached(): Promise<void> {
+    const owner = generation;
+    loading = true;
+    error = '';
+    try {
+      await loadCached(owner);
+    } catch (cause) {
+      if (owner === generation) error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      if (owner === generation) loading = false;
+    }
+  }
+
+  function applySearch(event: SubmitEvent): void {
+    event.preventDefault();
+    search = searchDraft.trim();
+    void reloadCached();
   }
 
   async function refresh(owner = generation): Promise<void> {
@@ -143,12 +161,16 @@
   });
   onDestroy(() => {
     generation += 1;
+    readGeneration += 1;
     tasks = [];
+    projects = [];
+    statuses = [];
+    token = '';
   });
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-  <PanelHeader title="Tasks" count={visibleTasks.length}>
+  <PanelHeader title="Tasks" count={tasks.length}>
     {#snippet actions()}
       <IconButton label="Task settings" onclick={() => (showSetup = !showSetup)}><Settings2 /></IconButton>
       <IconButton label="Refresh tasks" disabled={refreshing || showSetup} onclick={() => void refresh()}>
@@ -182,20 +204,23 @@
     <p class="mx-3 mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
   {/if}
 
-  {#if tasks.length > 0}
-    <div class="grid gap-2 px-3 pb-3">
-      <Input bind:value={query} placeholder="Search tasks" aria-label="Search tasks" />
+  {#if projects.length > 0 || statuses.length > 0 || searchDraft || projectFilter || statusFilter}
+    <form class="grid gap-2 px-3 pb-3" onsubmit={applySearch}>
+      <div class="flex gap-2">
+        <Input bind:value={searchDraft} placeholder="Search tasks" aria-label="Search tasks" />
+        <Button type="submit" variant="ghost" disabled={loading}>Search</Button>
+      </div>
       <div class="grid grid-cols-2 gap-2">
-        <select bind:value={projectFilter} aria-label="Filter by project" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground">
-          <option value="all">All projects</option>
+        <select bind:value={projectFilter} onchange={() => void reloadCached()} aria-label="Filter by project" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground">
+          <option value="">All projects</option>
           {#each projects as project}<option value={project}>{project}</option>{/each}
         </select>
-        <select bind:value={statusFilter} aria-label="Filter by status" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground">
-          <option value="all">All statuses</option>
+        <select bind:value={statusFilter} onchange={() => void reloadCached()} aria-label="Filter by status" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground">
+          <option value="">All statuses</option>
           {#each statuses as status}<option value={status}>{status}</option>{/each}
         </select>
       </div>
-    </div>
+    </form>
   {/if}
 
   <ScrollArea class="min-h-0 flex-1">
@@ -203,16 +228,22 @@
       <EmptyState title="Loading tasks…" body="Reading the last successful local snapshot." />
     {:else if tasks.length === 0}
       <EmptyState
-        title={showSetup ? 'Connect Notion to see tasks' : 'No tasks in the snapshot'}
-        body={showSetup ? 'Configuration stays local to this Mac.' : 'Refresh to ask Notion for the latest read-only task list.'}
+        title={showSetup
+          ? 'Connect Notion to see tasks'
+          : search || projectFilter || statusFilter
+            ? 'No matching tasks'
+            : 'No tasks in the snapshot'}
+        body={showSetup
+          ? 'Configuration stays local to this Mac.'
+          : search || projectFilter || statusFilter
+            ? 'Try a different search or filter.'
+            : 'Refresh to ask Notion for the latest read-only task list.'}
       >
         {#snippet icon()}<ListTodo />{/snippet}
       </EmptyState>
-    {:else if visibleTasks.length === 0}
-      <EmptyState title="No matching tasks" body="Try a different search or filter." />
     {:else}
       <div class="grid gap-px px-2 pb-3">
-        {#each visibleTasks as task (task.sourceTaskId)}
+        {#each tasks as task (task.sourceTaskId)}
           <article class="group grid gap-1 rounded-md px-2 py-2 hover:bg-accent/60">
             <div class="flex min-w-0 items-start gap-2">
               <div class="min-w-0 flex-1">

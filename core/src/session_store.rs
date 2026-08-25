@@ -361,6 +361,14 @@ pub struct NotionTaskProjection {
     pub fetched_at_ms: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotionTaskProjectionPage {
+    pub tasks: Vec<NotionTaskProjection>,
+    pub projects: Vec<String>,
+    pub statuses: Vec<String>,
+    pub has_more: bool,
+}
+
 impl SessionStore {
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)
@@ -1390,45 +1398,119 @@ impl SessionStore {
         })
     }
 
-    pub fn list_notion_task_projections(
+    pub fn query_notion_task_projections(
         &self,
         offset: u32,
         limit: u32,
-    ) -> Result<Vec<NotionTaskProjection>> {
+        search: &str,
+        project: &str,
+        status: &str,
+    ) -> Result<NotionTaskProjectionPage> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT source_task_id, title, project, status, priority, assignee, due_date,
                         source_url, fetched_at_ms
                  FROM notion_task_projections
+                 WHERE (?1 = '' OR
+                        instr(lower(title), lower(?1)) > 0 OR
+                        instr(lower(project), lower(?1)) > 0 OR
+                        instr(lower(status), lower(?1)) > 0 OR
+                        instr(lower(COALESCE(priority, '')), lower(?1)) > 0 OR
+                        instr(lower(COALESCE(assignee, '')), lower(?1)) > 0)
+                   AND (?2 = '' OR project = ?2)
+                   AND (?3 = '' OR status = ?3)
                  ORDER BY project COLLATE NOCASE ASC,
                           status COLLATE NOCASE ASC,
                           due_date IS NULL ASC,
                           due_date ASC,
                           title COLLATE NOCASE ASC,
                           source_task_id ASC
-                 LIMIT ?1 OFFSET ?2",
+                 LIMIT ?4 OFFSET ?5",
             )
             .map_err(|error| {
                 StoreError::sqlite("could not prepare the Notion task projection page", error)
             })?;
+        let lookahead_limit = limit.saturating_add(1);
         let rows = statement
-            .query_map(params![i64::from(limit), i64::from(offset)], |row| {
-                Ok(NotionTaskProjection {
-                    source_task_id: row.get(0)?,
-                    title: row.get(1)?,
-                    project: row.get(2)?,
-                    status: row.get(3)?,
-                    priority: row.get(4)?,
-                    assignee: row.get(5)?,
-                    due_date: row.get(6)?,
-                    source_url: row.get(7)?,
-                    fetched_at_ms: row.get(8)?,
-                })
-            })
+            .query_map(
+                params![
+                    search.trim(),
+                    project.trim(),
+                    status.trim(),
+                    i64::from(lookahead_limit),
+                    i64::from(offset)
+                ],
+                |row| {
+                    Ok(NotionTaskProjection {
+                        source_task_id: row.get(0)?,
+                        title: row.get(1)?,
+                        project: row.get(2)?,
+                        status: row.get(3)?,
+                        priority: row.get(4)?,
+                        assignee: row.get(5)?,
+                        due_date: row.get(6)?,
+                        source_url: row.get(7)?,
+                        fetched_at_ms: row.get(8)?,
+                    })
+                },
+            )
             .map_err(|error| StoreError::sqlite("could not list Notion task projections", error))?;
-        rows.collect::<rusqlite::Result<_>>().map_err(|error| {
-            StoreError::sqlite("could not read the Notion task projection page", error)
+        let mut tasks = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| {
+                StoreError::sqlite("could not read the Notion task projection page", error)
+            })?;
+        let has_more = tasks.len() > limit as usize;
+        if has_more {
+            tasks.pop();
+        }
+
+        let mut project_statement = connection
+            .prepare(
+                "SELECT DISTINCT project
+                 FROM notion_task_projections
+                 WHERE project <> ''
+                 ORDER BY project COLLATE NOCASE ASC",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not prepare Notion task project filters", error)
+            })?;
+        let projects = project_statement
+            .query_map([], |row| row.get(0))
+            .map_err(|error| {
+                StoreError::sqlite("could not list Notion task project filters", error)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| {
+                StoreError::sqlite("could not read Notion task project filters", error)
+            })?;
+
+        let mut status_statement = connection
+            .prepare(
+                "SELECT DISTINCT status
+                 FROM notion_task_projections
+                 WHERE status <> ''
+                 ORDER BY status COLLATE NOCASE ASC",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not prepare Notion task status filters", error)
+            })?;
+        let statuses = status_statement
+            .query_map([], |row| row.get(0))
+            .map_err(|error| {
+                StoreError::sqlite("could not list Notion task status filters", error)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| {
+                StoreError::sqlite("could not read Notion task status filters", error)
+            })?;
+
+        Ok(NotionTaskProjectionPage {
+            tasks,
+            projects,
+            statuses,
+            has_more,
         })
     }
 
@@ -2976,9 +3058,14 @@ mod tests {
 
         assert_eq!(
             store
-                .list_notion_task_projections(0, 10)
+                .query_notion_task_projections(0, 10, "", "", "")
                 .expect("read Notion task snapshot"),
-            second
+            super::NotionTaskProjectionPage {
+                tasks: second.to_vec(),
+                projects: vec!["Rental Command".to_string()],
+                statuses: vec!["Doing".to_string()],
+                has_more: false,
+            }
         );
     }
 
@@ -2996,10 +3083,11 @@ mod tests {
             .expect("write Notion task snapshot");
 
         let first_page = store
-            .list_notion_task_projections(0, 2)
+            .query_notion_task_projections(0, 2, "", "", "")
             .expect("read first Notion task page");
         assert_eq!(
             first_page
+                .tasks
                 .iter()
                 .map(|task| task.source_task_id.as_str())
                 .collect::<Vec<_>>(),
@@ -3007,15 +3095,36 @@ mod tests {
         );
 
         let second_page = store
-            .list_notion_task_projections(2, 2)
+            .query_notion_task_projections(2, 2, "", "", "")
             .expect("read second Notion task page");
         assert_eq!(
             second_page
+                .tasks
                 .iter()
                 .map(|task| task.source_task_id.as_str())
                 .collect::<Vec<_>>(),
             ["task-3", "task-4"]
         );
+        assert!(!second_page.has_more);
+    }
+
+    #[test]
+    fn notion_task_projection_filters_run_in_sql() {
+        let (_directory, _path, store) = open_temp_store();
+        let tasks = [
+            fixture_notion_task("task-1", "Assembly", "Doing", "Workbench", None),
+            fixture_notion_task("task-2", "Rental Command", "Todo", "Billing", None),
+        ];
+        store
+            .replace_notion_task_projections(&tasks)
+            .expect("write Notion task snapshot");
+
+        let page = store
+            .query_notion_task_projections(0, 10, "work", "Assembly", "Doing")
+            .expect("filter Notion task snapshot");
+        assert_eq!(page.tasks, tasks[..1]);
+        assert_eq!(page.projects, ["Assembly", "Rental Command"]);
+        assert_eq!(page.statuses, ["Doing", "Todo"]);
     }
 
     #[test]

@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mcb_core::session_store::NotionTaskProjection;
+use mcb_core::session_store::{NotionTaskProjection, NotionTaskProjectionPage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -50,6 +50,27 @@ pub struct NotionTaskRefreshReceipt {
     fetched_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionTaskPage {
+    tasks: Vec<NotionTaskRow>,
+    projects: Vec<String>,
+    statuses: Vec<String>,
+    has_more: bool,
+}
+
+struct PendingNotionTask {
+    source_task_id: String,
+    title: String,
+    project_ids: Vec<String>,
+    status: String,
+    priority: Option<String>,
+    assignee: Option<String>,
+    due_date: Option<String>,
+    source_url: String,
+    fetched_at_ms: i64,
+}
+
 impl From<NotionTaskProjection> for NotionTaskRow {
     fn from(task: NotionTaskProjection) -> Self {
         Self {
@@ -62,6 +83,17 @@ impl From<NotionTaskProjection> for NotionTaskRow {
             due_date: task.due_date,
             source_url: task.source_url,
             fetched_at_ms: task.fetched_at_ms,
+        }
+    }
+}
+
+impl From<NotionTaskProjectionPage> for NotionTaskPage {
+    fn from(page: NotionTaskProjectionPage) -> Self {
+        Self {
+            tasks: page.tasks.into_iter().map(NotionTaskRow::from).collect(),
+            projects: page.projects,
+            statuses: page.statuses,
+            has_more: page.has_more,
         }
     }
 }
@@ -208,12 +240,15 @@ pub async fn list_notion_tasks(
     manager: tauri::State<'_, AgentRuntimeManager>,
     offset: u32,
     limit: u32,
-) -> Result<Vec<NotionTaskRow>, String> {
+    search: String,
+    project: String,
+    status: String,
+) -> Result<NotionTaskPage, String> {
     let store = manager.store_handle();
     tauri::async_runtime::spawn_blocking(move || {
         store
-            .list_notion_task_projections(offset, limit.min(100))
-            .map(|rows| rows.into_iter().map(NotionTaskRow::from).collect())
+            .query_notion_task_projections(offset, limit.min(100), &search, &project, &status)
+            .map(NotionTaskPage::from)
             .map_err(|error| error.to_string())
     })
     .await
@@ -234,11 +269,12 @@ pub async fn refresh_notion_tasks(
         .ok_or_else(|| "Configure a Notion integration token first".to_string())?;
     let client = reqwest::Client::new();
     let fetched_at_ms = now_ms();
-    let pages = query_task_pages(&client, &token, &settings.data_source_id).await?;
-    let project_names = load_project_names(&client, &token, &pages).await?;
-    let tasks = pages
-        .iter()
-        .filter_map(|page| project_task(page, &project_names, fetched_at_ms))
+    let pending_tasks =
+        query_task_pages(&client, &token, &settings.data_source_id, fetched_at_ms).await?;
+    let project_names = load_project_names(&client, &token, &pending_tasks).await?;
+    let tasks = pending_tasks
+        .into_iter()
+        .map(|task| finish_task_projection(task, &project_names))
         .collect::<Vec<_>>();
     let count = tasks.len();
     let store = manager.store_handle();
@@ -259,10 +295,12 @@ async fn query_task_pages(
     client: &reqwest::Client,
     token: &str,
     data_source_id: &str,
-) -> Result<Vec<Value>, String> {
-    let mut pages = Vec::new();
+    fetched_at_ms: i64,
+) -> Result<Vec<PendingNotionTask>, String> {
+    let mut tasks = Vec::new();
+    let mut results_seen = 0;
     let mut cursor: Option<String> = None;
-    while pages.len() < MAX_NOTION_TASKS {
+    while results_seen < MAX_NOTION_TASKS {
         let mut body = json!({ "page_size": NOTION_PAGE_SIZE });
         if let Some(value) = &cursor {
             body["start_cursor"] = Value::String(value.clone());
@@ -282,7 +320,17 @@ async fn query_task_pages(
             .get("results")
             .and_then(Value::as_array)
             .ok_or_else(|| "Notion returned no task results".to_string())?;
-        pages.extend(results.iter().take(MAX_NOTION_TASKS - pages.len()).cloned());
+        if results.is_empty() {
+            break;
+        }
+        let result_count = results.len().min(MAX_NOTION_TASKS - results_seen);
+        results_seen += result_count;
+        tasks.extend(
+            results
+                .iter()
+                .take(result_count)
+                .filter_map(|page| pending_task_projection(page, fetched_at_ms)),
+        );
         if payload.get("has_more").and_then(Value::as_bool) != Some(true) {
             break;
         }
@@ -294,18 +342,18 @@ async fn query_task_pages(
             break;
         }
     }
-    Ok(pages)
+    Ok(tasks)
 }
 
 async fn load_project_names(
     client: &reqwest::Client,
     token: &str,
-    pages: &[Value],
+    tasks: &[PendingNotionTask],
 ) -> Result<HashMap<String, String>, String> {
-    let ids = pages
+    let ids = tasks
         .iter()
-        .flat_map(project_relation_ids)
-        .collect::<HashSet<_>>();
+        .flat_map(|task| task.project_ids.iter().cloned())
+        .collect::<BTreeSet<_>>();
     let mut names = HashMap::new();
     for id in ids.into_iter().take(50) {
         let response = notion_request(
@@ -348,29 +396,14 @@ async fn response_payload(response: reqwest::Response) -> Result<Value, String> 
     }
 }
 
-fn project_task(
-    page: &Value,
-    project_names: &HashMap<String, String>,
-    fetched_at_ms: i64,
-) -> Option<NotionTaskProjection> {
+fn pending_task_projection(page: &Value, fetched_at_ms: i64) -> Option<PendingNotionTask> {
     let properties = page.get("properties")?;
-    let source_task_id = page.get("id")?.as_str()?.to_string();
-    let title = property_text(properties, "Name", "title")
-        .or_else(|| page_title(page))
-        .unwrap_or_else(|| "Untitled task".to_string());
-    let project = project_relation_ids(page)
-        .into_iter()
-        .filter_map(|id| project_names.get(&id).cloned())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(NotionTaskProjection {
-        source_task_id,
-        title,
-        project: if project.is_empty() {
-            "Unassigned".to_string()
-        } else {
-            project
-        },
+    Some(PendingNotionTask {
+        source_task_id: page.get("id")?.as_str()?.to_string(),
+        title: property_text(properties, "Name", "title")
+            .or_else(|| page_title(page))
+            .unwrap_or_else(|| "Untitled task".to_string()),
+        project_ids: project_relation_ids(page),
         status: property_choice(properties, "Status").unwrap_or_else(|| "Unspecified".to_string()),
         priority: property_choice(properties, "Priority"),
         assignee: property_people(properties, "Assignee"),
@@ -382,6 +415,34 @@ fn project_task(
             .to_string(),
         fetched_at_ms,
     })
+}
+
+fn finish_task_projection(
+    task: PendingNotionTask,
+    project_names: &HashMap<String, String>,
+) -> NotionTaskProjection {
+    let project = task
+        .project_ids
+        .iter()
+        .filter_map(|id| project_names.get(id))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    NotionTaskProjection {
+        source_task_id: task.source_task_id,
+        title: task.title,
+        project: if project.is_empty() {
+            "Unassigned".to_string()
+        } else {
+            project
+        },
+        status: task.status,
+        priority: task.priority,
+        assignee: task.assignee,
+        due_date: task.due_date,
+        source_url: task.source_url,
+        fetched_at_ms: task.fetched_at_ms,
+    }
 }
 
 fn project_relation_ids(page: &Value) -> Vec<String> {
@@ -471,12 +532,10 @@ mod tests {
                 "Due": { "date": { "start": "2026-08-25" } }
             }
         });
-        let task = project_task(
-            &page,
+        let task = finish_task_projection(
+            pending_task_projection(&page, 42).unwrap(),
             &HashMap::from([("project-1".to_string(), "MacCommandBar".to_string())]),
-            42,
-        )
-        .unwrap();
+        );
 
         assert_eq!(task.title, "[TSK-808] Workbench");
         assert_eq!(task.project, "MacCommandBar");

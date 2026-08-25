@@ -22,6 +22,13 @@ export interface NotionTaskRefreshReceipt {
   fetchedAtMs: number;
 }
 
+export interface NotionTaskPage {
+  tasks: NotionTaskRow[];
+  projects: string[];
+  statuses: string[];
+  hasMore: boolean;
+}
+
 async function invokeDesktop<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isNativeTauriRuntime()) throw new Error('Notion Tasks is available in the desktop app.');
   const { invoke } = await import('@tauri-apps/api/core');
@@ -43,8 +50,14 @@ export function clearNotionTaskSettings(): Promise<void> {
   return invokeDesktop('clear_notion_task_settings');
 }
 
-export function listNotionTasks(offset: number, limit = 100): Promise<NotionTaskRow[]> {
-  return invokeDesktop('list_notion_tasks', { offset, limit });
+export function listNotionTasks(
+  offset: number,
+  limit = 100,
+  search = '',
+  project = '',
+  status = ''
+): Promise<NotionTaskPage> {
+  return invokeDesktop('list_notion_tasks', { offset, limit, search, project, status });
 }
 
 export function refreshNotionTasks(): Promise<NotionTaskRefreshReceipt> {
