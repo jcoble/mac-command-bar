@@ -2229,7 +2229,7 @@
 		});
 		disposers.push(stopExtensionApiProbeObservations);
 		if (import.meta.env.DEV) {
-			(window as FastSwitchWindow).__fastSwitch = async (gapMs: number, count: number) => {
+			const fastSwitch = async (gapMs: number, count: number) => {
 				const before = memprobeSnapshot();
 				const ids = rail.owned.map((session) => session.ownedId);
 				const activeIndex = ids.indexOf(rail.activeOwnedId ?? "");
@@ -2254,6 +2254,14 @@
 				console.log("[fastSwitch]", JSON.stringify(result));
 				return result;
 			};
+			(window as FastSwitchWindow).__fastSwitch = fastSwitch;
+			const [autoGap, autoCount] = (new URLSearchParams(location.search).get("fastswitch") ?? "").split(",").map(Number);
+			if (Number.isFinite(autoGap) && autoGap > 0 && Number.isFinite(autoCount) && autoCount > 0) {
+				const autoFastSwitchTimer = setTimeout(() => {
+					void fastSwitch(autoGap, autoCount).then((result) => console.log("[fastSwitch:auto]", JSON.stringify(result)));
+				}, 20_000);
+				disposers.push(() => clearTimeout(autoFastSwitchTimer));
+			}
 			disposers.push(() => {
 				delete (window as FastSwitchWindow).__fastSwitch;
 			});
