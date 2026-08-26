@@ -1,0 +1,16 @@
+diff --git a/tauri-svelte-preview/src/lib/shell/components/TerminalSurface.svelte b/tauri-svelte-preview/src/lib/shell/components/TerminalSurface.svelte
+index 11f10fea..31f01b88 100644
+--- a/tauri-svelte-preview/src/lib/shell/components/TerminalSurface.svelte
++++ b/tauri-svelte-preview/src/lib/shell/components/TerminalSurface.svelte
+@@ -42,7 +42,10 @@
+   let { owned, activeOwnedId, registerHost, onHostLayout }: Props = $props();
+ 
+   const active = $derived(owned.find((session) => session.ownedId === activeOwnedId) ?? null);
+-  const hosted = $derived(active && (active.state !== 'exited' || active.ptySessionId) ? active : null);
++  // EXPERIMENT 2026-08-20: terminals off for a memory A/B — no hosts, so no
++  // xterm views are ever created. Restore the line below to re-enable.
++  const hosted = $derived(null as OwnedSession | null);
++  // const hosted = $derived(active && (active.state !== 'exited' || active.ptySessionId) ? active : null);
+ 
+   /**
+    * How many animation frames to keep re-measuring for after a terminal appears.
