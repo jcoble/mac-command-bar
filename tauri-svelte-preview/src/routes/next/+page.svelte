@@ -2162,6 +2162,12 @@
 		__fastSwitch?: (gapMs: number, count: number) => Promise<Record<string, unknown>>;
 	};
 
+	// DEV-only reproduction driver for real pointer/mouse events sweeping the
+	// session rows, callable as `window.__pointerSweep(msPerRow, seconds)`.
+	type PointerSweepWindow = Window & {
+		__pointerSweep?: (msPerRow: number, seconds: number) => Promise<{ rows: number; events: number }>;
+	};
+
 	onMount(() => {
 		const disposers: Array<() => void> = [
 			releaseShellCommands,
@@ -2255,15 +2261,61 @@
 				return result;
 			};
 			(window as FastSwitchWindow).__fastSwitch = fastSwitch;
-			const [autoGap, autoCount] = (new URLSearchParams(location.search).get("fastswitch") ?? "").split(",").map(Number);
-			if (Number.isFinite(autoGap) && autoGap > 0 && Number.isFinite(autoCount) && autoCount > 0) {
-				const autoFastSwitchTimer = setTimeout(() => {
-					void fastSwitch(autoGap, autoCount).then((result) => console.log("[fastSwitch:auto]", JSON.stringify(result)));
+			const pointerSweep = async (msPerRow: number, seconds: number) => {
+				const rows = document.querySelectorAll<HTMLElement>("li.row");
+				let events = 0;
+				const dispatch = (target: Element, type: string, x: number, y: number, bubbles: boolean): void => {
+					const init = { bubbles, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: "mouse", isPrimary: true };
+					target.dispatchEvent(type.startsWith("pointer") ? new PointerEvent(type, init) : new MouseEvent(type, init));
+					events++;
+				};
+				const deadline = Date.now() + seconds * 1000;
+				let previous: Element | null = null;
+				while (Date.now() < deadline) {
+					for (const row of rows) {
+						const rect = row.getBoundingClientRect();
+						const cx = rect.left + rect.width / 2;
+						const cy = rect.top + rect.height / 2;
+						const target = document.elementFromPoint(cx, cy) ?? row;
+						if (previous && previous !== target) {
+							dispatch(previous, "pointerout", cx, cy, true);
+							dispatch(previous, "pointerleave", cx, cy, false);
+							dispatch(previous, "mouseout", cx, cy, true);
+							dispatch(previous, "mouseleave", cx, cy, false);
+						}
+						dispatch(target, "pointerover", cx, cy, true);
+						dispatch(target, "pointerenter", cx, cy, false);
+						dispatch(target, "mouseover", cx, cy, true);
+						dispatch(target, "mouseenter", cx, cy, false);
+						for (const dx of [-2, 0, 2]) {
+							dispatch(target, "pointermove", cx + dx, cy, true);
+							dispatch(target, "mousemove", cx + dx, cy, true);
+						}
+						previous = target;
+						await new Promise((resolve) => setTimeout(resolve, msPerRow));
+						if (Date.now() >= deadline) break;
+					}
+				}
+				const result = { rows: rows.length, events };
+				console.log("[pointerSweep]", JSON.stringify(result));
+				return result;
+			};
+			(window as PointerSweepWindow).__pointerSweep = pointerSweep;
+			const autoParams = new URLSearchParams(location.search);
+			const [autoGap, autoCount] = (autoParams.get("fastswitch") ?? "").split(",").map(Number);
+			const [autoPointerMs, autoPointerSec] = (autoParams.get("pointersweep") ?? "").split(",").map(Number);
+			const hasAutoFastSwitch = Number.isFinite(autoGap) && autoGap > 0 && Number.isFinite(autoCount) && autoCount > 0;
+			const hasAutoPointerSweep = Number.isFinite(autoPointerMs) && autoPointerMs > 0 && Number.isFinite(autoPointerSec) && autoPointerSec > 0;
+			if (hasAutoFastSwitch || hasAutoPointerSweep) {
+				const autoTimer = setTimeout(async () => {
+					if (hasAutoPointerSweep) console.log("[pointerSweep:auto]", JSON.stringify(await pointerSweep(autoPointerMs, autoPointerSec)));
+					if (hasAutoFastSwitch) console.log("[fastSwitch:auto]", JSON.stringify(await fastSwitch(autoGap, autoCount)));
 				}, 20_000);
-				disposers.push(() => clearTimeout(autoFastSwitchTimer));
+				disposers.push(() => clearTimeout(autoTimer));
 			}
 			disposers.push(() => {
 				delete (window as FastSwitchWindow).__fastSwitch;
+				delete (window as PointerSweepWindow).__pointerSweep;
 			});
 		}
 		void startConversationEvents();
