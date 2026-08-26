@@ -1,0 +1,12 @@
+diff --git a/tauri-svelte-preview/src/lib/shell/components/WorktreeAgentRow.svelte b/tauri-svelte-preview/src/lib/shell/components/WorktreeAgentRow.svelte
+index ffc14f4c..1935ad51 100644
+--- a/tauri-svelte-preview/src/lib/shell/components/WorktreeAgentRow.svelte
++++ b/tauri-svelte-preview/src/lib/shell/components/WorktreeAgentRow.svelte
+@@ -218,7 +218,6 @@
+               <span data-testid="worktree-agent-title" class="session-title">{label}</span>
+               <span data-testid="worktree-agent-age" class="age">
+                 {#if showWorkingIndicator}
+-                  <WorkingSpinner seed={session.activeTurnId ?? session.ownedId} size={12} />
+                 {/if}
+                 <span class="age-text">{ageText ?? ''}</span>
+               </span>

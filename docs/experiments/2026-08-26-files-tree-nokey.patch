@@ -1,0 +1,20 @@
+diff --git a/tauri-svelte-preview/src/lib/shell/panels/files/FilesPanel.svelte b/tauri-svelte-preview/src/lib/shell/panels/files/FilesPanel.svelte
+index 33265f65..8bae6e70 100644
+--- a/tauri-svelte-preview/src/lib/shell/panels/files/FilesPanel.svelte
++++ b/tauri-svelte-preview/src/lib/shell/panels/files/FilesPanel.svelte
+@@ -1126,7 +1126,6 @@
+     bind:this={treeHost}
+     onclickcapture={onTreeWrapperClick}
+   >
+-    {#key treeRendererKey}
+       <Tree
+         data={displayedTreeData}
+         treeId="project-files"
+@@ -1190,7 +1189,6 @@
+           <p class="tree-empty">Nothing matches that search.</p>
+         {/snippet}
+       </Tree>
+-    {/key}
+   </div>
+   {#if treeVisible && searching && searchNextCursor !== null}
+     <div class="search-more">
