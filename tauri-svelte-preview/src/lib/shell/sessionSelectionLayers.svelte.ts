@@ -16,7 +16,6 @@ import {
 } from './conversation/conversationService';
 import { countInvoke } from './devInvokeCounter.svelte';
 import { activate as activateExplorer } from './explorer/explorerService';
-import { resetExplorer } from './explorer/explorerStore.svelte';
 import { validateProjectRootFromTauri } from '../tauriSource';
 
 export class SessionSelectionLayers {
@@ -30,14 +29,12 @@ export class SessionSelectionLayers {
   /** Select only the filesystem projection. No chat ownership changes or reads. */
   async selectTreeOnly(session: OwnedSession): Promise<void> {
     const generation = ++this.selectionGeneration;
-    this.releaseDepartingTree(session.ownedId);
     await this.fillTreeView(session, generation);
   }
 
   async selectSession(session: OwnedSession, displayedChatOwnedId: string | null): Promise<void> {
     const generation = ++this.selectionGeneration;
     this.releaseDepartingChat(session.ownedId, displayedChatOwnedId);
-    this.releaseDepartingTree(session.ownedId);
     await this.fillTreeView(session, generation);
     await this.fillChatHistory(session, generation);
   }
@@ -97,7 +94,7 @@ export class SessionSelectionLayers {
     this.hasTreeProjection = false;
     this.treeOwnedId = null;
     this.treeRoot = '';
-    resetExplorer();
+    activateExplorer(null);
   }
 
   clearChatHistory(): void {
@@ -111,14 +108,6 @@ export class SessionSelectionLayers {
     return session.agent === 'codex' || session.agent === 'claude' || session.agent === 'antigravity'
       ? session.agent
       : null;
-  }
-
-  private releaseDepartingTree(nextOwnedId: string): void {
-    if (this.treeOwnedId === nextOwnedId) return;
-    this.hasTreeProjection = false;
-    this.treeOwnedId = null;
-    this.treeRoot = '';
-    resetExplorer();
   }
 
   private releaseDepartingChat(nextOwnedId: string, displayedChatOwnedId: string | null): void {

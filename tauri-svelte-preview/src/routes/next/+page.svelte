@@ -2134,7 +2134,7 @@
 				}
 				const initial = attachable[0] ?? null;
 				if (initial) {
-					await selectSessionLayers(initial.ownedId);
+					await selectOwned(initial.ownedId);
 				}
 				const activationError = rail.error;
 				await scanRail();
