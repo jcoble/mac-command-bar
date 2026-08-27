@@ -192,6 +192,25 @@ pub async fn read_agent_conversation_workspace(
 }
 
 #[tauri::command]
+pub async fn read_agent_conversation_workspace_expanded_paths(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    root: String,
+) -> CommandResult<Vec<String>> {
+    command_result(manager.read_workspace_expanded_paths(&owned_id, &root))
+}
+
+#[tauri::command]
+pub async fn write_agent_conversation_workspace_expanded_paths(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    owned_id: String,
+    root: String,
+    paths: Vec<String>,
+) -> CommandResult<()> {
+    command_result(manager.write_workspace_expanded_paths(&owned_id, &root, &paths))
+}
+
+#[tauri::command]
 pub async fn delete_agent_conversation_workspace(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
@@ -424,8 +443,18 @@ pub async fn delete_agent_conversation_session(
 pub async fn read_agent_conversation_snapshot(
     manager: tauri::State<'_, AgentRuntimeManager>,
     owned_id: String,
+    request_id: u64,
 ) -> CommandResult<Option<AgentConversationSnapshot>> {
-    command_result(manager.snapshot(&owned_id))
+    command_result(manager.latest_snapshot(&owned_id, request_id))
+}
+
+#[tauri::command]
+/// Cancels a snapshot whose frontend projection owner has been released.
+pub fn cancel_agent_conversation_snapshot(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    request_id: u64,
+) {
+    manager.cancel_snapshot(request_id);
 }
 
 #[tauri::command]

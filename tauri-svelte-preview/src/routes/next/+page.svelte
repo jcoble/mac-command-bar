@@ -33,9 +33,8 @@
 		restoreBrowserState,
 	} from "$lib/shell/browser/browserStore.svelte.ts";
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
-	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
+	import ConversationHistorySurface from "$lib/shell/components/ConversationHistorySurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
-	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
 	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
 	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
 	import RightPanel from "$lib/shell/components/RightPanel.svelte";
@@ -80,7 +79,11 @@
 	} from "$lib/shell/conversation/conversationTypes";
 	import { countInvoke } from "$lib/shell/devInvokeCounter.svelte";
 	import { profileResourceLifecycle } from "$lib/shell/resourceDiagnostics.svelte";
-	import { editorState, resetEditorState, restoreEditorFiles } from "$lib/shell/editor/editorStore.svelte";
+	import {
+		editorState,
+		resetEditorState,
+		restoreEditorFiles,
+	} from "$lib/shell/editor/editorStore.svelte";
 	import {
 		configureExtensionApiProbeRuntime,
 		disposeExtensionApiProbeResources,
@@ -116,7 +119,6 @@
 	import {
 		DEFAULT_CENTER_TAB,
 		DEFAULT_RIGHT_TAB,
-		isCenterTabId as isStoredCenterTabId,
 	} from "$lib/shell/layout/workbenchTabs";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import { rememberLastUsed } from "$lib/shell/newSession/projectRootsStore.svelte";
@@ -146,6 +148,7 @@
 	} from "$lib/shell/sessionWorkspaces";
 	import { registerShellCommands } from "$lib/shell/shellCommands";
 	import { readSelection, shellPanels } from "$lib/shell/shellPanels";
+	import { SessionSelectionLayers } from "$lib/shell/sessionSelectionLayers.svelte";
 	import {
 		clearStackHandlers,
 		noteSessionRemoved,
@@ -181,6 +184,7 @@
 		clearAgentConversationWorkspaceTabsFromTauri,
 		deleteAgentConversationSessionFromTauri,
 		readAgentConversationWorkspaceFromTauri,
+		readAgentConversationWorkspaceExpandedPathsFromTauri,
 		listAgentConversationSessionsFromTauri,
 		listAgentSessionsForProjectFromTauri,
 		listAgentSessionsFromLocalBridge,
@@ -191,6 +195,7 @@
 		validateProjectRootFromTauri,
 		writeAssemblySettingFromTauri,
 		writeAgentConversationWorkspaceFromTauri,
+		writeAgentConversationWorkspaceExpandedPathsFromTauri,
 		type AgentSession,
 	} from "$lib/tauriSource";
 
@@ -222,6 +227,9 @@
 	let workspaceWriteQueue: Promise<void> = Promise.resolve();
 	let workspaceAutosaveEnabled = false;
 	let clearAllEditorsInFlight = false;
+	const sessionSelectionLayers = new SessionSelectionLayers();
+	let controlledSelectionOwnedId = $state<string | null>(null);
+	let controlledExpandedPathsByRoot = $state.raw<Readonly<Record<string, readonly string[]>>>({});
 	const sessionProjection = $derived<SessionProjection>({
 		activeOwnedId: rail.activeOwnedId,
 		rail: rail.owned,
@@ -248,6 +256,87 @@
 			conversationGeneration: sessionProjection.activeConversation?.generation ?? null,
 		};
 	});
+	const filesProjectionRoot = $derived(
+		sessionSelectionLayers.hasTreeProjection
+			? sessionSelectionLayers.treeRoot
+			: checkoutScope.durableSessionRoot,
+	);
+	const filesProjectionOwnedId = $derived(
+		sessionSelectionLayers.hasTreeProjection
+			? sessionSelectionLayers.treeOwnedId
+			: sessionProjection.activeOwnedId,
+	);
+	const controlledSession = $derived(
+		controlledSelectionOwnedId === null
+			? null
+			: rail.owned.find((session) => session.ownedId === controlledSelectionOwnedId) ?? null,
+	);
+	const controlledRoot = $derived(
+		controlledSession?.cwd.trim() || controlledSession?.projectPath?.trim() || "",
+	);
+	const controlledCheckoutScope = $derived<CheckoutScope>({
+		durableSessionRoot: controlledRoot,
+		filesInspectionRoot: null,
+		gitInspectionRoot: null,
+		filesReadOnly: false,
+		gitReadOnly: false,
+		workspaceRestoreGeneration,
+		sessionSelectionGeneration,
+		conversationGeneration: sessionSelectionLayers.chatOwnedId === null
+			? null
+			: conversationSessions[sessionSelectionLayers.chatOwnedId]?.generation ?? null,
+	});
+
+	async function selectSessionLayers(ownedId: string): Promise<void> {
+		const enteringIsolationBaseline = controlledSelectionOwnedId === null;
+		if (enteringIsolationBaseline) {
+			// One-time cleanup only. Repeating these releases on every row click was
+			// doing work outside the row + tree baseline being measured.
+			restoreTabsFor(null);
+			const displayedChatOwnedId = sessionProjection.activeOwnedId;
+			if (displayedChatOwnedId !== null) releaseConversationForRead(displayedChatOwnedId);
+			sessionSelectionLayers.clearChatHistory();
+			if (editorState.openFiles.length > 0) {
+				editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
+				resetEditorState();
+			}
+		}
+		controlledSelectionOwnedId = ownedId;
+		// Drop departing session's tree state from memory. SQLite is the source of truth.
+		controlledExpandedPathsByRoot = {};
+		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
+		if (session) {
+			const projectRoot = canonicalPath(session.cwd.trim() || (session.projectPath ?? "").trim());
+			const loadPaths = projectRoot
+				? (async () => {
+					countInvoke("read_agent_conversation_workspace_expanded_paths");
+					const saved = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot);
+					if (controlledSelectionOwnedId === ownedId) {
+						controlledExpandedPathsByRoot = { [projectRoot]: saved };
+					}
+				})()
+				: Promise.resolve();
+			await Promise.all([
+				loadPaths,
+				sessionSelectionLayers.selectSession(session, sessionSelectionLayers.chatOwnedId),
+			]);
+		}
+		else {
+			sessionSelectionLayers.clearTreeView();
+			sessionSelectionLayers.clearChatHistory();
+		}
+	}
+
+	/**
+	 * Memory-isolation baseline: session selection owns no editor component,
+	 * tab projection, source read, or CodeMirror view.
+	 */
+	function clearControlledEditorProjection(): void {
+		const previousPaths = editorState.openFiles.map((file) => file.path);
+		editorPanel?.releaseSessionResources(previousPaths);
+		resetEditorState();
+		selectCenterTab("session");
+	}
 	let service: ReturnType<typeof createTerminalService> | null = null;
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
 	let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
@@ -264,13 +353,13 @@
 		setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
 		regionWidth(id: ShellRegionId): number | null;
 	} | null = null;
-	let editorPanel: {
+	let editorPanel = $state<{
 		captureViewStates(paths: readonly string[]): Record<string, object>;
 		workspaceOwnedPaths(): string[];
 		restoreViewStates(files: readonly { path: string; viewState?: object }[]): void;
 		releaseSessionResources(paths: readonly string[]): void;
 		requestCloseActive(): void;
-	} | null = null;
+	} | null>(null);
 	/** Which panel the right column is showing, and which surface the center
 	 * pane is on. The PAGE owns both, because both are remembered per session and
 	 * the sessions are the page's. Read for the session on screen, written the
@@ -293,10 +382,6 @@
 	 */
 	let draftOpen = $state(false);
 	let draftProjectPath = $state<string | null>(null);
-	/** The conversation surface, for putting the caret in its prompt box when a
-	 * panel hands the composer something. */
-	let conversationSurface: { focusComposer(): void } | null = null;
-
 	function mostRecentProjectPath(): string | undefined {
 		const active = rail.owned.find((session) => session.ownedId === rail.activeOwnedId);
 		if (active) return active.projectPath?.trim() || active.cwd.trim() || undefined;
@@ -407,7 +492,10 @@
 	function syncGitSurfaceVisibility(): void {
 		if (restoringTabs) return;
 		const graphVisible = centerTab === "git-history" || rightTab === "source-control";
-		shellPanels.sourceControlVisible(graphVisible);
+		// The controlled reconstruction gives SourceControlPanel its root directly.
+		// Do not also wake the legacy panel activator, whose selection still belongs
+		// to the pre-reconstruction session owner.
+		shellPanels.sourceControlVisible(controlledSelectionOwnedId === null && graphVisible);
 		if (graphVisible) {
 			return;
 		}
@@ -423,13 +511,12 @@
 		applyRightTab(id);
 	}
 
-	/** Put both columns back on the tabs this session was left on. */
+	/** Keep the controlled selection rebuild on the two surfaces under test. */
 	function restoreTabsFor(snapshot: SessionWorkspaceSnapshot | null): void {
 		restoringTabs = true;
 		try {
-			const storedCenter = snapshot?.center?.activePanelId;
-			applyCenterTab(isStoredCenterTabId(storedCenter) ? storedCenter : DEFAULT_CENTER_TAB);
-			applyRightTab(snapshot?.rightTab ?? DEFAULT_RIGHT_TAB);
+			applyCenterTab("session");
+			applyRightTab("files");
 		} finally {
 			restoringTabs = false;
 		}
@@ -618,10 +705,7 @@
 				const draft = getConversationSession(handoff.ownedId)?.draft ?? "";
 				setConversationDraft(handoff.ownedId, draft ? `${draft}\n${handoff.appendText}` : handoff.appendText);
 			}
-			// The composer may not be the surface on screen yet, so wait for Svelte
-			// to have applied the draft before asking for the caret.
-			await tick();
-			conversationSurface?.focusComposer();
+			// The controlled history-only surface deliberately has no composer to focus.
 		},
 		sendToSession: async (request) => {
 			// The same two steps the composer takes: the attachments go on the
@@ -845,6 +929,26 @@
 			rightTab,
 			captureBrowserState(),
 		);
+		void writeAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot, paths);
+	}
+
+	/** Persist only the active tree's expansion. Rust merges this small field
+	 * into the SQLite workspace row without bringing editor state into JS. */
+	function rememberControlledFileTreeExpandedPaths(root: string, paths: readonly string[]): void {
+		const ownedId = controlledSelectionOwnedId;
+		const projectRoot = canonicalPath(root);
+		if (!ownedId || !projectRoot) return;
+		controlledExpandedPathsByRoot = { [projectRoot]: [...paths] };
+		const write = workspaceWriteQueue.then(async () => {
+			countInvoke("write_agent_conversation_workspace_expanded_paths");
+			await writeAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot, paths);
+		});
+		workspaceWriteQueue = write.catch(() => undefined);
+		void write.catch((error) => {
+			if (!disposed && controlledSelectionOwnedId === ownedId) {
+				rail.error = `workspace checkpoint failed: ${describeError(error)}`;
+			}
+		});
 	}
 
 	function rememberInspectionRoot(kind: 'files' | 'source-control', root: string | null): void {
@@ -1040,16 +1144,18 @@
 		cancelWorkspaceAutosave();
 		workspaceSaveTimer = setTimeout(() => {
 			workspaceSaveTimer = null;
-			if (workspaceAutosaveEnabled && rail.activeOwnedId === ownedId) void snapshotWorkspace(ownedId);
+			if (controlledSelectionOwnedId === null && workspaceAutosaveEnabled && rail.activeOwnedId === ownedId) {
+				void snapshotWorkspace(ownedId);
+			}
 		}, 30_000);
 	}
 
 	$effect(() => {
-		const ownedId = rail.activeOwnedId;
+		const ownedId = controlledSelectionOwnedId ?? rail.activeOwnedId;
 		const openFiles = editorState.openFiles;
 		const activePath = editorState.activePath;
 		const browserState = captureBrowserState();
-		if (workspaceAutosaveEnabled && ownedId !== null) {
+		if (ownedId !== null && controlledSelectionOwnedId === null && workspaceAutosaveEnabled) {
 			scheduleWorkspaceAutosave(ownedId, openFiles, activePath, centerTab, rightTab, browserState);
 		}
 	});
@@ -1163,14 +1269,13 @@
 			setScrollTop(0);
 			return;
 		}
-		const plan = planWorkspaceRestore(snapshot ?? null);
 		// Every restore starts from THIS session's tabs and no others. A session
 		// that has never had a file open starts from an empty editor, and that
 		// emptiness is the whole point: it is the other session's tabs not being
 		// there.
-		editorPanel?.restoreViewStates(plan.openFiles);
-		if (plan.openFiles.length > 0) restoreEditorFiles(plan.openFiles, plan.activePath);
-		else resetEditorState();
+		// Editor is intentionally absent while rail selection is rebuilt one
+		// projection at a time. Do not retain its SQLite tab/draft projection.
+		resetEditorState();
 		if (!snapshot) return;
 		selectPath(snapshot.selectedPath);
 		setScrollTop(snapshot.scrollTop);
@@ -2028,7 +2133,9 @@
 					service.trackExisting(session, size);
 				}
 				const initial = attachable[0] ?? null;
-				if (initial) await selectOwned(initial.ownedId);
+				if (initial) {
+					await selectSessionLayers(initial.ownedId);
+				}
 				const activationError = rail.error;
 				await scanRail();
 				if (activationError) {
@@ -2072,7 +2179,9 @@
 		 * reload would come back to an empty editor. `pagehide` is the event
 		 * browsers still fire for both a reload and a close. */
 		const saveOnLeaving = (): void => {
-			if (rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") void snapshotWorkspace(rail.activeOwnedId);
+			if (controlledSelectionOwnedId === null && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") {
+				void snapshotWorkspace(rail.activeOwnedId);
+			}
 		};
 		window.addEventListener("pagehide", saveOnLeaving);
 		disposers.push(() => window.removeEventListener("pagehide", saveOnLeaving));
@@ -2081,7 +2190,9 @@
 			cancelWorkspaceAutosave();
 			// Navigating away inside the app ends here instead, and it is the same
 			// last chance to remember what the session on screen had open.
-			if (!disposed && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") void snapshotWorkspace(rail.activeOwnedId);
+			if (!disposed && controlledSelectionOwnedId === null && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") {
+				void snapshotWorkspace(rail.activeOwnedId);
+			}
 			disposed = true;
 			for (const dispose of disposers.splice(0)) dispose();
 			// Probe teardown closes only its disposable PTY first. The product
@@ -2103,7 +2214,7 @@
 </script>
 
 <svelte:head>
-	<title>{PRODUCT_DOCUMENT_TITLE}</title>
+	<title>ROOT ROWS ONLY · TREE SERVICES ISOLATED · 5177 · {PRODUCT_DOCUMENT_TITLE}</title>
 </svelte:head>
 
 <!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
@@ -2119,32 +2230,40 @@
 				owned={rail.owned}
 				activeOwnedId={sessionProjection.activeOwnedId}
 				collapsed={sessionsCollapsed}
-				onSelect={selectOwned}
-				onRestart={restartOwned}
-				onComplete={completeOwned}
-				onReopen={reopenOwned}
-				onSettle={settleOwnedSession}
-				onUnsettle={unsettleOwnedSession}
-				onRemove={removeSession}
 				onCollapse={collapseSessions}
 				onNewSession={openNewSession}
+				onSelectSession={selectSessionLayers}
 			/>
 		</div>
 	</div>
 {/snippet}
 {#snippet toolsArea()}
 		<RightPanel
-			activeId={rightTab}
-			onSelect={selectRightTab}
-			root={checkoutScope.durableSessionRoot}
-			rootAvailable={activeRootAvailable}
-			{checkoutScope}
-			ownedId={sessionProjection.activeOwnedId}
-			onRootUnavailable={handleActiveRootUnavailable}
-			expandedPathsByRoot={sessionProjection.activeWorkspace?.expandedPathsByRoot ?? {}}
-			onExpandedPathsChange={rememberFileTreeExpandedPaths}
-			filesInspectionRoot={checkoutScope.filesInspectionRoot}
-			sourceControlInspectionRoot={checkoutScope.gitInspectionRoot}
+			activeId={controlledSelectionOwnedId === null ? rightTab : "files"}
+			onSelect={(id) => {
+				if (controlledSelectionOwnedId === null || id === "files") selectRightTab(id);
+			}}
+			root={controlledSelectionOwnedId === null
+				? checkoutScope.durableSessionRoot
+				: ""}
+			rootAvailable={controlledSelectionOwnedId === null
+				? activeRootAvailable
+				: false}
+			checkoutScope={controlledSelectionOwnedId === null ? checkoutScope : controlledCheckoutScope}
+			ownedId={controlledSelectionOwnedId === null ? sessionProjection.activeOwnedId : null}
+			filesRoot={filesProjectionRoot}
+			filesOwnedId={filesProjectionOwnedId}
+			onRootUnavailable={sessionSelectionLayers.hasTreeProjection ? undefined : handleActiveRootUnavailable}
+				expandedPathsByRoot={sessionSelectionLayers.hasTreeProjection
+				? controlledExpandedPathsByRoot
+				: sessionProjection.activeWorkspace?.expandedPathsByRoot ?? {}}
+			onExpandedPathsChange={sessionSelectionLayers.hasTreeProjection
+				? rememberControlledFileTreeExpandedPaths
+				: rememberFileTreeExpandedPaths}
+			filesInspectionRoot={sessionSelectionLayers.hasTreeProjection
+				? null
+				: checkoutScope.filesInspectionRoot}
+			sourceControlInspectionRoot={controlledSelectionOwnedId === null ? checkoutScope.gitInspectionRoot : null}
 			onFilesInspectionRootChange={(root) => rememberInspectionRoot('files', root)}
 			onSourceControlInspectionRootChange={(root) => rememberInspectionRoot('source-control', root)}
 			onUseSessionCheckout={async (root) => {
@@ -2154,32 +2273,32 @@
 		/>
 {/snippet}
 {#snippet centerTabsArea()}
-	<CenterCornerTabs activeId={centerTab} onSelect={selectCenterTab} />
+	<CenterCornerTabs
+		activeId={centerTab}
+		onSelect={(id) => {
+			if (controlledSelectionOwnedId === null || id === "session" || id === "editor") {
+				selectCenterTab(id);
+			}
+		}}
+	/>
 {/snippet}
 {#snippet dockArea()}
 	<DockPanel onReset={resetLayout} onProblemsLocationChange={applyProblemsLocation} />
 {/snippet}
 {#snippet sessionArea()}
-	<!-- `onHostLayout` is what re-measures a terminal: a terminal is built inside
-       a hidden host, where one character measures zero pixels wide, so the fit
-       that runs when the panel is shown does nothing. The surface says when a
-       host appears, changes size, or the terminal font lands. -->
-	<!-- A draft is LAYERED over the conversation rather than replacing it: the
-       active terminal host lives inside this component, and unmounting it to
-       show a draft would take the running session off screen. -->
 	<div class="session-area">
-			<ConversationSurface
-			bind:this={conversationSurface}
-			owned={rail.owned}
-			activeOwnedId={sessionProjection.activeOwnedId}
-			activeOrigin={rail.owned.find((session) => session.ownedId === sessionProjection.activeOwnedId)?.origin}
-				rootAvailable={activeRootAvailable}
-			{registerHost}
-			onHostLayout={scheduleRefit}
-			onOpenNativeCli={openNativeCli}
-			onForkNativeCli={forkNativeCli}
-			onReturnToStructured={returnToStructured}
-		/>
+		{#if sessionSelectionLayers.hasChatProjection}
+			{#key sessionSelectionLayers.chatOwnedId}
+				<ConversationHistorySurface
+					owned={rail.owned}
+					activeOwnedId={sessionSelectionLayers.chatOwnedId}
+				/>
+			{/key}
+		{:else}
+			<div class="conversation-data-isolation" aria-label="Conversation history loading">
+				<p>Conversation history is loading. Composer and editor remain isolated.</p>
+			</div>
+		{/if}
 		{#if draftOpen}
 			<DraftSessionSurface
 				sessionRoots={deriveThreadStartProjects(rail.owned.map((session) => session.projectPath ?? session.cwd)).map(
@@ -2196,19 +2315,9 @@
 	</div>
 {/snippet}
 {#snippet editorArea()}
-	<!-- Opening a file is a request to READ it: bring the editor forward, not load it out of sight. -->
-		<EditorPanel
-		bind:this={editorPanel}
-			showing={centerTab === "editor"}
-			rootAvailable={activeRootAvailable}
-		onCloseAllEditors={clearAllEditorWorkspaceRecords}
-		onStartWorkspaceCommand={(request) => {
-			void onStartStack({ stackId: request.id, ...request });
-		}}
-		onFileOpened={() => {
-			selectCenterTab("editor");
-		}}
-	/>
+	<div class="editor-isolation-baseline" aria-label="Editor isolated for memory testing">
+		<p>The editor is temporarily isolated while its lifecycle is measured.</p>
+	</div>
 {/snippet}
 <!-- The changes to whichever file source control has selected. `GitDiffView`
      reads the selected file itself and lives here as a tab of its own — which
@@ -2350,6 +2459,8 @@
      keeps its own size and its terminals keep their hosts. */
 	.session-area {
 		position: relative;
+		display: flex;
+		flex-direction: column;
 		width: 100%;
 		height: 100%;
 		min-height: 0;

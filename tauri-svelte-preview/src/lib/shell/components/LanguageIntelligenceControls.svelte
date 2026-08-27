@@ -150,38 +150,6 @@
     padding: 0;
   }
 
-  /* ── The three states ────────────────────────────────────────────────────
-     Colour is the TRUTH channel. The knob has already moved by the time any of
-     these apply; what changes here is only what the control claims. */
-
-  /* Up and answering. */
-  .language-switch[data-tone='running'] {
-    color: var(--color-good);
-  }
-
-  .language-switch[data-tone='running'] :global([data-slot='switch']) {
-    background: var(--switch-track-running);
-  }
-
-  /* Asked for, not there yet: starting, reading the project, or a build that
-     cannot say. The switch is to the right and the colour is a warning. */
-  .language-switch[data-tone='waiting'] {
-    color: var(--color-attention);
-  }
-
-  .language-switch[data-tone='waiting'] :global([data-slot='switch']) {
-    background: var(--switch-track-waiting);
-  }
-
-  /* Off: read mode, nothing started, nothing claimed. */
-  .language-switch[data-tone='off'] {
-    color: var(--color-idle);
-  }
-
-  .language-switch[data-tone='off'] :global([data-slot='switch']) {
-    background: var(--switch-track-off);
-  }
-
   /* The knob is one colour in every state — it is the position that carries
    * meaning here, and a knob that changed colour too would say it twice. */
   .language-switch :global([data-slot='switch-thumb']) {

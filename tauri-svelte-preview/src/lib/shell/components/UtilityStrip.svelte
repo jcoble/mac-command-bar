@@ -63,9 +63,10 @@
     if (!import.meta.env.DEV) return '';
     return [
       `chat ${resourceDiagnostics.loadedConversationProjections}/${formatResourceBytes(resourceDiagnostics.loadedConversationEventBytes)}`,
-      `snap ${resourceDiagnostics.conversationSnapshotReadsInFlight}`,
+      `snap ${resourceDiagnostics.conversationSnapshotReadsInFlight}/${resourceDiagnostics.conversationSnapshotReadsInvalidated} stale`,
+      `turns ${resourceDiagnostics.conversationRenderedRows}/${resourceDiagnostics.conversationVirtualRows} · cache ${resourceDiagnostics.conversationMeasuredElementCacheEntries}/${resourceDiagnostics.conversationMeasuredSizeCacheEntries}`,
       `CM ${resourceDiagnostics.codeMirrorEditorStates}/${formatResourceBytes(resourceDiagnostics.openTabDocumentBytes)}`,
-      `source ${resourceDiagnostics.editorSourceReadsInFlight}/${formatResourceBytes(resourceDiagnostics.editorSourceReadBytesInFlight)}`
+      `source ${resourceDiagnostics.editorSourceReadsInFlight}/${resourceDiagnostics.editorSourceReadsInvalidated} stale/${formatResourceBytes(resourceDiagnostics.editorSourceReadBytesInFlight)}`
     ].join(' · ');
   });
 

@@ -1,9 +1,10 @@
 //! Heavy Tauri commands are async because synchronous command bodies run on the UI thread.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -556,6 +557,21 @@ impl SourceScanRegistry {
     }
 }
 
+#[derive(Default)]
+struct SourceFileReadOwner {
+    generation: Arc<AtomicU64>,
+}
+
+impl SourceFileReadOwner {
+    fn advance(&self, generation: u64) -> bool {
+        generation >= self.generation.fetch_max(generation, Ordering::AcqRel)
+    }
+
+    fn generation(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.generation)
+    }
+}
+
 struct SourceScanCancellation {
     cancelled: Arc<AtomicBool>,
     progress: Option<Arc<dyn Fn(SourceScanStats) + Send + Sync>>,
@@ -776,10 +792,27 @@ fn source_scan_cancellation_for_command(
 }
 
 #[tauri::command]
-async fn read_source_file(path: String) -> Result<SourcePreview, String> {
-    tauri::async_runtime::spawn_blocking(move || read_source_file_sync(PathBuf::from(path)))
-        .await
-        .map_err(|error| format!("Source preview task failed: {error}"))?
+async fn read_source_file(
+    owner: tauri::State<'_, SourceFileReadOwner>,
+    path: String,
+    generation: u64,
+) -> Result<Option<SourcePreview>, String> {
+    if !owner.advance(generation) {
+        return Ok(None);
+    }
+    let current_generation = owner.generation();
+    tauri::async_runtime::spawn_blocking(move || {
+        read_source_file_sync_while(PathBuf::from(path), || {
+            current_generation.load(Ordering::Acquire) == generation
+        })
+    })
+    .await
+    .map_err(|error| format!("Source preview task failed: {error}"))?
+}
+
+#[tauri::command]
+fn cancel_source_file_reads(owner: tauri::State<'_, SourceFileReadOwner>, generation: u64) {
+    owner.advance(generation);
 }
 
 /// Read one UTF-8 source file for native C# Peek, confined to the canonical
@@ -2490,6 +2523,14 @@ fn collect_source_files(
 }
 
 fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
+    read_source_file_sync_while(path, || true)?
+        .ok_or_else(|| "Source read was cancelled".to_string())
+}
+
+fn read_source_file_sync_while(
+    path: PathBuf,
+    keep_reading: impl Fn() -> bool,
+) -> Result<Option<SourcePreview>, String> {
     let path_ref = path.as_path();
     let metadata = std::fs::metadata(path_ref)
         .map_err(|error| format!("Could not read {}: {error}", path_ref.display()))?;
@@ -2503,7 +2544,32 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
         ));
     }
 
-    let content = std::fs::read_to_string(path_ref)
+    if !keep_reading() {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path_ref)
+        .map_err(|error| format!("Could not read source file as UTF-8: {error}"))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        if !keep_reading() {
+            return Ok(None);
+        }
+        let read = file
+            .read(&mut chunk)
+            .map_err(|error| format!("Could not read source file as UTF-8: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+            return Err(format!("Source file is too large: {} bytes", bytes.len()));
+        }
+    }
+    if !keep_reading() {
+        return Ok(None);
+    }
+    let content = String::from_utf8(bytes)
         .map_err(|error| format!("Could not read source file as UTF-8: {error}"))?;
     let file_name = path_ref
         .file_name()
@@ -2527,7 +2593,7 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
         preview.language,
         preview.line_count
     );
-    Ok(preview)
+    Ok(Some(preview))
 }
 
 fn write_source_file_sync(path: PathBuf, content: String) -> Result<SourcePreview, String> {
@@ -6377,6 +6443,7 @@ fn main() {
     install_panic_hook();
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
+        .manage(SourceFileReadOwner::default())
         .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
         .manage(projection_streams::ProjectionStreams::default())
@@ -6470,6 +6537,7 @@ fn main() {
             cancel_source_scan,
             validate_project_root,
             read_source_file,
+            cancel_source_file_reads,
             read_native_csharp_file,
             write_source_file,
             open_source_file,
@@ -6596,6 +6664,8 @@ fn main() {
             agent_conversation::agent_conversation_clear_session_draft,
             agent_conversation::write_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace,
+            agent_conversation::read_agent_conversation_workspace_expanded_paths,
+            agent_conversation::write_agent_conversation_workspace_expanded_paths,
             agent_conversation::delete_agent_conversation_workspace,
             agent_conversation::clear_agent_conversation_workspace_editors,
             agent_conversation::clear_agent_conversation_workspace_tabs,
@@ -6614,6 +6684,7 @@ fn main() {
             agent_conversation::close_agent_conversation,
             agent_conversation::delete_agent_conversation_session,
             agent_conversation::read_agent_conversation_snapshot,
+            agent_conversation::cancel_agent_conversation_snapshot,
             agent_conversation::list_agent_conversation_sessions,
             agent_conversation::list_agent_conversation_events,
             agent_conversation::list_agent_conversation_events_before,

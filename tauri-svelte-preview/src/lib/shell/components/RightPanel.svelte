@@ -39,6 +39,9 @@
     checkoutScope?: CheckoutScope;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
+    /** Optional tree-only projection while rail selection is rebuilt in layers. */
+    filesRoot?: string;
+    filesOwnedId?: string | null;
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(root: string, paths: readonly string[]): void;
@@ -55,6 +58,8 @@
     rootAvailable = true,
     checkoutScope,
     ownedId,
+    filesRoot,
+    filesOwnedId,
     onRootUnavailable,
     expandedPathsByRoot,
     onExpandedPathsChange,
@@ -73,8 +78,8 @@
     <div class="panel-body" class:showing={activeId === 'files'} aria-hidden={activeId !== 'files'}>
       <FilesPanel
         visible={activeId === 'files'}
-        {root}
-        {ownedId}
+        root={filesRoot ?? root}
+        ownedId={filesOwnedId === undefined ? ownedId : filesOwnedId}
         {onRootUnavailable}
         {expandedPathsByRoot}
         {onExpandedPathsChange}

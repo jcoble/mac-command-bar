@@ -32,6 +32,22 @@ function localSourceBridgePlugin(): Plugin {
   };
 }
 
+function freshDevModulesPlugin(): Plugin {
+  return {
+    name: "mac-command-bar-fresh-dev-modules",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.headers["sec-fetch-dest"] === "script") {
+          delete request.headers["if-modified-since"];
+          delete request.headers["if-none-match"];
+          response.setHeader("cache-control", "no-store");
+        }
+        next();
+      });
+    },
+  };
+}
+
 /**
  * Upstream UI CSS ships three relational-selector patterns. Registering even
  * one makes WebKit invalidate it after every transcript DOM insertion, so the
@@ -301,6 +317,7 @@ export default defineConfig({
   // browser tab, so the panes and the commit graph can be looked at without the
   // desktop app. It cannot change a repository — see `src/lib/server/gitBridge.ts`.
   plugins: [
+    freshDevModulesPlugin(),
     relationalSelectorPurgePlugin(),
     gitBridgePlugin(),
     localSourceBridgePlugin(),

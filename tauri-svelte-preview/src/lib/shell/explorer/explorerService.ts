@@ -11,11 +11,6 @@ import {
 } from '../../tauriSource.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
-  forgetProjectSourceRecords,
-  setProjectSourceRecords
-} from '../projectSourceIndex.ts';
-import { sourceRecordFromPath } from '../editor/sourceRecordFromPath.ts';
-import {
   applyDirectoryResult,
   beginScan,
   canonicalPath,
@@ -23,7 +18,6 @@ import {
   endScan,
   explorer,
   explorerScanGeneration,
-  explorerNodes,
   failScan,
   loadedExplorerDirectories,
   loadedExplorerDirectoryDepth,
@@ -63,15 +57,6 @@ function checkoutWasDeleted(message: string): boolean {
     (normalized.includes('no such file or directory') || normalized.includes('os error 2'));
 }
 
-function publishLoadedFiles(root: string): void {
-  setProjectSourceRecords(
-    root,
-    explorerNodes()
-      .filter((node) => !node.isDirectory)
-      .map((node) => sourceRecordFromPath(root, node.path))
-  );
-}
-
 export async function loadDirectory(directory: string, depth: number): Promise<boolean> {
   const root = canonicalPath(explorer.root ?? '');
   const target = canonicalPath(directory);
@@ -91,7 +76,6 @@ export async function loadDirectory(directory: string, depth: number): Promise<b
       return false;
     }
     applyDirectoryResult(target, depth, entries);
-    publishLoadedFiles(root);
     return true;
   } catch (error) {
     if (!isCurrentDirectoryRequest(target, root, generation, requestId)) return false;
@@ -141,17 +125,13 @@ export function unloadDirectory(directory: string): void {
     if (isExplorerPathAtOrBelow(pendingPath, target)) directoryRequests.delete(pendingPath);
   }
   discardDirectory(target);
-  if (explorer.root) publishLoadedFiles(explorer.root);
 }
 
 export async function scanRoot(root: string): Promise<void> {
   const target = canonicalPath(root);
   if (!target) return;
-  const previousRoot = explorer.root;
   directoryRequests.clear();
   resetExplorer();
-  if (previousRoot && previousRoot !== target) forgetProjectSourceRecords(previousRoot);
-  forgetProjectSourceRecords(target);
   beginScan(target);
   const generation = explorerScanGeneration();
   try {
@@ -165,7 +145,6 @@ export function activate(root: string | null, checkoutDeleted = false): void {
   const target = canonicalPath(root ?? '');
   if (!target) {
     directoryRequests.clear();
-    if (explorer.root) forgetProjectSourceRecords(explorer.root);
     if (checkoutDeleted) markCheckoutDeleted();
     else resetExplorer();
     return;

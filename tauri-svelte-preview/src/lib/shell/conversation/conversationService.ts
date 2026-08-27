@@ -57,6 +57,7 @@ import {
   listAgentConversationEventsAfterFromTauri,
   extendAgentConversationImportFromTauri,
   readAgentConversationSnapshotFromTauri,
+  cancelAgentConversationSnapshotFromTauri,
   changeAgentConversationCheckoutFromTauri,
   writeTerminalSessionFromTauri,
   registerAgentConversationStream,
@@ -79,7 +80,7 @@ import { ConversationDraftPersistence } from './conversationDraftPersistence.ts'
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import {
   revokeTrackedObjectUrl,
-  setConversationSnapshotReadsInFlight,
+  setConversationSnapshotReadDiagnostics,
   trackTauriListener
 } from '../resourceDiagnostics.svelte.ts';
 
@@ -89,6 +90,7 @@ let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
 let conversationEventsGeneration = 0;
 type ConversationSnapshotRead = {
+  invalidated: boolean;
   readVersion: number;
   token: object;
   work: Promise<void>;
@@ -98,6 +100,13 @@ const resyncing = new Map<string, ConversationSnapshotRead>();
 const ensuring = new Map<string, { signature: string; work: Promise<AgentConversationConnection | null> }>();
 const terminalProjections = new Map<string, string>();
 const readVersions = new Map<string, number>();
+
+function publishConversationSnapshotReadDiagnostics(): void {
+  setConversationSnapshotReadDiagnostics(
+    resyncing.size,
+    [...resyncing.values()].filter((read) => read.invalidated).length
+  );
+}
 const ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY = 'acpLiveConversationEvents';
 const sessionDraftPersistence = new ConversationDraftPersistence(
   {
@@ -235,6 +244,12 @@ export function cleanupConversationAttachmentPreview(attachment: ConversationAtt
 /** Drop frontend-only conversation data after its workspace has been saved. */
 export function releaseConversationForRead(ownedId: string): void {
   readVersions.set(ownedId, (readVersions.get(ownedId) ?? 0) + 1);
+  const activeRead = resyncing.get(ownedId);
+  if (activeRead) {
+    activeRead.invalidated = true;
+    publishConversationSnapshotReadDiagnostics();
+    void cancelAgentConversationSnapshotFromTauri().catch(() => undefined);
+  }
   cancelChildConversationTranscriptRead(ownedId);
   const state = getConversationSession(ownedId);
   if (!state) return;
@@ -552,15 +567,18 @@ async function resyncConversation(ownedId: string): Promise<void> {
   })().finally(() => {
     if (resyncing.get(ownedId)?.token === token) {
       resyncing.delete(ownedId);
-      setConversationSnapshotReadsInFlight(resyncing.size);
+      publishConversationSnapshotReadDiagnostics();
     }
   });
-  resyncing.set(ownedId, { readVersion, token, work });
-  setConversationSnapshotReadsInFlight(resyncing.size);
+  resyncing.set(ownedId, { invalidated: false, readVersion, token, work });
+  publishConversationSnapshotReadDiagnostics();
   return work;
 }
 
-export async function loadConversationForRead(ownedId: string): Promise<void> {
+export async function loadConversationForRead(
+  ownedId: string,
+  includeAttachments = true
+): Promise<void> {
   const existing = resyncing.get(ownedId);
   if (existing) {
     try {
@@ -568,11 +586,11 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
     } catch (error) {
       if (!getConversationSession(ownedId)) return;
       if (readVersions.get(ownedId) === existing.readVersion) throw error;
-      return loadConversationForRead(ownedId);
+      return loadConversationForRead(ownedId, includeAttachments);
     }
     if (!getConversationSession(ownedId)) return;
     if (readVersions.get(ownedId) === existing.readVersion) return;
-    return loadConversationForRead(ownedId);
+    return loadConversationForRead(ownedId, includeAttachments);
   }
   const generation = getConversationSession(ownedId)?.generation ?? 0;
   const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
@@ -587,15 +605,17 @@ export async function loadConversationForRead(ownedId: string): Promise<void> {
       || current?.generation !== generation
     ) return;
     applyAgentConversationSnapshot(snapshot);
-    void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
+    if (includeAttachments) {
+      void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
+    }
   })().finally(() => {
     if (resyncing.get(ownedId)?.token === token) {
       resyncing.delete(ownedId);
-      setConversationSnapshotReadsInFlight(resyncing.size);
+      publishConversationSnapshotReadDiagnostics();
     }
   });
-  resyncing.set(ownedId, { readVersion, token, work });
-  setConversationSnapshotReadsInFlight(resyncing.size);
+  resyncing.set(ownedId, { invalidated: false, readVersion, token, work });
+  publishConversationSnapshotReadDiagnostics();
   return work;
 }
 

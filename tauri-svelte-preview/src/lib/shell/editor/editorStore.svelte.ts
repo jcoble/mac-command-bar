@@ -12,8 +12,8 @@
  * 2. **No `$effect`, no derived reads that do work.** Every decision is a pure
  *    function in `editorStoreOps.ts`; this module assigns its result.
  *
- * Nothing here is persisted this slice: reopening the shell starts with an
- * empty editor, which is also what keeps launch free of file reads.
+ * SQLite persists only lightweight tab metadata, dirty drafts and view state.
+ * Clean file contents are still read from disk only when their tab is shown.
  */
 import type { SourcePreview, SourceRecord, SourceSymbol } from '../../sourceData.ts';
 import {
@@ -178,7 +178,7 @@ export function clearEditorFileLoading(path: string): void {
   });
 }
 
-/** Keep an unsaved Monaco edit with the session that owns this editor tab. */
+/** Keep an unsaved CodeMirror edit with the session that owns this editor tab. */
 export function setEditorFileDraft(path: string, content: string): void {
   const file = editorFileFor(path);
   if (!file?.preview) return;
@@ -206,12 +206,12 @@ export function setEditorFileError(path: string, message: string): void {
   });
 }
 
-/** Ask Monaco to scroll `path` to `line` (pass `null` to stop asking). */
+/** Ask CodeMirror to scroll `path` to `line` (pass `null` to stop asking). */
 export function revealEditorLine(path: string, line: number | null): void {
   editorState.openFiles = revealLineInOpenFile(editorState.openFiles, path, line);
 }
 
-/** Symbols Monaco extracted from the file on screen. */
+/** Symbols CodeMirror/LSP extracted from the file on screen. */
 export function setEditorSymbols(symbols: SourceSymbol[]): void {
   editorState.symbols = symbols;
 }

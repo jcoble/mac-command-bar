@@ -69,7 +69,7 @@ export interface SessionCenterWorkspace {
 export interface SessionWorkspaceFileState {
   /** Unsaved text only. Saved file contents are always read from disk. */
   draftContent?: string;
-  /** Monaco cursor, scroll and folding state. */
+  /** CodeMirror cursor, scroll and folding state. */
   viewState?: object;
 }
 

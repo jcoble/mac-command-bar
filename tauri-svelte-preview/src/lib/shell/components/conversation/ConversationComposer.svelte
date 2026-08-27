@@ -225,7 +225,7 @@
   });
 
   $effect(() => {
-    if (!composerArea) return;
+    if (!composerArea || !onHeightChange) return;
     let frame: number | null = null;
     let publishedHeight = -1;
     const publish = (): void => {
@@ -233,7 +233,7 @@
       const nextHeight = Math.ceil(composerArea?.getBoundingClientRect().height ?? 0);
       if (nextHeight === publishedHeight) return;
       publishedHeight = nextHeight;
-      onHeightChange?.(nextHeight);
+      onHeightChange(nextHeight);
     };
     const observer = new ResizeObserver(() => {
       if (frame === null) frame = requestTrackedAnimationFrame(publish);

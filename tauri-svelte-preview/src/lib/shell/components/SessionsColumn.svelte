@@ -3,8 +3,8 @@
    * SessionsColumn.svelte — the /next shell's left column.
    *
    * The Working/Done/Settled list is owned by SessionRail. This wrapper keeps
-   * the column-width strip, the header controls, and the remove confirmation
-   * while forwarding every session intent to the page-owned rail authorities.
+   * the column-width strip and the header controls. Session rows are currently
+   * inert while their selection lifecycle is rebuilt one responsibility at a time.
    */
   import Bot from '@lucide/svelte/icons/bot';
   import Archive from '@lucide/svelte/icons/archive';
@@ -16,7 +16,6 @@
   import List from '@lucide/svelte/icons/list';
   import { onMount } from 'svelte';
 
-  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
@@ -27,7 +26,6 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { resolveOwnedSessionProject, type OwnedSession } from '$lib/shell/ownedSessions';
   import { AGENT_ICONS } from '$lib/shell/agentIcons';
-  import { registerSessionRestart } from '$lib/shell/conversation/sessionRestart.ts';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
   import SegmentedTabs from './SegmentedTabs.svelte';
   import SessionRail from './SessionRail.svelte';
@@ -54,30 +52,18 @@
     owned: OwnedSession[];
     activeOwnedId: string | null;
     collapsed: boolean;
-    onSelect(ownedId: string): void;
-    onRestart(ownedId: string): void;
-    onComplete(ownedId: string): void;
-    onReopen(ownedId: string): void;
-    onSettle(ownedId: string): void;
-    onUnsettle(ownedId: string): void;
-    onRemove(ownedId: string): void;
     onNewSession(): void;
     onCollapse(collapsed: boolean): void;
+    onSelectSession?(ownedId: string): void | Promise<void>;
   }
 
   let {
     owned,
     activeOwnedId,
     collapsed,
-    onSelect,
-    onRestart,
-    onComplete,
-    onReopen,
-    onSettle,
-    onUnsettle,
-    onRemove,
     onNewSession,
-    onCollapse
+    onCollapse,
+    onSelectSession
   }: Props = $props();
 
   const cells = $derived(stripCells(owned, activeOwnedId));
@@ -99,8 +85,6 @@
     { value: 'done', label: 'Done', icon: Check },
     { value: 'settled', label: 'Settled', icon: Archive }
   ] as const;
-
-  $effect(() => registerSessionRestart(onRestart, onSelect));
 
   onMount(() => {
     let mounted = true;
@@ -134,10 +118,6 @@
     setViewOptions({ visibleStatuses });
   }
 
-  /** The session the remove confirmation is about, or null while it is shut. */
-  let removing = $state<OwnedSession | null>(null);
-  let removeOpen = $state(false);
-
   /** Searching sessions means the full Session History tab, not a rail popover. */
   export function openFinder(): void {
     openSessionLibrary();
@@ -168,24 +148,6 @@
     filterText = '';
   }
 
-  function askAboutRemoving(ownedId: string): void {
-    removing = owned.find((session) => session.ownedId === ownedId) ?? null;
-    removeOpen = removing !== null;
-  }
-
-  function removeNow(): void {
-    const session = removing;
-    removeOpen = false;
-    removing = null;
-    if (session) onRemove(session.ownedId);
-  }
-
-  function removeQuestion(session: OwnedSession): string {
-    return session.state !== 'exited'
-      ? 'Its terminal is still running and will be closed. The transcript stays on disk.'
-      : 'The transcript stays on disk.';
-  }
-
   const ACTION_CLASS =
     'text-[var(--color-text-2)] hover:text-foreground hover:bg-[var(--color-elevated)]';
   const TOOLTIP_CLASS =
@@ -211,41 +173,35 @@
   </IconButton>
 {/snippet}
 
-<Tooltip.Provider delayDuration={250}>
   {#if collapsed}
     <div class="flex h-full w-full flex-col items-center gap-1 overflow-hidden py-2">
-      {@render action('Open the sessions column', PanelLeftOpen, () => onCollapse(false))}
+      <Tooltip.Provider delayDuration={250}>
+        {@render action('Open the sessions column', PanelLeftOpen, () => onCollapse(false))}
+      </Tooltip.Provider>
 
       <div class="mt-1 flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto">
         {#each cells as cell (cell.ownedId)}
           {@const CellIcon = AGENT_ICONS[cell.agent]}
-          <Tooltip.Root>
-            <Tooltip.Trigger
-              class={cn(
-                'relative flex size-9 shrink-0 items-center justify-center rounded-md border',
-                'border-transparent text-[var(--color-text-2)] transition-colors',
-                'hover:bg-[var(--color-elevated)] hover:text-foreground',
-                'focus-visible:ring-3 focus-visible:ring-ring/50 outline-none',
-                cell.done && 'opacity-55',
-                cell.active &&
-                  'border-primary/45 bg-[var(--color-elevated)] text-foreground opacity-100'
-              )}
-              aria-label={cell.label}
-              onclick={() => onSelect(cell.ownedId)}
-            >
-              <CellIcon class="size-4" aria-hidden="true" />
-              <span class="state-dot absolute right-1 bottom-1" data-state={cell.state} aria-hidden="true"></span>
-            </Tooltip.Trigger>
-            <Tooltip.Content side="right" class={TOOLTIP_CLASS} arrowClasses={TOOLTIP_ARROW_CLASS}>
-              {cell.label}{cell.done ? ' · done' : ''}
-            </Tooltip.Content>
-          </Tooltip.Root>
+          <div
+            class={cn(
+              'relative flex size-9 shrink-0 items-center justify-center rounded-md border',
+              'border-transparent text-[var(--color-text-2)]',
+              cell.done && 'opacity-55',
+              cell.active &&
+                'border-primary/45 bg-[var(--color-elevated)] text-foreground opacity-100'
+            )}
+            aria-label={cell.label}
+          >
+            <CellIcon class="size-4" aria-hidden="true" />
+            <span class="state-dot absolute right-1 bottom-1" data-state={cell.state} aria-hidden="true"></span>
+          </div>
         {/each}
       </div>
     </div>
   {:else}
     <div data-testid="sessions-column" class="sessions-column flex h-full min-h-0 flex-col text-[var(--color-text)]">
-      <header class="sessions-header">
+      <Tooltip.Provider delayDuration={250}>
+        <header class="sessions-header">
         <h2 class="text-[14px] font-semibold text-[var(--color-text)]">Sessions</h2>
         <div class="header-actions ml-auto flex items-center gap-2">
           <IconButton
@@ -377,6 +333,7 @@
           {@render action('New session', Plus, onNewSession, 'text-[var(--color-accent)]')}
         </div>
       </header>
+      </Tooltip.Provider>
 
       {#if filterOpen}
         <div class="filter-strip">
@@ -396,38 +353,11 @@
         <SessionRail
           sessions={filtered}
           options={viewOptions}
-          {activeOwnedId}
-          {onSelect}
-          {onComplete}
-          {onReopen}
-          {onSettle}
-          {onUnsettle}
-          onAskRemove={askAboutRemoving}
+          {onSelectSession}
         />
       </div>
     </div>
   {/if}
-
-  <AlertDialog.Root bind:open={removeOpen}>
-    <AlertDialog.Content class="rounded-lg bg-background text-foreground ring-[var(--color-border)] shadow-[var(--shadow-lg)]">
-      <AlertDialog.Header>
-        <AlertDialog.Title class="text-[14px] leading-[1.4] font-semibold">
-          Remove “{removing ? sessionLabel(removing) : ''}” from your sessions?
-        </AlertDialog.Title>
-        <AlertDialog.Description class="text-[13px] leading-[1.5] text-[var(--color-text-2)]">
-          {removing ? removeQuestion(removing) : ''}
-        </AlertDialog.Description>
-      </AlertDialog.Header>
-      <AlertDialog.Footer class="bg-transparent">
-        <AlertDialog.Cancel size="sm" class="text-[13px]">Keep</AlertDialog.Cancel>
-        <AlertDialog.Action size="sm" variant="destructive" class="text-[13px]" onclick={removeNow}>
-          Remove
-        </AlertDialog.Action>
-      </AlertDialog.Footer>
-    </AlertDialog.Content>
-  </AlertDialog.Root>
-
-</Tooltip.Provider>
 
 <style>
   .state-dot {

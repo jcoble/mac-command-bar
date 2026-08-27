@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
     conversationFileLinkProvenance,
@@ -19,6 +20,7 @@
   import UserInputItem from './UserInputItem.svelte';
   import ErrorItem from './ErrorItem.svelte';
   import CompactionItem from './CompactionItem.svelte';
+  import { trackConversationTimelineItem } from '$lib/shell/resourceDiagnostics.svelte.ts';
 
   interface Props {
     item: ConversationDisplayItem;
@@ -37,6 +39,7 @@
   const visible = $derived(conversationItemHasVisibleContent(item));
   const fileLinkProvenance = $derived(conversationFileLinkProvenance(item));
   const openFileLink = (path: string): void => onFileLink?.(path, fileLinkProvenance);
+  onMount(trackConversationTimelineItem);
 </script>
 
 {#if visible}

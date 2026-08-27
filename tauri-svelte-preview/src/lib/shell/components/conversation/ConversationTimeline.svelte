@@ -164,7 +164,8 @@
     getScrollElement: () => host,
     getItemKey: (index) => rowKey(renderedGroups[index], index),
     estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
-    overscan: 6
+    overscan: 6,
+    useAnimationFrameWithResizeObserver: true
   });
 
   let timelineMounted = false;
@@ -173,6 +174,7 @@
     setConversationTimelineDiagnostics(
       renderedGroups.length,
       $virtualizer.getVirtualItems().length,
+      $virtualizer.elementsCache.size,
       $virtualizer.itemSizeCache.size
     );
   }
@@ -182,7 +184,7 @@
     publishTimelineDiagnostics();
     return () => {
       timelineMounted = false;
-      setConversationTimelineDiagnostics(0, 0, 0);
+      setConversationTimelineDiagnostics(0, 0, 0, 0);
     };
   });
 
@@ -205,13 +207,19 @@
       getScrollElement: () => element,
       getItemKey: (index) => rowKey(renderedGroups[index], index),
       estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
-      overscan: 6
+      overscan: 6,
+      useAnimationFrameWithResizeObserver: true
     });
     if (windowChanged) {
       // Row keys include the session/child window. TanStack does not prune old
       // measured sizes merely because getItemKey starts returning new keys.
       $virtualizer.measure();
-      publishTimelineDiagnostics();
+      void tick().then(() => {
+        // Session replacement removes the old rows during this Svelte flush.
+        // Sweep only nodes that are now detached; current rows stay observed.
+        $virtualizer.measureElement(null);
+        publishTimelineDiagnostics();
+      });
     }
   });
   const anchoredUserIndex = $derived(anchoredUserItemId
@@ -672,8 +680,14 @@
     publishTimelineDiagnostics();
     return {
       destroy(): void {
-        $virtualizer.measureElement(null);
-        publishTimelineDiagnostics();
+        // Svelte destroys the action before removing its element. TanStack's
+        // null cleanup only evicts elements that are already disconnected, so
+        // running it synchronously leaves this row and its message subtree in
+        // elementsCache. Wait until Svelte has detached the row, then sweep it.
+        queueMicrotask(() => {
+          $virtualizer.measureElement(null);
+          publishTimelineDiagnostics();
+        });
       }
     };
   }

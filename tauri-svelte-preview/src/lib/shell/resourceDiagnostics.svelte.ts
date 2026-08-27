@@ -8,10 +8,14 @@ export const resourceDiagnostics = $state({
   loadedConversationProjections: 0,
   loadedConversationEventBytes: 0,
   conversationSnapshotReadsInFlight: 0,
+  conversationSnapshotReadsInvalidated: 0,
   loadedChildTranscriptBytes: 0,
   conversationRenderedRows: 0,
   conversationVirtualRows: 0,
   conversationMeasuredElementCacheEntries: 0,
+  conversationMeasuredSizeCacheEntries: 0,
+  conversationTimelineItems: 0,
+  conversationMessageRenderers: 0,
   sentAttachmentMapEntries: 0,
   sentAttachmentCount: 0,
   tauriRootListeners: 0,
@@ -31,6 +35,7 @@ export const resourceDiagnostics = $state({
   codeMirrorUndoDepth: 0,
   openTabDocumentBytes: 0,
   editorSourceReadsInFlight: 0,
+  editorSourceReadsInvalidated: 0,
   editorSourceReadBytesInFlight: 0,
   mergeViews: 0,
   mergeDocBytes: 0,
@@ -137,23 +142,45 @@ export function setConversationProjectionDiagnostics(
   );
 }
 
-export function setConversationSnapshotReadsInFlight(count: number): void {
+export function setConversationSnapshotReadDiagnostics(count: number, invalidated: number): void {
   if (!import.meta.env.DEV) return;
   resourceDiagnostics.conversationSnapshotReadsInFlight = Math.max(0, Math.trunc(count));
+  resourceDiagnostics.conversationSnapshotReadsInvalidated = Math.max(0, Math.trunc(invalidated));
 }
 
 export function setConversationTimelineDiagnostics(
   renderedRows: number,
   virtualRows: number,
-  measuredRowCacheEntries: number
+  measuredElementCacheEntries: number,
+  measuredSizeCacheEntries: number
 ): void {
   if (!import.meta.env.DEV) return;
   resourceDiagnostics.conversationRenderedRows = Math.max(0, Math.trunc(renderedRows));
   resourceDiagnostics.conversationVirtualRows = Math.max(0, Math.trunc(virtualRows));
   resourceDiagnostics.conversationMeasuredElementCacheEntries = Math.max(
     0,
-    Math.trunc(measuredRowCacheEntries)
+    Math.trunc(measuredElementCacheEntries)
   );
+  resourceDiagnostics.conversationMeasuredSizeCacheEntries = Math.max(
+    0,
+    Math.trunc(measuredSizeCacheEntries)
+  );
+}
+
+function trackConversationComponent(key: 'conversationTimelineItems' | 'conversationMessageRenderers'): () => void {
+  if (!import.meta.env.DEV) return () => {};
+  resourceDiagnostics[key] += 1;
+  return () => {
+    resourceDiagnostics[key] = Math.max(0, resourceDiagnostics[key] - 1);
+  };
+}
+
+export function trackConversationTimelineItem(): () => void {
+  return trackConversationComponent('conversationTimelineItems');
+}
+
+export function trackConversationMessageRenderer(): () => void {
+  return trackConversationComponent('conversationMessageRenderers');
 }
 
 export function setSentAttachmentDiagnostics(
@@ -332,9 +359,10 @@ export function setOpenTabDocumentBytes(bytes: number): void {
   resourceDiagnostics.openTabDocumentBytes = Math.max(0, Math.trunc(bytes));
 }
 
-export function setEditorSourceReadDiagnostics(count: number, bytes: number): void {
+export function setEditorSourceReadDiagnostics(count: number, invalidated: number, bytes: number): void {
   if (!import.meta.env.DEV) return;
   resourceDiagnostics.editorSourceReadsInFlight = Math.max(0, Math.trunc(count));
+  resourceDiagnostics.editorSourceReadsInvalidated = Math.max(0, Math.trunc(invalidated));
   resourceDiagnostics.editorSourceReadBytesInFlight = Math.max(0, Math.trunc(bytes));
 }
 

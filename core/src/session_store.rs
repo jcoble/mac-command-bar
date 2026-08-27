@@ -1,10 +1,10 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{params, Connection, InterruptHandle, OptionalExtension, Row, TransactionBehavior};
 
 const SCHEMA_VERSION: i64 = 12;
 
@@ -253,6 +253,16 @@ pub struct AnnotationRow {
 
 pub struct SessionStore {
     connection: Mutex<Connection>,
+    interrupt_handle: InterruptHandle,
+    recent_events_read_active: AtomicBool,
+}
+
+struct RecentEventsReadGuard<'a>(&'a AtomicBool);
+
+impl Drop for RecentEventsReadGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 pub fn session_store_open_handles() -> usize {
@@ -795,9 +805,12 @@ impl SessionStore {
         add_evidence_artifact_schema(&connection)?;
         add_notion_task_projection_schema(&connection)?;
 
+        let interrupt_handle = connection.get_interrupt_handle();
         SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             connection: Mutex::new(connection),
+            interrupt_handle,
+            recent_events_read_active: AtomicBool::new(false),
         })
     }
 
@@ -972,6 +985,91 @@ impl SessionStore {
             )
             .optional()
             .map_err(|error| StoreError::sqlite("could not read the session workspace", error))
+    }
+
+    /// Reads only one checkout's expanded directory paths. The full workspace
+    /// snapshot remains in SQLite and never crosses into the active tree
+    /// projection just to restore folder disclosure state.
+    pub fn get_workspace_expanded_paths(&self, owned_id: &str, root: &str) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let snapshot: Option<String> = connection
+            .query_row(
+                "SELECT snapshot_json FROM session_workspaces WHERE owned_id = ?",
+                [owned_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not read tree expansion state", error))?;
+        let Some(snapshot) = snapshot else {
+            return Ok(Vec::new());
+        };
+        let value: serde_json::Value = serde_json::from_str(&snapshot)
+            .map_err(|_| StoreError::message("the session workspace is not valid JSON"))?;
+        Ok(value
+            .get("expandedPathsByRoot")
+            .and_then(|roots| roots.get(root))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|path| path.as_str().map(str::to_owned))
+            .collect())
+    }
+
+    /// Merges one checkout's expanded directory paths into the durable
+    /// workspace row without reading or replacing editor/tab state in the
+    /// frontend.
+    pub fn set_workspace_expanded_paths(
+        &self,
+        owned_id: &str,
+        root: &str,
+        paths: &[String],
+    ) -> Result<()> {
+        let connection = self.lock_write()?;
+        let stored: Option<String> = connection
+            .query_row(
+                "SELECT snapshot_json FROM session_workspaces WHERE owned_id = ?",
+                [owned_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not read tree expansion state", error))?;
+        let mut snapshot = match stored {
+            Some(snapshot) => serde_json::from_str::<serde_json::Value>(&snapshot)
+                .map_err(|_| StoreError::message("the session workspace is not valid JSON"))?,
+            None => serde_json::json!({}),
+        };
+        let object = snapshot
+            .as_object_mut()
+            .ok_or_else(|| StoreError::message("the session workspace is not a JSON object"))?;
+        let roots = object
+            .entry("expandedPathsByRoot")
+            .or_insert_with(|| serde_json::json!({}));
+        if !roots.is_object() {
+            *roots = serde_json::json!({});
+        }
+        roots
+            .as_object_mut()
+            .expect("tree expansion roots were normalized to an object")
+            .insert(root.to_string(), serde_json::json!(paths));
+        let snapshot = serde_json::to_string(&snapshot)
+            .map_err(|_| StoreError::message("could not encode tree expansion state"))?;
+        let changed = connection
+            .execute(
+                "INSERT INTO session_workspaces (owned_id, snapshot_json, updated_at)
+                 SELECT owned_id, ?, CAST(strftime('%s', 'now') AS INTEGER) * 1000
+                 FROM sessions WHERE owned_id = ?
+                 ON CONFLICT(owned_id) DO UPDATE SET
+                    snapshot_json = excluded.snapshot_json,
+                    updated_at = excluded.updated_at",
+                params![snapshot, owned_id],
+            )
+            .map_err(|error| StoreError::sqlite("could not save tree expansion state", error))?;
+        if changed != 1 {
+            return Err(StoreError::message(
+                "could not save tree expansion state because the session does not exist",
+            ));
+        }
+        Ok(())
     }
 
     pub fn delete_workspace_snapshot(&self, owned_id: &str) -> Result<()> {
@@ -1459,6 +1557,37 @@ impl SessionStore {
     /// will be. Both the limiting and the final ordering stay in SQLite.
     pub fn list_recent_events(&self, owned_id: &str, max_bytes: u32) -> Result<Vec<EventRow>> {
         let connection = self.lock()?;
+        Self::query_recent_events(&connection, owned_id, max_bytes)
+    }
+
+    /// Reads the active conversation window while allowing a newer activation
+    /// to interrupt SQLite itself, rather than waiting for the old query and
+    /// merely throwing its completed object graph away.
+    pub fn list_recent_events_cancellable(
+        &self,
+        owned_id: &str,
+        max_bytes: u32,
+    ) -> Result<Vec<EventRow>> {
+        let connection = self.lock()?;
+        self.recent_events_read_active
+            .store(true, Ordering::Release);
+        let _active_read = RecentEventsReadGuard(&self.recent_events_read_active);
+        Self::query_recent_events(&connection, owned_id, max_bytes)
+    }
+
+    /// Interrupts only the active-session conversation read. Other SQLite
+    /// reads and writes never set this ownership flag and are left alone.
+    pub fn cancel_recent_events_read(&self) {
+        if self.recent_events_read_active.load(Ordering::Acquire) {
+            self.interrupt_handle.interrupt();
+        }
+    }
+
+    fn query_recent_events(
+        connection: &Connection,
+        owned_id: &str,
+        max_bytes: u32,
+    ) -> Result<Vec<EventRow>> {
         let mut statement = connection
             .prepare(
                 "SELECT owned_id, seq, turn_id, kind, payload, created_at
@@ -3623,5 +3752,47 @@ mod tests {
         guardian
             .execute_batch("ROLLBACK;")
             .expect("release read transaction");
+    }
+
+    #[test]
+    fn workspace_expanded_paths_roundtrip_in_sqlite() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::open(&dir.path().join("sessions.db")).expect("open store");
+
+        let session = fixture_session("session-tree-1", 10_000);
+        store.upsert_session(&session).expect("insert session");
+
+        // Initially empty
+        let initial = store
+            .get_workspace_expanded_paths("session-tree-1", "/test/project")
+            .expect("get initial");
+        assert!(initial.is_empty());
+
+        // Save expanded paths for root A
+        let paths_a = vec!["/test/project/src".to_string(), "/test/project/lib".to_string()];
+        store
+            .set_workspace_expanded_paths("session-tree-1", "/test/project", &paths_a)
+            .expect("set paths a");
+
+        let read_a = store
+            .get_workspace_expanded_paths("session-tree-1", "/test/project")
+            .expect("read paths a");
+        assert_eq!(read_a, paths_a);
+
+        // Save expanded paths for root B without disturbing root A
+        let paths_b = vec!["/other/repo/docs".to_string()];
+        store
+            .set_workspace_expanded_paths("session-tree-1", "/other/repo", &paths_b)
+            .expect("set paths b");
+
+        let read_b = store
+            .get_workspace_expanded_paths("session-tree-1", "/other/repo")
+            .expect("read paths b");
+        assert_eq!(read_b, paths_b);
+
+        let reread_a = store
+            .get_workspace_expanded_paths("session-tree-1", "/test/project")
+            .expect("reread paths a");
+        assert_eq!(reread_a, paths_a);
     }
 }

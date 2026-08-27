@@ -1,10 +1,9 @@
 /**
  * The session rail's one clock.
  *
- * Every row shows how long its session has been going, and that text has to
- * keep up on its own. One timer per row would mean a dozen timers waking the
- * app up forever, so every row shares this single interval instead. It starts
- * when the first row asks for it and stops the moment the last row lets go.
+ * Every row shows how long its session has been going, but only SessionRail
+ * subscribes to this clock. It passes the resulting timestamp into its rows.
+ * The interval starts when the rail asks for it and stops when the rail leaves.
  *
  * It also runs no faster than the rows actually need. A row asks for `second`
  * only while it is working or while its age is still counted in seconds;
@@ -14,7 +13,7 @@
 import { setRailElapsedDiagnostics } from '../resourceDiagnostics.svelte.ts';
 
 export type RailElapsedListener = (nowMs: number) => void;
-/** How often a row needs to hear from the clock. */
+/** How often the rail needs to hear from the clock. */
 export type RailElapsedCadence = 'second' | 'minute';
 
 export const RAIL_ELAPSED_SECOND_MS = 1_000;
@@ -52,7 +51,7 @@ function retune(): void {
 /**
  * Hear the current time until the returned release function is called. The
  * cadence is a request, not a promise: the clock runs at the fastest one any
- * row currently needs.
+ * mounted rail currently needs.
  */
 export function watchRailElapsed(
   listener: RailElapsedListener,
@@ -82,7 +81,7 @@ export function railElapsedTickerInterval(): number | null {
   return interval;
 }
 
-/** How many rows are currently listening. */
+/** How many mounted rail owners are currently listening. */
 export function railElapsedWatcherCount(): number {
   return watchers.size;
 }

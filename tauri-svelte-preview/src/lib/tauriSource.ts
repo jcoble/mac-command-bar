@@ -1042,14 +1042,29 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
       : null;
   }
 
+  const generation = sourceFileReadGeneration;
   const { invoke } = await import('@tauri-apps/api/core');
-  const preview = await invoke<SourcePreview>('read_source_file', { path: record.path });
+  const preview = await invoke<SourcePreview | null>('read_source_file', {
+    path: record.path,
+    generation
+  });
+  if (!preview) return null;
   return {
     ...preview,
     relativePath: record.relativePath,
     language: record.language,
     byteCount: record.byteCount
   };
+}
+
+let sourceFileReadGeneration = 1;
+
+export async function cancelSourceFileReadsFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  sourceFileReadGeneration += 1;
+  const generation = sourceFileReadGeneration;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_source_file_reads', { generation });
 }
 
 export async function readNativeCsharpFileFromTauri(
@@ -1598,12 +1613,31 @@ export async function readAgentConversationCapabilitiesFromTauri(
   return invoke<AgentConversationCapabilities>('read_agent_conversation_capabilities', { ownedId });
 }
 
+// Millisecond epoch plus room for rapid calls stays within JavaScript's exact
+// integer range and remains newer after a frontend hot reload.
+let latestConversationSnapshotRequest = Math.trunc(Date.now() * 1_000);
+
 export async function readAgentConversationSnapshotFromTauri(
   ownedId: string
 ): Promise<AgentConversationSnapshot | null> {
   if (!isTauriRuntime() || !ownedId.trim()) return null;
+  latestConversationSnapshotRequest += 1;
+  const requestId = latestConversationSnapshotRequest;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', { ownedId });
+  return invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', {
+    ownedId,
+    requestId
+  });
+}
+
+export async function cancelAgentConversationSnapshotFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  latestConversationSnapshotRequest += 1;
+  const requestId = latestConversationSnapshotRequest;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_agent_conversation_snapshot', {
+    requestId
+  });
 }
 
 export async function listAgentConversationSessionsFromTauri(): Promise<AgentConversationSessionRecord[] | null> {
@@ -1707,6 +1741,29 @@ export async function readAgentConversationWorkspaceFromTauri(
   if (snapshot === null) return null;
   const parsed: unknown = JSON.parse(snapshot);
   return normalizeWorkspaceSnapshot(parsed);
+}
+
+export async function readAgentConversationWorkspaceExpandedPathsFromTauri(
+  ownedId: string,
+  root: string
+): Promise<string[]> {
+  if (!isTauriRuntime() || !ownedId.trim() || !root.trim()) return [];
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string[]>('read_agent_conversation_workspace_expanded_paths', { ownedId, root });
+}
+
+export async function writeAgentConversationWorkspaceExpandedPathsFromTauri(
+  ownedId: string,
+  root: string,
+  paths: readonly string[]
+): Promise<void> {
+  if (!isTauriRuntime() || !ownedId.trim() || !root.trim()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('write_agent_conversation_workspace_expanded_paths', {
+    ownedId,
+    root,
+    paths: [...paths]
+  });
 }
 
 export async function deleteAgentConversationWorkspaceFromTauri(ownedId: string): Promise<void> {

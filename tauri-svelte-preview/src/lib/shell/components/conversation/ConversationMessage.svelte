@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -8,6 +9,7 @@
     cancelTrackedAnimationFrame,
     requestTrackedAnimationFrame
   } from '$lib/shell/resourceDiagnostics.svelte.ts';
+  import { trackConversationMessageRenderer } from '$lib/shell/resourceDiagnostics.svelte.ts';
   import CodeBlock from './CodeBlock.svelte';
 
   interface Props {
@@ -28,6 +30,7 @@
   let bodyHost = $state<HTMLElement | null>(null);
   let expanded = $state(false);
   let folded = $state(false);
+  onMount(trackConversationMessageRenderer);
 
   $effect(() => {
     const host = bodyHost;

@@ -2,20 +2,14 @@
   /**
    * One session in the rail: project and status, title and model, branch.
    *
-   * The row is presentational. Selecting, jumping, and every menu action arrive
-   * through props. Hover changes only the row highlight; secondary actions live
-   * in the right-click menu instead of mounting buttons on every rail row.
+   * The row currently owns one visual-only click. It changes the rail's local
+   * active paint and calls no session, panel, persistence, or native service.
    *
-   * The working indicator is static and only shown while this row is genuinely
-   * working and on screen; the elapsed clock is the rail's one shared interval
-   * rather than a timer per row.
+   * The rail passes one shared timestamp into every row. This row mounts no
+   * timer, clock subscription, spinner, or visibility observer.
   */
-  import FileCode2 from '@lucide/svelte/icons/file-code-2';
-  import GitBranch from '@lucide/svelte/icons/git-branch';
-  import MessageCircle from '@lucide/svelte/icons/message-circle';
-
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import SessionRowVisual from './SessionRowVisual.svelte';
   import {
     deriveSessionPresence,
     EMPTY_SESSION_PRESENCE_HISTORY,
@@ -28,28 +22,17 @@
     type OwnedSession
   } from '$lib/shell/ownedSessions';
   import { sessionLabel } from '$lib/shell/sessionStrip';
-  import {
-    formatRailElapsed,
-    railElapsedCadenceFor,
-    watchRailElapsed
-  } from './railElapsedTicker.ts';
-  import { sessionRowJump } from './sessionRowJump';
-  import { observeElementVisibility } from '$lib/shell/elementVisibility.ts';
+  import { formatRailElapsed } from './railElapsedTicker.ts';
 
   interface Props {
     session: OwnedSession;
+    nowMs: number;
     active?: boolean;
     onSelect?(): void;
-    onContextMenu?(event: MouseEvent): void;
   }
 
   type RowPresence = 'working' | 'attention' | 'idle' | 'done' | 'failed';
-  let {
-    session,
-    active = false,
-    onSelect,
-    onContextMenu
-  }: Props = $props();
+  let { session, nowMs, active = false, onSelect }: Props = $props();
 
   const label = $derived(sessionLabel(session));
   const shelf = $derived(deriveOwnedLibraryState(session));
@@ -113,14 +96,6 @@
   const providerName = $derived(agentDisplayName(session.agent, session.viaCmux));
 
   // ── The age, and the working indicator in the rail ─────────────────────────
-  let rowElement = $state<HTMLLIElement | null>(null);
-  let onScreen = $state(true);
-  let nowMs = $state(Date.now());
-
-  const isWorking = $derived(presence === 'working');
-  /** Show the working indicator only for a row a person can actually see. */
-  const showWorkingIndicator = $derived(isWorking && onScreen);
-
   /**
    * How old this session is, counted from when it started rather than from the
    * current turn — the number stays put when the agent stops working, which is
@@ -135,66 +110,16 @@
   const ageMs = $derived(startedAtMs === null ? null : Math.max(0, nowMs - startedAtMs));
   const ageText = $derived(ageMs === null ? null : formatRailElapsed(ageMs));
 
-  $effect(() => {
-    if (!isWorking) {
-      onScreen = true;
-      return;
-    }
-    const element = rowElement;
-    if (!element) return;
-    return observeElementVisibility(element, (visible) => {
-      onScreen = visible;
-    });
-  });
-
-  const hasAge = $derived(startedAtMs !== null);
-  /** Only two possible values, so this effect re-subscribes at the one-minute
-   * mark rather than on every tick. */
-  const cadence = $derived(railElapsedCadenceFor(ageMs ?? 0, isWorking));
-
-  // Every row shares this one clock. Most rows ask for one update per minute;
-  // only genuinely working or newly-created rows make it tick each second.
-  $effect(() => {
-    if (!hasAge) return;
-    const wanted = cadence;
-    nowMs = Date.now();
-    return watchRailElapsed((tick) => {
-      nowMs = tick;
-    }, wanted);
-  });
-
-  function selectRow(event: MouseEvent): void {
-    onSelect?.();
-    if (event.detail > 0 && event.currentTarget instanceof HTMLButtonElement) {
-      event.currentTarget.blur();
-    }
-  }
-
-  function jump(event: MouseEvent, surface: 'session' | 'editor' | 'source-control'): void {
-    event.stopPropagation();
-    if (!sessionRowJump(session.ownedId, surface)) onSelect?.();
-  }
-
 </script>
 
 <li
-  bind:this={rowElement}
   data-testid="worktree-agent-row"
   data-presence={presence}
   data-shelf={shelf}
-  class:active
   class:needs-you-row={needsYou}
-  class="row group"
+  class="row"
 >
-        <button
-          data-testid="worktree-agent-select"
-          type="button"
-          class="session-row"
-          aria-current={active ? 'true' : undefined}
-          aria-label={`Open session: ${label}`}
-          onclick={selectRow}
-          oncontextmenu={onContextMenu}
-        >
+        <SessionRowVisual {active} {onSelect}>
           <!-- The mark, at the height of the three lines beside it. It carries
                the provider and whether this session is working, and nothing
                else: no action is ever drawn on top of it. -->
@@ -217,9 +142,6 @@
             <span class="line line-title">
               <span data-testid="worktree-agent-title" class="session-title">{label}</span>
               <span data-testid="worktree-agent-age" class="age">
-                {#if showWorkingIndicator}
-                  <WorkingSpinner seed={session.activeTurnId ?? session.ownedId} size={12} />
-                {/if}
                 <span class="age-text">{ageText ?? ''}</span>
               </span>
             </span>
@@ -251,19 +173,7 @@
               {/if}
             </span>
           </span>
-        </button>
-
-        <span class="row-actions" aria-label="Session shortcuts">
-          <button data-slot="icon-button" type="button" title="Open session" aria-label="Open session" onclick={(event) => jump(event, 'session')}>
-            <MessageCircle aria-hidden="true" />
-          </button>
-          <button data-slot="icon-button" type="button" title="Open editor" aria-label="Open editor" onclick={(event) => jump(event, 'editor')}>
-            <FileCode2 aria-hidden="true" />
-          </button>
-          <button data-slot="icon-button" type="button" title="Open source control" aria-label="Open source control" onclick={(event) => jump(event, 'source-control')}>
-            <GitBranch aria-hidden="true" />
-          </button>
-        </span>
+        </SessionRowVisual>
 
 </li>
 
@@ -282,42 +192,9 @@
     line-height: 1.4;
   }
 
-  /* What else line one's corner is holding. A row that can step back carries a
-     fourth button; a working row keeps an 18px hole so its spinner is never
-     covered. A done row is never also working, so those two never both apply —
-     except on a settled row, which can still be running. */
-  .row[data-shelf='done'],
-  .row[data-shelf='settled'] { --rail-action-gutter: 109px; }
-
-  .row[data-presence='working'] { --rail-action-gutter: 99px; }
-  .row[data-presence='working'][data-shelf='settled'] { --rail-action-gutter: 127px; }
-
   /* The mark, then the three lines. The row is 58px so a rail this narrow still
      shows a useful stack of sessions; the mark matches the height of the three
      lines beside it, which is the proportion the reference keeps. */
-  .session-row {
-    position: relative;
-    display: grid;
-    grid-template-columns: 44px minmax(0, 1fr);
-    column-gap: 10px;
-    align-items: center;
-    width: 100%;
-    min-height: 58px;
-    padding: var(--rail-row-content-inset);
-    border: 0;
-    /* No rule between rows: the gap and the rounded highlight carry the
-       separation, which reads calmer than a stack of hairlines. */
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-    /* Nothing inside may paint past the rounded corner. */
-    overflow: hidden;
-    outline: none;
-  }
-
   /* The provider mark, at the height of the text beside it. Nothing is ever
      drawn over this square: it says who is running the session and whether the
      session is working, and those are the only two things it says. */
@@ -355,63 +232,6 @@
     justify-content: center;
     gap: 0;
   }
-
-  /* Selection is persistent state; hover is a local paint-only response. */
-  .row:hover .session-row {
-    background: var(--color-hover);
-  }
-
-  .active .session-row {
-    background: color-mix(in srgb, var(--color-elevated) 88%, var(--color-text));
-  }
-
-  .row.active:hover .session-row {
-    background: color-mix(in srgb, var(--color-elevated) 84%, var(--color-text));
-  }
-
-  .row-actions {
-    position: absolute;
-    top: 5px;
-    right: 17px;
-    z-index: 2;
-    display: flex;
-    gap: 3px;
-    visibility: hidden;
-  }
-
-  .row:hover .row-actions,
-  .row:focus-within .row-actions { visibility: visible; }
-
-  .row:hover .line-title,
-  .row:focus-within .line-title { padding-right: 82px; }
-
-  .row:hover .age,
-  .row:focus-within .age { visibility: hidden; }
-
-  .row-actions button {
-    display: grid;
-    width: 25px;
-    height: 25px;
-    padding: 0;
-    border: 0;
-    border-radius: var(--radius-pill);
-    place-items: center;
-    background: var(--color-elevated);
-    color: var(--color-text-2);
-    cursor: pointer;
-  }
-
-  .row-actions button:hover,
-  .row-actions button:focus-visible {
-    background: var(--color-hover);
-    color: var(--color-text);
-    outline: none;
-  }
-
-  .row-actions button:focus-visible { box-shadow: var(--focus-ring); }
-  .row-actions :global(svg) { width: 15px; height: 15px; }
-
-  .session-row:focus-visible { box-shadow: inset 0 0 0 2px var(--color-focus); }
 
   .line {
     position: relative;

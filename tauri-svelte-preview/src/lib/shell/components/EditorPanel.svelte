@@ -97,6 +97,7 @@
   import { openFileTimeline } from '$lib/shell/workbenchNavigation';
   import {
     findSourceLspCodeActionsFromTauri,
+    cancelSourceFileReadsFromTauri,
     isNativeTauriRuntime,
     readAssemblySettingFromTauri,
     readSourceFromTauri,
@@ -162,7 +163,7 @@
   let closeDialogOpen = $state(false);
   let closeActionBusy = $state(false);
 
-  type EditorSourceRead = { byteCount: number; token: object; work: Promise<void> };
+  type EditorSourceRead = { byteCount: number; generation: number; token: object; work: Promise<void> };
 
   /** Native reads cannot be cancelled, so keep them owned until they settle. */
   const readsInFlight = new Map<string, EditorSourceRead>();
@@ -170,6 +171,9 @@
   function publishSourceReadDiagnostics(): void {
     setEditorSourceReadDiagnostics(
       readsInFlight.size,
+      [...readsInFlight].filter(([path, read]) =>
+        read.generation !== sessionResourceGeneration || path !== editorState.activePath
+      ).length,
       [...readsInFlight.values()].reduce((total, read) => total + read.byteCount, 0)
     );
   }
@@ -218,6 +222,17 @@
   }
 
   const activeFile = $derived(activeEditorFile());
+  const activePreview = $derived(activeFile?.preview ?? (activeFile
+    ? {
+        path: activeFile.path,
+        relativePath: activeFile.relativePath,
+        fileName: activeFile.fileName,
+        language: activeFile.language,
+        byteCount: 0,
+        content: '',
+        lineCount: 1
+      }
+    : null));
   const activeFileMissing = $derived(
     Boolean(activeFile?.error && /(?:os error 2|No such file)/i.test(activeFile.error))
   );
@@ -816,7 +831,7 @@
         }
       }
     })();
-    readsInFlight.set(record.path, { byteCount: record.byteCount, token, work });
+    readsInFlight.set(record.path, { byteCount: record.byteCount, generation, token, work });
     publishSourceReadDiagnostics();
     return work;
   }
@@ -1193,6 +1208,10 @@
 
   export function releaseSessionResources(paths: readonly string[]): void {
     sessionResourceGeneration += 1;
+    if (readsInFlight.size > 0) {
+      void cancelSourceFileReadsFromTauri().catch(() => undefined);
+    }
+    publishSourceReadDiagnostics();
     ownerSelectionGeneration += 1;
     inlayHintRequestCount += 1;
     languageServerGate.releaseAll();
@@ -1437,7 +1456,7 @@
           relativePath={activeFile.relativePath}
           dirty={activeFile.dirty ?? false}
         />
-      {:else if activeFile?.preview}
+      {:else if activeFile && activePreview}
         {#if CodeEditor}
           <CodeEditor
             bind:this={codeEditor}
@@ -1445,8 +1464,8 @@
             onInlayHintLookup={activeFileReadOnly ? undefined : lookupInlayHintsWhenServerCanAnswer}
             onCodeActionLookup={fullMode && !activeFileReadOnly ? lookupCodeActions : undefined}
             onWorkspaceEditAction={fullMode && !activeFileReadOnly ? applyExternalWorkspaceEdits : undefined}
-            preview={activeFile.preview}
-            content={activeFile.draftContent ?? activeFile.preview.content}
+            preview={activePreview}
+            content={activeFile.draftContent ?? activeFile.preview?.content ?? ''}
             editable={rootAvailable && !activeFileReadOnly && !closeActionBusy}
             visible={showing}
             languageServerRoot={fullMode ? editorState.projectRoot : null}

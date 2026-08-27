@@ -206,10 +206,14 @@
         <span><strong>{frontend.loadedConversationProjections}</strong> loaded conversations</span>
         <span><strong>{frontend.loadedConversationEventBytes}</strong> conversation bytes</span>
         <span><strong>{frontend.conversationSnapshotReadsInFlight}</strong> snapshot reads</span>
+        <span><strong>{frontend.conversationSnapshotReadsInvalidated}</strong> stale snapshot reads</span>
         <span><strong>{frontend.loadedChildTranscriptBytes}</strong> child transcript bytes</span>
         <span><strong>{frontend.conversationRenderedRows}</strong> rendered turn rows</span>
         <span><strong>{frontend.conversationVirtualRows}</strong> virtual turn rows</span>
-        <span><strong>{frontend.conversationMeasuredElementCacheEntries}</strong> measured-row cache entries</span>
+        <span><strong>{frontend.conversationMeasuredElementCacheEntries}</strong> measured DOM rows</span>
+        <span><strong>{frontend.conversationMeasuredSizeCacheEntries}</strong> measured row sizes</span>
+        <span><strong>{frontend.conversationTimelineItems}</strong> mounted timeline items</span>
+        <span><strong>{frontend.conversationMessageRenderers}</strong> mounted message renderers</span>
         <span><strong>{frontend.sentAttachmentMapEntries}</strong> sent attachment map entries</span>
         <span><strong>{frontend.sentAttachmentCount}</strong> sent attachments</span>
         <span><strong>{frontend.tauriRootListeners}</strong> Tauri listeners</span>
@@ -229,6 +233,7 @@
         <span><strong>{frontend.codeMirrorUndoDepth}</strong> active undo depth</span>
         <span><strong>{frontend.openTabDocumentBytes}</strong> active open-tab document bytes</span>
         <span><strong>{frontend.editorSourceReadsInFlight}</strong> source reads</span>
+        <span><strong>{frontend.editorSourceReadsInvalidated}</strong> stale source reads</span>
         <span><strong>{frontend.editorSourceReadBytesInFlight}</strong> source-read bytes</span>
         <span><strong>{frontend.mergeViews}</strong> mounted MergeViews</span>
         <span><strong>{frontend.mergeDocBytes}</strong> diff bytes</span>

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -309,6 +310,7 @@ pub struct AgentRuntimeManager {
     namer: Arc<Mutex<Option<SessionNamer>>>,
     renamed_listener: Arc<Mutex<Option<SessionRenamedListener>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
+    latest_snapshot_request: Arc<AtomicU64>,
     store: Arc<SessionStore>,
     adapter_pools: Arc<AsyncMutex<HashMap<AdapterPoolKey, AdapterPoolEntry>>>,
 }
@@ -361,9 +363,9 @@ impl AgentRuntimeManager {
 
     pub fn with_store(providers: ProviderRegistry, store: SessionStore) -> Result<Self, String> {
         let store = Arc::new(store);
-        let sessions = recover_sessions_from_store(&store)?;
+        normalize_sessions_in_store(&store)?;
         Ok(Self {
-            sessions: Arc::new(Mutex::new(sessions)),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             providers: Arc::new(providers),
             emitter: Arc::new(Mutex::new(None)),
             broker_emitter: Arc::new(Mutex::new(None)),
@@ -371,6 +373,7 @@ impl AgentRuntimeManager {
             namer: Arc::new(Mutex::new(None)),
             renamed_listener: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
+            latest_snapshot_request: Arc::new(AtomicU64::new(0)),
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
         })
@@ -413,6 +416,27 @@ impl AgentRuntimeManager {
     pub fn read_workspace(&self, owned_id: &str) -> Result<Option<String>, String> {
         self.store
             .get_workspace_snapshot(owned_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn read_workspace_expanded_paths(
+        &self,
+        owned_id: &str,
+        root: &str,
+    ) -> Result<Vec<String>, String> {
+        self.store
+            .get_workspace_expanded_paths(owned_id, root)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn write_workspace_expanded_paths(
+        &self,
+        owned_id: &str,
+        root: &str,
+        paths: &[String],
+    ) -> Result<(), String> {
+        self.store
+            .set_workspace_expanded_paths(owned_id, root, paths)
             .map_err(|error| error.to_string())
     }
 
@@ -465,7 +489,6 @@ impl AgentRuntimeManager {
             cwd,
             title,
         )?;
-        self.restore_overlay_from_store(&owned_id)?;
         Ok(owned_id)
     }
 
@@ -483,49 +506,34 @@ impl AgentRuntimeManager {
             max_bytes,
             max_records,
         )?;
-        // Built again now that the records exist. The overlay carries the events
-        // a snapshot is read from, and the one made when the session was named
-        // was made from an empty row — leaving it in place showed the title over
-        // an empty conversation until the next reload.
-        self.restore_overlay_from_store(owned_id)?;
         Ok(count)
     }
 
-    /// Rebuilds one session's live overlay from what is stored.
-    ///
-    /// Every stored row needs an overlay before anything lists the sessions or
-    /// reads one — listing fails outright on a row without one, and reading
-    /// reports an empty conversation. An import calls this because it has just
-    /// written a row nothing has an overlay for yet, and reading calls it
-    /// because the overlay is runtime state that comes and goes underneath a
-    /// conversation that is durably on disk either way.
-    /// A rebuild never moves a session's generation backwards. The stored row
-    /// carries the generation the session had when it was last written, and an
-    /// import writes zero; ensuring the same session meanwhile raises the live
-    /// one. Replacing the live session with the stored one then published a
-    /// conversation numbered below what the reader had already been told, and
-    /// the reader discards those — it is how a resumed transcript arrived
-    /// complete and was thrown away, in silence, until the next launch started
-    /// the count again from nothing.
-    fn restore_overlay_from_store(&self, owned_id: &str) -> Result<(), String> {
-        let row = self
+    /// Hydrate the disposable runtime overlay only for an operation that needs
+    /// mutable ACP state. Reads and rail listing use SQLite directly.
+    fn hydrate_overlay_from_store(&self, owned_id: &str) -> Result<bool, String> {
+        if self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(owned_id)
+        {
+            return Ok(true);
+        }
+        let Some(row) = self
             .store
             .get_session(owned_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "The imported session was not stored".to_string())?;
-        let mut session = recovered_session_from_row(&self.store, row)?;
+        else {
+            return Ok(false);
+        };
+        let session = recovered_session_from_row(&self.store, row)?;
         let mut sessions = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(live) = sessions.get(owned_id) {
-            if live.generation > session.generation {
-                session.generation = live.generation;
-                session.connection.generation = live.generation;
-            }
-        }
-        sessions.insert(owned_id.to_string(), session);
-        Ok(())
+        sessions.entry(owned_id.to_string()).or_insert(session);
+        Ok(true)
     }
 
     pub fn extend_imported_session(
@@ -821,14 +829,21 @@ impl AgentRuntimeManager {
     /// snapshot read, not a mutating operation; the map contains only the
     /// current generation for each owned session.
     pub fn capabilities_for_owned_id(&self, owned_id: &str) -> Result<AgentCapabilities, String> {
-        let sessions = self
+        if let Some(capabilities) = self
             .sessions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sessions
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(owned_id)
             .map(|session| session.capabilities.clone())
-            .ok_or_else(|| "Conversation session was not found".to_string())
+        {
+            return Ok(capabilities);
+        }
+        let row = self
+            .store
+            .get_session(owned_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Conversation session was not found".to_string())?;
+        Ok(stored_session_projection(&self.store, &row)?.1.capabilities)
     }
 
     /// Ensure an app-owned ACP session while serializing it with activation.
@@ -870,6 +885,26 @@ impl AgentRuntimeManager {
                 task.abort();
             }
         }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let disposable = sessions.get(&owned_id).is_some_and(|session| {
+            session.generation == connection.generation
+                && session.runtime.is_none()
+                && session.transport.is_none()
+                && session.ordered_events.is_none()
+                && session.active_turn_id.is_none()
+                && !session.prompt_once_active
+                && session.permission_requests.is_empty()
+                && session.user_input_requests.is_empty()
+                && session.live_tool_calls.is_empty()
+                && session.background_work.is_empty()
+                && !session.suspending
+        });
+        if disposable {
+            sessions.remove(&owned_id);
+        }
         Ok(connection)
     }
 
@@ -885,6 +920,7 @@ impl AgentRuntimeManager {
         let new_cwd = validated_conversation_cwd(&request.cwd)?
             .display()
             .to_string();
+        self.hydrate_overlay_from_store(&owned_id)?;
         let _lifecycle = self.lifecycle_guard(&owned_id).await?;
         let (
             runtime,
@@ -1020,10 +1056,16 @@ impl AgentRuntimeManager {
             return Err(error);
         }
         drop(sessions);
-        self.list_sessions()?
+        let record = self
+            .list_sessions()?
             .into_iter()
             .find(|session| session.owned_id == owned_id)
-            .ok_or_else(|| "Conversation session disappeared after checkout change".to_string())
+            .ok_or_else(|| "Conversation session disappeared after checkout change".to_string())?;
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&owned_id);
+        Ok(record)
     }
 
     fn ensure_inner(
@@ -1041,6 +1083,7 @@ impl AgentRuntimeManager {
         {
             return Err("A native session id is required to load a stopped session".to_string());
         }
+        self.hydrate_overlay_from_store(&owned_id)?;
         let mut sessions = self
             .sessions
             .lock()
@@ -1192,6 +1235,7 @@ impl AgentRuntimeManager {
         owned_id: &str,
         generation: u64,
     ) -> Result<AgentConversationConnection, String> {
+        self.hydrate_overlay_from_store(owned_id)?;
         let (
             provider,
             cwd,
@@ -2060,14 +2104,21 @@ impl AgentRuntimeManager {
         &self,
         owned_id: &str,
     ) -> Result<AgentConversationConfigState, String> {
-        let sessions = self
+        if let Some(config) = self
             .sessions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sessions
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(owned_id)
             .map(|session| session.config.clone())
-            .ok_or_else(|| "Conversation session was not found".to_string())
+        {
+            return Ok(config);
+        }
+        let row = self
+            .store
+            .get_session(owned_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Conversation session was not found".to_string())?;
+        Ok(stored_session_projection(&self.store, &row)?.1.config)
     }
 
     pub async fn set_conversation_config(
@@ -2096,6 +2147,7 @@ impl AgentRuntimeManager {
         request: SetAgentConversationConfigRequest,
         suspend_on_error: bool,
     ) -> Result<AgentConversationConfigState, String> {
+        self.hydrate_overlay_from_store(&request.owned_id)?;
         let update = AgentConversationConfigUpdate {
             model: normalized_optional_id(request.model),
             reasoning_effort: normalized_optional_id(request.reasoning_effort),
@@ -2279,44 +2331,115 @@ impl AgentRuntimeManager {
     }
 
     pub fn snapshot(&self, owned_id: &str) -> Result<Option<AgentConversationSnapshot>, String> {
-        // A conversation that is stored can be read, whether or not anything is
-        // running it. The live overlay is the runtime's business and it comes
-        // and goes — ensuring a session takes it out of the map before putting
-        // the replacement in, and a session whose project folder has since been
-        // deleted never gets the replacement at all. Reporting nothing there
-        // left a resumed transcript that was on disk, complete, and invisible,
-        // until the next launch rebuilt the overlay and it appeared.
-        let missing = {
+        self.snapshot_for_request(owned_id, None)
+    }
+
+    fn snapshot_for_request(
+        &self,
+        owned_id: &str,
+        request_id: Option<u64>,
+    ) -> Result<Option<AgentConversationSnapshot>, String> {
+        let live = {
             let sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            !sessions.contains_key(owned_id)
+            sessions.get(owned_id).map(|session| {
+                (
+                    session.connection.clone(),
+                    session.state == AgentRuntimeState::Suspended,
+                    session.next_sequence.saturating_sub(1),
+                )
+            })
         };
-        if missing {
-            if self
-                .store
-                .get_session(owned_id)
-                .map_err(|error| error.to_string())?
-                .is_none()
-            {
+        let (connection, suspended, last_sequence) = match live {
+            Some(live) => live,
+            None => {
+                let Some(row) = self
+                    .store
+                    .get_session(owned_id)
+                    .map_err(|error| error.to_string())?
+                else {
+                    return Ok(None);
+                };
+                let (provider, stored, state) = stored_session_projection(&self.store, &row)?;
+                let last_sequence = self
+                    .store
+                    .latest_seq(owned_id)
+                    .map_err(|error| error.to_string())?;
+                (
+                    AgentConversationConnection {
+                        owned_id: row.owned_id,
+                        provider,
+                        generation: stored.generation,
+                        native_session_id: row.native_session_id,
+                        state: connection_state_for_runtime_state(state),
+                        config: stored.config,
+                    },
+                    state == AgentRuntimeState::Suspended,
+                    last_sequence,
+                )
+            }
+        };
+        if request_id.is_some_and(|request_id| {
+            self.latest_snapshot_request.load(Ordering::Acquire) != request_id
+        }) {
+            return Ok(None);
+        }
+        let events = match request_id {
+            Some(_) => self.list_recent_events_cancellable(owned_id),
+            None => self.list_recent_events(owned_id),
+        }?;
+        Ok(Some(AgentConversationSnapshot {
+            connection,
+            suspended,
+            last_sequence,
+            events,
+        }))
+    }
+
+    /// Read only the newest requested active-session snapshot. A newer request
+    /// interrupts the superseded SQLite query and no stale event window crosses
+    /// the Tauri boundary into JavaScript.
+    pub fn latest_snapshot(
+        &self,
+        owned_id: &str,
+        request_id: u64,
+    ) -> Result<Option<AgentConversationSnapshot>, String> {
+        if !self.advance_snapshot_request(request_id) {
+            return Ok(None);
+        }
+        let snapshot = match self.snapshot_for_request(owned_id, Some(request_id)) {
+            Ok(snapshot) => snapshot,
+            Err(_) if self.latest_snapshot_request.load(Ordering::Acquire) != request_id => {
                 return Ok(None);
             }
-            self.restore_overlay_from_store(owned_id)?;
-        }
-        let sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(session) = sessions.get(owned_id) else {
-            return Ok(None);
+            Err(error) => return Err(error),
         };
-        Ok(Some(AgentConversationSnapshot {
-            connection: session.connection.clone(),
-            suspended: session.state == AgentRuntimeState::Suspended,
-            last_sequence: session.next_sequence.saturating_sub(1),
-            events: self.list_recent_events(owned_id)?,
-        }))
+        if self.latest_snapshot_request.load(Ordering::Acquire) != request_id {
+            return Ok(None);
+        }
+        Ok(snapshot)
+    }
+
+    /// Releases the frontend owner even when no replacement session snapshot
+    /// is about to start. The request identity makes a delayed cancel harmless
+    /// if a newer read has already taken ownership.
+    pub fn cancel_snapshot(&self, request_id: u64) {
+        self.advance_snapshot_request(request_id);
+    }
+
+    fn advance_snapshot_request(&self, request_id: u64) -> bool {
+        let previous = self
+            .latest_snapshot_request
+            .fetch_max(request_id, Ordering::AcqRel);
+        if request_id <= previous {
+            return false;
+        }
+        if previous != 0 {
+            self.store.cancel_recent_events_read();
+        }
+        true
     }
 
     pub fn list_sessions(&self) -> Result<Vec<AgentConversationSessionRecord>, String> {
@@ -2330,28 +2453,49 @@ impl AgentRuntimeManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         rows.into_iter()
             .map(|row| {
-                let session = sessions.get(&row.owned_id).ok_or_else(|| {
-                    "The stored session is missing its live runtime overlay".to_string()
-                })?;
-                let mut meta = session.rail_meta.clone();
+                let live = sessions.get(&row.owned_id);
+                let (provider, state, active_turn_id, pending_permission, pending_input, native_session_id, mut meta) =
+                    if let Some(session) = live {
+                        (
+                            session.provider,
+                            session.state,
+                            session.active_turn_id.clone(),
+                            !session.permission_requests.is_empty(),
+                            !session.user_input_requests.is_empty(),
+                            session.native_session_id.clone(),
+                            session.rail_meta.clone(),
+                        )
+                    } else {
+                        let (provider, stored, state) =
+                            stored_session_projection(&self.store, &row)?;
+                        (
+                            provider,
+                            state,
+                            None,
+                            false,
+                            false,
+                            row.native_session_id.clone(),
+                            stored.rail_meta,
+                        )
+                    };
                 meta.worktree.clone_from(&row.worktree);
                 meta.branch.clone_from(&row.branch);
                 meta.title.clone_from(&row.title);
                 meta.project.clone_from(&row.project);
                 Ok(AgentConversationSessionRecord {
                     owned_id: row.owned_id,
-                    provider: session.provider,
+                    provider,
                     model: row.model,
                     effort: row.effort,
                     cwd: row.cwd,
-                    state: session.state,
-                    suspended: session.state == AgentRuntimeState::Suspended,
+                    state,
+                    suspended: state == AgentRuntimeState::Suspended,
                     created_at_ms: row.created_at_ms,
                     last_activity_at_ms: row.last_activity_at_ms,
-                    active_turn_id: session.active_turn_id.clone(),
-                    pending_permission: !session.permission_requests.is_empty(),
-                    pending_input: !session.user_input_requests.is_empty(),
-                    native_session_id: session.native_session_id.clone(),
+                    active_turn_id,
+                    pending_permission,
+                    pending_input,
+                    native_session_id,
                     meta,
                 })
             })
@@ -2446,29 +2590,34 @@ impl AgentRuntimeManager {
             .collect()
     }
 
+    fn list_recent_events_cancellable(
+        &self,
+        owned_id: &str,
+    ) -> Result<Vec<AgentConversationEvent>, String> {
+        self.store
+            .list_recent_events_cancellable(owned_id, SNAPSHOT_WINDOW_BYTES)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(stored_event)
+            .collect()
+    }
+
     pub fn update_session_meta(
         &self,
         request: UpdateAgentConversationSessionMetaRequest,
     ) -> Result<AgentConversationSessionRecord, String> {
         let owned_id = required_id(&request.owned_id, "Owned session id")?;
-        {
-            let mut sessions = self
-                .sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = sessions
-                .get_mut(&owned_id)
-                .ok_or_else(|| "Conversation session was not found".to_string())?;
+        let apply = |session: &mut ManagedAgentSession| -> Result<(), String> {
             // The rail row this comes from is a copy that a fresh session has
             // not filled in yet, and it is saved right after the first send.
             // Taking its empty model or effort wrote a blank over the choice
             // every time.
-            if request.model.is_some() {
-                session.config.model = request.model;
+            if let Some(model) = request.model.as_ref() {
+                session.config.model = Some(model.clone());
             }
-            if request.effort.is_some() {
+            if let Some(effort) = request.effort.as_ref() {
                 session.spawn_reasoning_effort.clone_from(&request.effort);
-                session.config.reasoning_effort.clone_from(&request.effort);
+                session.config.reasoning_effort = Some(effort.clone());
             }
             // Setting the value without the list left the menu showing exactly
             // one option: the picker falls back to the current value when the
@@ -2491,11 +2640,32 @@ impl AgentRuntimeManager {
                 .as_deref()
                 .is_some_and(|title| !title.trim().is_empty())
                 && request.meta.title != session.rail_meta.title;
-            session.rail_meta = request.meta;
+            session.rail_meta = request.meta.clone();
             if renamed {
                 session.title_source = Some(TITLE_SOURCE_USER.to_string());
             }
-            persist_session(session)?;
+            persist_session(session)
+        };
+        let updated_live = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(session) = sessions.get_mut(&owned_id) {
+                apply(session)?;
+                true
+            } else {
+                false
+            }
+        };
+        if !updated_live {
+            let row = self
+                .store
+                .get_session(&owned_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "Conversation session was not found".to_string())?;
+            let mut session = recovered_session_from_row(&self.store, row)?;
+            apply(&mut session)?;
         }
         self.list_sessions()?
             .into_iter()
@@ -2565,24 +2735,63 @@ impl AgentRuntimeManager {
             let Some(title) = helper_title(&answer) else {
                 return;
             };
-            let mut sessions = sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) else {
-                return;
+            let updated_live = {
+                let mut sessions = sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match sessions.get_mut(&owned_id) {
+                    Some(session) if session.generation == generation => {
+                        // The person may have renamed the session while the
+                        // helper was being asked, and their name wins.
+                        if !title_can_be_replaced(session.title_source.as_deref()) {
+                            return;
+                        }
+                        session.rail_meta.title = Some(title.clone());
+                        session.title_source = Some(TITLE_SOURCE_HELPER.to_string());
+                        if let Err(error) = persist_session(session) {
+                            crate::debug_log::stderr_log!(
+                                "Could not save the session name: {error}"
+                            );
+                            return;
+                        }
+                        true
+                    }
+                    Some(_) => return,
+                    None => false,
+                }
             };
-            // The person may have renamed the session while the helper was
-            // being asked, and their name wins.
-            if !title_can_be_replaced(session.title_source.as_deref()) {
-                return;
+            if !updated_live {
+                let Some(mut row) = store
+                    .get_session(&owned_id)
+                    .map_err(|error| error.to_string())
+                    .unwrap_or_else(|error| {
+                        crate::debug_log::stderr_log!("Could not read the session name: {error}");
+                        None
+                    })
+                else {
+                    return;
+                };
+                let Ok(mut stored) = serde_json::from_str::<StoredSessionExtra>(&row.extra_json)
+                else {
+                    return;
+                };
+                if stored.generation != generation
+                    || !title_can_be_replaced(row.title_source.as_deref())
+                {
+                    return;
+                }
+                row.title = Some(title.clone());
+                row.title_source = Some(TITLE_SOURCE_HELPER.to_string());
+                stored.rail_meta.title = Some(title.clone());
+                let Ok(extra_json) = serde_json::to_string(&stored) else {
+                    return;
+                };
+                row.extra_json = extra_json;
+                if let Err(error) = store.upsert_session(&row) {
+                    crate::debug_log::stderr_log!("Could not save the session name: {error}");
+                    return;
+                }
             }
-            session.rail_meta.title = Some(title.clone());
-            session.title_source = Some(TITLE_SOURCE_HELPER.to_string());
-            if let Err(error) = persist_session(session) {
-                crate::debug_log::stderr_log!("Could not save the session name: {error}");
-                return;
-            }
-            drop(sessions);
             let listener = renamed_listener
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2673,6 +2882,11 @@ impl AgentRuntimeManager {
                 native_session_mode: Some(AgentNativeSessionMode::Resume),
             },
         )?;
+        if let Some(mut session) = sessions.remove(owned_id) {
+            if let Some(task) = session.child_rollout_scan.take() {
+                task.abort();
+            }
+        }
         Ok(true)
     }
 
@@ -2699,6 +2913,7 @@ impl AgentRuntimeManager {
         owned_id: &str,
         generation: u64,
     ) -> Result<AgentConversationConfigState, String> {
+        self.hydrate_overlay_from_store(owned_id)?;
         let _lifecycle = self.lifecycle_guard(owned_id).await?;
         self.activate_locked(owned_id, generation).await?;
         let (runtime, transport, ordered_events, pool_key, native_session_id) = {
@@ -2799,10 +3014,15 @@ impl AgentRuntimeManager {
                 native_session_mode: Some(AgentNativeSessionMode::Resume),
             },
         )?;
-        Ok(session.config.clone())
+        let config = session.config.clone();
+        sessions.remove(owned_id);
+        Ok(config)
     }
 
     pub async fn close(&self, owned_id: &str, generation: u64) -> Result<bool, String> {
+        if !self.hydrate_overlay_from_store(owned_id)? {
+            return Ok(false);
+        }
         let _lifecycle = self.lifecycle_guard(owned_id).await?;
         let (runtime, transport, pool_key, native_session_id, pending_permissions, pending_inputs) = {
             let mut sessions = self
@@ -2902,7 +3122,7 @@ impl AgentRuntimeManager {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        let sessions = self
+        let mut sessions = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2912,6 +3132,7 @@ impl AgentRuntimeManager {
         {
             return Err("Conversation lifecycle changed while close was in progress".to_string());
         }
+        sessions.remove(owned_id);
         Ok(true)
     }
 
@@ -2933,14 +3154,28 @@ impl AgentRuntimeManager {
                 .get(&owned_id)
                 .map(|session| (session.generation, session.state != AgentRuntimeState::Closed))
         };
-        let Some((generation, open)) = live else {
+        if let Some((generation, open)) = live {
+            if open {
+                self.close(&owned_id, generation).await?;
+            }
+        } else if self
+            .store
+            .get_session(&owned_id)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
             return Ok(false);
-        };
-        if open {
-            self.close(&owned_id, generation).await?;
         }
         let _lifecycle = self.lifecycle_guard(&owned_id).await?;
         self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&owned_id);
+        self.activation_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&owned_id);
+        self.broker_statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&owned_id);
@@ -3244,6 +3479,7 @@ impl AgentRuntimeManager {
             .activation_locks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         Ok(locks
             .entry(owned_id.to_string())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
@@ -3421,44 +3657,25 @@ fn persist_session(session: &ManagedAgentSession) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn recover_sessions_from_store(
-    store: &Arc<SessionStore>,
-) -> Result<HashMap<String, ManagedAgentSession>, String> {
-    let mut sessions = HashMap::new();
+fn normalize_sessions_in_store(store: &Arc<SessionStore>) -> Result<(), String> {
     for row in store.list_sessions().map_err(|error| error.to_string())? {
-        let owned_id = row.owned_id.clone();
         let session = recovered_session_from_row(store, row)?;
         persist_session(&session)?;
-        sessions.insert(owned_id, session);
     }
-    Ok(sessions)
+    Ok(())
 }
 
-/// Rebuilds what a stored session needs in memory, without starting anything.
-///
-/// `list_sessions` reads the stored rows and the live overlay together, and a
-/// row with no overlay fails the whole list rather than only itself. Recovery
-/// builds one of these for every row at launch; anything that writes a row
-/// while the app is running has to build one too, or the next listing breaks
-/// on the row it just created.
-fn recovered_session_from_row(
+fn stored_session_projection(
     store: &Arc<SessionStore>,
-    row: SessionRow,
-) -> Result<ManagedAgentSession, String> {
+    row: &SessionRow,
+) -> Result<(AgentConversationProvider, StoredSessionExtra, AgentRuntimeState), String> {
     let provider: AgentConversationProvider = enum_from_storage(&row.provider)?;
     let mut stored: StoredSessionExtra = serde_json::from_str(&row.extra_json)
         .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
-    if stored.rail_meta.worktree.is_none() {
-        stored.rail_meta.worktree.clone_from(&row.worktree);
-    }
-    if stored.rail_meta.branch.is_none() {
-        stored.rail_meta.branch.clone_from(&row.branch);
-    }
-    if session_title_is_empty(stored.rail_meta.title.as_deref())
-        && !session_title_is_empty(row.title.as_deref())
-    {
-        stored.rail_meta.title.clone_from(&row.title);
-    }
+    stored.rail_meta.worktree.clone_from(&row.worktree);
+    stored.rail_meta.branch.clone_from(&row.branch);
+    stored.rail_meta.title.clone_from(&row.title);
+    stored.rail_meta.project.clone_from(&row.project);
     if session_title_is_empty(stored.rail_meta.title.as_deref()) {
         stored.rail_meta.title = store
             .first_user_message_payload(&row.owned_id)
@@ -3473,24 +3690,29 @@ fn recovered_session_from_row(
                 _ => None,
             });
     }
-    if stored.rail_meta.project.is_none() {
-        stored.rail_meta.project.clone_from(&row.project);
-    }
     let persisted_state: AgentRuntimeState = enum_from_storage(&row.state)?;
-    let recoverable =
-        row.native_session_id.is_some() && persisted_state != AgentRuntimeState::Closed;
-    let state = if recoverable {
+    let state = if row.native_session_id.is_some() && persisted_state != AgentRuntimeState::Closed {
         AgentRuntimeState::Suspended
     } else {
         persisted_state
     };
-    let connection_state = match state {
-        AgentRuntimeState::Suspended | AgentRuntimeState::Closed => {
-            ConversationConnectionState::Disconnected
-        }
+    Ok((provider, stored, state))
+}
+
+fn connection_state_for_runtime_state(state: AgentRuntimeState) -> ConversationConnectionState {
+    match state {
         AgentRuntimeState::Failed => ConversationConnectionState::Failed,
         _ => ConversationConnectionState::Disconnected,
-    };
+    }
+}
+
+/// Rebuilds the disposable runtime overlay only when a mutating ACP operation
+/// needs one. Rail listing and conversation reads project directly from SQLite.
+fn recovered_session_from_row(
+    store: &Arc<SessionStore>,
+    row: SessionRow,
+) -> Result<ManagedAgentSession, String> {
+    let (provider, stored, state) = stored_session_projection(store, &row)?;
     let next_sequence = store
         .latest_seq(&row.owned_id)
         .map_err(|error| error.to_string())?
@@ -3500,7 +3722,7 @@ fn recovered_session_from_row(
         provider,
         generation: stored.generation,
         native_session_id: row.native_session_id.clone(),
-        state: connection_state,
+        state: connection_state_for_runtime_state(state),
         config: stored.config.clone(),
     };
     let session = ManagedAgentSession {
@@ -4794,11 +5016,11 @@ async fn handle_ordered_session_event(
             // session survives for resume on the next send; only the idle
             // process tree is removed because those trees otherwise retain
             // hundreds of megabytes between turns.
-            if let Err(error) = manager.suspend_if_quiescent(owned_id, generation).await {
-                crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
-            }
             if let Err(error) = manager.sync_broker_status(owned_id, generation, runtime_error) {
                 crate::debug_log::stderr_log!("Could not publish broker status: {error}");
+            }
+            if let Err(error) = manager.suspend_if_quiescent(owned_id, generation).await {
+                crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
             }
             true
         }
@@ -7311,15 +7533,11 @@ mod tests {
             .unwrap();
         activation.await.unwrap().unwrap();
 
-        let sessions = manager.sessions.lock().unwrap();
-        let session = sessions.get("owned-blocked-activation").unwrap();
-        assert_eq!(session.state, AgentRuntimeState::Closed);
+        assert!(manager.sessions.lock().unwrap().is_empty());
         assert_eq!(
-            session.connection.state,
-            ConversationConnectionState::Closed
+            manager.list_sessions().unwrap()[0].state,
+            AgentRuntimeState::Closed
         );
-        assert!(session.runtime.is_none());
-        drop(sessions);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -7416,9 +7634,11 @@ mod tests {
         let providers =
             ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
         let recovered = AgentRuntimeManager::open(providers, &database).unwrap();
+        assert!(recovered.sessions.lock().unwrap().is_empty());
         let sessions = recovered.list_sessions().unwrap();
         assert_eq!(sessions.len(), 1);
         assert!(sessions[0].suspended);
+        assert!(recovered.sessions.lock().unwrap().is_empty());
         recovered
             .activate(&connection.owned_id, connection.generation)
             .await
@@ -7621,6 +7841,8 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(manager.snapshot(&connection.owned_id).unwrap().is_none());
+        assert!(!manager.activation_locks.lock().unwrap().contains_key(&connection.owned_id));
+        assert!(!manager.broker_statuses.lock().unwrap().contains_key(&connection.owned_id));
         // Gone is gone: asking again is not an error, just nothing to do.
         assert!(!manager.delete(&connection.owned_id).await.unwrap());
         fs::remove_dir_all(root).unwrap();
@@ -7629,14 +7851,18 @@ mod tests {
     #[test]
     fn selecting_and_reading_session_never_spawns_runtime() {
         let root = temp_root();
+        let database = root.join("sessions.db");
         let log = root.join("read-only-session.jsonl");
         let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
             &log,
             "prompt_with_update",
         );
-        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+        let providers = ProviderRegistry::new([(
+            AgentConversationProvider::Codex,
+            manifest.clone(),
+        )])
             .expect("fixture provider");
-        let manager = AgentRuntimeManager::new(providers);
+        let manager = AgentRuntimeManager::open(providers, &database).unwrap();
         let (connection, _) = manager
             .ensure_inner(request(
                 root.to_str().unwrap(),
@@ -7675,6 +7901,15 @@ mod tests {
                 },
             })
             .unwrap();
+        drop(manager);
+
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::open(providers, &database).unwrap();
+        assert!(manager.sessions.lock().unwrap().is_empty());
+        let before_reads = manager.resource_diagnostics().unwrap();
+        assert_eq!(before_reads.durable_session_rows, 1);
+        assert_eq!(before_reads.live_session_overlays, 0);
 
         let listed = manager.list_sessions().unwrap();
         let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
@@ -7685,6 +7920,10 @@ mod tests {
         assert_eq!(listed[0].meta.pty_session_id.as_deref(), Some("pty-1"));
         assert_eq!(snapshot.events, events);
         assert_eq!(events.len(), 1);
+        assert!(manager.sessions.lock().unwrap().is_empty());
+        let after_reads = manager.resource_diagnostics().unwrap();
+        assert_eq!(after_reads.durable_session_rows, 1);
+        assert_eq!(after_reads.live_session_overlays, 0);
         assert!(manager.resource_roots().is_empty());
         assert!(
             !log.exists(),
