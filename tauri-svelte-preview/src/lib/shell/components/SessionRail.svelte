@@ -55,15 +55,14 @@
     return 'minute';
   });
 
-  function onRailTick(tick: number): void {
-    nowMs = tick;
-  }
-
   // The rail owns one clock subscription. Rows receive the same timestamp as
   // data and therefore create no timers, watcher closures, or cleanup effects.
   $effect(() => {
     if (sessions.length === 0) return;
-    return watchRailElapsed(onRailTick, elapsedCadence);
+    const cadence = elapsedCadence;
+    return watchRailElapsed((tick) => {
+      nowMs = tick;
+    }, cadence);
   });
 
   function sessionNeedsYou(session: OwnedSession): boolean {

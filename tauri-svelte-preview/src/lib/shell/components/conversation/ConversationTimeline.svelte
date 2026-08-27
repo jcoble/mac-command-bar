@@ -214,7 +214,7 @@
       // Row keys include the session/child window. TanStack does not prune old
       // measured sizes merely because getItemKey starts returning new keys.
       $virtualizer.measure();
-      queueMicrotask(() => {
+      void tick().then(() => {
         // Session replacement removes the old rows during this Svelte flush.
         // Sweep only nodes that are now detached; current rows stay observed.
         $virtualizer.measureElement(null);
@@ -238,29 +238,22 @@
   // also clears the anchored message.
   const showActiveTurnTail = $derived(anchoredUserIndex >= 0);
 
-  let timelineResizeFrame: number | null = null;
-  function onTimelineResize(): void {
-    if (timelineResizeFrame === null) {
-      timelineResizeFrame = requestTrackedAnimationFrame(() => {
-        timelineResizeFrame = null;
-        const nextHeight = host?.clientHeight ?? 0;
-        if (viewportHeight !== nextHeight) viewportHeight = nextHeight;
-      });
-    }
-  }
-
   $effect(() => {
     if (!host) return;
-    const observer = new ResizeObserver(onTimelineResize);
+    let frame: number | null = null;
+    const publish = (): void => {
+      frame = null;
+      const nextHeight = host?.clientHeight ?? 0;
+      if (viewportHeight !== nextHeight) viewportHeight = nextHeight;
+    };
+    const observer = new ResizeObserver(() => {
+      if (frame === null) frame = requestTrackedAnimationFrame(publish);
+    });
     observer.observe(host);
-    const nextHeight = host.clientHeight;
-    if (viewportHeight !== nextHeight) viewportHeight = nextHeight;
+    publish();
     return () => {
       observer.disconnect();
-      if (timelineResizeFrame !== null) {
-        cancelTrackedAnimationFrame(timelineResizeFrame);
-        timelineResizeFrame = null;
-      }
+      if (frame !== null) cancelTrackedAnimationFrame(frame);
     };
   });
 
@@ -286,7 +279,7 @@
     if (restoringScrollTop === null || renderedItems.length === 0) return;
     const target = restoringScrollTop;
     restoringScrollTop = null;
-    queueMicrotask(() => {
+    void tick().then(() => {
       if (!host) return;
       host.scrollTop = target;
       requestTrackedAnimationFrame(() => {
@@ -315,7 +308,7 @@
       framesLeft -= 1;
       if (framesLeft > 0) frame = requestTrackedAnimationFrame(settleAtLatest);
     };
-    queueMicrotask(() => {
+    void tick().then(() => {
       if (!cancelled) frame = requestTrackedAnimationFrame(settleAtLatest);
     });
     return () => {
@@ -525,7 +518,7 @@
   });
 
   function restoreViewportAnchor(anchor: PageAnchor): void {
-    queueMicrotask(() => {
+    void tick().then(() => {
       if (!host) return;
       const rowIndex = renderedGroups.findIndex((group) =>
         group.items.some((item) => item.itemId === anchor.itemId)
@@ -621,7 +614,7 @@
       userItemIds
     });
     scrollState = decision.state;
-    if (decision.action.type !== 'none') queueMicrotask(() => perform(decision.action));
+    if (decision.action.type !== 'none') void tick().then(() => perform(decision.action));
   });
 
   $effect(() => {
@@ -629,7 +622,7 @@
     lastContentRevision = timelineRevision;
     const decision = decideConversationScroll(scrollState, { type: 'stream-growth' });
     scrollState = decision.state;
-    queueMicrotask(() => {
+    void tick().then(() => {
       perform(decision.action);
       if (!host) return;
       if (follow && decision.action.type === 'none') {
@@ -647,7 +640,7 @@
     if (composerHeight === lastComposerHeight) return;
     lastComposerHeight = composerHeight;
     if (!scrollState.pinnedToBottom) return;
-    queueMicrotask(() => {
+    void tick().then(() => {
       if (host) animateTo(latestWritingScrollTop(), 'instant');
     });
   });

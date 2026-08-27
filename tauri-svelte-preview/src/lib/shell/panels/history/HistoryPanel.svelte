@@ -246,14 +246,10 @@
     expandedKey = null;
   });
 
-  function updateNow(): void {
-    now = new Date();
-  }
-
   $effect(() => {
     if (!visible) return;
-    updateNow();
-    const timer = setInterval(updateNow, 60_000);
+    now = new Date();
+    const timer = setInterval(() => (now = new Date()), 60_000);
     return () => clearInterval(timer);
   });
 

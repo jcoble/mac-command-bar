@@ -42,7 +42,7 @@
   let { tool, shapes, backdrop, highlight, onAdd, onErase, onHover, onPick, onResize }: Props =
     $props();
 
-  let host = $state.raw<HTMLDivElement | null>(null);
+  let host = $state<HTMLDivElement | null>(null);
   let canvas = $state<HTMLCanvasElement | null>(null);
   let size = $state({ width: 0, height: 0 });
   let inProgress = $state<AnnotationShape | null>(null);
@@ -127,16 +127,14 @@
     origin = null;
   }
 
-  function handleCanvasResize(entries: ResizeObserverEntry[]): void {
-    const box = entries[0]?.contentRect;
-    if (!box) return;
-    size = { width: box.width, height: box.height };
-    onResize({ width: box.width, height: box.height });
-  }
-
   $effect(() => {
     if (!host) return;
-    const observer = new ResizeObserver(handleCanvasResize);
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (!box) return;
+      size = { width: box.width, height: box.height };
+      onResize({ width: box.width, height: box.height });
+    });
     observer.observe(host);
     return () => observer.disconnect();
   });

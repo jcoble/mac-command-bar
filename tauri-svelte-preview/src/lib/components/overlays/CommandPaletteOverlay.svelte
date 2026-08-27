@@ -66,7 +66,7 @@
   // imperatively; the element now lives here, so the focus follows it.
   $effect(() => {
     if (visible) {
-      queueMicrotask(() => inputEl?.focus());
+      tick().then(() => inputEl?.focus());
     }
   });
 </script>
