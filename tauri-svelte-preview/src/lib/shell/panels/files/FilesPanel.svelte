@@ -328,26 +328,7 @@
 			// too aggressive if it kills a valid search that just started
 		};
 	});
-	// $effect(() => {
-	//   const query = searchText.trim();
-	//   const projectRoot = projectRootForView();
-	//   explorer.includeExcluded;
-	//   const generation = ++searchGeneration;
-	//   cancelActiveSearch();
-	//   searchMatches = [];
-	//   searchNextCursor = null;
-	//   searchError = null;
-	//   searchLoading = false;
-	//   if (!query || !visible || !listed || !projectRoot) return;
 
-	//   const timer = window.setTimeout(() => {
-	//     void loadSearchPage(generation, null, true);
-	//   }, 220);
-	//   return () => {
-	//     window.clearTimeout(timer);
-	//     cancelActiveSearch();
-	//   };
-	// });
 
 	$effect(() => {
 		if (visible) return;
@@ -381,43 +362,7 @@
 		field.select();
 	});
 
-	// $effect(() => {
-	// 	const host = treeHost;
-	// 	if (!host) return;
 
-	// 	let frame: number | null = null;
-	// 	const updateTreeHeight = () => {
-	// 		frame = null;
-	// 		const nextHeight = Math.max(1, Math.floor(host.clientHeight));
-	// 		if (treeHeight !== nextHeight) treeHeight = nextHeight;
-	// 	};
-	// 	updateTreeHeight();
-	// 	const observer = new ResizeObserver(() => {
-	// 		if (frame === null) frame = requestTrackedAnimationFrame(updateTreeHeight);
-	// 	});
-	// 	observer.observe(host);
-	// 	return () => {
-	// 		observer.disconnect();
-	// 		if (frame !== null) cancelTrackedAnimationFrame(frame);
-	// 	};
-	// });
-
-	// $effect(() => {
-	// 	displayedTreeData.length;
-	// 	const host = treeHost;
-	// 	if (!host) return;
-	// 	let active = true;
-	// 	void tick().then(() => {
-	// 		if (!active) return;
-	// 		const viewport = host.querySelector<HTMLElement>(".ltree-virtual-scroll");
-	// 		if (!viewport) return;
-	// 		const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-	// 		if (viewport.scrollTop > maxScrollTop) viewport.scrollTop = maxScrollTop;
-	// 	});
-	// 	return () => {
-	// 		active = false;
-	// 	};
-	// });
 
 	// 1. Define the logic once, outside the effect
 	function adjustScroll(viewport: HTMLElement | null) {
@@ -456,21 +401,18 @@
 		queueMicrotask(() => adjustScroll(viewport));
 	});
 
-	// Move this outside or to a top-level scope
-	function getHostHeight(el: HTMLElement) {
-		return Math.max(1, Math.floor(el.clientHeight));
+	function onHostResize(entries: ResizeObserverEntry[]) {
+		const entry = entries[0];
+		if (!entry) return;
+		const nextHeight = Math.max(1, Math.floor(entry.contentRect.height));
+		if (treeHeight !== nextHeight) treeHeight = nextHeight;
 	}
 
 	$effect(() => {
 		const host = treeHost;
 		if (!host) return;
 
-		const observer = new ResizeObserver(() => {
-			// Use a stable logic block here
-			const nextHeight = getHostHeight(host);
-			if (treeHeight !== nextHeight) treeHeight = nextHeight;
-		});
-
+		const observer = new ResizeObserver(onHostResize);
 		observer.observe(host);
 		return () => observer.disconnect();
 	});

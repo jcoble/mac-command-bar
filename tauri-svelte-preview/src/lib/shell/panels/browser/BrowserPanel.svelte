@@ -108,9 +108,9 @@
   }
   let { visible, root, ownedId }: Props = $props();
 
-  let pageHost = $state<HTMLDivElement | null>(null);
+  let pageHost = $state.raw<HTMLDivElement | null>(null);
   /** The panel's own rows above the page — measured, never assumed. */
-  let chromeHost = $state<HTMLDivElement | null>(null);
+  let chromeHost = $state.raw<HTMLDivElement | null>(null);
   let tool = $state<BrowserPanelTool>('browse');
   let expanded = $state(false);
   let address = $state('');
@@ -626,11 +626,13 @@
 
   // ── Keeping the rectangle current ──────────────────────────────────────────
 
+  function bumpLayoutTick(): void {
+    layoutTick += 1;
+  }
+
   $effect(() => {
     if (!pageHost) return;
-    const observer = new ResizeObserver(() => {
-      layoutTick += 1;
-    });
+    const observer = new ResizeObserver(bumpLayoutTick);
     observer.observe(pageHost);
     // The rows above move the page host and set the floor the expanded view is
     // held to, so a row appearing has to be a re-measure in its own right.
@@ -640,11 +642,8 @@
 
   $effect(() => {
     if (typeof window === 'undefined') return;
-    const onResize = (): void => {
-      layoutTick += 1;
-    };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    window.addEventListener('resize', bumpLayoutTick);
+    return () => window.removeEventListener('resize', bumpLayoutTick);
   });
 
   $effect(() => {

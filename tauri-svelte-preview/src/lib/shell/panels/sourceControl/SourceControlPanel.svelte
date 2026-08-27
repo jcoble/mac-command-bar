@@ -231,23 +231,29 @@
       setInspectionRoot('');
       return;
     }
-    void (async () => {
-      const validation = await validateProjectRootFromTauri(target);
-      if (
-        generation !== inspectionRestoreGeneration
-        || canonicalPath(root) !== sessionRootPath
-        || canonicalPath(inspectionRoot ?? '') !== target
-      ) return;
-      if (validation === null || (validation.exists && validation.isDirectory)) {
-        setInspectionRoot(target);
-      } else {
-        setInspectionRoot('');
-      }
-    })();
+    void validateAndSetInspectionRoot(target, generation, sessionRootPath);
     return () => {
       inspectionRestoreGeneration += 1;
     };
   });
+
+  async function validateAndSetInspectionRoot(
+    target: string,
+    generation: number,
+    sessionRootPath: string
+  ): Promise<void> {
+    const validation = await validateProjectRootFromTauri(target);
+    if (
+      generation !== inspectionRestoreGeneration
+      || canonicalPath(root) !== sessionRootPath
+      || canonicalPath(inspectionRoot ?? '') !== target
+    ) return;
+    if (validation === null || (validation.exists && validation.isDirectory)) {
+      setInspectionRoot(target);
+    } else {
+      setInspectionRoot('');
+    }
+  }
 
   /** The one place a scope becomes a real read. `activate` ignores a repeat. */
   let historyRoot = '';
@@ -350,20 +356,21 @@
   let openSections = $state<Record<string, boolean>>({});
 
   /** The list DOM is rebuilt on return, but the reader stays at the same place. */
-  let scrollViewport = $state<HTMLElement | null>(null);
+  let scrollViewport = $state.raw<HTMLElement | null>(null);
   let savedScrollTop = 0;
+
+  function onScrollViewportScroll(): void {
+    if (scrollViewport) savedScrollTop = scrollViewport.scrollTop;
+  }
 
   $effect(() => {
     const viewport = scrollViewport;
     if (!viewport) return;
     viewport.scrollTop = savedScrollTop;
-    const rememberScroll = () => {
-      savedScrollTop = viewport.scrollTop;
-    };
-    viewport.addEventListener('scroll', rememberScroll, { passive: true });
+    viewport.addEventListener('scroll', onScrollViewportScroll, { passive: true });
     return () => {
       savedScrollTop = viewport.scrollTop;
-      viewport.removeEventListener('scroll', rememberScroll);
+      viewport.removeEventListener('scroll', onScrollViewportScroll);
     };
   });
 

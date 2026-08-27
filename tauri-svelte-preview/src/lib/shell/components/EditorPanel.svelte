@@ -741,40 +741,53 @@
     syncIntelligenceWithActiveFile();
   });
 
+  async function syncLanguageIntelligenceOwner(
+    root: string | null,
+    languageServersEnabled: boolean,
+    generation: number
+  ): Promise<void> {
+    await hydrateLanguageIntelligenceChoices();
+    if (destroyed || generation !== ownerSelectionGeneration) return;
+    const enabled = Boolean(
+      root
+        && languageServersEnabled
+        && activeServerEnabled === true
+    );
+    try {
+      const answer = await queueLanguageIntelligenceOwner(root, enabled);
+      if (
+        destroyed
+        || !answer
+        || root !== activeLanguageRoot()
+      ) return;
+      languageServerPids = answer.serverPids;
+    } catch {
+      // An older desktop build leaves the selected project in read mode.
+    }
+  }
+
   $effect(() => {
     const root = activeLanguageRoot();
     languageIntelligenceChoices;
     const languageServersEnabled = settings.intelligence.languageServers;
     const generation = ++ownerSelectionGeneration;
-    void (async () => {
-      await hydrateLanguageIntelligenceChoices();
-      if (destroyed || generation !== ownerSelectionGeneration) return;
-      const enabled = Boolean(
-        root
-          && languageServersEnabled
-          && activeServerEnabled === true
-      );
-      try {
-        const answer = await queueLanguageIntelligenceOwner(root, enabled);
-        if (
-          destroyed
-          || !answer
-          || root !== activeLanguageRoot()
-        ) return;
-        languageServerPids = answer.serverPids;
-      } catch {
-        // An older desktop build leaves the selected project in read mode.
-      }
-    })();
+    void syncLanguageIntelligenceOwner(root, languageServersEnabled, generation);
   });
+
+  async function updateNativeCsharpRoot(root: string | null): Promise<void> {
+    try {
+      const { setNativeCsharpActiveRoot } = await import('$lib/shell/editor/csharpLanguageClient');
+      setNativeCsharpActiveRoot(root);
+    } catch {
+      // Ignored
+    }
+  }
 
   $effect(() => {
     const root = fullMode ? activeLanguageRoot() : null;
     if (root === nativeCsharpRoot) return;
     nativeCsharpRoot = root;
-    void import('$lib/shell/editor/csharpLanguageClient').then(({ setNativeCsharpActiveRoot }) =>
-      setNativeCsharpActiveRoot(root)
-    ).catch(() => undefined);
+    void updateNativeCsharpRoot(root);
   });
 
   /** EXPLICIT IO: read one file and show it. */
@@ -1276,14 +1289,16 @@
     void ensureCodeEditor();
   });
 
+  function scrollSelectedTabIntoView(strip: HTMLElement | null): void {
+    strip?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }
+
   // Keep the selected tab on screen when opening, selecting, or restoring files.
   $effect(() => {
     const activePath = editorState.activePath;
     const openFiles = editorState.openFiles;
     if (!activePath || openFiles.length === 0 || !fileStrip) return;
-    fileStrip
-      .querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
-      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    scrollSelectedTabIntoView(fileStrip);
   });
 
   /**
