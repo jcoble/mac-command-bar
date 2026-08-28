@@ -725,6 +725,7 @@
 			try {
 				return await startNewSession({
 					prompt: request.prompt,
+					executionEnvironment: "local",
 					provider,
 					model: config?.model ?? null,
 					reasoningEffort: config?.reasoningEffort ?? null,
