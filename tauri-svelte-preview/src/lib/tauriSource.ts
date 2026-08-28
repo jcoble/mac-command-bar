@@ -399,6 +399,7 @@ export type AgentConversationSessionMeta = {
 
 export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   ownedId: string;
+  executionEnvironment: ExecutionEnvironment;
   provider: import('./shell/conversation/conversationTypes.ts').AgentConversationProvider;
   model: string | null;
   effort: string | null;
@@ -412,6 +413,8 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   pendingInput: boolean;
   nativeSessionId: string | null;
 };
+
+export type ExecutionEnvironment = 'local' | 'agent-workbox';
 
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
 

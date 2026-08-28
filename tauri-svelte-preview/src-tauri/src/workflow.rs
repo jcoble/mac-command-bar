@@ -521,6 +521,8 @@ impl AgentRuntimePort for AgentRuntimeManager {
             let connection = self
                 .ensure_async(EnsureAgentConversationRequest {
                     owned_id: request.owned_id.clone(),
+                    execution_environment:
+                        crate::agent_conversation::protocol::ExecutionEnvironment::Local,
                     provider,
                     cwd: request.cwd.clone(),
                     native_session_id: None,

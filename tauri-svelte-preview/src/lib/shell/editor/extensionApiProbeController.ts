@@ -193,6 +193,7 @@ export async function createExtensionApiProbeTerminal(
   const probeOwnedId = `mcb-extension-probe:${current.ownedId}:${current.generation}`;
   const owned: OwnedSession = {
     ownedId: probeOwnedId,
+    executionEnvironment: 'local',
     agent: 'other',
     viaCmux: false,
     source: 'fresh',

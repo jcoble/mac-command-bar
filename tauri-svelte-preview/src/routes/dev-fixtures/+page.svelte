@@ -39,6 +39,7 @@
   const firstSession = fixture.sessions[0];
   const fixtureOwnedSessions: OwnedSession[] = fixture.sessions.map((session, index) => ({
     ownedId: session.id,
+    executionEnvironment: 'local',
     agent: index % 3 === 0 ? 'claude' : 'codex',
     origin: 'app',
     viaCmux: false,
