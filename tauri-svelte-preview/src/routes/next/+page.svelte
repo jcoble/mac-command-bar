@@ -35,6 +35,7 @@
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
 	import ConversationHistorySurface from "$lib/shell/components/ConversationHistorySurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
+	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
 	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
 	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
 	import RightPanel from "$lib/shell/components/RightPanel.svelte";
@@ -80,6 +81,7 @@
 	import { countInvoke } from "$lib/shell/devInvokeCounter.svelte";
 	import { profileResourceLifecycle } from "$lib/shell/resourceDiagnostics.svelte";
 	import {
+		activateEditor,
 		editorState,
 		resetEditorState,
 		restoreEditorFiles,
@@ -230,6 +232,10 @@
 	const sessionSelectionLayers = new SessionSelectionLayers();
 	let controlledSelectionOwnedId = $state<string | null>(null);
 	let controlledExpandedPathsByRoot = $state.raw<Readonly<Record<string, readonly string[]>>>({});
+	let controlledEditorOwnedId = $state<string | null>(null);
+	let controlledEditorSnapshot: SessionWorkspaceSnapshot | null = null;
+	let controlledEditorGeneration = 0;
+	let controlledEditorSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	const sessionProjection = $derived<SessionProjection>({
 		activeOwnedId: rail.activeOwnedId,
 		rail: rail.owned,
@@ -275,6 +281,11 @@
 		controlledSession?.cwd.trim() || controlledSession?.projectPath?.trim() || "",
 	);
 	const controlledRootRemote = $derived(controlledSession?.executionEnvironment === "remote");
+	const controlledEditorRootAvailable = $derived(
+		controlledSelectionOwnedId !== null
+			&& Boolean(sessionSelectionLayers.treeRoot)
+			&& !controlledRootRemote,
+	);
 	const controlledCheckoutScope = $derived<CheckoutScope>({
 		durableSessionRoot: controlledRoot,
 		filesInspectionRoot: null,
@@ -289,6 +300,7 @@
 	});
 
 	async function selectSessionLayers(ownedId: string): Promise<void> {
+		const editorGeneration = ++controlledEditorGeneration;
 		const enteringIsolationBaseline = controlledSelectionOwnedId === null;
 		if (enteringIsolationBaseline) {
 			// One-time cleanup only. Repeating these releases on every row click was
@@ -297,11 +309,9 @@
 			const displayedChatOwnedId = sessionProjection.activeOwnedId;
 			if (displayedChatOwnedId !== null) releaseConversationForRead(displayedChatOwnedId);
 			sessionSelectionLayers.clearChatHistory();
-			if (editorState.openFiles.length > 0) {
-				editorPanel?.releaseSessionResources(editorState.openFiles.map((file) => file.path));
-				resetEditorState();
-			}
 		}
+		checkpointControlledEditorWorkspace();
+		releaseControlledEditorWorkspace();
 		controlledSelectionOwnedId = ownedId;
 		// Drop departing session's tree state from memory. SQLite is the source of truth.
 		controlledExpandedPathsByRoot = {};
@@ -314,12 +324,19 @@
 					const saved = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot);
 					if (controlledSelectionOwnedId === ownedId) {
 						controlledExpandedPathsByRoot = { [projectRoot]: saved };
+						if (controlledEditorSnapshot) {
+							controlledEditorSnapshot = {
+								...controlledEditorSnapshot,
+								expandedPathsByRoot: { [projectRoot]: saved },
+							};
+						}
 					}
 				})()
 				: Promise.resolve();
 			await Promise.all([
 				loadPaths,
 				sessionSelectionLayers.selectSession(session, sessionSelectionLayers.chatOwnedId),
+				fillEditorWorkspace(ownedId, projectRoot, editorGeneration),
 			]);
 		}
 		else {
@@ -328,15 +345,108 @@
 		}
 	}
 
-	/**
-	 * Memory-isolation baseline: session selection owns no editor component,
-	 * tab projection, source read, or CodeMirror view.
-	 */
-	function clearControlledEditorProjection(): void {
+	/** Release the one active editor projection before another session hydrates. */
+	function releaseControlledEditorWorkspace(): void {
+		cancelControlledEditorAutosave();
+		controlledEditorOwnedId = null;
+		controlledEditorSnapshot = null;
 		const previousPaths = editorState.openFiles.map((file) => file.path);
 		editorPanel?.releaseSessionResources(previousPaths);
-		resetEditorState();
-		selectCenterTab("session");
+		if (!editorPanel) resetEditorState();
+	}
+
+	/** Load only this session's tab descriptors. Source text remains on disk. */
+	async function fillEditorWorkspace(
+		ownedId: string,
+		projectRoot: string,
+		generation: number,
+	): Promise<void> {
+		await workspaceWriteQueue;
+		if (disposed || generation !== controlledEditorGeneration || controlledSelectionOwnedId !== ownedId) return;
+		countInvoke("read_agent_conversation_workspace");
+		let snapshot: SessionWorkspaceSnapshot | null = null;
+		try {
+			snapshot = await readAgentConversationWorkspaceFromTauri(ownedId);
+		} catch (error) {
+			if (!disposed && generation === controlledEditorGeneration && controlledSelectionOwnedId === ownedId) {
+				rail.error = `editor workspace restore failed: ${describeError(error)}`;
+			}
+			return;
+		}
+		if (disposed || generation !== controlledEditorGeneration || controlledSelectionOwnedId !== ownedId) return;
+
+		controlledEditorOwnedId = ownedId;
+		const restoredExpandedPaths = controlledExpandedPathsByRoot[projectRoot];
+		controlledEditorSnapshot = snapshot && restoredExpandedPaths
+			? { ...snapshot, expandedPathsByRoot: { [projectRoot]: [...restoredExpandedPaths] } }
+			: snapshot;
+		activateEditor(projectRoot || null);
+		const plan = planWorkspaceRestore(snapshot);
+		editorPanel?.restoreViewStates(plan.openFiles);
+		restoreEditorFiles(plan.openFiles, plan.activePath);
+	}
+
+	/** Capture the editor strip without retaining file contents for another session. */
+	function captureControlledEditorWorkspace(): SessionWorkspaceSnapshot | null {
+		if (!controlledEditorOwnedId) return null;
+		const ownedPaths = editorPanel?.workspaceOwnedPaths()
+			?? editorState.openFiles.map((file) => file.path);
+		const ownedPathSet = new Set(ownedPaths);
+		const openFiles = editorState.openFiles.filter((file) => ownedPathSet.has(file.path));
+		const activePath = editorState.activePath && ownedPathSet.has(editorState.activePath)
+			? editorState.activePath
+			: openFiles.at(-1)?.path ?? null;
+		const editorFields = captureWorkspace({
+			openFiles,
+			activePath,
+			viewStates: editorPanel?.captureViewStates(ownedPaths),
+			selectedPath: controlledEditorSnapshot?.selectedPath ?? null,
+			scrollTop: controlledEditorSnapshot?.scrollTop ?? 0,
+			rightTab: controlledEditorSnapshot?.rightTab ?? DEFAULT_RIGHT_TAB,
+		});
+		const snapshot: SessionWorkspaceSnapshot = {
+			...(controlledEditorSnapshot ?? editorFields),
+			openPaths: editorFields.openPaths,
+			activePath: editorFields.activePath,
+		};
+		if (editorFields.fileStates) snapshot.fileStates = editorFields.fileStates;
+		else delete snapshot.fileStates;
+		return snapshot;
+	}
+
+	/** Queue one small SQLite checkpoint; switching never keeps a second editor alive. */
+	function checkpointControlledEditorWorkspace(): void {
+		const ownedId = controlledEditorOwnedId;
+		const snapshot = captureControlledEditorWorkspace();
+		if (!ownedId || !snapshot) return;
+		controlledEditorSnapshot = snapshot;
+		const write = workspaceWriteQueue.then(async () => {
+			countInvoke("write_agent_conversation_workspace");
+			if (!(await writeAgentConversationWorkspaceFromTauri(ownedId, snapshot))) {
+				throw new Error("workspace checkpoint was refused");
+			}
+		});
+		workspaceWriteQueue = write.catch(() => undefined);
+		void write.catch((error) => {
+			if (!disposed && controlledEditorOwnedId === ownedId) {
+				rail.error = `editor workspace checkpoint failed: ${describeError(error)}`;
+			}
+		});
+	}
+
+	function cancelControlledEditorAutosave(): void {
+		if (controlledEditorSaveTimer !== null) clearTimeout(controlledEditorSaveTimer);
+		controlledEditorSaveTimer = null;
+	}
+
+	function scheduleControlledEditorAutosave(ownedId: string): void {
+		cancelControlledEditorAutosave();
+		controlledEditorSaveTimer = setTimeout(() => {
+			controlledEditorSaveTimer = null;
+			if (controlledEditorOwnedId === ownedId && controlledSelectionOwnedId === ownedId) {
+				checkpointControlledEditorWorkspace();
+			}
+		}, 30_000);
 	}
 	let service: ReturnType<typeof createTerminalService> | null = null;
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
@@ -942,6 +1052,12 @@
 		const projectRoot = canonicalPath(root);
 		if (!ownedId || !projectRoot) return;
 		controlledExpandedPathsByRoot = { [projectRoot]: [...paths] };
+		if (controlledEditorSnapshot) {
+			controlledEditorSnapshot = {
+				...controlledEditorSnapshot,
+				expandedPathsByRoot: { [projectRoot]: [...paths] },
+			};
+		}
 		const write = workspaceWriteQueue.then(async () => {
 			countInvoke("write_agent_conversation_workspace_expanded_paths");
 			await writeAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot, paths);
@@ -1164,8 +1280,17 @@
 		}
 	});
 
+	$effect(() => {
+		const ownedId = controlledEditorOwnedId;
+		editorState.openFiles;
+		editorState.activePath;
+		if (ownedId && controlledSelectionOwnedId === ownedId) {
+			scheduleControlledEditorAutosave(ownedId);
+		}
+	});
+
 	async function clearAllEditorWorkspaceRecords(): Promise<boolean> {
-		const ownedId = rail.activeOwnedId;
+		const ownedId = controlledSelectionOwnedId ?? rail.activeOwnedId;
 		if (ownedId === null || clearAllEditorsInFlight || sessionProjectionOwner === "checkout") return false;
 		clearAllEditorsInFlight = true;
 		workspaceAutosaveEnabled = false;
@@ -1179,6 +1304,14 @@
 			if (activeWorkspaceSnapshot !== null) {
 				activeWorkspaceSnapshot = {
 					...activeWorkspaceSnapshot,
+					openPaths: [],
+					activePath: null,
+					fileStates: undefined,
+				};
+			}
+			if (controlledEditorSnapshot !== null) {
+				controlledEditorSnapshot = {
+					...controlledEditorSnapshot,
 					openPaths: [],
 					activePath: null,
 					fileStates: undefined,
@@ -2200,7 +2333,9 @@
 		 * reload would come back to an empty editor. `pagehide` is the event
 		 * browsers still fire for both a reload and a close. */
 		const saveOnLeaving = (): void => {
-			if (controlledSelectionOwnedId === null && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") {
+			if (controlledEditorOwnedId !== null) {
+				checkpointControlledEditorWorkspace();
+			} else if (controlledSelectionOwnedId === null && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") {
 				void snapshotWorkspace(rail.activeOwnedId);
 			}
 		};
@@ -2209,9 +2344,12 @@
 
 		return () => {
 			cancelWorkspaceAutosave();
+			cancelControlledEditorAutosave();
 			// Navigating away inside the app ends here instead, and it is the same
 			// last chance to remember what the session on screen had open.
-			if (!disposed && controlledSelectionOwnedId === null && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") {
+			if (!disposed && controlledEditorOwnedId !== null) {
+				checkpointControlledEditorWorkspace();
+			} else if (!disposed && controlledSelectionOwnedId === null && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") {
 				void snapshotWorkspace(rail.activeOwnedId);
 			}
 			disposed = true;
@@ -2235,7 +2373,7 @@
 </script>
 
 <svelte:head>
-	<title>ROOT ROWS ONLY · TREE SERVICES ISOLATED · 5177 · {PRODUCT_DOCUMENT_TITLE}</title>
+	<title>{PRODUCT_DOCUMENT_TITLE}</title>
 </svelte:head>
 
 <!-- Every region is a top-level snippet: an implicit `{#snippet rail()}` child would
@@ -2343,9 +2481,18 @@
 	</div>
 {/snippet}
 {#snippet editorArea()}
-	<div class="editor-isolation-baseline" aria-label="Editor isolated for memory testing">
-		<p>The editor is temporarily isolated while its lifecycle is measured.</p>
-	</div>
+	<EditorPanel
+		bind:this={editorPanel}
+		showing={centerTab === "editor"}
+		rootAvailable={controlledEditorRootAvailable}
+		onCloseAllEditors={clearAllEditorWorkspaceRecords}
+		onStartWorkspaceCommand={(request) => {
+			void onStartStack({ stackId: request.id, ...request });
+		}}
+		onFileOpened={() => {
+			selectCenterTab("editor");
+		}}
+	/>
 {/snippet}
 <!-- The changes to whichever file source control has selected. `GitDiffView`
      reads the selected file itself and lives here as a tab of its own — which
