@@ -1,4 +1,5 @@
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER, USER_AGENT};
+#[cfg(target_os = "macos")]
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
 use serde::Deserialize;
 use serde_json::Value;
@@ -6,6 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,7 +18,9 @@ const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const USER_PROFILE_SCOPE: &str = "user:profile";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+#[cfg(target_os = "macos")]
 const KEYCHAIN_ITEM_NOT_FOUND: i32 = -25_300;
 const CLAUDE_USER_AGENT: &str = "claude-code";
 
@@ -123,10 +127,12 @@ impl CredentialStore for FileStore {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[derive(Default)]
 struct KeychainStore;
 
 /// `security find-generic-password` when the item is not there.
+#[cfg(target_os = "macos")]
 const SECURITY_ITEM_NOT_FOUND: i32 = 44;
 
 /// One Keychain item's data, read through Apple's own `security` tool.
@@ -136,6 +142,7 @@ const SECURITY_ITEM_NOT_FOUND: i32 = 44;
 /// process directly, every rebuild of the unsigned development binary was a
 /// new program as far as the Keychain was concerned, and it asked again each
 /// time — "Always Allow" never stuck. `None` means the item is not there.
+#[cfg(target_os = "macos")]
 fn keychain_password(account: &str) -> Result<Option<Vec<u8>>, CredentialStoreError> {
     let output = Command::new("/usr/bin/security")
         .args([
@@ -166,6 +173,7 @@ fn keychain_password(account: &str) -> Result<Option<Vec<u8>>, CredentialStoreEr
     Ok(Some(password))
 }
 
+#[cfg(target_os = "macos")]
 impl CredentialStore for KeychainStore {
     fn label(&self) -> &'static str {
         "Claude Keychain"
@@ -480,10 +488,10 @@ pub fn read_credentials() -> Result<ClaudeCredentials, ClaudeCredentialError> {
         Some(path) => Arc::new(FileStore::new(path)),
         None => Arc::new(FileStore::unavailable()),
     };
-    select_credentials(vec![
-        file_store,
-        Arc::new(KeychainStore::default()) as Arc<dyn CredentialStore>,
-    ])
+    let mut stores = vec![file_store];
+    #[cfg(target_os = "macos")]
+    stores.push(Arc::new(KeychainStore) as Arc<dyn CredentialStore>);
+    select_credentials(stores)
 }
 
 fn credential_path() -> Result<PathBuf, ClaudeCredentialError> {
@@ -897,6 +905,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
 
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "requires the logged-in Claude Keychain credential"]
     fn live_keychain_item_reads_without_asking() {
@@ -904,9 +913,12 @@ mod tests {
             .read()
             .expect("Claude Keychain credential should be readable through `security`");
         assert!(!records.is_empty());
-        assert!(records.iter().all(|record| parse_credential(&record.document).is_ok()));
+        assert!(records
+            .iter()
+            .all(|record| parse_credential(&record.document).is_ok()));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "requires the logged-in Claude Keychain credential and network access"]
     fn live_corrected_version_header_returns_status() {
@@ -1149,8 +1161,8 @@ mod tests {
             "Keychain fake",
             CredentialStoreError::missing("generic-password item could not be accessed"),
         ));
-        let selected = select_credentials(vec![file, keychain])
-            .expect("the file should still answer");
+        let selected =
+            select_credentials(vec![file, keychain]).expect("the file should still answer");
         assert_eq!(selected.owner.store.label(), "File fake");
     }
 
@@ -1252,6 +1264,7 @@ mod tests {
 
     /// The real Keychain item is Claude Code's, and this app does not renew
     /// what it did not sign in to.
+    #[cfg(target_os = "macos")]
     #[test]
     fn claude_quota_does_not_renew_a_keychain_sign_in() {
         let store: Arc<dyn CredentialStore> = Arc::new(KeychainStore::default());
