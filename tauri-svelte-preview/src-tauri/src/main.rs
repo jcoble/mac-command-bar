@@ -6443,12 +6443,12 @@ fn main() {
     install_panic_hook();
     if std::env::args().any(|argument| argument == "--assembly-server") {
         if let Err(error) = agent_conversation::remote::run_server_from_environment() {
-            crate::debug_log::stderr_log!("Assembly workbox server failed: {error}");
+            crate::debug_log::stderr_log!("Assembly remote server failed: {error}");
             std::process::exit(1);
         }
         return;
     }
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(SourceScanRegistry::default())
         .manage(SourceFileReadOwner::default())
         .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
@@ -6507,6 +6507,13 @@ fn main() {
                 agent_conversation::remote::RemoteConnectionManager::from_environment(Arc::new(
                     move |event| remote_projection_streams.publish_agent_event(event),
                 ))?;
+            if !remote_connection.is_configured() {
+                if let Some(profile) = agent_runtime.read_app_setting(
+                    agent_conversation::remote::REMOTE_ASSEMBLY_PROFILE_SETTING_KEY,
+                )? {
+                    remote_connection.restore_profile(&profile)?;
+                }
+            }
             agent_runtime.set_emitter(Arc::new(move |event| {
                 projection_streams.publish_agent_event(event);
             }));
@@ -6671,7 +6678,8 @@ fn main() {
             approve_workflow_gate,
             submit_workflow_result,
             agent_conversation::ensure_agent_conversation,
-            agent_conversation::remote::read_agent_workbox_environment,
+            agent_conversation::remote::read_remote_assembly_environment,
+            agent_conversation::remote::deploy_remote_assembly,
             agent_conversation::send_agent_conversation_message,
             agent_conversation::agent_conversation_set_session_draft,
             agent_conversation::agent_conversation_get_session_draft,
@@ -6755,10 +6763,22 @@ fn main() {
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window.state::<browser::BrowserRegistry>().shutdown();
+                window
+                    .state::<agent_conversation::remote::RemoteConnectionManager>()
+                    .shutdown();
             }
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect(product_identity::STARTUP_FAILURE_CONTEXT);
+
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            app_handle.state::<browser::BrowserRegistry>().shutdown();
+            app_handle
+                .state::<agent_conversation::remote::RemoteConnectionManager>()
+                .shutdown();
+        }
+    });
 }
 
 #[cfg(test)]
