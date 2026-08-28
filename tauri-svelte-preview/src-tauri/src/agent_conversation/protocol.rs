@@ -573,6 +573,8 @@ pub struct AgentConversationEvent {
 #[serde(rename_all = "camelCase")]
 pub struct EnsureAgentConversationRequest {
     pub owned_id: String,
+    #[serde(default)]
+    pub execution_environment: ExecutionEnvironment,
     pub provider: AgentConversationProvider,
     pub cwd: String,
     pub native_session_id: Option<String>,
@@ -580,6 +582,15 @@ pub struct EnsureAgentConversationRequest {
     pub native_session_mode: AgentNativeSessionMode,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+}
+
+/// The machine that owns a conversation's complete runtime and durable state.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionEnvironment {
+    #[default]
+    Local,
+    AgentWorkbox,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -735,6 +746,7 @@ pub struct UpdateAgentConversationSessionMetaRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationSessionRecord {
     pub owned_id: String,
+    pub execution_environment: ExecutionEnvironment,
     pub provider: AgentConversationProvider,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -755,6 +767,19 @@ pub struct AgentConversationSessionRecord {
 mod contract_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn omitted_execution_environment_means_this_mac() {
+        let request: EnsureAgentConversationRequest = serde_json::from_value(json!({
+            "ownedId": "owned-local",
+            "provider": "codex",
+            "cwd": "/tmp/project",
+            "nativeSessionId": null
+        }))
+        .unwrap();
+
+        assert_eq!(request.execution_environment, ExecutionEnvironment::Local);
+    }
 
     #[test]
     fn unknown_config_categories_round_trip_losslessly() {

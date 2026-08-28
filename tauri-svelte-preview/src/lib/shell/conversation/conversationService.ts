@@ -63,7 +63,8 @@ import {
   registerAgentConversationStream,
   type StreamEnvelope,
   type ProjectionStreamRegistration,
-  type AgentConversationSessionRecord
+  type AgentConversationSessionRecord,
+  type ExecutionEnvironment
 } from '$lib/tauriSource';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
@@ -851,6 +852,7 @@ export async function closeStructuredConversation(ownedId: string): Promise<void
 /** Ensures one structured runtime and applies only its returned connection. */
 export async function ensureStructuredConversation(input: {
   ownedId: string;
+  executionEnvironment?: ExecutionEnvironment;
   provider: AgentConversationProvider;
   cwd: string;
   nativeSessionId?: string | null;
@@ -861,7 +863,11 @@ export async function ensureStructuredConversation(input: {
     ensureConversationSession(input.ownedId, input.provider);
   }
   if (!isTauri() || !input.cwd.trim()) return null;
-  const request = { ...input, nativeSessionMode: input.nativeSessionMode ?? 'resume' };
+  const request = {
+    ...input,
+    executionEnvironment: input.executionEnvironment ?? 'local',
+    nativeSessionMode: input.nativeSessionMode ?? 'resume'
+  };
   const signature = JSON.stringify(request);
   const active = ensuring.get(input.ownedId);
   if (active?.signature === signature) return active.work;
@@ -962,6 +968,7 @@ export async function sendStructuredMessage(
       const nativeSessionMode = activation.kind === 'structured' ? activation.nativeSessionMode : 'resume';
       const activated = await ensureStructuredConversation({
         ownedId,
+        executionEnvironment: owned.executionEnvironment,
         provider,
         cwd: owned.cwd,
         nativeSessionId: owned.nativeSessionId,

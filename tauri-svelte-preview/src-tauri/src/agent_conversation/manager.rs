@@ -24,8 +24,9 @@ use super::protocol::{
     AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputResponse,
     AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
     ChangeAgentConversationCheckoutRequest, ConversationConnectionState,
-    EnsureAgentConversationRequest, PlanItem, SetAgentConversationConfigRequest,
-    TerminalProjectionPayload, ToolState, UpdateAgentConversationSessionMetaRequest,
+    EnsureAgentConversationRequest, ExecutionEnvironment, PlanItem,
+    SetAgentConversationConfigRequest, TerminalProjectionPayload, ToolState,
+    UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
 use super::providers::process::validated_conversation_cwd;
@@ -1072,6 +1073,12 @@ impl AgentRuntimeManager {
         &self,
         request: EnsureAgentConversationRequest,
     ) -> Result<(AgentConversationConnection, Option<ManagedAgentSession>), String> {
+        if request.execution_environment != ExecutionEnvironment::Local {
+            return Err(
+                "Agent Workbox conversations must be routed through the remote connection manager"
+                    .to_string(),
+            );
+        }
         let owned_id = required_id(&request.owned_id, "Owned session id")?;
         let cwd = validated_conversation_cwd(&request.cwd)?
             .display()
@@ -2484,6 +2491,7 @@ impl AgentRuntimeManager {
                 meta.project.clone_from(&row.project);
                 Ok(AgentConversationSessionRecord {
                     owned_id: row.owned_id,
+                    execution_environment: ExecutionEnvironment::Local,
                     provider,
                     model: row.model,
                     effort: row.effort,
@@ -6166,6 +6174,7 @@ mod tests {
     ) -> EnsureAgentConversationRequest {
         EnsureAgentConversationRequest {
             owned_id: owned_id.into(),
+            execution_environment: ExecutionEnvironment::Local,
             provider,
             cwd: root.into(),
             native_session_id: None,
@@ -6173,6 +6182,27 @@ mod tests {
             reasoning_effort: None,
         }
     }
+
+    #[test]
+    fn remote_environment_never_launches_through_the_local_manager() {
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        let mut request = request(
+            "/remote/path/that/does/not/exist/here",
+            "owned-remote",
+            AgentConversationProvider::Codex,
+        );
+        request.execution_environment = ExecutionEnvironment::AgentWorkbox;
+
+        let error = manager
+            .ensure_inner(request)
+            .err()
+            .expect("the local manager must reject a remote environment");
+        assert_eq!(
+            error,
+            "Agent Workbox conversations must be routed through the remote connection manager"
+        );
+    }
+
     fn temp_root() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!("mcb-runtime-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).unwrap();

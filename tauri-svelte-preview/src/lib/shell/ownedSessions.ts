@@ -9,6 +9,7 @@ import type {
   AgentConversationSessionMeta,
   AgentConversationSessionRecord,
   AgentSession,
+  ExecutionEnvironment,
   TerminalSessionInfo
 } from '../tauriSource';
 
@@ -47,6 +48,7 @@ export interface OwnedAgentRuntimeFields {
 
 export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSessionId'> & {
   ownedId: string;
+  executionEnvironment: ExecutionEnvironment;
   agent: AgentKind;
   /** App-created agent sessions use ACP; adopted sessions stay PTY projections. */
   origin?: 'app' | 'external';
@@ -202,6 +204,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
   const { agent, viaCmux } = normalizeProvider(record.provider);
   return {
     ownedId: mintId(),
+    executionEnvironment: 'local',
     agent,
     origin: 'external',
     viaCmux,
@@ -240,6 +243,7 @@ export function createFreshSession(
   const defaultTitle = segments.length > 0 ? segments[segments.length - 1] : opts.cwd;
   return {
     ownedId: mintId(),
+    executionEnvironment: 'local',
     agent: 'other',
     origin: 'external',
     viaCmux: false,
@@ -279,6 +283,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
   const terminalOwned = record.origin === 'external' && record.ptySessionId !== null;
   return {
     ownedId: record.ownedId,
+    executionEnvironment: record.executionEnvironment,
     agent,
     origin: record.origin ?? 'app',
     viaCmux: record.viaCmux || providerViaCmux,
@@ -389,6 +394,8 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
         : 'closed';
     result.push({
       ownedId: candidate.ownedId,
+      executionEnvironment:
+        candidate.executionEnvironment === 'agent-workbox' ? 'agent-workbox' : 'local',
       agent,
       origin,
       viaCmux: candidate.viaCmux === true,

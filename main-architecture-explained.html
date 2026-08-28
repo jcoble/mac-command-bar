@@ -575,7 +575,7 @@
       <section id="answer">
         <span class="section-label">00 · The short answer</span>
         <h2>Two durable ledgers. One disposable process.</h2>
-        <p class="intro">The Svelte interface does not talk to Claude, Codex, or Agy directly. It calls Tauri commands. Rust owns the session, records every normalized event in SQLite, launches an ACP adapter only when work begins, and streams ordered updates back to Svelte.</p>
+        <p class="intro">The Svelte interface does not talk to Claude, Codex, or Agy directly. It calls Tauri commands. Rust owns the session, records every normalized event in the SQLite database on the machine that owns the session, launches an ACP adapter only when work begins, and streams ordered updates back to Svelte.</p>
 
         <div class="plain-answer">
           <p><strong>The easiest accurate mental model is this:</strong></p>
@@ -647,6 +647,11 @@
             <h3>Markdown is real and safe</h3>
             <p>The frontend tokenizes GitHub-flavored Markdown with <code>marked</code>, converts it to typed blocks, and renders escaped Svelte nodes. It does not inject generated HTML.</p>
           </article>
+          <article class="truth-card">
+            <span class="badge current">Remote boundary</span>
+            <h3>The owning machine owns the session</h3>
+            <p>Normalized session and ensure records name either <code>local</code> or <code>agent-workbox</code>. Omitted values remain local for compatibility. The local ACP manager rejects workbox requests; the remote connection manager must route them to the workbox, whose own <code>sessions.db</code>, provider session, checkout, credentials, and runtime are authoritative.</p>
+          </article>
         </div>
 
         <div class="callout limit">
@@ -658,6 +663,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-08-27 · “Define the Assembly execution environment boundary”</td><td>Normalized frontend and Rust session contracts now distinguish <code>local</code> from <code>agent-workbox</code>, defaulting omitted values to local. This is a routing identity, not a new local SQLite ownership column: each machine owns its own complete durable session state. The local ACP manager rejects workbox requests before filesystem or provider work begins, reserving them for the remote connection manager.</td><td>00, 01, 10</td></tr>
             <tr><td>2026-08-27 · “Give the session rail one clock subscriber”</td><td><code>SessionRail</code> owns the sole elapsed-time subscription and passes one timestamp into every visible row. Rows no longer create their own clock subscriber closure or cleanup effect. The shared timer still stops when the rail unmounts and slows from one second to one minute when no working or newly-created session needs second precision. Resource Diagnostics therefore reports one rail watcher regardless of session count.</td><td>09, 13, 18</td></tr>
             <tr><td>2026-08-27 · “Keep only live ACP ownership in memory”</td><td>SQLite session rows no longer cause one full <code>ManagedAgentSession</code> overlay per durable Assembly session. Startup normalizes stored rows without retaining overlays; listing, conversation snapshots, capabilities, and configuration reads project directly from SQLite when no live owner exists. Activation and other mutating ACP operations hydrate one overlay on demand. Quiescent suspension, close, checkout change, and an unused ensure release that overlay again after persistence. Provider-native identity remains durable and is resumed on the next prompt.</td><td>07, 09, 18</td></tr>
             <tr><td>2026-08-25 · “Cancel released snapshot and source reads”</td><td>Conversation projection release advances the native snapshot owner and interrupts its in-flight SQLite statement through a dedicated interrupt handle, even when no replacement session read follows. A newer snapshot request performs the same cancellation. Editor release likewise advances a native source-read generation; the reader checks that owner between 64-KiB chunks and stops before decoding or returning a released file. Request generations make delayed cancels harmless after another session takes ownership. Cancelled data is not serialized by Tauri or materialized by WebKit. Development diagnostics separately report total and invalidated in-flight conversation and source-file reads. A single observed footprint is no longer described as a baseline.</td><td>09, 13, 18</td></tr>
@@ -1104,7 +1110,7 @@
           <caption>Durability map</caption>
           <thead><tr><th>Store</th><th>What it owns</th><th>Survives restart?</th></tr></thead>
           <tbody>
-            <tr><td><code>sessions.db</code></td><td>Assembly sessions, ordered normalized events/messages, conversation drafts, annotations, attachment metadata, per-session UI workspace snapshots, global <code>app_settings</code>, orchestration/workflow events, evidence metadata, and the latest bounded read-only Notion task projection.</td><td>Yes</td></tr>
+            <tr><td><code>sessions.db</code></td><td>Assembly sessions, ordered normalized events/messages, conversation drafts, annotations, attachment metadata, per-session UI workspace snapshots, global <code>app_settings</code>, orchestration/workflow events, evidence metadata, and the latest bounded read-only Notion task projection. Each execution environment owns its own database; the Mac does not mirror a workbox session into its local database.</td><td>Yes, on its owning machine</td></tr>
             <tr><td>Attachment vault</td><td>Validated image bytes under app data <code>conversation-attachments/&lt;ownedId&gt;/</code>.</td><td>Yes</td></tr>
             <tr><td>Provider-native storage</td><td>The conversation context Codex, Claude, or Agy resumes; often provider JSONL or its equivalent.</td><td>Yes, provider-controlled</td></tr>
             <tr><td><code>usage-history.sqlite3</code></td><td>Separate usage analytics: token/cost events, source cursors, rate versions, and daily rollups.</td><td>Yes</td></tr>

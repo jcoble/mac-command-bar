@@ -1634,6 +1634,7 @@
 		}
 		await ensureStructuredConversation({
 			ownedId: owned.ownedId,
+			executionEnvironment: owned.executionEnvironment,
 			provider,
 			cwd: owned.cwd,
 			nativeSessionId: owned.nativeSessionId,
