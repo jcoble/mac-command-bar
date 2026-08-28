@@ -50,7 +50,7 @@
 	import RefreshCw from "@lucide/svelte/icons/refresh-cw";
 	import Square from "@lucide/svelte/icons/square";
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-	import { onDestroy } from "svelte";
+	import { onDestroy, tick } from "svelte";
 
 	interface Props {
 		visible: boolean;
@@ -113,7 +113,6 @@
 	let fileClipboard = $state.raw<FileClipboard | null>(null);
 	let contextMenu = $state.raw<FilesContextMenuState | null>(null);
 	let treeHost = $state<HTMLDivElement | null>(null);
-	let viewportElement = $state.raw<HTMLElement | null>(null);
 	let treeHeight = $state(400);
 	let virtualized = $state(true);
 	let searchText = $state("");
@@ -128,7 +127,7 @@
 	let hydratedRoot = "";
 	let hydratedExpansionKey = "";
 	let expansionRestoreGeneration = 0;
-	let scopedSessionKey = "";
+	let scopedSessionKey = $state("");
 	let inspectionGeneration = 0;
 
 	const READ_ONLY_SCOPE_MESSAGE =
@@ -402,58 +401,21 @@
 	// 	};
 	// });
 
-	// $effect(() => {
-	// 	displayedTreeData.length;
-	// 	const host = treeHost;
-	// 	if (!host) return;
-	// 	let active = true;
-	// 	void tick().then(() => {
-	// 		if (!active) return;
-	// 		const viewport = host.querySelector<HTMLElement>(".ltree-virtual-scroll");
-	// 		if (!viewport) return;
-	// 		const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-	// 		if (viewport.scrollTop > maxScrollTop) viewport.scrollTop = maxScrollTop;
-	// 	});
-	// 	return () => {
-	// 		active = false;
-	// 	};
-	// });
-
-	// 1. Define the logic once, outside the effect
-	function adjustScroll(viewport: HTMLElement | null) {
-		if (!viewport) return;
-		const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-		if (viewport.scrollTop > maxScrollTop) {
-			viewport.scrollTop = maxScrollTop;
-		}
-	}
-
-	function bindViewport(node: HTMLElement) {
-		viewportElement = node.querySelector<HTMLElement>(".ltree-virtual-scroll");
-		const observer = new MutationObserver(() => {
-			const found = node.querySelector<HTMLElement>(".ltree-virtual-scroll");
-			if (found !== viewportElement) viewportElement = found;
-		});
-		observer.observe(node, { childList: true, subtree: true });
-		return {
-			destroy() {
-				observer.disconnect();
-				viewportElement = null;
-			}
-		};
-	}
-
-	// 2. The effect becomes much "thinner"
 	$effect(() => {
-		// Dependency
 		displayedTreeData.length;
-
-		// Use the direct binding from bind:this={viewportElement}
-		const viewport = viewportElement;
-		if (!viewport) return;
-
-		// Use a microtask instead of a full tick promise if possible
-		queueMicrotask(() => adjustScroll(viewport));
+		const host = treeHost;
+		if (!host) return;
+		let active = true;
+		void tick().then(() => {
+			if (!active) return;
+			const viewport = host.querySelector<HTMLElement>(".ltree-virtual-scroll");
+			if (!viewport) return;
+			const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+			if (viewport.scrollTop > maxScrollTop) viewport.scrollTop = maxScrollTop;
+		});
+		return () => {
+			active = false;
+		};
 	});
 
 	// Move this outside or to a top-level scope
@@ -1108,10 +1070,9 @@
 		aria-hidden={!treeVisible}
 		aria-label="Project files"
 		bind:this={treeHost}
-		use:bindViewport
 		onclickcapture={onTreeWrapperClick}
 	>
-		{#key virtualized}
+		{#key `${virtualized}:${scopedSessionKey}`}
 			<Tree
 				data={displayedTreeData}
 				treeId="project-files"
