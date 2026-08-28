@@ -8,6 +8,7 @@
  */
 
 import { sessionTitleFromPrompt } from '../sessionStrip.ts';
+import type { ExecutionEnvironment } from '../../tauriSource.ts';
 
 export type ThreadStartProvider = 'codex' | 'claude' | 'antigravity';
 
@@ -37,6 +38,7 @@ export type ThreadStartModelGroup = {
 
 export type ThreadStartPickerState = {
   prompt: string;
+  executionEnvironment: ExecutionEnvironment;
   provider: ThreadStartProvider;
   model: string;
   effort: string;
@@ -57,6 +59,7 @@ export type ThreadStartProblem = {
 
 export type ThreadStartRequest = {
   prompt: string;
+  executionEnvironment: ExecutionEnvironment;
   provider: ThreadStartProvider;
   model: string | null;
   reasoningEffort: string | null;
@@ -285,6 +288,7 @@ export function defaultThreadStartState(input: {
   const config = configForProvider(provider, configs);
   return {
     prompt: '',
+    executionEnvironment: 'local',
     provider,
     model: firstConfiguredModel(provider, configs),
     // A remembered value the provider does not know — a spelling an earlier
@@ -380,6 +384,7 @@ export function buildThreadStartRequest(
   if (validateThreadStart(state).length > 0) return null;
   return {
     prompt: tidy(state.prompt),
+    executionEnvironment: state.executionEnvironment,
     provider: state.provider,
     model: tidy(state.model) || null,
     reasoningEffort: tidy(state.effort) || null,

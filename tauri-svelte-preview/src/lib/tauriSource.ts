@@ -416,6 +416,11 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
 
 export type ExecutionEnvironment = 'local' | 'agent-workbox';
 
+export type AgentWorkboxEnvironment = {
+  configured: boolean;
+  defaultCwd: string | null;
+};
+
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
 
 export type RuntimeContext = {
@@ -1649,6 +1654,12 @@ export async function listAgentConversationSessionsFromTauri(): Promise<AgentCon
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
+}
+
+export async function readAgentWorkboxEnvironmentFromTauri(): Promise<AgentWorkboxEnvironment> {
+  if (!isTauriRuntime()) return { configured: false, defaultCwd: null };
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentWorkboxEnvironment>('read_agent_workbox_environment');
 }
 
 export async function changeAgentConversationCheckoutFromTauri(input: {

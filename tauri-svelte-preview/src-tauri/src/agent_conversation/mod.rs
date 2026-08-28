@@ -10,6 +10,7 @@ pub mod prompt_content;
 pub mod protocol;
 pub mod providers;
 pub mod reaper;
+pub mod remote;
 pub mod terminal_projection;
 mod transcript;
 pub mod transcript_import;
@@ -20,13 +21,13 @@ use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
     AgentConversationEvent, AgentConversationEventPage, AgentConversationSessionRecord,
-    AgentConversationSnapshot,
-    ChangeAgentConversationCheckoutRequest, CommandResult, EnsureAgentConversationRequest,
-    RespondAgentConversationApprovalRequest,
+    AgentConversationSnapshot, ChangeAgentConversationCheckoutRequest, CommandResult,
+    EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
     RespondAgentConversationInputRequest, RespondAgentConversationPermissionRequest,
     SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
     StopAgentConversationTurnRequest, UpdateAgentConversationSessionMetaRequest,
 };
+use remote::RemoteConnectionManager;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,9 +95,13 @@ pub async fn agent_conversation_delete_session_annotation(
 /// Ensures a conversation runtime and returns typed failures to the frontend.
 pub async fn ensure_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: EnsureAgentConversationRequest,
 ) -> CommandResult<AgentConversationConnection> {
     let owned_id = request.owned_id.clone();
+    if request.execution_environment == protocol::ExecutionEnvironment::AgentWorkbox {
+        return command_result(remote.ensure(request).await);
+    }
     let ensured = log_command_error(
         "ensure_agent_conversation",
         &owned_id,
@@ -124,9 +129,13 @@ pub async fn ensure_agent_conversation(
 /// Sends one structured message and returns typed failures without logging its content.
 pub async fn send_agent_conversation_message(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: SendAgentConversationMessageRequest,
 ) -> CommandResult<()> {
     let owned_id = request.owned_id.clone();
+    if remote.owns(&owned_id) {
+        return command_result(remote.send(request).await);
+    }
     let result = async {
         let mut prompt = prompt_from_blocks(request.text.trim(), request.content)?;
         // The ids come from the composer, not from the image bytes, so they are
@@ -150,9 +159,13 @@ pub async fn send_agent_conversation_message(
 /// Persists one draft and converts storage failures at the native boundary.
 pub async fn agent_conversation_set_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     text: String,
 ) -> CommandResult<()> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.set_draft(owned_id, text).await);
+    }
     command_result(manager.set_session_draft(&owned_id, &text))
 }
 
@@ -160,8 +173,12 @@ pub async fn agent_conversation_set_session_draft(
 /// Reads one persisted draft with the shared command error shape.
 pub async fn agent_conversation_get_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<Option<String>> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.get_draft(owned_id).await);
+    }
     command_result(manager.get_session_draft(&owned_id))
 }
 
@@ -169,52 +186,76 @@ pub async fn agent_conversation_get_session_draft(
 /// Clears one persisted draft and converts storage failures at the native boundary.
 pub async fn agent_conversation_clear_session_draft(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<()> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.clear_draft(owned_id).await);
+    }
     command_result(manager.clear_session_draft(&owned_id))
 }
 
 #[tauri::command]
 pub async fn write_agent_conversation_workspace(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     snapshot_json: String,
 ) -> CommandResult<()> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.write_workspace(owned_id, snapshot_json).await);
+    }
     command_result(manager.write_workspace(&owned_id, &snapshot_json))
 }
 
 #[tauri::command]
 pub async fn read_agent_conversation_workspace(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<Option<String>> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.read_workspace(owned_id).await);
+    }
     command_result(manager.read_workspace(&owned_id))
 }
 
 #[tauri::command]
 pub async fn read_agent_conversation_workspace_expanded_paths(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     root: String,
 ) -> CommandResult<Vec<String>> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.read_expanded_paths(owned_id, root).await);
+    }
     command_result(manager.read_workspace_expanded_paths(&owned_id, &root))
 }
 
 #[tauri::command]
 pub async fn write_agent_conversation_workspace_expanded_paths(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     root: String,
     paths: Vec<String>,
 ) -> CommandResult<()> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.write_expanded_paths(owned_id, root, paths).await);
+    }
     command_result(manager.write_workspace_expanded_paths(&owned_id, &root, &paths))
 }
 
 #[tauri::command]
 pub async fn delete_agent_conversation_workspace(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<()> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.delete_workspace(owned_id).await);
+    }
     command_result(manager.delete_workspace(&owned_id))
 }
 
@@ -253,9 +294,13 @@ pub async fn read_assembly_setting(
 /// Records a legacy approval decision after validating its request identity.
 pub async fn respond_agent_conversation_approval(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: RespondAgentConversationApprovalRequest,
 ) -> CommandResult<()> {
     let request_id = required_id(&request.request_id, "Approval request id")?;
+    if remote.owns(&request.owned_id) {
+        return command_result(remote.respond_approval(request).await);
+    }
     command_result(
         manager
             .respond_legacy_approval(
@@ -272,9 +317,13 @@ pub async fn respond_agent_conversation_approval(
 /// Records a provider permission choice after validating its request identity.
 pub async fn respond_agent_conversation_permission(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: RespondAgentConversationPermissionRequest,
 ) -> CommandResult<()> {
     let request_id = required_id(&request.request_id, "Permission request id")?;
+    if remote.owns(&request.owned_id) {
+        return command_result(remote.respond_permission(request).await);
+    }
     command_result(
         manager
             .respond_permission_option(
@@ -291,9 +340,13 @@ pub async fn respond_agent_conversation_permission(
 /// Records structured user input after validating its request identity.
 pub async fn respond_agent_conversation_input(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: RespondAgentConversationInputRequest,
 ) -> CommandResult<()> {
     let request_id = required_id(&request.request_id, "User input request id")?;
+    if remote.owns(&request.owned_id) {
+        return command_result(remote.respond_input(request).await);
+    }
     command_result(
         manager
             .respond_user_input(protocol::AgentUserInputResponse {
@@ -315,8 +368,12 @@ pub async fn respond_agent_conversation_input(
 /// Stops the active turn for the requested conversation generation.
 pub async fn stop_agent_conversation_turn(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: StopAgentConversationTurnRequest,
 ) -> CommandResult<()> {
+    if remote.owns(&request.owned_id) {
+        return command_result(remote.stop(request).await);
+    }
     command_result(
         manager
             .cancel_turn(&request.owned_id, request.generation)
@@ -328,9 +385,13 @@ pub async fn stop_agent_conversation_turn(
 /// Changes a Codex session's durable checkout while it is quiescent.
 pub async fn change_agent_conversation_checkout(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: ChangeAgentConversationCheckoutRequest,
 ) -> CommandResult<AgentConversationSessionRecord> {
     let owned_id = request.owned_id.clone();
+    if remote.owns(&owned_id) {
+        return command_result(remote.change_checkout(request).await);
+    }
     log_command_error(
         "change_agent_conversation_checkout",
         &owned_id,
@@ -342,12 +403,16 @@ pub async fn change_agent_conversation_checkout(
 /// Applies the supported conversation configuration fields for one generation.
 pub async fn set_agent_conversation_config(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: SetAgentConversationConfigRequest,
 ) -> CommandResult<AgentConversationConfigState> {
+    if remote.owns(&request.owned_id) {
+        return command_result(remote.set_config(request).await);
+    }
     command_result(manager.set_conversation_config(request).await)
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetAgentConversationConfigOptionRequest {
     owned_id: String,
@@ -366,8 +431,17 @@ pub struct SetAgentConversationConfigOptionResponse {
 /// Applies one advertised provider option and returns the refreshed choices.
 pub async fn set_agent_conversation_config_option(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: SetAgentConversationConfigOptionRequest,
 ) -> CommandResult<SetAgentConversationConfigOptionResponse> {
+    if remote.owns(&request.owned_id) {
+        return command_result(
+            remote
+                .set_config_option(request)
+                .await
+                .map(|config_options| SetAgentConversationConfigOptionResponse { config_options }),
+        );
+    }
     command_result(
         manager
             .set_config(
@@ -389,9 +463,13 @@ pub async fn set_agent_conversation_config_option(
 /// later read goes to the database the same way an existing session's does.
 pub async fn warm_agent_conversation_config(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     generation: u64,
 ) -> CommandResult<AgentConversationConfigState> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.warm_config(owned_id, generation).await);
+    }
     command_result(
         manager
             .warm_conversation_config(&owned_id, generation)
@@ -401,19 +479,27 @@ pub async fn warm_agent_conversation_config(
 
 #[tauri::command]
 /// Reads the current provider configuration for one conversation.
-pub fn read_agent_conversation_config(
+pub async fn read_agent_conversation_config(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<AgentConversationConfigState> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.config(owned_id).await);
+    }
     command_result(manager.conversation_config(&owned_id))
 }
 
 #[tauri::command]
 /// Reads the current provider capabilities for one conversation.
-pub fn read_agent_conversation_capabilities(
+pub async fn read_agent_conversation_capabilities(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<AgentCapabilities> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.capabilities(owned_id).await);
+    }
     command_result(manager.capabilities_for_owned_id(&owned_id))
 }
 
@@ -421,9 +507,13 @@ pub fn read_agent_conversation_capabilities(
 /// Closes one exact conversation generation so stale views cannot close a replacement.
 pub async fn close_agent_conversation(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     generation: u64,
 ) -> CommandResult<bool> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.close(owned_id, generation).await);
+    }
     command_result(manager.close(&owned_id, generation).await)
 }
 
@@ -432,8 +522,12 @@ pub async fn close_agent_conversation(
 /// is running. Answers whether there was anything to delete.
 pub async fn delete_agent_conversation_session(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<bool> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.delete(owned_id).await);
+    }
     let result = manager.delete(&owned_id).await;
     log_command_error("delete_agent_conversation_session", &owned_id, result)
 }
@@ -442,9 +536,13 @@ pub async fn delete_agent_conversation_session(
 /// Reads the durable snapshot for one conversation.
 pub async fn read_agent_conversation_snapshot(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     request_id: u64,
 ) -> CommandResult<Option<AgentConversationSnapshot>> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.snapshot(owned_id).await);
+    }
     command_result(manager.latest_snapshot(&owned_id, request_id))
 }
 
@@ -461,8 +559,20 @@ pub fn cancel_agent_conversation_snapshot(
 /// Lists durable conversation sessions with typed storage failures.
 pub async fn list_agent_conversation_sessions(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
 ) -> CommandResult<Vec<AgentConversationSessionRecord>> {
-    command_result(manager.list_sessions())
+    let mut sessions = manager
+        .list_sessions()
+        .map_err(protocol::CommandError::from)?;
+    if remote.is_configured() {
+        match remote.list_sessions().await {
+            Ok(remote_sessions) => sessions.extend(remote_sessions),
+            Err(error) => crate::debug_log::stderr_log!(
+                "Agent Workbox session list unavailable; keeping local sessions visible: {error}"
+            ),
+        }
+    }
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -479,10 +589,18 @@ pub async fn list_agent_conversation_events(
 /// Lists the page of durable events just older than the requested sequence.
 pub async fn list_agent_conversation_events_before(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     before_sequence: i64,
     max_bytes: u32,
 ) -> CommandResult<AgentConversationEventPage> {
+    if remote.owns(&owned_id) {
+        return command_result(
+            remote
+                .events_before(owned_id, before_sequence, max_bytes)
+                .await,
+        );
+    }
     command_result(manager.list_events_before(&owned_id, before_sequence, max_bytes))
 }
 
@@ -490,10 +608,18 @@ pub async fn list_agent_conversation_events_before(
 /// Lists the page of durable events just newer than the requested sequence.
 pub async fn list_agent_conversation_events_after(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     after_sequence: i64,
     max_bytes: u32,
 ) -> CommandResult<AgentConversationEventPage> {
+    if remote.owns(&owned_id) {
+        return command_result(
+            remote
+                .events_after(owned_id, after_sequence, max_bytes)
+                .await,
+        );
+    }
     command_result(manager.list_events_after(&owned_id, after_sequence, max_bytes))
 }
 
@@ -501,8 +627,12 @@ pub async fn list_agent_conversation_events_after(
 /// Updates owner-scoped conversation metadata and returns the stored record.
 pub async fn update_agent_conversation_session_meta(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: UpdateAgentConversationSessionMetaRequest,
 ) -> CommandResult<AgentConversationSessionRecord> {
+    if remote.owns(&request.owned_id) {
+        return command_result(remote.update_meta(request).await);
+    }
     command_result(manager.update_session_meta(request))
 }
 

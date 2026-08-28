@@ -569,7 +569,7 @@ pub struct AgentConversationEvent {
     pub payload: AgentConversationPayload,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnsureAgentConversationRequest {
     pub owned_id: String,
@@ -593,7 +593,7 @@ pub enum ExecutionEnvironment {
     AgentWorkbox,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendAgentConversationMessageRequest {
     pub owned_id: String,
@@ -612,14 +612,14 @@ pub struct SendAgentConversationMessageRequest {
     pub approval_policy: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalDecision {
     Accept,
     Decline,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RespondAgentConversationApprovalRequest {
     pub owned_id: String,
@@ -628,7 +628,7 @@ pub struct RespondAgentConversationApprovalRequest {
     pub decision: ApprovalDecision,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RespondAgentConversationPermissionRequest {
     pub owned_id: String,
@@ -637,7 +637,7 @@ pub struct RespondAgentConversationPermissionRequest {
     pub option_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RespondAgentConversationInputRequest {
     pub owned_id: String,
@@ -648,14 +648,14 @@ pub struct RespondAgentConversationInputRequest {
     pub cancelled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StopAgentConversationTurnRequest {
     pub owned_id: String,
     pub generation: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeAgentConversationCheckoutRequest {
     pub owned_id: String,
@@ -674,7 +674,7 @@ pub struct AgentConversationConfigState {
     pub available_approval_policies: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetAgentConversationConfigRequest {
     pub owned_id: String,
@@ -684,7 +684,7 @@ pub struct SetAgentConversationConfigRequest {
     pub approval_policy: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationConnection {
     pub owned_id: String,
@@ -696,14 +696,14 @@ pub struct AgentConversationConnection {
 }
 
 /// One backward page of transcript events, with whether older history remains.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationEventPage {
     pub events: Vec<AgentConversationEvent>,
     pub has_more: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationSnapshot {
     pub connection: AgentConversationConnection,
@@ -733,7 +733,7 @@ pub struct AgentConversationSessionMeta {
     pub scanned_last_activity: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAgentConversationSessionMetaRequest {
     pub owned_id: String,
@@ -742,7 +742,7 @@ pub struct UpdateAgentConversationSessionMetaRequest {
     pub meta: AgentConversationSessionMeta,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationSessionRecord {
     pub owned_id: String,
