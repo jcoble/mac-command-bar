@@ -1075,7 +1075,7 @@ impl AgentRuntimeManager {
     ) -> Result<(AgentConversationConnection, Option<ManagedAgentSession>), String> {
         if request.execution_environment != ExecutionEnvironment::Local {
             return Err(
-                "Agent Workbox conversations must be routed through the remote connection manager"
+                "Remote Assembly conversations must be routed through the remote connection manager"
                     .to_string(),
             );
         }
@@ -6191,7 +6191,7 @@ mod tests {
             "owned-remote",
             AgentConversationProvider::Codex,
         );
-        request.execution_environment = ExecutionEnvironment::AgentWorkbox;
+        request.execution_environment = ExecutionEnvironment::Remote;
 
         let error = manager
             .ensure_inner(request)
@@ -6199,7 +6199,7 @@ mod tests {
             .expect("the local manager must reject a remote environment");
         assert_eq!(
             error,
-            "Agent Workbox conversations must be routed through the remote connection manager"
+            "Remote Assembly conversations must be routed through the remote connection manager"
         );
     }
 

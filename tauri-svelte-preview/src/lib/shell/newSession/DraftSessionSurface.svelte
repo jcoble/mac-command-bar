@@ -60,8 +60,10 @@
   } from '$lib/shell/newSession/newSessionBackend.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
-    readAgentWorkboxEnvironmentFromTauri,
-    type AgentWorkboxEnvironment,
+    deployRemoteAssemblyFromTauri,
+    readRemoteAssemblyEnvironmentFromTauri,
+    type RemoteAssemblyEnvironment,
+    type RemoteAssemblyProfile,
     type ExecutionEnvironment
   } from '$lib/tauriSource.ts';
 
@@ -100,7 +102,19 @@
   let submitting = $state(false);
   let submitError = $state('');
   let loadSequence = 0;
-  let workbox = $state<AgentWorkboxEnvironment>({ configured: false, defaultCwd: null });
+  let remoteAssembly = $state<RemoteAssemblyEnvironment>({
+    configured: false,
+    sshTarget: null,
+    sourceRoot: null,
+    defaultCwd: null
+  });
+  let remoteSetupOpen = $state(false);
+  let remoteDeploying = $state(false);
+  let remoteProfile = $state<RemoteAssemblyProfile>({
+    sshTarget: '',
+    sourceRoot: '',
+    defaultCwd: ''
+  });
 
   const roots = $derived(knownRoots());
   const modelGroups = $derived(groupProviderModels(providerConfigs));
@@ -166,9 +180,12 @@
 
   function selectEnvironment(environment: ExecutionEnvironment): void {
     if (environment === draft.executionEnvironment) return;
-    if (environment === 'agent-workbox') {
-      const cwd = workbox.defaultCwd?.trim();
-      if (!workbox.configured || !cwd) return;
+    if (environment === 'remote') {
+      const cwd = remoteAssembly.defaultCwd?.trim();
+      if (!remoteAssembly.configured || !cwd) {
+        remoteSetupOpen = true;
+        return;
+      }
       loadSequence += 1;
       gitRefs = [];
       refsLoading = false;
@@ -191,6 +208,30 @@
       branchesAvailable: false
     });
     if (projectPath) void loadRefs(projectPath);
+  }
+
+  function describeError(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (error && typeof error === 'object' && 'message' in error) {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === 'string') return message;
+    }
+    return String(error);
+  }
+
+  async function deployRemote(): Promise<void> {
+    if (remoteDeploying) return;
+    remoteDeploying = true;
+    submitError = '';
+    try {
+      remoteAssembly = await deployRemoteAssemblyFromTauri(remoteProfile);
+      remoteSetupOpen = false;
+      selectEnvironment('remote');
+    } catch (error) {
+      submitError = describeError(error);
+    } finally {
+      remoteDeploying = false;
+    }
   }
 
   async function addProject(): Promise<void> {
@@ -254,7 +295,7 @@
       }
       await onSend(request);
     } catch (error) {
-      submitError = error instanceof Error ? error.message : String(error);
+      submitError = describeError(error);
     } finally {
       submitting = false;
     }
@@ -270,9 +311,15 @@
       if (projectPath) void loadRefs(projectPath);
       composer?.focus();
     });
-    void readAgentWorkboxEnvironmentFromTauri()
+    void readRemoteAssemblyEnvironmentFromTauri()
       .then((environment) => {
-        if (active) workbox = environment;
+        if (!active) return;
+        remoteAssembly = environment;
+        remoteProfile = {
+          sshTarget: environment.sshTarget ?? '',
+          sourceRoot: environment.sourceRoot ?? '',
+          defaultCwd: environment.defaultCwd ?? ''
+        };
       })
       .catch(() => undefined);
     return () => {
@@ -287,28 +334,27 @@
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
         <Button {...props} data-testid="draft-session-environment" variant="ghost" size="xs" class="draft-control">
-          {draft.executionEnvironment === 'agent-workbox' ? 'Agent Workbox' : 'This Mac'}
+          {draft.executionEnvironment === 'remote' ? 'Remote' : 'Local'}
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
         </Button>
       {/snippet}
     </DropdownMenu.Trigger>
     <DropdownMenu.Content side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
-      <DropdownMenu.Label>Where this session runs</DropdownMenu.Label>
+      <DropdownMenu.Label>Work in</DropdownMenu.Label>
       <DropdownMenu.Item onSelect={() => selectEnvironment('local')}>
         <span class="draft-check">
           {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="size-3.5" />{/if}
         </span>
-        This Mac
+        Local
       </DropdownMenu.Item>
       <DropdownMenu.Item
-        disabled={!workbox.configured || !workbox.defaultCwd}
-        title={workbox.configured ? workbox.defaultCwd ?? undefined : 'Configure the Agent Workbox connection first'}
-        onSelect={() => selectEnvironment('agent-workbox')}
+        title={remoteAssembly.configured ? remoteAssembly.defaultCwd ?? undefined : 'Set up a remote machine'}
+        onSelect={() => selectEnvironment('remote')}
       >
         <span class="draft-check">
-          {#if draft.executionEnvironment === 'agent-workbox'}<Check aria-hidden="true" class="size-3.5" />{/if}
+          {#if draft.executionEnvironment === 'remote'}<Check aria-hidden="true" class="size-3.5" />{/if}
         </span>
-        Agent Workbox
+        Remote{remoteAssembly.configured ? '' : '…'}
       </DropdownMenu.Item>
     </DropdownMenu.Content>
   </DropdownMenu.Root>
@@ -341,7 +387,7 @@
   <DropdownMenu.Root>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
-        <Button {...props} disabled={draft.executionEnvironment === 'agent-workbox'} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
+        <Button {...props} disabled={draft.executionEnvironment === 'remote'} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
           {projectName || 'Choose a project'}
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
         </Button>
@@ -385,7 +431,7 @@
   <DropdownMenu.Root onOpenChange={(open) => { if (!open) refSearch = ''; }}>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
-        <Button {...props} disabled={draft.executionEnvironment === 'agent-workbox'} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
+        <Button {...props} disabled={draft.executionEnvironment === 'remote'} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
           <GitBranch aria-hidden="true" class="size-3.5" />
           <span class="truncate">{(selectedRef?.name ?? draft.branch) || 'Choose a branch'}</span>
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
@@ -462,7 +508,38 @@
   </div>
 
   <div class="draft-transcript" data-testid="draft-session-transcript">
-    <p>Start the conversation below.</p>
+    {#if remoteSetupOpen}
+      <div class="remote-setup" data-testid="draft-session-remote-setup">
+        <div class="remote-setup-heading">
+          <strong>Connect a remote machine</strong>
+          <span>Assembly will deploy its server over SSH and keep it on that machine.</span>
+        </div>
+        <label>
+          <span>SSH destination</span>
+          <Input bind:value={remoteProfile.sshTarget} placeholder="user@hostname" autocomplete="off" />
+        </label>
+        <label>
+          <span>Remote Assembly checkout</span>
+          <Input bind:value={remoteProfile.sourceRoot} placeholder="/home/user/mac-command-bar" autocomplete="off" />
+        </label>
+        <label>
+          <span>Remote working directory</span>
+          <Input bind:value={remoteProfile.defaultCwd} placeholder="/home/user/project" autocomplete="off" />
+        </label>
+        <div class="remote-setup-actions">
+          <Button variant="ghost" size="sm" onclick={() => (remoteSetupOpen = false)}>Cancel</Button>
+          <Button
+            size="sm"
+            disabled={remoteDeploying || !remoteProfile.sshTarget || !remoteProfile.sourceRoot || !remoteProfile.defaultCwd}
+            onclick={() => void deployRemote()}
+          >
+            {remoteDeploying ? 'Deploying…' : 'Deploy and connect'}
+          </Button>
+        </div>
+      </div>
+    {:else}
+      <p>Start the conversation below.</p>
+    {/if}
     {#if refsMessage}
       <p class="draft-warning" data-testid="draft-session-refs-note">
         <span>
@@ -540,6 +617,29 @@
   }
 
   .draft-transcript p { margin: 0; font-size: 13px; }
+  .remote-setup {
+    display: flex;
+    width: min(520px, 100%);
+    flex-direction: column;
+    gap: 12px;
+    padding: 18px;
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    text-align: left;
+  }
+
+  .remote-setup-heading,
+  .remote-setup label {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .remote-setup-heading span,
+  .remote-setup label > span { color: var(--color-text-3); font-size: 12px; }
+  .remote-setup-actions { display: flex; justify-content: flex-end; gap: 6px; }
   .draft-warning {
     display: flex;
     align-items: flex-start;

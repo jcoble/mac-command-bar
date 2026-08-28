@@ -99,7 +99,7 @@ pub async fn ensure_agent_conversation(
     request: EnsureAgentConversationRequest,
 ) -> CommandResult<AgentConversationConnection> {
     let owned_id = request.owned_id.clone();
-    if request.execution_environment == protocol::ExecutionEnvironment::AgentWorkbox {
+    if request.execution_environment == protocol::ExecutionEnvironment::Remote {
         return command_result(remote.ensure(request).await);
     }
     let ensured = log_command_error(
@@ -568,7 +568,7 @@ pub async fn list_agent_conversation_sessions(
         match remote.list_sessions().await {
             Ok(remote_sessions) => sessions.extend(remote_sessions),
             Err(error) => crate::debug_log::stderr_log!(
-                "Agent Workbox session list unavailable; keeping local sessions visible: {error}"
+                "Remote Assembly session list unavailable; keeping local sessions visible: {error}"
             ),
         }
     }

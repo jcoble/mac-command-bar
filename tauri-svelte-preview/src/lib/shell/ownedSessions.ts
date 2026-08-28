@@ -395,7 +395,7 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
     result.push({
       ownedId: candidate.ownedId,
       executionEnvironment:
-        candidate.executionEnvironment === 'agent-workbox' ? 'agent-workbox' : 'local',
+        candidate.executionEnvironment === 'remote' ? 'remote' : 'local',
       agent,
       origin,
       viaCmux: candidate.viaCmux === true,

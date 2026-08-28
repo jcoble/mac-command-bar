@@ -590,7 +590,7 @@ pub struct EnsureAgentConversationRequest {
 pub enum ExecutionEnvironment {
     #[default]
     Local,
-    AgentWorkbox,
+    Remote,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

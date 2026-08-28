@@ -414,11 +414,19 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   nativeSessionId: string | null;
 };
 
-export type ExecutionEnvironment = 'local' | 'agent-workbox';
+export type ExecutionEnvironment = 'local' | 'remote';
 
-export type AgentWorkboxEnvironment = {
+export type RemoteAssemblyEnvironment = {
   configured: boolean;
+  sshTarget: string | null;
+  sourceRoot: string | null;
   defaultCwd: string | null;
+};
+
+export type RemoteAssemblyProfile = {
+  sshTarget: string;
+  sourceRoot: string;
+  defaultCwd: string;
 };
 
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
@@ -1656,10 +1664,20 @@ export async function listAgentConversationSessionsFromTauri(): Promise<AgentCon
   return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
 }
 
-export async function readAgentWorkboxEnvironmentFromTauri(): Promise<AgentWorkboxEnvironment> {
-  if (!isTauriRuntime()) return { configured: false, defaultCwd: null };
+export async function readRemoteAssemblyEnvironmentFromTauri(): Promise<RemoteAssemblyEnvironment> {
+  if (!isTauriRuntime()) {
+    return { configured: false, sshTarget: null, sourceRoot: null, defaultCwd: null };
+  }
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<AgentWorkboxEnvironment>('read_agent_workbox_environment');
+  return invoke<RemoteAssemblyEnvironment>('read_remote_assembly_environment');
+}
+
+export async function deployRemoteAssemblyFromTauri(
+  profile: RemoteAssemblyProfile
+): Promise<RemoteAssemblyEnvironment> {
+  if (!isTauriRuntime()) throw new Error('Remote setup is available in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<RemoteAssemblyEnvironment>('deploy_remote_assembly', { profile });
 }
 
 export async function changeAgentConversationCheckoutFromTauri(input: {

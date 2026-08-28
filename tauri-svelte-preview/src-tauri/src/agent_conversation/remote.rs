@@ -1,7 +1,10 @@
-//! One authenticated WebSocket boundary for conversations owned by the agent workbox.
+//! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write;
+use std::net::{TcpListener as StdTcpListener, TcpStream};
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -35,6 +38,8 @@ const PROTOCOL_VERSION: u16 = 1;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
+pub const REMOTE_ASSEMBLY_PROFILE_SETTING_KEY: &str = "remote-assembly.profile.v1";
+const REMOTE_SERVER_PORT: u16 = 7777;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -166,19 +171,36 @@ enum ClientRequest {
     },
 }
 
-/// Owns the one workbox socket and the compact routing/cursor data needed to reconnect it.
-#[derive(Clone, Default)]
+/// Owns the remote socket, SSH tunnels, and compact routing data needed to reconnect.
+#[derive(Clone)]
 pub struct RemoteConnectionManager {
-    requests: Option<mpsc::Sender<ClientRequest>>,
+    client: Arc<Mutex<RemoteClientState>>,
+    tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
     remote_sessions: Arc<Mutex<HashSet<String>>>,
-    default_cwd: Option<String>,
     next_request_id: Arc<AtomicU64>,
+    event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
+}
+
+#[derive(Default)]
+struct RemoteClientState {
+    requests: Option<mpsc::Sender<ClientRequest>>,
+    profile: Option<RemoteAssemblyProfile>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteAssemblyProfile {
+    pub ssh_target: String,
+    pub source_root: String,
+    pub default_cwd: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentWorkboxEnvironment {
+pub struct RemoteAssemblyEnvironment {
     pub configured: bool,
+    pub ssh_target: Option<String>,
+    pub source_root: Option<String>,
     pub default_cwd: Option<String>,
 }
 
@@ -186,39 +208,111 @@ impl RemoteConnectionManager {
     pub fn from_environment(
         event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
     ) -> Result<Self, String> {
-        let Some(url) = std::env::var("ASSEMBLY_AGENT_WORKBOX_WS_URL").ok() else {
-            return Ok(Self::default());
+        let manager = Self {
+            client: Arc::new(Mutex::new(RemoteClientState::default())),
+            tunnel_processes: Arc::new(Mutex::new(HashMap::new())),
+            remote_sessions: Arc::new(Mutex::new(HashSet::new())),
+            next_request_id: Arc::new(AtomicU64::new(1)),
+            event_sink,
         };
-        let token = std::env::var("ASSEMBLY_AGENT_WORKBOX_TOKEN").map_err(|_| {
-            "ASSEMBLY_AGENT_WORKBOX_TOKEN is required when a workbox URL is configured".to_string()
+        let Some(url) = std::env::var("ASSEMBLY_REMOTE_WS_URL").ok() else {
+            return Ok(manager);
+        };
+        let token = std::env::var("ASSEMBLY_REMOTE_TOKEN").map_err(|_| {
+            "ASSEMBLY_REMOTE_TOKEN is required when a remote URL is configured".to_string()
         })?;
-        let default_cwd = std::env::var("ASSEMBLY_AGENT_WORKBOX_DEFAULT_CWD").map_err(|_| {
-            "ASSEMBLY_AGENT_WORKBOX_DEFAULT_CWD is required when a workbox URL is configured"
+        let default_cwd = std::env::var("ASSEMBLY_REMOTE_DEFAULT_CWD").map_err(|_| {
+            "ASSEMBLY_REMOTE_DEFAULT_CWD is required when a remote URL is configured"
                 .to_string()
         })?;
         if !PathBuf::from(&default_cwd).is_absolute() {
-            return Err("ASSEMBLY_AGENT_WORKBOX_DEFAULT_CWD must be an absolute path".to_string());
+            return Err("ASSEMBLY_REMOTE_DEFAULT_CWD must be an absolute path".to_string());
         }
         let (request_tx, request_rx) = mpsc::channel(32);
-        let remote_sessions = Arc::new(Mutex::new(HashSet::new()));
+        manager
+            .client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .requests = Some(request_tx);
+        let event_sink = manager.event_sink.clone();
         tauri::async_runtime::spawn(client_loop(url, token, request_rx, event_sink));
-        Ok(Self {
-            requests: Some(request_tx),
-            remote_sessions,
-            default_cwd: Some(default_cwd),
-            next_request_id: Arc::new(AtomicU64::new(1)),
-        })
+        Ok(manager)
     }
 
     pub fn is_configured(&self) -> bool {
-        self.requests.is_some()
+        self.client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .requests
+            .is_some()
     }
 
-    pub fn environment(&self) -> AgentWorkboxEnvironment {
-        AgentWorkboxEnvironment {
-            configured: self.is_configured(),
-            default_cwd: self.default_cwd.clone(),
+    pub fn environment(&self) -> RemoteAssemblyEnvironment {
+        let state = self
+            .client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let profile = state.profile.as_ref();
+        RemoteAssemblyEnvironment {
+            configured: state.requests.is_some(),
+            ssh_target: profile.map(|value| value.ssh_target.clone()),
+            source_root: profile.map(|value| value.source_root.clone()),
+            default_cwd: profile
+                .map(|value| value.default_cwd.clone())
+                .or_else(|| std::env::var("ASSEMBLY_REMOTE_DEFAULT_CWD").ok()),
         }
+    }
+
+    pub fn shutdown(&self) {
+        self.client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .requests = None;
+        let mut tunnels = self
+            .tunnel_processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (_, mut child) in tunnels.drain() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    pub fn restore_profile(&self, profile_json: &str) -> Result<(), String> {
+        let profile: RemoteAssemblyProfile = serde_json::from_str(profile_json)
+            .map_err(|error| format!("Invalid Remote Assembly profile: {error}"))?;
+        self.connect_profile(profile)
+    }
+
+    pub fn connect_profile(&self, profile: RemoteAssemblyProfile) -> Result<(), String> {
+        validate_profile(&profile)?;
+        let (request_tx, request_rx) = mpsc::channel(32);
+        {
+            let mut state = self
+                .client
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.requests = Some(request_tx);
+            state.profile = Some(profile.clone());
+        }
+        let event_sink = self.event_sink.clone();
+        let tunnel_processes = self.tunnel_processes.clone();
+        tauri::async_runtime::spawn(profile_client_loop(
+            profile,
+            request_rx,
+            event_sink,
+            tunnel_processes,
+        ));
+        Ok(())
+    }
+
+    pub async fn deploy_profile(&self, profile: RemoteAssemblyProfile) -> Result<(), String> {
+        validate_profile(&profile)?;
+        let deployment = profile.clone();
+        tauri::async_runtime::spawn_blocking(move || deploy_remote_service(&deployment))
+            .await
+            .map_err(|error| format!("Remote Assembly deployment task failed: {error}"))??;
+        self.connect_profile(profile)
     }
 
     pub fn owns(&self, owned_id: &str) -> bool {
@@ -236,22 +330,28 @@ impl RemoteConnectionManager {
     }
 
     async fn request(&self, command: RemoteCommand) -> Result<RemoteResponse, String> {
-        let sender = self.requests.as_ref().ok_or_else(|| {
-            "The Agent Workbox connection is not configured on this Mac".to_string()
-        })?;
+        let sender = self
+            .client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .requests
+            .clone()
+            .ok_or_else(|| {
+                "The Remote Assembly connection is not configured on this Mac".to_string()
+            })?;
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (reply, answer) = oneshot::channel();
         sender
             .send(ClientRequest::Execute { id, command, reply })
             .await
-            .map_err(|_| "The Agent Workbox connection task stopped".to_string())?;
+            .map_err(|_| "The Remote Assembly connection task stopped".to_string())?;
         match tokio::time::timeout(Duration::from_secs(15), answer).await {
             Ok(answer) => {
-                answer.map_err(|_| "The Agent Workbox disconnected before answering".to_string())?
+                answer.map_err(|_| "The Remote Assembly connection closed before answering".to_string())?
             }
             Err(_) => {
                 let _ = sender.send(ClientRequest::Cancel { id }).await;
-                Err("The Agent Workbox did not answer within 15 seconds".to_string())
+                Err("The remote machine did not answer within 15 seconds".to_string())
             }
         }
     }
@@ -259,7 +359,7 @@ impl RemoteConnectionManager {
     pub async fn list_sessions(&self) -> Result<Vec<AgentConversationSessionRecord>, String> {
         let RemoteResponse::Sessions(sessions) = self.request(RemoteCommand::ListSessions).await?
         else {
-            return Err("The Agent Workbox returned the wrong list response".to_string());
+            return Err("Remote Assembly returned the wrong list response".to_string());
         };
         for session in &sessions {
             self.remember(session.owned_id.clone());
@@ -275,7 +375,7 @@ impl RemoteConnectionManager {
         let RemoteResponse::Connection(connection) =
             self.request(RemoteCommand::Ensure(request)).await?
         else {
-            return Err("The Agent Workbox returned the wrong ensure response".to_string());
+            return Err("Remote Assembly returned the wrong ensure response".to_string());
         };
         self.remember(owned_id);
         Ok(connection)
@@ -288,7 +388,7 @@ impl RemoteConnectionManager {
         let RemoteResponse::Snapshot(snapshot) =
             self.request(RemoteCommand::Snapshot { owned_id }).await?
         else {
-            return Err("The Agent Workbox returned the wrong snapshot response".to_string());
+            return Err("Remote Assembly returned the wrong snapshot response".to_string());
         };
         Ok(snapshot)
     }
@@ -307,7 +407,7 @@ impl RemoteConnectionManager {
             })
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong event-page response".to_string());
+            return Err("Remote Assembly returned the wrong event-page response".to_string());
         };
         Ok(page)
     }
@@ -326,7 +426,7 @@ impl RemoteConnectionManager {
             })
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong event-page response".to_string());
+            return Err("Remote Assembly returned the wrong event-page response".to_string());
         };
         Ok(page)
     }
@@ -336,7 +436,7 @@ impl RemoteConnectionManager {
             .request(RemoteCommand::Capabilities { owned_id })
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong capabilities response".to_string());
+            return Err("Remote Assembly returned the wrong capabilities response".to_string());
         };
         Ok(capabilities)
     }
@@ -345,7 +445,7 @@ impl RemoteConnectionManager {
         let RemoteResponse::Config(config) =
             self.request(RemoteCommand::Config { owned_id }).await?
         else {
-            return Err("The Agent Workbox returned the wrong config response".to_string());
+            return Err("Remote Assembly returned the wrong config response".to_string());
         };
         Ok(config)
     }
@@ -362,7 +462,7 @@ impl RemoteConnectionManager {
             })
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong config response".to_string());
+            return Err("Remote Assembly returned the wrong config response".to_string());
         };
         Ok(config)
     }
@@ -374,7 +474,7 @@ impl RemoteConnectionManager {
         let RemoteResponse::Config(config) =
             self.request(RemoteCommand::SetConfig(request)).await?
         else {
-            return Err("The Agent Workbox returned the wrong config response".to_string());
+            return Err("Remote Assembly returned the wrong config response".to_string());
         };
         Ok(config)
     }
@@ -387,7 +487,7 @@ impl RemoteConnectionManager {
             .request(RemoteCommand::SetConfigOption(request))
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong config-option response".to_string());
+            return Err("Remote Assembly returned the wrong config-option response".to_string());
         };
         Ok(options)
     }
@@ -400,7 +500,7 @@ impl RemoteConnectionManager {
         let RemoteResponse::OptionalString(draft) =
             self.request(RemoteCommand::GetDraft { owned_id }).await?
         else {
-            return Err("The Agent Workbox returned the wrong draft response".to_string());
+            return Err("Remote Assembly returned the wrong draft response".to_string());
         };
         Ok(draft)
     }
@@ -426,7 +526,7 @@ impl RemoteConnectionManager {
             .request(RemoteCommand::ReadWorkspace { owned_id })
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong workspace response".to_string());
+            return Err("Remote Assembly returned the wrong workspace response".to_string());
         };
         Ok(snapshot)
     }
@@ -440,7 +540,7 @@ impl RemoteConnectionManager {
             .request(RemoteCommand::ReadExpandedPaths { owned_id, root })
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong expanded-path response".to_string());
+            return Err("Remote Assembly returned the wrong expanded-path response".to_string());
         };
         Ok(paths)
     }
@@ -471,7 +571,7 @@ impl RemoteConnectionManager {
         let RemoteResponse::Session(session) =
             self.request(RemoteCommand::ChangeCheckout(request)).await?
         else {
-            return Err("The Agent Workbox returned the wrong session response".to_string());
+            return Err("Remote Assembly returned the wrong session response".to_string());
         };
         Ok(session)
     }
@@ -483,7 +583,7 @@ impl RemoteConnectionManager {
         let RemoteResponse::Session(session) =
             self.request(RemoteCommand::UpdateMeta(request)).await?
         else {
-            return Err("The Agent Workbox returned the wrong session response".to_string());
+            return Err("Remote Assembly returned the wrong session response".to_string());
         };
         Ok(session)
     }
@@ -496,7 +596,7 @@ impl RemoteConnectionManager {
             })
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong close response".to_string());
+            return Err("Remote Assembly returned the wrong close response".to_string());
         };
         Ok(closed)
     }
@@ -508,7 +608,7 @@ impl RemoteConnectionManager {
             })
             .await?
         else {
-            return Err("The Agent Workbox returned the wrong delete response".to_string());
+            return Err("Remote Assembly returned the wrong delete response".to_string());
         };
         if deleted {
             self.remote_sessions
@@ -522,7 +622,7 @@ impl RemoteConnectionManager {
     async fn empty(&self, command: RemoteCommand) -> Result<(), String> {
         match self.request(command).await? {
             RemoteResponse::Empty => Ok(()),
-            _ => Err("The Agent Workbox returned the wrong command response".to_string()),
+            _ => Err("Remote Assembly returned the wrong command response".to_string()),
         }
     }
 
@@ -557,11 +657,320 @@ impl RemoteConnectionManager {
 }
 
 #[tauri::command]
-pub fn read_agent_workbox_environment(
+pub fn read_remote_assembly_environment(
     remote: tauri::State<'_, RemoteConnectionManager>,
-) -> AgentWorkboxEnvironment {
+) -> RemoteAssemblyEnvironment {
     remote.environment()
 }
+
+#[tauri::command]
+pub async fn deploy_remote_assembly(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile: RemoteAssemblyProfile,
+) -> Result<RemoteAssemblyEnvironment, super::protocol::CommandError> {
+    remote
+        .deploy_profile(profile.clone())
+        .await
+        .map_err(super::protocol::CommandError::from)?;
+    let profile_json = serde_json::to_string(&profile)
+        .map_err(|error| super::protocol::CommandError::from(error.to_string()))?;
+    manager
+        .write_app_setting(REMOTE_ASSEMBLY_PROFILE_SETTING_KEY, &profile_json)
+        .map_err(super::protocol::CommandError::from)?;
+    Ok(remote.environment())
+}
+
+fn validate_profile(profile: &RemoteAssemblyProfile) -> Result<(), String> {
+    if profile.ssh_target.is_empty()
+        || profile.ssh_target.starts_with('-')
+        || !profile
+            .ssh_target
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || b"._@-".contains(&value))
+    {
+        return Err(
+            "SSH destination may contain only letters, numbers, '.', '_', '@', and '-'".to_string(),
+        );
+    }
+    for (label, value) in [
+        ("Remote Assembly checkout", profile.source_root.as_str()),
+        ("Remote working directory", profile.default_cwd.as_str()),
+    ] {
+        if !value.starts_with('/')
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
+        {
+            return Err(format!(
+                "{label} must be an absolute path containing only letters, numbers, '/', '.', '_', and '-'"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn deploy_remote_service(profile: &RemoteAssemblyProfile) -> Result<(), String> {
+    let mut child = ssh_command(&profile.ssh_target)
+        .args(["sh", "-s", "--", &profile.source_root])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start SSH: {error}"))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "Could not open SSH input".to_string())?
+        .write_all(REMOTE_INSTALL_SCRIPT.as_bytes())
+        .map_err(|error| format!("Could not send the Remote Assembly installer: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Could not wait for SSH deployment: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if message.is_empty() {
+        "Remote Assembly deployment failed".to_string()
+    } else {
+        format!("Remote Assembly deployment failed: {message}")
+    })
+}
+
+async fn profile_client_loop(
+    profile: RemoteAssemblyProfile,
+    requests: mpsc::Receiver<ClientRequest>,
+    event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
+    tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
+) {
+    let target = profile.ssh_target.clone();
+    let connection = tauri::async_runtime::spawn_blocking(move || {
+        open_remote_tunnel(&target, tunnel_processes)
+    })
+    .await;
+    let Ok(Ok(tunnel)) = connection else {
+        let message = match connection {
+            Ok(Err(error)) => error,
+            Err(error) => format!("Remote Assembly connection task failed: {error}"),
+            Ok(Ok(_)) => unreachable!(),
+        };
+        let mut requests = requests;
+        fail_queued_requests(&mut requests, message);
+        return;
+    };
+    let url = format!("ws://127.0.0.1:{}/assembly", tunnel.local_port);
+    let token = tunnel.token.clone();
+    client_loop(url, token, requests, event_sink).await;
+    drop(tunnel);
+}
+
+struct RemoteTunnel {
+    pid: u32,
+    processes: Arc<Mutex<HashMap<u32, Child>>>,
+    local_port: u16,
+    token: String,
+}
+
+impl Drop for RemoteTunnel {
+    fn drop(&mut self) {
+        stop_remote_tunnel(&self.processes, self.pid);
+    }
+}
+
+fn stop_remote_tunnel(processes: &Mutex<HashMap<u32, Child>>, pid: u32) {
+    let child = processes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&pid);
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+fn open_remote_tunnel(
+    target: &str,
+    processes: Arc<Mutex<HashMap<u32, Child>>>,
+) -> Result<RemoteTunnel, String> {
+    let token = read_remote_token(target)?;
+    let local_port = StdTcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .map_err(|error| format!("Could not reserve a local Remote Assembly port: {error}"))?
+        .port();
+    let forwarding = format!("127.0.0.1:{local_port}:127.0.0.1:{REMOTE_SERVER_PORT}");
+    let mut command = Command::new("ssh");
+    command.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=15",
+        "-N",
+        "-L",
+        &forwarding,
+        "--",
+        target,
+    ]);
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start the Remote Assembly tunnel: {error}"))?;
+    let pid = child.id();
+    processes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(pid, child);
+    for _ in 0..50 {
+        if TcpStream::connect(("127.0.0.1", local_port)).is_ok() {
+            return Ok(RemoteTunnel {
+                pid,
+                processes,
+                local_port,
+                token,
+            });
+        }
+        let status = {
+            let mut tunnels = processes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(child) = tunnels.get_mut(&pid) else {
+                return Err("Remote Assembly tunnel was stopped".to_string());
+            };
+            child
+                .try_wait()
+                .map_err(|error| format!("Could not inspect the Remote Assembly tunnel: {error}"))?
+        };
+        if let Some(status) = status {
+            processes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&pid);
+            return Err(format!("Remote Assembly tunnel exited with {status}"));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    stop_remote_tunnel(&processes, pid);
+    Err("Remote Assembly tunnel did not become ready".to_string())
+}
+
+fn read_remote_token(target: &str) -> Result<String, String> {
+    let mut child = ssh_command(target)
+        .args(["sh", "-s"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start SSH: {error}"))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "Could not open SSH input".to_string())?
+        .write_all(b"set -eu\nsed -n 's/^ASSEMBLY_SERVER_TOKEN=//p' \"$HOME/.config/assembly/server.env\"\n")
+        .map_err(|error| format!("Could not request the Remote Assembly token: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Could not read the Remote Assembly token: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not read the Remote Assembly token: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let token = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if token.len() < 32 {
+        return Err(
+            "The Remote Assembly token is missing or invalid; deploy the server again".to_string(),
+        );
+    }
+    Ok(token)
+}
+
+fn ssh_command(target: &str) -> Command {
+    let mut command = Command::new("ssh");
+    command.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "--",
+        target,
+    ]);
+    command
+}
+
+const REMOTE_INSTALL_SCRIPT: &str = r#"set -eu
+source_root=$1
+crate_dir="$source_root/tauri-svelte-preview/src-tauri"
+bridge_source="$source_root/tauri-svelte-preview/tools/codex-acp-bridge/bridge.mjs"
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+for command in cargo node codex sha256sum systemctl openssl; do
+  command -v "$command" >/dev/null 2>&1 || { echo "Required command is missing: $command" >&2; exit 1; }
+done
+[ -f "$crate_dir/Cargo.toml" ] || { echo "Assembly Rust source was not found at $crate_dir" >&2; exit 1; }
+[ -f "$bridge_source" ] || { echo "Codex ACP bridge was not found at $bridge_source" >&2; exit 1; }
+(cd "$crate_dir" && cargo build --release --bin mac-command-bar-webview-preview)
+install -d "$HOME/.local/bin" "$HOME/.local/share/assembly" "$HOME/.config/assembly" "$HOME/.config/systemd/user"
+install -m 755 "$crate_dir/target/release/mac-command-bar-webview-preview" "$HOME/.local/bin/assembly-remote-server"
+install -m 644 "$bridge_source" "$HOME/.local/share/assembly/codex-acp-bridge.mjs"
+codex_path=$(command -v codex)
+node_path=$(command -v node)
+claude_path=$(command -v claude-agent-acp 2>/dev/null || find /opt -maxdepth 4 -path '*/bin/claude-agent-acp' -print -quit 2>/dev/null || true)
+[ -n "$claude_path" ] || { echo "Required command is missing: claude-agent-acp" >&2; exit 1; }
+cat >"$HOME/.local/bin/assembly-codex-acp" <<EOF
+#!/bin/sh
+export CODEX_BIN="$codex_path"
+exec "$node_path" "$HOME/.local/share/assembly/codex-acp-bridge.mjs" "\$@"
+EOF
+cat >"$HOME/.local/bin/assembly-claude-acp" <<EOF
+#!/bin/sh
+exec "$claude_path" "\$@"
+EOF
+chmod 755 "$HOME/.local/bin/assembly-codex-acp" "$HOME/.local/bin/assembly-claude-acp"
+token=$(sed -n 's/^ASSEMBLY_SERVER_TOKEN=//p' "$HOME/.config/assembly/server.env" 2>/dev/null || true)
+[ "${#token}" -ge 32 ] || token=$(openssl rand -hex 32)
+codex_hash=$(sha256sum "$HOME/.local/bin/assembly-codex-acp" | awk '{print $1}')
+claude_hash=$(sha256sum "$HOME/.local/bin/assembly-claude-acp" | awk '{print $1}')
+cat >"$HOME/.config/assembly/server.env" <<EOF
+ASSEMBLY_SERVER_BIND=127.0.0.1:7777
+ASSEMBLY_SERVER_TOKEN=$token
+ASSEMBLY_SERVER_DATA_DIR=$HOME/.local/share/assembly
+MCB_CODEX_ACP_PATH=$HOME/.local/bin/assembly-codex-acp
+MCB_CODEX_ACP_SHA256=$codex_hash
+MCB_CLAUDE_AGENT_ACP_PATH=$HOME/.local/bin/assembly-claude-acp
+MCB_CLAUDE_AGENT_ACP_SHA256=$claude_hash
+PATH=$(dirname "$node_path"):$(dirname "$codex_path"):$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+EOF
+cat >"$HOME/.config/systemd/user/assembly-remote.service" <<EOF
+[Unit]
+Description=Assembly Remote Service
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=$HOME/.config/assembly/server.env
+ExecStart=$HOME/.local/bin/assembly-remote-server --assembly-server
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now assembly-remote.service
+systemctl --user restart assembly-remote.service
+systemctl --user is-active --quiet assembly-remote.service
+"#;
 
 async fn client_loop(
     url: String,
@@ -574,7 +983,7 @@ async fn client_loop(
         let mut request = match url.as_str().into_client_request() {
             Ok(request) => request,
             Err(error) => {
-                fail_queued_requests(&mut requests, format!("Invalid workbox URL: {error}"));
+                fail_queued_requests(&mut requests, format!("Invalid remote URL: {error}"));
                 return;
             }
         };
@@ -584,7 +993,7 @@ async fn client_loop(
                 request.headers_mut().insert("authorization", value);
             }
             Err(error) => {
-                fail_queued_requests(&mut requests, format!("Invalid workbox token: {error}"));
+                fail_queued_requests(&mut requests, format!("Invalid remote token: {error}"));
                 return;
             }
         }
@@ -634,7 +1043,7 @@ async fn client_loop(
                     match frame {
                         ServerFrame::Ready { protocol_version } if protocol_version != PROTOCOL_VERSION => {
                             for (_, reply) in pending.drain() {
-                                let _ = reply.send(Err(format!("Unsupported workbox protocol {protocol_version}")));
+                                let _ = reply.send(Err(format!("Unsupported remote protocol {protocol_version}")));
                             }
                             return;
                         }
@@ -669,7 +1078,7 @@ async fn client_loop(
         }
         for (_, reply) in pending.drain() {
             let _ = reply.send(Err(
-                "The Agent Workbox connection was interrupted".to_string()
+                "The Remote Assembly connection was interrupted".to_string()
             ));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -691,7 +1100,7 @@ where
 {
     let json = serde_json::to_string(frame).map_err(|error| error.to_string())?;
     if json.len() > MAX_WIRE_FRAME_BYTES {
-        return Err("Agent Workbox frame exceeds one MiB".to_string());
+        return Err("Remote Assembly frame exceeds one MiB".to_string());
     }
     socket
         .send(TungsteniteMessage::Text(json.into()))
@@ -706,7 +1115,7 @@ fn parse_server_frame(message: TungsteniteMessage) -> Option<ServerFrame> {
     serde_json::from_str(text.as_str()).ok()
 }
 
-/// Runs the resident workbox server instead of starting a Tauri window.
+/// Runs the resident remote server instead of starting a Tauri window.
 pub fn run_server_from_environment() -> Result<(), String> {
     let bind =
         std::env::var("ASSEMBLY_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:7777".to_string());
@@ -739,19 +1148,19 @@ pub fn run_server_from_environment() -> Result<(), String> {
             events,
         };
         let app = Router::new()
-            .route("/assembly", get(upgrade_workbox_socket))
+            .route("/assembly", get(upgrade_remote_socket))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind(&bind)
             .await
             .map_err(|error| error.to_string())?;
-        println!("Assembly workbox server listening on {bind}");
+        println!("Assembly remote server listening on {bind}");
         axum::serve(listener, app)
             .await
             .map_err(|error| error.to_string())
     })
 }
 
-async fn upgrade_workbox_socket(
+async fn upgrade_remote_socket(
     State(state): State<ServerState>,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
@@ -766,11 +1175,11 @@ async fn upgrade_workbox_socket(
     }
     upgrade
         .max_message_size(MAX_WIRE_FRAME_BYTES)
-        .on_upgrade(move |socket| serve_workbox_socket(socket, state))
+        .on_upgrade(move |socket| serve_remote_socket(socket, state))
         .into_response()
 }
 
-async fn serve_workbox_socket(socket: WebSocket, state: ServerState) {
+async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let (mut writer, mut reader) = socket.split();
     let (outbound, mut outgoing) = mpsc::channel::<ServerFrame>(OUTBOUND_FRAME_CAPACITY);
     let writer_task = tokio::spawn(async move {
@@ -893,7 +1302,7 @@ async fn execute_remote_command(
         RemoteCommand::ListSessions => {
             let mut sessions = manager.list_sessions()?;
             for session in &mut sessions {
-                session.execution_environment = ExecutionEnvironment::AgentWorkbox;
+                session.execution_environment = ExecutionEnvironment::Remote;
             }
             Ok(RemoteResponse::Sessions(sessions))
         }
@@ -985,13 +1394,13 @@ async fn execute_remote_command(
         }
         RemoteCommand::ChangeCheckout(request) => {
             manager.change_checkout(request).await.map(|mut session| {
-                session.execution_environment = ExecutionEnvironment::AgentWorkbox;
+                session.execution_environment = ExecutionEnvironment::Remote;
                 RemoteResponse::Session(session)
             })
         }
         RemoteCommand::UpdateMeta(request) => {
             manager.update_session_meta(request).map(|mut session| {
-                session.execution_environment = ExecutionEnvironment::AgentWorkbox;
+                session.execution_environment = ExecutionEnvironment::Remote;
                 RemoteResponse::Session(session)
             })
         }

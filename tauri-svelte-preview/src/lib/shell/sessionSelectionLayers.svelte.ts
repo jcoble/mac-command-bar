@@ -43,7 +43,7 @@ export class SessionSelectionLayers {
     session: OwnedSession,
     generation = this.selectionGeneration
   ): Promise<void> {
-    if (session.executionEnvironment === 'agent-workbox') {
+    if (session.executionEnvironment === 'remote') {
       this.treeOwnedId = session.ownedId;
       this.treeRoot = '';
       this.hasTreeProjection = true;

@@ -274,7 +274,7 @@
 	const controlledRoot = $derived(
 		controlledSession?.cwd.trim() || controlledSession?.projectPath?.trim() || "",
 	);
-	const controlledRootRemote = $derived(controlledSession?.executionEnvironment === "agent-workbox");
+	const controlledRootRemote = $derived(controlledSession?.executionEnvironment === "remote");
 	const controlledCheckoutScope = $derived<CheckoutScope>({
 		durableSessionRoot: controlledRoot,
 		filesInspectionRoot: null,
@@ -1327,7 +1327,7 @@
 		}
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
 		let selectedRootAvailable = true;
-		const selectedRootRemote = selected?.executionEnvironment === "agent-workbox";
+		const selectedRootRemote = selected?.executionEnvironment === "remote";
 		if (selectedRootRemote) selectedRootAvailable = false;
 		else if (selected && shellPanels.loadsAllowed()) {
 			const root = selected.cwd.trim() || (selected.projectPath ?? "").trim();
@@ -2173,7 +2173,7 @@
 				if (!disposed && rail.activeOwnedId !== null) {
 					const selected = rail.owned.find((session) => session.ownedId === rail.activeOwnedId);
 					const root = selected ? selected.cwd.trim() || (selected.projectPath ?? "").trim() : "";
-					activeRootRemote = selected?.executionEnvironment === "agent-workbox";
+					activeRootRemote = selected?.executionEnvironment === "remote";
 					if (activeRootRemote) activeRootAvailable = false;
 					else if (root) {
 						countInvoke("validate_project_root");
