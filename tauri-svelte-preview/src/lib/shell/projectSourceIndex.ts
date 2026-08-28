@@ -8,6 +8,12 @@
 import { normalizeProjectPath, type SourceRecord } from '../sourceData.ts';
 
 const recordsByRoot = new Map<string, readonly SourceRecord[]>();
+/**
+ * How many projects keep their index. One record per file in a repository, so
+ * every root visited in one run would otherwise be retained until reload; three
+ * covers the current project and switching back and forth with two others.
+ */
+const rootLimit = 3;
 
 function rootKey(root: string | null | undefined): string {
   return root ? normalizeProjectPath(root) : '';
@@ -20,7 +26,15 @@ export function setProjectSourceRecords(
 ): void {
   const key = rootKey(root);
   if (!key) return;
+  // Delete first: `Map.set` on a key that is already there does not move it to
+  // the end, and the oldest key is the one evicted.
+  recordsByRoot.delete(key);
   recordsByRoot.set(key, records);
+  while (recordsByRoot.size > rootLimit) {
+    const oldest = recordsByRoot.keys().next().value;
+    if (oldest === undefined) break;
+    recordsByRoot.delete(oldest);
+  }
 }
 
 /** The last completed scan for this project, or an empty list before one. */
@@ -37,7 +51,10 @@ export function forgetProjectSourceRecords(root: string): void {
   if (key) recordsByRoot.delete(key);
 }
 
-/** Test/support hook; normal project switches deliberately keep their index. */
+/**
+ * Test/support hook; a normal project switch keeps its index, and only the
+ * fourth-oldest project loses one.
+ */
 export function forgetAllProjectSourceRecords(): void {
   recordsByRoot.clear();
 }

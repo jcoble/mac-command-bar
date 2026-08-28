@@ -244,8 +244,8 @@
                 {@const Icon = SEVERITY_ICONS[row.severity]}
                 <button
                   type="button"
-                  class="flex w-full min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-2 pl-6
-                         text-left transition-colors hover:bg-[var(--color-elevated)]
+                  class="problem-row flex w-full min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-2
+                         pl-6 text-left transition-colors hover:bg-[var(--color-elevated)]
                          focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
                   title="{severityWord(row.severity, 1)} · {row.message}"
                   onclick={() => openProblem(row)}
@@ -272,3 +272,19 @@
     {/if}
   </div>
 </div>
+
+<style>
+  /* A project with thousands of diagnostics puts thousands of rows in here.
+     Skipping layout and paint for what is off screen keeps the panel cheap to
+     scroll. `auto` means the browser uses the real height it last measured, so
+     a row that has been on screen once reserves the space it really takes.
+
+     24px is one problem row: 13px text at the app's 1.5 line-height (19.5px)
+     inside py-0.5 (4px). Only rows carry this: a file group starts open and
+     holds however many rows it has, so a single guessed height for a whole
+     group would shift the scroll range as the reader moves through the list. */
+  .problem-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 24px;
+  }
+</style>

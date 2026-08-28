@@ -21,7 +21,10 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
-  import { activate as activatePlaywright } from '$lib/shell/processes/playwrightService';
+  import {
+    activate as activatePlaywright,
+    resetPlaywrightActivation
+  } from '$lib/shell/processes/playwrightService';
 
   import PlaywrightCard from '$lib/shell/components/processes/PlaywrightCard.svelte';
 
@@ -79,7 +82,13 @@
     resourceReclaimState.entry ? describeReclaimQuestion(resourceReclaimState.entry) : null
   );
 
-  onMount(() => activatePlaywright());
+  // Reading the Playwright processes is worth doing while the panel is open and
+  // is worth undoing when it closes, so the list does not sit in memory behind a
+  // closed panel and a later open reads it again.
+  onMount(() => {
+    activatePlaywright();
+    return resetPlaywrightActivation;
+  });
 
   function toggle(id: string): void {
     collapsed = { ...collapsed, [id]: !collapsed[id] };
@@ -204,7 +213,7 @@
     {#if import.meta.env.DEV && frontend}
       <section class="diagnostic-strip" aria-label="Frontend lifecycle counts">
         <span><strong>{frontend.loadedConversationProjections}</strong> loaded conversations</span>
-        <span><strong>{frontend.loadedConversationEventBytes}</strong> conversation bytes</span>
+        <span><strong>{frontend.loadedConversationEventCount}</strong> conversation events</span>
         <span><strong>{frontend.conversationSnapshotReadsInFlight}</strong> snapshot reads</span>
         <span><strong>{frontend.conversationSnapshotReadsInvalidated}</strong> stale snapshot reads</span>
         <span><strong>{frontend.loadedChildTranscriptBytes}</strong> child transcript bytes</span>

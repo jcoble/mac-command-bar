@@ -150,6 +150,14 @@
     return () => {
       cancelled = true;
       watch?.stop();
+      // Drop the tails this watch collected. Without this, the tail of every
+      // session the tab has ever watched stays in the record for as long as the
+      // tab is open. The next watch repopulates whatever is still running, and
+      // deleting by the captured id list — rather than reading `tails` — keeps
+      // this cleanup from touching state the effect would then depend on.
+      for (const id of sessions) {
+        delete tails[id];
+      }
     };
   });
 

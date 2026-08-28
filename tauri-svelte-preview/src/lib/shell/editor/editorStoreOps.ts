@@ -6,7 +6,7 @@
  * a function), so every decision worth testing — where a newly opened file
  * lands in the strip, which file becomes active when one is closed, how a
  * "reveal this line" request is delivered to Monaco — lives here and is
- * covered by `scripts/editorStore.test.mjs`. The runes module is then a thin
+ * covered by `scripts/editorStore.test.ts`. The runes module is then a thin
  * shell: hold state, call these, assign the result.
  *
  * No IO, no Svelte, no mutation of the arrays passed in: every function
@@ -167,23 +167,6 @@ export function modelPathToDisposeOnClose(
   file: Pick<OpenEditorFile, 'path' | 'dirty'> | null
 ): string | null {
   return file && !file.dirty ? file.path : null;
-}
-
-/** Move a tab model to MRU and identify clean models beyond the shared cap. */
-export function touchTabModelLru(
-  leastRecentFirst: readonly string[],
-  path: string,
-  dirtyPaths: ReadonlySet<string>,
-  cap = 24
-): { keptPaths: string[]; evictedPaths: string[] } {
-  const keptPaths = [...leastRecentFirst.filter((entry) => entry !== path), path];
-  const evictedPaths: string[] = [];
-  while (keptPaths.length > cap) {
-    const index = keptPaths.findIndex((entry) => entry !== path && !dirtyPaths.has(entry));
-    if (index < 0) break;
-    evictedPaths.push(...keptPaths.splice(index, 1));
-  }
-  return { keptPaths, evictedPaths };
 }
 
 /**

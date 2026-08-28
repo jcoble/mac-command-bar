@@ -834,6 +834,9 @@ export function stopConversationEvents(): void {
   conversationEventsDisposed = true;
   conversationEventsGeneration += 1;
   childTranscriptReads.clear();
+  // Nothing can read a session's snapshot once the stream is gone, so the
+  // per-session read counters have nothing left to invalidate.
+  readVersions.clear();
   void conversationStream?.unregister();
   conversationStream = null;
   unlistenTitles?.();

@@ -151,46 +151,44 @@
         {@const expanded = isCommitExpanded(commitFilesState, commit.sha)}
         {@const entry = commitFilesEntry(commitFilesState, commit.sha)}
         {@const sentence = describeCommitFiles(entry, commit.parentCount > 1)}
-        <li class="min-w-0">
-          <Tooltip.Provider delayDuration={500}>
-            <Tooltip.Root>
-              <Tooltip.Trigger>
-                {#snippet child({ props })}
-                  <div {...props} class="min-w-0">
-                    <ListRow
-                      onclick={() => toggle(commit.sha, commit.parentCount)}
-                      data-testid={`source-control-commit-${commit.shortSha}`}
-                    >
-                      <ChevronRight
-                        class={`chevron size-3.5 shrink-0 text-muted-foreground ${
-                          expanded ? 'is-open' : ''
-                        }`}
-                        aria-hidden="true"
-                      />
-                      {#each refPills(commit.refs) as pill (pill.label)}
-                        <Chip tone={pill.tone} class="max-w-[40%] overflow-hidden text-ellipsis">
-                          {pill.label}
-                        </Chip>
-                      {/each}
-                      <span class="min-w-0 flex-1 truncate">{commit.subject}</span>
-                      <span class="shrink-0 text-sm text-muted-foreground">
-                        {commit.author} · {whenCommitted(commit.committedAt)}
-                      </span>
-                    </ListRow>
-                  </div>
-                {/snippet}
-              </Tooltip.Trigger>
-              <Tooltip.Content side="left" sideOffset={6} class="max-w-[320px]">
-                <span class="flex flex-col gap-1 text-left">
-                  {#each commitDetail(commit) as line, index (index)}
-                    <span class={index === 0 ? 'text-[13px] leading-snug' : 'text-sm text-muted-foreground'}>
-                      {line}
+        <li class="commit-row min-w-0">
+          <Tooltip.Root delayDuration={500}>
+            <Tooltip.Trigger>
+              {#snippet child({ props })}
+                <div {...props} class="min-w-0">
+                  <ListRow
+                    onclick={() => toggle(commit.sha, commit.parentCount)}
+                    data-testid={`source-control-commit-${commit.shortSha}`}
+                  >
+                    <ChevronRight
+                      class={`chevron size-3.5 shrink-0 text-muted-foreground ${
+                        expanded ? 'is-open' : ''
+                      }`}
+                      aria-hidden="true"
+                    />
+                    {#each refPills(commit.refs) as pill (pill.label)}
+                      <Chip tone={pill.tone} class="max-w-[40%] overflow-hidden text-ellipsis">
+                        {pill.label}
+                      </Chip>
+                    {/each}
+                    <span class="min-w-0 flex-1 truncate">{commit.subject}</span>
+                    <span class="shrink-0 text-sm text-muted-foreground">
+                      {commit.author} · {whenCommitted(commit.committedAt)}
                     </span>
-                  {/each}
-                </span>
-              </Tooltip.Content>
-            </Tooltip.Root>
-          </Tooltip.Provider>
+                  </ListRow>
+                </div>
+              {/snippet}
+            </Tooltip.Trigger>
+            <Tooltip.Content side="left" sideOffset={6} class="max-w-[320px]">
+              <span class="flex flex-col gap-1 text-left">
+                {#each commitDetail(commit) as line, index (index)}
+                  <span class={index === 0 ? 'text-[13px] leading-snug' : 'text-sm text-muted-foreground'}>
+                    {line}
+                  </span>
+                {/each}
+              </span>
+            </Tooltip.Content>
+          </Tooltip.Root>
 
           {#if expanded}
             <div class="flex flex-col pb-1 pl-5">
@@ -247,6 +245,17 @@
 </section>
 
 <style>
+  /* "Load more" appends another page of commits and never drops the ones
+     already there, so this list only grows. Skipping layout and paint for the
+     rows off screen is what keeps a deep history cheap. 28px is the collapsed
+     row height (ListRow's min-h-7); `auto` means the browser uses the real
+     height it last measured, so an opened row with its files listed still
+     reserves the right space. */
+  .commit-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 28px;
+  }
+
   /* The chevron turns to point down while its commit is open, and stops there. */
   section :global(.chevron) {
     transition: transform 120ms ease-out;

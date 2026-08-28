@@ -1,5 +1,5 @@
 /**
- * playwrightStore.test.mjs — the /next Playwright card's store, run in plain node.
+ * playwrightStore.test.ts — the /next Playwright card's store, run in plain node.
  *
  * `playwrightStore.svelte.ts` is a runes module, so node cannot import it as it
  * stands: `$state` is compiler syntax, not a function. The test does what vite
@@ -343,6 +343,22 @@ test('a slow first load cannot overwrite a fast second one', () => {
   assert.ok(playwrightState.loadedAt !== null);
 });
 
+test('a reset invalidates the read that was already in flight', () => {
+  resetPlaywright();
+  // The card is unmounted mid-read (its teardown resets the store), then
+  // mounted again and starts a new read. If the reset rewound the ticket, the
+  // pre-reset read would be handed the same number as the new one, compare
+  // equal, and overwrite the newer rows with what it found before the reset.
+  const inFlight = beginPlaywrightLoad();
+  resetPlaywright();
+  const reopened = beginPlaywrightLoad();
+  assert.notEqual(inFlight, reopened);
+  assert.equal(applyPlaywrightGroups(inFlight, groupPlaywrightProcesses(psFixture())), false);
+  assert.deepEqual(playwrightState.groups, [], 'the stale read landed nowhere');
+  assert.equal(applyPlaywrightGroups(reopened, groupPlaywrightProcesses(psFixture())), true);
+  assert.equal(playwrightState.groups.length, 2);
+});
+
 test('a failed load keeps its message and drops the spinner', () => {
   resetPlaywright();
   const ticket = beginPlaywrightLoad();
@@ -391,4 +407,4 @@ test('a desktop app without the one-session command says so once and stays hones
   assert.equal(playwrightState.perSessionStopSupported, 'yes');
 });
 
-console.log(`playwrightStore.test.mjs: ${passed} passed`);
+console.log(`playwrightStore.test.ts: ${passed} passed`);

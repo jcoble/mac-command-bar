@@ -369,21 +369,32 @@ const ownedA = {
   // and end up showing/fitting/focusing a second terminal per close.
   const log = [];
   const { backend } = makeBackend(log);
-  let created = 0;
+  // A rebuilt view is a NEW spy object, so its identity says nothing. Name each
+  // view after the session it was built for instead — the host is what the
+  // manager hands back to a rebuild, so the name survives the rebuild and the
+  // assertion below can name the exact successor rather than "some terminal".
+  const keyByHost = new Map();
   const svc = createTerminalService({
     backend,
-    createView: () => makeView(log, `s${(created += 1)}`)
+    createView: (host) => makeView(log, `s:${keyByHost.get(host) ?? 'unknown'}`)
   });
   await svc.attach();
   for (const ownedId of ['a', 'b', 'c']) {
-    await svc.startOwned({ ...ownedA, ownedId, resumeCommand: null }, {});
+    const host = {};
+    keyByHost.set(host, ownedId);
+    await svc.startOwned({ ...ownedA, ownedId, resumeCommand: null }, host);
   }
   svc.show('a');
+  const beforeClose = log.length;
   const first = await svc.closeOwned('a');
   assert.equal(first.successor, 'c', 'the successor is the most-recently-inserted survivor');
-  assert.ok(
-    log.some((e) => e[0] === 's3' && e[1] === 'visible' && e[2] === true),
-    'and it is the view the manager actually showed'
+  // The survivor's buffer was released while it was hidden, so it is rebuilt
+  // from the backend ring — an async read, hence one turn of the event loop.
+  await settle();
+  assert.deepEqual(
+    log.slice(beforeClose).filter((e) => e[1] === 'visible' && e[2] === true),
+    [['s:c', 'visible', true]],
+    "the rebuilt view of the REPORTED successor is the one shown, and it is the only one"
   );
   assert.equal((await svc.closeOwned('c')).successor, 'b', 'the next close reports the next one');
   assert.equal((await svc.closeOwned('b')).successor, null, 'no views left = no successor');
@@ -395,27 +406,33 @@ const ownedA = {
   // painted over the terminal the manager had just shown.
   const log = [];
   const { backend, failClose } = makeBackend(log);
-  let created = 0;
+  // Named by session, not by creation order — see I6.
+  const keyByHost = new Map();
   const svc = createTerminalService({
     backend,
-    createView: () => makeView(log, `f${(created += 1)}`)
+    createView: (host) => makeView(log, `f:${keyByHost.get(host) ?? 'unknown'}`)
   });
   await svc.attach();
   for (const ownedId of ['a', 'b']) {
-    await svc.startOwned({ ...ownedA, ownedId, resumeCommand: null }, {});
+    const host = {};
+    keyByHost.set(host, ownedId);
+    await svc.startOwned({ ...ownedA, ownedId, resumeCommand: null }, host);
   }
   svc.show('a');
   const boom = new Error('ipc channel closed');
   failClose(boom);
+  const beforeClose = log.length;
   const result = await svc.closeOwned('a');
   assert.equal(result.successor, 'b', 'a failed close still reports the surviving view');
   assert.equal(result.error, boom, 'and hands the rejection back instead of throwing it');
-  assert.ok(
-    log.some((e) => e[0] === 'f2' && e[1] === 'visible' && e[2] === true),
-    'the survivor is the view the manager actually showed'
+  await settle();
+  assert.deepEqual(
+    log.slice(beforeClose).filter((e) => e[1] === 'visible' && e[2] === true),
+    [['f:b', 'visible', true]],
+    'the reported successor is the view rebuilt from the ring and put back on screen'
   );
   assert.ok(
-    log.some((e) => e[0] === 'f1' && e[1] === 'dispose'),
+    log.some((e) => e[0] === 'f:a' && e[1] === 'dispose'),
     'the closed view is dropped even though the backend rejected'
   );
   // The mapping went with it: a second dismiss must not re-issue the close.
@@ -477,18 +494,22 @@ const ownedA = {
   await svc.attach();
   await svc.startOwned({ ...ownedA, ownedId: 'a', resumeCommand: null }, {});
   await svc.startOwned({ ...ownedA, ownedId: 'b', resumeCommand: null }, {});
+  // Each show after the first rebuilds a released view from the ring, so every
+  // switch has to be given its turn of the event loop before it is measured.
   svc.show('a');
+  await settle();
   svc.show('b');
+  await settle();
   const settled = log.filter((e) => e[0] === 'resize').length;
   // Each PTY opened at 96x28 and the pane is 120x40, so exactly one resize per
   // session is legitimate — after that the size is known.
   assert.equal(settled, 2, 'one resize per session while its size actually changes');
 
   const before = log.length;
-  svc.show('a');
-  svc.show('b');
-  svc.show('a');
-  svc.show('b');
+  for (const ownedId of ['a', 'b', 'a', 'b']) {
+    svc.show(ownedId);
+    await settle();
+  }
   assert.equal(
     log.slice(before).filter((e) => e[0] === 'resize').length,
     0,
@@ -510,6 +531,7 @@ const ownedA = {
   pane.rows = 30;
   const beforeGrow = log.length;
   svc.show('a');
+  await settle();
   assert.deepEqual(
     log.slice(beforeGrow).filter((e) => e[0] === 'resize'),
     [['resize', 'pty-1', 100, 30]],
@@ -586,6 +608,55 @@ const ownedA = {
   assert.ok(
     !log2.some((e) => e[0] === 'nosize' && e[1] === 'resize'),
     'no size supplied = no forced resize'
+  );
+}
+
+{
+  // F3c: a view RELEASED while its session was still RUNNING, whose PTY then
+  // exits while the view is gone. The manager's "keep a terminated buffer"
+  // rule cannot help here — the record was not terminated yet when it was
+  // released — so showing it again rebuilds from the backend ring, and the
+  // size memo is the only surviving record of the width that output was
+  // written at. Dropping the memo on exit left the rebuild at xterm's 80x24
+  // default, re-wrapping the final frame. The memo now outlives the exit; the
+  // repaint nudge must still be withheld, because there is no process left.
+  const log = [];
+  const { backend, emit } = makeBackend(log);
+  let built = 0;
+  const svc = createTerminalService({
+    backend,
+    createView: (_host, hooks) => makeView(log, `zombie${(built += 1)}`, { hooks }),
+    repaintNudgeMs: 5
+  });
+  await svc.attach();
+  await svc.adoptExisting(
+    { ...ownedA, ownedId: 'z', ptySessionId: 'pty-z' },
+    {},
+    { cols: 146, rows: 46 }
+  );
+  // Let the live re-attach nudge fire and finish, so nothing is left pending.
+  await settle();
+  svc.releaseView('z');
+  emit({ sessionId: 'pty-z', data: '', terminated: true, exitCode: 0, signal: null });
+
+  const beforeShow = log.length;
+  svc.show('z');
+  await settle();
+  const after = log.slice(beforeShow);
+  assert.deepEqual(
+    after.filter((e) => e[0] === 'zombie2').map((e) => e[1]).slice(0, 2),
+    ['resize', 'write'],
+    'the rebuilt view is sized BEFORE the replay, exactly as a live re-attach is'
+  );
+  assert.deepEqual(
+    after.find((e) => e[0] === 'zombie2' && e[1] === 'resize'),
+    ['zombie2', 'resize', 146, 46],
+    'and to the geometry the PTY was last at, not xterm 80x24'
+  );
+  assert.equal(
+    after.filter((e) => e[0] === 'resize').length,
+    0,
+    'and no repaint nudge is issued against a PTY whose process has exited'
   );
 }
 
@@ -735,7 +806,7 @@ const ownedA = {
 }
 
 {
-  // F6: the backend ring is 16 MB but the view keeps 20000 lines, so a replay
+  // F6: the backend ring is 16 MB but the view keeps 8000 lines, so a replay
   // is capped to the 4 MB TAIL before it ever reaches the view.
   const CAP = 4 * 1024 * 1024;
   const log = [];

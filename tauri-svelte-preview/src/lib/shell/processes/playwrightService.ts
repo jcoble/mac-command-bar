@@ -36,7 +36,8 @@ import {
   markPerSessionStopUnsupported,
   markPlaywrightActivated,
   markPlaywrightUnavailable,
-  playwrightState
+  playwrightState,
+  resetPlaywright
 } from './playwrightStore.svelte.ts';
 
 /** Shown when the data only exists inside the desktop app. */
@@ -81,9 +82,18 @@ export async function refresh(): Promise<void> {
   }
 }
 
-/** Forget that a read has happened — used when the shell tears the panel down. */
+/**
+ * Let go of the card's state — used when the shell tears the panel down.
+ *
+ * Forgetting the read is not enough on its own: the process groups from the
+ * last read stay in the store, holding a row per process for a card that is no
+ * longer on screen. Dropping the store back to launch state releases them, and
+ * clearing `loadedOnce` means the next mount reads the processes again instead
+ * of showing the list as it was when the panel closed.
+ */
 export function resetPlaywrightActivation(): void {
   loadedOnce = false;
+  resetPlaywright();
 }
 
 /**

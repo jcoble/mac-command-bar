@@ -62,7 +62,7 @@
   const ownershipSummary = $derived.by(() => {
     if (!import.meta.env.DEV) return '';
     return [
-      `chat ${resourceDiagnostics.loadedConversationProjections}/${formatResourceBytes(resourceDiagnostics.loadedConversationEventBytes)}`,
+      `chat ${resourceDiagnostics.loadedConversationProjections}/${resourceDiagnostics.loadedConversationEventCount}`,
       `snap ${resourceDiagnostics.conversationSnapshotReadsInFlight}/${resourceDiagnostics.conversationSnapshotReadsInvalidated} stale`,
       `turns ${resourceDiagnostics.conversationRenderedRows}/${resourceDiagnostics.conversationVirtualRows} · cache ${resourceDiagnostics.conversationMeasuredElementCacheEntries}/${resourceDiagnostics.conversationMeasuredSizeCacheEntries}`,
       `CM ${resourceDiagnostics.codeMirrorEditorStates}/${formatResourceBytes(resourceDiagnostics.openTabDocumentBytes)}`,
@@ -77,7 +77,9 @@
       if (document.visibilityState === 'visible') void refreshResourceTotals();
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
-    const pollTimer = window.setInterval(() => void refreshResourceTotals(), 5_000);
+    // The same visibility guard as the event above: a hidden window or a
+    // backgrounded app must not keep sampling the process tree every 5 seconds.
+    const pollTimer = window.setInterval(refreshWhenVisible, 5_000);
     return () => {
       document.removeEventListener('visibilitychange', refreshWhenVisible);
       window.clearInterval(pollTimer);

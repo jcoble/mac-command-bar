@@ -150,6 +150,11 @@ export class InMemoryBrowserBackend implements BrowserBackend {
 
   private record(command: string, input: unknown): void {
     this.calls.push({ command, input: copy(input) });
+    // The browser preview keeps one of these for the life of the page, and
+    // resizing fires `set_browser_tab_bounds` continuously, so the list is
+    // capped. Tests read the first handful of commands; 200 is far more than
+    // any of them sends.
+    if (this.calls.length > 200) this.calls.shift();
   }
 
   create_browser_tab(input: BrowserBackendTabInput): BrowserBackendTabResult {

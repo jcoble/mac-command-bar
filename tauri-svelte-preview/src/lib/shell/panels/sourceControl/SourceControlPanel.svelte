@@ -721,6 +721,18 @@
 />
 
 <style>
+  /* A first import or a generated-file commit puts thousands of changed files in
+     these sections. Skipping layout and paint for the rows off screen keeps that
+     off the webview's main thread. 28px is the row height (ListRow's min-h-7);
+     `auto` means the browser uses the real height it last measured.
+
+     Scoped to this component's sections on purpose: the commit list below them
+     is `CommitTimeline`, which carries the same rule for its own rows. */
+  section :global(.row) {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 28px;
+  }
+
   /* The chevron turns to point down while its section is open, and stops there. */
   section :global(.chevron) {
     transition: transform 120ms ease-out;

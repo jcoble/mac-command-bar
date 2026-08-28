@@ -6,7 +6,7 @@
  */
 export const resourceDiagnostics = $state({
   loadedConversationProjections: 0,
-  loadedConversationEventBytes: 0,
+  loadedConversationEventCount: 0,
   conversationSnapshotReadsInFlight: 0,
   conversationSnapshotReadsInvalidated: 0,
   loadedChildTranscriptBytes: 0,
@@ -130,12 +130,12 @@ if (typeof window !== 'undefined') {
 
 export function setConversationProjectionDiagnostics(
   projections: number,
-  eventBytes: number,
+  eventCount: number,
   childTranscriptBytes: number
 ): void {
   if (!import.meta.env.DEV) return;
   resourceDiagnostics.loadedConversationProjections = Math.max(0, projections);
-  resourceDiagnostics.loadedConversationEventBytes = Math.max(0, Math.trunc(eventBytes));
+  resourceDiagnostics.loadedConversationEventCount = Math.max(0, Math.trunc(eventCount));
   resourceDiagnostics.loadedChildTranscriptBytes = Math.max(
     0,
     Math.trunc(childTranscriptBytes)

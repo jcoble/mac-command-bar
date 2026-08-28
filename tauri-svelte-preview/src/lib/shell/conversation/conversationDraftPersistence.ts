@@ -46,18 +46,27 @@ export class ConversationDraftPersistence {
   }
 
   async load(ownedId: string): Promise<void> {
-    const revision = this.revisions.get(ownedId) ?? 0;
+    // A read takes its own revision so a dropped counter can never look like
+    // the number this read started from.
+    const revision = this.bumpRevision(ownedId);
     await (this.writes.get(ownedId) ?? Promise.resolve()).catch(() => undefined);
     const text = await this.backend.get(ownedId);
-    if ((this.revisions.get(ownedId) ?? 0) === revision) {
+    if (this.revisions.get(ownedId) === revision) {
       this.applyLoadedDraft(ownedId, text ?? '');
     }
   }
 
   clear(ownedId: string): Promise<void> {
-    this.bumpRevision(ownedId);
+    const revision = this.bumpRevision(ownedId);
     this.cancelTimer(ownedId);
-    return this.enqueue(ownedId, () => this.backend.clear(ownedId));
+    const work = this.enqueue(ownedId, () => this.backend.clear(ownedId));
+    // A cleared session holds no draft to invalidate, so its counter is
+    // dropped once the clear has settled and nothing newer has bumped it.
+    const forget = (): void => {
+      if (this.revisions.get(ownedId) === revision) this.revisions.delete(ownedId);
+    };
+    work.then(forget, forget);
+    return work;
   }
 
   private cancelTimer(ownedId: string): void {
@@ -67,8 +76,10 @@ export class ConversationDraftPersistence {
     this.pending.delete(ownedId);
   }
 
-  private bumpRevision(ownedId: string): void {
-    this.revisions.set(ownedId, (this.revisions.get(ownedId) ?? 0) + 1);
+  private bumpRevision(ownedId: string): number {
+    const revision = (this.revisions.get(ownedId) ?? 0) + 1;
+    this.revisions.set(ownedId, revision);
+    return revision;
   }
 
   private enqueue(ownedId: string, action: () => Promise<void>): Promise<void> {

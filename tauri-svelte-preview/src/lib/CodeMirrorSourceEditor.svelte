@@ -147,6 +147,8 @@
   const codeLens = new Compartment();
   const sessionViewStates = new Map<string, StoredViewState>();
   const sessionEditorStates = new Map<string, EditorState>();
+  /** How many tabs' editor states one session keeps; oldest go first. */
+  const retainedEditorStateLimit = 24;
   let themeGeneration = 0;
   let requestedThemeKey = '';
   let loadedThemeKey = '';
@@ -245,6 +247,30 @@
     );
   }
 
+  /**
+   * Record `state` for `path` as the most recently used, then drop the oldest
+   * entries beyond the cap. Each entry is a whole document plus its undo
+   * history, and a closed tab with unsaved edits keeps its state on purpose, so
+   * without a cap one session's tabs grow without limit. `Map.set` on a key
+   * that is already there does not move it, hence the delete first.
+   */
+  function rememberEditorState(path: string, state: EditorState): void {
+    sessionEditorStates.delete(path);
+    sessionEditorStates.set(path, state);
+    while (sessionEditorStates.size > retainedEditorStateLimit) {
+      let oldest: string | null = null;
+      for (const candidate of sessionEditorStates.keys()) {
+        if (candidate === currentPath) continue;
+        oldest = candidate;
+        break;
+      }
+      if (oldest === null) break;
+      // Removes the view state too, so the two maps stay in step.
+      disposeTabModel(oldest);
+    }
+    publishRetainedEditorDiagnostics();
+  }
+
   function editingExtensions(): Extension {
     return [EditorState.readOnly.of(!editable), EditorView.editable.of(editable)];
   }
@@ -332,9 +358,9 @@
 
   function rememberCurrentView(): void {
     if (!view || !currentPath) return;
-    sessionEditorStates.set(currentPath, view.state);
-    publishRetainedEditorDiagnostics();
+    rememberEditorState(currentPath, view.state);
     const selection = view.state.selection.main;
+    sessionViewStates.delete(currentPath);
     sessionViewStates.set(currentPath, {
       anchor: selection.anchor,
       head: selection.head,
@@ -658,8 +684,7 @@
         codeActionGeneration += 1;
       }
       if (currentPath) {
-        sessionEditorStates.set(currentPath, update.state);
-        publishRetainedEditorDiagnostics();
+        rememberEditorState(currentPath, update.state);
       }
       if (!update.docChanged || applyingContent) return;
       const next = update.state.doc.toString();
@@ -706,8 +731,7 @@
     applyingContent = true;
     view.setState(nextState);
     applyingContent = false;
-    sessionEditorStates.set(currentPath, view.state);
-    publishRetainedEditorDiagnostics();
+    rememberEditorState(currentPath, view.state);
     setCodeMirrorDocBytes(textBytes(doc));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));

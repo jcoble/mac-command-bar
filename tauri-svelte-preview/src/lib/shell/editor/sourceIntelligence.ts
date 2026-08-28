@@ -342,8 +342,28 @@ export function createSourceIntelligence(): SourceIntelligence {
    * per group; without this the lazy preview resolver re-reads it every time.
    * Dropped for a file when that file is written, and wholesale on a project
    * change — a stale preview after an edit would be a correctness bug.
+   *
+   * Each entry holds a whole file's text, and files pulled in by a peek window
+   * or a reference search never become tabs, so nothing else releases them:
+   * only the most recently used ones are kept.
    */
   const externalPreviewCache = new Map<string, SourcePreview>();
+  const externalPreviewCacheLimit = 32;
+
+  /**
+   * Remember `preview` as the most recently used and drop the oldest beyond the
+   * cap. `Map.set` on a key that is already there does not move it, so the
+   * delete comes first — on a cache hit as well as on a fresh read.
+   */
+  function rememberExternalPreview(path: string, preview: SourcePreview): void {
+    externalPreviewCache.delete(path);
+    externalPreviewCache.set(path, preview);
+    while (externalPreviewCache.size > externalPreviewCacheLimit) {
+      const oldest = externalPreviewCache.keys().next().value;
+      if (oldest === undefined) break;
+      externalPreviewCache.delete(oldest);
+    }
+  }
 
   /** Does the file on screen have a language server behind it? */
   function languageIntelligenceAvailable(): boolean {
@@ -1082,7 +1102,10 @@ export function createSourceIntelligence(): SourceIntelligence {
     }
 
     const cached = externalPreviewCache.get(sourceRecord.path);
-    if (cached) return cached;
+    if (cached) {
+      rememberExternalPreview(sourceRecord.path, cached);
+      return cached;
+    }
 
     countInvoke('read_source_file');
     const preview = await readSourceFromTauri(sourceRecord).catch(() => null);
@@ -1091,7 +1114,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       || previewGeneration !== externalPreviewGeneration
       || projectRoot !== requestRoot
     ) return null;
-    if (preview) externalPreviewCache.set(sourceRecord.path, preview);
+    if (preview) rememberExternalPreview(sourceRecord.path, preview);
     return preview;
   }
 

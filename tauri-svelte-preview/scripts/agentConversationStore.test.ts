@@ -15,24 +15,44 @@ const storePath = fileURLToPath(
 const outputPath = fileURLToPath(
   new URL('../src/lib/shell/conversation/.conversationStore.test.mjs', import.meta.url)
 );
+// The store imports the runes module that holds the resource counters. Node
+// cannot run that file as written, so it is compiled beside it and the store's
+// import is pointed at the compiled copy.
+const diagnosticsPath = fileURLToPath(
+  new URL('../src/lib/shell/resourceDiagnostics.svelte.ts', import.meta.url)
+);
+const diagnosticsOutputPath = fileURLToPath(
+  new URL('../src/lib/shell/.resourceDiagnostics.test.mjs', import.meta.url)
+);
 
-const source = readFileSync(storePath, 'utf8');
 const surfaceSource = readFileSync(
   new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
   'utf8'
 );
-const javascript = stripTypeScriptTypes(source, { mode: 'strip' });
-const compiled = compileModule(javascript, {
-  generate: 'client',
-  filename: 'conversationStore.svelte.js'
-});
-writeFileSync(outputPath, compiled.js.code);
+// Node has no bundler, so the build-time flag both modules read is compiled
+// out as false, which is what the shipped app sees.
+function compileForTest(modulePath: string, filename: string): string {
+  const stripped = stripTypeScriptTypes(readFileSync(modulePath, 'utf8'), { mode: 'strip' });
+  const module = compileModule(stripped, { generate: 'client', filename });
+  return module.js.code.replaceAll('import.meta.env', '({ DEV: false })');
+}
+
+writeFileSync(
+  outputPath,
+  compileForTest(storePath, 'conversationStore.svelte.js')
+    .replace('../resourceDiagnostics.svelte.ts', '../.resourceDiagnostics.test.mjs')
+);
+writeFileSync(
+  diagnosticsOutputPath,
+  compileForTest(diagnosticsPath, 'resourceDiagnostics.svelte.js')
+);
 
 let store;
 try {
   store = await import(`${outputPath}?test=${Date.now()}`);
 } finally {
   rmSync(outputPath, { force: true });
+  rmSync(diagnosticsOutputPath, { force: true });
 }
 
 const a = store.ensureConversationSession('owned-a', 'codex');
@@ -1139,6 +1159,30 @@ assert.ok(store.getConversationSession('owned-b'));
   assert.deepEqual(timeline.map((entry) => entry.kind), ['compaction']);
   assert.equal(timeline[0].trigger, 'auto');
   assert.equal(timeline[0].preTokens, undefined);
+}
+
+// The retained event window is capped by event count. Without a working cap
+// the transcript of a long session grows for as long as the session is
+// selected, which is what put the app's memory on a ramp.
+{
+  const ownedId = 'owned-event-window-cap';
+  // Mirrors ACTIVE_EVENT_WINDOW_EVENTS and ACTIVE_EVENT_WINDOW_TRIM_EVENTS.
+  const windowEvents = 20_000;
+  const trimEvents = 15_000;
+  for (let sequence = 1; sequence <= windowEvents + 1; sequence += 1) {
+    store.applyAgentConversationEvent({
+      ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+      payload: { kind: 'assistantMessage', itemId: `m-${sequence}`, text: 'x', completed: true }
+    });
+  }
+  const session = store.getConversationSession(ownedId);
+  assert.equal(session.loadedEvents.length, trimEvents, 'the window trims down to its low mark');
+  assert.equal(
+    session.oldestLoadedSequence,
+    windowEvents + 1 - trimEvents + 1,
+    'the oldest retained sequence follows the trim so scrolling up still has a cursor'
+  );
+  assert.equal(session.newestLoadedSequence, windowEvents + 1, 'the newest event is retained');
 }
 
 console.log('agent conversation store tests passed');

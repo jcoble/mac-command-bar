@@ -179,10 +179,19 @@ export type TerminalService = {
     owned: OwnedSession,
     size?: { cols: number; rows: number } | null
   ): boolean;
-  /** Drop one xterm view while leaving its PTY and routing metadata intact. */
+  /**
+   * Drop one xterm view's buffer while leaving its PTY, its routing metadata
+   * and its host intact, so `show` can rebuild it from the backend ring.
+   */
   releaseView(ownedId: string): void;
   createProbe(owned: OwnedSession, host: HTMLElement): Promise<OwnedTerminalProbe | null>;
-  /** Make one owned session's terminal the visible one. */
+  /**
+   * Make one owned session's terminal the visible one.
+   *
+   * A session whose view was released while it was hidden has no buffer left,
+   * so this rebuilds it from the backend ring first — an asynchronous read,
+   * which is why its terminal appears a tick after the call returns.
+   */
   show(ownedId: string): void;
   /**
    * Re-measure the VISIBLE terminal after its pane changed size. Safe to call
@@ -268,12 +277,12 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
  * How much of a re-attached session's scrollback is actually replayed into the
  * view, in UTF-16 code units.
  *
- * The backend ring now holds up to 16 MB, but the view keeps only 20000 lines
- * (see `xtermFactory`). Everything older than that tail is parsed by xterm —
- * escape sequences and all — purely to be dropped off the top of its own
- * buffer. 4 MB is a deliberate over-estimate of what 20000 lines can hold
- * (~200 bytes/line), so the cap costs nothing visible and bounds the worst-case
- * re-attach at a quarter of the ring.
+ * The backend ring holds up to 16 MB, but the view keeps only 8000 lines (see
+ * `xtermFactory`). Everything older than that tail is parsed by xterm — escape
+ * sequences and all — purely to be dropped off the top of its own buffer. 4 MB
+ * is a deliberate over-estimate of what 8000 lines can hold (~200 bytes/line),
+ * so the cap costs nothing visible and bounds the worst-case re-attach at a
+ * quarter of the ring.
  */
 const REPLAY_TAIL_MAX_CHARS = 4 * 1024 * 1024;
 const PROBE_WRITE_MAX_CHARS = 64 * 1024;
@@ -362,6 +371,15 @@ export function createTerminalService(opts: {
    */
   const lastSizeByPty = new Map<string, string>();
   /**
+   * The PTY ids whose process has exited while this service still maps them.
+   * Tracked separately from the size memo because the two answer different
+   * questions: the memo says how wide the output was written, which a rebuilt
+   * view still needs to lay out the final frame; this set says there is no
+   * process left to signal, which is what suppresses a repaint nudge. Cleared
+   * by `forgetPty`, i.e. when the session is closed or restarted onto a new id.
+   */
+  const terminatedPtys = new Set<string>();
+  /**
    * sessionId -> scrollback, populated for the duration of ONE `adoptExisting`
    * call. The manager's `readScrollback` dep is synchronous, so the async read
    * has to land here before `ensureView` runs; the entry is dropped right after.
@@ -391,6 +409,12 @@ export function createTerminalService(opts: {
    * text that was already laid out at the wrong width.
    */
   let creatingSize: { cols: number; rows: number } | null = null;
+  /**
+   * The session `show` was last asked for. Rebuilding a released view reads the
+   * backend ring, so a quick switch can land while an older rebuild is still in
+   * flight; without this the stale one finishes and steals the screen back.
+   */
+  let showRequested: string | null = null;
   let unlisten: (() => void) | null = null;
   let attaching: Promise<void> | null = null;
   /**
@@ -463,6 +487,7 @@ export function createTerminalService(opts: {
     cancelRepaintNudge(ptyId);
     ownedByPty.delete(ptyId);
     lastSizeByPty.delete(ptyId);
+    terminatedPtys.delete(ptyId);
     scrollbackCache.delete(ptyId);
   }
 
@@ -475,10 +500,18 @@ export function createTerminalService(opts: {
     }
   }
 
-  function dropView(ownedId: string): void {
-    const ptyId = ptyByOwned.get(ownedId);
-    if (ptyId) cancelRepaintNudge(ptyId);
-    manager.closeView(ownedId);
+  /**
+   * The grid this service last sent `ptyId`, or `null` when it has sent none.
+   * A rebuilt view is created against a hidden host, which measures zero, so it
+   * has to be told the PTY's size before any scrollback is replayed into it.
+   */
+  function lastSizeOf(ptyId: string): { cols: number; rows: number } | null {
+    const memo = lastSizeByPty.get(ptyId);
+    if (memo == null) {
+      return null;
+    }
+    const [cols, rows] = memo.split('x').map((part) => Number.parseInt(part, 10));
+    return cols > 0 && rows > 0 ? { cols, rows } : null;
   }
 
   /**
@@ -654,10 +687,14 @@ export function createTerminalService(opts: {
         if (ownedId == null) {
           return;
         }
-        // The PTY is gone: its geometry memo must not survive to suppress a
-        // resize if this ownedId is later restarted onto a new session id, and a
-        // pending repaint nudge has nothing left to talk to.
-        lastSizeByPty.delete(payload.sessionId);
+        // The PTY is gone, so a pending repaint nudge has nothing left to talk
+        // to, and no later one may be scheduled against it. The geometry memo
+        // STAYS: a view released while this session was still running is
+        // rebuilt from the backend ring, and that memo is the only record of
+        // the width its final frame was written at. `forgetPty` drops both when
+        // the session is actually closed or restarted — the restart is where a
+        // stale memo could suppress a resize, and it mints a new PTY id anyway.
+        terminatedPtys.add(payload.sessionId);
         cancelRepaintNudge(payload.sessionId);
         manager.markTerminated(ownedId);
         // The view and its scrollback stay on screen; flipping session STATE is
@@ -752,7 +789,7 @@ export function createTerminalService(opts: {
     // tracked by `trackExisting`; only the stale frontend allocation is skipped.
     if (host.isConnected === false) return false;
     if (scrollback) {
-      // Only the tail: the ring is 16 MB, the view keeps 20000 lines.
+      // Only the tail: the ring is 16 MB, the view keeps 8000 lines.
       scrollbackCache.set(ptyId, replayTail(scrollback));
     }
     try {
@@ -800,15 +837,65 @@ export function createTerminalService(opts: {
     return true;
   }
 
-  function releaseView(_ownedId: string): void {
-    // Session changes must leave no hidden xterm behind; PTY maps stay intact
-    // so the next selection can hydrate from backend scrollback.
-    const active = manager.activeKey();
-    for (const key of manager.liveKeys()) {
-      if (key !== active) dropView(key);
+  function releaseView(ownedId: string): void {
+    // Session changes must leave no hidden xterm buffer behind. The PTY, its
+    // routing and its host stay, so selecting this session again rebuilds the
+    // view from the backend ring.
+    const ptyId = ptyByOwned.get(ownedId);
+    if (ptyId) {
+      // A pending nudge exists to repaint a view that is about to be gone.
+      cancelRepaintNudge(ptyId);
     }
-    for (const key of manager.liveKeys()) {
-      dropView(key);
+    manager.releaseView(ownedId);
+  }
+
+  /**
+   * Show a session whose view was released while it was hidden. The buffer went
+   * with the view, so it is rebuilt from the backend's ring — an asynchronous
+   * read, which is exactly why the manager cannot do this inside `showView`.
+   */
+  async function rebuildAndShow(ownedId: string): Promise<void> {
+    showRequested = ownedId;
+    const host = manager.hostFor(ownedId);
+    if (host == null || host.isConnected === false) {
+      // The surface that owned this host has gone; its next mount hands over a
+      // live one through `adoptExisting`.
+      return;
+    }
+    const ptyId = ptyByOwned.get(ownedId) ?? null;
+    const size = ptyId == null ? null : lastSizeOf(ptyId);
+    if (ptyId != null) {
+      const scrollback = await backend.readScrollback(ptyId, REPLAY_TAIL_MAX_CHARS);
+      // Selection can move — or another rebuild can win — while that read runs.
+      if (
+        disposed ||
+        showRequested !== ownedId ||
+        !manager.hasView(ownedId) ||
+        manager.viewFor(ownedId) != null
+      ) {
+        return;
+      }
+      if (scrollback) {
+        scrollbackCache.set(ptyId, replayTail(scrollback));
+      }
+    }
+    try {
+      // `sessionId` and `size` do the same two jobs they do in `adoptExisting`:
+      // hydrate from the staged cache, at the width the PTY wrote at.
+      ensureViewFor(ownedId, { host, sessionId: ptyId, size });
+    } finally {
+      if (ptyId != null) {
+        scrollbackCache.delete(ptyId);
+      }
+    }
+    manager.showView(ownedId);
+    // A rebuild IS a re-attach: the replay can start mid-escape-sequence, and a
+    // live TUI cannot redraw itself from bytes that scrolled out of the ring.
+    // A PTY that has exited keeps its remembered size — the view above was
+    // built at it — but has no process to signal, so it gets no nudge.
+    const settled = ptyId == null ? null : lastSizeOf(ptyId);
+    if (ptyId != null && settled != null && !terminatedPtys.has(ptyId)) {
+      scheduleRepaintNudge(ptyId, settled.cols, settled.rows);
     }
   }
 
@@ -874,11 +961,14 @@ export function createTerminalService(opts: {
 
   function show(ownedId: string): void {
     if (!manager.hasView(ownedId)) return;
-    manager.showView(ownedId);
-    const active = manager.activeKey();
-    for (const key of manager.liveKeys()) {
-      if (key !== active) dropView(key);
+    showRequested = ownedId;
+    if (manager.viewFor(ownedId) == null) {
+      // Released when this session was last hidden; rebuilding reads the ring.
+      void rebuildAndShow(ownedId);
+      return;
     }
+    // `showView` releases every other view, so only one buffer is ever live.
+    manager.showView(ownedId);
   }
 
   /**
@@ -928,9 +1018,14 @@ export function createTerminalService(opts: {
     }
     manager.closeView(ownedId);
     // Read the successor BEFORE the awaited close: the manager already picked
-    // and showed it inside `closeView`, and the caller must adopt that choice
-    // rather than show a different one.
+    // it inside `closeView`, and the caller must adopt that choice rather than
+    // show a different one.
     const successor = manager.activeKey();
+    if (successor != null && manager.viewFor(successor) == null) {
+      // `closeView` promoted a survivor whose buffer was released when it was
+      // hidden. Rebuilding it reads the backend ring, so the manager could not.
+      void rebuildAndShow(successor);
+    }
     let error: unknown = null;
     if (ptyId) {
       scrollbackCache.delete(ptyId);
@@ -969,6 +1064,7 @@ export function createTerminalService(opts: {
     // scratch, and a remembered size would suppress the resize that new view
     // legitimately needs.
     lastSizeByPty.clear();
+    terminatedPtys.clear();
     scrollbackCache.clear();
   }
 

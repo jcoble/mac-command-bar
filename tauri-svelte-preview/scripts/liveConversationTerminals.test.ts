@@ -15,7 +15,11 @@ function createHarness(extraDeps = {}) {
       fit: 0,
       focus: 0,
       setVisible: [],
-      dispose: 0
+      dispose: 0,
+      // Every setVisible/dispose in the order it happened. A view that is
+      // disposed while its host still says `display: block` covers the live
+      // terminal, so the ORDER of those two is the thing worth asserting.
+      order: []
     };
     const view = {
       host,
@@ -31,9 +35,11 @@ function createHarness(extraDeps = {}) {
       },
       setVisible(visible) {
         calls.setVisible.push(visible);
+        calls.order.push(`visible:${visible}`);
       },
       dispose() {
         calls.dispose += 1;
+        calls.order.push('dispose');
       },
       // Convenience helpers for assertions.
       visibleNow() {
@@ -280,6 +286,102 @@ const fakeHost = (id) => ({ __host: id });
     /createTerminal/,
     'manager should require deps.createTerminal'
   );
+}
+
+// --- hiding a conversation RELEASES its buffer; the PTY binding survives ---
+{
+  const harness = createHarness({
+    readScrollback: (sessionId) => (sessionId === 'sess-b' ? 'RING-REPLAY' : null)
+  });
+  const { manager, created } = harness;
+  manager.ensureView('a', { host: fakeHost('a'), sessionId: 'sess-a' }); // active
+  manager.ensureView('b', { host: fakeHost('b'), sessionId: 'sess-b' });
+  const [, firstB] = created;
+
+  manager.showView('a');
+
+  assert.equal(firstB.calls.dispose, 1, 'hiding b disposes its view and frees the buffer');
+  assert.deepEqual(
+    firstB.calls.order.slice(-2),
+    ['visible:false', 'dispose'],
+    'the host is hidden BEFORE the view goes, or it covers the live terminal'
+  );
+  assert.equal(manager.viewFor('b'), null, 'a released record has no view');
+  assert.equal(manager.hasView('b'), true, 'but the record itself survives');
+  assert.equal(manager.keyForSession('sess-b'), 'b', 'and so does its PTY mapping');
+  assert.deepEqual(manager.liveKeys(), ['a', 'b'], 'releasing is not closing');
+
+  // Output for a released conversation is dropped here — the backend ring keeps
+  // it — and must never throw at a view that no longer exists.
+  const writesWhenReleased = firstB.calls.write.length;
+  assert.doesNotThrow(() => manager.feedSession('sess-b', 'while-released'));
+  assert.equal(firstB.calls.write.length, writesWhenReleased, 'nothing reaches the disposed view');
+
+  // Showing it again rebuilds the view and replays the ring into it.
+  const rebuilt = manager.ensureView('b', { host: fakeHost('b'), sessionId: 'sess-b' });
+  manager.showView('b');
+  assert.equal(harness.createCalls, 3, 'the re-show builds a NEW terminal');
+  assert.notEqual(rebuilt, firstB, 'and it is not the disposed one');
+  assert.deepEqual(rebuilt.calls.write, ['RING-REPLAY'], 'rebuilt views hydrate from scrollback');
+  assert.equal(rebuilt.visibleNow(), true, 'and the rebuilt view is the visible one');
+  assert.equal(manager.activeKey(), 'b');
+}
+
+// --- releaseView is callable on its own, and keeps the record's host ---
+{
+  const harness = createHarness();
+  const { manager, created } = harness;
+  const host = fakeHost('a');
+  manager.ensureView('a', { host, sessionId: 'sess-a' });
+  const [first] = created;
+  assert.equal(manager.hostFor('a'), host, 'the manager keeps the host it built on');
+
+  manager.releaseView('a');
+
+  assert.equal(first.calls.dispose, 1, 'releaseView disposes the view');
+  assert.equal(manager.activeKey(), null, 'releasing the ACTIVE view leaves nothing showing');
+  assert.equal(manager.keyForSession('sess-a'), 'a', 'the PTY mapping is untouched');
+  assert.equal(manager.hostFor('a'), host, 'and the host is still there to rebuild on');
+
+  // Idempotent, and unknown keys are a no-op.
+  manager.releaseView('a');
+  assert.equal(first.calls.dispose, 1, 'releasing twice disposes once');
+  assert.doesNotThrow(() => manager.releaseView('ghost'));
+
+  // ensureView rebuilds on the remembered host when none is supplied anew.
+  const rebuilt = manager.ensureView('a', { host: manager.hostFor('a') });
+  assert.equal(harness.createCalls, 2);
+  assert.equal(rebuilt.host, host, 'the rebuilt view is bound to the same host');
+}
+
+// --- a TERMINATED conversation keeps its view: nothing can re-wrap it ---
+{
+  const { manager, created } = createHarness();
+  manager.ensureView('a', { host: fakeHost('a') }); // active
+  manager.ensureView('b', { host: fakeHost('b') });
+  const [, b] = created;
+  manager.markTerminated('b');
+
+  manager.showView('a');
+
+  assert.equal(b.calls.dispose, 0, 'a finished session keeps its final output');
+  assert.equal(b.visibleNow(), false, 'it is hidden, not released');
+  assert.equal(manager.viewFor('b'), b, 'and the view is still there to show again');
+
+  // The explicit call refuses too, for the same reason.
+  manager.releaseView('b');
+  assert.equal(b.calls.dispose, 0, 'releaseView leaves a terminated view alone');
+}
+
+// --- showing a released key is a no-op until its owner rebuilds it ---
+{
+  const { manager } = createHarness();
+  manager.ensureView('a', { host: fakeHost('a') });
+  manager.ensureView('b', { host: fakeHost('b') });
+  manager.showView('a'); // releases b
+  assert.doesNotThrow(() => manager.showView('b'), 'showing a released key must not throw');
+  assert.equal(manager.activeKey(), 'b', 'it still becomes the active key');
+  assert.equal(manager.viewFor('b'), null, 'the buffer arrives when its owner rebuilds it');
 }
 
 console.log('liveConversationTerminals: all tests passed');

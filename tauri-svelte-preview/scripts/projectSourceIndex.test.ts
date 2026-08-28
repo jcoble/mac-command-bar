@@ -33,6 +33,27 @@ assert.deepEqual(projectSourceRecords('/other'), [], 'project indexes stay isola
 forgetProjectSourceRecords('/repo');
 assert.deepEqual(projectSourceRecords('/repo'), [], 'a failed rescan drops stale records');
 
+// Only the three most recently indexed projects are kept: one record per file
+// in a repository is far too much to retain for every root visited in a run.
+{
+  forgetAllProjectSourceRecords();
+  const recordIn = (root) => [{ ...record, path: `${root}/example.ts` }];
+  for (const root of ['/a', '/b', '/c', '/d']) setProjectSourceRecords(root, recordIn(root));
+  assert.deepEqual(projectSourceRecords('/a'), [], 'the fourth project drops the oldest index');
+  assert.deepEqual(projectSourceRecords('/d'), recordIn('/d'), 'the newest project is kept');
+  assert.deepEqual(projectSourceRecords('/b'), recordIn('/b'));
+
+  // Re-indexing a project makes it the most recent, so the next one past the
+  // cap evicts whatever has gone longest without a scan.
+  setProjectSourceRecords('/b', recordIn('/b'));
+  setProjectSourceRecords('/e', recordIn('/e'));
+  assert.deepEqual(projectSourceRecords('/c'), [], 'the least recently indexed project goes');
+  assert.deepEqual(projectSourceRecords('/b'), recordIn('/b'), 're-indexing keeps a project');
+  assert.deepEqual(projectSourceRecords('/d'), recordIn('/d'));
+  assert.deepEqual(projectSourceRecords('/e'), recordIn('/e'));
+  forgetAllProjectSourceRecords();
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const explorerService = fs.readFileSync(
   path.join(here, '..', 'src/lib/shell/explorer/explorerService.ts'),
