@@ -80,16 +80,13 @@
     top: 5px;
     right: 11px;
     z-index: 2;
-    display: flex;
+    display: none;
     gap: 3px;
-    opacity: 0;
-    pointer-events: none;
   }
 
   .row-visual:hover .row-actions,
   .row-visual:focus-within .row-actions {
-    opacity: 1;
-    pointer-events: auto;
+    display: flex;
   }
 
   :global(.line-title) {
@@ -98,8 +95,7 @@
 
   .row-visual:hover :global(.age),
   .row-visual:focus-within :global(.age) {
-    opacity: 0;
-    pointer-events: none;
+    display: none;
   }
 
   .row-actions button {
