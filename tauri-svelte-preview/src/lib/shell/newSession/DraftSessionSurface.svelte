@@ -59,6 +59,11 @@
     type ProjectGitRef
   } from '$lib/shell/newSession/newSessionBackend.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
+  import {
+    readAgentWorkboxEnvironmentFromTauri,
+    type AgentWorkboxEnvironment,
+    type ExecutionEnvironment
+  } from '$lib/tauriSource.ts';
 
   interface Props {
     /** Folders the sessions on the rail are running in, so the project picker
@@ -95,6 +100,7 @@
   let submitting = $state(false);
   let submitError = $state('');
   let loadSequence = 0;
+  let workbox = $state<AgentWorkboxEnvironment>({ configured: false, defaultCwd: null });
 
   const roots = $derived(knownRoots());
   const modelGroups = $derived(groupProviderModels(providerConfigs));
@@ -158,6 +164,35 @@
     void loadRefs(path);
   }
 
+  function selectEnvironment(environment: ExecutionEnvironment): void {
+    if (environment === draft.executionEnvironment) return;
+    if (environment === 'agent-workbox') {
+      const cwd = workbox.defaultCwd?.trim();
+      if (!workbox.configured || !cwd) return;
+      loadSequence += 1;
+      gitRefs = [];
+      refsLoading = false;
+      refsMessage = null;
+      updateDraft({
+        executionEnvironment: environment,
+        projectPath: cwd,
+        cwd,
+        branch: '',
+        branchesAvailable: false
+      });
+      return;
+    }
+    const projectPath = preferredRoot(presetProjectPath);
+    updateDraft({
+      executionEnvironment: environment,
+      projectPath,
+      cwd: projectPath,
+      branch: '',
+      branchesAvailable: false
+    });
+    if (projectPath) void loadRefs(projectPath);
+  }
+
   async function addProject(): Promise<void> {
     const answer = await pickProjectFolder();
     if (answer.status !== 'ok') {
@@ -204,7 +239,7 @@
     submitting = true;
     submitError = '';
     try {
-      if (!draft.branchesAvailable) {
+      if (draft.executionEnvironment === 'local' && !draft.branchesAvailable) {
         const made = await initProjectRepository(draft.projectPath);
         if (made.status !== 'ok') {
           submitError = made.message;
@@ -235,6 +270,11 @@
       if (projectPath) void loadRefs(projectPath);
       composer?.focus();
     });
+    void readAgentWorkboxEnvironmentFromTauri()
+      .then((environment) => {
+        if (active) workbox = environment;
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
       loadSequence += 1;
@@ -243,6 +283,36 @@
 </script>
 
 {#snippet draftControls()}
+  <DropdownMenu.Root>
+    <DropdownMenu.Trigger>
+      {#snippet child({ props })}
+        <Button {...props} data-testid="draft-session-environment" variant="ghost" size="xs" class="draft-control">
+          {draft.executionEnvironment === 'agent-workbox' ? 'Agent Workbox' : 'This Mac'}
+          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
+        </Button>
+      {/snippet}
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Content side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
+      <DropdownMenu.Label>Where this session runs</DropdownMenu.Label>
+      <DropdownMenu.Item onSelect={() => selectEnvironment('local')}>
+        <span class="draft-check">
+          {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="size-3.5" />{/if}
+        </span>
+        This Mac
+      </DropdownMenu.Item>
+      <DropdownMenu.Item
+        disabled={!workbox.configured || !workbox.defaultCwd}
+        title={workbox.configured ? workbox.defaultCwd ?? undefined : 'Configure the Agent Workbox connection first'}
+        onSelect={() => selectEnvironment('agent-workbox')}
+      >
+        <span class="draft-check">
+          {#if draft.executionEnvironment === 'agent-workbox'}<Check aria-hidden="true" class="size-3.5" />{/if}
+        </span>
+        Agent Workbox
+      </DropdownMenu.Item>
+    </DropdownMenu.Content>
+  </DropdownMenu.Root>
+
   <DropdownMenu.Root>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
@@ -271,7 +341,7 @@
   <DropdownMenu.Root>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
-        <Button {...props} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
+        <Button {...props} disabled={draft.executionEnvironment === 'agent-workbox'} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
           {projectName || 'Choose a project'}
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
         </Button>
@@ -315,7 +385,7 @@
   <DropdownMenu.Root onOpenChange={(open) => { if (!open) refSearch = ''; }}>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
-        <Button {...props} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
+        <Button {...props} disabled={draft.executionEnvironment === 'agent-workbox'} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
           <GitBranch aria-hidden="true" class="size-3.5" />
           <span class="truncate">{(selectedRef?.name ?? draft.branch) || 'Choose a branch'}</span>
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />

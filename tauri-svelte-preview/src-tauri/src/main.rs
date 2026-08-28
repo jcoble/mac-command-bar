@@ -6441,6 +6441,13 @@ fn install_panic_hook() {
 
 fn main() {
     install_panic_hook();
+    if std::env::args().any(|argument| argument == "--assembly-server") {
+        if let Err(error) = agent_conversation::remote::run_server_from_environment() {
+            crate::debug_log::stderr_log!("Assembly workbox server failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     tauri::Builder::default()
         .manage(SourceScanRegistry::default())
         .manage(SourceFileReadOwner::default())
@@ -6495,6 +6502,11 @@ fn main() {
                 .state::<projection_streams::ProjectionStreams>()
                 .inner()
                 .clone();
+            let remote_projection_streams = projection_streams.clone();
+            let remote_connection =
+                agent_conversation::remote::RemoteConnectionManager::from_environment(Arc::new(
+                    move |event| remote_projection_streams.publish_agent_event(event),
+                ))?;
             agent_runtime.set_emitter(Arc::new(move |event| {
                 projection_streams.publish_agent_event(event);
             }));
@@ -6520,6 +6532,7 @@ fn main() {
                 );
             }));
             app.manage(workflow_engine);
+            app.manage(remote_connection);
             app.manage(agent_runtime);
             // Every time a language server starts, finishes reading a project, or stops,
             // tell the editor straight away. Without this the editor would have to ask
@@ -6658,6 +6671,7 @@ fn main() {
             approve_workflow_gate,
             submit_workflow_result,
             agent_conversation::ensure_agent_conversation,
+            agent_conversation::remote::read_agent_workbox_environment,
             agent_conversation::send_agent_conversation_message,
             agent_conversation::agent_conversation_set_session_draft,
             agent_conversation::agent_conversation_get_session_draft,

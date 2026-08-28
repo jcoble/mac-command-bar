@@ -236,14 +236,14 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
 }
 
 export function createFreshSession(
-  opts: { cwd: string; title?: string },
+  opts: { cwd: string; title?: string; executionEnvironment?: ExecutionEnvironment },
   mintId: () => string = defaultMintId
 ): OwnedSession {
   const segments = opts.cwd.split('/').filter((segment) => segment.length > 0);
   const defaultTitle = segments.length > 0 ? segments[segments.length - 1] : opts.cwd;
   return {
     ownedId: mintId(),
-    executionEnvironment: 'local',
+    executionEnvironment: opts.executionEnvironment ?? 'local',
     agent: 'other',
     origin: 'external',
     viaCmux: false,

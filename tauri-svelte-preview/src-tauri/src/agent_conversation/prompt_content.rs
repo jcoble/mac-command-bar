@@ -5,12 +5,12 @@
 //! so the raw bytes that arrive from the window are encoded here once, on the
 //! way into the provider prompt.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::providers::{AgentPrompt, AgentPromptImage};
 
 /// One block of an outgoing prompt, in the shape the window sends.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AgentPromptContentBlock {
     Text {

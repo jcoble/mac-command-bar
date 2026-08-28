@@ -274,6 +274,7 @@
 	const controlledRoot = $derived(
 		controlledSession?.cwd.trim() || controlledSession?.projectPath?.trim() || "",
 	);
+	const controlledRootRemote = $derived(controlledSession?.executionEnvironment === "agent-workbox");
 	const controlledCheckoutScope = $derived<CheckoutScope>({
 		durableSessionRoot: controlledRoot,
 		filesInspectionRoot: null,
@@ -342,6 +343,7 @@
 	let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
 	let disposed = false;
 	let activeRootAvailable = $state(true);
+	let activeRootRemote = $state(false);
 	let frameControls: {
 		resetLayout(): void;
 		showCenterPanel(id: string): void;
@@ -1107,6 +1109,7 @@
 
 			updateOwnedSession(ownedId, { cwd: record.cwd, runtimeState: record.state });
 			activeRootAvailable = true;
+			activeRootRemote = false;
 			setUnavailableOpenFileRoot(null);
 			activeWorkspaceSnapshot = null;
 			shellPanels.sessionPicked(true);
@@ -1324,7 +1327,9 @@
 		}
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
 		let selectedRootAvailable = true;
-		if (selected && shellPanels.loadsAllowed()) {
+		const selectedRootRemote = selected?.executionEnvironment === "agent-workbox";
+		if (selectedRootRemote) selectedRootAvailable = false;
+		else if (selected && shellPanels.loadsAllowed()) {
 			const root = selected.cwd.trim() || (selected.projectPath ?? "").trim();
 			if (root) {
 				countInvoke("validate_project_root");
@@ -1408,7 +1413,8 @@
 			});
 		}
 		activeRootAvailable = selectedRootAvailable;
-		setUnavailableOpenFileRoot(activeRootAvailable ? null : selectedRoot);
+		activeRootRemote = selectedRootRemote;
+		setUnavailableOpenFileRoot(activeRootAvailable || activeRootRemote ? null : selectedRoot);
 		let structuredHydration: Promise<void> | null = null;
 		if (selected && provider) {
 			ensureConversationSession(ownedId, provider);
@@ -1429,7 +1435,7 @@
 				}
 			}
 		}
-		if (!activeRootAvailable) {
+		if (!activeRootAvailable && !activeRootRemote) {
 			await handleActiveRootUnavailable(selectedRoot, true);
 			if (!selectionIsCurrent()) return;
 		}
@@ -1678,7 +1684,11 @@
 		});
 		if (disposed) throw new Error("the shell is closing");
 		const owned = {
-			...createFreshSession({ cwd: request.cwd, title: request.title }),
+			...createFreshSession({
+				cwd: request.cwd,
+				title: request.title,
+				executionEnvironment: request.executionEnvironment,
+			}),
 			agent: request.provider,
 			projectPath: request.projectPath,
 			branch: request.branch,
@@ -2156,12 +2166,14 @@
 				if (!disposed && rail.activeOwnedId !== null) {
 					const selected = rail.owned.find((session) => session.ownedId === rail.activeOwnedId);
 					const root = selected ? selected.cwd.trim() || (selected.projectPath ?? "").trim() : "";
-					if (root) {
+					activeRootRemote = selected?.executionEnvironment === "agent-workbox";
+					if (activeRootRemote) activeRootAvailable = false;
+					else if (root) {
 						countInvoke("validate_project_root");
 						const validation = await validateProjectRootFromTauri(root);
 						activeRootAvailable = validation === null || (validation.exists && validation.isDirectory);
 					}
-					if (!activeRootAvailable && root) await handleActiveRootUnavailable(root, true);
+					if (!activeRootAvailable && !activeRootRemote && root) await handleActiveRootUnavailable(root, true);
 					else {
 						setUnavailableOpenFileRoot(null);
 						shellPanels.sessionPicked(true);
@@ -2252,7 +2264,9 @@
 				: false}
 			checkoutScope={controlledSelectionOwnedId === null ? checkoutScope : controlledCheckoutScope}
 			ownedId={controlledSelectionOwnedId === null ? sessionProjection.activeOwnedId : null}
-			filesRoot={filesProjectionRoot}
+			filesRoot={(controlledSelectionOwnedId === null ? activeRootRemote : controlledRootRemote)
+				? ""
+				: filesProjectionRoot}
 			filesOwnedId={filesProjectionOwnedId}
 			onRootUnavailable={sessionSelectionLayers.hasTreeProjection ? undefined : handleActiveRootUnavailable}
 				expandedPathsByRoot={sessionSelectionLayers.hasTreeProjection

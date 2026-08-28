@@ -37,7 +37,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
-tokio = { version = "1", features = ["io-util", "net", "process", "sync"] }
+tokio = { version = "1", features = ["io-util", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = "0.29"
 # The file-system plugin's `remove` deletes for good. Deleting from the Files
 # panel has to be recoverable, so `move_to_trash` hands the path to the Finder's
 # Trash through this crate instead.

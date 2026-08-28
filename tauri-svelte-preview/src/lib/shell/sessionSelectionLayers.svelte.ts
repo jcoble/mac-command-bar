@@ -43,6 +43,13 @@ export class SessionSelectionLayers {
     session: OwnedSession,
     generation = this.selectionGeneration
   ): Promise<void> {
+    if (session.executionEnvironment === 'agent-workbox') {
+      this.treeOwnedId = session.ownedId;
+      this.treeRoot = '';
+      this.hasTreeProjection = true;
+      activateExplorer(null, true);
+      return;
+    }
     const root = session.cwd.trim() || (session.projectPath ?? '').trim();
     this.hasTreeProjection = true;
 
