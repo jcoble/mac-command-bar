@@ -290,7 +290,27 @@ fn process_snapshot(pid: u32) -> Option<ProcessSnapshot> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn process_snapshot(pid: u32) -> Option<ProcessSnapshot> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields = stat
+        .rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    Some(ProcessSnapshot {
+        identity: InstanceIdentity {
+            pid,
+            // Linux exposes this as clock ticks since boot. It is an opaque,
+            // stable process-birth marker here; no wall-clock conversion is needed.
+            start_time_micros: fields.get(19)?.parse().ok()?,
+        },
+        parent_pid: fields.get(1)?.parse().ok()?,
+        process_group_id: fields.get(2)?.parse().ok()?,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn process_snapshot(_pid: u32) -> Option<ProcessSnapshot> {
     None
 }
