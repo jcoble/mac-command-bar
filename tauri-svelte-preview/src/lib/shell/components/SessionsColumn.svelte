@@ -55,6 +55,11 @@
     onNewSession(): void;
     onCollapse(collapsed: boolean): void;
     onSelectSession?(ownedId: string): void | Promise<void>;
+    onComplete?(ownedId: string): void;
+    onReopen?(ownedId: string): void;
+    onSettle?(ownedId: string): void;
+    onUnsettle?(ownedId: string): void;
+    onAskRemove?(ownedId: string): void;
   }
 
   let {
@@ -63,7 +68,12 @@
     collapsed,
     onNewSession,
     onCollapse,
-    onSelectSession
+    onSelectSession,
+    onComplete,
+    onReopen,
+    onSettle,
+    onUnsettle,
+    onAskRemove
   }: Props = $props();
 
   const cells = $derived(stripCells(owned, activeOwnedId));
@@ -353,7 +363,13 @@
         <SessionRail
           sessions={filtered}
           options={viewOptions}
+          {activeOwnedId}
           {onSelectSession}
+          {onComplete}
+          {onReopen}
+          {onSettle}
+          {onUnsettle}
+          {onAskRemove}
         />
       </div>
     </div>

@@ -8,8 +8,10 @@
    * from the view options, which is also how a person groups by project instead.
    */
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import { onDestroy } from 'svelte';
 
   import type { OwnedSession } from '$lib/shell/ownedSessions';
+  import { deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
   import { buildMyWorkGroups, type MyWorkViewOptions } from './myWorkViewOptions.ts';
   import {
     railElapsedCadenceFor,
@@ -17,19 +19,86 @@
     type RailElapsedCadence
   } from './railElapsedTicker.ts';
   import WorktreeAgentRow from './WorktreeAgentRow.svelte';
+  import SessionRowContextMenu from './SessionRowContextMenu.svelte';
+  import SessionRowFlyout from './SessionRowFlyout.svelte';
+  import { sessionRowJump, type SessionRowSurface } from './sessionRowJump.ts';
+  import {
+    sessionRowMenuItems,
+    type SessionRowMenuAction
+  } from './sessionRowMenu.ts';
 
   interface Props {
     sessions: OwnedSession[];
     options: MyWorkViewOptions;
+    activeOwnedId?: string | null;
     onSelectSession?(ownedId: string): void | Promise<void>;
+    onComplete?(ownedId: string): void;
+    onReopen?(ownedId: string): void;
+    onSettle?(ownedId: string): void;
+    onUnsettle?(ownedId: string): void;
+    onAskRemove?(ownedId: string): void;
   }
 
-  let { sessions, options, onSelectSession }: Props = $props();
+  let {
+    sessions,
+    options,
+    activeOwnedId = null,
+    onSelectSession,
+    onComplete,
+    onReopen,
+    onSettle,
+    onUnsettle,
+    onAskRemove
+  }: Props = $props();
 
   const groups = $derived(buildMyWorkGroups(sessions, options));
   let collapsedGroups = $state<Record<string, boolean>>({});
   let visualActiveOwnedId = $state<string | null>(null);
   let nowMs = $state(Date.now());
+  let flyout = $state<{ session: OwnedSession; top: number; left: number } | null>(null);
+  let flyoutTimer: ReturnType<typeof setTimeout> | null = null;
+  let contextMenu = $state<{ session: OwnedSession; x: number; y: number } | null>(null);
+  const contextMenuItems = $derived(contextMenu
+    ? sessionRowMenuItems({
+        status: deriveOwnedLibraryState(contextMenu.session),
+        sessionId: contextMenu.session.nativeSessionId || contextMenu.session.ownedId,
+        worktreePath: contextMenu.session.cwd || contextMenu.session.projectPath || null
+      })
+    : []);
+
+  $effect(() => {
+    if (activeOwnedId !== null) visualActiveOwnedId = activeOwnedId;
+  });
+
+  function clearFlyoutTimer(): void {
+    if (flyoutTimer === null) return;
+    clearTimeout(flyoutTimer);
+    flyoutTimer = null;
+  }
+
+  function showFlyout(session: OwnedSession, element: HTMLElement): void {
+    clearFlyoutTimer();
+    flyoutTimer = setTimeout(() => {
+      flyoutTimer = null;
+      const rect = element.getBoundingClientRect();
+      const width = 320;
+      const height = 180;
+      flyout = {
+        session,
+        top: Math.max(8, Math.min(rect.top, window.innerHeight - height - 8)),
+        left: rect.right + width + 8 <= window.innerWidth
+          ? rect.right + 8
+          : Math.max(8, rect.left - width - 8)
+      };
+    }, 180);
+  }
+
+  function hideFlyout(): void {
+    clearFlyoutTimer();
+    flyout = null;
+  }
+
+  onDestroy(clearFlyoutTimer);
 
   function sessionStartedAtMs(session: OwnedSession): number | null {
     if (session.startedAtMs !== null && session.startedAtMs !== undefined) {
@@ -84,6 +153,38 @@
     visualActiveOwnedId = ownedId;
     await onSelectSession?.(ownedId);
   }
+
+  async function jumpTo(session: OwnedSession, surface: SessionRowSurface): Promise<void> {
+    visualActiveOwnedId = session.ownedId;
+    if (!await sessionRowJump(session.ownedId, surface)) await onSelectSession?.(session.ownedId);
+  }
+
+  function openContextMenu(event: MouseEvent, session: OwnedSession): void {
+    event.preventDefault();
+    event.stopPropagation();
+    hideFlyout();
+    contextMenu = { session, x: event.clientX, y: event.clientY };
+  }
+
+  function copyText(value: string | null): void {
+    if (!value || !navigator.clipboard?.writeText) return;
+    void navigator.clipboard.writeText(value);
+  }
+
+  function runContextAction(action: SessionRowMenuAction): void {
+    const session = contextMenu?.session;
+    contextMenu = null;
+    if (!session) return;
+    if (action === 'mark-done') onComplete?.(session.ownedId);
+    else if (action === 'reopen') onReopen?.(session.ownedId);
+    else if (action === 'archive') onSettle?.(session.ownedId);
+    else if (action === 'unsettle') onUnsettle?.(session.ownedId);
+    else if (action === 'copy-session-id') copyText(session.nativeSessionId || session.ownedId);
+    else if (action === 'copy-worktree-path') copyText(session.cwd || session.projectPath || null);
+    else if (action === 'open-in-editor') void jumpTo(session, 'editor');
+    else if (action === 'open-source-control') void jumpTo(session, 'source-control');
+    else if (action === 'delete') onAskRemove?.(session.ownedId);
+  }
 </script>
 
 <div data-testid="session-rail" class="session-scroll">
@@ -123,6 +224,12 @@
               {nowMs}
               active={session.ownedId === visualActiveOwnedId}
               onSelect={() => void selectRow(session.ownedId)}
+              onOpenSession={() => void jumpTo(session, 'session')}
+              onOpenEditor={() => void jumpTo(session, 'editor')}
+              onOpenSourceControl={() => void jumpTo(session, 'source-control')}
+              onHoverStart={(element) => showFlyout(session, element)}
+              onHoverEnd={hideFlyout}
+              onContextMenu={(event) => openContextMenu(event, session)}
             />
           {/each}
         </ul>
@@ -136,6 +243,20 @@
 
   <div class="scroll-spacer" aria-hidden="true"></div>
 </div>
+
+{#if flyout}
+  <SessionRowFlyout session={flyout.session} top={flyout.top} left={flyout.left} />
+{/if}
+
+{#if contextMenu}
+  <SessionRowContextMenu
+    x={contextMenu.x}
+    y={contextMenu.y}
+    items={contextMenuItems}
+    onSelect={runContextAction}
+    onClose={() => { contextMenu = null; }}
+  />
+{/if}
 
 <style>
   /* One scroll area for the whole list, with the scrollbar in its own gutter so

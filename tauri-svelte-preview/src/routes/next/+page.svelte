@@ -1997,6 +1997,13 @@
 		if (rail.activeOwnedId === ownedId) activeWorkspaceSnapshot = null;
 	}
 
+	function askRemoveSession(ownedId: string): void {
+		const session = rail.owned.find((entry) => entry.ownedId === ownedId);
+		const label = session?.title || ownedId;
+		if (!window.confirm(`Remove "${label}" from this list? The provider transcript will stay on disk.`)) return;
+		void removeSession(ownedId);
+	}
+
 	onMount(() => {
 		const disposers: Array<() => void> = [
 			releaseShellCommands,
@@ -2233,6 +2240,11 @@
 				onCollapse={collapseSessions}
 				onNewSession={openNewSession}
 				onSelectSession={selectSessionLayers}
+				onComplete={completeOwned}
+				onReopen={reopenOwned}
+				onSettle={settleOwnedSession}
+				onUnsettle={unsettleOwnedSession}
+				onAskRemove={askRemoveSession}
 			/>
 		</div>
 	</div>

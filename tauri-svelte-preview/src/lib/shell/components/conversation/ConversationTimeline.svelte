@@ -132,10 +132,10 @@
    * These are only estimates for rows not yet measured; `measureElement`
    * replaces each with its real height the first time it paints.
    */
-  const ROW_CHARS_PER_LINE = 90;
+  const ROW_CHARS_PER_LINE = 72;
   const ROW_LINE_HEIGHT = 20;
-  const ROW_CHROME = 12;
-  const ROW_MIN_HEIGHT = 4;
+  const ROW_CHROME = 32;
+  const ROW_MIN_HEIGHT = 44;
 
   function rowHeightEstimate(group: ConversationTurnGroup): number {
     let characters = 0;

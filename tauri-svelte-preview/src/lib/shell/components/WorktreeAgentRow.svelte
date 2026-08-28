@@ -29,10 +29,27 @@
     nowMs: number;
     active?: boolean;
     onSelect?(): void;
+    onOpenSession?(): void;
+    onOpenEditor?(): void;
+    onOpenSourceControl?(): void;
+    onHoverStart?(element: HTMLElement): void;
+    onHoverEnd?(): void;
+    onContextMenu?(event: MouseEvent): void;
   }
 
   type RowPresence = 'working' | 'attention' | 'idle' | 'done' | 'failed';
-  let { session, nowMs, active = false, onSelect }: Props = $props();
+  let {
+    session,
+    nowMs,
+    active = false,
+    onSelect,
+    onOpenSession,
+    onOpenEditor,
+    onOpenSourceControl,
+    onHoverStart,
+    onHoverEnd,
+    onContextMenu
+  }: Props = $props();
 
   const label = $derived(sessionLabel(session));
   const shelf = $derived(deriveOwnedLibraryState(session));
@@ -118,8 +135,17 @@
   data-shelf={shelf}
   class:needs-you-row={needsYou}
   class="row"
+  onmouseenter={(event) => onHoverStart?.(event.currentTarget)}
+  onmouseleave={onHoverEnd}
+  oncontextmenu={onContextMenu}
 >
-        <SessionRowVisual {active} {onSelect}>
+        <SessionRowVisual
+          {active}
+          {onSelect}
+          {onOpenSession}
+          {onOpenEditor}
+          {onOpenSourceControl}
+        >
           <!-- The mark, at the height of the three lines beside it. It carries
                the provider and whether this session is working, and nothing
                else: no action is ever drawn on top of it. -->

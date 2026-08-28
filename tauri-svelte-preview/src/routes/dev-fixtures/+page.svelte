@@ -127,6 +127,8 @@
     <SessionRail
       sessions={fixtureOwnedSessions}
       options={DEFAULT_MY_WORK_VIEW_OPTIONS}
+      activeOwnedId={activeSessionId}
+      onSelectSession={selectSession}
     />
   </nav>
 

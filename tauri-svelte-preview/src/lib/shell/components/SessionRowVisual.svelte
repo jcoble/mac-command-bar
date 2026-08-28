@@ -7,10 +7,25 @@
   interface Props {
     active?: boolean;
     onSelect?(): void;
+    onOpenSession?(): void;
+    onOpenEditor?(): void;
+    onOpenSourceControl?(): void;
     children: Snippet;
   }
 
-  let { active = false, onSelect, children }: Props = $props();
+  let {
+    active = false,
+    onSelect,
+    onOpenSession,
+    onOpenEditor,
+    onOpenSourceControl,
+    children
+  }: Props = $props();
+
+  function runShortcut(event: MouseEvent, action: (() => void) | undefined): void {
+    event.stopPropagation();
+    action?.();
+  }
 </script>
 
 <div class="row-visual">
@@ -26,13 +41,13 @@
   </button>
 
   <span class="row-actions" aria-label="Session shortcuts">
-    <button type="button" aria-label="Open session">
+    <button type="button" aria-label="Open session" onclick={(event) => runShortcut(event, onOpenSession)}>
       <MessageCircle aria-hidden="true" />
     </button>
-    <button type="button" aria-label="Open editor">
+    <button type="button" aria-label="Open editor" onclick={(event) => runShortcut(event, onOpenEditor)}>
       <FileCode2 aria-hidden="true" />
     </button>
-    <button type="button" aria-label="Open source control">
+    <button type="button" aria-label="Open source control" onclick={(event) => runShortcut(event, onOpenSourceControl)}>
       <GitBranch aria-hidden="true" />
     </button>
   </span>
