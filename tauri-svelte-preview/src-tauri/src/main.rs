@@ -527,26 +527,28 @@ struct SourceScanRegistry {
 
 impl SourceScanRegistry {
     fn register(&self, scan_id: &str) -> Arc<AtomicBool> {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        self.scans
+        let mut scans = self
+            .scans
             .lock()
-            .expect("source scan registry lock poisoned")
-            .insert(scan_id.to_string(), Arc::clone(&cancelled));
-        cancelled
+            .expect("source scan registry lock poisoned");
+        Arc::clone(
+            scans
+                .entry(scan_id.to_string())
+                .or_insert_with(|| Arc::new(AtomicBool::new(false))),
+        )
     }
 
     fn cancel(&self, scan_id: &str) -> bool {
-        let Some(cancelled) = self
+        let mut scans = self
             .scans
             .lock()
-            .expect("source scan registry lock poisoned")
-            .get(scan_id)
-            .cloned()
-        else {
-            return false;
-        };
+            .expect("source scan registry lock poisoned");
+        let was_registered = scans.contains_key(scan_id);
+        let cancelled = scans
+            .entry(scan_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)));
         cancelled.store(true, Ordering::Relaxed);
-        true
+        was_registered
     }
 
     fn unregister(&self, scan_id: &str) {
@@ -734,20 +736,33 @@ async fn list_source_files(
 #[tauri::command]
 async fn list_source_directory(
     app: tauri::AppHandle,
+    scan_registry: tauri::State<'_, SourceScanRegistry>,
     root: String,
     directory: String,
     include_excluded: Option<bool>,
+    scan_id: Option<String>,
 ) -> Result<Vec<SourceDirectoryEntry>, String> {
+    let _read = resources::begin_source_directory_read();
     allow_workspace_root_in_fs_scope(&app, &root);
-    tauri::async_runtime::spawn_blocking(move || {
-        list_source_directory_sync(
+    let cancellation =
+        source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
+    let scan_id_for_cleanup = scan_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        list_source_directory_sync_with_cancellation(
             PathBuf::from(root),
             PathBuf::from(directory),
             include_excluded.unwrap_or(false),
+            cancellation,
         )
     })
     .await
-    .map_err(|error| format!("Source directory task failed: {error}"))?
+    .map_err(|error| format!("Source directory task failed: {error}"))?;
+
+    if let Some(scan_id) = &scan_id_for_cleanup {
+        scan_registry.unregister(scan_id);
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -2312,13 +2327,16 @@ fn list_source_files_sync_with_cancellation(
     })
 }
 
-fn list_source_directory_sync(
+fn list_source_directory_sync_with_cancellation(
     root: PathBuf,
     directory: PathBuf,
     include_excluded: bool,
+    cancellation: SourceScanCancellation,
 ) -> Result<Vec<SourceDirectoryEntry>, String> {
+    cancellation.ensure_active()?;
     let canonical_root = std::fs::canonicalize(&root)
         .map_err(|error| format!("Could not read source root metadata: {error}"))?;
+    cancellation.ensure_active()?;
     let canonical_directory = std::fs::canonicalize(&directory)
         .map_err(|error| format!("Could not read source directory metadata: {error}"))?;
     if !canonical_directory.starts_with(&canonical_root) {
@@ -2328,28 +2346,33 @@ fn list_source_directory_sync(
         return Err("Source path is not a directory".to_string());
     }
 
-    let mut entries = std::fs::read_dir(&directory)
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&directory)
         .map_err(|error| format!("Could not read source directory: {error}"))?
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let file_type = entry.file_type().ok()?;
+    {
+        cancellation.ensure_active()?;
+        if let Ok(entry) = entry {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             if file_type.is_symlink() {
-                return None;
+                continue;
             }
             let name = entry.file_name().to_string_lossy().to_string();
             let is_directory = file_type.is_dir();
             let excluded = is_directory && skip_dir_reason(&name).is_some();
             if (excluded && !include_excluded) || (!is_directory && !file_type.is_file()) {
-                return None;
+                continue;
             }
-            Some(SourceDirectoryEntry {
+            entries.push(SourceDirectoryEntry {
                 path: entry.path().display().to_string(),
                 name,
                 is_directory,
                 excluded,
-            })
-        })
-        .collect::<Vec<_>>();
+            });
+        }
+    }
+    cancellation.ensure_active()?;
     entries.sort_by(|left, right| {
         right
             .is_directory
@@ -6441,7 +6464,7 @@ fn install_panic_hook() {
 
 fn main() {
     install_panic_hook();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(SourceScanRegistry::default())
         .manage(SourceFileReadOwner::default())
         .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
@@ -6455,7 +6478,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(debug_assertions)]
+    let builder = builder.plugin(tauri_plugin_devtools::init());
+
+    builder
         .setup(|app| {
             let app_data_dir = app
                 .path()

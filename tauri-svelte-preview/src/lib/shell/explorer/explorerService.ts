@@ -6,6 +6,7 @@
  * project scan or cross-project explorer cache in this path.
  */
 import {
+  cancelSourceScanFromTauri,
   isNativeTauriRuntime,
   listSourceDirectoryFromTauri
 } from '../../tauriSource.ts';
@@ -32,13 +33,21 @@ export const SCANNER_UNAVAILABLE_MESSAGE =
   'The file browser is not available here. Open this window in the CommandBar app to browse project files.';
 
 let nextRequestId = 0;
-const directoryRequests = new Map<string, number>();
+const directoryRequests = new Map<string, string>();
+
+function cancelDirectoryRequests(atOrBelow?: string): void {
+  for (const [path, scanId] of directoryRequests) {
+    if (atOrBelow && !isExplorerPathAtOrBelow(path, atOrBelow)) continue;
+    directoryRequests.delete(path);
+    void cancelSourceScanFromTauri(scanId);
+  }
+}
 
 function isCurrentDirectoryRequest(
   directory: string,
   root: string,
   generation: number,
-  requestId: number
+  requestId: string
 ): boolean {
   return directoryRequests.get(directory) === requestId &&
     explorerScanGeneration() === generation &&
@@ -62,13 +71,20 @@ export async function loadDirectory(directory: string, depth: number): Promise<b
   const target = canonicalPath(directory);
   if (!root || !target) return false;
   const generation = explorerScanGeneration();
-  const requestId = ++nextRequestId;
+  const previousRequestId = directoryRequests.get(target);
+  if (previousRequestId) void cancelSourceScanFromTauri(previousRequestId);
+  const requestId = `directory:${++nextRequestId}`;
   directoryRequests.set(target, requestId);
   setExplorerError(null);
 
   try {
     countInvoke(isNativeTauriRuntime() ? 'list_source_directory' : 'bridge:list-source-directory');
-    const entries = await listSourceDirectoryFromTauri(root, target, explorer.includeExcluded);
+    const entries = await listSourceDirectoryFromTauri(
+      root,
+      target,
+      explorer.includeExcluded,
+      requestId
+    );
     if (!isCurrentDirectoryRequest(target, root, generation, requestId)) return false;
     if (!entries) {
       if (target === root) failScan(SCANNER_UNAVAILABLE_MESSAGE);
@@ -121,16 +137,14 @@ export async function revealExplorerPath(path: string): Promise<string[]> {
 
 export function unloadDirectory(directory: string): void {
   const target = canonicalPath(directory);
-  for (const pendingPath of directoryRequests.keys()) {
-    if (isExplorerPathAtOrBelow(pendingPath, target)) directoryRequests.delete(pendingPath);
-  }
+  cancelDirectoryRequests(target);
   discardDirectory(target);
 }
 
 export async function scanRoot(root: string): Promise<void> {
   const target = canonicalPath(root);
   if (!target) return;
-  directoryRequests.clear();
+  cancelDirectoryRequests();
   resetExplorer();
   beginScan(target);
   const generation = explorerScanGeneration();
@@ -144,7 +158,7 @@ export async function scanRoot(root: string): Promise<void> {
 export function activate(root: string | null, checkoutDeleted = false): void {
   const target = canonicalPath(root ?? '');
   if (!target) {
-    directoryRequests.clear();
+    cancelDirectoryRequests();
     if (checkoutDeleted) markCheckoutDeleted();
     else resetExplorer();
     return;
@@ -173,6 +187,6 @@ export function refreshChangedPath(path: string): void {
 }
 
 export function stopScan(): void {
-  directoryRequests.clear();
+  cancelDirectoryRequests();
   endScan();
 }

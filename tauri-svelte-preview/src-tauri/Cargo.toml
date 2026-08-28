@@ -33,6 +33,7 @@ sysinfo = { version = "=0.38.4", default-features = false, features = ["system"]
 # quietly do nothing in the app people actually install.
 tauri = { version = "2", features = ["devtools", "protocol-asset", "test", "unstable"] }
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-devtools = "2.1.0"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"

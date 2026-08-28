@@ -27,6 +27,7 @@ export type ResourceSampleTotals = {
   physicalFootprintBytes: number;
   rssBytes: number;
   processCount: number;
+  activeSourceDirectoryReads: number;
 };
 
 export type ResourceDiagnostics = {

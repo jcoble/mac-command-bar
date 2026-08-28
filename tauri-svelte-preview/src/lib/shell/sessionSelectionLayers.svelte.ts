@@ -45,10 +45,11 @@ export class SessionSelectionLayers {
   ): Promise<void> {
     const root = session.cwd.trim() || (session.projectPath ?? '').trim();
     this.hasTreeProjection = true;
+    this.treeOwnedId = session.ownedId;
+    this.treeRoot = '';
+    activateExplorer(null);
 
     if (!root) {
-      this.treeOwnedId = session.ownedId;
-      this.treeRoot = '';
       activateExplorer(null, true);
       return;
     }
@@ -57,13 +58,10 @@ export class SessionSelectionLayers {
     const validation = await validateProjectRootFromTauri(root);
     if (generation !== this.selectionGeneration) return;
     if (validation && (!validation.exists || !validation.isDirectory)) {
-      this.treeOwnedId = session.ownedId;
-      this.treeRoot = '';
       activateExplorer(null, true);
       return;
     }
 
-    this.treeOwnedId = session.ownedId;
     this.treeRoot = root;
   }
 

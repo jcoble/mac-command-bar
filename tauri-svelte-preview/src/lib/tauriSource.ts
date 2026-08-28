@@ -615,7 +615,8 @@ export async function listSourceFilesFromTauri(
 export async function listSourceDirectoryFromTauri(
   root: string,
   directory: string,
-  includeExcluded = false
+  includeExcluded = false,
+  scanId: string | null = null
 ): Promise<SourceDirectoryEntry[] | null> {
   if (!isTauriRuntime()) {
     return postLocalSourceBridge<SourceDirectoryEntry[]>('list-directory', {
@@ -629,7 +630,8 @@ export async function listSourceDirectoryFromTauri(
   return invoke<SourceDirectoryEntry[]>('list_source_directory', {
     root,
     directory,
-    includeExcluded
+    includeExcluded,
+    scanId
   });
 }
 

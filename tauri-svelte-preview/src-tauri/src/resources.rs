@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessesToUpdate, System};
@@ -24,6 +24,21 @@ use crate::debug_log::stderr_log;
 /// How long a stopped process is given to exit on its own before the harder
 /// signal follows.
 const RESOURCE_STOP_GRACE_SECONDS: u64 = 5;
+
+static ACTIVE_SOURCE_DIRECTORY_READS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) struct SourceDirectoryReadGuard;
+
+impl Drop for SourceDirectoryReadGuard {
+    fn drop(&mut self) {
+        ACTIVE_SOURCE_DIRECTORY_READS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn begin_source_directory_read() -> SourceDirectoryReadGuard {
+    ACTIVE_SOURCE_DIRECTORY_READS.fetch_add(1, Ordering::Relaxed);
+    SourceDirectoryReadGuard
+}
 
 pub struct ResourceRegistry {
     generation: AtomicU64,
@@ -105,6 +120,7 @@ pub struct ResourceSampleTotals {
     /// Resident set size, kept separate from Activity Monitor's footprint.
     pub rss_bytes: u64,
     pub process_count: usize,
+    pub active_source_directory_reads: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -450,6 +466,7 @@ pub async fn read_resource_totals(
             physical_footprint_bytes: 0,
             rss_bytes: 0,
             process_count: 0,
+            active_source_directory_reads: ACTIVE_SOURCE_DIRECTORY_READS.load(Ordering::Relaxed),
         };
         let mut alive_process_ids = Vec::with_capacity(process_ids.len());
         for pid in process_ids {
@@ -1080,6 +1097,7 @@ fn build_resource_sample(
                 .sum(),
             rss_bytes: included.iter().map(|process| process.rss_bytes).sum(),
             process_count: included.len(),
+            active_source_directory_reads: ACTIVE_SOURCE_DIRECTORY_READS.load(Ordering::Relaxed),
         },
         diagnostics: ResourceDiagnostics::default(),
         app: ResourceSampleApp {

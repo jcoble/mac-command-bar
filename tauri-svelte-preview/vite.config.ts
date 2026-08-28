@@ -335,7 +335,7 @@ export default defineConfig({
       allow: [process.cwd(), realpathSync("node_modules")],
     },
     watch: {
-      ignored: ["**/.svelte-kit/generated/**"],
+      ignored: ["**/.svelte-kit/generated/**", "**/src-tauri/**"],
     },
   },
   clearScreen: false,

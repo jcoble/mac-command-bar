@@ -66,7 +66,8 @@
       `snap ${resourceDiagnostics.conversationSnapshotReadsInFlight}/${resourceDiagnostics.conversationSnapshotReadsInvalidated} stale`,
       `turns ${resourceDiagnostics.conversationRenderedRows}/${resourceDiagnostics.conversationVirtualRows} · cache ${resourceDiagnostics.conversationMeasuredElementCacheEntries}/${resourceDiagnostics.conversationMeasuredSizeCacheEntries}`,
       `CM ${resourceDiagnostics.codeMirrorEditorStates}/${formatResourceBytes(resourceDiagnostics.openTabDocumentBytes)}`,
-      `source ${resourceDiagnostics.editorSourceReadsInFlight}/${resourceDiagnostics.editorSourceReadsInvalidated} stale/${formatResourceBytes(resourceDiagnostics.editorSourceReadBytesInFlight)}`
+      `source ${resourceDiagnostics.editorSourceReadsInFlight}/${resourceDiagnostics.editorSourceReadsInvalidated} stale/${formatResourceBytes(resourceDiagnostics.editorSourceReadBytesInFlight)}`,
+      `dirs ${resourceSampleState.totals?.activeSourceDirectoryReads ?? 0}`
     ].join(' · ');
   });
 
