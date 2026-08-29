@@ -28,6 +28,12 @@
 		setIncludeExcluded,
 	} from "$lib/shell/explorer/explorerStore.svelte";
 	import { projectRootLabel } from "$lib/shell/explorer/explorerTree";
+	import {
+		FILE_TREE_OVERSCAN_ROWS,
+		FILE_TREE_ROW_HEIGHT,
+		visibleFileTreeNodes,
+		windowFileTreeNodes,
+	} from "./fileTreeModel.ts";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
 	import type { SourceTreeSearchMatch } from "$lib/sourceData";
 	import type { RepositoryCheckout } from "$lib/tauriSource";
@@ -39,7 +45,8 @@
 		searchSourceTreeFromTauri,
 		validateProjectRootFromTauri,
 	} from "$lib/tauriSource";
-	import { Tree, type LTreeNode } from "@keenmate/svelte-treeview";
+	import ChevronDown from "@lucide/svelte/icons/chevron-down";
+	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import ArrowDownAZ from "@lucide/svelte/icons/arrow-down-a-z";
 	import ArrowUpZA from "@lucide/svelte/icons/arrow-up-z-a";
 	import Eye from "@lucide/svelte/icons/eye";
@@ -113,6 +120,8 @@
 	let fileClipboard = $state.raw<FileClipboard | null>(null);
 	let contextMenu = $state.raw<FilesContextMenuState | null>(null);
 	let treeHost = $state<HTMLDivElement | null>(null);
+	let treeScroll = $state<HTMLDivElement | null>(null);
+	let treeScrollTop = $state(0);
 	let treeHeight = $state(400);
 	let virtualized = $state(true);
 	let searchText = $state("");
@@ -192,6 +201,19 @@
 		})),
 	);
 	const displayedTreeData = $derived(searching ? searchTreeData : treeData);
+	/** The rows an open tree actually shows, parents before their open children. */
+	const visibleRows = $derived(visibleFileTreeNodes(displayedTreeData, expanded, compareTreeNodes));
+	/** Only the slice inside the viewport, plus a spacer for everything above and below. */
+	const treeWindow = $derived(
+		windowFileTreeNodes(
+			visibleRows,
+			treeScrollTop,
+			treeHeight,
+			FILE_TREE_ROW_HEIGHT,
+			FILE_TREE_OVERSCAN_ROWS,
+		),
+	);
+	const renderedRows = $derived(virtualized ? treeWindow.nodes : visibleRows);
 
 	$effect(() => {
 		const treeRoot = projectRoot.replace(/\/+$/, "");
@@ -435,7 +457,7 @@
 		let active = true;
 		void tick().then(() => {
 			if (!active) return;
-			const viewport = host.querySelector<HTMLElement>(".ltree-virtual-scroll");
+			const viewport = treeScroll;
 			if (!viewport) return;
 			const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
 			if (viewport.scrollTop > maxScrollTop) viewport.scrollTop = maxScrollTop;
@@ -640,24 +662,14 @@
 		}
 	}
 
-	function compareTreeNodes(left: LTreeNode<TreeItem>, right: LTreeNode<TreeItem>): number {
-		const leftLevel = left.level ?? 0;
-		const rightLevel = right.level ?? 0;
-		if (leftLevel !== rightLevel) return leftLevel - rightLevel;
-		const parentOrder = String(left.parentPath ?? "").localeCompare(String(right.parentPath ?? ""));
-		if (parentOrder !== 0) return parentOrder;
-		const leftDirectory = left.data?.isDirectory ?? false;
-		const rightDirectory = right.data?.isDirectory ?? false;
-		if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
-		const nameOrder = (left.data?.name ?? "").localeCompare(right.data?.name ?? "", undefined, {
+	/** Siblings only: folders first, then name, in whichever direction the header asks for. */
+	function compareTreeNodes(left: TreeItem, right: TreeItem): number {
+		if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+		const nameOrder = left.name.localeCompare(right.name, undefined, {
 			numeric: true,
 			sensitivity: "base",
 		});
 		return sortDirection === "ascending" ? nameOrder : -nameOrder;
-	}
-
-	function sortTreeNodes(items: LTreeNode<TreeItem>[]): LTreeNode<TreeItem>[] {
-		return [...items].sort(compareTreeNodes);
 	}
 
 	function collapsePath(path: string): void {
@@ -666,9 +678,7 @@
 		persistExpandedPaths();
 	}
 
-	function onTreeNodeClicked(treeNode: LTreeNode<TreeItem>): void {
-		const node = treeNode.data;
-		if (!node) return;
+	function onTreeNodeClicked(node: TreeItem): void {
 		if (node.searchResult) {
 			void onSearchResultClicked(node);
 			return;
@@ -704,16 +714,6 @@
 			readOnly: readOnlyInspection,
 			pin: true,
 		});
-	}
-
-	function onTreeWrapperClick(event: MouseEvent): void {
-		const target = event.target;
-		if (!(target instanceof Element) || !target.closest(".ltree-toggle-icon")) return;
-		event.preventDefault();
-		event.stopPropagation();
-		const row = target.closest<HTMLElement>("[data-tree-path]");
-		const node = displayedTreeData.find((item) => item.treePath === row?.dataset.treePath);
-		if (node) onTreeNodeClicked({ data: node } as LTreeNode<TreeItem>);
 	}
 
 	function beginEntry(node: TreeItem, kind: PendingEntry["kind"]): void {
@@ -1088,82 +1088,56 @@
 		{/if}
 	{/if}
 
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		class="tree-host"
 		class:hidden={!treeVisible}
-		role="tree"
-		tabindex={treeVisible ? 0 : -1}
 		aria-hidden={!treeVisible}
-		aria-label="Project files"
 		bind:this={treeHost}
-		onclickcapture={onTreeWrapperClick}
 	>
-		{#key `${virtualized}:${scopedSessionKey}`}
-			<Tree
-				data={displayedTreeData}
-				treeId="project-files"
-				treePathSeparator="/"
-				idMember="path"
-				pathMember="treePath"
-				parentPathMember="treeParentPath"
-				hasChildrenMember="hasChildren"
-				isExpandedMember="expanded"
-				isSelectedMember="selected"
-				displayValueMember="name"
-				searchValueMember="relativePath"
-				searchText=""
-				sortCallback={sortTreeNodes}
-				shouldToggleOnNodeClick={false}
-				shouldUseInternalSearchIndex={false}
-				useFlatRendering={true}
-				progressiveRender={false}
-				virtualScroll={virtualized}
-				virtualRowHeight={28}
-				virtualOverscan={6}
-				virtualContainerHeight={`${treeHeight}px`}
-				bodyClass="mcb-tree-body"
-				expandLevel={0}
-				selectedNodeClass="mcb-tree-selected"
-				expandIconClass="mcb-tree-expand"
-				collapseIconClass="mcb-tree-collapse"
-				leafIconClass="mcb-tree-leaf"
-				onNodeClicked={onTreeNodeClicked}
-			>
-				{#snippet nodeTemplate(treeNode: LTreeNode<TreeItem>)}
-					{@const node = treeNode.data}
-					{#if node}
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<span
-							class="tree-row"
-							class:excluded={node.ignored}
-							title={node.path}
-							ondblclick={(event) => pinTreeNodeOpen(node, event)}
-							oncontextmenu={(event) => openContextMenu(node, event)}
-						>
-							<span class="tree-file-icon" aria-hidden="true">
-								{#if node.isDirectory}
-									{#if expanded.has(node.path)}
-										<FolderOpen size={14} strokeWidth={1.75} />
-									{:else}
-										<Folder size={14} strokeWidth={1.75} />
-									{/if}
-								{:else}
-									<FileIcon fileName={node.name} size={14} />
-								{/if}
-							</span>
+		<div
+			class="tree-scroll"
+			role="tree"
+			tabindex={treeVisible ? 0 : -1}
+			aria-label="Project files"
+			bind:this={treeScroll}
+			onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
+		>
+			{#if renderedRows.length === 0}
+				<p class="tree-empty">Nothing matches that search.</p>
+			{:else}
+				<!-- One canvas whose height never changes as you scroll, with each row
+				     transformed into place. Resizing spacer divs on every scroll instead
+				     rewrites the scroller's layout continuously, and WebKit reallocates
+				     the layer's tile backing each time without releasing the old grid. -->
+				<div class="tree-canvas" style={`height: ${virtualized ? treeWindow.totalHeight : renderedRows.length * FILE_TREE_ROW_HEIGHT}px`}>
+				<!-- Keyed by slot, not by path. Keying by path destroys and rebuilds every row
+				     on each session switch; each destroyed row's layer backing is never
+				     reclaimed, so the tile count ratchets. By slot, the same elements are
+				     reused and only their contents change. -->
+				{#each renderedRows as node, rowIndex (rowIndex)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<div
+						class="tree-node"
+						class:selected={node.path === explorer.selectedPath}
+						style={`padding-left: ${node.depth * 12}px; transform: translateY(${(virtualized ? treeWindow.topSpacerHeight : 0) + rowIndex * FILE_TREE_ROW_HEIGHT}px)`}
+						onclick={() => onTreeNodeClicked(node)}
+						ondblclick={(event) => pinTreeNodeOpen(node, event)}
+						oncontextmenu={(event) => openContextMenu(node, event)}
+					>
+						<span class="tree-toggle" aria-hidden="true">{#if node.isDirectory}{expanded.has(node.path) ? "\u2304" : "\u203A"}{/if}</span>
+						<span class="tree-row" class:excluded={node.ignored} title={node.path}>
+							<span class="tree-file-icon" aria-hidden="true"></span>
 							<span class="tree-name">{node.name}</span>
 							{#if fileClipboard?.path === node.path}
 								<span class="clipboard-mark">{fileClipboard.operation}</span>
 							{/if}
 						</span>
-					{/if}
-				{/snippet}
-				{#snippet noDataFound()}
-					<p class="tree-empty">Nothing matches that search.</p>
-				{/snippet}
-			</Tree>
-		{/key}
+					</div>
+				{/each}
+				</div>
+			{/if}
+		</div>
 	</div>
 	{#if treeVisible && searching && searchNextCursor !== null}
 		<div class="search-more">
@@ -1298,41 +1272,37 @@
 		background: var(--color-border);
 	}
 
-	:global(.files-panel .ltree-tree) {
-		position: relative;
-		font: inherit;
-		color: inherit;
-		overscroll-behavior: contain;
-		scrollbar-width: thin;
-		scrollbar-color: var(--scrollbar-thumb) transparent;
-	}
-	:global(.files-panel .ltree-container) {
+	.tree-scroll {
 		width: 100%;
 		height: 100%;
 		min-width: 0;
 		min-height: 0;
+		overflow-x: hidden;
+		overflow-y: auto;
+		scrollbar-width: thin;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
 	}
-	:global(.files-panel .mcb-tree-body) {
-		height: 100%;
-		min-height: 0;
-	}
-	:global(.files-panel .ltree-tree.ltree-virtual-scroll) {
-		height: 100% !important;
-		overflow-x: hidden !important;
-		overflow-y: auto !important;
-	}
-	:global(.files-panel .ltree-node) {
+	.tree-canvas {
 		position: relative;
-		height: 28px;
-		font: inherit;
+		width: 100%;
 	}
-	:global(.files-panel .ltree-node-row) {
+	.tree-node {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
 		display: flex;
 		height: 28px;
-		align-items: center;
 		min-width: 0;
+		align-items: center;
+		border-radius: 4px;
+		user-select: none;
+		cursor: pointer;
 	}
-	:global(.files-panel .ltree-toggle-icon) {
+	.tree-node.selected {
+		background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+	}
+	.tree-toggle {
 		display: flex;
 		width: 16px;
 		height: 28px;
@@ -1340,33 +1310,5 @@
 		align-items: center;
 		justify-content: center;
 		color: var(--color-text-3);
-		font-size: 13px;
-		cursor: pointer;
-	}
-	:global(.files-panel .mcb-tree-expand::before) {
-		content: "›";
-	}
-	:global(.files-panel .mcb-tree-collapse::before) {
-		content: "⌄";
-	}
-	:global(.files-panel .mcb-tree-leaf::before) {
-		content: "";
-	}
-	:global(.files-panel .ltree-node-content) {
-		display: flex;
-		height: 28px;
-		min-width: 0;
-		flex: 1;
-		align-items: center;
-		padding: 0 6px;
-		border-radius: 4px;
-		user-select: none;
-		cursor: pointer;
-	}
-	:global(.files-panel .ltree-node-content:hover) {
-		background: var(--color-surface-hover);
-	}
-	:global(.files-panel .ltree-node-content.mcb-tree-selected) {
-		background: color-mix(in srgb, var(--color-accent) 18%, transparent);
 	}
 </style>

@@ -8,7 +8,6 @@
    * from the view options, which is also how a person groups by project instead.
    */
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import { onDestroy } from 'svelte';
 
   import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { deriveOwnedLibraryState } from '$lib/shell/sessionLibrary/sessionLibraryModel';
@@ -20,7 +19,6 @@
   } from './railElapsedTicker.ts';
   import WorktreeAgentRow from './WorktreeAgentRow.svelte';
   import SessionRowContextMenu from './SessionRowContextMenu.svelte';
-  import SessionRowFlyout from './SessionRowFlyout.svelte';
   import { sessionRowJump, type SessionRowSurface } from './sessionRowJump.ts';
   import {
     sessionRowMenuItems,
@@ -55,8 +53,6 @@
   let collapsedGroups = $state<Record<string, boolean>>({});
   let visualActiveOwnedId = $state<string | null>(null);
   let nowMs = $state(Date.now());
-  let flyout = $state<{ session: OwnedSession; top: number; left: number } | null>(null);
-  let flyoutTimer: ReturnType<typeof setTimeout> | null = null;
   let contextMenu = $state<{ session: OwnedSession; x: number; y: number } | null>(null);
   const contextMenuItems = $derived(contextMenu
     ? sessionRowMenuItems({
@@ -69,36 +65,6 @@
   $effect(() => {
     if (activeOwnedId !== null) visualActiveOwnedId = activeOwnedId;
   });
-
-  function clearFlyoutTimer(): void {
-    if (flyoutTimer === null) return;
-    clearTimeout(flyoutTimer);
-    flyoutTimer = null;
-  }
-
-  function showFlyout(session: OwnedSession, element: HTMLElement): void {
-    clearFlyoutTimer();
-    flyoutTimer = setTimeout(() => {
-      flyoutTimer = null;
-      const rect = element.getBoundingClientRect();
-      const width = 320;
-      const height = 180;
-      flyout = {
-        session,
-        top: Math.max(8, Math.min(rect.top, window.innerHeight - height - 8)),
-        left: rect.right + width + 8 <= window.innerWidth
-          ? rect.right + 8
-          : Math.max(8, rect.left - width - 8)
-      };
-    }, 180);
-  }
-
-  function hideFlyout(): void {
-    clearFlyoutTimer();
-    flyout = null;
-  }
-
-  onDestroy(clearFlyoutTimer);
 
   function sessionStartedAtMs(session: OwnedSession): number | null {
     if (session.startedAtMs !== null && session.startedAtMs !== undefined) {
@@ -162,7 +128,6 @@
   function openContextMenu(event: MouseEvent, session: OwnedSession): void {
     event.preventDefault();
     event.stopPropagation();
-    hideFlyout();
     contextMenu = { session, x: event.clientX, y: event.clientY };
   }
 
@@ -227,8 +192,6 @@
               onOpenSession={() => void jumpTo(session, 'session')}
               onOpenEditor={() => void jumpTo(session, 'editor')}
               onOpenSourceControl={() => void jumpTo(session, 'source-control')}
-              onHoverStart={(element) => showFlyout(session, element)}
-              onHoverEnd={hideFlyout}
               onContextMenu={(event) => openContextMenu(event, session)}
             />
           {/each}
@@ -243,10 +206,6 @@
 
   <div class="scroll-spacer" aria-hidden="true"></div>
 </div>
-
-{#if flyout}
-  <SessionRowFlyout session={flyout.session} top={flyout.top} left={flyout.left} />
-{/if}
 
 {#if contextMenu}
   <SessionRowContextMenu
@@ -298,7 +257,6 @@
     cursor: pointer;
   }
 
-  .section-heading:hover { color: var(--color-text); }
   .section-heading:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
   .section-heading :global(.chevron) { width: 13px; height: 13px; flex: 0 0 auto; }
   .section-heading[aria-expanded='true'] :global(.chevron) { transform: rotate(90deg); }

@@ -15,7 +15,6 @@
  * and look like a backend storm. So input gets its own bucket and the headline
  * number — the shell's own IPC overhead, the thing worth watching — excludes it.
  */
-import { isTerminalInputCommand } from './terminalService.ts';
 
 /**
  * Live invoke tallies. `total` is the HEADLINE: every counted call that is NOT
@@ -35,10 +34,10 @@ export const invokeCounts = $state<{
 
 /** Record one backend invoke of `command`, routed to its bucket. */
 export function countInvoke(command: string): void {
-  if (isTerminalInputCommand(command)) {
-    invokeCounts.input += 1;
-  } else {
-    invokeCounts.total += 1;
-  }
-  invokeCounts.byCommand[command] = (invokeCounts.byCommand[command] ?? 0) + 1;
+  // if (isTerminalInputCommand(command)) {
+  //   invokeCounts.input += 1;
+  // } else {
+  //   invokeCounts.total += 1;
+  // }
+  // invokeCounts.byCommand[command] = (invokeCounts.byCommand[command] ?? 0) + 1;
 }

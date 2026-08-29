@@ -324,6 +324,12 @@ export default defineConfig({
     tailwindcss(),
     sveltekit(),
   ],
+  // Source maps in the preview build so Web Inspector steps through the real
+  // .svelte and .ts files instead of the minified chunks. The .map files are
+  // fetched only when the inspector is open, so a normal run is unaffected.
+  build: {
+    sourcemap: true,
+  },
   worker: {
     format: "es",
   },

@@ -1,76 +1,29 @@
-import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import {
-  applyAgentConversationEvent,
-  applyAgentConversationSnapshot,
-  applyChildConversationTranscript,
-  ensureConversationSession,
-  evictConversationSession,
-  getConversationSession,
-  recordAgentConversationPresenceEvent,
-  setConversationDraft,
-  setConversationConnection,
-  setConversationAttachments,
-  setConversationProviderNotice,
-  recordSentConversationAttachments,
-  restoreSentConversationAttachments,
-  setConversationSending,
-  beginConversationConfigChange,
-  confirmConversationConfigChange,
-  failConversationConfigChange,
-  setConversationCapabilities,
-  setConversationCapabilityError,
-  setConversationWriterLeaseTransition,
-  clearConversationWriterLeaseTransition,
-  beginLoadingOlderConversationEvents,
-  beginLoadingNewerConversationEvents,
-  failLoadingOlderConversationEvents,
-  failLoadingNewerConversationEvents,
-  prependOlderConversationEvents,
-  appendNewerConversationEvents
-} from './conversationStore.svelte.ts';
-import { bump } from '../memprobe.ts';
-import type {
-  AgentCapabilities,
-  AgentConversationConnection,
-  AgentConversationEvent,
-  AgentConversationProvider,
-  AgentConfigOption,
-  AgentConfigValue,
-  AgentUserInputResponse,
-  ConversationTranscriptSnapshot,
-  ConversationAttachment,
-  AgentConversationHandoffRequest,
-  AgentConversationHandoffReceipt,
-  AgentConversationHandoffDirection,
-  AgentConversationHandoffPhase,
-  AgentWriterLeaseOwner,
-  AgentWriterLeaseTransition
-} from './conversationTypes.ts';
-import {
-  applyConversationHandoffReceipt,
-  createConversationHandoffRequest,
-  handoffGenerationMatches
-} from './conversationTypes.ts';
-import {
-  readAgentConversationCapabilitiesFromTauri,
-  listAgentConversationEventsBeforeFromTauri,
-  listAgentConversationEventsAfterFromTauri,
-  extendAgentConversationImportFromTauri,
-  readAgentConversationSnapshotFromTauri,
   cancelAgentConversationSnapshotFromTauri,
   changeAgentConversationCheckoutFromTauri,
-  writeTerminalSessionFromTauri,
+  extendAgentConversationImportFromTauri,
+  listAgentConversationEventsAfterFromTauri,
+  listAgentConversationEventsBeforeFromTauri,
+  readAgentConversationCapabilitiesFromTauri,
+  readAgentConversationSnapshotFromTauri,
   registerAgentConversationStream,
-  type StreamEnvelope,
-  type ProjectionStreamRegistration,
+  writeTerminalSessionFromTauri,
   type AgentConversationSessionRecord,
-  type ExecutionEnvironment
+  type ExecutionEnvironment,
+  type ProjectionStreamRegistration,
+  type StreamEnvelope
 } from '$lib/tauriSource';
+import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { hasBackendCapability } from '../backendCapabilities.ts';
-import { shouldClearConversationSending } from './conversationReducer.ts';
-import { rail, updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import { bump } from '../memprobe.ts';
+import {
+  revokeTrackedObjectUrl,
+  setConversationSnapshotReadDiagnostics,
+  trackTauriListener
+} from '../resourceDiagnostics.svelte.ts';
 import { sessionTitleFromPrompt } from '../sessionStrip.ts';
+import { rail, updateOwnedSession } from '../stores/sessionRailStore.svelte';
 import {
   decideConversationActivation,
   generationForSend,
@@ -80,11 +33,58 @@ import {
 } from './conversationActivation.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
+import { shouldClearConversationSending } from './conversationReducer.ts';
 import {
-  revokeTrackedObjectUrl,
-  setConversationSnapshotReadDiagnostics,
-  trackTauriListener
-} from '../resourceDiagnostics.svelte.ts';
+  appendNewerConversationEvents,
+  applyAgentConversationEvent,
+  applyAgentConversationSnapshot,
+  applyChildConversationTranscript,
+  beginConversationConfigChange,
+  beginLoadingNewerConversationEvents,
+  beginLoadingOlderConversationEvents,
+  clearConversationWriterLeaseTransition,
+  confirmConversationConfigChange,
+  ensureConversationSession,
+  evictConversationSession,
+  failConversationConfigChange,
+  failLoadingNewerConversationEvents,
+  failLoadingOlderConversationEvents,
+  getConversationSession,
+  prependOlderConversationEvents,
+  recordAgentConversationPresenceEvent,
+  recordSentConversationAttachments,
+  restoreSentConversationAttachments,
+  setConversationAttachments,
+  setConversationCapabilities,
+  setConversationCapabilityError,
+  setConversationConnection,
+  setConversationDraft,
+  setConversationProviderNotice,
+  setConversationSending,
+  setConversationWriterLeaseTransition
+} from './conversationStore.svelte.ts';
+import type {
+  AgentCapabilities,
+  AgentConfigOption,
+  AgentConfigValue,
+  AgentConversationConnection,
+  AgentConversationEvent,
+  AgentConversationHandoffDirection,
+  AgentConversationHandoffPhase,
+  AgentConversationHandoffReceipt,
+  AgentConversationHandoffRequest,
+  AgentConversationProvider,
+  AgentUserInputResponse,
+  AgentWriterLeaseOwner,
+  AgentWriterLeaseTransition,
+  ConversationAttachment,
+  ConversationTranscriptSnapshot
+} from './conversationTypes.ts';
+import {
+  applyConversationHandoffReceipt,
+  createConversationHandoffRequest,
+  handoffGenerationMatches
+} from './conversationTypes.ts';
 
 let conversationStream: ProjectionStreamRegistration | null = null;
 let unlistenTitles: (() => void) | null = null;
@@ -551,7 +551,7 @@ async function hydrateSentConversationAttachments(
   if (Object.keys(resolved).length) restoreSentConversationAttachments(ownedId, resolved, generation);
 }
 
-async function resyncConversation(ownedId: string): Promise<void> {
+async function resyncConversation(ownedId: string) {
   const existing = resyncing.get(ownedId);
   if (existing) return existing.work;
   const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
@@ -776,7 +776,7 @@ export async function startConversationEvents(): Promise<void> {
   if (conversationEventsSetup) return conversationEventsSetup;
   const streamGeneration = ++conversationEventsGeneration;
   conversationEventsSetup = (async () => {
-    const registration = await registerAgentConversationStream((envelope: StreamEnvelope<AgentConversationEvent>) => {
+    const registration = await registerAgentConversationStream(async (envelope: StreamEnvelope<AgentConversationEvent>) => {
       if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
       const payload = envelope.chunk;
       const active = rail.activeOwnedId === payload.ownedId;
@@ -793,15 +793,15 @@ export async function startConversationEvents(): Promise<void> {
         }
       }
       if (active && getConversationSession(payload.ownedId)?.desynchronized) {
-        void resyncConversation(payload.ownedId);
+        await resyncConversation(payload.ownedId);
       }
       if (active && shouldClearConversationSending(payload)) {
         setConversationSending(payload.ownedId, false);
       }
-    }, () => {
+    }, async () => {
       if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
       const activeOwnedId = rail.activeOwnedId;
-      if (activeOwnedId) void resyncConversation(activeOwnedId);
+      if (activeOwnedId) await resyncConversation(activeOwnedId);
     });
     // A session starts out named after the first words of its prompt. Once
     // its first turn is done the app writes a short summary over that, and this

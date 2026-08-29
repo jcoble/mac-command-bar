@@ -45,34 +45,26 @@
 	import ShellOverlays from "$lib/shell/components/ShellOverlays.svelte";
 	import type { UtilityId } from "$lib/shell/components/utilityStrip";
 	import UtilityStrip from "$lib/shell/components/UtilityStrip.svelte";
-	import { rememberedAgentConfigChoice } from "$lib/shell/conversation/agentConfigMemory";
 	import {
 		changeStructuredConversationCheckout,
-		commitConversationHandoff,
 		ensureStructuredConversation,
 		flushConversationSessionDraft,
-		loadConversationForRead,
-		loadConversationSessionDraft,
-		prepareConversationHandoff,
 		releaseConversationForRead,
-		rollbackConversationHandoff,
 		sendStructuredMessage,
-		startConversationEvents,
-		startConversationTerminalProjection,
 		stopConversationEvents,
 		stopConversationTerminalProjection,
 	} from "$lib/shell/conversation/conversationService";
-	import {
-		captureConversationWorkspace,
-		conversationSessions,
-		ensureConversationSession,
-		getConversationSession,
-		removeConversationSession,
-		restoreConversationWorkspace,
-		setConversationAttachments,
-		setConversationDraft,
-		setConversationMode,
-	} from "$lib/shell/conversation/conversationStore.svelte";
+	// import {
+	// 	captureConversationWorkspace,
+	// 	conversationSessions,
+	// 	ensureConversationSession,
+	// 	getConversationSession,
+	// 	removeConversationSession,
+	// 	restoreConversationWorkspace,
+	// 	setConversationAttachments,
+	// 	setConversationDraft,
+	// 	setConversationMode,
+	// } from "$lib/shell/conversation/conversationStore.svelte";
 	import type {
 		AgentConversationHandoffDirection,
 		AgentConversationHandoffMode,
@@ -93,11 +85,7 @@
 		setExtensionApiProbeWorkspace,
 		type ExtensionApiProbeObservation,
 	} from "$lib/shell/editor/extensionApiProbeController";
-	import {
-		setLanguageServerEnabled,
-		setLanguageServersEnabled,
-		sourceIntelligence,
-	} from "$lib/shell/editor/sourceIntelligence";
+	import { sourceIntelligence } from "$lib/shell/editor/sourceIntelligence";
 	import { canonicalPath, explorer, selectPath, setScrollTop } from "$lib/shell/explorer/explorerStore.svelte";
 	import { gitCommitFilesService } from "$lib/shell/git/gitCommitFilesService";
 	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
@@ -119,16 +107,13 @@
 	import { isSidebarViewId, type SidebarViewId } from "$lib/shell/layout/sidebarViews";
 	import { DEFAULT_CENTER_TAB, DEFAULT_RIGHT_TAB } from "$lib/shell/layout/workbenchTabs";
 	import { bump, bumpBail } from "$lib/shell/memprobe";
-	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import { rememberLastUsed } from "$lib/shell/newSession/projectRootsStore.svelte";
-	import type { ThreadStartProviderConfig, ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow.ts";
-	import { deriveThreadStartProjects } from "$lib/shell/newSession/threadStartFlow.ts";
+	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow.ts";
 	import { setUnavailableOpenFileRoot } from "$lib/shell/openFileBus";
 	import {
 		adoptAgentSession,
 		createFreshSession,
 		ownedSessionFromBackend,
-		ownedSessionMetaForBackend,
 		reconcileOwnedSessions,
 	} from "$lib/shell/ownedSessions";
 	import { profileResourceLifecycle } from "$lib/shell/resourceDiagnostics.svelte";
@@ -159,11 +144,9 @@
 	import { recordStackStart, stackIdForOwnedId } from "$lib/shell/stacks/stackStore.svelte";
 	import {
 		addOwnedSession,
-		completeOwnedSession,
 		hydrateOwned,
 		rail,
 		removeOwnedSession,
-		reopenOwnedSession,
 		setActiveOwned,
 		setAvailable,
 		updateOwnedSession,
@@ -191,7 +174,6 @@
 		readAgentConversationWorkspaceExpandedPathsFromTauri,
 		readAgentConversationWorkspaceFromTauri,
 		readAssemblySettingFromTauri,
-		updateAgentConversationSessionMetaFromTauri,
 		validateProjectRootFromTauri,
 		writeAgentConversationWorkspaceExpandedPathsFromTauri,
 		writeAgentConversationWorkspaceFromTauri,
@@ -210,6 +192,8 @@
 	 * `adoptExisting`: a HIDDEN host cannot be measured, so without it a survivor's
 	 * view keeps 80x24 and wraps its replay wrong. */
 	const livePtySizes = new Map<string, { cols: number; rows: number }>();
+	/** Cleanup callbacks for mount-level listeners and one-off resources. */
+	const disposers: Array<() => void> = [];
 
 	let activeWorkspaceSnapshot = $state<SessionWorkspaceSnapshot | null>(null);
 	let diffMode = $state<DiffMode>(DEFAULT_DIFF_MODE);
@@ -237,7 +221,8 @@
 	const sessionProjection = $derived<SessionProjection>({
 		activeOwnedId: rail.activeOwnedId,
 		rail: rail.owned,
-		activeConversation: rail.activeOwnedId === null ? null : (conversationSessions[rail.activeOwnedId] ?? null),
+		// activeConversation: rail.activeOwnedId === null ? null : (conversationSessions[rail.activeOwnedId] ?? null),
+		activeConversation: null,
 		activeWorkspace: activeWorkspaceSnapshot,
 	});
 	const checkoutScope = $derived.by<CheckoutScope>(() => {
@@ -272,34 +257,23 @@
 	const controlledEditorRootAvailable = $derived(
 		controlledSelectionOwnedId !== null && Boolean(sessionSelectionLayers.treeRoot) && !controlledRootRemote,
 	);
-	const controlledCheckoutScope = $derived<CheckoutScope>({
-		durableSessionRoot: controlledRoot,
-		filesInspectionRoot: null,
-		gitInspectionRoot: null,
-		filesReadOnly: false,
-		gitReadOnly: false,
-		workspaceRestoreGeneration,
-		sessionSelectionGeneration,
-		conversationGeneration:
-			sessionSelectionLayers.chatOwnedId === null
-				? null
-				: (conversationSessions[sessionSelectionLayers.chatOwnedId]?.generation ?? null),
-	});
+	// const controlledCheckoutScope = $derived<CheckoutScope>({
+	// 	durableSessionRoot: controlledRoot,
+	// 	filesInspectionRoot: null,
+	// 	gitInspectionRoot: null,
+	// 	filesReadOnly: false,
+	// 	gitReadOnly: false,
+	// 	workspaceRestoreGeneration,
+	// 	sessionSelectionGeneration,
+	// 	// conversationGeneration:
+	// 	// 	sessionSelectionLayers.chatOwnedId === null
+	// 	// 		? null
+	// 	// 		: (conversationSessions[sessionSelectionLayers.chatOwnedId]?.generation ?? null),
+	// });
 
 	async function selectSessionLayers(ownedId: string): Promise<void> {
-		const editorGeneration = ++controlledEditorGeneration;
-		const enteringIsolationBaseline = controlledSelectionOwnedId === null;
-		if (enteringIsolationBaseline) {
-			// One-time cleanup only. Repeating these releases on every row click was
-			// doing work outside the row + tree baseline being measured.
-			restoreTabsFor(null);
-			const displayedChatOwnedId = sessionProjection.activeOwnedId;
-			if (displayedChatOwnedId !== null) releaseConversationForRead(displayedChatOwnedId);
-			sessionSelectionLayers.clearChatHistory();
-		}
-		checkpointControlledEditorWorkspace();
-		releaseControlledEditorWorkspace();
 		controlledSelectionOwnedId = ownedId;
+		setActiveOwned(ownedId);
 		// Drop departing session's tree state from memory. SQLite is the source of truth.
 		controlledExpandedPathsByRoot = {};
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
@@ -320,20 +294,15 @@
 						}
 					})()
 				: Promise.resolve();
-			await Promise.all([
-				loadPaths,
-				sessionSelectionLayers.selectSession(session, sessionSelectionLayers.chatOwnedId),
-				fillEditorWorkspace(ownedId, projectRoot, editorGeneration),
-			]);
+			await Promise.all([loadPaths, sessionSelectionLayers.selectTreeOnly(session)]);
 		} else {
 			sessionSelectionLayers.clearTreeView();
-			sessionSelectionLayers.clearChatHistory();
 		}
 	}
 
 	/** Release the one active editor projection before another session hydrates. */
 	function releaseControlledEditorWorkspace(): void {
-		cancelControlledEditorAutosave();
+		// cancelControlledEditorAutosave();
 		controlledEditorOwnedId = null;
 		controlledEditorSnapshot = null;
 		const previousPaths = editorState.openFiles.map((file) => file.path);
@@ -369,68 +338,68 @@
 		restoreEditorFiles(plan.openFiles, plan.activePath);
 	}
 
-	/** Capture the editor strip without retaining file contents for another session. */
-	function captureControlledEditorWorkspace(): SessionWorkspaceSnapshot | null {
-		if (!controlledEditorOwnedId) return null;
-		const ownedPaths = editorPanel?.workspaceOwnedPaths() ?? editorState.openFiles.map((file) => file.path);
-		const ownedPathSet = new Set(ownedPaths);
-		const openFiles = editorState.openFiles.filter((file) => ownedPathSet.has(file.path));
-		const activePath =
-			editorState.activePath && ownedPathSet.has(editorState.activePath)
-				? editorState.activePath
-				: (openFiles.at(-1)?.path ?? null);
-		const editorFields = captureWorkspace({
-			openFiles,
-			activePath,
-			viewStates: editorPanel?.captureViewStates(ownedPaths),
-			selectedPath: controlledEditorSnapshot?.selectedPath ?? null,
-			scrollTop: controlledEditorSnapshot?.scrollTop ?? 0,
-			rightTab: controlledEditorSnapshot?.rightTab ?? DEFAULT_RIGHT_TAB,
-		});
-		const snapshot: SessionWorkspaceSnapshot = {
-			...(controlledEditorSnapshot ?? editorFields),
-			openPaths: editorFields.openPaths,
-			activePath: editorFields.activePath,
-		};
-		if (editorFields.fileStates) snapshot.fileStates = editorFields.fileStates;
-		else delete snapshot.fileStates;
-		return snapshot;
-	}
+	// /** Capture the editor strip without retaining file contents for another session. */
+	// function captureControlledEditorWorkspace(): SessionWorkspaceSnapshot | null {
+	// 	if (!controlledEditorOwnedId) return null;
+	// 	const ownedPaths = editorPanel?.workspaceOwnedPaths() ?? editorState.openFiles.map((file) => file.path);
+	// 	const ownedPathSet = new Set(ownedPaths);
+	// 	const openFiles = editorState.openFiles.filter((file) => ownedPathSet.has(file.path));
+	// 	const activePath =
+	// 		editorState.activePath && ownedPathSet.has(editorState.activePath)
+	// 			? editorState.activePath
+	// 			: (openFiles.at(-1)?.path ?? null);
+	// 	const editorFields = captureWorkspace({
+	// 		openFiles,
+	// 		activePath,
+	// 		viewStates: editorPanel?.captureViewStates(ownedPaths),
+	// 		selectedPath: controlledEditorSnapshot?.selectedPath ?? null,
+	// 		scrollTop: controlledEditorSnapshot?.scrollTop ?? 0,
+	// 		rightTab: controlledEditorSnapshot?.rightTab ?? DEFAULT_RIGHT_TAB,
+	// 	});
+	// 	const snapshot: SessionWorkspaceSnapshot = {
+	// 		...(controlledEditorSnapshot ?? editorFields),
+	// 		openPaths: editorFields.openPaths,
+	// 		activePath: editorFields.activePath,
+	// 	};
+	// 	if (editorFields.fileStates) snapshot.fileStates = editorFields.fileStates;
+	// 	else delete snapshot.fileStates;
+	// 	return snapshot;
+	// }
 
 	/** Queue one small SQLite checkpoint; switching never keeps a second editor alive. */
-	function checkpointControlledEditorWorkspace(): void {
-		const ownedId = controlledEditorOwnedId;
-		const snapshot = captureControlledEditorWorkspace();
-		if (!ownedId || !snapshot) return;
-		controlledEditorSnapshot = snapshot;
-		const write = workspaceWriteQueue.then(async () => {
-			countInvoke("write_agent_conversation_workspace");
-			if (!(await writeAgentConversationWorkspaceFromTauri(ownedId, snapshot))) {
-				throw new Error("workspace checkpoint was refused");
-			}
-		});
-		workspaceWriteQueue = write.catch(() => undefined);
-		void write.catch((error) => {
-			if (!disposed && controlledEditorOwnedId === ownedId) {
-				rail.error = `editor workspace checkpoint failed: ${describeError(error)}`;
-			}
-		});
-	}
+	// function checkpointControlledEditorWorkspace(): void {
+	// 	const ownedId = controlledEditorOwnedId;
+	// 	const snapshot = captureControlledEditorWorkspace();
+	// 	if (!ownedId || !snapshot) return;
+	// 	controlledEditorSnapshot = snapshot;
+	// 	const write = workspaceWriteQueue.then(async () => {
+	// 		countInvoke("write_agent_conversation_workspace");
+	// 		if (!(await writeAgentConversationWorkspaceFromTauri(ownedId, snapshot))) {
+	// 			throw new Error("workspace checkpoint was refused");
+	// 		}
+	// 	});
+	// 	workspaceWriteQueue = write.catch(() => undefined);
+	// 	void write.catch((error) => {
+	// 		if (!disposed && controlledEditorOwnedId === ownedId) {
+	// 			rail.error = `editor workspace checkpoint failed: ${describeError(error)}`;
+	// 		}
+	// 	});
+	// }
 
-	function cancelControlledEditorAutosave(): void {
-		if (controlledEditorSaveTimer !== null) clearTimeout(controlledEditorSaveTimer);
-		controlledEditorSaveTimer = null;
-	}
+	// function cancelControlledEditorAutosave(): void {
+	// 	if (controlledEditorSaveTimer !== null) clearTimeout(controlledEditorSaveTimer);
+	// 	controlledEditorSaveTimer = null;
+	// }
 
-	function scheduleControlledEditorAutosave(ownedId: string): void {
-		cancelControlledEditorAutosave();
-		controlledEditorSaveTimer = setTimeout(() => {
-			controlledEditorSaveTimer = null;
-			if (controlledEditorOwnedId === ownedId && controlledSelectionOwnedId === ownedId) {
-				checkpointControlledEditorWorkspace();
-			}
-		}, 30_000);
-	}
+	// function scheduleControlledEditorAutosave(ownedId: string): void {
+	// 	cancelControlledEditorAutosave();
+	// 	controlledEditorSaveTimer = setTimeout(() => {
+	// 		controlledEditorSaveTimer = null;
+	// 		if (controlledEditorOwnedId === ownedId && controlledSelectionOwnedId === ownedId) {
+	// 			checkpointControlledEditorWorkspace();
+	// 		}
+	// 	}, 30_000);
+	// }
 	let service: ReturnType<typeof createTerminalService> | null = null;
 	let extensionApiProbeTerminalHost: HTMLElement | null = null;
 	let extensionApiProbeObservation = $state<ExtensionApiProbeObservation | null>(null);
@@ -503,24 +472,24 @@
 	/** Provider settings already fetched for existing structured sessions. A
 	 * fresh pane consumes these snapshots without starting a hidden session just
 	 * to populate its menus. */
-	function providerConfigsForNewSession(): ThreadStartProviderConfig[] {
-		return (["codex", "claude", "antigravity"] as const).map((provider) => {
-			const existing = Object.values(conversationSessions).find((session) => session.provider === provider);
-			const config = existing?.agentConfig;
-			// The lists come from any session that has them; the choice is the
-			// reader's last one, not whichever session happened to be found.
-			const chosen = rememberedAgentConfigChoice(provider);
-			return {
-				provider,
-				model: chosen?.model ?? config?.model ?? null,
-				availableModels: config?.availableModels ?? [],
-				reasoningEffort: chosen?.reasoningEffort ?? config?.reasoningEffort ?? null,
-				availableEfforts: config?.availableEfforts ?? [],
-				approvalPolicy: chosen?.approvalPolicy ?? config?.approvalPolicy ?? null,
-				availableApprovalPolicies: config?.availableApprovalPolicies ?? [],
-			};
-		});
-	}
+	// function providerConfigsForNewSession(): ThreadStartProviderConfig[] {
+	// 	return (["codex", "claude", "antigravity"] as const).map((provider) => {
+	// 		const existing = Object.values(conversationSessions).find((session) => session.provider === provider);
+	// 		const config = existing?.agentConfig;
+	// 		// The lists come from any session that has them; the choice is the
+	// 		// reader's last one, not whichever session happened to be found.
+	// 		const chosen = rememberedAgentConfigChoice(provider);
+	// 		return {
+	// 			provider,
+	// 			model: chosen?.model ?? config?.model ?? null,
+	// 			availableModels: config?.availableModels ?? [],
+	// 			reasoningEffort: chosen?.reasoningEffort ?? config?.reasoningEffort ?? null,
+	// 			availableEfforts: config?.availableEfforts ?? [],
+	// 			approvalPolicy: chosen?.approvalPolicy ?? config?.approvalPolicy ?? null,
+	// 			availableApprovalPolicies: config?.availableApprovalPolicies ?? [],
+	// 		};
+	// 	});
+	// }
 	/** The sessions column, for opening its "Find a session" drawer from the
 	 * context panel's "Search all sessions" link. */
 	let sessionsColumn: { openFinder(): void } | null = null;
@@ -641,37 +610,37 @@
 		else if (id === "session-library") selectRightTab("history");
 	}
 
-	async function persistOwnedMetadata(ownedId: string): Promise<void> {
-		const session = rail.owned.find((entry) => entry.ownedId === ownedId);
-		if (!session) return;
-		await updateAgentConversationSessionMetaFromTauri({
-			ownedId,
-			model: session.model ?? null,
-			effort: getConversationSession(ownedId)?.agentConfig.reasoningEffort ?? null,
-			meta: ownedSessionMetaForBackend(session),
-		});
-	}
+	// async function persistOwnedMetadata(ownedId: string): Promise<void> {
+	// 	const session = rail.owned.find((entry) => entry.ownedId === ownedId);
+	// 	if (!session) return;
+	// 	await updateAgentConversationSessionMetaFromTauri({
+	// 		ownedId,
+	// 		model: session.model ?? null,
+	// 		effort: getConversationSession(ownedId)?.agentConfig.reasoningEffort ?? null,
+	// 		meta: ownedSessionMetaForBackend(session),
+	// 	});
+	// }
 
 	/** Settled is an explicit rail transition. Age, process state, and title never infer this shelf. */
-	function settleOwnedSession(ownedId: string): void {
-		updateOwnedSession(ownedId, { settledAt: new Date().toISOString() });
-		void persistOwnedMetadata(ownedId);
-	}
+	// function settleOwnedSession(ownedId: string): void {
+	// 	updateOwnedSession(ownedId, { settledAt: new Date().toISOString() });
+	// 	void persistOwnedMetadata(ownedId);
+	// }
 
-	function unsettleOwnedSession(ownedId: string): void {
-		updateOwnedSession(ownedId, { settledAt: null });
-		void persistOwnedMetadata(ownedId);
-	}
+	// function unsettleOwnedSession(ownedId: string): void {
+	// 	updateOwnedSession(ownedId, { settledAt: null });
+	// 	void persistOwnedMetadata(ownedId);
+	// }
 
-	function completeOwned(ownedId: string): void {
-		completeOwnedSession(ownedId, new Date());
-		void persistOwnedMetadata(ownedId);
-	}
+	// function completeOwned(ownedId: string): void {
+	// 	completeOwnedSession(ownedId, new Date());
+	// 	void persistOwnedMetadata(ownedId);
+	// }
 
-	function reopenOwned(ownedId: string): void {
-		reopenOwnedSession(ownedId);
-		void persistOwnedMetadata(ownedId);
-	}
+	// function reopenOwned(ownedId: string): void {
+	// 	reopenOwnedSession(ownedId);
+	// 	void persistOwnedMetadata(ownedId);
+	// }
 
 	/** The center library reuses the rail's imperative actions; construction of
 	 * this adapter is inert and does not scan, start, or mutate anything. */
@@ -706,11 +675,11 @@
 					await adopt(record.available);
 				}
 			},
-			onArchive: (record: SessionLibraryRecord) => {
-				if (!record.ownedId) return;
-				if (record.state === "settled") unsettleOwnedSession(record.ownedId);
-				else if (record.state === "done") settleOwnedSession(record.ownedId);
-			},
+			// onArchive: (record: SessionLibraryRecord) => {
+			// 	if (!record.ownedId) return;
+			// 	if (record.state === "settled") unsettleOwnedSession(record.ownedId);
+			// 	else if (record.state === "done") settleOwnedSession(record.ownedId);
+			// },
 			onDelete: async (record: SessionLibraryRecord) => {
 				if (record.ownedId) await removeSession(record.ownedId);
 			},
@@ -791,53 +760,53 @@
 			openBrowserUrl(request.url);
 		},
 		focusComposer: async (handoff) => {
-			if (handoff.attachments) {
-				// Add to what the composer is already holding. Replacing dropped a
-				// screenshot the reader had just pasted, with nothing said about it.
-				const existing = getConversationSession(handoff.ownedId)?.attachments ?? [];
-				setConversationAttachments(handoff.ownedId, [...existing, ...handoff.attachments]);
-			}
-			if (handoff.appendText) {
-				const draft = getConversationSession(handoff.ownedId)?.draft ?? "";
-				setConversationDraft(handoff.ownedId, draft ? `${draft}\n${handoff.appendText}` : handoff.appendText);
-			}
+			// if (handoff.attachments) {
+			// 	// Add to what the composer is already holding. Replacing dropped a
+			// 	// screenshot the reader had just pasted, with nothing said about it.
+			// 	const existing = getConversationSession(handoff.ownedId)?.attachments ?? [];
+			// 	setConversationAttachments(handoff.ownedId, [...existing, ...handoff.attachments]);
+			// }
+			// if (handoff.appendText) {
+			// 	const draft = getConversationSession(handoff.ownedId)?.draft ?? "";
+			// 	setConversationDraft(handoff.ownedId, draft ? `${draft}\n${handoff.appendText}` : handoff.appendText);
+			// }
 			// The controlled history-only surface deliberately has no composer to focus.
 		},
 		sendToSession: async (request) => {
 			// The same two steps the composer takes: the attachments go on the
 			// session, then the send picks them up. A send that fails leaves them
 			// there, which is what the service does for the composer too.
-			if (request.attachments?.length) {
-				const existing = getConversationSession(request.ownedId)?.attachments ?? [];
-				setConversationAttachments(request.ownedId, [...existing, ...request.attachments]);
-			}
-			await sendStructuredMessage(request.ownedId, request.text);
+			// if (request.attachments?.length) {
+			// 	const existing = getConversationSession(request.ownedId)?.attachments ?? [];
+			// 	setConversationAttachments(request.ownedId, [...existing, ...request.attachments]);
+			// }
+			// await sendStructuredMessage(request.ownedId, request.text);
 		},
-		startSession: async (request) => {
-			const provider = request.provider ?? "codex";
-			const config = providerConfigsForNewSession().find((entry) => entry.provider === provider);
-			try {
-				return await startNewSession({
-					prompt: request.prompt,
-					executionEnvironment: "local",
-					provider,
-					model: config?.model ?? null,
-					reasoningEffort: config?.reasoningEffort ?? null,
-					// Same reason as the draft's own request: Antigravity's adapter has
-					// no approval control, so a remembered choice must not be sent to it.
-					approvalPolicy: provider === "antigravity" ? null : (config?.approvalPolicy ?? null),
-					projectPath: request.projectPath,
-					cwd: request.cwd,
-					branch: "",
-					createNewWorktree: false,
-					title: request.title,
-				});
-			} catch {
-				// `startNewSession` has already put the failure on the rail in words a
-				// person can read; the caller only needs to know it did not happen.
-				return null;
-			}
-		},
+		// startSession: async (request) => {
+		// 	const provider = request.provider ?? "codex";
+		// 	// const config = providerConfigsForNewSession().find((entry) => entry.provider === provider);
+		// 	try {
+		// 		return await startNewSession({
+		// 			prompt: request.prompt,
+		// 			executionEnvironment: "local",
+		// 			provider,
+		// 			model: config?.model ?? null,
+		// 			reasoningEffort: config?.reasoningEffort ?? null,
+		// 			// Same reason as the draft's own request: Antigravity's adapter has
+		// 			// no approval control, so a remembered choice must not be sent to it.
+		// 			approvalPolicy: provider === "antigravity" ? null : (config?.approvalPolicy ?? null),
+		// 			projectPath: request.projectPath,
+		// 			cwd: request.cwd,
+		// 			branch: "",
+		// 			createNewWorktree: false,
+		// 			title: request.title,
+		// 		});
+		// 	} catch {
+		// 		// `startNewSession` has already put the failure on the rail in words a
+		// 		// person can read; the caller only needs to know it did not happen.
+		// 		return null;
+		// 	}
+		// },
 	});
 
 	/** The History panel's actions are the page's, because only the page owns the
@@ -1106,7 +1075,7 @@
 			diffPath: gitPanel.selectedPath || null,
 			diffRoot: gitPanel.root,
 			diffMode,
-			conversation: captureConversationWorkspace(ownedId),
+			// conversation: captureConversationWorkspace(ownedId),
 			browser: captureBrowserState(),
 			center: frameControls?.captureCenterLayout() ?? null,
 			rightTab,
@@ -1142,18 +1111,18 @@
 	 * checkout-backed surfaces once that transaction succeeds. */
 	async function changeCodexCheckout(ownedId: string, requestedRoot: string): Promise<boolean> {
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
-		const conversation = getConversationSession(ownedId);
+		// const conversation = getConversationSession(ownedId);
 		if (
 			!selected ||
 			selected.origin !== "app" ||
 			rail.activeOwnedId !== ownedId ||
-			conversationProviderFor(ownedId) !== "codex" ||
-			!conversation
+			conversationProviderFor(ownedId) !== "codex"
+			// !conversation
 		) {
 			rail.error = "Only the active Codex session can change checkout.";
 			return false;
 		}
-		const conversationGeneration = conversation.generation;
+		// const conversationGeneration = conversation.generation;
 		const restoreGeneration = workspaceRestoreGeneration;
 		const selectionGeneration = sessionSelectionGeneration;
 		const checkoutStillCurrent = (): boolean =>
@@ -1161,7 +1130,7 @@
 			rail.activeOwnedId === ownedId &&
 			workspaceRestoreGeneration === restoreGeneration &&
 			sessionSelectionGeneration === selectionGeneration &&
-			getConversationSession(ownedId)?.generation === conversationGeneration &&
+			// getConversationSession(ownedId)?.generation === conversationGeneration &&
 			conversationProviderFor(ownedId) === "codex";
 		const root = requestedRoot.trim();
 		if (!root) {
@@ -1387,9 +1356,9 @@
 		}
 		const conversationProvider = conversationProviderFor(ownedId);
 		if (conversationProvider) {
-			restoreConversationWorkspace(ownedId, conversationProvider, snapshot?.conversation);
+			// restoreConversationWorkspace(ownedId, conversationProvider, snapshot?.conversation);
 			if (rail.owned.find((session) => session.ownedId === ownedId)?.origin === "app") {
-				setConversationMode(ownedId, "structured");
+				// setConversationMode(ownedId, "structured");
 			}
 		}
 		if (!activeRootAvailable) {
@@ -1526,7 +1495,7 @@
 		}
 		if (bailAt("after-probe-workspace-gate")) return;
 		const provider = conversationProviderFor(ownedId);
-		if (selected && provider) ensureConversationSession(ownedId, provider);
+		// if (selected && provider) ensureConversationSession(ownedId, provider);
 		// Hand the persistent conversation surface directly from the old compact
 		// projection to the new one. Clearing the old projection before the
 		// awaited workspace setup made the timeline and composer unmount and mount
@@ -1550,24 +1519,24 @@
 		activeRootRemote = selectedRootRemote;
 		setUnavailableOpenFileRoot(activeRootAvailable || activeRootRemote ? null : selectedRoot);
 		let structuredHydration: Promise<void> | null = null;
-		if (selected && provider) {
-			ensureConversationSession(ownedId, provider);
-			if (selected.origin === "external" && selected.ptySessionId) {
-				setConversationMode(ownedId, "raw");
-			} else {
-				setConversationMode(ownedId, "structured");
-				if (switching) {
-					structuredHydration = Promise.all([loadConversationForRead(ownedId), loadConversationSessionDraft(ownedId)])
-						.then(() => undefined)
-						.catch((error) => {
-							if (bailAt("after-hydration-error")) return;
-							const message = describeError(error);
-							updateOwnedSession(ownedId, { lastError: message });
-							if (propagateStructuredFailure) throw error;
-						});
-				}
-			}
-		}
+		// if (selected && provider) {
+		// 	ensureConversationSession(ownedId, provider);
+		// 	if (selected.origin === "external" && selected.ptySessionId) {
+		// 		setConversationMode(ownedId, "raw");
+		// 	} else {
+		// 		setConversationMode(ownedId, "structured");
+		// 		if (switching) {
+		// 			structuredHydration = Promise.all([loadConversationForRead(ownedId), loadConversationSessionDraft(ownedId)])
+		// 				.then(() => undefined)
+		// 				.catch((error) => {
+		// 					if (bailAt("after-hydration-error")) return;
+		// 					const message = describeError(error);
+		// 					updateOwnedSession(ownedId, { lastError: message });
+		// 					if (propagateStructuredFailure) throw error;
+		// 				});
+		// 		}
+		// 	}
+		// }
 		if (!activeRootAvailable && !activeRootRemote) {
 			await handleActiveRootUnavailable(selectedRoot, true);
 			if (bailAt("after-root-unavailable")) return;
@@ -1620,7 +1589,7 @@
 		if (!switching && activeRootAvailable) service?.show(ownedId);
 		if (selected && provider) {
 			const mode = selected.origin === "external" && selected.ptySessionId ? "raw" : "structured";
-			setConversationMode(ownedId, mode);
+			// setConversationMode(ownedId, mode);
 		}
 		if (structuredHydration) {
 			await structuredHydration;
@@ -1669,26 +1638,26 @@
 		mode: AgentConversationHandoffMode,
 	) {
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
-		const conversation = getConversationSession(ownedId);
-		if (!selected || !conversation) throw new Error("The conversation is not loaded");
-		const nativeSessionId = selected.nativeSessionId ?? conversation.nativeSessionId ?? null;
-		const ptySessionId = selected.ptySessionId ?? null;
-		if (!nativeSessionId) throw new Error("The native session id is not available");
-		if (!ptySessionId) throw new Error("A live user terminal is required for handoff");
+		// const conversation = getConversationSession(ownedId);
+		// if (!selected || !conversation) throw new Error("The conversation is not loaded");
+		// const nativeSessionId = selected.nativeSessionId ?? conversation.nativeSessionId ?? null;
+		// const ptySessionId = selected.ptySessionId ?? null;
+		// if (!nativeSessionId) throw new Error("The native session id is not available");
+		// if (!ptySessionId) throw new Error("A live user terminal is required for handoff");
 		return {
 			ownedId,
-			generation: conversation.generation,
+			// generation: conversation.generation,
 			direction,
 			mode,
 			expectedOwner: direction === "structured-to-terminal" ? ("structured" as const) : ("terminal" as const),
 			targetOwnedId: mode === "fork" ? `${ownedId}:native:${Date.now()}` : null,
-			nativeSessionId,
-			ptySessionId,
+			// nativeSessionId,
+			// ptySessionId,
 			historyBoundary: {
-				nativeSessionId,
+				// nativeSessionId,
 				firstSequence: 0,
-				lastSequence: conversation.lastSequence,
-				reconciledSequence: conversation.lastSequence,
+				// lastSequence: conversation.lastSequence,
+				// reconciledSequence: conversation.lastSequence,
 			},
 			// The assertion is populated from the single owned PTY and writer lease.
 			// Native-window proof still needs the rebuilt app and is recorded as a
@@ -1700,54 +1669,54 @@
 				writerCount: 1,
 				ptyCount: 1,
 				sidecarCount: 0,
-				ptySessionId,
+				// ptySessionId,
 			},
 		};
 	}
 
-	async function completeNativeHandoff(ownedId: string, mode: AgentConversationHandoffMode): Promise<void> {
-		const input = handoffInput(ownedId, "structured-to-terminal", mode);
-		await prepareConversationHandoff(input);
-		try {
-			const receipt = await commitConversationHandoff(input);
-			if (mode === "same-session" && receipt.nativeSessionId) {
-				const provider = conversationProviderFor(ownedId);
-				if (provider) {
-					startConversationTerminalProjection({ ownedId, provider, nativeSessionId: receipt.nativeSessionId });
-				}
-			}
-		} catch (error) {
-			await rollbackConversationHandoff(input).catch(() => undefined);
-			throw error;
-		}
-	}
+	// async function completeNativeHandoff(ownedId: string, mode: AgentConversationHandoffMode): Promise<void> {
+	// 	const input = handoffInput(ownedId, "structured-to-terminal", mode);
+	// 	await prepareConversationHandoff(input);
+	// 	try {
+	// 		const receipt = await commitConversationHandoff(input);
+	// 		if (mode === "same-session" && receipt.nativeSessionId) {
+	// 			const provider = conversationProviderFor(ownedId);
+	// 			if (provider) {
+	// 				startConversationTerminalProjection({ ownedId, provider, nativeSessionId: receipt.nativeSessionId });
+	// 			}
+	// 		}
+	// 	} catch (error) {
+	// 		await rollbackConversationHandoff(input).catch(() => undefined);
+	// 		throw error;
+	// 	}
+	// }
 
-	async function openNativeCli(ownedId: string): Promise<void> {
-		try {
-			await completeNativeHandoff(ownedId, "same-session");
-		} catch (error) {
-			rail.error = `native handoff failed: ${describeError(error)}`;
-		}
-	}
+	// async function openNativeCli(ownedId: string): Promise<void> {
+	// 	try {
+	// 		await completeNativeHandoff(ownedId, "same-session");
+	// 	} catch (error) {
+	// 		rail.error = `native handoff failed: ${describeError(error)}`;
+	// 	}
+	// }
 
-	async function forkNativeCli(ownedId: string): Promise<void> {
-		try {
-			await completeNativeHandoff(ownedId, "fork");
-		} catch (error) {
-			rail.error = `native fork failed: ${describeError(error)}`;
-		}
-	}
+	// async function forkNativeCli(ownedId: string): Promise<void> {
+	// 	try {
+	// 		await completeNativeHandoff(ownedId, "fork");
+	// 	} catch (error) {
+	// 		rail.error = `native fork failed: ${describeError(error)}`;
+	// 	}
+	// }
 
-	async function returnToStructured(ownedId: string): Promise<void> {
-		try {
-			const input = handoffInput(ownedId, "terminal-to-structured", "same-session");
-			await prepareConversationHandoff(input);
-			const receipt = await commitConversationHandoff(input);
-			if (receipt.owner === "structured") setConversationMode(ownedId, "structured");
-		} catch (error) {
-			rail.error = `structured handoff failed: ${describeError(error)}`;
-		}
-	}
+	// async function returnToStructured(ownedId: string): Promise<void> {
+	// 	try {
+	// 		const input = handoffInput(ownedId, "terminal-to-structured", "same-session");
+	// 		await prepareConversationHandoff(input);
+	// 		const receipt = await commitConversationHandoff(input);
+	// 		if (receipt.owner === "structured") setConversationMode(ownedId, "structured");
+	// 	} catch (error) {
+	// 		rail.error = `structured handoff failed: ${describeError(error)}`;
+	// 	}
+	// }
 
 	/** EXPLICIT IO: adopt a scanned session, spawn its PTY, replay the resume command. */
 	async function adopt(record: AgentSession): Promise<void> {
@@ -1774,7 +1743,7 @@
 			nativeSessionId: owned.nativeSessionId,
 			nativeSessionMode: "load",
 		});
-		await persistOwnedMetadata(owned.ownedId);
+		// await persistOwnedMetadata(owned.ownedId);
 		await selectOwned(owned.ownedId);
 		const host = await hostFor(owned.ownedId);
 		if (!host) {
@@ -1788,7 +1757,7 @@
 			return;
 		}
 		updateOwnedSession(owned.ownedId, { ptySessionId, state: "live" });
-		await persistOwnedMetadata(owned.ownedId);
+		// await persistOwnedMetadata(owned.ownedId);
 		await selectOwned(owned.ownedId);
 		// A session you just started is a session you want to watch. Deliberately
 		// here rather than inside `selectOwned`, which also runs on every plain
@@ -1852,7 +1821,7 @@
 				model: request.model,
 				approvalPolicy: request.approvalPolicy,
 			});
-			await persistOwnedMetadata(owned.ownedId);
+			// await persistOwnedMetadata(owned.ownedId);
 			rememberLastUsed(request.projectPath);
 			updateOwnedSession(owned.ownedId, { runtimeState: "ready", lastError: null });
 			return owned.ownedId;
@@ -2011,7 +1980,7 @@
 			// `hostFor` to wait for. The old PTY id goes at the same time — it names
 			// a process that no longer exists.
 			updateOwnedSession(ownedId, { state: "live", ptySessionId: null });
-			await persistOwnedMetadata(ownedId);
+			// await persistOwnedMetadata(ownedId);
 			await selectOwned(ownedId);
 
 			const host = await hostFor(ownedId);
@@ -2053,7 +2022,7 @@
 
 			// Persist the new PTY id: reload re-attach reads it back out of storage.
 			updateOwnedSession(ownedId, { ptySessionId, state: "live" });
-			await persistOwnedMetadata(ownedId);
+			// await persistOwnedMetadata(ownedId);
 			// A restarted stack run is a run again — without this the stacks pane
 			// keeps the old exit on record and says "stopped" under a live server.
 			if (restartedStackId !== null) await recordStackStart(restartedStackId, ownedId);
@@ -2097,7 +2066,7 @@
 		// The PTY id is cleared with the state: it names a process that is gone, and
 		// leaving it stored would have the next launch try to re-attach to it.
 		updateOwnedSession(ownedId, { state: "exited", ptySessionId: null });
-		await persistOwnedMetadata(ownedId);
+		// await persistOwnedMetadata(ownedId);
 		// Picked BEFORE the await: adopt it only while it still exists. It goes
 		// through `selectOwned` like every other session change, and the order is
 		// what makes that safe: `rail.activeOwnedId` is still the session whose
@@ -2128,7 +2097,7 @@
 		pendingHosts.delete(ownedId);
 		removeOwnedSession(ownedId);
 		releaseConversationForRead(ownedId);
-		removeConversationSession(ownedId);
+		// removeConversationSession(ownedId);
 		stopConversationTerminalProjection(ownedId);
 		// A removed row takes its stack tag with it, rather than leaving one
 		// pointing at a session that is gone.
@@ -2176,13 +2145,13 @@
 				if (disposed) return;
 				applyStoredTheme();
 				applyStoredFonts();
-				applyProblemsLocation(settings.panels.problemsLocation);
-				if (!settings.intelligence.languageServers) {
-					void setLanguageServersEnabled(false);
-				}
-				for (const [language, enabled] of Object.entries(settings.intelligence.languageServerEnabled)) {
-					if (!enabled) void setLanguageServerEnabled(language as "csharp" | "typescript" | "rust", false);
-				}
+				// applyProblemsLocation(settings.panels.problemsLocation);
+				// if (!settings.intelligence.languageServers) {
+				// 	void setLanguageServersEnabled(false);
+				// }
+				// for (const [language, enabled] of Object.entries(settings.intelligence.languageServerEnabled)) {
+				// 	if (!enabled) void setLanguageServerEnabled(language as "csharp" | "typescript" | "rust", false);
+				// }
 			})
 			.catch(() => undefined);
 		const collapsedRestoreVersion = sessionsCollapsedVersion;
@@ -2197,15 +2166,15 @@
 		// A file dropped anywhere but a drop zone would otherwise navigate the
 		// window to that file and take the whole shell with it. Anything a zone
 		// has already claimed arrives here with its default prevented.
-		const swallowStrayDrop = (event: DragEvent): void => {
-			if (!event.defaultPrevented) event.preventDefault();
-		};
-		window.addEventListener("dragover", swallowStrayDrop);
-		window.addEventListener("drop", swallowStrayDrop);
-		disposers.push(() => {
-			window.removeEventListener("dragover", swallowStrayDrop);
-			window.removeEventListener("drop", swallowStrayDrop);
-		});
+		// const swallowStrayDrop = (event: DragEvent): void => {
+		// 	if (!event.defaultPrevented) event.preventDefault();
+		// };
+		// window.addEventListener("dragover", swallowStrayDrop);
+		// window.addEventListener("drop", swallowStrayDrop);
+		// disposers.push(() => {
+		// 	window.removeEventListener("dragover", swallowStrayDrop);
+		// 	window.removeEventListener("drop", swallowStrayDrop);
+		// });
 		// ⌥⌘I opens the inspector, the same chord every browser uses. WebKit offers
 		// this itself, but only in a build the inspector was compiled into, and only
 		// when the shortcut has not been swallowed on its way through — asking the
@@ -2307,7 +2276,7 @@
 			// 	delete (window as PointerSweepWindow).__pointerSweep;
 			// });
 		}
-		void startConversationEvents();
+		// void startConversationEvents();
 		// Honour where the reader last put the Problems list. The frame and the
 		// tool column both mount before this runs, so both have handed over their
 		// controls by now. Without it the bottom strip comes back open on every
@@ -2319,7 +2288,7 @@
 		registerStackHandlers({
 			onStartStack,
 			onStopStack: (ownedId) => closeTerminal(ownedId),
-			onSelectSession: (ownedId) => selectOwned(ownedId),
+			onSelectSession: (ownedId) => selectSessionLayers(ownedId),
 		});
 		void (async () => {
 			try {
@@ -2378,7 +2347,7 @@
 				}
 				const initial = attachable[0] ?? null;
 				if (initial) {
-					await selectOwned(initial.ownedId);
+					await selectSessionLayers(initial.ownedId);
 				}
 				const activationError = rail.error;
 				await scanRail();
@@ -2426,7 +2395,7 @@
 		 * browsers still fire for both a reload and a close. */
 		const saveOnLeaving = (): void => {
 			if (controlledEditorOwnedId !== null) {
-				checkpointControlledEditorWorkspace();
+				// checkpointControlledEditorWorkspace();
 			} else if (
 				controlledSelectionOwnedId === null &&
 				rail.activeOwnedId !== null &&
@@ -2440,11 +2409,11 @@
 
 		return () => {
 			cancelWorkspaceAutosave();
-			cancelControlledEditorAutosave();
+			// cancelControlledEditorAutosave();
 			// Navigating away inside the app ends here instead, and it is the same
 			// last chance to remember what the session on screen had open.
 			if (!disposed && controlledEditorOwnedId !== null) {
-				checkpointControlledEditorWorkspace();
+				// checkpointControlledEditorWorkspace();
 			} else if (
 				!disposed &&
 				controlledSelectionOwnedId === null &&
@@ -2493,10 +2462,10 @@
 				onCollapse={collapseSessions}
 				onNewSession={openNewSession}
 				onSelectSession={selectSessionLayers}
-				onComplete={completeOwned}
-				onReopen={reopenOwned}
-				onSettle={settleOwnedSession}
-				onUnsettle={unsettleOwnedSession}
+				// onComplete={completeOwned}
+				// onReopen={reopenOwned}
+				// onSettle={settleOwnedSession}
+				// onUnsettle={unsettleOwnedSession}
 				onAskRemove={askRemoveSession}
 			/>
 		</div>
@@ -2510,7 +2479,7 @@
 		}}
 		root={controlledSelectionOwnedId === null ? checkoutScope.durableSessionRoot : ""}
 		rootAvailable={controlledSelectionOwnedId === null ? activeRootAvailable : false}
-		checkoutScope={controlledSelectionOwnedId === null ? checkoutScope : controlledCheckoutScope}
+		// checkoutScope={controlledSelectionOwnedId === null ? checkoutScope : controlledCheckoutScope}
 		ownedId={controlledSelectionOwnedId === null ? sessionProjection.activeOwnedId : null}
 		filesRoot={(controlledSelectionOwnedId === null ? activeRootRemote : controlledRootRemote)
 			? ""
@@ -2547,44 +2516,46 @@
 	<DockPanel onReset={resetLayout} onProblemsLocationChange={applyProblemsLocation} />
 {/snippet}
 {#snippet sessionArea()}
-	<div class="session-area">
-		{#if sessionSelectionLayers.hasChatProjection}
-			{#key sessionSelectionLayers.chatOwnedId}
-				<ConversationHistorySurface owned={rail.owned} activeOwnedId={sessionSelectionLayers.chatOwnedId} />
-			{/key}
-		{:else}
-			<div class="conversation-data-isolation" aria-label="Conversation history loading">
-				<p>Conversation history is loading. Composer and editor remain isolated.</p>
-			</div>
-		{/if}
-		{#if draftOpen}
-			<DraftSessionSurface
-				sessionRoots={deriveThreadStartProjects(rail.owned.map((session) => session.projectPath ?? session.cwd)).map(
-					(project) => project.path,
-				)}
-				presetProjectPath={draftProjectPath}
-				providerConfigs={providerConfigsForNewSession()}
-				onSend={async (request) => {
-					await startNewSession(request);
-				}}
-				onClose={() => (draftOpen = false)}
-			/>
-		{/if}
-	</div>
+	<!-- MEASUREMENT VARIANT: conversation disabled so the tree can be measured alone. -->
+	{#if false}
+		<div class="session-area">
+			{#if sessionSelectionLayers.hasChatProjection}
+				{#key sessionSelectionLayers.chatOwnedId}
+					<ConversationHistorySurface owned={rail.owned} activeOwnedId={sessionSelectionLayers.chatOwnedId} />
+				{/key}
+			{:else}
+				<div class="conversation-data-isolation" aria-label="Conversation history loading">
+					<p>Conversation history is loading. Composer and editor remain isolated.</p>
+				</div>
+			{/if}
+			{#if draftOpen}
+				<!-- <DraftSessionSurface -->
+				<!-- sessionRoots={deriveThreadStartProjects(rail.owned.map((session) => session.projectPath ?? session.cwd)).map(
+						(project) => project.path,
+					)}
+					presetProjectPath={draftProjectPath}
+					// providerConfigs={providerConfigsForNewSession()}
+					onSend={async (request) => {
+						await startNewSession(request);
+					}}
+					onClose={() => (draftOpen = false)} -->
+				<!-- /> -->
+			{/if}
+		</div>
+	{/if}
 {/snippet}
 {#snippet editorArea()}
-	<EditorPanel
-		bind:this={editorPanel}
-		showing={centerTab === "editor"}
-		rootAvailable={controlledEditorRootAvailable}
-		onCloseAllEditors={clearAllEditorWorkspaceRecords}
-		onStartWorkspaceCommand={(request) => {
-			void onStartStack({ stackId: request.id, ...request });
-		}}
-		onFileOpened={() => {
-			selectCenterTab("editor");
-		}}
-	/>
+	<!-- MEASUREMENT VARIANT: editor disabled so the tree can be measured alone. -->
+	{#if false}<EditorPanel
+			bind:this={editorPanel}
+			showing={true}
+			rootAvailable={controlledEditorRootAvailable}
+			onCloseAllEditors={clearAllEditorWorkspaceRecords}
+			onStartWorkspaceCommand={(request) => {
+				void onStartStack({ stackId: request.id, ...request });
+			}}
+			onFileOpened={() => {}}
+		/>{/if}
 {/snippet}
 <!-- The changes to whichever file source control has selected. `GitDiffView`
      reads the selected file itself and lives here as a tab of its own — which

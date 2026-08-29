@@ -31,12 +31,13 @@ export function filterFileTreeNodes(
   );
 }
 
-export function visibleFileTreeNodes(
-  nodes: readonly FileTreeNode[],
-  expanded: ReadonlySet<string>
-): FileTreeNode[] {
-  const byParent = new Map<string, FileTreeNode[]>();
-  const roots: FileTreeNode[] = [];
+export function visibleFileTreeNodes<T extends FileTreeNode>(
+  nodes: readonly T[],
+  expanded: ReadonlySet<string>,
+  compare: (left: T, right: T) => number = compareNodes
+): T[] {
+  const byParent = new Map<string, T[]>();
+  const roots: T[] = [];
   for (const node of nodes) {
     if (node.depth === 0) {
       roots.push(node);
@@ -47,9 +48,9 @@ export function visibleFileTreeNodes(
     else byParent.set(node.parentPath, [node]);
   }
 
-  const visible: FileTreeNode[] = [];
-  function emit(list: FileTreeNode[]): void {
-    for (const node of [...list].sort(compareNodes)) {
+  const visible: T[] = [];
+  function emit(list: T[]): void {
+    for (const node of [...list].sort(compare)) {
       visible.push(node);
       if (!node.isDirectory || !expanded.has(node.path)) continue;
       const children = byParent.get(node.path);
@@ -75,8 +76,8 @@ export function toggleDirectory(
   return next;
 }
 
-export interface FileTreeWindow {
-  nodes: FileTreeNode[];
+export interface FileTreeWindow<T extends FileTreeNode = FileTreeNode> {
+  nodes: T[];
   topSpacerHeight: number;
   bottomSpacerHeight: number;
   totalHeight: number;
@@ -87,13 +88,13 @@ const WINDOW_CARRIER_ROW: SourceTreeRow = {
   level: 0
 };
 
-export function windowFileTreeNodes(
-  nodes: readonly FileTreeNode[],
+export function windowFileTreeNodes<T extends FileTreeNode>(
+  nodes: readonly T[],
   scrollTop: number,
   viewportHeight: number,
   rowHeight: number = FILE_TREE_ROW_HEIGHT,
   overscanRows: number = FILE_TREE_OVERSCAN_ROWS
-): FileTreeWindow {
+): FileTreeWindow<T> {
   const virtual = virtualizeSourceTreeRows(
     new Array<SourceTreeRow>(nodes.length).fill(WINDOW_CARRIER_ROW),
     scrollTop,
