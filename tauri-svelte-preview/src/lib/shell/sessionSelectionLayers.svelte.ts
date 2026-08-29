@@ -4,19 +4,19 @@
  * Keep this sequence explicit. Each large surface gets one small loader here
  * so it can be added, measured, and removed without waking the other surfaces.
  */
-import type { OwnedSession } from './ownedSessions';
-import type { AgentConversationProvider } from './conversation/conversationTypes';
-import {
-  ensureConversationSession,
-  setConversationMode
-} from './conversation/conversationStore.svelte';
+import { validateProjectRootFromTauri } from '../tauriSource';
 import {
   loadConversationForRead,
   releaseConversationForRead
 } from './conversation/conversationService';
+import {
+  ensureConversationSession,
+  setConversationMode
+} from './conversation/conversationStore.svelte';
+import type { AgentConversationProvider } from './conversation/conversationTypes';
 import { countInvoke } from './devInvokeCounter.svelte';
 import { activate as activateExplorer } from './explorer/explorerService';
-import { validateProjectRootFromTauri } from '../tauriSource';
+import type { OwnedSession } from './ownedSessions';
 
 export class SessionSelectionLayers {
   treeOwnedId = $state<string | null>(null);

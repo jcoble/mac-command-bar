@@ -60,18 +60,7 @@ export function removeOwnedSession(ownedId: string): void {
 }
 
 export function setActiveOwned(ownedId: string | null): void {
-  const previousId = rail.activeOwnedId;
   rail.activeOwnedId = ownedId;
-  rail.owned = rail.owned.map((session) => {
-    if (session.state === 'exited') return session;
-    if (session.ownedId === ownedId) {
-      return session.state === 'live' ? session : { ...session, state: 'live' };
-    }
-    if (session.ownedId === previousId) {
-      return session.state === 'background' ? session : { ...session, state: 'background' };
-    }
-    return session;
-  });
 }
 
 export function setAvailable(sessions: AgentSession[]): void {

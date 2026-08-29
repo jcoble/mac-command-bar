@@ -467,24 +467,20 @@
 		};
 	});
 
-	// Move this outside or to a top-level scope
-	function getHostHeight(el: HTMLElement) {
-		return Math.max(1, Math.floor(el.clientHeight));
-	}
-
-	$effect(() => {
-		const host = treeHost;
-		if (!host) return;
-
-		const observer = new ResizeObserver(() => {
-			// Use a stable logic block here
-			const nextHeight = getHostHeight(host);
+	function observeTreeHost(node: HTMLElement) {
+		const update = () => {
+			const nextHeight = Math.max(1, Math.floor(node.clientHeight));
 			if (treeHeight !== nextHeight) treeHeight = nextHeight;
-		});
-
-		observer.observe(host);
-		return () => observer.disconnect();
-	});
+		};
+		update();
+		const observer = new ResizeObserver(update);
+		observer.observe(node);
+		return {
+			destroy() {
+				observer.disconnect();
+			},
+		};
+	}
 
 	function relativePath(projectRoot: string, path: string): string {
 		const prefix = `${projectRoot}/`;
@@ -1093,6 +1089,7 @@
 		class:hidden={!treeVisible}
 		aria-hidden={!treeVisible}
 		bind:this={treeHost}
+		use:observeTreeHost
 	>
 		<div
 			class="tree-scroll"
