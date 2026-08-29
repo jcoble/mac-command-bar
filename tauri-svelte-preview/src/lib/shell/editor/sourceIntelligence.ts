@@ -57,7 +57,6 @@ import {
 } from '../../sourceData.ts';
 import {
   countSourceReferencesFromTauri,
-  findSourceDefinitionsFromTauri,
   findSourceLspCompletionsFromTauri,
   findSourceLspDefinitionsFromTauri,
   findSourceLspDocumentHighlightsFromTauri,
@@ -66,7 +65,6 @@ import {
   findSourceLspReferencesFromTauri,
   findSourceLspSemanticTokensFromTauri,
   findSourceLspSignatureHelpFromTauri,
-  findSourceReferencesFromTauri,
   isNativeTauriRuntime,
   readSourceFromTauri,
   readSourceLspDiagnosticsFromTauri,
@@ -74,7 +72,6 @@ import {
 } from '../../tauriSource.ts';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
-import { projectSourceRecords } from '../projectSourceIndex.ts';
 import { activateEditor } from './editorStore.svelte.ts';
 import {
   createReferenceCountBatcher,
@@ -415,32 +412,6 @@ export function createSourceIntelligence(): SourceIntelligence {
 
   // ── The callbacks ──────────────────────────────────────────────────────────
 
-  async function indexedDefinitions(
-    symbolName: string
-  ): Promise<SourceDefinitionTarget[] | null> {
-    const records = projectSourceRecords(projectRoot);
-    if (records.length === 0) return null;
-    countInvoke('find_source_definitions');
-    return findSourceDefinitionsFromTauri(
-      [...records],
-      symbolName,
-      maxSourceDefinitionResults
-    ).catch(() => null);
-  }
-
-  async function indexedReferences(
-    symbolName: string
-  ): Promise<SourceReferenceTarget[] | null> {
-    const records = projectSourceRecords(projectRoot);
-    if (records.length === 0) return null;
-    countInvoke('find_source_references');
-    return findSourceReferencesFromTauri(
-      [...records],
-      symbolName,
-      maxSourceReferenceResults
-    ).catch(() => null);
-  }
-
   async function findDefinitions(
     request: SourceLookupRequest
   ): Promise<SourceDefinitionTarget[]> {
@@ -451,7 +422,7 @@ export function createSourceIntelligence(): SourceIntelligence {
         lspDefinitions(request),
         languageServerLookupDeadlineMs
       );
-      return lspTargets ?? (await indexedDefinitions(symbolName)) ?? [];
+      return lspTargets ?? [];
     } catch {
       return [];
     }
@@ -482,10 +453,8 @@ export function createSourceIntelligence(): SourceIntelligence {
         if (semantic) return semantic.targets;
       }
 
-      // Keep the legacy text finder for the browser preview, but never let it
-      // compete with Roslyn in the native editor.
       if (isNativeTauriRuntime()) return [];
-      return (await indexedReferences(symbolName)) ?? [];
+      return [];
     } catch {
       return [];
     }
@@ -1088,11 +1057,7 @@ export function createSourceIntelligence(): SourceIntelligence {
     const requestRoot = projectRoot;
     const generation = projectRootGeneration;
     const previewGeneration = externalPreviewGeneration;
-    const sourceRecord = sourceRecordFromPath(
-      requestRoot,
-      record.path,
-      projectSourceRecords(requestRoot)
-    );
+    const sourceRecord = sourceRecordFromPath(requestRoot, record.path);
 
     if (activePreview?.path === sourceRecord.path) {
       return previewFromContent(

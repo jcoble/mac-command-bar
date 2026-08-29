@@ -2,8 +2,10 @@
  * markdownPreview.ts — which of the two Markdown views the editor shows first.
  *
  * The editor can show a Markdown file two ways: the raw source in the code
- * editor, or the rendered document. Opening is source-first; rendered preview
- * appears only after the reader explicitly picks Preview for the active file.
+ * editor, or the rendered document. A file reached from a diff or a jump opens
+ * rendered, because the reader asked to read it. Picking the file in the
+ * open-files strip keeps the editor on source, because the reader is working in
+ * it. Either way the toggle switches the active file at any time.
  */
 
 export type MarkdownView = 'rendered' | 'raw';
@@ -22,8 +24,8 @@ export function isMarkdownFile(fileName: string | null | undefined): boolean {
 
 export function markdownPreviewDefault(
   fileName: string | null | undefined,
-  _origin: MarkdownOpenOrigin
+  origin: MarkdownOpenOrigin
 ): MarkdownView {
   if (!isMarkdownFile(fileName)) return 'raw';
-  return 'raw';
+  return origin === 'strip' ? 'raw' : 'rendered';
 }

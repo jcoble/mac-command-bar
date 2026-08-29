@@ -2,7 +2,7 @@ import type { ProviderUsageSnapshot } from './usageTypes.ts';
 import {
   readAssemblySettingFromTauri,
   writeAssemblySettingFromTauri
-} from '$lib/tauriSource.ts';
+} from '../../tauriSource.ts';
 
 type ProviderUsageWindowInput = {
   label?: string;

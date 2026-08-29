@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use mcb_core::session_store::{AnnotationRow, EventRow, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use similar::TextDiff;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use super::broker_status::{status_for, AgentWorkStatus, WorkflowBrokerEvent};
@@ -5870,44 +5871,13 @@ fn patch_target_path(text: &str) -> Option<String> {
 /// A unified diff of one whole-file replacement.
 ///
 /// ACP hands over the file before and after rather than a patch, so the change
-/// has to be found. Matching lines at each end are common ground and are left
-/// out; what remains is the edit, with a hunk header carrying the line it
-/// starts at. That is what the file-change row reads.
+/// has to be found. Each hunk keeps three lines of surrounding context so
+/// distant edits do not retain all the unchanged text between them.
 fn unified_diff(old_text: &str, new_text: &str) -> String {
-    let old: Vec<&str> = old_text.split('\n').collect();
-    let new: Vec<&str> = new_text.split('\n').collect();
-    let mut prefix = 0;
-    while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < old.len() - prefix
-        && suffix < new.len() - prefix
-        && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-    let removed = &old[prefix..old.len() - suffix];
-    let added = &new[prefix..new.len() - suffix];
-    if removed.is_empty() && added.is_empty() {
-        return String::new();
-    }
-    let mut patch = format!(
-        "@@ -{},{} +{},{} @@",
-        prefix + 1,
-        removed.len(),
-        prefix + 1,
-        added.len()
-    );
-    for line in removed {
-        patch.push_str("\n-");
-        patch.push_str(line);
-    }
-    for line in added {
-        patch.push_str("\n+");
-        patch.push_str(line);
-    }
-    patch
+    TextDiff::from_lines(old_text, new_text)
+        .unified_diff()
+        .context_radius(3)
+        .to_string()
 }
 
 fn text_from_value(value: &Value) -> Option<String> {
@@ -10873,6 +10843,22 @@ mod tests {
     #[test]
     fn a_file_with_no_change_produces_no_diff() {
         assert_eq!(unified_diff("same\nlines", "same\nlines"), "");
+    }
+
+    #[test]
+    fn unified_diff_splits_distant_edits_into_small_hunks() {
+        let old_lines: Vec<String> = (1..=1_000).map(|line| format!("line {line}")).collect();
+        let mut new_lines = old_lines.clone();
+        new_lines[9] = "changed line 10".to_owned();
+        new_lines[899] = "changed line 900".to_owned();
+
+        let patch = unified_diff(&old_lines.join("\n"), &new_lines.join("\n"));
+        let line_count = patch.lines().count();
+
+        assert!(
+            line_count < 40,
+            "expected a patch under 40 lines, got {line_count}"
+        );
     }
 
     #[test]

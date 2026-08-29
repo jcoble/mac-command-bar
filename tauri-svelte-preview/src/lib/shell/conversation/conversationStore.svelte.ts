@@ -797,7 +797,7 @@ export function applyAgentConversationSnapshot(
     snapshot.connection.ownedId,
     snapshot.connection.provider
   );
-  const events = idempotentSnapshotEvents(sourceEvents);
+  const events = window ? sourceEvents : idempotentSnapshotEvents(sourceEvents);
   const firstEvent = events[0];
   // A read snapshot is deliberately a bounded tail window. Seed the reducer
   // immediately before that window so the first retained event is contiguous

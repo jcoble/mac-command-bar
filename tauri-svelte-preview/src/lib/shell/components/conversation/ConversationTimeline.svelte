@@ -818,7 +818,7 @@
      leaves a short conversation stranded against the prompt with the empty pane
      above it, which is not how a conversation reads. */
   .timeline-list{position:relative;flex:none;width:min(820px,100%);min-height:1px;margin:0 auto}
-  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:16px;width:100%;padding-bottom:16px}
+  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:22px;width:100%;padding-bottom:22px}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
   .turn-fold:hover{color:var(--color-text)}
   .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
