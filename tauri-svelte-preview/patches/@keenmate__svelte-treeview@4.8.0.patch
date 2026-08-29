@@ -1,5 +1,5 @@
 diff --git a/dist/components/Node.svelte b/dist/components/Node.svelte
-index c42dec4a667db10a2073b88213d83ff05409e329..fdbfbc1ba500532716e62c14653f7264749a7e03 100644
+index c42dec4a667db10a2073b88213d83ff05409e329..2f448b023c150c870ebea882db44131585a2e1b2 100644
 --- a/dist/components/Node.svelte
 +++ b/dist/components/Node.svelte
 @@ -2,13 +2,13 @@
@@ -244,7 +244,7 @@ index c42dec4a667db10a2073b88213d83ff05409e329..fdbfbc1ba500532716e62c14653f7264
  			{#if hasMoreToRender}
  				<div class="ltree-loading-more">
 diff --git a/dist/components/Tree.svelte b/dist/components/Tree.svelte
-index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37e0ee892a 100644
+index 1db26d9bc9f98749eea76827426bdd41453669bb..0c5b7ef734a8fb11d729c555b81974c9031be53e 100644
 --- a/dist/components/Tree.svelte
 +++ b/dist/components/Tree.svelte
 @@ -3,24 +3,16 @@
@@ -252,8 +252,9 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  	import { type LTreeNode } from '../ltree/ltree-node.svelte.js';
  	import { createLTree } from '../ltree/ltree.svelte.js';
 -	import { type Ltree, type InsertArrayResult, type ContextMenuItem, type DropPosition, type DragDropMode, type DropOperation } from '../ltree/types.js';
+-	import { setContext, tick, untrack } from 'svelte';
 +	import { type Ltree, type InsertArrayResult, type ContextMenuItem } from '../ltree/types.js';
- 	import { setContext, tick, untrack } from 'svelte';
++	import { onDestroy, setContext, tick, untrack } from 'svelte';
  	import { createRenderCoordinator, type RenderCoordinator, type RenderStats } from './RenderCoordinator.svelte.js';
 -	import { uiLogger, dragLogger } from '../logger.js';
 +	import { uiLogger } from '../logger.js';
@@ -539,7 +540,32 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  	};
  	setContext('NodeCallbacks', nodeCallbacks);
  
-@@ -802,13 +685,6 @@
+@@ -792,6 +675,24 @@
+ 		setContext('RenderCoordinator', renderCoordinator);
+ 	}
+ 
++	// Release what outlives the component. A host that rebuilds this tree — for
++	// example keyed on the selected session — destroys and recreates it on every
++	// switch, and without this each switch strands a highlight timer holding a
++	// detached element, a queued frame writing to state that is gone, and the
++	// coordinator's own frame loop. Detached elements keep their layer backing
++	// alive, so the cost is compositor memory that is never returned.
++	onDestroy(() => {
++		if (currentHighlight) {
++			clearTimeout(currentHighlight.timeoutId);
++			currentHighlight = null;
++		}
++		if (flatRenderAnimationFrame !== null) {
++			cancelAnimationFrame(flatRenderAnimationFrame);
++			flatRenderAnimationFrame = null;
++		}
++		renderCoordinator?.reset();
++	});
++
+ 	// Create stable config object shared via context.
+ 	// Must use $state (not $state.raw) so property mutations are tracked reactively.
+ 	// We mutate individual properties in the $effect below so that Node components
+@@ -802,13 +703,6 @@
  		collapseIconClass: collapseIconClass ?? 'ltree-icon-collapse',
  		leafIconClass: leafIconClass ?? 'ltree-icon-leaf',
  		selectedNodeClass,
@@ -553,7 +579,7 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  	});
  	setContext('NodeConfig', nodeConfig);
  
-@@ -819,20 +695,8 @@
+@@ -819,20 +713,8 @@
  		nodeConfig.collapseIconClass = collapseIconClass ?? 'ltree-icon-collapse';
  		nodeConfig.leafIconClass = leafIconClass ?? 'ltree-icon-leaf';
  		nodeConfig.selectedNodeClass = selectedNodeClass;
@@ -574,7 +600,7 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  	$effect(() => {
  		tree.filterNodes(searchText);
  	});
-@@ -1077,580 +941,6 @@
+@@ -1077,580 +959,6 @@
  		isDebugMenuActive = false; // This is a user-triggered menu, not debug menu
  	}
  
@@ -1155,7 +1181,7 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  	// Close context menu when clicking outside
  	function handleDocumentClick(event: MouseEvent) {
  		if (contextMenuVisible) {
-@@ -1721,13 +1011,10 @@
+@@ -1721,13 +1029,10 @@
  </script>
  
  <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1173,7 +1199,7 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  	{#if shouldDisplayDebugInformation}
  		<div class="ltree-debug-info">
  			<details>
-@@ -1744,7 +1031,6 @@
+@@ -1744,7 +1049,6 @@
  					{#if tree?.statistics.isIndexing}
  						<span>Indexing: {tree.statistics.pendingIndexCount} pending</span>
  					{/if}
@@ -1181,7 +1207,7 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  				</div>
  			</details>
  		</div>
-@@ -1784,38 +1070,13 @@
+@@ -1784,38 +1088,13 @@
  										{node}
  										children={nodeTemplate}
  										progressiveRender={false}
@@ -1224,7 +1250,7 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  								{/each}
  							</div>
  						</div>
-@@ -1825,41 +1086,16 @@
+@@ -1825,41 +1104,16 @@
  					<div class="ltree-tree ltree-flat-mode">
  						{#each flatNodesToRender as node, i (node.id + '|' + node.path + '|' + node.hasChildren + '|' + node._rev)}
  							{@const prevNode = i > 0 ? flatNodesToRender[i - 1] : null}
@@ -1273,7 +1299,7 @@ index 1db26d9bc9f98749eea76827426bdd41453669bb..e202e140cbb392b9e23e175916456c37
  							</div>
  						{/each}
  					</div>
-@@ -1869,108 +1105,29 @@
+@@ -1869,108 +1123,29 @@
  				{#key tree.changeTracker}
  					<div class="ltree-tree">
  						{#each tree.tree as node (node.id)}
