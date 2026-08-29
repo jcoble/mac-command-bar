@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Files tree graphics leak — 2026-08-29</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1a1a19; --muted: #5f5e5a; --line: #e0ddd6;
+    --card: #ffffff; --accent: #8a4b2a; --bad: #a3342a; --good: #2f6b46;
+    --code-bg: #f3f1ec;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 62rem; margin: 0 auto; padding: 2.5rem 1.25rem 5rem; }
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 .3rem; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 2rem; }
+  h2 { font-size: 1.12rem; margin: 2.4rem 0 .7rem; padding-bottom: .3rem;
+    border-bottom: 1px solid var(--line); }
+  h3 { font-size: .97rem; margin: 1.5rem 0 .4rem; }
+  p { margin: .6rem 0; }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 3px;
+    font: .87em ui-monospace, "SF Mono", Menlo, monospace; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line);
+    vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: .82rem;
+    text-transform: uppercase; letter-spacing: .04em; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .wrap { overflow-x: auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 1rem 1.15rem; margin: 1rem 0; }
+  .verdict-bad { color: var(--bad); font-weight: 600; }
+  .verdict-good { color: var(--good); font-weight: 600; }
+  .cause { background: #fdf6ee; border-left: 3px solid var(--accent); }
+  ul { margin: .5rem 0; padding-left: 1.3rem; }
+  li { margin: .3rem 0; }
+  .key { font-weight: 600; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: .87rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>The Files tree leaks compositor surfaces</h1>
+<p class="sub">2026-08-29 · branch <code>tsk-808-assembly-wave</code> · production build, measured with <code>footprint</code></p>
+
+<div class="card cause">
+<p><span class="key">Result.</span> A single session load grows the WebContent process from
+<strong>122&nbsp;MB to 969&nbsp;MB</strong>, of which <strong>~450&nbsp;MB is orphaned compositor
+surfaces</strong> — graphics memory owned by the process but attributed to no live layer. Removing
+the <code>&lt;Tree&gt;</code> component from the Files panel is the only change that fixes it;
+graphics returns to its cold value of 41&nbsp;MB. Nothing the tree <em>renders</em> matters.</p>
+</div>
+
+<h2>1 · The leak is real in production</h2>
+
+<p>The first control was whether this was a Vite dev-mode artifact. Dev serves the app as thousands
+of unbundled ES modules with source maps, and that source text is retained by JavaScriptCore where
+it appears under <code>WebKit malloc</code> — unreachable from app state and never freed.</p>
+
+<div class="wrap">
+<table>
+<thead><tr><th>Build</th><th class="num">idle</th><th class="num">after use</th><th class="num">peak</th><th class="num">WebKit malloc idle</th></tr></thead>
+<tbody>
+<tr><td>dev (Vite)</td><td class="num">506 MB</td><td class="num">720 MB</td><td class="num">1082 MB</td><td class="num">454 MB</td></tr>
+<tr><td>production (4.3 MB bundle)</td><td class="num">97–122 MB</td><td class="num">969 MB</td><td class="num">1040 MB</td><td class="num">58 MB</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Dev inflates the idle baseline roughly <strong>8×</strong> on the malloc term, so any ranking
+taken in dev is distorted. But production still climbs, so the leak is genuine. All numbers below
+are production.</p>
+
+<h2>2 · It is graphics, in one specific process</h2>
+
+<p>The app runs <strong>two</strong> WebContent processes. The second is the browser-tab child
+webview and is small and malloc-dominated; measuring it instead of the main one produces a flat,
+misleading trace. Every number here is the main webview.</p>
+
+<div class="wrap">
+<table>
+<thead><tr><th>Process</th><th class="num">footprint</th><th>dominant category</th></tr></thead>
+<tbody>
+<tr><td>Rust app</td><td class="num">41–49 MB</td><td>—</td></tr>
+<tr><td>WebContent (browser-tab child)</td><td class="num">149 MB</td><td>malloc</td></tr>
+<tr><td><strong>WebContent (main webview)</strong></td><td class="num"><strong>749–1040 MB</strong></td><td><strong>graphics, 174 regions ≈ 3 MB each</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The Rust backend is not involved. Neither is the JS heap, the DOM, nor the conversation store —
+all measured clean at the time the process held 720 MB:</p>
+
+<ul>
+<li><code>document.querySelectorAll('*').length</code> → <strong>1,206 nodes</strong></li>
+<li>conversation projections → <strong>1 session, 220 bytes</strong> of reachable character data</li>
+<li>retained editor states → <strong>0</strong></li>
+<li><code>.timeline-scroll</code> scrollHeight → <strong>3,948 px</strong> (rules out tiled backing for a tall scroller)</li>
+</ul>
+
+<h3>The surfaces are orphaned</h3>
+<p>Web Inspector's Layers tab accounts for only about <strong>53 MB</strong> of live layers
+(<code>#document</code> 24.78 MB, <code>dv-render-overlay</code> 10.96 MB,
+<code>ltree-tree</code> 9.95 MB, <code>session-scroll</code> 7.05 MB) while the process reports
+<strong>507 MB</strong> of graphics. The gap belongs to no live layer: destroyed layers whose
+backing surfaces were never returned. The live-layer list looks near-identical at 120 MB and at
+835 MB, so the leak is invisible to the Layers tab by construction.</p>
+
+<h3>It ratchets, and it does not drain</h3>
+<p>Sampled at 15 s for 25 minutes idle: total stepped down 690 → 687 → 686 → 649 and never below,
+with graphics pinned at 459 MB throughout. At 1 s resolution a single session load spikes to
+969 MB and settles at 539 MB — roughly 430 MB is transient, and <strong>+417 MB stays</strong>.
+Because one session is enough to pay most of the cost, the curve is sub-linear rather than
+unbounded, which is why earlier work saw it plateau.</p>
+
+<h2>3 · Elimination</h2>
+
+<p>Each row is one variable changed against the same production build, driven the same way, each on
+a fresh process.</p>
+
+<div class="wrap">
+<table>
+<thead><tr><th>Variant</th><th class="num">peak total</th><th class="num">peak graphics</th><th class="num">settled graphics</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td>baseline — Files panel on</td><td class="num">969 MB</td><td class="num">637 MB</td><td class="num">369 MB</td><td>—</td></tr>
+<tr><td>all 8 <code>backdrop-filter</code> sites off</td><td class="num">890 MB</td><td class="num">590 MB</td><td class="num">—</td><td class="verdict-bad">innocent</td></tr>
+<tr><td><code>{#key}</code> removed (tree not rebuilt per session)</td><td class="num">1040 MB</td><td class="num">714 MB</td><td class="num">507 MB</td><td class="verdict-bad">innocent</td></tr>
+<tr><td><code>title={node.path}</code> removed (native tooltips)</td><td class="num">1068 MB</td><td class="num">736 MB</td><td class="num">—</td><td class="verdict-bad">innocent</td></tr>
+<tr><td>per-row SVG icons removed</td><td class="num">727 MB</td><td class="num">394 MB</td><td class="num">—</td><td class="verdict-bad">innocent</td></tr>
+<tr><td>Files panel removed entirely</td><td class="num">366 MB</td><td class="num">180 MB</td><td class="num">43 MB</td><td class="verdict-good">fixes it</td></tr>
+<tr><td><strong><code>&lt;Tree&gt;</code> removed, panel otherwise intact</strong></td><td class="num"><strong>418 MB</strong></td><td class="num"><strong>184 MB</strong></td><td class="num"><strong>41 MB</strong></td><td class="verdict-good"><strong>fixes it</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Removing only <code>&lt;Tree&gt;</code> matches removing the whole panel. Settled graphics returns
+to its cold value. Hover styling, pointer behaviour and Web Inspector attachment were separately
+ruled out by the owner from prior work.</p>
+
+<h2>4 · Where that points</h2>
+
+<p>Every property of what the tree renders is innocent; only the component itself matters. The
+remaining mechanism is the virtual-scroll DOM recycling inside
+<code>@keenmate/svelte-treeview</code> v4.8.0 — rows recycled as the pointer and scroll move over
+them, and the whole dataset replaced on each session switch. That matches the observed worst case:
+moving the pointer across rows and <em>then</em> switching produces the largest jump, consistent with
+recycling churning composited layers and the switch orphaning their surfaces.</p>
+
+<div class="card">
+<p><span class="key">Recommendation.</span> Replace <code>@keenmate/svelte-treeview</code> with the
+TanStack virtualizer the app already depends on. It drives the conversation timeline, which measured
+flat in every run in this session, so it is proven non-leaking in this exact app and WebKit build.
+It also removes a dependency rather than adding one, and ends the app having two virtualization
+mechanisms.</p>
+<p>The replacement must preserve expand/collapse, selection, the context menu, search filtering and
+flat-render mode. It deserves a written contract before implementation.</p>
+</div>
+
+<h2>5 · Corrections to earlier findings</h2>
+
+<p>The 2026-08-26 fast-switch campaign reached three conclusions that this measurement revises. The
+cause in each case is that its <code>__fastSwitch</code> driver switched faster than sessions could
+load, so it never rendered the content that allocates.</p>
+
+<ul>
+<li><span class="key">"The JS heap is not the leak."</span> True but incomplete. The heap is indeed
+bounded, but it was read as clearing the frontend; the leaking term is graphics, which that campaign
+ranked on malloc and described as plateauing at rest.</li>
+<li><span class="key">"The Files panel is the only arm that moved the number."</span> Correct
+subsystem, understated magnitude — it measured a fraction of a 600 MB effect.</li>
+<li><span class="key">Native <code>title=</code> tooltips as the hover candidate.</span> Tested
+directly here and cleared.</li>
+</ul>
+
+<h3>Method notes</h3>
+<ul>
+<li>Rank on the main webview's <code>footprint</code> graphics category, not RSS and not the JS heap.</li>
+<li>Identify the correct WebContent process; there are two, and the wrong one produces a flat trace.</li>
+<li>Fresh process per measurement — retained graphics never drains, so runs contaminate each other.</li>
+<li>Measure production. Dev inflates the malloc baseline about 8×.</li>
+<li>Drive with a real pointer. Synthetic events do not reproduce the worst case.</li>
+</ul>
+
+<footer>
+Raw traces: <code>step-samples.tsv</code>, <code>nofiles-samples.tsv</code>,
+<code>notree-samples.tsv</code>, <code>notitle-samples.tsv</code>, <code>noicons-samples.tsv</code>.
+Experiment patch: <code>docs/experiments/2026-08-29-backdrop-filter-off.patch</code>.
+</footer>
+
+</main>
+</body>
+</html>

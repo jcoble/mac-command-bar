@@ -1,0 +1,147 @@
+diff --git a/tauri-svelte-preview/src/app.css b/tauri-svelte-preview/src/app.css
+index e21f58a3..e4a15bb8 100644
+--- a/tauri-svelte-preview/src/app.css
++++ b/tauri-svelte-preview/src/app.css
+@@ -445,7 +445,7 @@ textarea,
+   border-radius: 9px;
+   background: rgba(12, 16, 16, 0.86);
+   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
+-  backdrop-filter: blur(14px);
++  /* experiment: backdrop-filter off */
+ }
+ 
+ .hidden-dock-panel-button {
+diff --git a/tauri-svelte-preview/src/lib/components/Dialog.svelte b/tauri-svelte-preview/src/lib/components/Dialog.svelte
+index f5bab5e9..c767d202 100644
+--- a/tauri-svelte-preview/src/lib/components/Dialog.svelte
++++ b/tauri-svelte-preview/src/lib/components/Dialog.svelte
+@@ -90,7 +90,7 @@
+     inset: 0;
+     z-index: 100;
+     background-color: var(--color-scrim);
+-    backdrop-filter: blur(2px);
++    /* experiment: backdrop-filter off */
+     animation: dialog-overlay-in 160ms ease forwards;
+   }
+ 
+diff --git a/tauri-svelte-preview/src/lib/components/overlays/CommandPaletteOverlay.svelte b/tauri-svelte-preview/src/lib/components/overlays/CommandPaletteOverlay.svelte
+index 645fbc6e..eca99275 100644
+--- a/tauri-svelte-preview/src/lib/components/overlays/CommandPaletteOverlay.svelte
++++ b/tauri-svelte-preview/src/lib/components/overlays/CommandPaletteOverlay.svelte
+@@ -144,7 +144,7 @@
+     height: 100%;
+     border: 0;
+     background: rgba(7, 9, 10, 0.56);
+-    backdrop-filter: blur(10px);
++    /* experiment: backdrop-filter off */
+     cursor: default;
+   }
+ 
+diff --git a/tauri-svelte-preview/src/lib/components/overlays/QuickOpenOverlay.svelte b/tauri-svelte-preview/src/lib/components/overlays/QuickOpenOverlay.svelte
+index 66a54d8b..e3e79590 100644
+--- a/tauri-svelte-preview/src/lib/components/overlays/QuickOpenOverlay.svelte
++++ b/tauri-svelte-preview/src/lib/components/overlays/QuickOpenOverlay.svelte
+@@ -201,7 +201,7 @@
+     height: 100%;
+     border: 0;
+     background: rgba(7, 9, 10, 0.56);
+-    backdrop-filter: blur(10px);
++    /* experiment: backdrop-filter off */
+     cursor: default;
+   }
+ 
+diff --git a/tauri-svelte-preview/src/lib/components/ui/alert-dialog/alert-dialog-overlay.svelte b/tauri-svelte-preview/src/lib/components/ui/alert-dialog/alert-dialog-overlay.svelte
+index 9a40277d..a1903eba 100644
+--- a/tauri-svelte-preview/src/lib/components/ui/alert-dialog/alert-dialog-overlay.svelte
++++ b/tauri-svelte-preview/src/lib/components/ui/alert-dialog/alert-dialog-overlay.svelte
+@@ -12,6 +12,6 @@
+ <AlertDialogPrimitive.Overlay
+ 	bind:ref
+ 	data-slot="alert-dialog-overlay"
+-	class={cn("data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-[var(--color-scrim)] duration-100 supports-backdrop-filter:backdrop-blur-[2px] fixed inset-0 z-50", className)}
++	class={cn("data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-[var(--color-scrim)] duration-100 fixed inset-0 z-50", className)}
+ 	{...restProps}
+ />
+diff --git a/tauri-svelte-preview/src/lib/components/ui/dialog/dialog-overlay.svelte b/tauri-svelte-preview/src/lib/components/ui/dialog/dialog-overlay.svelte
+index 2a4e3a5e..443ea900 100644
+--- a/tauri-svelte-preview/src/lib/components/ui/dialog/dialog-overlay.svelte
++++ b/tauri-svelte-preview/src/lib/components/ui/dialog/dialog-overlay.svelte
+@@ -12,6 +12,6 @@
+ <DialogPrimitive.Overlay
+ 	bind:ref
+ 	data-slot="dialog-overlay"
+-	class={cn("data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-[var(--color-scrim)] duration-100 supports-backdrop-filter:backdrop-blur-[2px] fixed inset-0 isolate z-50", className)}
++	class={cn("data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-[var(--color-scrim)] duration-100 fixed inset-0 isolate z-50", className)}
+ 	{...restProps}
+ />
+diff --git a/tauri-svelte-preview/src/lib/shell/memprobe.ts b/tauri-svelte-preview/src/lib/shell/memprobe.ts
+index f5d9257c..c9a0109e 100644
+--- a/tauri-svelte-preview/src/lib/shell/memprobe.ts
++++ b/tauri-svelte-preview/src/lib/shell/memprobe.ts
+@@ -19,10 +19,38 @@ export const memprobe = {
+   sizes: () => ({
+     conversationSessions: Object.keys(conversationSessions).length,
+     editorStates: resourceDiagnostics.codeMirrorEditorStates
+-  })
++  }),
++  /**
++   * UTF-16 character bytes reachable from each live conversation projection.
++   * Large strings are allocated from bmalloc and report under "WebKit malloc"
++   * rather than the JS heap, so a transcript can weigh hundreds of megabytes
++   * while the heap and the DOM both look small.
++   */
++  bytes: () => {
++    const seen = new Set<object>();
++    const perSession: Record<string, { events: number; eventBytes: number; sessionBytes: number }> = {};
++    for (const [ownedId, session] of Object.entries(conversationSessions)) {
++      perSession[ownedId] = {
++        events: session.loadedEvents.length,
++        eventBytes: characterBytes(session.loadedEvents, seen),
++        sessionBytes: characterBytes(session, seen)
++      };
++    }
++    return perSession;
++  }
+ };
+ 
+-type CounterKey = Exclude<keyof typeof memprobe, 'selectBailEarly' | 'sizes'>;
++function characterBytes(value: unknown, seen: Set<object>): number {
++  if (typeof value === 'string') return value.length * 2;
++  if (value === null || typeof value !== 'object') return 0;
++  if (seen.has(value)) return 0;
++  seen.add(value);
++  let total = 0;
++  for (const entry of Object.values(value as Record<string, unknown>)) total += characterBytes(entry, seen);
++  return total;
++}
++
++type CounterKey = Exclude<keyof typeof memprobe, 'selectBailEarly' | 'sizes' | 'bytes'>;
+ 
+ export function bump(key: CounterKey): void {
+   memprobe[key] += 1;
+diff --git a/tauri-svelte-preview/src/lib/shell/usage/UsagePopover.svelte b/tauri-svelte-preview/src/lib/shell/usage/UsagePopover.svelte
+index 9db79428..e3319275 100644
+--- a/tauri-svelte-preview/src/lib/shell/usage/UsagePopover.svelte
++++ b/tauri-svelte-preview/src/lib/shell/usage/UsagePopover.svelte
+@@ -262,7 +262,7 @@
+     place-items: center;
+     padding: 24px;
+     background: color-mix(in srgb, var(--color-bg) 74%, transparent);
+-    backdrop-filter: blur(5px);
++    /* experiment: backdrop-filter off */
+   }
+   .modal-surface {
+     width: min(1120px, calc(100vw - 48px));
+diff --git a/tauri-svelte-preview/src/lib/shell/usage/UsageWorkspace.svelte b/tauri-svelte-preview/src/lib/shell/usage/UsageWorkspace.svelte
+index c53522d8..1284c326 100644
+--- a/tauri-svelte-preview/src/lib/shell/usage/UsageWorkspace.svelte
++++ b/tauri-svelte-preview/src/lib/shell/usage/UsageWorkspace.svelte
+@@ -344,7 +344,7 @@
+   button { border: 0; font: inherit; cursor: pointer; }
+   .muted, small { color: var(--color-text-2); }
+   .muted { font-size: 0.76rem; line-height: 1.45; }
+-  .workspace-header { position: sticky; top: -20px; z-index: 5; display: flex; justify-content: space-between; gap: 16px; margin: -20px -20px 0; padding: 18px 20px 14px; background: color-mix(in srgb, var(--color-surface) 94%, transparent); backdrop-filter: blur(10px); }
++  .workspace-header { position: sticky; top: -20px; z-index: 5; display: flex; justify-content: space-between; gap: 16px; margin: -20px -20px 0; padding: 18px 20px 14px; background: color-mix(in srgb, var(--color-surface) 94%, transparent); /* experiment: backdrop-filter off */ }
+   .title-block { display: grid; gap: 3px; }
+   .eyebrow { color: var(--color-text-3); font-size: 0.75rem; font-weight: 680; letter-spacing: 0.085em; text-transform: uppercase; }
+   .header-actions, .panel-heading, .section-heading, .provider-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }

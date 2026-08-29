@@ -19,10 +19,38 @@ export const memprobe = {
   sizes: () => ({
     conversationSessions: Object.keys(conversationSessions).length,
     editorStates: resourceDiagnostics.codeMirrorEditorStates
-  })
+  }),
+  /**
+   * UTF-16 character bytes reachable from each live conversation projection.
+   * Large strings are allocated from bmalloc and report under "WebKit malloc"
+   * rather than the JS heap, so a transcript can weigh hundreds of megabytes
+   * while the heap and the DOM both look small.
+   */
+  bytes: () => {
+    const seen = new Set<object>();
+    const perSession: Record<string, { events: number; eventBytes: number; sessionBytes: number }> = {};
+    for (const [ownedId, session] of Object.entries(conversationSessions)) {
+      perSession[ownedId] = {
+        events: session.loadedEvents.length,
+        eventBytes: characterBytes(session.loadedEvents, seen),
+        sessionBytes: characterBytes(session, seen)
+      };
+    }
+    return perSession;
+  }
 };
 
-type CounterKey = Exclude<keyof typeof memprobe, 'selectBailEarly' | 'sizes'>;
+function characterBytes(value: unknown, seen: Set<object>): number {
+  if (typeof value === 'string') return value.length * 2;
+  if (value === null || typeof value !== 'object') return 0;
+  if (seen.has(value)) return 0;
+  seen.add(value);
+  let total = 0;
+  for (const entry of Object.values(value as Record<string, unknown>)) total += characterBytes(entry, seen);
+  return total;
+}
+
+type CounterKey = Exclude<keyof typeof memprobe, 'selectBailEarly' | 'sizes' | 'bytes'>;
 
 export function bump(key: CounterKey): void {
   memprobe[key] += 1;

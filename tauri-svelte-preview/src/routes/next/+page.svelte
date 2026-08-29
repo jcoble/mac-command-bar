@@ -47,8 +47,8 @@
 	import UtilityStrip from "$lib/shell/components/UtilityStrip.svelte";
 	import { rememberedAgentConfigChoice } from "$lib/shell/conversation/agentConfigMemory";
 	import {
-		commitConversationHandoff,
 		changeStructuredConversationCheckout,
+		commitConversationHandoff,
 		ensureStructuredConversation,
 		flushConversationSessionDraft,
 		loadConversationForRead,
@@ -79,14 +79,12 @@
 		AgentConversationProvider,
 	} from "$lib/shell/conversation/conversationTypes";
 	import { countInvoke } from "$lib/shell/devInvokeCounter.svelte";
-	import { profileResourceLifecycle } from "$lib/shell/resourceDiagnostics.svelte";
 	import {
 		activateEditor,
 		editorState,
 		resetEditorState,
 		restoreEditorFiles,
 	} from "$lib/shell/editor/editorStore.svelte";
-	import { bump, bumpBail, memprobe, memprobeSnapshot } from "$lib/shell/memprobe";
 	import {
 		configureExtensionApiProbeRuntime,
 		disposeExtensionApiProbeResources,
@@ -101,8 +99,8 @@
 		sourceIntelligence,
 	} from "$lib/shell/editor/sourceIntelligence";
 	import { canonicalPath, explorer, selectPath, setScrollTop } from "$lib/shell/explorer/explorerStore.svelte";
-	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
 	import { gitCommitFilesService } from "$lib/shell/git/gitCommitFilesService";
+	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
 	import { gitService } from "$lib/shell/git/gitService";
 	import type { CenterDockSnapshot } from "$lib/shell/layout/centerDock";
 	import {
@@ -119,14 +117,13 @@
 		type ShellRegionId,
 	} from "$lib/shell/layout/frame";
 	import { isSidebarViewId, type SidebarViewId } from "$lib/shell/layout/sidebarViews";
-	import {
-		DEFAULT_CENTER_TAB,
-		DEFAULT_RIGHT_TAB,
-	} from "$lib/shell/layout/workbenchTabs";
+	import { DEFAULT_CENTER_TAB, DEFAULT_RIGHT_TAB } from "$lib/shell/layout/workbenchTabs";
+	import { bump, bumpBail } from "$lib/shell/memprobe";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import { rememberLastUsed } from "$lib/shell/newSession/projectRootsStore.svelte";
 	import type { ThreadStartProviderConfig, ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow.ts";
 	import { deriveThreadStartProjects } from "$lib/shell/newSession/threadStartFlow.ts";
+	import { setUnavailableOpenFileRoot } from "$lib/shell/openFileBus";
 	import {
 		adoptAgentSession,
 		createFreshSession,
@@ -134,12 +131,13 @@
 		ownedSessionMetaForBackend,
 		reconcileOwnedSessions,
 	} from "$lib/shell/ownedSessions";
-	import { setUnavailableOpenFileRoot } from "$lib/shell/openFileBus";
+	import { profileResourceLifecycle } from "$lib/shell/resourceDiagnostics.svelte";
 	import type { SessionLibraryRecord } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import {
 		createSessionLibraryService,
 		registerSessionLibraryHost,
 	} from "$lib/shell/sessionLibrary/sessionLibraryService";
+	import { SessionSelectionLayers } from "$lib/shell/sessionSelectionLayers.svelte";
 	import {
 		captureWorkspace,
 		DEFAULT_DIFF_MODE,
@@ -151,7 +149,6 @@
 	} from "$lib/shell/sessionWorkspaces";
 	import { registerShellCommands } from "$lib/shell/shellCommands";
 	import { readSelection, shellPanels } from "$lib/shell/shellPanels";
-	import { SessionSelectionLayers } from "$lib/shell/sessionSelectionLayers.svelte";
 	import {
 		clearStackHandlers,
 		noteSessionRemoved,
@@ -186,19 +183,19 @@
 		clearAgentConversationWorkspaceEditorsFromTauri,
 		clearAgentConversationWorkspaceTabsFromTauri,
 		deleteAgentConversationSessionFromTauri,
-		readAgentConversationWorkspaceFromTauri,
-		readAgentConversationWorkspaceExpandedPathsFromTauri,
 		listAgentConversationSessionsFromTauri,
 		listAgentSessionsForProjectFromTauri,
 		listAgentSessionsFromLocalBridge,
 		listAgentSessionsFromTauri,
 		openMainDevtoolsFromTauri,
+		readAgentConversationWorkspaceExpandedPathsFromTauri,
+		readAgentConversationWorkspaceFromTauri,
 		readAssemblySettingFromTauri,
 		updateAgentConversationSessionMetaFromTauri,
 		validateProjectRootFromTauri,
-		writeAssemblySettingFromTauri,
-		writeAgentConversationWorkspaceFromTauri,
 		writeAgentConversationWorkspaceExpandedPathsFromTauri,
+		writeAgentConversationWorkspaceFromTauri,
+		writeAssemblySettingFromTauri,
 		type AgentSession,
 	} from "$lib/tauriSource";
 
@@ -240,9 +237,7 @@
 	const sessionProjection = $derived<SessionProjection>({
 		activeOwnedId: rail.activeOwnedId,
 		rail: rail.owned,
-		activeConversation: rail.activeOwnedId === null
-			? null
-			: conversationSessions[rail.activeOwnedId] ?? null,
+		activeConversation: rail.activeOwnedId === null ? null : (conversationSessions[rail.activeOwnedId] ?? null),
 		activeWorkspace: activeWorkspaceSnapshot,
 	});
 	const checkoutScope = $derived.by<CheckoutScope>(() => {
@@ -254,38 +249,28 @@
 			durableSessionRoot,
 			filesInspectionRoot,
 			gitInspectionRoot,
-			filesReadOnly: Boolean(filesInspectionRoot)
-				&& canonicalPath(filesInspectionRoot ?? "") !== canonicalSessionRoot,
-			gitReadOnly: Boolean(gitInspectionRoot)
-				&& canonicalPath(gitInspectionRoot ?? "") !== canonicalSessionRoot,
+			filesReadOnly: Boolean(filesInspectionRoot) && canonicalPath(filesInspectionRoot ?? "") !== canonicalSessionRoot,
+			gitReadOnly: Boolean(gitInspectionRoot) && canonicalPath(gitInspectionRoot ?? "") !== canonicalSessionRoot,
 			workspaceRestoreGeneration,
 			sessionSelectionGeneration,
 			conversationGeneration: sessionProjection.activeConversation?.generation ?? null,
 		};
 	});
 	const filesProjectionRoot = $derived(
-		sessionSelectionLayers.hasTreeProjection
-			? sessionSelectionLayers.treeRoot
-			: checkoutScope.durableSessionRoot,
+		sessionSelectionLayers.hasTreeProjection ? sessionSelectionLayers.treeRoot : checkoutScope.durableSessionRoot,
 	);
 	const filesProjectionOwnedId = $derived(
-		sessionSelectionLayers.hasTreeProjection
-			? sessionSelectionLayers.treeOwnedId
-			: sessionProjection.activeOwnedId,
+		sessionSelectionLayers.hasTreeProjection ? sessionSelectionLayers.treeOwnedId : sessionProjection.activeOwnedId,
 	);
 	const controlledSession = $derived(
 		controlledSelectionOwnedId === null
 			? null
-			: rail.owned.find((session) => session.ownedId === controlledSelectionOwnedId) ?? null,
+			: (rail.owned.find((session) => session.ownedId === controlledSelectionOwnedId) ?? null),
 	);
-	const controlledRoot = $derived(
-		controlledSession?.cwd.trim() || controlledSession?.projectPath?.trim() || "",
-	);
+	const controlledRoot = $derived(controlledSession?.cwd.trim() || controlledSession?.projectPath?.trim() || "");
 	const controlledRootRemote = $derived(controlledSession?.executionEnvironment === "remote");
 	const controlledEditorRootAvailable = $derived(
-		controlledSelectionOwnedId !== null
-			&& Boolean(sessionSelectionLayers.treeRoot)
-			&& !controlledRootRemote,
+		controlledSelectionOwnedId !== null && Boolean(sessionSelectionLayers.treeRoot) && !controlledRootRemote,
 	);
 	const controlledCheckoutScope = $derived<CheckoutScope>({
 		durableSessionRoot: controlledRoot,
@@ -295,9 +280,10 @@
 		gitReadOnly: false,
 		workspaceRestoreGeneration,
 		sessionSelectionGeneration,
-		conversationGeneration: sessionSelectionLayers.chatOwnedId === null
-			? null
-			: conversationSessions[sessionSelectionLayers.chatOwnedId]?.generation ?? null,
+		conversationGeneration:
+			sessionSelectionLayers.chatOwnedId === null
+				? null
+				: (conversationSessions[sessionSelectionLayers.chatOwnedId]?.generation ?? null),
 	});
 
 	async function selectSessionLayers(ownedId: string): Promise<void> {
@@ -321,26 +307,25 @@
 			const projectRoot = canonicalPath(session.cwd.trim() || (session.projectPath ?? "").trim());
 			const loadPaths = projectRoot
 				? (async () => {
-					countInvoke("read_agent_conversation_workspace_expanded_paths");
-					const saved = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot);
-					if (controlledSelectionOwnedId === ownedId) {
-						controlledExpandedPathsByRoot = { [projectRoot]: saved };
-						if (controlledEditorSnapshot) {
-							controlledEditorSnapshot = {
-								...controlledEditorSnapshot,
-								expandedPathsByRoot: { [projectRoot]: saved },
-							};
+						countInvoke("read_agent_conversation_workspace_expanded_paths");
+						const saved = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot);
+						if (controlledSelectionOwnedId === ownedId) {
+							controlledExpandedPathsByRoot = { [projectRoot]: saved };
+							if (controlledEditorSnapshot) {
+								controlledEditorSnapshot = {
+									...controlledEditorSnapshot,
+									expandedPathsByRoot: { [projectRoot]: saved },
+								};
+							}
 						}
-					}
-				})()
+					})()
 				: Promise.resolve();
 			await Promise.all([
 				loadPaths,
 				sessionSelectionLayers.selectSession(session, sessionSelectionLayers.chatOwnedId),
 				fillEditorWorkspace(ownedId, projectRoot, editorGeneration),
 			]);
-		}
-		else {
+		} else {
 			sessionSelectionLayers.clearTreeView();
 			sessionSelectionLayers.clearChatHistory();
 		}
@@ -357,11 +342,7 @@
 	}
 
 	/** Load only this session's tab descriptors. Source text remains on disk. */
-	async function fillEditorWorkspace(
-		ownedId: string,
-		projectRoot: string,
-		generation: number,
-	): Promise<void> {
+	async function fillEditorWorkspace(ownedId: string, projectRoot: string, generation: number): Promise<void> {
 		await workspaceWriteQueue;
 		if (disposed || generation !== controlledEditorGeneration || controlledSelectionOwnedId !== ownedId) return;
 		countInvoke("read_agent_conversation_workspace");
@@ -378,9 +359,10 @@
 
 		controlledEditorOwnedId = ownedId;
 		const restoredExpandedPaths = controlledExpandedPathsByRoot[projectRoot];
-		controlledEditorSnapshot = snapshot && restoredExpandedPaths
-			? { ...snapshot, expandedPathsByRoot: { [projectRoot]: [...restoredExpandedPaths] } }
-			: snapshot;
+		controlledEditorSnapshot =
+			snapshot && restoredExpandedPaths
+				? { ...snapshot, expandedPathsByRoot: { [projectRoot]: [...restoredExpandedPaths] } }
+				: snapshot;
 		activateEditor(projectRoot || null);
 		const plan = planWorkspaceRestore(snapshot);
 		editorPanel?.restoreViewStates(plan.openFiles);
@@ -390,13 +372,13 @@
 	/** Capture the editor strip without retaining file contents for another session. */
 	function captureControlledEditorWorkspace(): SessionWorkspaceSnapshot | null {
 		if (!controlledEditorOwnedId) return null;
-		const ownedPaths = editorPanel?.workspaceOwnedPaths()
-			?? editorState.openFiles.map((file) => file.path);
+		const ownedPaths = editorPanel?.workspaceOwnedPaths() ?? editorState.openFiles.map((file) => file.path);
 		const ownedPathSet = new Set(ownedPaths);
 		const openFiles = editorState.openFiles.filter((file) => ownedPathSet.has(file.path));
-		const activePath = editorState.activePath && ownedPathSet.has(editorState.activePath)
-			? editorState.activePath
-			: openFiles.at(-1)?.path ?? null;
+		const activePath =
+			editorState.activePath && ownedPathSet.has(editorState.activePath)
+				? editorState.activePath
+				: (openFiles.at(-1)?.path ?? null);
 		const editorFields = captureWorkspace({
 			openFiles,
 			activePath,
@@ -800,7 +782,8 @@
 				rail.activeOwnedId !== ownedId ||
 				workspaceRestoreGeneration !== generation ||
 				canonicalPath(readSelection().root) !== canonicalPath(root)
-			) return false;
+			)
+				return false;
 			return true;
 		},
 		openUrl: (request) => {
@@ -1028,13 +1011,13 @@
 		activeWorkspaceSnapshot = activeWorkspaceSnapshot
 			? { ...activeWorkspaceSnapshot, expandedPathsByRoot }
 			: captureWorkspace({
-				openFiles: [],
-				activePath: null,
-				selectedPath: explorer.selectedPath,
-				scrollTop: explorer.scrollTop,
-				rightTab,
-				expandedPathsByRoot,
-			});
+					openFiles: [],
+					activePath: null,
+					selectedPath: explorer.selectedPath,
+					scrollTop: explorer.scrollTop,
+					rightTab,
+					expandedPathsByRoot,
+				});
 		scheduleWorkspaceAutosave(
 			ownedId,
 			editorState.openFiles,
@@ -1071,18 +1054,16 @@
 		});
 	}
 
-	function rememberInspectionRoot(kind: 'files' | 'source-control', root: string | null): void {
+	function rememberInspectionRoot(kind: "files" | "source-control", root: string | null): void {
 		const ownedId = rail.activeOwnedId;
 		const sessionRoot = canonicalPath(readSelection().root);
 		if (!ownedId || !sessionRoot) return;
-		const selectedRoot = canonicalPath(root ?? '');
+		const selectedRoot = canonicalPath(root ?? "");
 		const inspectionRoot = selectedRoot && selectedRoot !== sessionRoot ? selectedRoot : null;
 		const filesInspectionRoot =
-			kind === 'files' ? inspectionRoot : (activeWorkspaceSnapshot?.filesInspectionRoot ?? null);
+			kind === "files" ? inspectionRoot : (activeWorkspaceSnapshot?.filesInspectionRoot ?? null);
 		const sourceControlInspectionRoot =
-			kind === 'source-control'
-				? inspectionRoot
-				: (activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null);
+			kind === "source-control" ? inspectionRoot : (activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null);
 		activeWorkspaceSnapshot = activeWorkspaceSnapshot
 			? { ...activeWorkspaceSnapshot, filesInspectionRoot, sourceControlInspectionRoot }
 			: captureWorkspace({
@@ -1109,29 +1090,29 @@
 	 * few hundred bytes. */
 	async function snapshotWorkspace(ownedId: string): Promise<boolean> {
 		if (clearAllEditorsInFlight) return false;
-		const ownedPaths = editorPanel?.workspaceOwnedPaths()
-			?? editorState.openFiles.map((file) => file.path);
+		const ownedPaths = editorPanel?.workspaceOwnedPaths() ?? editorState.openFiles.map((file) => file.path);
 		const ownedPathSet = new Set(ownedPaths);
 		const openFiles = editorState.openFiles.filter((file) => ownedPathSet.has(file.path));
-		const activePath = editorState.activePath && ownedPathSet.has(editorState.activePath)
-			? editorState.activePath
-			: openFiles.at(-1)?.path ?? null;
+		const activePath =
+			editorState.activePath && ownedPathSet.has(editorState.activePath)
+				? editorState.activePath
+				: (openFiles.at(-1)?.path ?? null);
 		const snapshot = captureWorkspace({
-				openFiles,
-				activePath,
-				viewStates: editorPanel?.captureViewStates(ownedPaths),
-				selectedPath: explorer.selectedPath,
-				scrollTop: explorer.scrollTop,
-				diffPath: gitPanel.selectedPath || null,
-				diffRoot: gitPanel.root,
-				diffMode,
-				conversation: captureConversationWorkspace(ownedId),
-				browser: captureBrowserState(),
-				center: frameControls?.captureCenterLayout() ?? null,
-				rightTab,
-				expandedPathsByRoot: activeWorkspaceSnapshot?.expandedPathsByRoot,
-				filesInspectionRoot: activeWorkspaceSnapshot?.filesInspectionRoot,
-				sourceControlInspectionRoot: activeWorkspaceSnapshot?.sourceControlInspectionRoot,
+			openFiles,
+			activePath,
+			viewStates: editorPanel?.captureViewStates(ownedPaths),
+			selectedPath: explorer.selectedPath,
+			scrollTop: explorer.scrollTop,
+			diffPath: gitPanel.selectedPath || null,
+			diffRoot: gitPanel.root,
+			diffMode,
+			conversation: captureConversationWorkspace(ownedId),
+			browser: captureBrowserState(),
+			center: frameControls?.captureCenterLayout() ?? null,
+			rightTab,
+			expandedPathsByRoot: activeWorkspaceSnapshot?.expandedPathsByRoot,
+			filesInspectionRoot: activeWorkspaceSnapshot?.filesInspectionRoot,
+			sourceControlInspectionRoot: activeWorkspaceSnapshot?.sourceControlInspectionRoot,
 		});
 		activeWorkspaceSnapshot = snapshot;
 		try {
@@ -1163,41 +1144,41 @@
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
 		const conversation = getConversationSession(ownedId);
 		if (
-			!selected
-			|| selected.origin !== "app"
-			|| rail.activeOwnedId !== ownedId
-			|| conversationProviderFor(ownedId) !== 'codex'
-			|| !conversation
+			!selected ||
+			selected.origin !== "app" ||
+			rail.activeOwnedId !== ownedId ||
+			conversationProviderFor(ownedId) !== "codex" ||
+			!conversation
 		) {
-			rail.error = 'Only the active Codex session can change checkout.';
+			rail.error = "Only the active Codex session can change checkout.";
 			return false;
 		}
 		const conversationGeneration = conversation.generation;
 		const restoreGeneration = workspaceRestoreGeneration;
 		const selectionGeneration = sessionSelectionGeneration;
 		const checkoutStillCurrent = (): boolean =>
-			!disposed
-			&& rail.activeOwnedId === ownedId
-			&& workspaceRestoreGeneration === restoreGeneration
-			&& sessionSelectionGeneration === selectionGeneration
-			&& getConversationSession(ownedId)?.generation === conversationGeneration
-			&& conversationProviderFor(ownedId) === 'codex';
+			!disposed &&
+			rail.activeOwnedId === ownedId &&
+			workspaceRestoreGeneration === restoreGeneration &&
+			sessionSelectionGeneration === selectionGeneration &&
+			getConversationSession(ownedId)?.generation === conversationGeneration &&
+			conversationProviderFor(ownedId) === "codex";
 		const root = requestedRoot.trim();
 		if (!root) {
-			rail.error = 'A checkout folder is required.';
+			rail.error = "A checkout folder is required.";
 			return false;
 		}
 		if (sessionProjectionOwner !== null || clearAllEditorsInFlight) {
-			rail.error = 'Wait for the current session change to finish.';
+			rail.error = "Wait for the current session change to finish.";
 			return false;
 		}
 		sessionProjectionOwner = "checkout";
 		try {
-			countInvoke('validate_project_root');
+			countInvoke("validate_project_root");
 			const validation = await validateProjectRootFromTauri(root);
 			if (!checkoutStillCurrent()) return false;
 			if (validation && (!validation.exists || !validation.isDirectory)) {
-				rail.error = 'That checkout folder is not available.';
+				rail.error = "That checkout folder is not available.";
 				return false;
 			}
 			workspaceAutosaveEnabled = false;
@@ -1271,24 +1252,24 @@
 		}, 30_000);
 	}
 
-	$effect(() => {
-		const ownedId = controlledSelectionOwnedId ?? rail.activeOwnedId;
-		const openFiles = editorState.openFiles;
-		const activePath = editorState.activePath;
-		const browserState = captureBrowserState();
-		if (ownedId !== null && controlledSelectionOwnedId === null && workspaceAutosaveEnabled) {
-			scheduleWorkspaceAutosave(ownedId, openFiles, activePath, centerTab, rightTab, browserState);
-		}
-	});
+	// $effect(() => {
+	// 	const ownedId = controlledSelectionOwnedId ?? rail.activeOwnedId;
+	// 	const openFiles = editorState.openFiles;
+	// 	const activePath = editorState.activePath;
+	// 	const browserState = captureBrowserState();
+	// 	if (ownedId !== null && controlledSelectionOwnedId === null && workspaceAutosaveEnabled) {
+	// 		scheduleWorkspaceAutosave(ownedId, openFiles, activePath, centerTab, rightTab, browserState);
+	// 	}
+	// });
 
-	$effect(() => {
-		const ownedId = controlledEditorOwnedId;
-		editorState.openFiles;
-		editorState.activePath;
-		if (ownedId && controlledSelectionOwnedId === ownedId) {
-			scheduleControlledEditorAutosave(ownedId);
-		}
-	});
+	// $effect(() => {
+	// 	const ownedId = controlledEditorOwnedId;
+	// 	editorState.openFiles;
+	// 	editorState.activePath;
+	// 	if (ownedId && controlledSelectionOwnedId === ownedId) {
+	// 		scheduleControlledEditorAutosave(ownedId);
+	// 	}
+	// });
 
 	async function clearAllEditorWorkspaceRecords(): Promise<boolean> {
 		const ownedId = controlledSelectionOwnedId ?? rail.activeOwnedId;
@@ -1373,11 +1354,22 @@
 		try {
 			snapshot = await readAgentConversationWorkspaceFromTauri(ownedId);
 		} catch (error) {
-			if (!disposed && generation === workspaceRestoreGeneration && rail.activeOwnedId === ownedId && !clearAllEditorsInFlight) {
+			if (
+				!disposed &&
+				generation === workspaceRestoreGeneration &&
+				rail.activeOwnedId === ownedId &&
+				!clearAllEditorsInFlight
+			) {
 				rail.error = `workspace restore failed: ${describeError(error)}`;
 			}
 		}
-		if (disposed || generation !== workspaceRestoreGeneration || rail.activeOwnedId !== ownedId || clearAllEditorsInFlight) return;
+		if (
+			disposed ||
+			generation !== workspaceRestoreGeneration ||
+			rail.activeOwnedId !== ownedId ||
+			clearAllEditorsInFlight
+		)
+			return;
 		activeWorkspaceSnapshot = snapshot;
 		diffMode = snapshot?.diffMode ?? DEFAULT_DIFF_MODE;
 		restoreBrowserState(snapshot?.browser);
@@ -1431,11 +1423,7 @@
 				queuedSessionSelection = null;
 				await new Promise((resolve) => setTimeout(resolve, sessionSelectionQuietMs));
 				if (queuedSessionSelection) continue;
-				await selectOwnedCurrent(
-					selection.ownedId,
-					selection.propagateStructuredFailure,
-					selection.generation,
-				);
+				await selectOwnedCurrent(selection.ownedId, selection.propagateStructuredFailure, selection.generation);
 			}
 		})().finally(() => {
 			sessionSelectionDrain = null;
@@ -1446,8 +1434,13 @@
 		return sessionSelectionDrain;
 	}
 
-	async function selectOwnedCurrent(ownedId: string, propagateStructuredFailure: boolean, selectionGeneration: number): Promise<void> {
-		const selectionIsCurrent = (): boolean => !disposed && !clearAllEditorsInFlight && selectionGeneration === sessionSelectionGeneration;
+	async function selectOwnedCurrent(
+		ownedId: string,
+		propagateStructuredFailure: boolean,
+		selectionGeneration: number,
+	): Promise<void> {
+		const selectionIsCurrent = (): boolean =>
+			!disposed && !clearAllEditorsInFlight && selectionGeneration === sessionSelectionGeneration;
 		const bailAt = (label: string): boolean => {
 			if (selectionIsCurrent()) return false;
 			bumpBail(label);
@@ -1564,15 +1557,14 @@
 			} else {
 				setConversationMode(ownedId, "structured");
 				if (switching) {
-					structuredHydration = Promise.all([
-						loadConversationForRead(ownedId),
-						loadConversationSessionDraft(ownedId),
-					]).then(() => undefined).catch((error) => {
-						if (bailAt("after-hydration-error")) return;
-						const message = describeError(error);
-						updateOwnedSession(ownedId, { lastError: message });
-						if (propagateStructuredFailure) throw error;
-					});
+					structuredHydration = Promise.all([loadConversationForRead(ownedId), loadConversationSessionDraft(ownedId)])
+						.then(() => undefined)
+						.catch((error) => {
+							if (bailAt("after-hydration-error")) return;
+							const message = describeError(error);
+							updateOwnedSession(ownedId, { lastError: message });
+							if (propagateStructuredFailure) throw error;
+						});
 				}
 			}
 		}
@@ -1646,11 +1638,8 @@
 	async function handleActiveRootUnavailable(root: string, force = false): Promise<void> {
 		const selectedRoot = readSelection().root.trim();
 		const ownedId = rail.activeOwnedId;
-		if (
-			(!force && !activeRootAvailable) ||
-			!selectedRoot ||
-			canonicalPath(root) !== canonicalPath(selectedRoot)
-		) return;
+		if ((!force && !activeRootAvailable) || !selectedRoot || canonicalPath(root) !== canonicalPath(selectedRoot))
+			return;
 
 		activeRootAvailable = false;
 		setUnavailableOpenFileRoot(selectedRoot);
@@ -1669,10 +1658,8 @@
 		try {
 			await probeCleanup;
 		} catch (error) {
-			if (
-				rail.activeOwnedId === ownedId &&
-				canonicalPath(readSelection().root) === canonicalPath(selectedRoot)
-			) rail.error = `extension probe cleanup failed: ${describeError(error)}`;
+			if (rail.activeOwnedId === ownedId && canonicalPath(readSelection().root) === canonicalPath(selectedRoot))
+				rail.error = `extension probe cleanup failed: ${describeError(error)}`;
 		}
 	}
 
@@ -2158,15 +2145,15 @@
 
 	// DEV-only reproduction driver for fast session switching, callable from
 	// Safari Web Inspector as `window.__fastSwitch(gapMs, count)`.
-	type FastSwitchWindow = Window & {
-		__fastSwitch?: (gapMs: number, count: number) => Promise<Record<string, unknown>>;
-	};
+	// type FastSwitchWindow = Window & {
+	// 	__fastSwitch?: (gapMs: number, count: number) => Promise<Record<string, unknown>>;
+	// };
 
-	// DEV-only reproduction driver for real pointer/mouse events sweeping the
-	// session rows, callable as `window.__pointerSweep(msPerRow, seconds)`.
-	type PointerSweepWindow = Window & {
-		__pointerSweep?: (msPerRow: number, seconds: number) => Promise<{ rows: number; events: number }>;
-	};
+	// // DEV-only reproduction driver for real pointer/mouse events sweeping the
+	// // session rows, callable as `window.__pointerSweep(msPerRow, seconds)`.
+	// type PointerSweepWindow = Window & {
+	// 	__pointerSweep?: (msPerRow: number, seconds: number) => Promise<{ rows: number; events: number }>;
+	// };
 
 	onMount(() => {
 		const disposers: Array<() => void> = [
@@ -2194,7 +2181,7 @@
 					void setLanguageServersEnabled(false);
 				}
 				for (const [language, enabled] of Object.entries(settings.intelligence.languageServerEnabled)) {
-					if (!enabled) void setLanguageServerEnabled(language as 'csharp' | 'typescript' | 'rust', false);
+					if (!enabled) void setLanguageServerEnabled(language as "csharp" | "typescript" | "rust", false);
 				}
 			})
 			.catch(() => undefined);
@@ -2235,88 +2222,90 @@
 		});
 		disposers.push(stopExtensionApiProbeObservations);
 		if (import.meta.env.DEV) {
-			const fastSwitch = async (gapMs: number, count: number) => {
-				const before = memprobeSnapshot();
-				const ids = rail.owned.map((session) => session.ownedId);
-				const activeIndex = ids.indexOf(rail.activeOwnedId ?? "");
-				const used = new Set<string>();
-				for (let i = 0; i < count; i++) {
-					const id = ids[(activeIndex + 1 + i) % ids.length];
-					used.add(id);
-					// Not awaited: selectOwned resolves only when the switch settles,
-					// and the point is to click again before that.
-					void selectOwned(id);
-					await new Promise((resolve) => setTimeout(resolve, gapMs));
-				}
-				await new Promise((resolve) => setTimeout(resolve, 60_000));
-				const result = {
-					before,
-					after: memprobeSnapshot(),
-					sizes: memprobe.sizes(),
-					gapMs,
-					count,
-					sessionsUsed: used.size,
-				};
-				console.log("[fastSwitch]", JSON.stringify(result));
-				return result;
-			};
-			(window as FastSwitchWindow).__fastSwitch = fastSwitch;
-			const pointerSweep = async (msPerRow: number, seconds: number) => {
-				const rows = document.querySelectorAll<HTMLElement>("li.row");
-				let events = 0;
-				const dispatch = (target: Element, type: string, x: number, y: number, bubbles: boolean): void => {
-					const init = { bubbles, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: "mouse", isPrimary: true };
-					target.dispatchEvent(type.startsWith("pointer") ? new PointerEvent(type, init) : new MouseEvent(type, init));
-					events++;
-				};
-				const deadline = Date.now() + seconds * 1000;
-				let previous: Element | null = null;
-				while (Date.now() < deadline) {
-					for (const row of rows) {
-						const rect = row.getBoundingClientRect();
-						const cx = rect.left + rect.width / 2;
-						const cy = rect.top + rect.height / 2;
-						const target = document.elementFromPoint(cx, cy) ?? row;
-						if (previous && previous !== target) {
-							dispatch(previous, "pointerout", cx, cy, true);
-							dispatch(previous, "pointerleave", cx, cy, false);
-							dispatch(previous, "mouseout", cx, cy, true);
-							dispatch(previous, "mouseleave", cx, cy, false);
-						}
-						dispatch(target, "pointerover", cx, cy, true);
-						dispatch(target, "pointerenter", cx, cy, false);
-						dispatch(target, "mouseover", cx, cy, true);
-						dispatch(target, "mouseenter", cx, cy, false);
-						for (const dx of [-2, 0, 2]) {
-							dispatch(target, "pointermove", cx + dx, cy, true);
-							dispatch(target, "mousemove", cx + dx, cy, true);
-						}
-						previous = target;
-						await new Promise((resolve) => setTimeout(resolve, msPerRow));
-						if (Date.now() >= deadline) break;
-					}
-				}
-				const result = { rows: rows.length, events };
-				console.log("[pointerSweep]", JSON.stringify(result));
-				return result;
-			};
-			(window as PointerSweepWindow).__pointerSweep = pointerSweep;
-			const autoParams = new URLSearchParams(location.search);
-			const [autoGap, autoCount] = (autoParams.get("fastswitch") ?? "").split(",").map(Number);
-			const [autoPointerMs, autoPointerSec] = (autoParams.get("pointersweep") ?? "").split(",").map(Number);
-			const hasAutoFastSwitch = Number.isFinite(autoGap) && autoGap > 0 && Number.isFinite(autoCount) && autoCount > 0;
-			const hasAutoPointerSweep = Number.isFinite(autoPointerMs) && autoPointerMs > 0 && Number.isFinite(autoPointerSec) && autoPointerSec > 0;
-			if (hasAutoFastSwitch || hasAutoPointerSweep) {
-				const autoTimer = setTimeout(async () => {
-					if (hasAutoPointerSweep) console.log("[pointerSweep:auto]", JSON.stringify(await pointerSweep(autoPointerMs, autoPointerSec)));
-					if (hasAutoFastSwitch) console.log("[fastSwitch:auto]", JSON.stringify(await fastSwitch(autoGap, autoCount)));
-				}, 20_000);
-				disposers.push(() => clearTimeout(autoTimer));
-			}
-			disposers.push(() => {
-				delete (window as FastSwitchWindow).__fastSwitch;
-				delete (window as PointerSweepWindow).__pointerSweep;
-			});
+			// const fastSwitch = async (gapMs: number, count: number) => {
+			// 	const before = memprobeSnapshot();
+			// 	const ids = rail.owned.map((session) => session.ownedId);
+			// 	const activeIndex = ids.indexOf(rail.activeOwnedId ?? "");
+			// 	const used = new Set<string>();
+			// 	for (let i = 0; i < count; i++) {
+			// 		const id = ids[(activeIndex + 1 + i) % ids.length];
+			// 		used.add(id);
+			// 		// Not awaited: selectOwned resolves only when the switch settles,
+			// 		// and the point is to click again before that.
+			// 		void selectOwned(id);
+			// 		await new Promise((resolve) => setTimeout(resolve, gapMs));
+			// 	}
+			// 	await new Promise((resolve) => setTimeout(resolve, 60_000));
+			// 	const result = {
+			// 		before,
+			// 		after: memprobeSnapshot(),
+			// 		sizes: memprobe.sizes(),
+			// 		gapMs,
+			// 		count,
+			// 		sessionsUsed: used.size,
+			// 	};
+			// 	console.log("[fastSwitch]", JSON.stringify(result));
+			// 	return result;
+			// };
+			// (window as FastSwitchWindow).__fastSwitch = fastSwitch;
+			// const pointerSweep = async (msPerRow: number, seconds: number) => {
+			// 	const rows = document.querySelectorAll<HTMLElement>("li.row");
+			// 	let events = 0;
+			// 	const dispatch = (target: Element, type: string, x: number, y: number, bubbles: boolean): void => {
+			// 		const init = { bubbles, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: "mouse", isPrimary: true };
+			// 		target.dispatchEvent(type.startsWith("pointer") ? new PointerEvent(type, init) : new MouseEvent(type, init));
+			// 		events++;
+			// 	};
+			// 	const deadline = Date.now() + seconds * 1000;
+			// 	let previous: Element | null = null;
+			// 	while (Date.now() < deadline) {
+			// 		for (const row of rows) {
+			// 			const rect = row.getBoundingClientRect();
+			// 			const cx = rect.left + rect.width / 2;
+			// 			const cy = rect.top + rect.height / 2;
+			// 			const target = document.elementFromPoint(cx, cy) ?? row;
+			// 			if (previous && previous !== target) {
+			// 				dispatch(previous, "pointerout", cx, cy, true);
+			// 				dispatch(previous, "pointerleave", cx, cy, false);
+			// 				dispatch(previous, "mouseout", cx, cy, true);
+			// 				dispatch(previous, "mouseleave", cx, cy, false);
+			// 			}
+			// 			dispatch(target, "pointerover", cx, cy, true);
+			// 			dispatch(target, "pointerenter", cx, cy, false);
+			// 			dispatch(target, "mouseover", cx, cy, true);
+			// 			dispatch(target, "mouseenter", cx, cy, false);
+			// 			for (const dx of [-2, 0, 2]) {
+			// 				dispatch(target, "pointermove", cx + dx, cy, true);
+			// 				dispatch(target, "mousemove", cx + dx, cy, true);
+			// 			}
+			// 			previous = target;
+			// 			await new Promise((resolve) => setTimeout(resolve, msPerRow));
+			// 			if (Date.now() >= deadline) break;
+			// 		}
+			// 	}
+			// 	const result = { rows: rows.length, events };
+			// 	console.log("[pointerSweep]", JSON.stringify(result));
+			// 	return result;
+			// };
+			// (window as PointerSweepWindow).__pointerSweep = pointerSweep;
+			// const autoParams = new URLSearchParams(location.search);
+			// const [autoGap, autoCount] = (autoParams.get("fastswitch") ?? "").split(",").map(Number);
+			// const [autoPointerMs, autoPointerSec] = (autoParams.get("pointersweep") ?? "").split(",").map(Number);
+			// const hasAutoFastSwitch = Number.isFinite(autoGap) && autoGap > 0 && Number.isFinite(autoCount) && autoCount > 0;
+			// const hasAutoPointerSweep =
+			// 	Number.isFinite(autoPointerMs) && autoPointerMs > 0 && Number.isFinite(autoPointerSec) && autoPointerSec > 0;
+			// if (hasAutoFastSwitch || hasAutoPointerSweep) {
+			// 	const autoTimer = setTimeout(async () => {
+			// 		if (hasAutoPointerSweep)
+			// 			console.log("[pointerSweep:auto]", JSON.stringify(await pointerSweep(autoPointerMs, autoPointerSec)));
+			// 		if (hasAutoFastSwitch) console.log("[fastSwitch:auto]", JSON.stringify(await fastSwitch(autoGap, autoCount)));
+			// 	}, 20_000);
+			// 	disposers.push(() => clearTimeout(autoTimer));
+			// }
+			// disposers.push(() => {
+			// 	delete (window as FastSwitchWindow).__fastSwitch;
+			// 	delete (window as PointerSweepWindow).__pointerSweep;
+			// });
 		}
 		void startConversationEvents();
 		// Honour where the reader last put the Problems list. The frame and the
@@ -2438,7 +2427,11 @@
 		const saveOnLeaving = (): void => {
 			if (controlledEditorOwnedId !== null) {
 				checkpointControlledEditorWorkspace();
-			} else if (controlledSelectionOwnedId === null && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") {
+			} else if (
+				controlledSelectionOwnedId === null &&
+				rail.activeOwnedId !== null &&
+				sessionProjectionOwner !== "checkout"
+			) {
 				void snapshotWorkspace(rail.activeOwnedId);
 			}
 		};
@@ -2452,7 +2445,12 @@
 			// last chance to remember what the session on screen had open.
 			if (!disposed && controlledEditorOwnedId !== null) {
 				checkpointControlledEditorWorkspace();
-			} else if (!disposed && controlledSelectionOwnedId === null && rail.activeOwnedId !== null && sessionProjectionOwner !== "checkout") {
+			} else if (
+				!disposed &&
+				controlledSelectionOwnedId === null &&
+				rail.activeOwnedId !== null &&
+				sessionProjectionOwner !== "checkout"
+			) {
 				void snapshotWorkspace(rail.activeOwnedId);
 			}
 			disposed = true;
@@ -2505,41 +2503,35 @@
 	</div>
 {/snippet}
 {#snippet toolsArea()}
-		<RightPanel
-			activeId={controlledSelectionOwnedId === null ? rightTab : "files"}
-			onSelect={(id) => {
-				if (controlledSelectionOwnedId === null || id === "files") selectRightTab(id);
-			}}
-			root={controlledSelectionOwnedId === null
-				? checkoutScope.durableSessionRoot
-				: ""}
-			rootAvailable={controlledSelectionOwnedId === null
-				? activeRootAvailable
-				: false}
-			checkoutScope={controlledSelectionOwnedId === null ? checkoutScope : controlledCheckoutScope}
-			ownedId={controlledSelectionOwnedId === null ? sessionProjection.activeOwnedId : null}
-			filesRoot={(controlledSelectionOwnedId === null ? activeRootRemote : controlledRootRemote)
-				? ""
-				: filesProjectionRoot}
-			filesOwnedId={filesProjectionOwnedId}
-			onRootUnavailable={sessionSelectionLayers.hasTreeProjection ? undefined : handleActiveRootUnavailable}
-				expandedPathsByRoot={sessionSelectionLayers.hasTreeProjection
-				? controlledExpandedPathsByRoot
-				: sessionProjection.activeWorkspace?.expandedPathsByRoot ?? {}}
-			onExpandedPathsChange={sessionSelectionLayers.hasTreeProjection
-				? rememberControlledFileTreeExpandedPaths
-				: rememberFileTreeExpandedPaths}
-			filesInspectionRoot={sessionSelectionLayers.hasTreeProjection
-				? null
-				: checkoutScope.filesInspectionRoot}
-			sourceControlInspectionRoot={controlledSelectionOwnedId === null ? checkoutScope.gitInspectionRoot : null}
-			onFilesInspectionRootChange={(root) => rememberInspectionRoot('files', root)}
-			onSourceControlInspectionRootChange={(root) => rememberInspectionRoot('source-control', root)}
-			onUseSessionCheckout={async (root) => {
-				const ownedId = sessionProjection.activeOwnedId;
-				if (ownedId !== null) await changeCodexCheckout(ownedId, root);
-			}}
-		/>
+	<RightPanel
+		activeId={controlledSelectionOwnedId === null ? rightTab : "files"}
+		onSelect={(id) => {
+			if (controlledSelectionOwnedId === null || id === "files") selectRightTab(id);
+		}}
+		root={controlledSelectionOwnedId === null ? checkoutScope.durableSessionRoot : ""}
+		rootAvailable={controlledSelectionOwnedId === null ? activeRootAvailable : false}
+		checkoutScope={controlledSelectionOwnedId === null ? checkoutScope : controlledCheckoutScope}
+		ownedId={controlledSelectionOwnedId === null ? sessionProjection.activeOwnedId : null}
+		filesRoot={(controlledSelectionOwnedId === null ? activeRootRemote : controlledRootRemote)
+			? ""
+			: filesProjectionRoot}
+		filesOwnedId={filesProjectionOwnedId}
+		onRootUnavailable={sessionSelectionLayers.hasTreeProjection ? undefined : handleActiveRootUnavailable}
+		expandedPathsByRoot={sessionSelectionLayers.hasTreeProjection
+			? controlledExpandedPathsByRoot
+			: (sessionProjection.activeWorkspace?.expandedPathsByRoot ?? {})}
+		onExpandedPathsChange={sessionSelectionLayers.hasTreeProjection
+			? rememberControlledFileTreeExpandedPaths
+			: rememberFileTreeExpandedPaths}
+		filesInspectionRoot={sessionSelectionLayers.hasTreeProjection ? null : checkoutScope.filesInspectionRoot}
+		sourceControlInspectionRoot={controlledSelectionOwnedId === null ? checkoutScope.gitInspectionRoot : null}
+		onFilesInspectionRootChange={(root) => rememberInspectionRoot("files", root)}
+		onSourceControlInspectionRootChange={(root) => rememberInspectionRoot("source-control", root)}
+		onUseSessionCheckout={async (root) => {
+			const ownedId = sessionProjection.activeOwnedId;
+			if (ownedId !== null) await changeCodexCheckout(ownedId, root);
+		}}
+	/>
 {/snippet}
 {#snippet centerTabsArea()}
 	<CenterCornerTabs
@@ -2558,10 +2550,7 @@
 	<div class="session-area">
 		{#if sessionSelectionLayers.hasChatProjection}
 			{#key sessionSelectionLayers.chatOwnedId}
-				<ConversationHistorySurface
-					owned={rail.owned}
-					activeOwnedId={sessionSelectionLayers.chatOwnedId}
-				/>
+				<ConversationHistorySurface owned={rail.owned} activeOwnedId={sessionSelectionLayers.chatOwnedId} />
 			{/key}
 		{:else}
 			<div class="conversation-data-isolation" aria-label="Conversation history loading">
@@ -2600,12 +2589,20 @@
 <!-- The changes to whichever file source control has selected. `GitDiffView`
      reads the selected file itself and lives here as a tab of its own — which
      is what gives a diff the width of the middle instead of a column. -->
-	{#snippet diffArea()}{#if centerTab === "diff"}<GitDiffView showing={true} rootAvailable={activeRootAvailable} mode={diffMode} onModeChange={handleDiffModeChange} />{/if}{/snippet}
+{#snippet diffArea()}{#if centerTab === "diff"}<GitDiffView
+			showing={true}
+			rootAvailable={activeRootAvailable}
+			mode={diffMode}
+			onModeChange={handleDiffModeChange}
+		/>{/if}{/snippet}
 
 <!-- The whole commit history as a table, given the width of the middle. It reads
      `gitPanel` itself; the active root only tells its lazy surface when to point
      the existing service at a new repository. -->
-	{#snippet gitHistoryArea()}{#if centerTab === "git-history"}<GitHistoryView root={activeRootAvailable ? readSelection().root : ""} rootAvailable={activeRootAvailable} />{/if}{/snippet}
+{#snippet gitHistoryArea()}{#if centerTab === "git-history"}<GitHistoryView
+			root={activeRootAvailable ? readSelection().root : ""}
+			rootAvailable={activeRootAvailable}
+		/>{/if}{/snippet}
 
 <!-- The webview's own right-click menu runs a native tracking loop that stalls
      the whole window for seconds, which reads as a freeze. Surfaces with a menu

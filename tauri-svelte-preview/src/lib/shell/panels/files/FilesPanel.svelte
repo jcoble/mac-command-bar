@@ -207,6 +207,33 @@
 		}));
 	});
 
+	/**
+	 * A session picked while the tree was still scanning waits here rather than
+	 * starting a second scan on top of the first. When the scan in flight ends,
+	 * whichever session is selected by then is the one that loads — clicking
+	 * through five sessions costs one scan after the current one, not five.
+	 */
+	let deferredExplorerRoot: string | null = null;
+	let deferredExplorerPending = $state(false);
+
+	function activateExplorerWhenIdle(target: string | null): void {
+		if (explorer.scanning) {
+			deferredExplorerRoot = target;
+			deferredExplorerPending = true;
+			return;
+		}
+		deferredExplorerPending = false;
+		activateExplorer(target);
+	}
+
+	$effect(() => {
+		if (explorer.scanning || !deferredExplorerPending) return;
+		const target = deferredExplorerRoot;
+		deferredExplorerPending = false;
+		deferredExplorerRoot = null;
+		activateExplorer(target);
+	});
+
 	$effect(() => {
 		const sessionKey = `${ownedId ?? ""}:${canonicalPath(root)}`;
 		if (sessionKey === scopedSessionKey) return;
@@ -230,13 +257,13 @@
 				if (directory.path !== nextRoot) unloadDirectory(directory.path);
 			}
 		}
-		if (visible) activateExplorer(sessionRoot || null);
-		else activateExplorer(null);
+		if (visible) activateExplorerWhenIdle(sessionRoot || null);
+		else activateExplorerWhenIdle(null);
 	});
 
 	$effect(() => {
 		if (!visible || !sessionRoot) return;
-		activateExplorer(sessionRoot);
+		activateExplorerWhenIdle(sessionRoot);
 	});
 
 	$effect(() => {

@@ -14,7 +14,6 @@
  * What is NOT here: any decision about when to save or restore. The page owns
  * that (see `+page.svelte`), so nothing in this file can fire on its own.
  */
-import type { AgentExecutionOwner } from './ownedSessions.ts';
 import type {
   AgentConfigValue,
   AgentWriterLease,
@@ -24,6 +23,7 @@ import {
   DEFAULT_RIGHT_TAB,
   isRightTabId
 } from './layout/workbenchTabs.ts';
+import type { AgentExecutionOwner } from './ownedSessions.ts';
 import type { RightTabId } from './workbenchNavigation.ts';
 
 export const SESSION_CONVERSATION_WORKSPACE_VERSION = 1;
