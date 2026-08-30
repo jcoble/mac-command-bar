@@ -69,9 +69,10 @@ function parseStamp(value: string | null | undefined): Date | null {
 /** Calendar days apart, in local time — not "24 hours ago". At 1am, work from
  * 11pm last night is three hours old and says so; at 2pm it is yesterday. */
 function isYesterday(when: Date, now: Date): boolean {
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startOfWhen = new Date(when.getFullYear(), when.getMonth(), when.getDate());
-  return startOfToday.getTime() - startOfWhen.getTime() === DAY;
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  return when.getFullYear() === yesterday.getFullYear()
+    && when.getMonth() === yesterday.getMonth()
+    && when.getDate() === yesterday.getDate();
 }
 
 /** `Jul 27, 9:16 PM` — the year is this one, so saying it adds nothing. */

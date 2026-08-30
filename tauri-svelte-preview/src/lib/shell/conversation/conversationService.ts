@@ -1,3 +1,4 @@
+import { writeTerminalSessionFromTauri } from '$lib/tauriSource';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
@@ -7,8 +8,8 @@ import {
   applyConversationTranscript,
   ensureConversationSession,
   getConversationSession,
-  setConversationConnection,
   setConversationAttachments,
+  setConversationConnection,
   setConversationSending
 } from './conversationStore.svelte.ts';
 import type {
@@ -16,10 +17,9 @@ import type {
   AgentConversationEvent,
   AgentConversationProvider,
   AgentConversationSnapshot,
-  ConversationTranscriptSnapshot,
-  ConversationAttachment
+  ConversationAttachment,
+  ConversationTranscriptSnapshot
 } from './conversationTypes.ts';
-import { writeTerminalSessionFromTauri } from '$lib/tauriSource';
 
 let unlisten: UnlistenFn | null = null;
 const resyncing = new Map<string, Promise<void>>();

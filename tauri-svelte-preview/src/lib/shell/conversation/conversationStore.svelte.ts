@@ -4,6 +4,7 @@
  * This module performs no IO. The conversation service owns Tauri calls and
  * feeds normalized events into `applyAgentConversationEvent`.
  */
+import type { SessionConversationWorkspace } from '../sessionWorkspaces.ts';
 import { applyConversationEvent, createConversationState } from './conversationReducer.ts';
 import type {
   AgentConversationConnection,
@@ -13,12 +14,11 @@ import type {
   ConversationAttachment,
   ConversationChildAgent,
   ConversationMetadata,
-  ConversationTranscriptMessage,
-  ConversationTranscriptSnapshot,
   ConversationSessionState,
-  ConversationTimelineEntry
+  ConversationTimelineEntry,
+  ConversationTranscriptMessage,
+  ConversationTranscriptSnapshot
 } from './conversationTypes.ts';
-import type { SessionConversationWorkspace } from '../sessionWorkspaces.ts';
 
 export type ConversationViewMode = 'structured' | 'raw';
 

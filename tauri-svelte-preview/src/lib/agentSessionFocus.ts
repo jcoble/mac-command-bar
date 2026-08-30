@@ -24,7 +24,7 @@ export type AgentSessionFocusLane = {
   action: AgentSessionFocusAction;
   label: string;
   tone: AgentSessionFocusTone;
-  title: string;
+  title: string; 
   detail: string;
 };
 

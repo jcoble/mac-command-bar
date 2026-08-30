@@ -35,6 +35,13 @@ assert.equal(
   '3h ago'
 );
 
+// Consecutive local midnights span 25 hours across the fall-back transition.
+{
+  const dstNow = new Date(2026, 10, 2, 1, 30);
+  const dstWhen = new Date(2026, 10, 1, 1, 30);
+  assert.equal(formatLastActivity(dstWhen.toISOString(), dstNow), 'yesterday');
+}
+
 // Older than yesterday becomes a date. This year, that includes the time of
 // day; a previous year drops it, because by then the hour has stopped
 // mattering. The exact wording is the reader's locale, so the test asserts what
