@@ -542,18 +542,21 @@ pub async fn read_agent_conversation_snapshot(
     request_id: u64,
 ) -> CommandResult<Option<AgentConversationSnapshot>> {
     if remote.owns(&owned_id) {
-        return command_result(remote.snapshot(owned_id).await);
+        return command_result(remote.snapshot(owned_id, request_id).await);
     }
     command_result(manager.latest_snapshot(&owned_id, request_id))
 }
 
 #[tauri::command]
 /// Cancels a snapshot whose frontend projection owner has been released.
-pub fn cancel_agent_conversation_snapshot(
+pub async fn cancel_agent_conversation_snapshot(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request_id: u64,
-) {
+) -> CommandResult<()> {
     manager.cancel_snapshot(request_id);
+    remote.cancel_snapshot(request_id).await;
+    Ok(())
 }
 
 #[tauri::command]

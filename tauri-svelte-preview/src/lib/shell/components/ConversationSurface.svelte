@@ -181,6 +181,15 @@
    * would otherwise retry forever against a failure that is not going away. */
   let configRetried = $state('');
   let sendAnchorRequest = $state<ConversationSendAnchorRequest | null>(null);
+  let surfaceController = new AbortController();
+
+  $effect(() => {
+    activeOwnedId;
+    surfaceController.abort();
+    const controller = new AbortController();
+    surfaceController = controller;
+    return () => controller.abort();
+  });
   let sendAnchorRequestId = 0;
   let localTurnActive = $state(false);
   let localTurnStarted = $state(false);
@@ -230,10 +239,10 @@
     const key = `${ownedId}:${generation}:${conversation.connectionState}`;
     if (configRequest === key) return;
     configRequest = key;
-    const owner = { active: true };
-    void readAgentConfigForSurface(owner, ownedId, generation, key);
+    const controller = new AbortController();
+    void readAgentConfigForSurface(controller.signal, ownedId, generation, key);
     return () => {
-      owner.active = false;
+      controller.abort();
     };
   });
 
@@ -248,10 +257,10 @@
     // upgrade, and activation refreshes it from the live handshake.
     if (conversation.capabilities && conversation.connectionState !== 'connected') return;
     capabilityRequest = key;
-    const owner = { active: true };
-    void loadCapabilitiesForSurface(owner, ownedId, provider, generation);
+    const controller = new AbortController();
+    void loadCapabilitiesForSurface(controller.signal, ownedId, provider, generation);
     return () => {
-      owner.active = false;
+      controller.abort();
     };
   });
 
@@ -260,37 +269,37 @@
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     if (!conversation.attachments.length && conversation.attachmentIds.length) {
-      const owner = { active: true };
-      void restoreAttachmentsForSurface(owner, ownedId, generation);
+      const controller = new AbortController();
+      void restoreAttachmentsForSurface(controller.signal, ownedId, generation);
       return () => {
-        owner.active = false;
+        controller.abort();
       };
     }
   });
 
-  function ownsConversationGeneration(owner: { active: boolean }, ownedId: string, generation: number): boolean {
-    return owner.active && conversationSessions[ownedId]?.generation === generation;
+  function ownsConversationGeneration(signal: AbortSignal, ownedId: string, generation: number): boolean {
+    return !signal.aborted && conversationSessions[ownedId]?.generation === generation;
   }
 
   async function readAgentConfigForSurface(
-    owner: { active: boolean },
+    signal: AbortSignal,
     ownedId: string,
     generation: number,
     key: string
   ): Promise<void> {
     try {
-      const state = await readAgentConversationConfig(ownedId);
-      if (ownsConversationGeneration(owner, ownedId, generation)) {
+      const state = await readAgentConversationConfig(ownedId, signal);
+      if (state && ownsConversationGeneration(signal, ownedId, generation)) {
         setConversationAgentConfigState(ownedId, state);
       }
     } catch (error) {
-      if (ownsConversationGeneration(owner, ownedId, generation)) {
+      if (ownsConversationGeneration(signal, ownedId, generation)) {
         setConversationAgentConfigError(ownedId, error instanceof Error ? error.message : String(error));
       }
       // The usual failure here is a race, not a refusal: the session is stored
       // but not yet in the manager's map. Asking a second time is what fills the
       // composer in; asking forever would be a retry storm.
-      if (owner.active && configRequest === key && configRetried !== key) {
+      if (!signal.aborted && configRequest === key && configRetried !== key) {
         configRetried = key;
         configRequest = '';
       }
@@ -298,14 +307,14 @@
   }
 
   async function loadCapabilitiesForSurface(
-    owner: { active: boolean },
+    signal: AbortSignal,
     ownedId: string,
     provider: AgentConversationProvider,
     generation: number
   ): Promise<void> {
     try {
-      if (ownsConversationGeneration(owner, ownedId, generation)) {
-        await loadConversationCapabilities(ownedId, provider);
+      if (ownsConversationGeneration(signal, ownedId, generation)) {
+        await loadConversationCapabilities(ownedId, provider, signal);
       }
     } catch (_error) {
       // The store owns capability errors; this effect only prevents unhandled
@@ -314,13 +323,13 @@
   }
 
   async function restoreAttachmentsForSurface(
-    owner: { active: boolean },
+    signal: AbortSignal,
     ownedId: string,
     generation: number
   ): Promise<void> {
     try {
-      if (ownsConversationGeneration(owner, ownedId, generation)) {
-        await restoreConversationAttachments(ownedId);
+      if (ownsConversationGeneration(signal, ownedId, generation)) {
+        await restoreConversationAttachments(ownedId, [], signal);
       }
     } catch (_error) {
       // Attachment restore is best effort; saved ids remain in the session.
@@ -632,11 +641,11 @@
         emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}
         hasOlder={!conversation.selectedChildId && !conversation.reachedTranscriptStart}
         loadingOlder={!conversation.selectedChildId && conversation.loadingOlder}
-        onLoadOlder={() => void loadOlderConversationEvents(active.ownedId)}
+        onLoadOlder={() => void loadOlderConversationEvents(active.ownedId, surfaceController.signal)}
         hasNewer={!conversation.selectedChildId && !conversation.reachedTranscriptEnd}
         loadingNewer={!conversation.selectedChildId && conversation.loadingNewer}
-        onLoadNewer={() => void loadNewerConversationEvents(active.ownedId)}
-        onJumpToLatest={() => loadConversationForRead(active.ownedId)}
+        onLoadNewer={() => void loadNewerConversationEvents(active.ownedId, surfaceController.signal)}
+        onJumpToLatest={() => loadConversationForRead(active.ownedId, true, surfaceController.signal)}
         onScroll={(scrollTop) => {
           if (conversation.selectedChildId) conversation.childScrollTopById[conversation.selectedChildId] = scrollTop;
           else setConversationScrollTop(active.ownedId, scrollTop);

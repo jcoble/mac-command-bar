@@ -34,6 +34,7 @@ export const SCANNER_UNAVAILABLE_MESSAGE =
 
 let nextRequestId = 0;
 const directoryRequests = new Map<string, string>();
+let activeExplorerSignal: AbortSignal | undefined;
 
 function cancelDirectoryRequests(atOrBelow?: string): void {
   for (const [path, scanId] of directoryRequests) {
@@ -66,7 +67,13 @@ function checkoutWasDeleted(message: string): boolean {
     (normalized.includes('no such file or directory') || normalized.includes('os error 2'));
 }
 
-export async function loadDirectory(directory: string, depth: number): Promise<boolean> {
+export async function loadDirectory(
+  directory: string,
+  depth: number,
+  signal?: AbortSignal
+): Promise<boolean> {
+  const ownerSignal = signal ?? activeExplorerSignal;
+  if (ownerSignal?.aborted) return false;
   const root = canonicalPath(explorer.root ?? '');
   const target = canonicalPath(directory);
   if (!root || !target) return false;
@@ -83,8 +90,10 @@ export async function loadDirectory(directory: string, depth: number): Promise<b
       root,
       target,
       explorer.includeExcluded,
-      requestId
+      requestId,
+      ownerSignal
     );
+    if (ownerSignal?.aborted) return false;
     if (!isCurrentDirectoryRequest(target, root, generation, requestId)) return false;
     if (!entries) {
       if (target === root) failScan(SCANNER_UNAVAILABLE_MESSAGE);
@@ -108,7 +117,9 @@ export async function loadDirectory(directory: string, depth: number): Promise<b
 }
 
 /** Load the root and each missing directory on the path to a file, in order. */
-export async function revealExplorerPath(path: string): Promise<string[]> {
+export async function revealExplorerPath(path: string, signal?: AbortSignal): Promise<string[]> {
+  const ownerSignal = signal ?? activeExplorerSignal;
+  if (ownerSignal?.aborted) return [];
   const root = canonicalPath(explorer.root ?? '');
   const target = canonicalPath(path);
   if (!root || !target || !isExplorerPathAtOrBelow(target, root) || target === root) return [];
@@ -125,9 +136,10 @@ export async function revealExplorerPath(path: string): Promise<string[]> {
 
   const loaded: string[] = [];
   for (const [index, candidate] of [root, ...directories].entries()) {
+    if (ownerSignal?.aborted) break;
     if (generation !== explorerScanGeneration() || canonicalPath(explorer.root ?? '') !== root) break;
     const depth = index;
-    if (loadedExplorerDirectoryDepth(candidate) === null && !(await loadDirectory(candidate, depth))) {
+    if (loadedExplorerDirectoryDepth(candidate) === null && !(await loadDirectory(candidate, depth, ownerSignal))) {
       break;
     }
     if (candidate !== root) loaded.push(candidate);
@@ -141,7 +153,9 @@ export function unloadDirectory(directory: string): void {
   discardDirectory(target);
 }
 
-export async function scanRoot(root: string): Promise<void> {
+export async function scanRoot(root: string, signal?: AbortSignal): Promise<void> {
+  const ownerSignal = signal ?? activeExplorerSignal;
+  if (ownerSignal?.aborted) return;
   const target = canonicalPath(root);
   if (!target) return;
   cancelDirectoryRequests();
@@ -149,31 +163,37 @@ export async function scanRoot(root: string): Promise<void> {
   beginScan(target);
   const generation = explorerScanGeneration();
   try {
-    await loadDirectory(target, 0);
+    await loadDirectory(target, 0, ownerSignal);
   } finally {
     if (explorer.root === target && explorerScanGeneration() === generation) endScan();
   }
 }
 
-export function activate(root: string | null, checkoutDeleted = false): void {
+export function activate(
+  root: string | null,
+  checkoutDeleted = false,
+  signal?: AbortSignal
+): void {
   const target = canonicalPath(root ?? '');
-  if (!target) {
+  activeExplorerSignal = signal;
+  if (!target || signal?.aborted) {
     cancelDirectoryRequests();
     if (checkoutDeleted) markCheckoutDeleted();
     else resetExplorer();
     return;
   }
   if (explorer.activated && explorer.root === target && explorer.error === null) return;
-  void scanRoot(target);
+  void scanRoot(target, signal);
 }
 
 export function refresh(): void {
+  if (activeExplorerSignal?.aborted) return;
   const directories = loadedExplorerDirectories();
   if (directories.length === 0 && explorer.root) {
-    void loadDirectory(explorer.root, 0);
+    void loadDirectory(explorer.root, 0, activeExplorerSignal);
     return;
   }
-  for (const directory of directories) void loadDirectory(directory.path, directory.depth);
+  for (const directory of directories) void loadDirectory(directory.path, directory.depth, activeExplorerSignal);
 }
 
 export function refreshChangedPath(path: string): void {
@@ -188,5 +208,6 @@ export function refreshChangedPath(path: string): void {
 
 export function stopScan(): void {
   cancelDirectoryRequests();
+  activeExplorerSignal = undefined;
   endScan();
 }

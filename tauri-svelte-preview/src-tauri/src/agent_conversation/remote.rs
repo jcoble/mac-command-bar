@@ -57,6 +57,7 @@ enum RemoteCommand {
     Ensure(EnsureAgentConversationRequest),
     Snapshot {
         owned_id: String,
+        request_id: u64,
     },
     EventsBefore {
         owned_id: String,
@@ -330,6 +331,15 @@ impl RemoteConnectionManager {
     }
 
     async fn request(&self, command: RemoteCommand) -> Result<RemoteResponse, String> {
+        let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        self.request_with_id(id, command).await
+    }
+
+    async fn request_with_id(
+        &self,
+        id: u64,
+        command: RemoteCommand,
+    ) -> Result<RemoteResponse, String> {
         let sender = self
             .client
             .lock()
@@ -339,16 +349,15 @@ impl RemoteConnectionManager {
             .ok_or_else(|| {
                 "The Remote Assembly connection is not configured on this Mac".to_string()
             })?;
-        let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let (reply, answer) = oneshot::channel();
         sender
             .send(ClientRequest::Execute { id, command, reply })
             .await
             .map_err(|_| "The Remote Assembly connection task stopped".to_string())?;
         match tokio::time::timeout(Duration::from_secs(15), answer).await {
-            Ok(answer) => {
-                answer.map_err(|_| "The Remote Assembly connection closed before answering".to_string())?
-            }
+            Ok(answer) => answer.map_err(|_| {
+                "The Remote Assembly connection closed before answering".to_string()
+            })?,
             Err(_) => {
                 let _ = sender.send(ClientRequest::Cancel { id }).await;
                 Err("The remote machine did not answer within 15 seconds".to_string())
@@ -384,13 +393,33 @@ impl RemoteConnectionManager {
     pub async fn snapshot(
         &self,
         owned_id: String,
+        request_id: u64,
     ) -> Result<Option<AgentConversationSnapshot>, String> {
-        let RemoteResponse::Snapshot(snapshot) =
-            self.request(RemoteCommand::Snapshot { owned_id }).await?
+        let RemoteResponse::Snapshot(snapshot) = self
+            .request_with_id(
+                request_id,
+                RemoteCommand::Snapshot {
+                    owned_id,
+                    request_id,
+                },
+            )
+            .await?
         else {
             return Err("Remote Assembly returned the wrong snapshot response".to_string());
         };
         Ok(snapshot)
+    }
+
+    pub async fn cancel_snapshot(&self, request_id: u64) {
+        let sender = self
+            .client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .requests
+            .clone();
+        if let Some(sender) = sender {
+            let _ = sender.send(ClientRequest::Cancel { id: request_id }).await;
+        }
     }
 
     pub async fn events_before(
@@ -1255,6 +1284,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 }
             }
             ClientFrame::Cancel { id } => {
+                state.manager.cancel_snapshot(id);
                 if let Some(task) = request_tasks.remove(&id) {
                     task.abort();
                 }
@@ -1313,9 +1343,12 @@ async fn execute_remote_command(
                 .await
                 .map(RemoteResponse::Connection)
         }
-        RemoteCommand::Snapshot { owned_id } => {
-            manager.snapshot(&owned_id).map(RemoteResponse::Snapshot)
-        }
+        RemoteCommand::Snapshot {
+            owned_id,
+            request_id,
+        } => manager
+            .latest_snapshot(&owned_id, request_id)
+            .map(RemoteResponse::Snapshot),
         RemoteCommand::EventsBefore {
             owned_id,
             before_sequence,

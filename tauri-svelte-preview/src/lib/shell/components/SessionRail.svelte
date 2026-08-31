@@ -22,7 +22,6 @@
 		options: MyWorkViewOptions;
 		activeOwnedId?: string | null;
 		onSelectSession?(ownedId: string): void | Promise<void>;
-		onOpenSession?(ownedId: string): void;
 		onComplete?(ownedId: string): void;
 		onReopen?(ownedId: string): void;
 		onSettle?(ownedId: string): void;
@@ -35,7 +34,6 @@
 		options,
 		activeOwnedId = null,
 		onSelectSession,
-		onOpenSession,
 		onComplete,
 		onReopen,
 		onSettle,
@@ -87,7 +85,6 @@
 	async function jumpTo(session: OwnedSession, surface: SessionRowSurface): Promise<void> {
 		visualActiveOwnedId = session.ownedId;
 		if (!(await sessionRowJump(session.ownedId, surface))) await onSelectSession?.(session.ownedId);
-		if (surface === "session") onOpenSession?.(session.ownedId);
 	}
 
 	function openContextMenu(event: MouseEvent, session: OwnedSession): void {

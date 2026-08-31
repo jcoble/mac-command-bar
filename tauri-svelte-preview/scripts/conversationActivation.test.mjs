@@ -76,13 +76,14 @@ assert.deepEqual(
 const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
 assert.match(
   page,
-  /openedConversationOwnedId = null;\s+await selection\.selectSession\(ownedId\);/,
-  'rail selection must unmount the prior transcript before activating its replacement'
+  /async function selectSession\(ownedId: string\): Promise<void> \{\s+await selection\.selectSession\(ownedId\);\s+\}/,
+  'rail selection automatically runs the owned conversation activation'
 );
 assert.match(
   page,
-  /openedConversationOwnedId === selection\.activeOwnedId/,
-  'only an explicitly opened final session may mount ConversationSurface'
+  /selection\.hasChatProjection && selection\.chatOwnedId === selection\.activeOwnedId/,
+  'only the fully loaded current projection may mount ConversationSurface'
 );
+assert.doesNotMatch(page, /Open conversation|Conversation paused/, 'conversation activation has no manual workaround gate');
 
 console.log('conversationActivation.test.mjs passed');

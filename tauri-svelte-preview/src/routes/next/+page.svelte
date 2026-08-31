@@ -36,13 +36,11 @@
 	let sessionsColumn = $state<SessionsColumn | null>(null);
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
-	let openedConversationOwnedId = $state<string | null>(null);
 
 	onMount(() => {
 		void startShell({
 			onSelectInitial: async (ownedId) => {
 				await selection.selectSession(ownedId);
-				await openConversation(ownedId);
 			},
 		});
 
@@ -57,16 +55,7 @@
 	}
 
 	async function selectSession(ownedId: string): Promise<void> {
-		openedConversationOwnedId = null;
 		await selection.selectSession(ownedId);
-	}
-
-	async function openConversation(ownedId: string | null): Promise<void> {
-		if (!ownedId || selection.activeOwnedId !== ownedId) return;
-		await selection.openConversation(ownedId);
-		if (selection.activeOwnedId === ownedId && selection.hasChatProjection) {
-			openedConversationOwnedId = ownedId;
-		}
 	}
 </script>
 
@@ -87,7 +76,6 @@
 				onSelectSession={(ownedId) => {
 					void selectSession(ownedId);
 				}}
-				onOpenSession={(ownedId) => void openConversation(ownedId)}
 				onAskRemove={handleAskRemoveSession}
 			/>
 		</div>
@@ -103,6 +91,7 @@
 		ownedId={selection.activeOwnedId}
 		filesRoot={selection.activeRootRemote ? "" : selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
+		selectionSignal={selection.selectionSignal}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(root, paths) => selection.rememberExpandedPaths(root, paths)}
 		filesInspectionRoot={null}
@@ -123,16 +112,15 @@
 
 {#snippet sessionArea()}
 	<div class="session-area">
-		{#if selection.activeOwnedId && openedConversationOwnedId === selection.activeOwnedId}
+		{#if selection.activeOwnedId && selection.hasChatProjection && selection.chatOwnedId === selection.activeOwnedId}
 			<ConversationSurface
 				owned={selection.railOwned}
 				activeOwnedId={selection.activeOwnedId}
 				rootAvailable={selection.activeRootAvailable}
 			/>
 		{:else if selection.activeOwnedId}
-			<div class="conversation-data-isolation" aria-label="Conversation paused">
-				<p>Conversation paused while you move between sessions.</p>
-				<button type="button" onclick={() => void openConversation(selection.activeOwnedId)}>Open conversation</button>
+			<div class="conversation-data-isolation" aria-label="Loading conversation">
+				<p>Loading conversation…</p>
 			</div>
 		{:else}
 			<div class="conversation-data-isolation" aria-label="No session selected">
@@ -257,13 +245,4 @@
 		gap: 10px;
 	}
 
-	.conversation-data-isolation button {
-		padding: 6px 10px;
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		background: var(--color-elevated);
-		color: var(--color-text);
-		font: inherit;
-		cursor: pointer;
-	}
 </style>

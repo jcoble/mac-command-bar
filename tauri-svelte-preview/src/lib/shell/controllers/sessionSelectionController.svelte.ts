@@ -80,6 +80,10 @@ export class SessionSelectionController {
 		return this.sessionSelectionLayers.chatOwnedId;
 	}
 
+	get selectionSignal(): AbortSignal | null {
+		return this.selectionOwner?.signal ?? null;
+	}
+
 	async selectSession(ownedId: string): Promise<void> {
 		const owner = this.beginSelection();
 		this.controlledSelectionOwnedId = ownedId;
@@ -99,14 +103,6 @@ export class SessionSelectionController {
 			this.sessionSelectionLayers.clearTreeView();
 			this.sessionSelectionLayers.clearChatHistory();
 		}
-	}
-
-	async openConversation(ownedId: string): Promise<void> {
-		const owner = this.selectionOwner;
-		if (!owner || !this.isCurrent(owner) || this.controlledSelectionOwnedId !== ownedId) return;
-		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
-		if (!session) return;
-		await this.sessionSelectionLayers.fillChatHistory(session, owner);
 	}
 
 	rememberExpandedPaths(root: string, paths: readonly string[]): void {
@@ -170,15 +166,9 @@ export class SessionSelectionController {
 	): Promise<void> {
 		if (!this.isCurrent(owner)) return;
 
-		const treeLoad = this.sessionSelectionLayers.selectSession(session, null, owner);
-		if (!root || this.activeRootRemote) {
-			await treeLoad;
-			return;
-		}
-		await Promise.all([
-			treeLoad,
-			this.loadExpandedPaths(session.ownedId, root, owner),
-		]);
+		await this.sessionSelectionLayers.selectSession(session, null, owner);
+		if (!this.isCurrent(owner) || !root || this.activeRootRemote) return;
+		await this.loadExpandedPaths(session.ownedId, root, owner);
 	}
 
 	private async loadExpandedPaths(
@@ -188,7 +178,7 @@ export class SessionSelectionController {
 	): Promise<void> {
 		try {
 			countInvoke("read_agent_conversation_workspace_expanded_paths");
-			const paths = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, root);
+			const paths = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, root, owner.signal);
 			if (!this.isCurrent(owner)) return;
 			this.expandedPathsByRoot = { [root]: paths };
 		} catch {

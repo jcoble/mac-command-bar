@@ -54,9 +54,13 @@ export function hasAgentConversationConfig(state: AgentConversationConfigState):
   );
 }
 
-export async function readAgentConversationConfig(ownedId: string): Promise<AgentConversationConfigState> {
+export async function readAgentConversationConfig(
+  ownedId: string,
+  signal?: AbortSignal
+): Promise<AgentConversationConfigState | null> {
+  if (signal?.aborted) return null;
   const state = await invoke<AgentConversationConfigState>('read_agent_conversation_config', { ownedId });
-  return state;
+  return signal?.aborted ? null : state;
 }
 
 /**

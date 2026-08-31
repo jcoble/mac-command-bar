@@ -666,23 +666,36 @@ export async function listSourceDirectoryFromTauri(
   root: string,
   directory: string,
   includeExcluded = false,
-  scanId: string | null = null
+  scanId: string | null = null,
+  signal?: AbortSignal
 ): Promise<SourceDirectoryEntry[] | null> {
+  if (signal?.aborted) return null;
   if (!isTauriRuntime()) {
-    return postLocalSourceBridge<SourceDirectoryEntry[]>('list-directory', {
+    const entries = await postLocalSourceBridge<SourceDirectoryEntry[]>('list-directory', {
       root,
       directory,
       includeExcluded
     });
+    return signal?.aborted ? null : entries;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<SourceDirectoryEntry[]>('list_source_directory', {
-    root,
-    directory,
-    includeExcluded,
-    scanId
-  });
+  if (signal?.aborted) return null;
+  const cancel = (): void => {
+    if (scanId) void cancelSourceScanFromTauri(scanId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const entries = await invoke<SourceDirectoryEntry[]>('list_source_directory', {
+      root,
+      directory,
+      includeExcluded,
+      scanId
+    });
+    return signal?.aborted ? null : entries;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function searchSourceTreeFromTauri(
@@ -691,13 +704,28 @@ export async function searchSourceTreeFromTauri(
   pageSize = 50,
   cursor: number | null = null,
   includeExcluded = false,
-  scanId: string | null = null
+  scanId: string | null = null,
+  signal?: AbortSignal
 ): Promise<SourceTreeSearchPage | null> {
+  if (signal?.aborted) return null;
   const request = { root, query: query.trim(), pageSize, cursor, includeExcluded, scanId };
-  if (!isTauriRuntime()) return postLocalSourceBridge<SourceTreeSearchPage>('search-tree', request);
+  if (!isTauriRuntime()) {
+    const page = await postLocalSourceBridge<SourceTreeSearchPage>('search-tree', request);
+    return signal?.aborted ? null : page;
+  }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<SourceTreeSearchPage>('search_source_tree', request);
+  if (signal?.aborted) return null;
+  const cancel = (): void => {
+    if (scanId) void cancelSourceScanFromTauri(scanId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const page = await invoke<SourceTreeSearchPage>('search_source_tree', request);
+    return signal?.aborted ? null : page;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean> {
@@ -1684,11 +1712,14 @@ export async function listRepositoryCheckoutsFromTauri(
 }
 
 export async function readAgentConversationCapabilitiesFromTauri(
-  ownedId: string
+  ownedId: string,
+  signal?: AbortSignal
 ): Promise<AgentConversationCapabilities | null> {
-  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<AgentConversationCapabilities>('read_agent_conversation_capabilities', { ownedId });
+  if (signal?.aborted) return null;
+  const capabilities = await invoke<AgentConversationCapabilities>('read_agent_conversation_capabilities', { ownedId });
+  return signal?.aborted ? null : capabilities;
 }
 
 // Millisecond epoch plus room for rapid calls stays within JavaScript's exact
@@ -1713,11 +1744,16 @@ export async function readAgentConversationSnapshotFromTauri(
       await cancelAgentConversationSnapshotFromTauri(requestId);
       return null;
     }
-    const snapshot = await invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', {
-      ownedId,
-      requestId
-    });
-    return signal?.aborted ? null : snapshot;
+    try {
+      const snapshot = await invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', {
+        ownedId,
+        requestId
+      });
+      return signal?.aborted ? null : snapshot;
+    } catch (error) {
+      if (signal?.aborted) return null;
+      throw error;
+    }
   } finally {
     signal?.removeEventListener('abort', cancel);
   }
@@ -1779,30 +1815,36 @@ export async function listAgentConversationEventsFromTauri(
 export async function listAgentConversationEventsBeforeFromTauri(
   ownedId: string,
   beforeSequence: number,
-  maxBytes: number
+  maxBytes: number,
+  signal?: AbortSignal
 ): Promise<AgentConversationEventPage | null> {
-  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
+  if (signal?.aborted) return null;
+  const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
     ownedId,
     beforeSequence,
     maxBytes
   });
+  return signal?.aborted ? null : page;
 }
 
 /** The page of stored events just newer than `afterSequence`, for scrolling down. */
 export async function listAgentConversationEventsAfterFromTauri(
   ownedId: string,
   afterSequence: number,
-  maxBytes: number
+  maxBytes: number,
+  signal?: AbortSignal
 ): Promise<AgentConversationEventPage | null> {
-  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
+  if (signal?.aborted) return null;
+  const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
     ownedId,
     afterSequence,
     maxBytes
   });
+  return signal?.aborted ? null : page;
 }
 
 export async function updateAgentConversationSessionMetaFromTauri(input: {
@@ -1853,11 +1895,14 @@ export async function readAgentConversationWorkspaceFromTauri(
 
 export async function readAgentConversationWorkspaceExpandedPathsFromTauri(
   ownedId: string,
-  root: string
+  root: string,
+  signal?: AbortSignal
 ): Promise<string[]> {
-  if (!isTauriRuntime() || !ownedId.trim() || !root.trim()) return [];
+  if (!isTauriRuntime() || !ownedId.trim() || !root.trim() || signal?.aborted) return [];
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<string[]>('read_agent_conversation_workspace_expanded_paths', { ownedId, root });
+  if (signal?.aborted) return [];
+  const paths = await invoke<string[]>('read_agent_conversation_workspace_expanded_paths', { ownedId, root });
+  return signal?.aborted ? [] : paths;
 }
 
 export async function writeAgentConversationWorkspaceExpandedPathsFromTauri(

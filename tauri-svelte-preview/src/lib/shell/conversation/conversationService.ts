@@ -324,13 +324,15 @@ function discardRestoredAttachments(attachments: readonly ConversationAttachment
 /** Restore attachment metadata supplied by the existing owner-scoped vault. */
 export async function restoreConversationAttachments(
   ownedId: string,
-  saved: readonly (Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[] = []
+  saved: readonly (Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[] = [],
+  signal?: AbortSignal
 ): Promise<ConversationAttachment[]> {
+  if (signal?.aborted) return [];
   const generation = getConversationSession(ownedId)?.generation;
   if (generation === undefined) return [];
   if (saved.length > 0) {
     const restored = saved.map(restoreConversationAttachmentPreview);
-    if (!conversationGenerationMatches(ownedId, generation)) {
+    if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
       discardRestoredAttachments(restored);
       return [];
     }
@@ -344,7 +346,7 @@ export async function restoreConversationAttachments(
       { ownedId }
     );
     const restored = Array.isArray(records) ? records.map(restoreConversationAttachmentPreview) : [];
-    if (!conversationGenerationMatches(ownedId, generation)) {
+    if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
       discardRestoredAttachments(restored);
       return [];
     }
@@ -386,21 +388,22 @@ export async function cleanupConversationAttachment(
 
 export async function loadConversationCapabilities(
   ownedId: string,
-  provider: AgentConversationProvider
+  provider: AgentConversationProvider,
+  signal?: AbortSignal
 ): Promise<AgentCapabilities | null> {
-  if (!isTauri()) return null;
+  if (!isTauri() || signal?.aborted) return null;
   const generation = getConversationSession(ownedId)?.generation;
   if (generation === undefined) return null;
   try {
-    const capabilities = await readAgentConversationCapabilitiesFromTauri(ownedId);
+    const capabilities = await readAgentConversationCapabilitiesFromTauri(ownedId, signal);
     if (!capabilities) return null;
-    if (!conversationGenerationMatches(ownedId, generation)) return null;
+    if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) return null;
     if (capabilities.provider !== provider) throw new Error('Capability provider does not match this session');
     setConversationCapabilities(ownedId, generation, capabilities);
     return capabilities;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (conversationGenerationMatches(ownedId, generation)) {
+    if (!signal?.aborted && conversationGenerationMatches(ownedId, generation)) {
       setConversationCapabilityError(ownedId, message);
     }
     throw error;
@@ -569,8 +572,10 @@ export async function rollbackConversationHandoff(input: HandoffInput): Promise<
 async function hydrateSentConversationAttachments(
   ownedId: string,
   generation: number,
-  events: readonly AgentConversationEvent[]
+  events: readonly AgentConversationEvent[],
+  signal?: AbortSignal
 ): Promise<void> {
+  if (signal?.aborted) return;
   const current = getConversationSession(ownedId);
   if (!current || current.generation !== generation) return;
   const alreadyShown = current.sentAttachments;
@@ -597,7 +602,7 @@ async function hydrateSentConversationAttachments(
     // its screenshot still shows its text, so there is nothing to repair here.
     return;
   }
-  if (!Array.isArray(records)) return;
+  if (signal?.aborted || !Array.isArray(records)) return;
   const byId = new Map(records.map((record) => [record.id, restoreConversationAttachmentPreview(record)]));
   const resolved: Record<string, ConversationAttachment[]> = {};
   for (const [itemId, ids] of wanted) {
@@ -606,7 +611,9 @@ async function hydrateSentConversationAttachments(
       .filter((attachment): attachment is ConversationAttachment => !!attachment);
     if (attachments.length) resolved[itemId] = attachments;
   }
-  if (Object.keys(resolved).length) restoreSentConversationAttachments(ownedId, resolved, generation);
+  if (!signal?.aborted && Object.keys(resolved).length) {
+    restoreSentConversationAttachments(ownedId, resolved, generation);
+  }
 }
 
 async function resyncConversation(ownedId: string) {
@@ -637,7 +644,7 @@ async function resyncConversationOnce(
       if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
       const sequenceBeforeApply = getConversationSession(ownedId)?.lastSequence ?? 0;
       applyAgentConversationSnapshot(snapshot);
-      void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
+      void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events, signal);
       if (sequenceBeforeApply <= snapshot.lastSequence) return;
     }
   } finally {
@@ -705,9 +712,12 @@ async function loadConversationSnapshot(
     bump('hydrationsStarted');
     const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
     const current = getConversationSession(ownedId);
+    if (signal?.aborted) {
+      bump('hydrationsAborted');
+      return;
+    }
     if (
-      signal?.aborted
-      || !snapshot
+      !snapshot
       || readVersions.get(ownedId) !== readVersion
       || current?.generation !== generation
     ) {
@@ -715,8 +725,9 @@ async function loadConversationSnapshot(
       return;
     }
     applyAgentConversationSnapshot(snapshot);
+    bump('hydrationsPublished');
     if (includeAttachments) {
-      void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
+      void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events, signal);
     }
   } finally {
     if (resyncing.get(ownedId)?.token === token) {
@@ -742,7 +753,11 @@ const EVENT_PAGE_BYTES = 1024 * 1024;
  * front. Opening a conversation ships one screen; this is how the rest of a
  * long session is reached.
  */
-export async function loadOlderConversationEvents(ownedId: string): Promise<void> {
+export async function loadOlderConversationEvents(
+  ownedId: string,
+  signal?: AbortSignal
+): Promise<void> {
+  if (signal?.aborted) return;
   if (!beginLoadingOlderConversationEvents(ownedId)) return;
   const started = getConversationSession(ownedId);
   const before = started?.oldestLoadedSequence ?? 0;
@@ -752,11 +767,13 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     const page = await listAgentConversationEventsBeforeFromTauri(
       ownedId,
       before,
-      EVENT_PAGE_BYTES
+      EVENT_PAGE_BYTES,
+      signal
     );
     const current = getConversationSession(ownedId);
     if (
-      readVersions.get(ownedId) !== readVersion
+      signal?.aborted
+      || readVersions.get(ownedId) !== readVersion
       || current?.generation !== generation
       || current.oldestLoadedSequence !== before
     ) {
@@ -772,7 +789,8 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
       void hydrateSentConversationAttachments(
         ownedId,
         generation,
-        getConversationSession(ownedId)?.loadedEvents ?? []
+        getConversationSession(ownedId)?.loadedEvents ?? [],
+        signal
       );
       return;
     }
@@ -782,10 +800,15 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     // cursor. Read the next chunk into the database and ask again. A session
     // started here has no transcript behind it and reports nothing added,
     // which is how this stops.
+    if (signal?.aborted) {
+      failLoadingOlderConversationEvents(ownedId);
+      return;
+    }
     const extended = await extendAgentConversationImportFromTauri(ownedId);
     const afterExtend = getConversationSession(ownedId);
     if (
-      readVersions.get(ownedId) !== readVersion
+      signal?.aborted
+      || readVersions.get(ownedId) !== readVersion
       || afterExtend?.generation !== generation
       || afterExtend.oldestLoadedSequence !== before
     ) {
@@ -809,11 +832,13 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     const grown = await listAgentConversationEventsBeforeFromTauri(
       ownedId,
       before,
-      EVENT_PAGE_BYTES
+      EVENT_PAGE_BYTES,
+      signal
     );
     const afterGrow = getConversationSession(ownedId);
     if (
-      readVersions.get(ownedId) !== readVersion
+      signal?.aborted
+      || readVersions.get(ownedId) !== readVersion
       || afterGrow?.generation !== generation
       || afterGrow.oldestLoadedSequence !== before
     ) {
@@ -827,7 +852,8 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
     void hydrateSentConversationAttachments(
       ownedId,
       generation,
-      getConversationSession(ownedId)?.loadedEvents ?? []
+      getConversationSession(ownedId)?.loadedEvents ?? [],
+      signal
     );
   } catch {
     failLoadingOlderConversationEvents(ownedId);
@@ -835,7 +861,11 @@ export async function loadOlderConversationEvents(ownedId: string): Promise<void
 }
 
 /** Reads the next stored page after a window whose newest end was trimmed. */
-export async function loadNewerConversationEvents(ownedId: string): Promise<void> {
+export async function loadNewerConversationEvents(
+  ownedId: string,
+  signal?: AbortSignal
+): Promise<void> {
+  if (signal?.aborted) return;
   if (!beginLoadingNewerConversationEvents(ownedId)) return;
   const started = getConversationSession(ownedId);
   const after = started?.newestLoadedSequence ?? 0;
@@ -845,11 +875,13 @@ export async function loadNewerConversationEvents(ownedId: string): Promise<void
     const page = await listAgentConversationEventsAfterFromTauri(
       ownedId,
       after,
-      EVENT_PAGE_BYTES
+      EVENT_PAGE_BYTES,
+      signal
     );
     const current = getConversationSession(ownedId);
     if (
-      readVersions.get(ownedId) !== readVersion
+      signal?.aborted
+      || readVersions.get(ownedId) !== readVersion
       || current?.generation !== generation
       || current.newestLoadedSequence !== after
     ) {
@@ -864,7 +896,8 @@ export async function loadNewerConversationEvents(ownedId: string): Promise<void
     void hydrateSentConversationAttachments(
       ownedId,
       generation,
-      getConversationSession(ownedId)?.loadedEvents ?? []
+      getConversationSession(ownedId)?.loadedEvents ?? [],
+      signal
     );
   } catch {
     failLoadingNewerConversationEvents(ownedId);

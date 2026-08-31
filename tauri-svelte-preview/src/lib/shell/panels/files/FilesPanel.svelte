@@ -63,6 +63,7 @@
 		visible: boolean;
 		root: string;
 		ownedId: string | null;
+		selectionSignal?: AbortSignal | null;
 		onRootUnavailable?(root: string): void | Promise<void>;
 		expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
 		onExpandedPathsChange?(root: string, paths: readonly string[]): void;
@@ -102,6 +103,7 @@
 		visible,
 		root,
 		ownedId,
+		selectionSignal,
 		onRootUnavailable,
 		expandedPathsByRoot,
 		onExpandedPathsChange,
@@ -136,8 +138,9 @@
 	let hydratedRoot = "";
 	let hydratedExpansionKey = "";
 	let expansionRestoreGeneration = 0;
-	let scopedSessionKey = $state("");
+	let scopedSessionKey = "";
 	let inspectionGeneration = 0;
+	let filesOwnerSignal: AbortSignal | undefined;
 
 	const READ_ONLY_SCOPE_MESSAGE =
 		"This folder is open for reading only — switch back to the session folder to change it.";
@@ -229,72 +232,57 @@
 		}));
 	});
 
-	/**
-	 * A session picked while the tree was still scanning waits here rather than
-	 * starting a second scan on top of the first. When the scan in flight ends,
-	 * whichever session is selected by then is the one that loads — clicking
-	 * through five sessions costs one scan after the current one, not five.
-	 */
-	let deferredExplorerRoot: string | null = null;
-	let deferredExplorerPending = $state(false);
-
-	function activateExplorerWhenIdle(target: string | null): void {
-		if (target === null) {
-			deferredExplorerRoot = null;
-			deferredExplorerPending = false;
-			activateExplorer(null);
-			return;
-		}
-		if (explorer.scanning) {
-			deferredExplorerRoot = target;
-			deferredExplorerPending = true;
-			return;
-		}
-		deferredExplorerPending = false;
-		activateExplorer(target);
-	}
-
 	$effect(() => {
-		if (explorer.scanning || !deferredExplorerPending) return;
-		const target = deferredExplorerRoot;
-		deferredExplorerPending = false;
-		deferredExplorerRoot = null;
-		activateExplorer(target);
-	});
-
-	$effect(() => {
+		const parentSignal = selectionSignal ?? undefined;
+		const controller = new AbortController();
+		filesOwnerSignal = controller.signal;
+		const abortFromSelection = (): void => controller.abort();
+		parentSignal?.addEventListener("abort", abortFromSelection, { once: true });
 		const sessionKey = `${ownedId ?? ""}:${canonicalPath(root)}`;
-		if (sessionKey === scopedSessionKey) return;
-		scopedSessionKey = sessionKey;
-		inspectionGeneration += 1;
-		inspectedRoot = "";
-		checkouts = [];
-		cancelActiveSearch();
-		revealGeneration += 1;
-		hydratedRoot = "";
-		hydratedExpansionKey = "";
-		expansionRestoreGeneration += 1;
-		expanded = new Set();
-		pending = null;
-		fileClipboard = null;
-		contextMenu = null;
-		searchText = "";
+		if (sessionKey !== scopedSessionKey) {
+			scopedSessionKey = sessionKey;
+			inspectionGeneration += 1;
+			inspectedRoot = "";
+			checkouts = [];
+			cancelActiveSearch();
+			revealGeneration += 1;
+			hydratedRoot = "";
+			hydratedExpansionKey = "";
+			expansionRestoreGeneration += 1;
+			expanded = new Set();
+			pending = null;
+			fileClipboard = null;
+			contextMenu = null;
+			searchText = "";
+		}
 		const nextRoot = canonicalPath(sessionRoot);
 		if (nextRoot && canonicalPath(explorer.root ?? "") === nextRoot) {
 			for (const directory of loadedExplorerDirectories()) {
 				if (directory.path !== nextRoot) unloadDirectory(directory.path);
 			}
 		}
-		activateExplorerWhenIdle(null);
+		if (visible && nextRoot && !controller.signal.aborted) {
+			activateExplorer(nextRoot, false, controller.signal);
+		} else {
+			activateExplorer(null);
+		}
+		return () => {
+			parentSignal?.removeEventListener("abort", abortFromSelection);
+			controller.abort();
+			if (filesOwnerSignal === controller.signal) filesOwnerSignal = undefined;
+			stopScan();
+		};
 	});
 
-	function loadSelectedSessionFiles(): void {
-		if (visible && sessionRoot) activateExplorerWhenIdle(sessionRoot);
-	}
-
-	async function validateInspectionRootForEffect(generation: number, target: string, sessionRootPath: string): Promise<void> {
-		const validation = await validateProjectRootFromTauri(target);
+	async function validateInspectionRootForEffect(
+		generation: number,
+		target: string,
+		sessionRootPath: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		const validation = await validateProjectRootFromTauri(target, signal);
 		if (
+			signal.aborted ||
 			generation !== inspectionGeneration ||
 			canonicalPath(root) !== sessionRootPath ||
 			canonicalPath(inspectionRoot ?? "") !== target
@@ -308,11 +296,12 @@
 	}
 
 	$effect(() => {
+		const signal = filesOwnerSignal;
 		const requestedRoot = canonicalPath(inspectionRoot ?? "");
 		const sessionRootPath = canonicalPath(sessionRoot);
 		const target = requestedRoot && requestedRoot !== sessionRootPath ? requestedRoot : "";
 		const generation = ++inspectionGeneration;
-		if (!visible || !sessionRootPath) return;
+		if (!visible || !sessionRootPath || !signal || signal.aborted) return;
 		if (requestedRoot === canonicalPath(inspectedRoot) && (!inspectionRoot || target !== "")) return;
 		if (!target) {
 			selectInspectionRoot("");
@@ -322,7 +311,7 @@
 			selectInspectionRoot("");
 			return;
 		}
-		void validateInspectionRootForEffect(generation, target, sessionRootPath);
+		void validateInspectionRootForEffect(generation, target, sessionRootPath, signal);
 	});
 
 	$effect(() => {
@@ -346,7 +335,10 @@
 		expansionRestoreGeneration += 1;
 		expanded = new Set(savedPaths);
 		const generation = expansionRestoreGeneration;
-		void restoreExpandedDirectories(activeRoot, savedPaths, generation);
+		const signal = filesOwnerSignal;
+		if (signal && !signal.aborted) {
+			void restoreExpandedDirectories(activeRoot, savedPaths, generation, signal);
+		}
 	});
 
 	$effect(() => {
@@ -372,7 +364,8 @@
 		}
 
 		const generation = ++searchGeneration;
-		void loadSearchPage(generation, null, true);
+		const signal = filesOwnerSignal;
+		if (signal && !signal.aborted) void loadSearchPage(generation, null, true, signal);
 	});
 
 	$effect(() => {
@@ -457,7 +450,7 @@
 			actionError = null;
 			searchText = "";
 			cancelActiveSearch();
-			activateExplorer(sessionRoot || null);
+			activateExplorer(sessionRoot || null, false, selectionSignal ?? undefined);
 			onInspectionRootChange?.(null);
 			return;
 		}
@@ -472,7 +465,7 @@
 		actionError = null;
 		searchText = "";
 		cancelActiveSearch();
-		activateExplorer(target);
+		activateExplorer(target, false, selectionSignal ?? undefined);
 		onInspectionRootChange?.(target);
 	}
 
@@ -522,6 +515,7 @@
 		projectRoot: string,
 		paths: readonly string[],
 		generation: number,
+		signal: AbortSignal,
 	): Promise<void> {
 		const directories = new Set<string>();
 		for (const path of paths) {
@@ -537,9 +531,9 @@
 			return depth !== 0 ? depth : left.localeCompare(right);
 		});
 		for (const directory of ordered) {
-			if (generation !== expansionRestoreGeneration || canonicalPath(explorer.root ?? "") !== projectRoot) return;
+			if (signal.aborted || generation !== expansionRestoreGeneration || canonicalPath(explorer.root ?? "") !== projectRoot) return;
 			if (loadedExplorerDirectoryDepth(directory) !== null) continue;
-			await loadDirectory(directory, pathDepth(directory) - pathDepth(projectRoot));
+			await loadDirectory(directory, pathDepth(directory) - pathDepth(projectRoot), signal);
 		}
 	}
 
@@ -553,10 +547,15 @@
 		searchText = event.currentTarget.value;
 	}
 
-	async function loadSearchPage(generation: number, cursor: number | null, replace: boolean): Promise<void> {
+	async function loadSearchPage(
+		generation: number,
+		cursor: number | null,
+		replace: boolean,
+		signal: AbortSignal,
+	): Promise<void> {
 		const projectRoot = projectRootForView();
 		const query = searchText.trim();
-		if (!projectRoot || !query || generation !== searchGeneration) return;
+		if (signal.aborted || !projectRoot || !query || generation !== searchGeneration) return;
 
 		cancelActiveSearch();
 		const scanId = createSourceScanId();
@@ -564,8 +563,16 @@
 		searchLoading = true;
 		searchError = null;
 		try {
-			const page = await searchSourceTreeFromTauri(projectRoot, query, 50, cursor, explorer.includeExcluded, scanId);
-			if (generation !== searchGeneration || searchText.trim() !== query || projectRootForView() !== projectRoot)
+			const page = await searchSourceTreeFromTauri(
+				projectRoot,
+				query,
+				50,
+				cursor,
+				explorer.includeExcluded,
+				scanId,
+				signal,
+			);
+			if (signal.aborted || generation !== searchGeneration || searchText.trim() !== query || projectRootForView() !== projectRoot)
 				return;
 			if (!page) {
 				searchError = "The file search is not available here.";
@@ -583,16 +590,18 @@
 
 	function loadMoreSearchResults(): void {
 		if (searchNextCursor === null || searchLoading) return;
-		void loadSearchPage(searchGeneration, searchNextCursor, false);
+		const signal = filesOwnerSignal;
+		if (signal && !signal.aborted) void loadSearchPage(searchGeneration, searchNextCursor, false, signal);
 	}
 
 	async function onSearchResultClicked(node: TreeItem): Promise<void> {
 		const projectRoot = projectRootForView();
-		if (!projectRoot) return;
+		const signal = filesOwnerSignal;
+		if (!projectRoot || !signal || signal.aborted) return;
 		const generation = ++revealGeneration;
 		searchText = "";
-		const ancestors = await revealExplorerPath(node.path);
-		if (generation !== revealGeneration || projectRootForView() !== projectRoot) return;
+		const ancestors = await revealExplorerPath(node.path, signal);
+		if (signal.aborted || generation !== revealGeneration || projectRootForView() !== projectRoot) return;
 		expanded = new Set([...expanded, ...ancestors]);
 		persistExpandedPaths();
 		selectPath(node.path);
@@ -982,16 +991,13 @@
 	{#if !explorer.activated}
 		{#if sessionRoot}
 			<EmptyState
-				title="Files paused"
-				body="List files when you are ready. Session switching does not rebuild this panel in the background."
+				title="Loading files…"
+				body="Reading the selected session's project folder."
 			>
 				{#snippet icon()}<FolderTree />{/snippet}
-				{#snippet actions()}
-					<Button size="sm" variant="secondary" onclick={loadSelectedSessionFiles}>List files</Button>
-				{/snippet}
 			</EmptyState>
 		{:else}
-			<EmptyState title="No session selected" body="Pick a session, then list its files when you are ready.">
+			<EmptyState title="No session selected" body="Pick a session to view its files.">
 				{#snippet icon()}<FolderTree />{/snippet}
 			</EmptyState>
 		{/if}

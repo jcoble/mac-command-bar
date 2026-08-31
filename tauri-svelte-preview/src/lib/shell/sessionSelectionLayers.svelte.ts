@@ -39,6 +39,8 @@ export class SessionSelectionLayers {
     this.selectionGeneration = owner.generation;
     this.releaseDepartingChat(session.ownedId, displayedChatOwnedId);
     await this.fillTreeView(session, owner);
+    if (!this.isCurrent(owner)) return;
+    await this.fillChatHistory(session, owner);
   }
 
   async fillTreeView(
@@ -47,17 +49,19 @@ export class SessionSelectionLayers {
   ): Promise<void> {
     if (!this.isCurrent(owner)) return;
     if (session.executionEnvironment === 'remote') {
+      if (!this.isCurrent(owner)) return;
       this.treeOwnedId = session.ownedId;
       this.treeRoot = '';
       this.hasTreeProjection = true;
       return;
     }
     const root = session.cwd.trim() || (session.projectPath ?? '').trim();
-    this.hasTreeProjection = true;
-    this.treeOwnedId = session.ownedId;
-    this.treeRoot = '';
 
     if (!root) {
+      if (!this.isCurrent(owner)) return;
+      this.hasTreeProjection = true;
+      this.treeOwnedId = session.ownedId;
+      this.treeRoot = '';
       return;
     }
 
@@ -65,10 +69,14 @@ export class SessionSelectionLayers {
     const validation = await validateProjectRootFromTauri(root, owner.signal);
     if (!this.isCurrent(owner)) return;
     if (validation && (!validation.exists || !validation.isDirectory)) {
+      this.hasTreeProjection = true;
+      this.treeOwnedId = session.ownedId;
       this.treeRoot = '';
       return;
     }
 
+    this.hasTreeProjection = true;
+    this.treeOwnedId = session.ownedId;
     this.treeRoot = root;
   }
 
@@ -84,24 +92,23 @@ export class SessionSelectionLayers {
 
     const provider = this.providerFor(session);
     if (!provider) {
-      this.clearChatHistory();
+      if (!this.isCurrent(owner)) return;
+      this.hasChatProjection = false;
+      this.chatOwnedId = null;
+      evictInactiveConversationSessions(null);
       return;
     }
 
     ensureConversationSession(session.ownedId, provider);
     setConversationMode(session.ownedId, 'structured');
-    this.hasChatProjection = true;
-    this.chatOwnedId = session.ownedId;
     await loadConversationForRead(session.ownedId, false, owner.signal);
     if (!this.isCurrent(owner)) {
-      if (this.chatOwnedId === session.ownedId) {
-        this.hasChatProjection = false;
-        this.chatOwnedId = null;
-      }
       releaseConversationForRead(session.ownedId);
-      evictInactiveConversationSessions(this.chatOwnedId);
+      evictInactiveConversationSessions(null);
       return;
     }
+    this.hasChatProjection = true;
+    this.chatOwnedId = session.ownedId;
     evictInactiveConversationSessions(session.ownedId);
   }
 

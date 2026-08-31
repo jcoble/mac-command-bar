@@ -55,7 +55,6 @@
     onNewSession(): void;
     onCollapse(collapsed: boolean): void;
     onSelectSession?(ownedId: string): void | Promise<void>;
-    onOpenSession?(ownedId: string): void;
     onComplete?(ownedId: string): void;
     onReopen?(ownedId: string): void;
     onSettle?(ownedId: string): void;
@@ -70,7 +69,6 @@
     onNewSession,
     onCollapse,
     onSelectSession,
-    onOpenSession,
     onComplete,
     onReopen,
     onSettle,
@@ -378,7 +376,6 @@
           options={viewOptions}
           {activeOwnedId}
           {onSelectSession}
-          {onOpenSession}
           {onComplete}
           {onReopen}
           {onSettle}
