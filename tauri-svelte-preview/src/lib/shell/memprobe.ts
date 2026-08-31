@@ -3,9 +3,6 @@
  * `window.__memprobe`, to check whether session-switch resources are created
  * without being released. Never runs outside `import.meta.env.DEV`.
  */
-import { conversationSessions } from './conversation/conversationStore.svelte.ts';
-import { resourceDiagnostics } from './resourceDiagnostics.svelte.ts';
-
 export const memprobe = {
   conversationCreates: 0,
   conversationEvicts: 0,
@@ -15,29 +12,7 @@ export const memprobe = {
   selectBailEarly: {} as Record<string, number>,
   editorReleases: 0,
   blobUrlsCreated: 0,
-  blobUrlsRevoked: 0,
-  sizes: () => ({
-    conversationSessions: Object.keys(conversationSessions).length,
-    editorStates: resourceDiagnostics.codeMirrorEditorStates
-  }),
-  /**
-   * UTF-16 character bytes reachable from each live conversation projection.
-   * Large strings are allocated from bmalloc and report under "WebKit malloc"
-   * rather than the JS heap, so a transcript can weigh hundreds of megabytes
-   * while the heap and the DOM both look small.
-   */
-  bytes: () => {
-    const seen = new Set<object>();
-    const perSession: Record<string, { events: number; eventBytes: number; sessionBytes: number }> = {};
-    for (const [ownedId, session] of Object.entries(conversationSessions)) {
-      perSession[ownedId] = {
-        events: session.loadedEvents.length,
-        eventBytes: characterBytes(session.loadedEvents, seen),
-        sessionBytes: characterBytes(session, seen)
-      };
-    }
-    return perSession;
-  }
+  blobUrlsRevoked: 0
 };
 
 function characterBytes(value: unknown, seen: Set<object>): number {
@@ -64,6 +39,6 @@ export function memprobeSnapshot(): typeof memprobe {
   return { ...memprobe, selectBailEarly: { ...memprobe.selectBailEarly } };
 }
 
-if (import.meta.env.DEV) {
+if (import.meta.env?.DEV && typeof window !== 'undefined') {
   (window as Window & { __memprobe?: typeof memprobe }).__memprobe = memprobe;
 }

@@ -15,6 +15,7 @@
 	import "$lib/shell/styles/themeChrome.css";
 
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
+	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
 	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
 	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
@@ -27,12 +28,10 @@
 
 	import { SessionSelectionController } from "$lib/shell/controllers/sessionSelectionController.svelte";
 	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
-	import { TerminalController } from "$lib/shell/controllers/terminalController.svelte";
-	import { scanRail, startShell, stopShell } from "$lib/shell/controllers/shellStartup";
+	import { refreshRailSessions, startShell, stopShell } from "$lib/shell/controllers/shellStartup";
 
 	const selection = new SessionSelectionController();
 	const workbench = new WorkbenchController();
-	const terminal = new TerminalController();
 
 	let sessionsColumn = $state<SessionsColumn | null>(null);
 	let overlays = $state<ShellOverlays | null>(null);
@@ -40,14 +39,13 @@
 
 	onMount(() => {
 		void startShell({
-			terminal,
 			onSelectInitial: async (ownedId) => {
 				await selection.selectSession(ownedId);
 			},
 		});
 
 		return () => {
-			stopShell({ terminal });
+			stopShell();
 		};
 	});
 
@@ -81,13 +79,11 @@
 
 {#snippet toolsArea()}
 	<RightPanel
-		activeId={selection.controlledSelectionOwnedId === null ? workbench.rightTab : "files"}
-		onSelect={(id) => {
-			if (selection.controlledSelectionOwnedId === null || id === "files") workbench.selectRightTab(id);
-		}}
-		root={selection.controlledSelectionOwnedId === null ? selection.durableSessionRoot : ""}
-		rootAvailable={selection.controlledSelectionOwnedId === null ? selection.activeRootAvailable : false}
-		ownedId={selection.controlledSelectionOwnedId === null ? selection.activeOwnedId : null}
+		activeId={workbench.rightTab}
+		onSelect={(id) => workbench.selectRightTab(id)}
+		root={selection.durableSessionRoot}
+		rootAvailable={selection.activeRootAvailable}
+		ownedId={selection.activeOwnedId}
 		filesRoot={selection.activeRootRemote ? "" : selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
@@ -109,7 +105,19 @@
 {/snippet}
 
 {#snippet sessionArea()}
-	<!-- Conversation isolated/disabled during baseline measurement -->
+	<div class="session-area">
+		{#if selection.activeOwnedId}
+			<ConversationSurface
+				owned={selection.railOwned}
+				activeOwnedId={selection.activeOwnedId}
+				rootAvailable={selection.activeRootAvailable}
+			/>
+		{:else}
+			<div class="conversation-data-isolation" aria-label="No session selected">
+				<p>Select a session to view conversation.</p>
+			</div>
+		{/if}
+	</div>
 {/snippet}
 
 {#snippet editorArea()}
@@ -170,7 +178,6 @@
 	<ShellOverlays
 		bind:this={overlays}
 		onResetLayout={() => workbench.resetLayout()}
-		onRescanSessions={() => scanRail()}
 		message={null}
 		onUtilityStateChange={(id, open) => {
 			openUtility = open ? id : null;
@@ -207,5 +214,23 @@
 		flex: 1;
 		min-height: 0;
 		overflow: hidden;
+	}
+
+	.session-area {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		width: 100%;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.conversation-data-isolation {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		height: 100%;
+		color: var(--color-text-2);
+		font-size: 13px;
 	}
 </style>

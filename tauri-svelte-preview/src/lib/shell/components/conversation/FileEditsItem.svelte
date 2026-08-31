@@ -113,13 +113,17 @@
   .group-head {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    min-height: 36px;
+    padding: 6px 10px;
+    border-radius: 10px;
     color: var(--color-text-2);
-    font-size: 12px;
-    line-height: 20px;
+    font-size: 13px;
+    line-height: 22px;
   }
 
   .group-head:hover {
+    background: color-mix(in srgb, var(--color-hover) 55%, transparent);
     color: var(--color-text);
   }
 
@@ -152,19 +156,25 @@
   .files {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    margin: 0;
-    padding: 0 0 0 6px;
+    gap: 4px;
+    margin: 4px 0 0;
+    padding: 0 0 0 8px;
     list-style: none;
     border-left: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+    max-height: 240px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 
   .file-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding-left: 6px;
-    font-size: 12px;
+    min-height: 30px;
+    padding: 4px 8px;
+    font-size: 13px;
     line-height: 20px;
   }
 

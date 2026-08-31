@@ -23,16 +23,16 @@
 </details>
 
 <style>
-  .reasoning{color:var(--color-text-2);border-radius:8px;padding:2px 6px;margin:0 -6px}
+  .reasoning{color:var(--color-text-2);border-radius:10px;padding:2px 0}
   .reasoning:hover{background:color-mix(in srgb,var(--color-surface) 40%,transparent)}
-  summary{display:flex;align-items:center;gap:8px;min-height:28px;cursor:pointer;list-style:none;font-size:12px}
+  summary{display:flex;align-items:center;gap:10px;min-height:36px;padding:6px 10px;border-radius:10px;cursor:pointer;list-style:none;font-size:13px}
   summary::-webkit-details-marker{display:none}
   summary:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
   .chevron{display:grid;place-items:center;flex:none;color:var(--color-text-3)}
   details[open] .chevron{transform:rotate(90deg)}
-  summary strong{flex:none;color:var(--color-text);font-weight:620;white-space:nowrap}
-  .preview{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-3)}
-  .reasoning-body{margin:8px 0 4px 22px;padding:4px 0 4px 12px;border-left:1px solid color-mix(in srgb,var(--color-accent) 28%,var(--color-border))}
+  summary strong{flex:none;color:var(--color-text);font-weight:620;white-space:nowrap;font-size:13px}
+  .preview{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-3);font-size:13px}
+  .reasoning-body{margin:8px 0 8px 24px;padding:6px 0 6px 14px;border-left:1px solid color-mix(in srgb,var(--color-accent) 28%,var(--color-border));max-height:260px;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
   @media (prefers-reduced-motion:no-preference){
     .chevron{transition:transform .14s ease}
     .reasoning{transition:background .14s ease}

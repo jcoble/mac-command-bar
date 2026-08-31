@@ -34,7 +34,14 @@ const fullTimeFormatter = new Intl.DateTimeFormat(undefined, {
   second: 'numeric'
 });
 
+const weekdayTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: 'long',
+  hour: 'numeric',
+  minute: '2-digit'
+});
+
 export const formatClockTime = (date: Date): string => clockTimeFormatter.format(date);
+export const formatWeekdayTime = (date: Date): string => weekdayTimeFormatter.format(date);
 export const formatFullDateTime = (date: Date): string => fullDateTimeFormatter.format(date);
 export const formatMonthDayTime = (date: Date): string => monthDayTimeFormatter.format(date);
 export const formatMonthDayYear = (date: Date): string => monthDayYearFormatter.format(date);

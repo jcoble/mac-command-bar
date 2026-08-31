@@ -290,10 +290,21 @@ function blocksFrom(tokens: Token[]): SafeMarkdownBlock[] {
   return blocks;
 }
 
+const MARKDOWN_CACHE_CAP = 128;
+const markdownCache = new Map<string, SafeMarkdownBlock[]>();
+
 /** Parse GFM Markdown into safe, streaming-friendly blocks. */
 export function parseSafeMarkdown(source: string): SafeMarkdownBlock[] {
   if (!source) return [];
-  return blocksFrom(marked.lexer(source, { gfm: true }));
+  const cached = markdownCache.get(source);
+  if (cached) return cached;
+  const blocks = blocksFrom(marked.lexer(source, { gfm: true }));
+  if (markdownCache.size >= MARKDOWN_CACHE_CAP) {
+    const oldestKey = markdownCache.keys().next().value;
+    if (oldestKey !== undefined) markdownCache.delete(oldestKey);
+  }
+  markdownCache.set(source, blocks);
+  return blocks;
 }
 
 /** Compatibility name used by safety-focused tests and adapters. */

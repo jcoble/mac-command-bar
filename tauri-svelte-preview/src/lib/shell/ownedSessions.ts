@@ -457,7 +457,7 @@ export function reconcileOwnedSessions(
     // record resumable instead of treating the absent terminal as proof that
     // the session stopped; otherwise the row paints the stopped affordance and
     // a later restart keeps the stale stopped owner.
-    if (session.origin === 'app' && session.ptySessionId === null) {
+    if (session.ptySessionId === null) {
       const failed = session.state === 'exited' && (session.runtimeState === 'failed' || session.lastError !== null);
       if (failed) {
         owned.push({ ...session, state: 'exited', executionOwner: 'stopped', runtimeState: 'failed' });

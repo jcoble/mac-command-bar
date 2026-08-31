@@ -15,6 +15,8 @@ import type {
   ConversationTimelineEntry
 } from './conversationTypes.ts';
 
+import type { SafeMarkdownBlock } from './conversationMessageSafety.ts';
+
 export interface AgentPlanStep {
   id: string;
   title: string;
@@ -43,6 +45,7 @@ export type ConversationTextDisplayItem = {
   timestampMs: number;
   completed?: boolean;
   label?: string;
+  blocks?: readonly SafeMarkdownBlock[];
   metadata?: Record<string, AgentConfigValue>;
 };
 
@@ -82,6 +85,14 @@ export type ConversationDisplayItem = (
     }
   | { kind: 'input'; itemId: string; requestId: string; title: string; description?: string; fields: AgentUserInputField[]; timestampMs: number }
   | { kind: 'fileEdits'; itemId: string; edits: readonly ConversationFileEdit[]; timestampMs: number }
+  | {
+      kind: 'toolRun';
+      itemId: string;
+      items: readonly ConversationDisplayItem[];
+      summary: string;
+      icon: 'pencil' | 'book' | 'terminal' | 'search' | 'sparkles';
+      timestampMs: number;
+    }
   | { kind: 'compaction'; itemId: string; trigger?: string; preTokens?: number; postTokens?: number; timestampMs: number }
   | { kind: 'unknown'; itemId: string; text: string; timestampMs: number; metadata?: Record<string, AgentConfigValue> }
 ) & {
@@ -146,6 +157,7 @@ export function conversationFileLinkProvenance(
 const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'reasoning',
   'fileEdits',
+  'toolRun',
   'tool',
   'command',
   'file',
@@ -165,6 +177,7 @@ const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
  * counted as unfinished for ever, and the fold that only a finished turn draws
  * never appeared again once a conversation had any writing in it. */
 function turnItemSettled(item: ConversationDisplayItem): boolean {
+  if (item.kind === 'toolRun') return Boolean(item.completed && item.items.every(turnItemSettled));
   if (item.kind === 'tool') return item.state === 'completed' || item.state === 'failed';
   if (item.kind === 'subagent') {
     return ['completed', 'complete', 'failed', 'cancelled', 'canceled', 'stopped', 'done']
@@ -307,6 +320,109 @@ export function foldFileEdits(
   return folded;
 }
 
+export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
+  summary: string;
+  icon: 'pencil' | 'book' | 'terminal' | 'search' | 'sparkles';
+} {
+  let editCount = 0;
+  let readCount = 0;
+  let commandCount = 0;
+  let searchCount = 0;
+  let reasoningCount = 0;
+
+  for (const item of items) {
+    if (item.kind === 'file' || item.kind === 'fileEdits' || (item.kind === 'tool' && item.toolKind === 'file-edit')) {
+      if (item.kind === 'fileEdits') editCount += item.edits.length;
+      else editCount += 1;
+    } else if (item.kind === 'command' || (item.kind === 'tool' && (item.toolKind === 'command' || item.title?.toLowerCase().includes('command') || item.title?.toLowerCase().includes('run') || item.title?.toLowerCase() === 'bash'))) {
+      commandCount += 1;
+    } else if (item.kind === 'tool' && (item.toolKind === 'search' || item.title?.toLowerCase().includes('search') || item.title?.toLowerCase().includes('grep') || item.title?.toLowerCase().includes('glob') || item.title?.toLowerCase().includes('find'))) {
+      searchCount += 1;
+    } else if (item.kind === 'tool' && (item.toolKind === 'fetch' || item.title?.toLowerCase().startsWith('read') || item.title?.toLowerCase().startsWith('view') || item.title?.toLowerCase() === 'cat')) {
+      readCount += 1;
+    } else if (item.kind === 'reasoning') {
+      reasoningCount += 1;
+    } else if (item.kind === 'tool') {
+      const name = item.title?.toLowerCase() ?? '';
+      if (name === 'edit' || name === 'write' || name.includes('edit') || name.includes('write')) editCount += 1;
+      else if (name === 'read' || name === 'view' || name.includes('read') || name.includes('view')) readCount += 1;
+      else if (name === 'bash' || name === 'sh' || name.includes('cmd') || name.includes('command') || name.includes('exec') || name.includes('run')) commandCount += 1;
+      else if (name === 'grep' || name === 'glob' || name.includes('search') || name.includes('find')) searchCount += 1;
+      else commandCount += 1;
+    }
+  }
+
+  const parts: string[] = [];
+  if (editCount === 1) parts.push('Edited a file');
+  else if (editCount > 1) parts.push(`Edited ${editCount} files`);
+
+  if (readCount === 1) parts.push('read a file');
+  else if (readCount > 1) parts.push('read files');
+
+  if (commandCount === 1) parts.push('ran a command');
+  else if (commandCount > 1) parts.push('ran commands');
+
+  if (searchCount === 1) parts.push('searched codebase');
+  else if (searchCount > 1) parts.push('searched files');
+
+  if (parts.length === 0) {
+    if (reasoningCount > 0) return { summary: 'Thinking', icon: 'sparkles' };
+    return { summary: 'Worked', icon: 'sparkles' };
+  }
+
+  parts[0] = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+  const summary = parts.join(', ');
+
+  let icon: 'pencil' | 'book' | 'terminal' | 'search' | 'sparkles' = 'sparkles';
+  if (editCount > 0) icon = 'pencil';
+  else if (readCount > 0) icon = 'book';
+  else if (commandCount > 0) icon = 'terminal';
+  else if (searchCount > 0) icon = 'search';
+
+  return { summary, icon };
+}
+
+export function foldToolRuns(
+  items: readonly ConversationDisplayItem[]
+): readonly ConversationDisplayItem[] {
+  const folded: ConversationDisplayItem[] = [];
+  let run: ConversationDisplayItem[] = [];
+  let runTurnId: string | null | undefined;
+  let runTimestampMs = 0;
+
+  const closeRun = (): void => {
+    if (!run.length) return;
+    const { summary, icon } = summarizeToolRun(run);
+    const allCompleted = run.every(turnItemSettled);
+    folded.push({
+      kind: 'toolRun',
+      itemId: `tool-run:${run[0].itemId}`,
+      items: run,
+      summary,
+      icon,
+      completed: allCompleted,
+      turnId: runTurnId,
+      timestampMs: runTimestampMs
+    });
+    run = [];
+  };
+
+  for (const item of items) {
+    if (item.kind === 'tool' || item.kind === 'command' || item.kind === 'file' || item.kind === 'fileEdits' || item.kind === 'reasoning') {
+      if (!run.length) {
+        runTurnId = item.turnId;
+        runTimestampMs = item.timestampMs;
+      }
+      run.push(item);
+    } else {
+      closeRun();
+      folded.push(item);
+    }
+  }
+  closeRun();
+  return folded;
+}
+
 /** Groups adjacent display rows without changing their transcript order.
  *
  * The turn the agent is still writing into is the newest one. It cannot be
@@ -328,7 +444,7 @@ export function conversationTurnGroups(
   });
   return partitions.map((partition, index) => turnGroup(
     partition.turnId,
-    foldFileEdits(partition.items),
+    partition.items,
     activeTurnId !== null && index === partitions.length - 1
   ));
 }
@@ -530,6 +646,12 @@ function toolKindOf(...values: unknown[]): ConversationToolKind {
       case 'terminal':
       case 'shell':
       case 'run':
+      case 'bash':
+      case 'sh':
+      case 'zsh':
+      case 'run-command':
+      case 'exec-command':
+      case 'execute-command':
         return 'command';
       case 'file':
       case 'file-change':
@@ -540,11 +662,18 @@ function toolKindOf(...values: unknown[]): ConversationToolKind {
       case 'write':
       case 'delete':
       case 'move':
+      case 'write-to-file':
+      case 'replace-file-content':
+      case 'apply-patch':
         return 'file-edit';
       case 'search':
       case 'grep':
       case 'find':
       case 'query':
+      case 'glob':
+      case 'ripgrep':
+      case 'grep-search':
+      case 'find-by-name':
         return 'search';
       case 'fetch':
       case 'read':
@@ -553,7 +682,12 @@ function toolKindOf(...values: unknown[]): ConversationToolKind {
       case 'http':
       case 'web':
       case 'web-search':
+      case 'websearch':
       case 'image-view':
+      case 'read-file':
+      case 'view-file':
+      case 'read-url-content':
+      case 'cat':
         return 'fetch';
     }
   }
@@ -598,10 +732,14 @@ function toolTitleOf(value: unknown): string | null {
 /** The first readable line of a title's fenced block, with the fence
  * markers and language tag stripped. Empty when the fence has no content. */
 function toolSummaryLine(raw: string): string {
-  const fenced = raw.match(/```[^\n]*\n([\s\S]*?)```/);
-  const body = fenced ? fenced[1] : '';
-  const line = body.split('\n').find((entry) => entry.trim().length > 0) ?? '';
-  return line.trim().slice(0, 80);
+  if (!raw) return '';
+  const withoutFences = raw.replace(/```[a-zA-Z0-9_-]*/g, '').replace(/```/g, '');
+  const lines = withoutFences
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && line.toLowerCase() !== 'tool');
+  const first = lines[0] ?? '';
+  return first.slice(0, 80);
 }
 
 function toolStateOf(value: unknown): ConversationToolState {
@@ -662,13 +800,12 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
   };
   if (kind === 'tool') {
     const rawTitle = toolTitleOf(metadata?.title) ?? toolTitleOf(metadata?.name) ?? item.type;
-    // A raw title sometimes has a fenced block stuffed into it instead of a
-    // separate summary; when it does, the fence is the row's one-line
-    // title, with the fence itself discarded.
-    const fenceIndex = rawTitle.indexOf('```');
-    const fencedSummary = fenceIndex < 0 ? '' : toolSummaryLine(rawTitle);
-    const title = fenceIndex < 0 ? rawTitle : fencedSummary || rawTitle.slice(0, fenceIndex).trim() || 'Tool';
-    const summary = fenceIndex < 0 ? (stringOf(metadata?.summary) || undefined) : undefined;
+    const hasFence = rawTitle.includes('```');
+    const fencedSummary = hasFence ? toolSummaryLine(rawTitle) : '';
+    const prefixTitle = hasFence ? rawTitle.slice(0, rawTitle.indexOf('```')).trim() : rawTitle;
+    const resolvedTitle = fencedSummary || prefixTitle || 'Tool';
+    const title = resolvedTitle.startsWith('```') ? 'Tool' : resolvedTitle;
+    const summary = stringOf(metadata?.summary) || undefined;
     const toolKind = toolKindForAgentItem(item);
     const output = toolKind === 'file-edit' ? '' : textOf(item.content) || stringOf(metadata?.output);
     const diff = stringOf(metadata?.diff);
@@ -711,12 +848,14 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
   const completed = typeof metadata?.completed === 'boolean'
     ? metadata.completed
     : metadata?.streaming === true ? false : true;
+  const blocks = Array.isArray(metadata?.blocks) ? (metadata.blocks as unknown as readonly SafeMarkdownBlock[]) : undefined;
   return {
     kind: kind as ConversationTextDisplayItem['kind'],
     itemId: item.id,
     turnId,
     text: textOf(item.content),
     completed,
+    blocks,
     timestampMs: startedAt,
     metadata
   } as ConversationDisplayItem;
@@ -766,21 +905,34 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
     completed: entry.completed,
     timestampMs: entry.timestampMs
   };
-  if (entry.kind === 'tool') return {
-    kind: 'tool',
-    itemId: entry.itemId,
-    title: entry.name,
-    toolKind: 'tool',
-    state: toolStateOf(entry.state),
-    // The body and the row's one line are different things. This handed the
-    // summary over as both, so a row either repeated itself or, far more often,
-    // opened onto nothing at all because the summary was all that was stored.
-    output: entry.output,
-    diff: entry.diff,
-    path: entry.path,
-    summary: entry.summary,
-    timestampMs: entry.timestampMs
-  };
+  if (entry.kind === 'tool') {
+    const rawTitle = entry.name || 'Tool';
+    const hasFence = rawTitle.includes('```');
+    const fencedSummary = hasFence ? toolSummaryLine(rawTitle) : '';
+    const prefixTitle = hasFence ? rawTitle.slice(0, rawTitle.indexOf('```')).trim() : rawTitle;
+    const resolvedTitle = fencedSummary || prefixTitle || entry.summary || 'Tool';
+    const title = resolvedTitle.startsWith('```') ? (entry.summary || 'Tool') : resolvedTitle;
+    const summary = entry.summary || fencedSummary || undefined;
+    const t = title.toLowerCase();
+    const s = (summary || '').toLowerCase();
+    let toolKind: ConversationToolKind = 'tool';
+    if (entry.diff || t.includes('edit') || t.includes('write') || s.includes('edit') || s.includes('write') || t.includes('patch')) toolKind = 'file-edit';
+    else if (t.includes('bash') || t.includes('sh') || t.includes('command') || t.includes('run') || t.includes('terminal') || t.includes('console') || s.includes('bash') || s.includes('sh')) toolKind = 'command';
+    else if (t.includes('grep') || t.includes('glob') || t.includes('search') || t.includes('find') || s.includes('grep') || s.includes('find')) toolKind = 'search';
+    else if (t.includes('read') || t.includes('view') || t.includes('cat') || s.includes('read') || entry.path) toolKind = 'fetch';
+    return {
+      kind: 'tool',
+      itemId: entry.itemId,
+      title,
+      toolKind,
+      state: toolStateOf(entry.state),
+      output: entry.output,
+      diff: entry.diff,
+      path: entry.path,
+      summary,
+      timestampMs: entry.timestampMs
+    };
+  }
   if (entry.kind === 'approval') return {
     kind: 'approval',
     itemId: entry.itemId,
@@ -1210,7 +1362,11 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
     type,
     turnId: 'turnId' in event ? event.turnId : stringOf(payload.turnId) || undefined,
     content: text ? [{ channel: contentChannel, text }] : [],
-    providerMetadata: eventMetadata(event, payload, { completed, streaming: !completed })
+    providerMetadata: eventMetadata(event, payload, {
+      completed,
+      streaming: !completed,
+      blocks: Array.isArray(payload.blocks) ? (payload.blocks as unknown as AgentConfigValue) : undefined
+    })
   };
 }
 

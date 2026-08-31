@@ -1,19 +1,22 @@
 <script lang="ts">
+	import FileCode from "@lucide/svelte/icons/file-code";
+	import GitBranch from "@lucide/svelte/icons/git-branch";
+	import MessageSquare from "@lucide/svelte/icons/message-square";
 	import type { Snippet } from "svelte";
 
 	interface Props {
 		active?: boolean;
 		onSelect?(): void;
 		onOpenSession?(): void;
-		onOpenEditor?(): void;
-		onOpenSourceControl?(): void;
+		// onOpenEditor?(): void;
+		// onOpenSourceControl?(): void;
 		children: Snippet;
 	}
 
 	let {
 		active = false,
 		onSelect,
-		// onOpenSession,
+		onOpenSession,
 		// onOpenEditor,
 		// onOpenSourceControl,
 		children,
@@ -37,17 +40,37 @@
 		{@render children()}
 	</button>
 
-	<!-- <span class="row-actions" aria-label="Session shortcuts">
-		<button type="button" aria-label="Open session" onclick={(event) => runShortcut(event, onOpenSession)}>
-			<MessageCircle aria-hidden="true" />
+	<span class="row-actions" aria-label="Session shortcuts">
+		<button type="button" aria-label="Open session" onclick={(event) => runShortcut(event, onOpenSession ?? onSelect)}>
+			<MessageSquare aria-hidden="true" />
 		</button>
-		<button type="button" aria-label="Open editor" onclick={(event) => runShortcut(event, onOpenEditor)}>
-			<FileCode2 aria-hidden="true" />
+		<button
+			type="button"
+			aria-label="Open editor"
+			onclick={(event) =>
+				runShortcut(
+					event,
+
+					// onOpenEditor
+
+					onSelect,
+				)}
+		>
+			<FileCode aria-hidden="true" />
 		</button>
-		<button type="button" aria-label="Open source control" onclick={(event) => runShortcut(event, onOpenSourceControl)}>
+		<button
+			type="button"
+			aria-label="Open source control"
+			onclick={(event) =>
+				runShortcut(
+					event,
+					//  onOpenSourceControl
+					onSelect,
+				)}
+		>
 			<GitBranch aria-hidden="true" />
 		</button>
-	</span> -->
+	</span>
 </div>
 
 <style>
@@ -75,29 +98,38 @@
 		outline: none;
 	}
 
+	.session-row:hover {
+		background: color-mix(in srgb, var(--color-elevated) 65%, transparent);
+	}
+
 	.session-row.active {
 		background: color-mix(in srgb, var(--color-elevated) 88%, var(--color-text));
 	}
 
 	.row-actions {
 		position: absolute;
-		top: 5px;
+		top: 6px;
 		right: 11px;
 		z-index: 2;
-		display: none;
+		display: flex;
 		gap: 3px;
+		opacity: 0;
+		pointer-events: none;
 	}
 
+	.row-visual:hover .row-actions,
 	.row-visual:focus-within .row-actions {
-		display: flex;
+		opacity: 1;
+		pointer-events: auto;
 	}
 
 	:global(.line-title) {
 		padding-right: 82px;
 	}
 
+	.row-visual:hover :global(.age),
 	.row-visual:focus-within :global(.age) {
-		display: none;
+		opacity: 0;
 	}
 
 	.row-actions button {

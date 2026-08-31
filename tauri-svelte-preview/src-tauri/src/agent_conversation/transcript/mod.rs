@@ -277,12 +277,19 @@ pub fn tool_summary(arguments: &Value) -> Option<String> {
     const NAMED: &[&str] = &[
         "cmd",
         "command",
+        "CommandLine",
         "file_path",
         "path",
         "pattern",
         "query",
         "url",
+        "Url",
         "description",
+        "TargetFile",
+        "AbsolutePath",
+        "DirectoryPath",
+        "SearchPath",
+        "code",
     ];
     let text = NAMED
         .iter()
@@ -310,25 +317,57 @@ pub fn tool_summary(arguments: &Value) -> Option<String> {
 pub fn tool_record(
     item_id: &str,
     name: &str,
-    summary: Option<String>,
+    input: &Value,
     timestamp_ms: u128,
 ) -> ProjectedRecord {
+    let summary = tool_summary(input);
+    let path = input
+        .get("file_path")
+        .or_else(|| input.get("path"))
+        .or_else(|| input.get("TargetFile"))
+        .or_else(|| input.get("AbsolutePath"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let diff = input
+        .get("diff")
+        .or_else(|| input.get("patch"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let mut payload = std::collections::BTreeMap::from([
+        ("historical".to_string(), Value::Bool(true)),
+        ("itemId".to_string(), Value::String(item_id.to_string())),
+        ("title".to_string(), Value::String(name.to_string())),
+        ("name".to_string(), Value::String(name.to_string())),
+        ("status".to_string(), Value::String("completed".to_string())),
+    ]);
+    if !input.is_null() {
+        payload.insert("args".to_string(), input.clone());
+    }
+    if let Some(summary_text) = &summary {
+        payload.insert("summary".to_string(), Value::String(summary_text.clone()));
+    }
+    if let Some(path_text) = &path {
+        payload.insert("path".to_string(), Value::String(path_text.clone()));
+    }
+    if let Some(diff_text) = &diff {
+        payload.insert("diff".to_string(), Value::String(diff_text.clone()));
+    }
+
     ProjectedRecord {
         key: format!("tool:{item_id}"),
         event_type: AgentEventType::ItemCompleted,
         timestamp_ms,
         item_id: Some(item_id.to_string()),
-        payload: std::collections::BTreeMap::from([("historical".to_string(), Value::Bool(true))]),
+        payload,
         native: Some(AgentConversationPayload::Tool {
             item_id: item_id.to_string(),
             name: name.to_string(),
             state: ToolState::Completed,
             summary,
-            // A past transcript records the call, not what came back: the
-            // result is written under a different id with no tool name on it.
             output: None,
-            path: None,
-            diff: None,
+            path,
+            diff,
         }),
     }
 }

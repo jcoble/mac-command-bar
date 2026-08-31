@@ -1,3 +1,41 @@
+<script lang="ts" module>
+  let sharedObserver: IntersectionObserver | null = null;
+  const observerCallbacks = new Map<Element, () => void>();
+
+  function getSharedObserver(): IntersectionObserver | null {
+    if (typeof IntersectionObserver === 'undefined') return null;
+    if (!sharedObserver) {
+      sharedObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const cb = observerCallbacks.get(entry.target);
+            if (cb) {
+              observerCallbacks.delete(entry.target);
+              sharedObserver?.unobserve(entry.target);
+              cb();
+            }
+          }
+        }
+      }, { rootMargin: '400px' });
+    }
+    return sharedObserver;
+  }
+
+  function observeCodeBlock(el: Element, onIntersect: () => void): () => void {
+    const obs = getSharedObserver();
+    if (!obs) {
+      onIntersect();
+      return () => {};
+    }
+    observerCallbacks.set(el, onIntersect);
+    obs.observe(el);
+    return () => {
+      observerCallbacks.delete(el);
+      obs.unobserve(el);
+    };
+  }
+</script>
+
 <script lang="ts">
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
@@ -35,18 +73,9 @@
   // scrolled past a hundred prose messages never pays for the ones above.
   $effect(() => {
     if (!host || onScreen) return;
-    if (typeof IntersectionObserver === 'undefined') {
+    return observeCodeBlock(host, () => {
       onScreen = true;
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        onScreen = true;
-        observer.disconnect();
-      }
-    }, { rootMargin: '400px' });
-    observer.observe(host);
-    return () => observer.disconnect();
+    });
   });
 
   $effect(() => () => {
@@ -100,7 +129,7 @@
   /* A line too long for the measure scrolls here and nowhere else. The pane
      around it never moves sideways. The bar is the thin one the transcript
      uses, so it does not read as a second scrollbar for the page. */
-  pre{overflow:auto;margin:0;padding:12px;font:13px/1.6 var(--font-mono);scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
+  pre{max-height:360px;overflow:auto;margin:0;padding:12px;font:13px/1.6 var(--font-mono);scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
   pre.wrapped{white-space:pre-wrap;overflow-wrap:anywhere}
   /* The browser gives <code> a face of its own — plain `monospace`, which on
      a Mac is Courier — so the code inside the box was not drawing in the face

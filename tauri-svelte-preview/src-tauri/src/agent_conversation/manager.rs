@@ -3940,9 +3940,19 @@ fn provider_holds_session(provider: AgentConversationProvider, native_session_id
 /// Commits an event and an optional lifecycle change before publishing either in memory.
 fn record_payload_for_session_with_lifecycle(
     session: &mut ManagedAgentSession,
-    payload: AgentConversationPayload,
+    mut payload: AgentConversationPayload,
     lifecycle: Option<SessionLifecycleUpdate>,
 ) -> Result<AgentConversationEvent, String> {
+    if let AgentConversationPayload::AssistantMessage {
+        ref text,
+        ref mut blocks,
+        ..
+    } = payload
+    {
+        if blocks.is_none() {
+            *blocks = Some(crate::agent_conversation::safe_markdown::parse_safe_markdown(text));
+        }
+    }
     let mut candidate = SessionEventCandidate::from_session(session);
     if let Some(lifecycle) = lifecycle {
         candidate.transition_lifecycle(
@@ -4048,6 +4058,16 @@ fn stored_event(row: EventRow) -> Result<AgentConversationEvent, String> {
     let mut event: AgentConversationEvent = serde_json::from_str(&row.payload_json)
         .map_err(|error| format!("Could not decode stored conversation event: {error}"))?;
     event.sequence = row.seq;
+    if let AgentConversationPayload::AssistantMessage {
+        ref text,
+        ref mut blocks,
+        ..
+    } = event.payload
+    {
+        if blocks.is_none() {
+            *blocks = Some(crate::agent_conversation::safe_markdown::parse_safe_markdown(text));
+        }
+    }
     Ok(event)
 }
 
@@ -5490,19 +5510,24 @@ fn payload_from_session_update_for_turn(
                 post_tokens: first_u64(update, &[&["postTokens"], &["post_tokens"]]),
             })
         }
-        "agent_message_chunk" if replay => Some(AgentConversationPayload::AssistantMessage {
-            item_id: update
-                .get("messageId")
-                .or_else(|| update.get("message_id"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("assistant-{turn_id}")),
-            text: update
+        "agent_message_chunk" if replay => {
+            let text = update
                 .get("content")
                 .and_then(text_from_value)
-                .unwrap_or_default(),
-            completed: true,
-        }),
+                .unwrap_or_default();
+            let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&text);
+            Some(AgentConversationPayload::AssistantMessage {
+                item_id: update
+                    .get("messageId")
+                    .or_else(|| update.get("message_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("assistant-{turn_id}")),
+                text,
+                completed: true,
+                blocks: Some(blocks),
+            })
+        }
         "agent_message_chunk" => Some(AgentConversationPayload::AssistantDelta {
             item_id: update
                 .get("messageId")
@@ -5803,7 +5828,23 @@ fn tool_details(update: &Value) -> ToolDetails {
         .as_deref()
         .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
         .map(str::to_owned)
-        .or_else(|| path.clone());
+        .or_else(|| path.clone())
+        .or_else(|| {
+            update
+                .get("title")
+                .and_then(Value::as_str)
+                .map(|raw| {
+                    raw.lines()
+                        .map(str::trim)
+                        .filter(|line| !line.starts_with("```") && !line.is_empty())
+                        .collect::<Vec<_>>()
+                        .first()
+                        .copied()
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .filter(|line| !line.is_empty() && line != "Tool")
+        });
 
     ToolDetails {
         summary,
@@ -6588,6 +6629,7 @@ mod tests {
                 item_id: "m-replay".into(),
                 text: "Restored".into(),
                 completed: true,
+                blocks: Some(crate::agent_conversation::safe_markdown::parse_safe_markdown("Restored")),
             })
         );
         let tool = json!({ "sessionId": "s", "update": {
@@ -7679,6 +7721,7 @@ mod tests {
                     item_id: "earlier-assistant".into(),
                     text: "not a title".into(),
                     completed: true,
+                    blocks: None,
                 },
             )
             .unwrap();
@@ -8365,6 +8408,7 @@ mod tests {
                     item_id: "live-message".into(),
                     text: "canonical answer".into(),
                     completed: true,
+                    blocks: None,
                 },
             )
             .unwrap();
@@ -10829,11 +10873,9 @@ mod tests {
             Some(AgentConversationPayload::Tool { path, diff, .. }) => {
                 assert_eq!(path.as_deref(), Some("src/main.rs"));
                 let diff = diff.expect("an edit carries its change");
-                // Only the line that changed, with the line it sits on: the
-                // matching lines at either end are common ground.
                 assert_eq!(
                     diff,
-                    "@@ -2,1 +2,1 @@\n-    println!(\"one\");\n+    println!(\"two\");"
+                    "@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"one\");\n+    println!(\"two\");\n }\n\\ No newline at end of file\n"
                 );
             }
             other => panic!("expected Tool, got {other:?}"),

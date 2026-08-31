@@ -248,10 +248,12 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                     attachment_ids: Vec::new(),
                 }
             } else {
+                let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&text);
                 AgentConversationPayload::AssistantMessage {
                     item_id: item_id.clone(),
                     text: text.clone(),
                     completed: true,
+                    blocks: Some(blocks),
                 }
             };
             records.push(ProjectedRecord {
@@ -308,7 +310,7 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
             records.push(super::tool_record(
                 call_id,
                 name,
-                super::tool_summary(&arguments),
+                &arguments,
                 timestamp(value),
             ));
         }

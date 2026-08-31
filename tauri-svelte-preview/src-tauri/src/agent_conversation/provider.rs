@@ -206,18 +206,21 @@ fn normalize_codex(
         "item/completed"
             if p.pointer("/item/type").and_then(Value::as_str) == Some("agentMessage") =>
         {
+            let text = p
+                .pointer("/item/text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&text);
             emit(
                 registry,
                 app,
                 c,
                 AgentConversationPayload::AssistantMessage {
                     item_id: item_id(),
-                    text: p
-                        .pointer("/item/text")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
+                    text,
                     completed: true,
+                    blocks: Some(blocks),
                 },
             )
         }
@@ -429,6 +432,7 @@ fn normalize_claude(
                     .map(str::to_string)
                     .or_else(|| assistant_item_id.clone())
                     .unwrap_or_else(|| format!("assistant-{}", c.generation));
+                let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&completed_text);
                 emit(
                     registry,
                     app,
@@ -437,6 +441,7 @@ fn normalize_claude(
                         item_id,
                         text: completed_text,
                         completed: true,
+                        blocks: Some(blocks),
                     },
                 );
             }

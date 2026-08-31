@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import { createVirtualizer } from '@tanstack/svelte-virtual';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
     conversationTurnGroups,
+    foldFileEdits,
+    foldToolRuns,
     formatWorkedFor,
     type ConversationTurnGroup,
     type ConversationDisplayItem,
@@ -27,6 +28,7 @@
     setConversationTimelineDiagnostics
   } from '$lib/shell/resourceDiagnostics.svelte';
   import TimelineItem from './TimelineItem.svelte';
+  import TurnFileCard from './TurnFileCard.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
 
   interface Props {
@@ -88,7 +90,6 @@
   let restoringScrollTop = $state<number | null>(null);
   let host = $state<HTMLDivElement | null>(null);
   let list = $state<HTMLDivElement | null>(null);
-  let tail = $state<HTMLDivElement | null>(null);
   let follow = $state(true);
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
   let animationFrame: number | null = null;
@@ -104,49 +105,73 @@
   let foldConversationId = $state('');
   let expandedTurns = $state<Map<string, boolean>>(new Map());
   /** Every item the conversation holds. A stored row is drawn, never offered. */
-  const renderedItems = $derived(items);
+  const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
   const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
   const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId));
 
-  /*
-   * One turn is one virtual row. Turns are the unit the transcript already
-   * groups by, so a row is a whole exchange rather than a fragment of one, and
-   * a turn is never split across the boundary of what is mounted.
-   *
-   * Heights are measured, not declared: a turn holding one line and a turn
-   * holding a diff are nothing alike, and an estimate that guessed would make
-   * the scrollbar lie. The estimate below is only what an unmeasured row is
-   * assumed to be until it has been on screen once.
-   */
-  /*
-   * A row is estimated from how many characters it holds, not from a fixed
-   * guess. Text length is the only thing known before a row has ever been on
-   * screen that actually tracks its height: a row is as tall as its writing
-   * wraps. A flat number is wrong in both directions at once — it inflates the
-   * scroll height for the rows that draw nothing (a stored transcript is mostly
-   * usage and config records, which render no text at all) and understates the
-   * ones carrying a long reply or a tool dump.
-   *
-   * These are only estimates for rows not yet measured; `measureElement`
-   * replaces each with its real height the first time it paints.
-   */
-  const ROW_CHARS_PER_LINE = 72;
-  const ROW_LINE_HEIGHT = 20;
-  const ROW_CHROME = 32;
-  const ROW_MIN_HEIGHT = 44;
-
-  function rowHeightEstimate(group: ConversationTurnGroup): number {
-    let characters = 0;
-    for (const item of group.items) {
-      const record = item as { text?: string; title?: string; output?: string };
-      characters += (record.text?.length ?? 0)
-        + (record.title?.length ?? 0)
-        + (record.output?.length ?? 0);
+  function countDiffLines(diffText: string): { added: number; removed: number } {
+    let added = 0;
+    let removed = 0;
+    let lineStart = 0;
+    const len = diffText.length;
+    for (let i = 0; i <= len; i++) {
+      if (i === len || diffText.charCodeAt(i) === 10) {
+        if (i > lineStart) {
+          const first = diffText.charCodeAt(lineStart);
+          const second = i > lineStart + 1 ? diffText.charCodeAt(lineStart + 1) : 0;
+          if (first === 43 && second !== 43) added++;
+          else if (first === 45 && second !== 45) removed++;
+        }
+        lineStart = i + 1;
+      }
     }
-    if (characters === 0) return ROW_MIN_HEIGHT;
-    return Math.ceil(characters / ROW_CHARS_PER_LINE) * ROW_LINE_HEIGHT + ROW_CHROME;
+    return { added, removed };
+  }
+
+  function getTurnFileEdits(group: ConversationTurnGroup): { path: string; added: number; removed: number }[] {
+    const edits: { path: string; added: number; removed: number }[] = [];
+    const seenPaths = new Set<string>();
+
+    for (const item of group.items) {
+      if (item.kind === 'fileEdits') {
+        for (const edit of item.edits) {
+          if (!seenPaths.has(edit.path)) {
+            seenPaths.add(edit.path);
+            edits.push({ path: edit.path, added: edit.added, removed: edit.removed });
+          }
+        }
+      } else if (item.kind === 'file') {
+        const p = typeof item.metadata?.path === 'string' ? item.metadata.path : '';
+        if (p && !seenPaths.has(p)) {
+          seenPaths.add(p);
+          const d = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
+          const { added, removed } = countDiffLines(d);
+          edits.push({ path: p, added, removed });
+        }
+      } else if (item.kind === 'toolRun') {
+        for (const sub of item.items) {
+          if (sub.kind === 'fileEdits') {
+            for (const edit of sub.edits) {
+              if (!seenPaths.has(edit.path)) {
+                seenPaths.add(edit.path);
+                edits.push({ path: edit.path, added: edit.added, removed: edit.removed });
+              }
+            }
+          } else if (sub.kind === 'file') {
+            const p = typeof sub.metadata?.path === 'string' ? sub.metadata.path : '';
+            if (p && !seenPaths.has(p)) {
+              seenPaths.add(p);
+              const d = typeof sub.metadata?.diff === 'string' ? sub.metadata.diff : sub.text;
+              const { added, removed } = countDiffLines(d);
+              edits.push({ path: p, added, removed });
+            }
+          }
+        }
+      }
+    }
+    return edits;
   }
 
   function rowKey(group: ConversationTurnGroup | undefined, index: number): string {
@@ -154,28 +179,15 @@
     return `${renderWindowId}:${groupId}`;
   }
 
-  let rowEstimates: number[] = [];
-  $effect(() => {
-    rowEstimates = renderedGroups.map(rowHeightEstimate);
-  });
-
-  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: 0,
-    getScrollElement: () => host,
-    getItemKey: (index) => rowKey(renderedGroups[index], index),
-    estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
-    overscan: 6,
-    useAnimationFrameWithResizeObserver: true
-  });
 
   let timelineMounted = false;
   function publishTimelineDiagnostics(): void {
     if (!timelineMounted) return;
     setConversationTimelineDiagnostics(
       renderedGroups.length,
-      $virtualizer.getVirtualItems().length,
-      $virtualizer.elementsCache.size,
-      $virtualizer.itemSizeCache.size
+      renderedGroups.length,
+      0,
+      0
     );
   }
 
@@ -187,41 +199,6 @@
       setConversationTimelineDiagnostics(0, 0, 0, 0);
     };
   });
-
-  let appliedRowCount = -1;
-  let appliedHost: HTMLDivElement | null = null;
-  let appliedRenderWindowId = '';
-  $effect(() => {
-    // Guarded because setOptions publishes the store, and this effect reads it:
-    // without the guard the two would drive each other in a loop.
-    const count = renderedGroups.length;
-    const element = host;
-    const windowId = renderWindowId;
-    if (count === appliedRowCount && element === appliedHost && windowId === appliedRenderWindowId) return;
-    const windowChanged = windowId !== appliedRenderWindowId;
-    appliedRowCount = count;
-    appliedHost = element;
-    appliedRenderWindowId = windowId;
-    $virtualizer.setOptions({
-      count,
-      getScrollElement: () => element,
-      getItemKey: (index) => rowKey(renderedGroups[index], index),
-      estimateSize: (index) => rowEstimates[index] ?? ROW_MIN_HEIGHT,
-      overscan: 6,
-      useAnimationFrameWithResizeObserver: true
-    });
-    if (windowChanged) {
-      // Row keys include the session/child window. TanStack does not prune old
-      // measured sizes merely because getItemKey starts returning new keys.
-      $virtualizer.measure();
-      void tick().then(() => {
-        // Session replacement removes the old rows during this Svelte flush.
-        // Sweep only nodes that are now detached; current rows stay observed.
-        $virtualizer.measureElement(null);
-        publishTimelineDiagnostics();
-      });
-    }
-  });
   const anchoredUserIndex = $derived(anchoredUserItemId
     ? renderedItems.findIndex((item) => item.itemId === anchoredUserItemId)
     : -1);
@@ -230,13 +207,6 @@
       && anchoredUserIndex >= 0
       && renderedItems.slice(anchoredUserIndex + 1).every((item) => !conversationItemHasVisibleContent(item))
   );
-  // Empty space under the newest user message, one screen tall, so that message can
-  // sit at the top of the screen after a send. It stays there once the reply is
-  // finished: taking it away would make the page shorter than the reader's current
-  // position, and the browser would answer by yanking the view down to the new
-  // bottom. The space is dropped only when another conversation is opened, which
-  // also clears the anchored message.
-  const showActiveTurnTail = $derived(anchoredUserIndex >= 0);
 
   $effect(() => {
     if (!host) return;
@@ -268,8 +238,11 @@
     // being opened for the first time lands on its newest turn — and that is
     // the only case with nowhere else to land. Both wait for messages to be on
     // screen before anything moves.
-    if (savedScrollTop > 0) restoringScrollTop = savedScrollTop;
-    else scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
+    if (savedScrollTop > 0) {
+      restoringScrollTop = savedScrollTop;
+    } else {
+      scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
+    }
   });
 
   $effect(() => {
@@ -281,9 +254,22 @@
     restoringScrollTop = null;
     void tick().then(() => {
       if (!host) return;
-      host.scrollTop = target;
+      const maxScroll = latestWritingScrollTop();
+      if (target >= maxScroll - 150) {
+        host.scrollTop = maxScroll;
+        follow = true;
+      } else {
+        host.scrollTop = target;
+        follow = false;
+      }
       requestTrackedAnimationFrame(() => {
-        if (host) host.scrollTop = target;
+        if (!host) return;
+        const currentMax = latestWritingScrollTop();
+        if (target >= currentMax - 150) {
+          host.scrollTop = currentMax;
+        } else {
+          host.scrollTop = target;
+        }
       });
     });
   });
@@ -298,7 +284,7 @@
     if (renderedItems.length === 0 || !scrollState.openingToLatest) return;
     let cancelled = false;
     let frame: number | null = null;
-    let framesLeft = 4;
+    let framesLeft = 6;
     const settleAtLatest = (): void => {
       frame = null;
       if (cancelled || !host || !scrollState.openingToLatest) return;
@@ -306,7 +292,11 @@
       if (Math.abs(host.scrollTop - target) > 1) host.scrollTop = target;
       follow = true;
       framesLeft -= 1;
-      if (framesLeft > 0) frame = requestTrackedAnimationFrame(settleAtLatest);
+      if (framesLeft > 0) {
+        frame = requestTrackedAnimationFrame(settleAtLatest);
+      } else {
+        scrollState = { ...scrollState, openingToLatest: false, pinnedToBottom: true };
+      }
     };
     void tick().then(() => {
       if (!cancelled) frame = requestTrackedAnimationFrame(settleAtLatest);
@@ -413,7 +403,7 @@
    * just above the prompt instead of hiding behind it. */
   function latestWritingScrollTop(): number {
     if (!host) return 0;
-    return host.scrollHeight - (tail?.offsetHeight ?? 0) - host.clientHeight;
+    return Math.max(0, host.scrollHeight - host.clientHeight);
   }
 
   /** How far the reader is above the end of the writing. Zero means they are
@@ -429,10 +419,6 @@
       return;
     }
     if (framesLeft === 0) return finishAnimation();
-    if (framesLeft === 8) {
-      const rowIndex = renderedGroups.findIndex((group) => group.items.some((item) => item.itemId === itemId));
-      if (rowIndex >= 0) $virtualizer.scrollToIndex(rowIndex, { align: 'start' });
-    }
     animationFrame = requestTrackedAnimationFrame(() => {
       animationFrame = null;
       anchorUser(itemId, motion, offsetPx, framesLeft - 1);
@@ -476,54 +462,22 @@
   }
 
   function requestOlderHistory(): void {
-    if (!host || !hasOlder || loadingOlder || !onLoadOlder) return;
-    // One viewport of warning, so the page arrives before the reader hits the top.
-    if (host.scrollTop > Math.max(viewportHeight, 1)) return;
+    if (!host || !hasOlder || loadingOlder || !onLoadOlder || scrollState.openingToLatest) return;
+    if (host.scrollTop > 80) return;
     captureViewportAnchor();
     onLoadOlder();
   }
 
   function requestNewerHistory(force = false): void {
-    if (!host || !hasNewer || loadingNewer || !onLoadNewer) return;
-    if (!force && distanceBelowReader() > Math.max(viewportHeight, 1)) return;
+    if (!host || !hasNewer || loadingNewer || !onLoadNewer || scrollState.openingToLatest) return;
+    if (!force && distanceBelowReader() > 80) return;
     captureViewportAnchor();
     onLoadNewer();
   }
 
-  // A restored page can mount with estimates that make its bounded tail look
-  // shorter than the viewport. Give those rows the same bounded frame window
-  // used by send anchoring, then let the normal scroll-position gate backfill.
-  function hydrateVisibleWindow(framesLeft = 8): void {
-    hydrationFrame = null;
-    if (!host || !list || renderedItems.length === 0) return;
-    for (const row of list.querySelectorAll<HTMLDivElement>('.turn-row')) {
-      $virtualizer.measureElement(row);
-    }
-    requestOlderHistory();
-    if (framesLeft === 0 || loadingOlder || !hasOlder) return;
-    hydrationFrame = requestTrackedAnimationFrame(() => hydrateVisibleWindow(framesLeft - 1));
-  }
-
-  let hydratedRevision = -1;
-  let hydratedWindowId = '';
-  $effect(() => {
-    const revision = timelineRevision;
-    const windowId = renderWindowId;
-    if (!host || renderedGroups.length === 0) return;
-    if (revision === hydratedRevision && windowId === hydratedWindowId) return;
-    hydratedRevision = revision;
-    hydratedWindowId = windowId;
-    if (hydrationFrame !== null) cancelTrackedAnimationFrame(hydrationFrame);
-    hydrationFrame = requestTrackedAnimationFrame(() => hydrateVisibleWindow());
-  });
-
   function restoreViewportAnchor(anchor: PageAnchor): void {
     void tick().then(() => {
       if (!host) return;
-      const rowIndex = renderedGroups.findIndex((group) =>
-        group.items.some((item) => item.itemId === anchor.itemId)
-      );
-      if (rowIndex >= 0) $virtualizer.scrollToIndex(rowIndex, { align: 'start' });
       requestTrackedAnimationFrame(() => {
         if (!host) return;
         const item = host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(anchor.itemId)}"]`);
@@ -556,6 +510,10 @@
 
   function handleScroll(): void {
     if (!host) return;
+    const maxScroll = Math.max(0, host.scrollHeight - host.clientHeight);
+    if (host.scrollTop > maxScroll) {
+      host.scrollTop = maxScroll;
+    }
     follow = distanceBelowReader() <= 80;
     // Keep the anchor fresh while reading so a live append that trims the top
     // can restore the same visible item instead of moving the reader.
@@ -639,10 +597,11 @@
   $effect(() => {
     if (composerHeight === lastComposerHeight) return;
     lastComposerHeight = composerHeight;
-    if (!scrollState.pinnedToBottom) return;
-    void tick().then(() => {
-      if (host) animateTo(latestWritingScrollTop(), 'instant');
-    });
+    if (follow || scrollState.pinnedToBottom || scrollState.openingToLatest) {
+      void tick().then(() => {
+        if (host) animateTo(latestWritingScrollTop(), 'instant');
+      });
+    }
   });
 
 
@@ -669,27 +628,6 @@
     if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
       handleUserInput();
     }
-  }
-
-  /** Hands each mounted turn to the virtualizer, which reads its real height
-   * from `data-index` and re-lays the rows below it. A turn that grows while it
-   * is on screen — a reply streaming in, a fold opening — is re-measured by the
-   * observer the virtualizer keeps on the element. */
-  function measureRow(node: HTMLDivElement): { destroy(): void } {
-    $virtualizer.measureElement(node);
-    publishTimelineDiagnostics();
-    return {
-      destroy(): void {
-        // Svelte destroys the action before removing its element. TanStack's
-        // null cleanup only evicts elements that are already disconnected, so
-        // running it synchronously leaves this row and its message subtree in
-        // elementsCache. Wait until Svelte has detached the row, then sweep it.
-        queueMicrotask(() => {
-          $virtualizer.measureElement(null);
-          publishTimelineDiagnostics();
-        });
-      }
-    };
   }
 
   function userInputInterrupts(node: HTMLElement): { destroy(): void } {
@@ -727,111 +665,54 @@
       class="timeline-list"
       data-testid="conversation-timeline-list"
       bind:this={list}
-      style={`height:${$virtualizer.getTotalSize() + (showActiveTurnTail ? viewportHeight : 0)}px`}
     >
-      {#each $virtualizer.getVirtualItems() as row (row.key)}
-          {@const group = renderedGroups[row.index]}
-          {#if group}
-            {@const expanded = turnExpanded(group)}
-            {@const firstWorkItemId = group.workItemIds[0]}
-            <div
-              class="turn-row"
-              data-index={row.index}
-              use:measureRow
-              style={`transform:translateY(${row.start}px)`}
-            >
-              {#each group.items as item (item.itemId)}
-                {@const workItem = group.workItemIds.includes(item.itemId)}
-                {#if group.turnId !== null && item.itemId === firstWorkItemId && group.completed}
-                  <button
-                    class="turn-fold"
-                    data-testid="conversation-turn-fold"
-                    type="button"
-                    aria-expanded={expanded}
-                    onclick={() => toggleTurn(group)}
-                  >
-                    <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
-                    <span class="turn-fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
-                  </button>
-                {/if}
-                {#if !workItem || expanded}
-                  <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
-                  {#if showWorking && item.itemId === anchoredUserItemId}
-                    <div class="working-row" data-testid="conversation-working-indicator" role="status">
-                      <WorkingSpinner seed={group.turnId ?? item.itemId} />
-                      <span>Working…</span>
-                    </div>
-                  {/if}
-                {/if}
-              {/each}
-            </div>
-          {/if}
-      {/each}
-      {#if showActiveTurnTail}
-        <!-- Inside the list and directly after the last row, which is where it
-             sat before the transcript was virtualized. Outside it, this became a
-             screen-tall blank between the newest message and the prompt, because
-             it stacked with the scroll box's own bottom padding. -->
+      {#each renderedGroups as group, index (rowKey(group, index))}
+        {@const expanded = turnExpanded(group)}
         <div
-          class="active-turn-tail"
-          bind:this={tail}
-          style={`transform:translateY(${$virtualizer.getTotalSize()}px);height:${viewportHeight}px`}
-          aria-hidden="true"
-        ></div>
-      {/if}
+          class="turn-row"
+          data-index={index}
+          data-turn-id={group.turnId}
+          data-testid="conversation-timeline-row"
+        >
+          {#each foldToolRuns(foldFileEdits(group.items)) as item (item.itemId)}
+            <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
+            {#if showWorking && item.itemId === anchoredUserItemId}
+              <div class="working-row" data-testid="conversation-working-indicator" role="status">
+                <WorkingSpinner seed={group.turnId ?? item.itemId} />
+                <span>Working…</span>
+              </div>
+            {/if}
+          {/each}
+          {#if group.completed}
+            {#each getTurnFileEdits(group) as edit (edit.path)}
+              <TurnFileCard path={edit.path} added={edit.added} removed={edit.removed} onReview={onFileLink} />
+            {/each}
+          {/if}
+        </div>
+      {/each}
+      <div class="timeline-bottom-spacer" aria-hidden="true"></div>
     </div>
   </div>
   {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" aria-label="Jump to latest" onclick={() => void jumpToLatest()}><ArrowDown size={16} strokeWidth={2} aria-hidden="true" /></button>{/if}
 </div>
 
 <style>
-  .timeline-wrap{position:relative;flex:1;min-height:0}
-  /* Laid over the top of the transcript rather than placed in it: a row in the
-     scroll flow would change its height while a page is arriving, and the
-     scroll position is being corrected against exactly that height. */
-  /* A pill rather than a line of small grey text: reaching the top of a long
-     transcript takes several reads, and the reader has to be able to tell the
-     difference between one running and nothing happening. */
-  .older-loading{position:absolute;top:calc(var(--center-head-height) + 6px);left:0;right:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;font-size:12px;color:var(--color-text-2);pointer-events:none}
-  /* The turn is the only animation in the app that repeats, and it exists only
-     while a read is actually running — the element is removed when it ends. */
+  .timeline-wrap{position:relative;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow:hidden}
+  .older-loading{position:absolute;top:calc(var(--center-head-height, 0px) + 6px);left:0;right:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;font-size:12px;color:var(--color-text-2);pointer-events:none}
   .older-spinner{width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--color-text-3) 45%,transparent);border-top-color:var(--color-text-2);border-radius:50%;animation:older-spin 700ms linear infinite}
   @keyframes older-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
-  /* scrollbar-width/-color are set here rather than on the shell root: they are
-     inherited, and declaring them globally turns every overlay scrollbar in the
-     app into a permanent one, including horizontal bars nobody asked for. Code
-     blocks and tables carry their own overflow, so this pane never scrolls sideways. */
-  /* The top inset is the centre pane's head, because that is what is laid over
-     the top of this box. Whatever comes to rest at the top — the first message
-     of a short conversation, or the one just sent — lands below the controls
-     rather than behind them. It is an inset, not a gap: the reading still
-     scrolls up through it. */
-  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;height:100%;overflow:auto;overflow-x:hidden;overflow-anchor:none;padding:var(--center-head-height) 24px calc(var(--composer-height) + 16px);scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;scrollbar-gutter:stable;overscroll-behavior:contain}
-  /* The list is now a measured column of absolutely placed turns, so its own
-     height is what the virtualizer reports rather than what its children add up
-     to. The 16px that used to be `gap` lives on each row instead: absolute
-     children are not flex items and gap would not reach them. */
-  /* Top-aligned on purpose. A conversation starts at the top of the pane and
-     grows downward; when it reaches the prompt the scroll box takes over and the
-     newest writing stays at the bottom. Bottom-anchoring this (margin-top:auto)
-     leaves a short conversation stranded against the prompt with the empty pane
-     above it, which is not how a conversation reads. */
-  .timeline-list{position:relative;flex:none;width:min(820px,100%);min-height:1px;margin:0 auto}
-  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:22px;width:100%;padding-bottom:22px}
-  .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
-  .turn-fold:hover{color:var(--color-text)}
-  .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
-  .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
-  .turn-fold-chevron.open{transform:rotate(90deg)}
+  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:auto;padding:var(--center-head-height, 0px) 28px 0;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
+  .timeline-list{position:relative;display:flex;flex-direction:column;gap:26px;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
+  .turn-row{position:relative;display:flex;flex-direction:column;gap:26px;width:100%;content-visibility:auto;contain-intrinsic-size:auto 120px}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
-  .working-row{display:flex;align-items:center;gap:8px;min-height:20px;color:var(--color-text-3);font-size:13px}
-  .active-turn-tail{position:absolute;top:0;left:0;width:100%;pointer-events:none}
+  .working-row{display:flex;align-items:center;gap:8px;min-height:24px;color:var(--color-text-3);font-size:13px}
   /* A disc under the middle of the transcript, holding one arrow. It sits over
      the column it scrolls rather than off in the corner, and it says what it
      does by pointing, so it stays out of the reading it is offering to move. */
-  .jump-latest{position:absolute;left:50%;bottom:calc(var(--composer-height) + 16px);display:grid;place-items:center;width:32px;height:32px;padding:0;transform:translateX(-50%);border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);box-shadow:var(--shadow-sm);cursor:pointer}
+  .jump-latest{position:absolute;left:50%;bottom:calc(max(var(--composer-height, 0px), 120px) + 20px);display:grid;place-items:center;width:32px;height:32px;padding:0;transform:translateX(-50%);border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);box-shadow:var(--shadow-sm);cursor:pointer}
   .jump-latest:hover{background:var(--color-hover)}
   .jump-latest:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
-  @media (prefers-reduced-motion:no-preference){.turn-fold-chevron{transition:transform .14s ease}.jump-latest{transition:background .14s ease,box-shadow .14s ease}}
+  @media (prefers-reduced-motion:no-preference){.jump-latest{transition:background .14s ease,box-shadow .14s ease}}
 </style>

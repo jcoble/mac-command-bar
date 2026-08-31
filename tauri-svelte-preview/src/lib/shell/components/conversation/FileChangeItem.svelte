@@ -4,10 +4,14 @@
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
 
-  let { item, onFileLink }: {
-    item: Extract<ConversationDisplayItem, { kind: 'file' }>;
+  interface Props {
+    item?: Extract<ConversationDisplayItem, { kind: 'file' }>;
+    path?: string;
+    diff?: string;
     onFileLink?(path: string): void;
-  } = $props();
+  }
+
+  let { item, path: propPath, diff: propDiff, onFileLink }: Props = $props();
 
   /* The same fold the tool rows use, for the same reason: a long diff is read
      by opening it, not by scrolling a fixed window that hides its own size. */
@@ -21,12 +25,16 @@
     text: string;
   }
 
-  const path = $derived(typeof item.metadata?.path === 'string' ? item.metadata.path : 'File change');
+  const path = $derived(
+    propPath ?? (typeof item?.metadata?.path === 'string' ? item.metadata.path : 'File change')
+  );
   /* The heading names the file, not the route to it. A repository path is
      mostly directories the reader already knows, and it pushed the counts off
      the end of the row. The whole path stays on the element's title. */
-  const fileName = $derived(path.split('/').filter(Boolean).at(-1) ?? path);
-  const diff = $derived(typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text);
+  const fileName = $derived(path.split(/[/\\]/).filter(Boolean).at(-1) ?? path);
+  const diff = $derived(
+    propDiff ?? (typeof item?.metadata?.diff === 'string' ? item.metadata.diff : (item?.text ?? ''))
+  );
 
   /** The diff as numbered rows, with the plumbing lines left out.
    *
@@ -135,7 +143,7 @@
   .copy-diff{display:grid;place-items:center;flex:none;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--color-text-3);cursor:pointer}
   .copy-diff:hover{background:color-mix(in srgb,var(--color-hover) 70%,transparent);color:var(--color-text)}
   .copy-diff:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:1px}
-  pre{overflow-x:auto;margin:0;padding:6px 0;white-space:pre;tab-size:2;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
+  pre{max-height:280px;overflow-y:auto;overflow-x:auto;margin:0;padding:6px 0;white-space:pre;tab-size:2;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
   /* Wide as its longest line, so an added or removed line keeps its tint all
      the way across when the diff is scrolled sideways. Sized to the container
      the bands stopped at the right edge and the rest of the line sat on bare

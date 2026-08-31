@@ -464,6 +464,8 @@ pub enum AgentConversationPayload {
         item_id: String,
         text: String,
         completed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blocks: Option<Vec<crate::agent_conversation::safe_markdown::SafeMarkdownBlock>>,
     },
     Tool {
         item_id: String,

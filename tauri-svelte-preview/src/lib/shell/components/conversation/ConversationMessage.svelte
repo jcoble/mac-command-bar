@@ -17,11 +17,12 @@
     role: 'user' | 'assistant';
     itemId?: string;
     completed?: boolean;
+    blocks?: readonly SafeMarkdownBlock[] | null;
     onFileLink?(path: string): void;
   }
 
-  let { text, role, itemId = 'message', completed = true, onFileLink }: Props = $props();
-  const blocks = $derived(parseSafeMarkdown(text));
+  let { text, role, itemId = 'message', completed = true, blocks: incomingBlocks, onFileLink }: Props = $props();
+  const blocks = $derived(incomingBlocks?.length ? incomingBlocks : parseSafeMarkdown(text));
 
   /* A pasted log or a long brief is worth keeping, but not worth scrolling
      past every time the conversation is reopened. A sent message shows its
@@ -126,20 +127,18 @@
      768px measure with no box around it, a prompt is a narrow bubble on the
      right. That asymmetry is the only role marking in the transcript. */
   article{max-width:768px;user-select:text;-webkit-user-select:text}
-  .turn-body{font-size:14px;line-height:1.62}
+  .turn-body{font-size:14px;line-height:1.68}
 
-  /* The transcript's scale, inside a message: 12px between blocks, 8px between
-     the rows of a list, and 16px above a heading so it reads as owning the
-     section under it rather than floating between two. The last block gives up
-     its trailing margin so the gap to the next turn is the one the list sets,
-     not that gap plus this one. */
-  .turn-body p{margin:0 0 12px;white-space:pre-wrap}
+  /* The transcript's scale, inside a message: 14px between blocks, 8px between
+     the rows of a list, and 18px above a heading so it reads as owning the
+     section under it rather than floating between two. */
+  .turn-body p{margin:0 0 14px;white-space:pre-wrap}
   .turn-body p:last-child,
   .turn-body ul:last-child,
   .turn-body ol:last-child,
   .turn-body blockquote:last-child,
   .turn-body .table-scroll:last-child{margin-bottom:0}
-  .heading{margin:16px 0 8px;font-weight:640;line-height:1.35;letter-spacing:-.01em}
+  .heading{margin:18px 0 10px;font-weight:640;line-height:1.4;letter-spacing:-.01em}
   .heading:first-child{margin-top:0}
   .heading.level-1{font-size:18px}
   .heading.level-2{font-size:16px}
@@ -147,34 +146,25 @@
   .heading.level-4{font-size:14px;color:var(--color-text-2)}
 
   /* A quote is marked by the rule down its side and the quieter text, and by
-     nothing else. It carried a fill and rounded corners as well, which made
-     every quoted line look like a warning box. */
-  .turn-body blockquote{margin:0 0 12px;padding:2px 0 2px 14px;border-left:2px solid color-mix(in srgb,var(--color-accent) 42%,var(--color-border));color:var(--color-text-2)}
-  .turn-body ul,.turn-body ol{margin:0 0 12px;padding-left:22px}
-  .turn-body li{margin-bottom:8px;padding-left:3px}
+     nothing else. */
+  .turn-body blockquote{margin:0 0 14px;padding:4px 0 4px 16px;border-left:2px solid color-mix(in srgb,var(--color-accent) 42%,var(--color-border));color:var(--color-text-2)}
+  .turn-body ul,.turn-body ol{margin:0 0 14px;padding-left:24px}
+  .turn-body li{margin-bottom:8px;padding-left:4px}
   .turn-body li:last-child{margin-bottom:0}
   .turn-body li::marker{color:var(--color-text-3)}
   .turn-body li.task-row{list-style:none;margin-left:-18px;padding-left:0}
   .turn-body a{color:var(--color-accent);text-decoration:underline;text-underline-offset:2px}
-  /* A document link is the file's name with the page mark in front of it, so a
-     file being pointed at is distinguishable at a glance from a link off to
-     the web. The mark keeps out of the underline; the name carries it. */
   .file-link{display:inline-flex;align-items:baseline;gap:4px;border:0;background:transparent;color:var(--color-accent);padding:0;text-decoration:underline;text-underline-offset:2px;font:inherit;cursor:pointer}
   .file-link :global(svg){align-self:center;flex:none}
-  /* Tinted, not outlined. The border made a two-word span read as a button,
-     which was loudest exactly where inline code is most common: table cells. */
-  .inline-code{padding:1.5px 5px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.35 var(--font-mono)}
+  .inline-code{padding:2px 6px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.4 var(--font-mono)}
 
-  /* Ten lines at the body's own size and leading. The text under the cut is
-     still there and still selectable; the fade says there is more without
-     drawing a second edge inside the bubble. */
-  .turn-body.folded{max-height:calc(10 * 1.62em);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent)}
+  .turn-body.folded{max-height:calc(10 * 1.68em);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent)}
   .fold-row{display:flex;margin-top:6px}
   .fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .fold-chevron.open{transform:rotate(90deg)}
   @media (prefers-reduced-motion:no-preference){.fold-chevron{transition:transform .14s ease}}
 
-  .user{width:fit-content;max-width:80%;margin-left:auto;padding:10px 14px;border-radius:16px;background:var(--color-elevated)}
+  .user{width:fit-content;max-width:80%;margin-left:auto;padding:12px 18px;border-radius:18px;background:var(--color-elevated);font-size:14px;line-height:1.6}
 
   .table-scroll{overflow:auto;margin-bottom:12px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:8px}
   .table-scroll table{border-collapse:collapse;min-width:100%;font-size:13px}

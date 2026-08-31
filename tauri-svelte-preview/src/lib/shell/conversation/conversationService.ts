@@ -245,16 +245,22 @@ export function cleanupConversationAttachmentPreview(attachment: ConversationAtt
 
 /** Drop frontend-only conversation data after its workspace has been saved. */
 export function releaseConversationForRead(ownedId: string): void {
-  readVersions.set(ownedId, (readVersions.get(ownedId) ?? 0) + 1);
+  readVersions.delete(ownedId);
   const activeRead = resyncing.get(ownedId);
   if (activeRead) {
     activeRead.invalidated = true;
-    publishConversationSnapshotReadDiagnostics();
     void cancelAgentConversationSnapshotFromTauri().catch(() => undefined);
   }
+  resyncing.delete(ownedId);
+  ensuring.delete(ownedId);
+  terminalProjections.delete(ownedId);
+  publishConversationSnapshotReadDiagnostics();
   cancelChildConversationTranscriptRead(ownedId);
   const state = getConversationSession(ownedId);
-  if (!state) return;
+  if (!state) {
+    evictConversationSession(ownedId);
+    return;
+  }
   const previewUrls = new Set([
     ...state.attachments,
     ...state.unclaimedSentAttachments,

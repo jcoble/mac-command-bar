@@ -98,7 +98,7 @@ function compileForTest(modulePath: string, filename: string): string {
 writeFileSync(
   outputPath,
   compileForTest(storePath, 'conversationStore.svelte.js')
-    .replace('../resourceDiagnostics.svelte.ts', '../.resourceDiagnostics.test.mjs')
+    .replace(/\.\.\/resourceDiagnostics\.svelte(\.ts|\.js)/, '../.resourceDiagnostics.test.mjs')
 );
 writeFileSync(
   diagnosticsOutputPath,

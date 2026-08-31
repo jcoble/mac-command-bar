@@ -83,8 +83,21 @@ export interface ConversationRecentEvent {
 }
 
 export const CONVERSATION_RECENT_EVENT_CAP = 200;
-const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
-const ACTIVE_EVENT_WINDOW_TRIM_EVENTS = 15_000;
+export const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
+export const ACTIVE_EVENT_WINDOW_TRIM_EVENTS = 15_000;
+export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB bounded memory window
+
+function serializedEventBytes(event: AgentConversationEvent): number {
+  return typeof event.payload === 'object' && event.payload !== null
+    ? textBytes(JSON.stringify(event.payload))
+    : 0;
+}
+
+function serializedEventsBytes(events: readonly AgentConversationEvent[]): number {
+  let bytes = 0;
+  for (const event of events) bytes += serializedEventBytes(event);
+  return bytes;
+}
 
 export interface ConversationWorkspaceState extends ConversationSessionState {
   draft: string;
@@ -366,12 +379,20 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   }
   applyTypedEventPayload(current, displayEvent);
   current.loadedEvents.push(event);
-  current.newestLoadedSequence = event.sequence;
-  current.reachedTranscriptEnd = true;
+  let bytes = serializedEventsBytes(current.loadedEvents);
   let trimmed = false;
   if (current.loadedEvents.length > ACTIVE_EVENT_WINDOW_EVENTS) {
-    current.loadedEvents.splice(0, current.loadedEvents.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS);
+    const excess = current.loadedEvents.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS;
+    current.loadedEvents.splice(0, excess);
     trimmed = true;
+    bytes = serializedEventsBytes(current.loadedEvents);
+  }
+  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && current.loadedEvents.length > 0) {
+    const removed = current.loadedEvents.shift();
+    if (removed) {
+      bytes -= serializedEventBytes(removed);
+      trimmed = true;
+    }
   }
   current.oldestLoadedSequence = current.loadedEvents[0]?.sequence ?? event.sequence;
   if (trimmed) {
@@ -779,7 +800,12 @@ export function applyAgentConversationSnapshot(
   if (!window) {
     sourceEvents = [...sourceEvents];
     if (sourceEvents.length > ACTIVE_EVENT_WINDOW_EVENTS) {
-      sourceEvents.splice(0, sourceEvents.length - ACTIVE_EVENT_WINDOW_EVENTS);
+      sourceEvents.splice(0, sourceEvents.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS);
+    }
+    let bytes = serializedEventsBytes(sourceEvents);
+    while (bytes > ACTIVE_EVENT_WINDOW_BYTES && sourceEvents.length > 0) {
+      const removed = sourceEvents.shift();
+      if (removed) bytes -= serializedEventBytes(removed);
     }
   }
   const newestSnapshotSequence = sourceEvents.length
@@ -922,8 +948,20 @@ export function prependOlderConversationEvents(
   if (!current) return;
   const events = [...page.events, ...current.loadedEvents];
   const oldestSequence = page.events[0]?.sequence ?? current.oldestLoadedSequence;
-  const trimmedNewest = events.length > ACTIVE_EVENT_WINDOW_EVENTS;
-  if (trimmedNewest) events.length = ACTIVE_EVENT_WINDOW_EVENTS;
+  let trimmedNewest = false;
+  if (events.length > ACTIVE_EVENT_WINDOW_EVENTS) {
+    const excess = events.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS;
+    events.splice(events.length - excess, excess);
+    trimmedNewest = true;
+  }
+  let bytes = serializedEventsBytes(events);
+  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && events.length > 0) {
+    const removed = events.pop();
+    if (removed) {
+      bytes -= serializedEventBytes(removed);
+      trimmedNewest = true;
+    }
+  }
   applyAgentConversationSnapshot(projectionSnapshot(current), {
     events,
     reachedStart: !page.hasMore,
@@ -934,7 +972,7 @@ export function prependOlderConversationEvents(
 }
 
 /** Adds the next stored page after the current window, trimming the oldest end
- * when the active projection reaches its event ceiling. */
+ * when the active projection reaches its byte ceiling. */
 export function appendNewerConversationEvents(
   ownedId: string,
   page: AgentConversationEventPage
@@ -944,8 +982,20 @@ export function appendNewerConversationEvents(
   const events = [...current.loadedEvents, ...page.events];
   const newestSequence = page.events[page.events.length - 1]?.sequence
     ?? current.newestLoadedSequence;
-  const trimmedOldest = events.length > ACTIVE_EVENT_WINDOW_EVENTS;
-  if (trimmedOldest) events.splice(0, events.length - ACTIVE_EVENT_WINDOW_EVENTS);
+  let trimmedOldest = false;
+  if (events.length > ACTIVE_EVENT_WINDOW_EVENTS) {
+    const excess = events.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS;
+    events.splice(0, excess);
+    trimmedOldest = true;
+  }
+  let bytes = serializedEventsBytes(events);
+  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && events.length > 0) {
+    const removed = events.shift();
+    if (removed) {
+      bytes -= serializedEventBytes(removed);
+      trimmedOldest = true;
+    }
+  }
   applyAgentConversationSnapshot(projectionSnapshot(current), {
     events,
     reachedStart: current.reachedTranscriptStart && !trimmedOldest,
@@ -1760,6 +1810,18 @@ export function evictConversationSession(ownedId: string): void {
   delete conversationSessions[ownedId];
   bump('conversationEvicts');
   publishConversationProjectionDiagnostics();
+}
+
+/** Release all materialized transcripts except the active session. */
+export function evictInactiveConversationSessions(activeOwnedId: string | null): void {
+  for (const ownedId of Object.keys(conversationSessions)) {
+    if (ownedId !== activeOwnedId) {
+      const current = conversationSessions[ownedId];
+      if (current && !current.sending) {
+        evictConversationSession(ownedId);
+      }
+    }
+  }
 }
 
 export function removeConversationSession(ownedId: string): void {

@@ -11,11 +11,11 @@ import {
 } from './conversation/conversationService';
 import {
   ensureConversationSession,
+  evictInactiveConversationSessions,
   setConversationMode
 } from './conversation/conversationStore.svelte';
 import type { AgentConversationProvider } from './conversation/conversationTypes';
 import { countInvoke } from './devInvokeCounter.svelte';
-import { activate as activateExplorer } from './explorer/explorerService';
 import type { OwnedSession } from './ownedSessions';
 
 export class SessionSelectionLayers {
@@ -35,8 +35,10 @@ export class SessionSelectionLayers {
   async selectSession(session: OwnedSession, displayedChatOwnedId: string | null): Promise<void> {
     const generation = ++this.selectionGeneration;
     this.releaseDepartingChat(session.ownedId, displayedChatOwnedId);
-    await this.fillTreeView(session, generation);
-    await this.fillChatHistory(session, generation);
+    await Promise.all([
+      this.fillTreeView(session, generation),
+      this.fillChatHistory(session, generation)
+    ]);
   }
 
   async fillTreeView(
@@ -47,17 +49,14 @@ export class SessionSelectionLayers {
       this.treeOwnedId = session.ownedId;
       this.treeRoot = '';
       this.hasTreeProjection = true;
-      activateExplorer(null, true);
       return;
     }
     const root = session.cwd.trim() || (session.projectPath ?? '').trim();
     this.hasTreeProjection = true;
     this.treeOwnedId = session.ownedId;
-    this.treeRoot = '';
-    activateExplorer(null);
 
     if (!root) {
-      activateExplorer(null, true);
+      this.treeRoot = '';
       return;
     }
 
@@ -65,7 +64,7 @@ export class SessionSelectionLayers {
     const validation = await validateProjectRootFromTauri(root);
     if (generation !== this.selectionGeneration) return;
     if (validation && (!validation.exists || !validation.isDirectory)) {
-      activateExplorer(null, true);
+      this.treeRoot = '';
       return;
     }
 
@@ -92,14 +91,22 @@ export class SessionSelectionLayers {
     this.hasChatProjection = true;
     this.chatOwnedId = session.ownedId;
     await loadConversationForRead(session.ownedId, false);
-    if (generation !== this.selectionGeneration) return;
+    if (generation !== this.selectionGeneration) {
+      if (this.chatOwnedId === session.ownedId) {
+        this.hasChatProjection = false;
+        this.chatOwnedId = null;
+      }
+      releaseConversationForRead(session.ownedId);
+      evictInactiveConversationSessions(this.chatOwnedId);
+      return;
+    }
+    evictInactiveConversationSessions(session.ownedId);
   }
 
   clearTreeView(): void {
     this.hasTreeProjection = false;
     this.treeOwnedId = null;
     this.treeRoot = '';
-    activateExplorer(null);
   }
 
   clearChatHistory(): void {
@@ -107,18 +114,24 @@ export class SessionSelectionLayers {
     if (this.chatOwnedId) releaseConversationForRead(this.chatOwnedId);
     this.hasChatProjection = false;
     this.chatOwnedId = null;
+    evictInactiveConversationSessions(null);
   }
 
   private providerFor(session: OwnedSession): AgentConversationProvider | null {
-    return session.agent === 'codex' || session.agent === 'claude' || session.agent === 'antigravity'
-      ? session.agent
-      : null;
+    const raw = (session.agent || '').toLowerCase();
+    if (raw === 'claude' || raw.includes('claude') || raw.includes('anthropic')) return 'claude';
+    if (raw === 'codex' || raw.includes('codex') || raw.includes('openai')) return 'codex';
+    if (raw === 'antigravity' || raw.includes('antigravity') || raw.includes('agy') || raw.includes('gemini')) return 'antigravity';
+    return null;
   }
 
   private releaseDepartingChat(nextOwnedId: string, displayedChatOwnedId: string | null): void {
     const departingOwnedId = this.chatOwnedId ?? displayedChatOwnedId;
+    if (departingOwnedId && departingOwnedId !== nextOwnedId) {
+      releaseConversationForRead(departingOwnedId);
+    }
+    evictInactiveConversationSessions(nextOwnedId);
     if (!departingOwnedId || (departingOwnedId === nextOwnedId && this.hasChatProjection)) return;
-    releaseConversationForRead(departingOwnedId);
     this.hasChatProjection = false;
     this.chatOwnedId = null;
   }

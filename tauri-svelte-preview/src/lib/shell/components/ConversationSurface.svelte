@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
-  import TerminalSurface from './TerminalSurface.svelte';
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
   import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
@@ -76,8 +75,6 @@
     activeOwnedId: string | null;
     activeOrigin?: OwnedSession['origin'];
     rootAvailable?: boolean;
-    registerHost(ownedId: string, host: HTMLElement): void;
-    onHostLayout?(ownedId: string): void;
     onOpenNativeCli?(ownedId: string): void | Promise<void>;
     onForkNativeCli?(ownedId: string): void | Promise<void>;
     onReturnToStructured?(ownedId: string): void | Promise<void>;
@@ -87,17 +84,20 @@
     activeOwnedId,
     activeOrigin,
     rootAvailable = true,
-    registerHost,
-    onHostLayout,
     onOpenNativeCli,
     onForkNativeCli,
     onReturnToStructured
   }: Props = $props();
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
+  const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
   const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
   const appOwned = $derived(origin === 'app');
-  const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
-  const structured = $derived(!!active && (active.agent === 'codex' || active.agent === 'claude' || active.agent === 'antigravity') && (appOwned || conversation?.mode !== 'raw'));
+  function isStructuredAgent(agent: string | undefined): boolean {
+    if (!agent) return false;
+    const a = agent.toLowerCase();
+    return a === 'codex' || a === 'claude' || a === 'antigravity' || a === 'anthropic' || a === 'openai' || a === 'gemini' || a === 'agy';
+  }
+  const structured = $derived(!!active && isStructuredAgent(active.agent) && (appOwned || conversation?.mode !== 'raw'));
   const selectedChild = $derived(conversation && conversation.selectedChildId
     ? conversation.children.find((child) => child.childId === conversation.selectedChildId) ?? null
     : null);
@@ -466,7 +466,6 @@
 </script>
 
 <div class="conversation-shell" data-testid="conversation-shell">
-  <div class:covered={structured} class="terminal-layer"><TerminalSurface {owned} {activeOwnedId} {registerHost} {onHostLayout} /></div>
   {#if structured && active && conversation}
     <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
       {#if !appOwned}
@@ -554,7 +553,7 @@
         />
       {/if}
     </section>
-  {:else if active && (active.agent === 'codex' || active.agent === 'claude' || active.agent === 'antigravity') && conversation?.mode === 'raw'}
+  {:else if active && isStructuredAgent(active.agent) && conversation?.mode === 'raw'}
     <div class="raw-actions" aria-label="Conversation handoff actions">
       <button class="structured-toggle" data-testid="conversation-structured-toggle" type="button" onclick={() => void onReturnToStructured?.(active.ownedId)}>
         Return to structured
@@ -563,4 +562,4 @@
   {/if}
 </div>
 
-<style>.conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:transparent;color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions{position:absolute;right:12px;top:12px;z-index:2}</style>
+<style>.conversation-shell,.structured{position:relative;width:100%;height:100%;min-height:0}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:transparent;color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions{position:absolute;right:12px;top:12px;z-index:2}</style>

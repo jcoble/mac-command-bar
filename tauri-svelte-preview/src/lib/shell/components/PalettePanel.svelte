@@ -27,13 +27,11 @@
   interface Props {
     /** Put every panel back to its starting position. Omitted: the row is greyed out. */
     onResetLayout?: () => void;
-    /** Look again for agent sessions that can be taken over. */
-    onRescanSessions?: () => void | Promise<void>;
     /** Open the settings dialog. */
     onOpenSettings?: () => void;
   }
 
-  let { onResetLayout, onRescanSessions, onOpenSettings }: Props = $props();
+  let { onResetLayout, onOpenSettings }: Props = $props();
 
   let visible = $state(false);
   let query = $state('');
@@ -142,13 +140,6 @@
       detail: 'Put every panel back to its starting position',
       disabled: () => onResetLayout == null,
       perform: () => onResetLayout?.()
-    },
-    {
-      id: 'rescan-sessions',
-      label: 'Look for agent sessions',
-      detail: 'Check again for agent sessions you can take over',
-      disabled: () => onRescanSessions == null,
-      perform: () => onRescanSessions?.()
     },
     {
       id: 'open-settings',

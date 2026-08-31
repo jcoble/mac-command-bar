@@ -74,21 +74,36 @@ export class SessionSelectionController {
 		return null;
 	}
 
-	get sourceControlInspectionRoot(): string | null {
-		return null;
+	get chatOwnedId(): string | null {
+		return this.sessionSelectionLayers.chatOwnedId;
 	}
 
 	async selectSession(ownedId: string): Promise<void> {
 		this.controlledSelectionOwnedId = ownedId;
 		setActiveOwned(ownedId);
-		this.expandedPathsByRoot = {};
+		this.selectionGeneration += 1;
+		const generation = this.selectionGeneration;
 
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		if (session) {
 			this.activeRootRemote = session.executionEnvironment === "remote";
-			await this.sessionSelectionLayers.selectTreeOnly(session);
+			const root = canonicalPath(session.cwd.trim() || (session.projectPath ?? "").trim());
+			if (root && !this.activeRootRemote) {
+				countInvoke("read_agent_conversation_workspace_expanded_paths");
+				readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, root)
+					.then((paths) => {
+						if (this.selectionGeneration !== generation) return;
+						this.expandedPathsByRoot = { [root]: paths };
+					})
+					.catch(() => undefined);
+			} else {
+				this.expandedPathsByRoot = {};
+			}
+			await this.sessionSelectionLayers.selectSession(session, this.sessionSelectionLayers.chatOwnedId);
 		} else {
+			this.expandedPathsByRoot = {};
 			this.sessionSelectionLayers.clearTreeView();
+			this.sessionSelectionLayers.clearChatHistory();
 		}
 	}
 
@@ -111,6 +126,7 @@ export class SessionSelectionController {
 		if (this.controlledSelectionOwnedId === ownedId) {
 			this.controlledSelectionOwnedId = null;
 			this.sessionSelectionLayers.clearTreeView();
+			this.sessionSelectionLayers.clearChatHistory();
 		}
 	}
 }

@@ -6,7 +6,7 @@
 </script>
 
 <div class="message-wrap" data-testid="timeline-assistant-message">
-  <ConversationMessage text={item.text} role="assistant" itemId={item.itemId} completed={item.completed} {onFileLink} />
+  <ConversationMessage text={item.text} blocks={item.blocks} role="assistant" itemId={item.itemId} completed={item.completed} {onFileLink} />
   <TurnMetadata text={item.text} timestampMs={item.timestampMs} />
 </div>
 

@@ -39,8 +39,8 @@
 		active = false,
 		onSelect,
 		onOpenSession,
-		onOpenEditor,
-		onOpenSourceControl,
+		// onOpenEditor,
+		// onOpenSourceControl,
 		onContextMenu,
 	}: Props = $props();
 
@@ -130,9 +130,8 @@
 	<SessionRowVisual
 		{active}
 		{onSelect}
-		// {onOpenSession}
-		// {onOpenEditor}
-		// {onOpenSourceControl}
+		{onOpenSession}
+		// {onOpenEditor} {onOpenSourceControl}
 	>
 		<!-- The mark, at the height of the three lines beside it. It carries
                the provider and whether this session is working, and nothing
@@ -193,6 +192,8 @@
 		display: block;
 		box-sizing: border-box;
 		min-width: 0;
+		content-visibility: auto;
+		contain-intrinsic-size: auto 58px;
 		/* The highlight block is inset from the rail's edges rather than bled to
        them, so a hovered row reads as a card in the list. */
 		padding: 0 6px;

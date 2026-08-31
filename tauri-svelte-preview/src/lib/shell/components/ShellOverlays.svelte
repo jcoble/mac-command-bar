@@ -25,8 +25,6 @@
 	interface Props {
 		/** Put every panel back where it started. */
 		onResetLayout: () => void;
-		/** Look for agent sessions again. */
-		onRescanSessions: () => void | Promise<void>;
 		/** One line describing whatever has gone wrong, or null when all is well. */
 		message: string | null;
 		/** The user moved the Problems list from the settings dialog, which lives
@@ -36,7 +34,7 @@
 		 * its own button as on or off from this. */
 		onUtilityStateChange?: (id: UtilityId, open: boolean) => void;
 	}
-	let { onResetLayout, onRescanSessions, message, onProblemsLocationChange, onUtilityStateChange }: Props = $props();
+	let { onResetLayout, message, onProblemsLocationChange, onUtilityStateChange }: Props = $props();
 
 	let settingsHost: { open: () => void; close: () => void } | null = null;
 	let resourcePopoverHost: HTMLDivElement | null = null;
@@ -98,7 +96,7 @@
 	}
 </script>
 
-<PalettePanel {onResetLayout} {onRescanSessions} onOpenSettings={() => settingsHost?.open()} />
+<PalettePanel {onResetLayout} onOpenSettings={() => settingsHost?.open()} />
 <SettingsHost bind:this={settingsHost} {onProblemsLocationChange} />
 <!-- The session's own browser, over the whole window including the sessions
      column. It reads the active session itself and takes no props. -->

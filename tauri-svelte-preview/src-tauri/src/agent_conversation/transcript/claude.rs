@@ -190,10 +190,12 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
                 attachment_ids: Vec::new(),
             }
         } else {
+            let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&text);
             AgentConversationPayload::AssistantMessage {
                 item_id: item_id.clone(),
                 text: text.clone(),
                 completed: true,
+                blocks: Some(blocks),
             }
         };
         records.push(ProjectedRecord {
@@ -221,10 +223,12 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
             let Some(item_id) = block.get("id").and_then(Value::as_str) else {
                 continue;
             };
+            let tool_name = block.get("name").and_then(Value::as_str).unwrap_or("Tool");
+            let input = block.get("input").unwrap_or(&Value::Null);
             records.push(super::tool_record(
                 item_id,
-                block.get("name").and_then(Value::as_str).unwrap_or("Tool"),
-                super::tool_summary(block.get("input").unwrap_or(&Value::Null)),
+                tool_name,
+                input,
                 timestamp(value),
             ));
         }

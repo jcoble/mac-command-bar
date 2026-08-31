@@ -200,12 +200,15 @@ export function applyConversationEvent(
     case 'tool':
       return {
         ...next,
-        timeline: replaceOrAppend(next.timeline, payload.itemId, () => ({
+        timeline: replaceOrAppend(next.timeline, payload.itemId, (current) => ({
           kind: 'tool',
           itemId: payload.itemId,
-          name: payload.name,
+          name: payload.name || (current?.kind === 'tool' ? current.name : 'Tool'),
           state: payload.state,
-          summary: payload.summary,
+          summary: payload.summary || (current?.kind === 'tool' ? current.summary : undefined),
+          path: payload.path || (current?.kind === 'tool' ? current.path : undefined),
+          diff: payload.diff || (current?.kind === 'tool' ? current.diff : undefined),
+          output: payload.output || (current?.kind === 'tool' ? current.output : undefined),
           timestampMs: event.timestampMs
         }))
       };

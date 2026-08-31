@@ -11,6 +11,25 @@ import { recordStackStart } from '../stacks/stackStore.svelte';
 export class TerminalController {
 	service: ReturnType<typeof createTerminalService> | null = null;
 	private disposed = false;
+	private pendingHosts = new Map<string, (host: HTMLElement) => void>();
+
+	registerHost(ownedId: string, host: HTMLElement): void {
+		const pending = this.pendingHosts.get(ownedId);
+		if (pending) {
+			this.pendingHosts.delete(ownedId);
+			pending(host);
+		}
+	}
+
+	hostFor(ownedId: string): Promise<HTMLElement> {
+		return new Promise<HTMLElement>((resolve) => {
+			this.pendingHosts.set(ownedId, resolve);
+		});
+	}
+
+	handleLayout(ownedId: string): void {
+		this.service?.refit();
+	}
 
 	async initialize(onSelectSession: (ownedId: string) => void | Promise<void>): Promise<void> {
 		const backend = tauriTerminalBackend(countInvoke);
@@ -48,6 +67,7 @@ export class TerminalController {
 
 	dispose(): void {
 		this.disposed = true;
+		this.pendingHosts.clear();
 		clearStackHandlers();
 		this.service?.dispose();
 		this.service = null;

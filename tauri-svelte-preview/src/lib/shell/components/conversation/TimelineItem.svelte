@@ -14,6 +14,7 @@
   import CommandItem from './CommandItem.svelte';
   import FileChangeItem from './FileChangeItem.svelte';
   import FileEditsItem from './FileEditsItem.svelte';
+  import ToolRunItem from './ToolRunItem.svelte';
   import ToolItem from './ToolItem.svelte';
   import SubagentSection from './SubagentSection.svelte';
   import ApprovalItem from './ApprovalItem.svelte';
@@ -46,6 +47,7 @@
   <div class="timeline-item" data-testid="conversation-timeline-item" data-item-id={item.itemId} data-kind={item.kind}>
     {#if item.kind === 'user'}<UserMessageItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'assistant'}<AssistantMessageItem {item} onFileLink={openFileLink} />
+    {:else if item.kind === 'toolRun'}<ToolRunItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'reasoning'}<ReasoningItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'plan'}<button class="plan-line" data-testid="timeline-plan-item" type="button" onclick={() => onPlanOpen?.()}>Plan updated · {item.steps.length} {item.steps.length === 1 ? 'step' : 'steps'}</button>
     {:else if item.kind === 'tasks'}<TaskListItem {item} />
@@ -82,9 +84,11 @@
   .timeline-item[data-kind='subagent'],
   .timeline-item[data-kind='command'],
   .timeline-item[data-kind='file'],
+  .timeline-item[data-kind='fileEdits'],
   .timeline-item[data-kind='plan'],
-  .timeline-item[data-kind='tasks']{margin-top:-6px}
-  .timeline-item[data-kind='user']{margin-top:16px}
+  .timeline-item[data-kind='tasks']{margin-top:4px}
+  .timeline-item[data-kind='user']{margin-top:24px;margin-bottom:8px}
+  .timeline-item[data-kind='assistant']{margin-top:8px}
   .timeline-item:first-child{margin-top:0}
   /* The plan is drawn once, in the chip above the composer. All the transcript
      owes the reader is that it moved, and a way back to it. */

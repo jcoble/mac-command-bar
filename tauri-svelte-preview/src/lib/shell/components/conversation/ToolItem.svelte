@@ -121,15 +121,15 @@
      is opened and its output needs a container. */
   .tool-item{border:1px solid transparent;border-radius:10px}
   .tool-item[open]{border-color:color-mix(in srgb,var(--color-border) 62%,transparent);background:color-mix(in srgb,var(--color-surface) 45%,var(--color-bg) 55%)}
-  summary{display:flex;align-items:center;gap:8px;min-height:28px;padding:2px 8px;border-radius:10px;cursor:pointer;list-style:none}
+  summary{display:flex;align-items:center;gap:10px;min-height:36px;padding:6px 10px;border-radius:10px;cursor:pointer;list-style:none}
   summary::-webkit-details-marker{display:none}
   summary:hover{background:color-mix(in srgb,var(--color-hover) 55%,transparent)}
   summary:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
   .chevron,.tool-icon{display:grid;place-items:center;flex:none;color:var(--color-text-3)}
   .chevron.hidden{visibility:hidden}
   details[open] .chevron{transform:rotate(90deg)}
-  strong{flex:none;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 12px/20px var(--font-mono)}
-  .preview{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-3);font-size:12px;line-height:20px}
+  strong{flex:none;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 13px/22px var(--font-mono)}
+  .preview{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-3);font-size:13px;line-height:22px}
   .status-mark{display:grid;place-items:center;flex:none;margin-left:auto;color:var(--color-text-3)}
 
   /* One accent family per state: a finished call is success, a broken one is
@@ -145,14 +145,14 @@
   .failed pre{border-color:color-mix(in srgb,var(--color-bad) 38%,transparent);background:color-mix(in srgb,var(--color-bad) 7%,var(--color-bg))}
   .running .status-mark,.running .tool-icon{color:var(--color-accent)}
 
-  .tool-body{display:grid;gap:8px;padding:0 12px 12px 38px}
+  .tool-body{display:grid;gap:8px;padding:0 12px 12px 38px;max-height:240px;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
   /* The output box used to be a fixed 16rem window on however much there was,
      which told a reader nothing about the size of what they were scrolling and
      put a second scroll region in the middle of the page. It now shows a
      bounded number of lines and says how many it is holding, so the height on
      screen is the height of what is being shown. Long lines run sideways
      inside the box rather than wrapping mid-word; the pane never widens. */
-  pre{overflow-x:auto;margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-surface) 30%,var(--color-bg));white-space:pre;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
+  pre{max-height:260px;overflow-y:auto;overflow-x:auto;margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-surface) 30%,var(--color-bg));white-space:pre;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
   code{font:13px/1.55 var(--font-mono)}
   .keyword{color:var(--color-accent)}
   .string{color:var(--color-good)}
