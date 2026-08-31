@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { usagePercent, usageProviderLabel, usageResetLabel } from '../src/lib/shell/usage/usageCurrent.ts';
-import { usageSummaryLabel } from '../src/lib/shell/usage/usageAnalytics.ts';
 
-globalThis.$state = (value) => value;
+globalThis.$state = <T>(value: T): T => value;
+const { usagePercent, usageProviderLabel, usageResetLabel } = await import('../src/lib/shell/usage/usageCurrent.ts');
+const { usageSummaryLabel } = await import('../src/lib/shell/usage/usageAnalytics.ts');
 const { describeUsageError, settleUsageRequest, usageState } = await import('../src/lib/shell/usage/usageStore.svelte.ts');
 
 function testUsageErrorsPreserveStringRejections() {
@@ -23,8 +23,8 @@ assert.equal(usageState.loading, true);
 usageState.historyLoading = false;
 assert.equal(usageState.loading, false);
 await assert.rejects(
-  settleUsageRequest(new Promise(() => undefined), 5),
-  /Usage request timed out\./
+  settleUsageRequest(Promise.reject(new Error('usage read failed'))),
+  /usage read failed/
 );
 
 assert.equal(usageProviderLabel('codex'), 'Codex');
@@ -70,7 +70,7 @@ assert.match(usageStoreSource, /historyRefreshing/);
 assert.match(usageStoreSource, /const cached = await loadUsageHistory\(usageState\.range\);[\s\S]*refreshUsageIndexInBackground\(\);/);
 assert.doesNotMatch(usageStoreSource, /await settleUsageRequest\(usageService\.refreshHistory\(\)\)/);
 assert.match(usageStoreSource, /finally \{\s*usageState\.currentLoading = false;/);
-assert.match(usageStoreSource, /\.finally\(\(\) => \{\s*usageState\.historyLoading = false;/);
+assert.match(usageStoreSource, /finally \{\s*usageState\.historyLoading = false;/);
 assert.match(usageStoreSource, /readDailyTotals/);
 assert.match(usageStoreSource, /No[\s\S]*event or turn rows cross IPC/);
 assert.match(usageStoreSource, /selectUsageRange/);

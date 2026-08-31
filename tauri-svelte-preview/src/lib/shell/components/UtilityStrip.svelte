@@ -12,8 +12,8 @@
    * `ShellOverlays.svelte`), so this component only says which one was asked
    * for and hands over the rectangle of the button that was pressed.
    *
-   * The one piece of IO here is the resource sample: it is read on mount, again
-   * whenever the window comes back to the front, and every five seconds.
+   * The one piece of IO here is the lightweight resource totals read: it runs
+   * on mount and whenever the window comes back to the front.
    */
   import { onMount } from 'svelte';
   import ChartNoAxesCombined from '@lucide/svelte/icons/chart-no-axes-combined';
@@ -25,7 +25,6 @@
     formatResourceCpu
   } from '$lib/shell/resources/resourceSampleViewModel';
   import {
-    refreshResourceSample,
     refreshResourceTotals,
     resourceSampleState
   } from '$lib/shell/resources/resourceSampleStore.svelte';
@@ -72,17 +71,13 @@
   });
 
   onMount(() => {
-    void refreshResourceSample();
+    void refreshResourceTotals();
     const refreshWhenVisible = (): void => {
       if (document.visibilityState === 'visible') void refreshResourceTotals();
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
-    // The same visibility guard as the event above: a hidden window or a
-    // backgrounded app must not keep sampling the process tree every 5 seconds.
-    const pollTimer = window.setInterval(refreshWhenVisible, 5_000);
     return () => {
       document.removeEventListener('visibilitychange', refreshWhenVisible);
-      window.clearInterval(pollTimer);
     };
   });
 </script>

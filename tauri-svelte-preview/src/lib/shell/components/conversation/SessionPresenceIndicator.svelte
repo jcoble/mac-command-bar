@@ -47,32 +47,12 @@
     );
   });
 
-  // The elapsed clock ticks per-instance and only while this session is
-  // working; a shared always-on ticking store kept feeding indicators that
-  // HMR or navigation had already destroyed, flooding the console.
   const baseline = $derived(deriveSessionPresence(
     { terminalState, connectionState, activeTurnId, sending, pendingApprovalCount, runtimeState },
     history,
-    0
+    Date.now()
   ));
-  let nowMs = $state(Date.now());
-  $effect(() => {
-    if (baseline.state !== 'working') return;
-    nowMs = Date.now();
-    const timer = window.setInterval(() => {
-      nowMs = Date.now();
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  });
-  const presence = $derived(
-    baseline.state === 'working'
-      ? deriveSessionPresence(
-          { terminalState, connectionState, activeTurnId, sending, pendingApprovalCount, runtimeState },
-          history,
-          nowMs
-        )
-      : baseline
-  );
+  const presence = $derived(baseline);
   const elapsed = $derived(formatPresenceElapsed(presence.elapsedMs ?? 0));
 </script>
 

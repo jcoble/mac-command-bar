@@ -554,6 +554,7 @@ type StackPersistence = {
 
 let persistence: StackPersistence | null = null;
 let hydrationInFlight: Promise<void> | null = null;
+let hydrationToken: object | null = null;
 let hydrationGeneration = 0;
 
 /** Give this backend-free store the SQLite setting functions owned by the service. */
@@ -597,11 +598,22 @@ async function persistRuns(): Promise<boolean> {
  * A tag pointing at a stack that no longer exists is dropped as it is read: the
  * stack it named is gone, so the session it named is just a terminal now.
  */
-export function hydrateStacks(): Promise<void> {
-  if (stacks.hydrated) return Promise.resolve();
-  if (hydrationInFlight) return hydrationInFlight;
+export async function hydrateStacks(): Promise<void> {
+  if (stacks.hydrated) return;
+  if (hydrationInFlight) {
+    await hydrationInFlight;
+    return;
+  }
   const generation = hydrationGeneration;
-  const hydration = (async () => {
+  const token = {};
+  hydrationToken = token;
+  const hydration = hydrateStacksOnce(generation, token);
+  hydrationInFlight = hydration;
+  await hydration;
+}
+
+async function hydrateStacksOnce(generation: number, token: object): Promise<void> {
+  try {
     if (!persistence) throw new Error('Run configuration persistence is not configured.');
     const [savedDefinitions, savedRuns] = await Promise.all([
       persistence.read(STACK_DEFINITIONS_SETTING_KEY),
@@ -618,12 +630,12 @@ export function hydrateStacks(): Promise<void> {
     stacks.definitions = definitions;
     stacks.runs = runs;
     stacks.hydrated = true;
-  })();
-  hydrationInFlight = hydration;
-  void hydration.finally(() => {
-    if (hydrationInFlight === hydration) hydrationInFlight = null;
-  }).catch(() => undefined);
-  return hydration;
+  } finally {
+    if (hydrationToken === token) {
+      hydrationInFlight = null;
+      hydrationToken = null;
+    }
+  }
 }
 
 // ── Mutations ─────────────────────────────────────────────────────────────────
@@ -984,6 +996,7 @@ export function runRecordForStack(stackId: string): StackRunRecord | null {
 /** Drop everything back to launch state. Used by tests and by a full reset. */
 export function resetStacks(): void {
   hydrationGeneration += 1;
+  hydrationToken = null;
   hydrationInFlight = null;
   stacks.hydrated = false;
   stacks.activated = false;

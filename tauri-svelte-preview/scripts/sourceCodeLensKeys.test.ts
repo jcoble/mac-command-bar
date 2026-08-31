@@ -19,12 +19,8 @@ import {
 // module creates while these pure decisions are imported.
 globalThis.$state = (value) => value;
 const {
-	countingReadinessForStatus,
-	semanticCountRetryDelaysMs,
-	semanticCountRetryLimit
-} = await import(
-	'../src/lib/shell/editor/sourceIntelligence.ts'
-);
+	countingReadinessForStatus
+} = await import('../src/lib/shell/editor/sourceIntelligence.ts');
 const sourceIntelligenceSource = await readFile(
 	new URL('../src/lib/shell/editor/sourceIntelligence.ts', import.meta.url),
 	'utf8'
@@ -123,20 +119,15 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	assert.equal(countingReadinessForStatus(undefined, true, true), 'no-server');
 }
 
-// a failed language-server question gets three spaced retries before its
-// waiting margin row is allowed to give up.
+// a completed language-server question publishes a repaint instead of resolving
+// parked margin-row promises.
 {
-	assert.equal(semanticCountRetryLimit, 3);
-	assert.deepEqual(semanticCountRetryDelaysMs, [2_000, 6_000, 12_000]);
-	assert.equal(semanticCountRetryDelaysMs.length, semanticCountRetryLimit);
-	assert.match(sourceIntelligenceSource, /spot\.tries < semanticCountRetryLimit/);
-	assert.match(sourceIntelligenceSource, /spot\.tries \+= 1/);
-	assert.match(
-		sourceIntelligenceSource,
-		/semanticCountRetryDelaysMs\[spot\.tries - 1\]/
-	);
-	assert.match(sourceIntelligenceSource, /waitingSpots\.get\(key\) !== spot/);
-	assert.match(sourceIntelligenceSource, /semanticScheduler\.request\(\[key\]\)/);
+	assert.doesNotMatch(sourceIntelligenceSource, /semanticCountRetry/);
+	assert.doesNotMatch(sourceIntelligenceSource, new RegExp('set' + 'Timeout'));
+	assert.doesNotMatch(sourceIntelligenceSource, /waitingSpots\.get\(key\) !== spot/);
+	assert.doesNotMatch(sourceIntelligenceSource, /spot\.waiters/);
+	assert.match(sourceIntelligenceSource, /waitingSpots\.delete\(key\)/);
+	assert.match(sourceIntelligenceSource, /if \(count\) publishReferenceCountUpdate\(spot\.preview\.path\)/);
 	assert.match(
 		sourceIntelligenceSource,
 		/countStore\.remember\(root, filePath, countKeyFor\(request\), count\)/,
@@ -149,8 +140,8 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	);
 	assert.match(
 		sourceIntelligenceSource,
-		/if \(isNativeTauriRuntime\(\)\) return \[\];[\s\S]*?indexedReferences\(symbolName\)/,
-		'native Peek must not fall back to the legacy text reference finder'
+		/findReferences[\s\S]*?if \(isNativeTauriRuntime\(\)\) return \[\];[\s\S]*?return \[\];/,
+		'Peek reference lookup must not fall back to the legacy text reference finder'
 	);
 	assert.match(
 		sourceIntelligenceSource,

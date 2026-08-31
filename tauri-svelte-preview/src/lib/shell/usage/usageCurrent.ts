@@ -124,6 +124,10 @@ export async function readUsageDisplayMode(): Promise<UsageDisplayMode> {
   }
 }
 
-export function writeUsageDisplayMode(mode: UsageDisplayMode): Promise<void> {
-  return writeAssemblySettingFromTauri(USAGE_DISPLAY_SETTING_KEY, mode).catch(() => undefined);
+export async function writeUsageDisplayMode(mode: UsageDisplayMode): Promise<void> {
+  try {
+    await writeAssemblySettingFromTauri(USAGE_DISPLAY_SETTING_KEY, mode);
+  } catch {
+    // Display mode is non-critical; the next launch falls back to the default.
+  }
 }

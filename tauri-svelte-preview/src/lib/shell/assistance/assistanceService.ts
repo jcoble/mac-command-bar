@@ -88,13 +88,14 @@ function createRequestId(next: () => string, counter: { value: number }): string
   return next?.() ?? `assistance-${counter.value++}`;
 }
 
-function adapterRequest(
+async function adapterRequest(
   structuredOutput: AssistanceServiceDependencies['structuredOutput'],
   request: AssistanceStructuredOutputRequest
-): AssistanceStructuredOutputResponse | Promise<AssistanceStructuredOutputResponse> {
-  return typeof structuredOutput === 'function'
+): Promise<AssistanceStructuredOutputResponse> {
+  const response = await (typeof structuredOutput === 'function'
     ? structuredOutput(request)
-    : structuredOutput.request(request);
+    : structuredOutput.request(request));
+  return response;
 }
 
 function auditRequest(
@@ -283,14 +284,16 @@ export async function requestAssistance(
   input: AssistanceRequestInput,
   dependencies: AssistanceServiceDependencies
 ): Promise<AssistanceProposal> {
-  return createAssistanceService(dependencies).requestAssistance(input);
+  const proposal = await createAssistanceService(dependencies).requestAssistance(input);
+  return proposal;
 }
 
 export async function applySelectedAssistancePatches(
   input: AssistanceApplyInput,
   dependencies: AssistanceServiceDependencies
 ): Promise<AssistanceApplyResult> {
-  return createAssistanceService(dependencies).applySelectedAssistancePatches(input);
+  const result = await createAssistanceService(dependencies).applySelectedAssistancePatches(input);
+  return result;
 }
 
 export function cancelAssistanceRequest(

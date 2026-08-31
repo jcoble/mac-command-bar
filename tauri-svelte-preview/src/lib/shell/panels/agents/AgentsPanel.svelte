@@ -18,7 +18,10 @@
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
-  import type { ConversationTimelineEntry } from '$lib/shell/conversation/conversationTypes.ts';
+  import type {
+    AgentConversationProvider,
+    ConversationTimelineEntry
+  } from '$lib/shell/conversation/conversationTypes.ts';
   import {
     getConversationSession,
     setConversationSelectedChild
@@ -66,24 +69,43 @@
     if (!visible || !ownedId || !conversation || !selectedChildId) return;
     if (!selectedChild?.transcriptAvailable) return;
     const parentGeneration = conversation.generation;
-    void parentGeneration;
     const nativeSessionId = rail.owned.find((session) => session.ownedId === ownedId)?.nativeSessionId;
 
-    const timer = nativeSessionId && selectedChildRunning
-      ? window.setInterval(() => {
-          void readChildConversationTranscript({
-            ownedId,
-            provider: conversation.provider,
-            nativeSessionId,
-            childSessionId: selectedChildId
-          }).catch(() => undefined);
-        }, 10_000)
-      : null;
+    let active = true;
+    if (nativeSessionId && selectedChildRunning) void readSelectedChildTranscript({
+      ownedId,
+      generation: parentGeneration,
+      provider: conversation.provider,
+      nativeSessionId,
+      childSessionId: selectedChildId,
+      isCurrent: () => active && visible && conversation?.generation === parentGeneration
+    });
     return () => {
-      if (timer !== null) window.clearInterval(timer);
+      active = false;
       cancelChildConversationTranscriptRead(ownedId);
     };
   });
+
+  async function readSelectedChildTranscript(request: {
+    ownedId: string;
+    generation: number;
+    provider: AgentConversationProvider;
+    nativeSessionId: string;
+    childSessionId: string;
+    isCurrent: () => boolean;
+  }): Promise<void> {
+    if (!request.isCurrent()) return;
+    try {
+      await readChildConversationTranscript({
+        ownedId: request.ownedId,
+        provider: request.provider,
+        nativeSessionId: request.nativeSessionId,
+        childSessionId: request.childSessionId
+      });
+    } catch {
+      // A child transcript read is opportunistic; the selected row remains valid.
+    }
+  }
 
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation) return;
@@ -98,12 +120,15 @@
     showCenterTab('session');
     const nativeSessionId = rail.owned.find((session) => session.ownedId === ownedId)?.nativeSessionId;
     if (!nativeSessionId) return;
-    await readChildConversationTranscript({
+    const generation = conversation.generation;
+    await readSelectedChildTranscript({
       ownedId,
+      generation,
       provider: conversation.provider,
       nativeSessionId,
-      childSessionId: next
-    }).catch(() => undefined);
+      childSessionId: next,
+      isCurrent: () => getConversationSession(ownedId)?.generation === generation
+    });
   }
 </script>
 

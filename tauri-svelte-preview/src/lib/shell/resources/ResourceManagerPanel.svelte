@@ -83,7 +83,7 @@
   );
 
   // Reading the Playwright processes is worth doing while the panel is open and
-  // is worth undoing when it closes, so the list does not sit in memory behind a
+  // worth undoing when it closes, so the list does not sit in memory behind a
   // closed panel and a later open reads it again.
   onMount(() => {
     activatePlaywright();

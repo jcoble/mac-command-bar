@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import {
+globalThis.$state = <T>(value: T): T => value;
+const {
   createTerminalService,
   isTerminalInputCommand,
   tauriTerminalBackend
-} from '../src/lib/shell/terminalService.ts';
+} = await import('../src/lib/shell/terminalService.ts');
 
 /** Let a scheduled one-shot (and the microtasks it queues) actually run. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
@@ -618,15 +619,14 @@ const ownedA = {
   // released — so showing it again rebuilds from the backend ring, and the
   // size memo is the only surviving record of the width that output was
   // written at. Dropping the memo on exit left the rebuild at xterm's 80x24
-  // default, re-wrapping the final frame. The memo now outlives the exit; the
-  // repaint nudge must still be withheld, because there is no process left.
+  // default, re-wrapping the final frame. The memo now outlives the exit, but
+  // rebuilding the view must not synthesize backend resize traffic.
   const log = [];
   const { backend, emit } = makeBackend(log);
   let built = 0;
   const svc = createTerminalService({
     backend,
-    createView: (_host, hooks) => makeView(log, `zombie${(built += 1)}`, { hooks }),
-    repaintNudgeMs: 5
+    createView: (_host, hooks) => makeView(log, `zombie${(built += 1)}`, { hooks })
   });
   await svc.attach();
   await svc.adoptExisting(
@@ -634,8 +634,6 @@ const ownedA = {
     {},
     { cols: 146, rows: 46 }
   );
-  // Let the live re-attach nudge fire and finish, so nothing is left pending.
-  await settle();
   svc.releaseView('z');
   emit({ sessionId: 'pty-z', data: '', terminated: true, exitCode: 0, signal: null });
 
@@ -656,7 +654,7 @@ const ownedA = {
   assert.equal(
     after.filter((e) => e[0] === 'resize').length,
     0,
-    'and no repaint nudge is issued against a PTY whose process has exited'
+    'and rebuilding the view does not resize a PTY whose process has exited'
   );
 }
 
@@ -700,16 +698,13 @@ const ownedA = {
 }
 
 {
-  // F5: after a live re-attach, the replayed scrollback cannot rebuild a
-  // full-screen TUI frame (the backend trims its 256 KB buffer mid-escape, and
-  // the bytes that drew the input box are long gone) — so the service nudges the
-  // PTY's size down a row and straight back, and the program repaints itself.
+  // F5: adopting a live PTY restores the view at its remembered geometry but
+  // does not schedule or synthesize backend resize traffic.
   const log = [];
   const { backend } = makeBackend(log);
   const svc = createTerminalService({
     backend,
-    createView: (_host, hooks) => makeView(log, 'live', { hooks }),
-    repaintNudgeMs: 5
+    createView: (_host, hooks) => makeView(log, 'live', { hooks })
   });
   await svc.attach();
   await svc.adoptExisting(
@@ -717,40 +712,25 @@ const ownedA = {
     {},
     { cols: 146, rows: 46 }
   );
+  assert.deepEqual(
+    log.find((e) => e[0] === 'live' && e[1] === 'resize'),
+    ['live', 'resize', 146, 46],
+    'the view is restored at the PTY geometry before replay'
+  );
   assert.equal(
     log.filter((e) => e[0] === 'resize').length,
     0,
-    'the nudge is scheduled, not fired inline — the TUI has to be reading first'
-  );
-
-  await settle();
-  assert.deepEqual(
-    log.filter((e) => e[0] === 'resize'),
-    [
-      ['resize', 'pty-live', 146, 45],
-      ['resize', 'pty-live', 146, 46]
-    ],
-    'exactly ONE nudge: down a row, then straight back to the real geometry'
-  );
-
-  const after = log.length;
-  await settle();
-  svc.show('n');
-  assert.equal(
-    log.slice(after).filter((e) => e[0] === 'resize').length,
-    0,
-    'it fires once, and leaves the gate holding the size the PTY really is'
+    'adoption performs no synthetic backend resize'
   );
 }
 
 {
-  // F5b: a TOMBSTONE gets no nudge — there is no process left to signal.
+  // F5b: a tombstone is never resized because there is no process left.
   const log = [];
   const { backend } = makeBackend(log);
   const svc = createTerminalService({
     backend,
-    createView: (_host, hooks) => makeView(log, 'dead', { hooks }),
-    repaintNudgeMs: 5
+    createView: (_host, hooks) => makeView(log, 'dead', { hooks })
   });
   await svc.attach();
   await svc.adoptExisting(
@@ -758,50 +738,10 @@ const ownedA = {
     {},
     { cols: 146, rows: 46 }
   );
-  await settle();
   assert.equal(
     log.filter((e) => e[0] === 'resize').length,
     0,
     'an exited session is never resized'
-  );
-}
-
-{
-  // F5c: a close (or an exit, or dispose) that beats the timer CANCELS it —
-  // nudging a PTY nobody owns any more would be IO from a dead shell.
-  const log = [];
-  const { backend, emit } = makeBackend(log);
-  const svc = createTerminalService({
-    backend,
-    createView: (_host, hooks) => makeView(log, 'gone', { hooks }),
-    repaintNudgeMs: 5
-  });
-  await svc.attach();
-  await svc.adoptExisting(
-    { ...ownedA, ownedId: 'c', ptySessionId: 'pty-live' },
-    {},
-    { cols: 146, rows: 46 }
-  );
-  await svc.closeOwned('c');
-  await settle();
-  assert.equal(
-    log.filter((e) => e[0] === 'resize').length,
-    0,
-    'a close before the nudge fires cancels it'
-  );
-
-  // Same for a PTY that exits during the delay.
-  await svc.adoptExisting(
-    { ...ownedA, ownedId: 'x', ptySessionId: 'pty-exiting' },
-    {},
-    { cols: 146, rows: 46 }
-  );
-  emit({ sessionId: 'pty-exiting', data: '', terminated: true, exitCode: 0, signal: null });
-  await settle();
-  assert.equal(
-    log.filter((e) => e[0] === 'resize').length,
-    0,
-    'and an exit during the delay cancels it too'
   );
 }
 

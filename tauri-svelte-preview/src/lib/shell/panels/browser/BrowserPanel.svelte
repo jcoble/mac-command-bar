@@ -485,25 +485,27 @@
     }
     pendingPoint = point;
     if (askingPage) return;
-    void (async () => {
-      askingPage = true;
-      try {
-        while (pendingPoint) {
-          const asked = pendingPoint;
-          const epoch = hoverEpoch;
-          pendingPoint = null;
-          // Still inside the box already outlined: the answer cannot change.
-          if (hovered && withinRect(hovered, asked)) continue;
-          const found = await elementAt(asked);
-          if (epoch !== hoverEpoch) return;
-          hovered = found?.rect ?? null;
-        }
-      } catch {
-        hovered = null;
-      } finally {
-        askingPage = false;
+    void inspectPendingHoverPoints();
+  }
+
+  async function inspectPendingHoverPoints(): Promise<void> {
+    askingPage = true;
+    try {
+      while (pendingPoint) {
+        const asked = pendingPoint;
+        const epoch = hoverEpoch;
+        pendingPoint = null;
+        // Still inside the box already outlined: the answer cannot change.
+        if (hovered && withinRect(hovered, asked)) continue;
+        const found = await elementAt(asked);
+        if (epoch !== hoverEpoch) return;
+        hovered = found?.rect ?? null;
       }
-    })();
+    } catch {
+      hovered = null;
+    } finally {
+      askingPage = false;
+    }
   }
 
   function withinRect(rect: BrowserRect, point: { x: number; y: number }): boolean {

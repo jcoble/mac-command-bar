@@ -28,6 +28,7 @@
      even before the page imports the files itself. */
   import '$lib/shell/styles/nextTokens.css';
   import '$lib/shell/styles/next.css';
+  import { onDestroy } from 'svelte';
 
   import type { ProblemsLocation } from '$lib/settingsStore.svelte';
 
@@ -47,12 +48,23 @@
   let loadFailure = $state<string | null>(null);
   /** Guards a second open() while the first load is still in flight. */
   let loading = false;
+  let mounted = true;
+  let loadGeneration = 0;
+
+  onDestroy(() => {
+    mounted = false;
+    loadGeneration += 1;
+  });
 
   /**
    * Show the settings dialog. Safe to call repeatedly; the first call
    * loads the panel, later calls just reopen it.
    */
   export function open(): void {
+    void openDialog();
+  }
+
+  async function openDialog(): Promise<void> {
     loadFailure = null;
     if (SettingsDialog) {
       dialogOpen = true;
@@ -60,17 +72,20 @@
     }
     if (loading) return;
     loading = true;
-    import('$lib/shell/components/SettingsDialog.svelte')
-      .then((module) => {
+    const generation = ++loadGeneration;
+    try {
+      const module = await import('$lib/shell/components/SettingsDialog.svelte');
+      if (mounted && generation === loadGeneration) {
         SettingsDialog = module.default;
         dialogOpen = true;
-      })
-      .catch((error: unknown) => {
+      }
+    } catch (error) {
+      if (mounted && generation === loadGeneration) {
         loadFailure = error instanceof Error ? error.message : String(error);
-      })
-      .finally(() => {
-        loading = false;
-      });
+      }
+    } finally {
+      if (generation === loadGeneration) loading = false;
+    }
   }
 
   /** Hide the settings dialog. */

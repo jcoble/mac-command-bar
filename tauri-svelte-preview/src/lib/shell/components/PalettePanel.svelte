@@ -82,9 +82,9 @@
   }
 
   /** The overlay hands back the row it drew; find ours again by id and run it. */
-  function chooseById(id: string): Promise<void> {
+  async function chooseById(id: string): Promise<void> {
     const row = rows.find((candidate) => candidate.id === id);
-    return row ? choose(row) : Promise.resolve();
+    if (row) await choose(row);
   }
 
   /** Arrow/Enter/Escape handling for the search field. */

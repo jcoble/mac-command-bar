@@ -2,7 +2,7 @@
  * Controller for session selection, filesystem projections, and workspace expansion.
  */
 import { rail, setActiveOwned } from '../stores/sessionRailStore.svelte';
-import { SessionSelectionLayers } from '../sessionSelectionLayers.svelte';
+import { SessionSelectionLayers, type SessionSelectionOwner } from '../sessionSelectionLayers.svelte';
 import { canonicalPath } from '../explorer/explorerStore.svelte';
 import { countInvoke } from '../devInvokeCounter.svelte';
 import {
@@ -20,8 +20,10 @@ export class SessionSelectionController {
 	activeRootAvailable = $state(true);
 	activeRootRemote = $state(false);
 
-	private workspaceWriteQueue: Promise<void> = Promise.resolve();
+	private workspaceWriteQueue: Promise<void> | null = null;
 	private selectionGeneration = 0;
+	private selectionAbort: AbortController | null = null;
+	private selectionOwner: SessionSelectionOwner | null = null;
 
 	get activeOwnedId(): string | null {
 		return this.controlledSelectionOwnedId ?? rail.activeOwnedId;
@@ -42,13 +44,13 @@ export class SessionSelectionController {
 	get filesProjectionRoot(): string {
 		return this.sessionSelectionLayers.hasTreeProjection
 			? this.sessionSelectionLayers.treeRoot
-			: this.durableSessionRoot;
+			: "";
 	}
 
 	get filesProjectionOwnedId(): string | null {
 		return this.sessionSelectionLayers.hasTreeProjection
 			? this.sessionSelectionLayers.treeOwnedId
-			: this.activeOwnedId;
+			: null;
 	}
 
 	get controlledSession(): OwnedSession | null {
@@ -79,32 +81,32 @@ export class SessionSelectionController {
 	}
 
 	async selectSession(ownedId: string): Promise<void> {
+		const owner = this.beginSelection();
 		this.controlledSelectionOwnedId = ownedId;
 		setActiveOwned(ownedId);
-		this.selectionGeneration += 1;
-		const generation = this.selectionGeneration;
+		this.sessionSelectionLayers.clearTreeView();
+		this.sessionSelectionLayers.clearChatHistory();
 
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		if (session) {
 			this.activeRootRemote = session.executionEnvironment === "remote";
 			const root = canonicalPath(session.cwd.trim() || (session.projectPath ?? "").trim());
-			if (root && !this.activeRootRemote) {
-				countInvoke("read_agent_conversation_workspace_expanded_paths");
-				readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, root)
-					.then((paths) => {
-						if (this.selectionGeneration !== generation) return;
-						this.expandedPathsByRoot = { [root]: paths };
-					})
-					.catch(() => undefined);
-			} else {
-				this.expandedPathsByRoot = {};
-			}
-			await this.sessionSelectionLayers.selectSession(session, this.sessionSelectionLayers.chatOwnedId);
+			this.expandedPathsByRoot = {};
+			await this.materializeSelection(session, root, owner);
 		} else {
 			this.expandedPathsByRoot = {};
+			this.sessionSelectionLayers.abandonSelection(owner);
 			this.sessionSelectionLayers.clearTreeView();
 			this.sessionSelectionLayers.clearChatHistory();
 		}
+	}
+
+	async openConversation(ownedId: string): Promise<void> {
+		const owner = this.selectionOwner;
+		if (!owner || !this.isCurrent(owner) || this.controlledSelectionOwnedId !== ownedId) return;
+		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
+		if (!session) return;
+		await this.sessionSelectionLayers.fillChatHistory(session, owner);
 	}
 
 	rememberExpandedPaths(root: string, paths: readonly string[]): void {
@@ -113,20 +115,107 @@ export class SessionSelectionController {
 		if (!ownedId || !projectRoot) return;
 
 		this.expandedPathsByRoot = { [projectRoot]: [...paths] };
-		const write = this.workspaceWriteQueue.then(async () => {
-			countInvoke("write_agent_conversation_workspace_expanded_paths");
-			await writeAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot, paths);
-		});
-		this.workspaceWriteQueue = write.catch(() => undefined);
+		const previousWrite = this.workspaceWriteQueue;
+		const write = this.writeExpandedPathsAfter(previousWrite, ownedId, projectRoot, paths);
+		this.workspaceWriteQueue = write;
+		void this.ignoreWorkspaceWriteFailure(write);
 	}
 
 	async removeSession(ownedId: string): Promise<void> {
 		await deleteAgentConversationSessionFromTauri(ownedId);
 		removeOwnedSession(ownedId);
 		if (this.controlledSelectionOwnedId === ownedId) {
+			this.cancelSelection();
 			this.controlledSelectionOwnedId = null;
 			this.sessionSelectionLayers.clearTreeView();
 			this.sessionSelectionLayers.clearChatHistory();
+		}
+	}
+
+	dispose(): void {
+		this.cancelSelection();
+		this.controlledSelectionOwnedId = null;
+		this.expandedPathsByRoot = {};
+		this.sessionSelectionLayers.clearTreeView();
+		this.sessionSelectionLayers.clearChatHistory();
+	}
+
+	private beginSelection(): SessionSelectionOwner {
+		this.selectionAbort?.abort();
+		const controller = new AbortController();
+		this.selectionAbort = controller;
+		const owner = {
+			generation: ++this.selectionGeneration,
+			signal: controller.signal,
+		};
+		this.selectionOwner = owner;
+		return owner;
+	}
+
+	private cancelSelection(): void {
+		this.selectionAbort?.abort();
+		this.selectionAbort = null;
+		this.selectionOwner = null;
+		this.selectionGeneration += 1;
+	}
+
+	private isCurrent(owner: SessionSelectionOwner): boolean {
+		return !owner.signal.aborted && owner.generation === this.selectionGeneration;
+	}
+
+	private async materializeSelection(
+		session: OwnedSession,
+		root: string,
+		owner: SessionSelectionOwner,
+	): Promise<void> {
+		if (!this.isCurrent(owner)) return;
+
+		const treeLoad = this.sessionSelectionLayers.selectSession(session, null, owner);
+		if (!root || this.activeRootRemote) {
+			await treeLoad;
+			return;
+		}
+		await Promise.all([
+			treeLoad,
+			this.loadExpandedPaths(session.ownedId, root, owner),
+		]);
+	}
+
+	private async loadExpandedPaths(
+		ownedId: string,
+		root: string,
+		owner: SessionSelectionOwner,
+	): Promise<void> {
+		try {
+			countInvoke("read_agent_conversation_workspace_expanded_paths");
+			const paths = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, root);
+			if (!this.isCurrent(owner)) return;
+			this.expandedPathsByRoot = { [root]: paths };
+		} catch {
+			// The session may have changed while the uncancellable invoke was in flight.
+		}
+	}
+
+	private async writeExpandedPathsAfter(
+		previousWrite: Promise<void> | null,
+		ownedId: string,
+		projectRoot: string,
+		paths: readonly string[],
+	): Promise<void> {
+		try {
+			if (previousWrite) await previousWrite;
+		} catch {
+			// Keep later writes ordered even if an earlier persistence call failed.
+		}
+		countInvoke("write_agent_conversation_workspace_expanded_paths");
+		await writeAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot, paths);
+	}
+
+	private async ignoreWorkspaceWriteFailure(write: Promise<void>): Promise<void> {
+		try {
+			await write;
+		} catch {
+			// Persistence is best-effort; the current projection remains in memory.
 		}
 	}
 }

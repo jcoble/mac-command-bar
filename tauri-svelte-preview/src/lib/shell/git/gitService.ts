@@ -296,17 +296,19 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   const historyGuard = createRequestGuard();
   const diffGuard = createRequestGuard();
   let historySurfaceVisible = false;
+  let sourceControlSyncGeneration = 0;
 
   function publishGitDiagnostics(): void {
     setGitSurfaceDiagnostics(state.history.length, state.selectedDiff ? 1 : 0);
   }
 
-  function publishSourceControl(): void {
+  async function publishSourceControl(): Promise<void> {
     if (typeof window === 'undefined') return;
+    const generation = ++sourceControlSyncGeneration;
     const snapshot = { root: state.root, status: state.status };
-    void import('../extensions/rustGitScmProvider.ts').then(({ syncRustGitSourceControl }) => {
-      syncRustGitSourceControl(snapshot);
-    });
+    const { syncRustGitSourceControl } = await import('../extensions/rustGitScmProvider.ts');
+    if (generation !== sourceControlSyncGeneration) return;
+    syncRustGitSourceControl(snapshot);
   }
 
   /** The repository is unchanged AND this request is still the newest one. */
@@ -324,7 +326,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyComplete = false;
     state.historyPaged = false;
     publishGitDiagnostics();
-    publishSourceControl();
+    void publishSourceControl();
   }
 
   async function refreshStatus(): Promise<void> {
@@ -343,12 +345,12 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       }
       state.desktopOnly = false;
       state.status = status;
-      publishSourceControl();
+      void publishSourceControl();
     } catch (error) {
       if (!stillCurrent(statusGuard, id, root)) return;
       state.status = null;
       state.statusError = describeError(error, 'Could not read the repository status.');
-      publishSourceControl();
+      void publishSourceControl();
     } finally {
       if (stillCurrent(statusGuard, id, root)) state.statusLoading = false;
     }
@@ -439,7 +441,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyComplete = false;
     state.historyPaged = false;
     publishGitDiagnostics();
-    publishSourceControl();
+    void publishSourceControl();
   }
 
   async function refresh(): Promise<void> {
@@ -535,7 +537,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     diffGuard.invalidate();
     resetGitPanelState(state, root);
     publishGitDiagnostics();
-    publishSourceControl();
+    void publishSourceControl();
     if (!root) return;
     state.activated = true;
     // Status and history are visible-surface projections. Their owners request
@@ -604,7 +606,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       state.desktopOnly = false;
       state.status = result.status;
       state.actionStatus = result.message;
-      publishSourceControl();
+      void publishSourceControl();
       refreshSelectedDiff();
       if (options.reloadHistory) void refreshHistory();
     } catch (error) {

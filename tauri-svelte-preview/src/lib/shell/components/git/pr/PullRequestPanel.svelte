@@ -65,7 +65,6 @@
   let baseMenuChoices = $state<string[]>([]);
   let baseMenuValue = $state('');
   let disposed = false;
-  let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
   const busy = $derived(model.state === 'generating' || model.state === 'pushing');
   const canCreate = $derived(canCreatePullRequest(model, canWrite));
@@ -74,7 +73,6 @@
     void initialize();
     return () => {
       disposed = true;
-      if (pollTimer) clearTimeout(pollTimer);
     };
   });
 
@@ -158,9 +156,6 @@
       const statusResult = await readPullRequestStatusFromTauri(root, model.branch);
       if (!statusResult) throw new Error(READ_ONLY_IN_BROWSER_MESSAGE);
       model = setPullRequestChecks(model, statusResult);
-      if (statusResult.checks === 'pending' && !disposed) {
-        pollTimer = setTimeout(() => void pollStatus(), 2500);
-      }
     } catch (error) {
       // A created PR remains useful even while checks are temporarily
       // unavailable; show the exact gh reason without losing the URL.

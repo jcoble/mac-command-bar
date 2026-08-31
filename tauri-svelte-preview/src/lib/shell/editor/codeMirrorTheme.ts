@@ -84,9 +84,10 @@ const themeLoaders: Record<string, ThemeLoader> = {
 };
 
 /** Resolve the selected CodeMirror extension, keeping Houston as the fallback. */
-export function loadCodeMirrorTheme(themeId: unknown): Promise<Extension> {
+export async function loadCodeMirrorTheme(themeId: unknown): Promise<Extension> {
   const loader = themeLoaders[typeof themeId === 'string' ? themeId : ''];
   if (!loader) return Promise.resolve(codeMirrorTheme);
   // Keep ThemeMirror, including its catalog, out of the startup chunk.
-  return import('thememirror').then((themes) => [codeMirrorTheme, loader(themes)]);
+  const themes = await import('thememirror');
+  return [codeMirrorTheme, loader(themes)];
 }

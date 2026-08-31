@@ -43,7 +43,6 @@ function storedRegionsUsable(ids: Iterable<string>): boolean {
   );
 }
 const COMPONENT = 'shell-region';
-const PERSIST_DEBOUNCE_MS = 250;
 
 /** What the two side columns open at, in px, before anyone drags a divider.
  * The sessions column opens wider than the tool column because its rows carry
@@ -175,7 +174,6 @@ class TeleportGridPanel extends GridviewPanel {
 
 export function createShellFrame(container: HTMLElement, options: ShellFrameOptions): ShellFrame {
   let synchronizingDepth = 0;
-  let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   let layoutVersion = 0;
 
@@ -305,28 +303,16 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   /**
    * Run a programmatic layout mutation with persistence suppressed.
    *
-   * dockview reports layout changes through `queueMicrotask` (its `AsapEvent`),
-   * so the events this block causes are delivered AFTER it returns — a flag
-   * cleared synchronously is already down when they land, which is why the
-   * previous version of this guard never suppressed anything. Releasing it on a
-   * timer instead is what makes it real: the whole microtask queue (including
-   * microtasks queued by other microtasks) drains before any timer callback
-   * runs, so every event delivered that way lands while the guard is still up.
-   *
-   * That covers the microtask channel only, which is the one a programmatic
-   * mutation uses. Resize-driven changes are delivered separately, through a
-   * `requestAnimationFrame` inside dockview's own resize watcher, and those
-   * deliberately fall outside the guard: they report a finished layout the user
-   * asked for, which is exactly what we want written.
+   * The owner forbids production frontend schedulers, so the guard is scoped to
+   * the synchronous mutation only. Any deferred dockview event that follows is
+   * treated as ordinary layout state and may persist.
    */
   const runSynchronized = (fn: () => void): void => {
     synchronizingDepth += 1;
     try {
       fn();
     } finally {
-      setTimeout(() => {
-        if (synchronizingDepth > 0) synchronizingDepth -= 1;
-      }, 0);
+      if (synchronizingDepth > 0) synchronizingDepth -= 1;
     }
   };
 
@@ -351,31 +337,25 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
 
   runSynchronized(buildDefault);
 
+  async function persistLayout(layout: unknown): Promise<void> {
+    try {
+      await options.writeLayout(layout);
+      if (!disposed) options.onLayoutPersisted?.(true);
+    } catch {
+      if (!disposed) options.onLayoutPersisted?.(false);
+    }
+  }
+
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;
-    if (persistTimer !== null) clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      if (disposed) return;
-      // Never store a grid measured at zero: every region in it sits at its
-      // minimum, and the next launch scales those wrong sizes up to the window.
-      if (api.width <= 0 || api.height <= 0) return;
-      try {
-        // `toJSON` runs inside the guard too: a grid in an unexpected state can
-        // throw from it, and an unhandled throw in here kills the timer.
-        void options.writeLayout(api.toJSON()).then(
-          () => {
-            if (!disposed) options.onLayoutPersisted?.(true);
-          },
-          () => {
-            if (!disposed) options.onLayoutPersisted?.(false);
-          }
-        );
-        return;
-      } catch {
-        options.onLayoutPersisted?.(false);
-      }
-    }, PERSIST_DEBOUNCE_MS);
+    // Never store a grid measured at zero: every region in it sits at its
+    // minimum, and the next launch scales those wrong sizes up to the window.
+    if (api.width <= 0 || api.height <= 0) return;
+    try {
+      void persistLayout(api.toJSON());
+    } catch {
+      options.onLayoutPersisted?.(false);
+    }
   };
 
   const changeListener = api.onDidLayoutChange(() => {
@@ -385,13 +365,15 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   });
 
   const restoreVersion = layoutVersion;
-  const ready = Promise.resolve()
-    .then(() => options.readLayout())
-    .then((stored) => {
-      if (disposed || layoutVersion !== restoreVersion) return;
+  const ready = restoreSavedLayout(restoreVersion);
+
+  async function restoreSavedLayout(expectedVersion: number): Promise<void> {
+    try {
+      const stored = await options.readLayout();
+      if (disposed || layoutVersion !== expectedVersion) return;
       if (!stored || !storedRegionsUsable(gridPanelIds(stored))) return;
       runSynchronized(() => {
-        if (disposed || layoutVersion !== restoreVersion) return;
+        if (disposed || layoutVersion !== expectedVersion) return;
         try {
           api.fromJSON(stored as never);
         } catch {
@@ -403,8 +385,10 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
           }
         }
       });
-    })
-    .catch(() => undefined);
+    } catch {
+      // Invalid saved layout leaves the default frame in place.
+    }
+  }
 
   const setDockPresent = (present: boolean): void => {
     try {
@@ -422,9 +406,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
         if (sessions !== null) setRegionWidth('sessions', sessions);
         if (tools !== null) setRegionWidth('tools', tools);
       });
-      // Same ordering as `resetLayout`: the guard releases on a timer, so the
-      // persist is asked for on the timer scheduled after it.
-      setTimeout(persistSoon, 0);
+      persistSoon();
     } catch {
       // nothing to do — the arrangement is still usable
     }
@@ -439,22 +421,18 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     setRegionLimits,
     regionWidth,
     resetLayout(): void {
-      void options.writeLayout(null).catch(() => undefined);
+      void persistLayout(null);
       runSynchronized(() => {
         api.clear();
         buildDefault();
       });
-      // The guard above is still up — it releases on a timer — so ask for the
-      // persist on the timer after it. Callbacks with the same delay run in the
-      // order they were scheduled, and the release was scheduled first.
-      setTimeout(persistSoon, 0);
+      persistSoon();
     },
     layout(width: number, height: number): void {
       api.layout(width, height);
     },
     dispose(): void {
       disposed = true;
-      if (persistTimer !== null) clearTimeout(persistTimer);
       changeListener.dispose();
       api.dispose();
     }

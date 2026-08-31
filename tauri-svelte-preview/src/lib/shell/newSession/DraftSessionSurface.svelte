@@ -151,7 +151,17 @@
     const sequence = ++loadSequence;
     refsLoading = true;
     refsMessage = null;
-    const answer: BackendAnswer<ProjectGitRef[]> = await listGitRefs(projectPath);
+    let answer: BackendAnswer<ProjectGitRef[]>;
+    try {
+      answer = await listGitRefs(projectPath);
+    } catch (error) {
+      if (sequence === loadSequence) {
+        refsLoading = false;
+        gitRefs = [];
+        refsMessage = describeError(error);
+      }
+      return;
+    }
     if (sequence !== loadSequence) return;
     refsLoading = false;
     if (answer.status === 'failed') {
@@ -302,31 +312,45 @@
   }
 
   onMount(() => {
-    let active = true;
+    const owner = { active: true };
     setSessionRoots(sessionRoots);
-    void hydrate().then(() => {
-      if (!active) return;
-      const projectPath = preferredRoot(presetProjectPath);
-      draft = defaultThreadStartState({ projectPath, providerConfigs });
-      if (projectPath) void loadRefs(projectPath);
-      composer?.focus();
-    });
-    void readRemoteAssemblyEnvironmentFromTauri()
-      .then((environment) => {
-        if (!active) return;
-        remoteAssembly = environment;
-        remoteProfile = {
-          sshTarget: environment.sshTarget ?? '',
-          sourceRoot: environment.sourceRoot ?? '',
-          defaultCwd: environment.defaultCwd ?? ''
-        };
-      })
-      .catch(() => undefined);
+    const sequence = ++loadSequence;
+    void hydrateDraft(owner, sequence);
+    void hydrateRemoteAssembly(owner, sequence);
     return () => {
-      active = false;
+      owner.active = false;
       loadSequence += 1;
     };
   });
+
+  async function hydrateDraft(owner: { active: boolean }, sequence: number): Promise<void> {
+    try {
+      await hydrate();
+    } catch (error) {
+      if (owner.active && sequence === loadSequence) submitError = describeError(error);
+      return;
+    }
+    if (!owner.active || sequence !== loadSequence) return;
+    const projectPath = preferredRoot(presetProjectPath);
+    draft = defaultThreadStartState({ projectPath, providerConfigs });
+    if (projectPath) void loadRefs(projectPath);
+    composer?.focus();
+  }
+
+  async function hydrateRemoteAssembly(owner: { active: boolean }, sequence: number): Promise<void> {
+    try {
+      const environment = await readRemoteAssemblyEnvironmentFromTauri();
+      if (!owner.active || sequence !== loadSequence) return;
+      remoteAssembly = environment;
+      remoteProfile = {
+        sshTarget: environment.sshTarget ?? '',
+        sourceRoot: environment.sourceRoot ?? '',
+        defaultCwd: environment.defaultCwd ?? ''
+      };
+    } catch {
+      // Remote setup controls stay empty when the desktop backend is unavailable.
+    }
+  }
 </script>
 
 {#snippet draftControls()}

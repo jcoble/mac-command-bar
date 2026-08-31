@@ -93,7 +93,8 @@ export async function pickProjectFolder(): Promise<BackendAnswer<string | null>>
  * somewhere unexpected.
  */
 export async function validateProjectRoot(
-  path: string
+  path: string,
+  signal?: AbortSignal
 ): Promise<BackendAnswer<ProjectRootValidationResult>> {
   const trimmed = path.trim();
   if (!trimmed) {
@@ -101,7 +102,7 @@ export async function validateProjectRoot(
   }
   try {
     countInvoke('validate_project_root');
-    const result = await validateProjectRootFromTauri(trimmed);
+    const result = await validateProjectRootFromTauri(trimmed, signal);
     if (!result) {
       return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
     }

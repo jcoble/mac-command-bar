@@ -128,16 +128,19 @@ export function activateStacks(input: { activeRoot: string | null; projectName?:
   setStackInput(input);
   const firstTime = !stacks.activated;
   markStacksActivated();
-  void hydrateStacks()
-    .then(() => {
-      if ((stacks.activeRoot ?? '').trim() !== key) return;
-      if (!firstTime && key === loadedRootKey) return;
-      loadedRootKey = key;
-      return refreshStacks();
-    })
-    .catch((error) => {
-      stacks.error = `Could not load run configurations: ${describeError(error)}`;
-    });
+  void activateStacksForKey(key, firstTime);
+}
+
+async function activateStacksForKey(key: string, firstTime: boolean): Promise<void> {
+  try {
+    await hydrateStacks();
+    if ((stacks.activeRoot ?? '').trim() !== key) return;
+    if (!firstTime && key === loadedRootKey) return;
+    loadedRootKey = key;
+    await refreshStacks();
+  } catch (error) {
+    stacks.error = `Could not load run configurations: ${describeError(error)}`;
+  }
 }
 
 /** Forget which project was last read — used when the shell tears the panel down. */
@@ -266,19 +269,33 @@ export function noteTerminalExit(
   ownedId: string,
   outcome: { exitCode: number | null; signal: string | null }
 ): void {
-  void recordStackExit(ownedId, outcome).then((recorded) => {
-    if (recorded) return refreshStacks();
-  }).catch((error) => {
-    stacks.error = `Could not save the run result: ${describeError(error)}`;
-  });
+  void recordTerminalExit(ownedId, outcome);
 }
 
 /** A session was removed from the rail: its stack tag goes with it. */
 export function noteSessionRemoved(ownedId: string): void {
   if (stackIdForOwnedId(ownedId) === null) return;
-  void forgetStackRun(ownedId).catch((error) => {
+  void forgetRemovedStackSession(ownedId);
+}
+
+async function recordTerminalExit(
+  ownedId: string,
+  outcome: { exitCode: number | null; signal: string | null }
+): Promise<void> {
+  try {
+    const recorded = await recordStackExit(ownedId, outcome);
+    if (recorded) await refreshStacks();
+  } catch (error) {
+    stacks.error = `Could not save the run result: ${describeError(error)}`;
+  }
+}
+
+async function forgetRemovedStackSession(ownedId: string): Promise<void> {
+  try {
+    await forgetStackRun(ownedId);
+  } catch (error) {
     stacks.error = `Could not forget the run session: ${describeError(error)}`;
-  });
+  }
 }
 
 /** Put a stack's session on screen — the row's click-through. */

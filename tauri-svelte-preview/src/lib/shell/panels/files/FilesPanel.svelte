@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { dev } from "$app/environment";
-	import { Button } from "$lib/components/ui/button/index.js";
+		import { dev } from "$app/environment";
+		import { Button } from "$lib/components/ui/button/index.js";
 	import { EmptyState } from "$lib/components/ui/empty-state/index.js";
 	import { IconButton } from "$lib/components/ui/icon-button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
@@ -28,12 +28,12 @@
 		setIncludeExcluded,
 	} from "$lib/shell/explorer/explorerStore.svelte";
 	import { projectRootLabel } from "$lib/shell/explorer/explorerTree";
-	import {
-		FILE_TREE_OVERSCAN_ROWS,
-		FILE_TREE_ROW_HEIGHT,
-		visibleFileTreeNodes,
-		windowFileTreeNodes,
-	} from "./fileTreeModel.ts";
+		import {
+			FILE_TREE_OVERSCAN_ROWS,
+			FILE_TREE_ROW_HEIGHT,
+			visibleFileTreeNodes,
+			windowFileTreeNodes,
+		} from "./fileTreeModel.ts";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
 	import type { SourceTreeSearchMatch } from "$lib/sourceData";
 	import type { RepositoryCheckout } from "$lib/tauriSource";
@@ -57,7 +57,7 @@
 	import RefreshCw from "@lucide/svelte/icons/refresh-cw";
 	import Square from "@lucide/svelte/icons/square";
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-	import { onDestroy, tick } from "svelte";
+	import { onDestroy } from "svelte";
 
 	interface Props {
 		visible: boolean;
@@ -118,13 +118,13 @@
 	let entryField = $state<HTMLInputElement | null>(null);
 	let actionError = $state<string | null>(null);
 	let fileClipboard = $state.raw<FileClipboard | null>(null);
-	let contextMenu = $state.raw<FilesContextMenuState | null>(null);
-	let treeHost = $state<HTMLDivElement | null>(null);
-	let treeScroll = $state<HTMLDivElement | null>(null);
-	let treeScrollTop = $state(0);
-	let treeHeight = $state(400);
-	let virtualized = $state(true);
-	let searchText = $state("");
+		let contextMenu = $state.raw<FilesContextMenuState | null>(null);
+		let treeHost = $state<HTMLDivElement | null>(null);
+		let treeScroll = $state<HTMLDivElement | null>(null);
+		let treeScrollTop = $state(0);
+		let treeHeight = $state(400);
+		let virtualized = $state(true);
+		let searchText = $state("");
 	let searchMatches = $state.raw<SourceTreeSearchMatch[]>([]);
 	let searchNextCursor = $state<number | null>(null);
 	let searchLoading = $state(false);
@@ -200,20 +200,20 @@
 			searchResult: true,
 		})),
 	);
-	const displayedTreeData = $derived(searching ? searchTreeData : treeData);
-	/** The rows an open tree actually shows, parents before their open children. */
-	const visibleRows = $derived(visibleFileTreeNodes(displayedTreeData, expanded, compareTreeNodes));
-	/** Only the slice inside the viewport, plus a spacer for everything above and below. */
-	const treeWindow = $derived(
-		windowFileTreeNodes(
-			visibleRows,
-			treeScrollTop,
-			treeHeight,
-			FILE_TREE_ROW_HEIGHT,
-			FILE_TREE_OVERSCAN_ROWS,
-		),
-	);
-	const renderedRows = $derived(virtualized ? treeWindow.nodes : visibleRows);
+		const displayedTreeData = $derived(searching ? searchTreeData : treeData);
+		/** The rows an open tree actually shows, parents before their open children. */
+		const visibleRows = $derived(visibleFileTreeNodes(displayedTreeData, expanded, compareTreeNodes));
+		/** Only the slice inside the viewport, plus a spacer for everything above and below. */
+		const treeWindow = $derived(
+			windowFileTreeNodes(
+				visibleRows,
+				treeScrollTop,
+				treeHeight,
+				FILE_TREE_ROW_HEIGHT,
+				FILE_TREE_OVERSCAN_ROWS,
+			),
+		);
+		const renderedRows = $derived(virtualized ? treeWindow.nodes : visibleRows);
 
 	$effect(() => {
 		const treeRoot = projectRoot.replace(/\/+$/, "");
@@ -239,6 +239,12 @@
 	let deferredExplorerPending = $state(false);
 
 	function activateExplorerWhenIdle(target: string | null): void {
+		if (target === null) {
+			deferredExplorerRoot = null;
+			deferredExplorerPending = false;
+			activateExplorer(null);
+			return;
+		}
 		if (explorer.scanning) {
 			deferredExplorerRoot = target;
 			deferredExplorerPending = true;
@@ -279,14 +285,27 @@
 				if (directory.path !== nextRoot) unloadDirectory(directory.path);
 			}
 		}
-		if (visible) activateExplorerWhenIdle(sessionRoot || null);
-		else activateExplorerWhenIdle(null);
+		activateExplorerWhenIdle(null);
 	});
 
-	$effect(() => {
-		if (!visible || !sessionRoot) return;
-		activateExplorerWhenIdle(sessionRoot);
-	});
+	function loadSelectedSessionFiles(): void {
+		if (visible && sessionRoot) activateExplorerWhenIdle(sessionRoot);
+	}
+
+	async function validateInspectionRootForEffect(generation: number, target: string, sessionRootPath: string): Promise<void> {
+		const validation = await validateProjectRootFromTauri(target);
+		if (
+			generation !== inspectionGeneration ||
+			canonicalPath(root) !== sessionRootPath ||
+			canonicalPath(inspectionRoot ?? "") !== target
+		)
+			return;
+		if (validation === null || (validation.exists && validation.isDirectory)) {
+			selectInspectionRoot(target);
+		} else {
+			selectInspectionRoot("");
+		}
+	}
 
 	$effect(() => {
 		const requestedRoot = canonicalPath(inspectionRoot ?? "");
@@ -303,20 +322,7 @@
 			selectInspectionRoot("");
 			return;
 		}
-		void (async () => {
-			const validation = await validateProjectRootFromTauri(target);
-			if (
-				generation !== inspectionGeneration ||
-				canonicalPath(root) !== sessionRootPath ||
-				canonicalPath(inspectionRoot ?? "") !== target
-			)
-				return;
-			if (validation === null || (validation.exists && validation.isDirectory)) {
-				selectInspectionRoot(target);
-			} else {
-				selectInspectionRoot("");
-			}
-		})();
+		void validateInspectionRootForEffect(generation, target, sessionRootPath);
 	});
 
 	$effect(() => {
@@ -353,49 +359,21 @@
 		notifiedUnavailableRoot = target;
 		void onRootUnavailable?.(target);
 	});
-	//ts;
-	// Move the logic into a stable function
-	async function executeSearch(gen: number) {
-		if (gen !== searchGeneration) return;
-		await loadSearchPage(gen, null, true);
-	}
-
 	$effect(() => {
 		const query = searchText.trim();
+		explorer.includeExcluded;
+		cancelActiveSearch();
+		searchMatches = [];
+		searchNextCursor = null;
+		searchError = null;
+		searchLoading = false;
 		if (!query || !visible || !listed || !projectRootForView()) {
-			cancelActiveSearch();
 			return;
 		}
 
 		const generation = ++searchGeneration;
-		const timer = window.setTimeout(() => executeSearch(generation), 220);
-
-		return () => {
-			window.clearTimeout(timer);
-			// Be careful: calling cancelActiveSearch here might be
-			// too aggressive if it kills a valid search that just started
-		};
+		void loadSearchPage(generation, null, true);
 	});
-	// $effect(() => {
-	//   const query = searchText.trim();
-	//   const projectRoot = projectRootForView();
-	//   explorer.includeExcluded;
-	//   const generation = ++searchGeneration;
-	//   cancelActiveSearch();
-	//   searchMatches = [];
-	//   searchNextCursor = null;
-	//   searchError = null;
-	//   searchLoading = false;
-	//   if (!query || !visible || !listed || !projectRoot) return;
-
-	//   const timer = window.setTimeout(() => {
-	//     void loadSearchPage(generation, null, true);
-	//   }, 220);
-	//   return () => {
-	//     window.clearTimeout(timer);
-	//     cancelActiveSearch();
-	//   };
-	// });
 
 	$effect(() => {
 		if (visible) return;
@@ -429,58 +407,28 @@
 		field.select();
 	});
 
-	// $effect(() => {
-	// 	const host = treeHost;
-	// 	if (!host) return;
-
-	// 	let frame: number | null = null;
-	// 	const updateTreeHeight = () => {
-	// 		frame = null;
-	// 		const nextHeight = Math.max(1, Math.floor(host.clientHeight));
-	// 		if (treeHeight !== nextHeight) treeHeight = nextHeight;
-	// 	};
-	// 	updateTreeHeight();
-	// 	const observer = new ResizeObserver(() => {
-	// 		if (frame === null) frame = requestTrackedAnimationFrame(updateTreeHeight);
-	// 	});
-	// 	observer.observe(host);
-	// 	return () => {
-	// 		observer.disconnect();
-	// 		if (frame !== null) cancelTrackedAnimationFrame(frame);
-	// 	};
-	// });
-
-	$effect(() => {
-		displayedTreeData.length;
-		const host = treeHost;
-		if (!host) return;
-		let active = true;
-		void tick().then(() => {
-			if (!active) return;
-			const viewport = treeScroll;
-			if (!viewport) return;
-			const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+		$effect(() => {
+			displayedTreeData.length;
+		const viewport = treeScroll;
+		if (!viewport) return;
+		const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
 			if (viewport.scrollTop > maxScrollTop) viewport.scrollTop = maxScrollTop;
 		});
-		return () => {
-			active = false;
-		};
-	});
 
-	function observeTreeHost(node: HTMLElement) {
-		const update = () => {
-			const nextHeight = Math.max(1, Math.floor(node.clientHeight));
-			if (treeHeight !== nextHeight) treeHeight = nextHeight;
-		};
-		update();
-		const observer = new ResizeObserver(update);
-		observer.observe(node);
-		return {
-			destroy() {
-				observer.disconnect();
-			},
-		};
-	}
+		function observeTreeHost(node: HTMLElement) {
+			const update = () => {
+				const nextHeight = Math.max(1, Math.floor(node.clientHeight));
+				if (treeHeight !== nextHeight) treeHeight = nextHeight;
+			};
+			update();
+			const observer = new ResizeObserver(update);
+			observer.observe(node);
+			return {
+				destroy() {
+					observer.disconnect();
+				},
+			};
+		}
 
 	function relativePath(projectRoot: string, path: string): string {
 		const prefix = `${projectRoot}/`;
@@ -988,25 +936,25 @@
 						</Select.Content>
 					</Select.Root>
 				{/if}
-				<Input
+					<Input
 					type="search"
 					class="h-7 w-32"
 					placeholder="Search files"
 					aria-label="Search project files"
 					value={searchText}
-					oninput={onFilterInput}
-				/>
-				{#if dev}
-					<Button
-						size="sm"
-						variant="ghost"
-						aria-label="Compare virtualized and all file-tree rows"
-						onclick={() => (virtualized = !virtualized)}
-					>
-						{virtualized ? "Virtualized" : "All rows"}
-					</Button>
-				{/if}
-				<IconButton
+						oninput={onFilterInput}
+					/>
+					{#if dev}
+						<Button
+							size="sm"
+							variant="ghost"
+							aria-label="Compare virtualized and all file-tree rows"
+							onclick={() => (virtualized = !virtualized)}
+						>
+							{virtualized ? "Virtualized" : "All rows"}
+						</Button>
+					{/if}
+					<IconButton
 					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
 					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
 				>
@@ -1032,9 +980,21 @@
 	</PanelHeader>
 
 	{#if !explorer.activated}
-		<EmptyState title="No session selected" body="Pick a session and its files appear here.">
-			{#snippet icon()}<FolderTree />{/snippet}
-		</EmptyState>
+		{#if sessionRoot}
+			<EmptyState
+				title="Files paused"
+				body="List files when you are ready. Session switching does not rebuild this panel in the background."
+			>
+				{#snippet icon()}<FolderTree />{/snippet}
+				{#snippet actions()}
+					<Button size="sm" variant="secondary" onclick={loadSelectedSessionFiles}>List files</Button>
+				{/snippet}
+			</EmptyState>
+		{:else}
+			<EmptyState title="No session selected" body="Pick a session, then list its files when you are ready.">
+				{#snippet icon()}<FolderTree />{/snippet}
+			</EmptyState>
+		{/if}
 	{:else if explorer.unavailable === "checkout-deleted" && !readOnlyInspection}
 		<EmptyState
 			title="Checkout/Worktree deleted."
@@ -1084,40 +1044,40 @@
 		{/if}
 	{/if}
 
-	<div
-		class="tree-host"
-		class:hidden={!treeVisible}
-		aria-hidden={!treeVisible}
-		bind:this={treeHost}
-		use:observeTreeHost
-	>
+		<div
+			class="tree-host"
+			class:hidden={!treeVisible}
+			aria-hidden={!treeVisible}
+			bind:this={treeHost}
+			use:observeTreeHost
+		>
 		<div
 			class="tree-scroll"
 			role="tree"
 			tabindex={treeVisible ? 0 : -1}
-			aria-label="Project files"
-			bind:this={treeScroll}
-			onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
-		>
-			{#if renderedRows.length === 0}
-				<p class="tree-empty">Nothing matches that search.</p>
-			{:else}
-				<!-- One canvas whose height never changes as you scroll, with each row
-				     transformed into place. Resizing spacer divs on every scroll instead
-				     rewrites the scroller's layout continuously, and WebKit reallocates
-				     the layer's tile backing each time without releasing the old grid. -->
-				<div class="tree-canvas" style={`height: ${virtualized ? treeWindow.totalHeight : renderedRows.length * FILE_TREE_ROW_HEIGHT}px`}>
-				<!-- Keyed by slot, not by path. Keying by path destroys and rebuilds every row
-				     on each session switch; each destroyed row's layer backing is never
-				     reclaimed, so the tile count ratchets. By slot, the same elements are
-				     reused and only their contents change. -->
-				{#each renderedRows as node, rowIndex (rowIndex)}
+				aria-label="Project files"
+				bind:this={treeScroll}
+				onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
+			>
+				{#if renderedRows.length === 0}
+					<p class="tree-empty">Nothing matches that search.</p>
+				{:else}
+					<!-- One canvas whose height never changes as you scroll, with each row
+					     transformed into place. Resizing spacer divs on every scroll instead
+					     rewrites the scroller's layout continuously, and WebKit reallocates
+					     the layer's tile backing each time without releasing the old grid. -->
+					<div class="tree-canvas" style={`height: ${virtualized ? treeWindow.totalHeight : renderedRows.length * FILE_TREE_ROW_HEIGHT}px`}>
+					<!-- Keyed by slot, not by path. Keying by path destroys and rebuilds every row
+					     on each session switch; each destroyed row's layer backing is never
+					     reclaimed, so the tile count ratchets. By slot, the same elements are
+					     reused and only their contents change. -->
+					{#each renderedRows as node, rowIndex (rowIndex)}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<!-- svelte-ignore a11y_click_events_have_key_events -->
 					<div
-						class="tree-node"
-						class:selected={node.path === explorer.selectedPath}
-						style={`padding-left: ${node.depth * 12}px; transform: translateY(${(virtualized ? treeWindow.topSpacerHeight : 0) + rowIndex * FILE_TREE_ROW_HEIGHT}px)`}
+							class="tree-node"
+							class:selected={node.path === explorer.selectedPath}
+							style={`padding-left: ${node.depth * 12}px; transform: translateY(${(virtualized ? treeWindow.topSpacerHeight : 0) + rowIndex * FILE_TREE_ROW_HEIGHT}px)`}
 						onclick={() => onTreeNodeClicked(node)}
 						ondblclick={(event) => pinTreeNodeOpen(node, event)}
 						oncontextmenu={(event) => openContextMenu(node, event)}
@@ -1279,15 +1239,15 @@
 		scrollbar-width: thin;
 		scrollbar-color: var(--scrollbar-thumb) transparent;
 	}
-	.tree-canvas {
-		position: relative;
-		width: 100%;
-	}
-	.tree-node {
-		position: absolute;
-		top: 0;
-		left: 0;
-		width: 100%;
+		.tree-canvas {
+			position: relative;
+			width: 100%;
+		}
+		.tree-node {
+			position: absolute;
+			top: 0;
+			left: 0;
+			width: 100%;
 		display: flex;
 		height: 28px;
 		min-width: 0;

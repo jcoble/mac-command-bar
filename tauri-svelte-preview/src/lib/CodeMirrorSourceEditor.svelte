@@ -42,7 +42,6 @@
 
   import {
     addCodeMirrorEditorView,
-    requestTrackedAnimationFrame,
     setCodeMirrorEditorStateCount,
     setCodeMirrorDocBytes,
     setCodeMirrorUndoDepth,
@@ -135,7 +134,6 @@
   let languageGeneration = 0;
   let requestedLanguageKey = '';
   let loadedLanguageKey = '';
-  let referenceCountTimer: ReturnType<typeof setTimeout> | null = null;
   let lspGeneration = 0;
   let requestedLspKey = '';
   let loadedLspKey = '';
@@ -231,11 +229,6 @@
     if (view) view.dispatch({ effects: codeLens.reconfigure([]) });
   }
 
-  function clearReferenceCountTimer(): void {
-    if (referenceCountTimer !== null) clearTimeout(referenceCountTimer);
-    referenceCountTimer = null;
-  }
-
   function desiredContent(): string {
     return content ?? preview.content;
   }
@@ -286,7 +279,7 @@
     if (view) view.dispatch({ effects: language.reconfigure([]) });
   }
 
-  function loadVisibleLanguageSupport(): void {
+  async function loadVisibleLanguageSupport(): Promise<void> {
     if (!view || !visible || !currentPath || currentPath !== preview.path) return;
     const path = currentPath;
     const languageId = preview.language;
@@ -294,23 +287,22 @@
     if (key === loadedLanguageKey || key === requestedLanguageKey) return;
     requestedLanguageKey = key;
     const generation = ++languageGeneration;
-    void loadCodeMirrorLanguage(languageId)
-      .then((extension) => {
-        if (
-          !view ||
-          !visible ||
-          generation !== languageGeneration ||
-          currentPath !== path ||
-          preview.path !== path ||
-          preview.language !== languageId
-        ) return;
-        requestedLanguageKey = '';
-        loadedLanguageKey = key;
-        view.dispatch({ effects: language.reconfigure(extension) });
-      })
-      .catch(() => {
-        if (generation === languageGeneration && requestedLanguageKey === key) requestedLanguageKey = '';
-      });
+    try {
+      const extension = await loadCodeMirrorLanguage(languageId);
+      if (
+        !view ||
+        !visible ||
+        generation !== languageGeneration ||
+        currentPath !== path ||
+        preview.path !== path ||
+        preview.language !== languageId
+      ) return;
+      requestedLanguageKey = '';
+      loadedLanguageKey = key;
+      view.dispatch({ effects: language.reconfigure(extension) });
+    } catch {
+      if (generation === languageGeneration && requestedLanguageKey === key) requestedLanguageKey = '';
+    }
   }
 
   function clearThemeSupport(): void {
@@ -320,28 +312,27 @@
     if (view) view.dispatch({ effects: themeExtension.reconfigure(codeMirrorTheme) });
   }
 
-  function loadVisibleThemeSupport(): void {
+  async function loadVisibleThemeSupport(): Promise<void> {
     if (!view || !visible || !currentPath || currentPath !== preview.path) return;
     const themeId = settings.appearance.themeId;
     if (themeId === loadedThemeKey || themeId === requestedThemeKey) return;
     requestedThemeKey = themeId;
     const generation = ++themeGeneration;
-    void loadCodeMirrorTheme(themeId)
-      .then((extension) => {
-        if (
-          !view ||
-          !visible ||
-          generation !== themeGeneration ||
-          settings.appearance.themeId !== themeId ||
-          currentPath !== preview.path
-        ) return;
-        requestedThemeKey = '';
-        loadedThemeKey = themeId;
-        view.dispatch({ effects: themeExtension.reconfigure(extension) });
-      })
-      .catch(() => {
-        if (generation === themeGeneration && requestedThemeKey === themeId) requestedThemeKey = '';
-      });
+    try {
+      const extension = await loadCodeMirrorTheme(themeId);
+      if (
+        !view ||
+        !visible ||
+        generation !== themeGeneration ||
+        settings.appearance.themeId !== themeId ||
+        currentPath !== preview.path
+      ) return;
+      requestedThemeKey = '';
+      loadedThemeKey = themeId;
+      view.dispatch({ effects: themeExtension.reconfigure(extension) });
+    } catch {
+      if (generation === themeGeneration && requestedThemeKey === themeId) requestedThemeKey = '';
+    }
   }
 
   function restoredState(path: string): StoredViewState | null {
@@ -559,7 +550,7 @@
     );
   }
 
-  function loadVisibleLspSupport(): void {
+  async function loadVisibleLspSupport(): Promise<void> {
     const root = languageServerRoot;
     if (!officialLspExpected() || !view || !root) return;
     const key = `${root}\0${currentPath}`;
@@ -573,7 +564,8 @@
     lspSession = session;
     view.dispatch({ effects: intelligence.reconfigure([]) });
     view.dispatch(setDiagnostics(view.state, []));
-    void session.extension(currentPath).then((extension) => {
+    try {
+      const extension = await session.extension(currentPath);
       if (
         !view ||
         !visible ||
@@ -587,13 +579,13 @@
       requestedLspKey = '';
       loadedLspKey = key;
       view.dispatch({ effects: intelligence.reconfigure(extension) });
-    }).catch(() => {
+    } catch {
       if (generation !== lspGeneration || requestedLspKey !== key) return;
       requestedLspKey = '';
       if (!view) return;
       view.dispatch({ effects: intelligence.reconfigure(callbackIntelligence) });
       view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
-    });
+    }
   }
 
   function diagnosticsFor(state: EditorState): Diagnostic[] {
@@ -690,17 +682,12 @@
       const next = update.state.doc.toString();
       onContentChange?.(next);
       onSymbolsChange?.(extractSourceSymbols(preview, next));
-      if (referenceCountTimer !== null) clearTimeout(referenceCountTimer);
-      referenceCountTimer = setTimeout(() => {
-        referenceCountTimer = null;
-        onReferenceCountsOutOfDate?.(preview.path);
-      }, 600);
+      onReferenceCountsOutOfDate?.(preview.path);
     })
   ];
 
   function showFile(): void {
     if (!view) return;
-    clearReferenceCountTimer();
     clearLspSupport(false);
     rememberCurrentView();
     currentPath = preview.path;
@@ -737,16 +724,13 @@
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
     clearLanguageSupport();
     clearThemeSupport();
-    loadVisibleLanguageSupport();
-    loadVisibleThemeSupport();
-    loadVisibleLspSupport();
+    void loadVisibleLanguageSupport();
+    void loadVisibleThemeSupport();
+    void loadVisibleLspSupport();
     configureCodeLens();
-    if (restored) {
-      requestTrackedAnimationFrame(() => {
-        if (!view || currentPath !== preview.path) return;
-        view.scrollDOM.scrollTop = restored.scrollTop;
-        if (restoredViewStates[currentPath]) onRestoredViewStateConsumed?.(currentPath);
-      });
+    if (restored && view && currentPath === preview.path) {
+      view.scrollDOM.scrollTop = restored.scrollTop;
+      if (restoredViewStates[currentPath]) onRestoredViewStateConsumed?.(currentPath);
     }
   }
 
@@ -782,8 +766,11 @@
     setCodeMirrorUndoDepth(0);
   }
 
+  export function refreshReferenceCounts(): void {
+    configureCodeLens();
+  }
+
   export function releaseSessionResources(): void {
-    clearReferenceCountTimer();
     clearLspSupport();
     clearLanguageSupport();
     clearCodeLens();
@@ -824,8 +811,8 @@
     preview.path;
     preview.language;
     if (visible) {
-      loadVisibleLanguageSupport();
-      if (officialLspExpected()) loadVisibleLspSupport();
+      void loadVisibleLanguageSupport();
+      if (officialLspExpected()) void loadVisibleLspSupport();
       else clearLspSupport();
     } else {
       clearLanguageSupport();
@@ -836,7 +823,7 @@
 
   $effect(() => {
     settings.appearance.themeId;
-    if (visible) loadVisibleThemeSupport();
+    if (visible) void loadVisibleThemeSupport();
     else clearThemeSupport();
   });
 
@@ -864,7 +851,6 @@
   });
 
   onDestroy(() => {
-    clearReferenceCountTimer();
     clearLspSupport();
     clearCodeLens();
     languageGeneration += 1;

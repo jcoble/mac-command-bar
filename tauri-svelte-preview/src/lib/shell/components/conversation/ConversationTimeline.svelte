@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onDestroy, tick } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
@@ -22,14 +21,12 @@
     type ConversationSendAnchorRequest
   } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
-  import {
-    cancelTrackedAnimationFrame,
-    requestTrackedAnimationFrame,
-    setConversationTimelineDiagnostics
-  } from '$lib/shell/resourceDiagnostics.svelte';
+  import { setConversationTimelineDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import TimelineItem from './TimelineItem.svelte';
   import TurnFileCard from './TurnFileCard.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
+
+  const CONVERSATION_GROUP_BATCH = 6;
 
   interface Props {
     items: readonly ConversationDisplayItem[];
@@ -92,8 +89,6 @@
   let list = $state<HTMLDivElement | null>(null);
   let follow = $state(true);
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
-  let animationFrame: number | null = null;
-  let hydrationFrame: number | null = null;
   let seenAnchorRequest = '';
   let anchoredUserItemId = $state<string | null>(null);
   let viewportHeight = $state(0);
@@ -104,12 +99,15 @@
   let openedConversationId = $state('');
   let foldConversationId = $state('');
   let expandedTurns = $state<Map<string, boolean>>(new Map());
+  let visibleGroupLimit = $state(CONVERSATION_GROUP_BATCH);
   /** Every item the conversation holds. A stored row is drawn, never offered. */
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
   const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
   const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId));
+  const visibleGroups = $derived(renderedGroups.slice(-visibleGroupLimit));
+  const hiddenGroupCount = $derived(Math.max(0, renderedGroups.length - visibleGroups.length));
 
   function countDiffLines(diffText: string): { added: number; removed: number } {
     let added = 0;
@@ -185,7 +183,7 @@
     if (!timelineMounted) return;
     setConversationTimelineDiagnostics(
       renderedGroups.length,
-      renderedGroups.length,
+      visibleGroups.length,
       0,
       0
     );
@@ -210,26 +208,22 @@
 
   $effect(() => {
     if (!host) return;
-    let frame: number | null = null;
     const publish = (): void => {
-      frame = null;
       const nextHeight = host?.clientHeight ?? 0;
       if (viewportHeight !== nextHeight) viewportHeight = nextHeight;
     };
-    const observer = new ResizeObserver(() => {
-      if (frame === null) frame = requestTrackedAnimationFrame(publish);
-    });
+    const observer = new ResizeObserver(publish);
     observer.observe(host);
     publish();
     return () => {
       observer.disconnect();
-      if (frame !== null) cancelTrackedAnimationFrame(frame);
     };
   });
 
   $effect(() => {
     if (openedConversationId === renderWindowId) return;
     openedConversationId = renderWindowId;
+    visibleGroupLimit = CONVERSATION_GROUP_BATCH;
     pageAnchor = null;
     anchoredUserItemId = null;
     foldConversationId = renderWindowId;
@@ -252,26 +246,15 @@
     if (restoringScrollTop === null || renderedItems.length === 0) return;
     const target = restoringScrollTop;
     restoringScrollTop = null;
-    void tick().then(() => {
-      if (!host) return;
-      const maxScroll = latestWritingScrollTop();
-      if (target >= maxScroll - 150) {
-        host.scrollTop = maxScroll;
-        follow = true;
-      } else {
-        host.scrollTop = target;
-        follow = false;
-      }
-      requestTrackedAnimationFrame(() => {
-        if (!host) return;
-        const currentMax = latestWritingScrollTop();
-        if (target >= currentMax - 150) {
-          host.scrollTop = currentMax;
-        } else {
-          host.scrollTop = target;
-        }
-      });
-    });
+    if (!host) return;
+    const maxScroll = latestWritingScrollTop();
+    if (target >= maxScroll - 150) {
+      host.scrollTop = maxScroll;
+      follow = true;
+    } else {
+      host.scrollTop = target;
+      follow = false;
+    }
   });
 
   $effect(() => {
@@ -282,35 +265,16 @@
     // rather than animated: nobody asked to watch a transcript they have not read
     // scroll past.
     if (renderedItems.length === 0 || !scrollState.openingToLatest) return;
-    let cancelled = false;
-    let frame: number | null = null;
-    let framesLeft = 6;
-    const settleAtLatest = (): void => {
-      frame = null;
-      if (cancelled || !host || !scrollState.openingToLatest) return;
-      const target = latestWritingScrollTop();
-      if (Math.abs(host.scrollTop - target) > 1) host.scrollTop = target;
-      follow = true;
-      framesLeft -= 1;
-      if (framesLeft > 0) {
-        frame = requestTrackedAnimationFrame(settleAtLatest);
-      } else {
-        scrollState = { ...scrollState, openingToLatest: false, pinnedToBottom: true };
-      }
-    };
-    void tick().then(() => {
-      if (!cancelled) frame = requestTrackedAnimationFrame(settleAtLatest);
-    });
-    return () => {
-      cancelled = true;
-      if (frame !== null) cancelTrackedAnimationFrame(frame);
-    };
+    if (!host) return;
+    host.scrollTop = latestWritingScrollTop();
+    follow = true;
+    scrollState = { ...scrollState, openingToLatest: false, pinnedToBottom: true };
   });
 
   $effect(() => {
     if (foldConversationId !== renderWindowId) return;
     let next: Map<string, boolean> | null = null;
-    for (const group of renderedGroups) {
+    for (const group of visibleGroups) {
       if (!group.turnId || group.completed || group.workItemIds.length === 0 || expandedTurns.has(group.turnId)) continue;
       next ??= new Map(expandedTurns);
       next.set(group.turnId, true);
@@ -330,53 +294,19 @@
   }
 
   function finishAnimation(): void {
-    animationFrame = null;
     scrollState = decideConversationScroll(scrollState, { type: 'animation-finished' }).state;
-  }
-
-  function cancelProgrammaticScroll(): void {
-    if (animationFrame !== null) cancelTrackedAnimationFrame(animationFrame);
-    animationFrame = null;
   }
 
   function animateTo(top: number, motion: ConversationScrollMotion, settleItemId?: string, settleOffsetPx?: number): void {
     if (!host) return;
-    cancelProgrammaticScroll();
     const target = Math.max(0, top);
-    if (motion === 'instant') {
-      host.scrollTop = target;
-      if (settleItemId) {
-        const settledTop = itemTop(settleItemId, settleOffsetPx ?? 0);
-        if (settledTop !== null) host.scrollTop = settledTop;
-      }
-      finishAnimation();
-      return;
+    void motion;
+    host.scrollTop = target;
+    if (settleItemId) {
+      const settledTop = itemTop(settleItemId, settleOffsetPx ?? 0);
+      if (settledTop !== null) host.scrollTop = settledTop;
     }
-    const start = host.scrollTop;
-    const distance = target - start;
-    if (Math.abs(distance) < 1) {
-      host.scrollTop = target;
-      finishAnimation();
-      return;
-    }
-    const durationMs = 180;
-    let startedAt: number | null = null;
-    const step = (now: number): void => {
-      if (!host) return finishAnimation();
-      startedAt ??= now;
-      const progress = Math.min(1, (now - startedAt) / durationMs);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      host.scrollTop = start + distance * eased;
-      if (progress < 1) animationFrame = requestTrackedAnimationFrame(step);
-      else {
-        if (settleItemId) {
-          const settledTop = itemTop(settleItemId, settleOffsetPx ?? 0);
-          if (settledTop !== null) host.scrollTop = settledTop;
-        }
-        finishAnimation();
-      }
-    };
-    animationFrame = requestTrackedAnimationFrame(step);
+    finishAnimation();
   }
 
   function itemTop(itemId: string, offsetPx: number): number | null {
@@ -412,22 +342,18 @@
     return host ? latestWritingScrollTop() - host.scrollTop : 0;
   }
 
-  function anchorUser(itemId: string, motion: ConversationScrollMotion, offsetPx: number, framesLeft = 8): void {
+  function anchorUser(itemId: string, motion: ConversationScrollMotion, offsetPx: number): void {
     const top = itemTop(itemId, offsetPx);
     if (top !== null) {
       animateTo(top, motion, itemId, offsetPx);
       return;
     }
-    if (framesLeft === 0) return finishAnimation();
-    animationFrame = requestTrackedAnimationFrame(() => {
-      animationFrame = null;
-      anchorUser(itemId, motion, offsetPx, framesLeft - 1);
-    });
+    finishAnimation();
   }
 
   function perform(action: ConversationScrollAction): void {
     if (!host || action.type === 'none') return;
-    if (action.type === 'cancel-programmatic-scroll') return cancelProgrammaticScroll();
+    if (action.type === 'cancel-programmatic-scroll') return finishAnimation();
     if (action.type === 'scroll-to-latest') {
       animateTo(latestWritingScrollTop(), action.motion);
       return;
@@ -476,16 +402,11 @@
   }
 
   function restoreViewportAnchor(anchor: PageAnchor): void {
-    void tick().then(() => {
-      if (!host) return;
-      requestTrackedAnimationFrame(() => {
-        if (!host) return;
-        const item = host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(anchor.itemId)}"]`);
-        if (item) host.scrollTop += item.getBoundingClientRect().top - anchor.viewportTop;
-        if (follow) pageAnchor = null;
-        else captureViewportAnchor();
-      });
-    });
+    if (!host) return;
+    const item = host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(anchor.itemId)}"]`);
+    if (item) host.scrollTop += item.getBoundingClientRect().top - anchor.viewportTop;
+    if (follow) pageAnchor = null;
+    else captureViewportAnchor();
   }
 
   $effect(() => {
@@ -534,7 +455,6 @@
       pageAnchor = null;
       try {
         await onJumpToLatest();
-        await tick();
       } finally {
         jumpingToLatest = false;
       }
@@ -572,7 +492,7 @@
       userItemIds
     });
     scrollState = decision.state;
-    if (decision.action.type !== 'none') void tick().then(() => perform(decision.action));
+    if (decision.action.type !== 'none') perform(decision.action);
   });
 
   $effect(() => {
@@ -580,27 +500,23 @@
     lastContentRevision = timelineRevision;
     const decision = decideConversationScroll(scrollState, { type: 'stream-growth' });
     scrollState = decision.state;
-    void tick().then(() => {
-      perform(decision.action);
-      if (!host) return;
-      if (follow && decision.action.type === 'none') {
-        animateTo(nextWritingFollowScrollTop(host.scrollTop, latestWritingScrollTop()), 'instant');
-      }
-      // Whether the view follows is the reader's to decide — by scrolling to
-      // the bottom, or by asking for the latest. It used to be recomputed here
-      // as well, from how close the writing had grown to where they were
-      // sitting, which turned a reply catching up with the reader into
-      // permission to take the view from them.
-    });
+    perform(decision.action);
+    if (!host) return;
+    if (follow && decision.action.type === 'none') {
+      animateTo(nextWritingFollowScrollTop(host.scrollTop, latestWritingScrollTop()), 'instant');
+    }
+    // Whether the view follows is the reader's to decide — by scrolling to
+    // the bottom, or by asking for the latest. It used to be recomputed here
+    // as well, from how close the writing had grown to where they were
+    // sitting, which turned a reply catching up with the reader into
+    // permission to take the view from them.
   });
 
   $effect(() => {
     if (composerHeight === lastComposerHeight) return;
     lastComposerHeight = composerHeight;
     if (follow || scrollState.pinnedToBottom || scrollState.openingToLatest) {
-      void tick().then(() => {
-        if (host) animateTo(latestWritingScrollTop(), 'instant');
-      });
+      if (host) animateTo(latestWritingScrollTop(), 'instant');
     }
   });
 
@@ -610,6 +526,13 @@
     const decision = decideConversationScroll(scrollState, { type: 'user-input' });
     scrollState = decision.state;
     perform(decision.action);
+  }
+
+  function showEarlierGroups(): void {
+    visibleGroupLimit = Math.min(
+      renderedGroups.length,
+      visibleGroupLimit + CONVERSATION_GROUP_BATCH
+    );
   }
 
   function turnExpanded(group: ConversationTurnGroup): boolean {
@@ -639,8 +562,7 @@
         node.removeEventListener('wheel', handleUserInput);
         node.removeEventListener('touchstart', handleUserInput);
         window.removeEventListener('keydown', handleKeydown);
-        cancelProgrammaticScroll();
-        if (hydrationFrame !== null) cancelTrackedAnimationFrame(hydrationFrame);
+        finishAnimation();
       }
     };
   }
@@ -666,7 +588,18 @@
       data-testid="conversation-timeline-list"
       bind:this={list}
     >
-      {#each renderedGroups as group, index (rowKey(group, index))}
+      {#if hiddenGroupCount > 0}
+        <button
+          class="show-earlier"
+          data-testid="conversation-show-earlier"
+          type="button"
+          onclick={showEarlierGroups}
+        >
+          <ChevronRight size={14} strokeWidth={2} aria-hidden="true" />
+          Show {Math.min(CONVERSATION_GROUP_BATCH, hiddenGroupCount)} earlier turns
+        </button>
+      {/if}
+      {#each visibleGroups as group, index (rowKey(group, index))}
         {@const expanded = turnExpanded(group)}
         <div
           class="turn-row"
@@ -704,8 +637,11 @@
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:auto;padding:var(--center-head-height, 0px) 28px 0;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
   .timeline-list{position:relative;display:flex;flex-direction:column;gap:26px;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .show-earlier{align-self:center;display:flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-elevated);color:var(--color-text-2);font:inherit;font-size:12px;cursor:pointer}
+  .show-earlier:hover{background:var(--color-hover);color:var(--color-text)}
+  .show-earlier:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
   .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
-  .turn-row{position:relative;display:flex;flex-direction:column;gap:26px;width:100%;content-visibility:auto;contain-intrinsic-size:auto 120px}
+  .turn-row{position:relative;display:flex;flex-direction:column;gap:26px;width:100%}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{display:flex;align-items:center;gap:8px;min-height:24px;color:var(--color-text-3);font-size:13px}
   /* A disc under the middle of the transcript, holding one arrow. It sits over

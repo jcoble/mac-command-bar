@@ -18,6 +18,11 @@ import type { AgentConversationProvider } from './conversation/conversationTypes
 import { countInvoke } from './devInvokeCounter.svelte';
 import type { OwnedSession } from './ownedSessions';
 
+export type SessionSelectionOwner = {
+  generation: number;
+  signal: AbortSignal;
+};
+
 export class SessionSelectionLayers {
   treeOwnedId = $state<string | null>(null);
   treeRoot = $state('');
@@ -26,25 +31,21 @@ export class SessionSelectionLayers {
   hasChatProjection = $state(false);
   private selectionGeneration = 0;
 
-  /** Select only the filesystem projection. No chat ownership changes or reads. */
-  async selectTreeOnly(session: OwnedSession): Promise<void> {
-    const generation = ++this.selectionGeneration;
-    await this.fillTreeView(session, generation);
-  }
-
-  async selectSession(session: OwnedSession, displayedChatOwnedId: string | null): Promise<void> {
-    const generation = ++this.selectionGeneration;
+  async selectSession(
+    session: OwnedSession,
+    displayedChatOwnedId: string | null,
+    owner: SessionSelectionOwner
+  ): Promise<void> {
+    this.selectionGeneration = owner.generation;
     this.releaseDepartingChat(session.ownedId, displayedChatOwnedId);
-    await Promise.all([
-      this.fillTreeView(session, generation),
-      this.fillChatHistory(session, generation)
-    ]);
+    await this.fillTreeView(session, owner);
   }
 
   async fillTreeView(
     session: OwnedSession,
-    generation = this.selectionGeneration
+    owner: SessionSelectionOwner
   ): Promise<void> {
+    if (!this.isCurrent(owner)) return;
     if (session.executionEnvironment === 'remote') {
       this.treeOwnedId = session.ownedId;
       this.treeRoot = '';
@@ -54,15 +55,15 @@ export class SessionSelectionLayers {
     const root = session.cwd.trim() || (session.projectPath ?? '').trim();
     this.hasTreeProjection = true;
     this.treeOwnedId = session.ownedId;
+    this.treeRoot = '';
 
     if (!root) {
-      this.treeRoot = '';
       return;
     }
 
     countInvoke('validate_project_root');
-    const validation = await validateProjectRootFromTauri(root);
-    if (generation !== this.selectionGeneration) return;
+    const validation = await validateProjectRootFromTauri(root, owner.signal);
+    if (!this.isCurrent(owner)) return;
     if (validation && (!validation.exists || !validation.isDirectory)) {
       this.treeRoot = '';
       return;
@@ -73,8 +74,9 @@ export class SessionSelectionLayers {
 
   async fillChatHistory(
     session: OwnedSession,
-    generation = this.selectionGeneration
+    owner: SessionSelectionOwner
   ): Promise<void> {
+    if (!this.isCurrent(owner)) return;
     if (this.chatOwnedId === session.ownedId && this.hasChatProjection) return;
     if (this.chatOwnedId) releaseConversationForRead(this.chatOwnedId);
     this.hasChatProjection = false;
@@ -90,8 +92,8 @@ export class SessionSelectionLayers {
     setConversationMode(session.ownedId, 'structured');
     this.hasChatProjection = true;
     this.chatOwnedId = session.ownedId;
-    await loadConversationForRead(session.ownedId, false);
-    if (generation !== this.selectionGeneration) {
+    await loadConversationForRead(session.ownedId, false, owner.signal);
+    if (!this.isCurrent(owner)) {
       if (this.chatOwnedId === session.ownedId) {
         this.hasChatProjection = false;
         this.chatOwnedId = null;
@@ -101,6 +103,10 @@ export class SessionSelectionLayers {
       return;
     }
     evictInactiveConversationSessions(session.ownedId);
+  }
+
+  abandonSelection(owner: SessionSelectionOwner): void {
+    if (owner.generation === this.selectionGeneration) this.selectionGeneration += 1;
   }
 
   clearTreeView(): void {
@@ -123,6 +129,10 @@ export class SessionSelectionLayers {
     if (raw === 'codex' || raw.includes('codex') || raw.includes('openai')) return 'codex';
     if (raw === 'antigravity' || raw.includes('antigravity') || raw.includes('agy') || raw.includes('gemini')) return 'antigravity';
     return null;
+  }
+
+  private isCurrent(owner: SessionSelectionOwner): boolean {
+    return !owner.signal.aborted && owner.generation === this.selectionGeneration;
   }
 
   private releaseDepartingChat(nextOwnedId: string, displayedChatOwnedId: string | null): void {

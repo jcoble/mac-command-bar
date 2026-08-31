@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
-  import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
+  import type {
+    AgentConfigValue,
+    AgentConversationProvider,
+    ConversationAttachment
+  } from '$lib/shell/conversation/conversationTypes.ts';
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
   import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
@@ -226,41 +230,178 @@
     const key = `${ownedId}:${generation}:${conversation.connectionState}`;
     if (configRequest === key) return;
     configRequest = key;
-    void readAgentConversationConfig(ownedId).then((state) => {
-      if (conversationSessions[ownedId]?.generation === generation) {
-        setConversationAgentConfigState(ownedId, state);
-      }
-    }).catch((error) => {
-      if (conversationSessions[ownedId]?.generation === generation) {
-        setConversationAgentConfigError(ownedId, error instanceof Error ? error.message : String(error));
-      }
-      // The usual failure here is a race, not a refusal: the session is stored
-      // but not yet in the manager's map. Asking a second time is what fills the
-      // composer in; asking forever would be a retry storm.
-      if (configRequest === key && configRetried !== key) {
-        configRetried = key;
-        configRequest = '';
-      }
-    });
+    const owner = { active: true };
+    void readAgentConfigForSurface(owner, ownedId, generation, key);
+    return () => {
+      owner.active = false;
+    };
   });
 
   $effect(() => {
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
-    const key = `${active.ownedId}:${conversation.generation}:${conversation.provider}:${conversation.connectionState}`;
+    const ownedId = active.ownedId;
+    const provider = conversation.provider;
+    const generation = conversation.generation;
+    const key = `${ownedId}:${generation}:${provider}:${conversation.connectionState}`;
     if (capabilityRequest === key) return;
     // A connection re-reads the snapshot: the stored one can predate a provider
     // upgrade, and activation refreshes it from the live handshake.
     if (conversation.capabilities && conversation.connectionState !== 'connected') return;
     capabilityRequest = key;
-    void loadConversationCapabilities(active.ownedId, conversation.provider).catch(() => undefined);
+    const owner = { active: true };
+    void loadCapabilitiesForSurface(owner, ownedId, provider, generation);
+    return () => {
+      owner.active = false;
+    };
   });
 
   $effect(() => {
     if (!active || !conversation || !structured) return;
+    const ownedId = active.ownedId;
+    const generation = conversation.generation;
     if (!conversation.attachments.length && conversation.attachmentIds.length) {
-      void restoreConversationAttachments(active.ownedId).catch(() => undefined);
+      const owner = { active: true };
+      void restoreAttachmentsForSurface(owner, ownedId, generation);
+      return () => {
+        owner.active = false;
+      };
     }
   });
+
+  function ownsConversationGeneration(owner: { active: boolean }, ownedId: string, generation: number): boolean {
+    return owner.active && conversationSessions[ownedId]?.generation === generation;
+  }
+
+  async function readAgentConfigForSurface(
+    owner: { active: boolean },
+    ownedId: string,
+    generation: number,
+    key: string
+  ): Promise<void> {
+    try {
+      const state = await readAgentConversationConfig(ownedId);
+      if (ownsConversationGeneration(owner, ownedId, generation)) {
+        setConversationAgentConfigState(ownedId, state);
+      }
+    } catch (error) {
+      if (ownsConversationGeneration(owner, ownedId, generation)) {
+        setConversationAgentConfigError(ownedId, error instanceof Error ? error.message : String(error));
+      }
+      // The usual failure here is a race, not a refusal: the session is stored
+      // but not yet in the manager's map. Asking a second time is what fills the
+      // composer in; asking forever would be a retry storm.
+      if (owner.active && configRequest === key && configRetried !== key) {
+        configRetried = key;
+        configRequest = '';
+      }
+    }
+  }
+
+  async function loadCapabilitiesForSurface(
+    owner: { active: boolean },
+    ownedId: string,
+    provider: AgentConversationProvider,
+    generation: number
+  ): Promise<void> {
+    try {
+      if (ownsConversationGeneration(owner, ownedId, generation)) {
+        await loadConversationCapabilities(ownedId, provider);
+      }
+    } catch (_error) {
+      // The store owns capability errors; this effect only prevents unhandled
+      // promise noise if the owning surface changes while the request is out.
+    }
+  }
+
+  async function restoreAttachmentsForSurface(
+    owner: { active: boolean },
+    ownedId: string,
+    generation: number
+  ): Promise<void> {
+    try {
+      if (ownsConversationGeneration(owner, ownedId, generation)) {
+        await restoreConversationAttachments(ownedId);
+      }
+    } catch (_error) {
+      // Attachment restore is best effort; saved ids remain in the session.
+    }
+  }
+
+  async function ignoreDraftFlushFailure(ownedId: string): Promise<void> {
+    try {
+      await flushConversationSessionDraft(ownedId);
+    } catch (_error) {
+      // Losing this best-effort flush must not hide the send failure.
+    }
+  }
+
+  async function readSelectedChildTranscript(
+    ownedId: string,
+    provider: AgentConversationProvider,
+    nativeSessionId: string,
+    childSessionId: string,
+    generation: number
+  ): Promise<void> {
+    try {
+      await readChildConversationTranscript({
+        ownedId,
+        provider,
+        nativeSessionId,
+        childSessionId
+      });
+    } catch (_error) {
+      // The transcript read is opportunistic; the selector remains usable.
+    }
+    if (conversationSessions[ownedId]?.generation !== generation) return;
+  }
+
+  async function cleanupSavedAttachments(
+    ownedId: string,
+    attachments: ConversationAttachment[]
+  ): Promise<void> {
+    await Promise.all(attachments.map(async (attachment) => {
+      try {
+        await cleanupConversationAttachment(ownedId, attachment);
+      } catch (_error) {
+        // A failed cleanup is already best-effort; previews are revoked by the service.
+      }
+    }));
+  }
+
+  async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {
+    try {
+      await sendPermissionResponse(ownedId, requestId, optionId);
+    } catch (error) {
+      if (conversationSessions[ownedId]?.generation === generation) {
+        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+
+  async function submitStructuredInput(
+    ownedId: string,
+    requestId: string,
+    values: Record<string, AgentConfigValue>,
+    cancelled: boolean,
+    generation: number
+  ): Promise<void> {
+    try {
+      await respondToStructuredInput(ownedId, { requestId, values, cancelled });
+    } catch (error) {
+      if (conversationSessions[ownedId]?.generation === generation) {
+        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+
+  async function stopActiveStructuredTurn(ownedId: string, generation: number): Promise<void> {
+    if (conversationSessions[ownedId]?.generation !== generation) return;
+    try {
+      await stopStructuredTurn(ownedId);
+    } catch (_error) {
+      // Stop remains best-effort; the stream/projection owns terminal state.
+    }
+  }
 
   async function send(): Promise<void> {
     const ownedId = activeOwnedId;
@@ -288,7 +429,7 @@
       setConversationSendError(ownedId, error instanceof Error ? error.message : String(error));
       setConversationDraft(ownedId, text);
       persistConversationSessionDraft(ownedId, text);
-      await flushConversationSessionDraft(ownedId).catch(() => undefined);
+      await ignoreDraftFlushFailure(ownedId);
       localTurnActive = false;
       localTurnStarted = false;
       sendAnchorRequest = null;
@@ -302,12 +443,7 @@
     if (!childId || !active.nativeSessionId) return;
     const child = conversation.children.find((candidate) => candidate.childId === childId);
     if (!child?.transcriptAvailable) return;
-    await readChildConversationTranscript({
-      ownedId: active.ownedId,
-      provider: conversation.provider,
-      nativeSessionId: active.nativeSessionId,
-      childSessionId: childId
-    }).catch(() => undefined);
+    await readSelectedChildTranscript(active.ownedId, conversation.provider, active.nativeSessionId, childId, conversation.generation);
   }
 
   $effect(() => {
@@ -342,12 +478,12 @@
       setConversationAttachmentError(active.ownedId, rejectedMessage);
       return;
     }
-    const saved = [];
+    const saved: ConversationAttachment[] = [];
     try {
       for (const file of images) saved.push(await saveConversationClipboardImage(active.ownedId, file));
       setConversationAttachments(active.ownedId, [...conversation.attachments, ...saved]);
     } catch (error) {
-      await Promise.all(saved.map((attachment) => cleanupConversationAttachment(active.ownedId, attachment).catch(() => undefined)));
+      await cleanupSavedAttachments(active.ownedId, saved);
       setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
       // Draft and existing attachments remain untouched after a failed paste.
     }
@@ -380,17 +516,15 @@
   function onApprovalDecision(requestId: string, optionId: string): void {
     if (!active || !optionId) return;
     const ownedId = active.ownedId;
-    void sendPermissionResponse(ownedId, requestId, optionId).catch((error) => {
-      setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
-    });
+    const generation = conversationSessions[ownedId]?.generation ?? 0;
+    void chooseApprovalOption(ownedId, requestId, optionId, generation);
   }
 
   function onInputSubmit(requestId: string, values: Record<string, AgentConfigValue>, cancelled = false): void {
     if (!active) return;
     const ownedId = active.ownedId;
-    void respondToStructuredInput(ownedId, { requestId, values, cancelled }).catch((error) => {
-      setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
-    });
+    const generation = conversationSessions[ownedId]?.generation ?? 0;
+    void submitStructuredInput(ownedId, requestId, values, cancelled, generation);
   }
 
   function openConversationFile(
@@ -541,7 +675,11 @@
           }}
           onDraftBlur={() => flushConversationSessionDraft(active.ownedId)}
           onSend={send}
-          onStop={() => { if (activeOwnedId) void stopStructuredTurn(activeOwnedId).catch(() => undefined); }}
+          onStop={() => {
+            if (activeOwnedId && conversation) {
+              void stopActiveStructuredTurn(activeOwnedId, conversation.generation);
+            }
+          }}
           onPaste={paste}
           onDropFiles={dropFiles}
           onRemoveAttachment={removeAttachment}

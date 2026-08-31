@@ -213,7 +213,6 @@ export function createPanelActivation(
    * the visibility reports below have always used. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
     const key = selectionKey(selection);
-    if (filesInView && filesLoadedFor !== key) loadFiles(selection);
     if (sourceControlInView && gitLoadedFor !== key) loadSourceControl(selection);
     if ((worktreesInView || sourceControlInView) && worktreesLoadedFor !== key) {
       loadWorktrees(selection);

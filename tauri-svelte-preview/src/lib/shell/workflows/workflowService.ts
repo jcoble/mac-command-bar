@@ -135,7 +135,13 @@ export function subscribeWorkflowSnapshots(
 function ensureWorkflowSnapshotSubscription(): void {
   if (!isNativeTauriRuntime() || unlisten || workflowSnapshotSetup) return;
   const generation = workflowSnapshotGeneration;
-  const setup = (async () => {
+  const setup = setupWorkflowSnapshotSubscription(generation);
+  workflowSnapshotSetup = setup;
+  void clearWorkflowSnapshotSetup(setup);
+}
+
+async function setupWorkflowSnapshotSubscription(generation: number): Promise<void> {
+  try {
     const stop = await listen<WorkflowSnapshotPayload>(workflowSnapshotEvent, ({ payload }) => {
       for (const current of listeners) current(payload);
     });
@@ -145,13 +151,15 @@ function ensureWorkflowSnapshotSubscription(): void {
       return;
     }
     unlisten = trackedStop;
-  })().catch(() => {
+  } catch {
     // An older controller has no event channel; commands remain authoritative.
     unlisten = null;
-  }).finally(() => {
-    if (workflowSnapshotSetup === setup) workflowSnapshotSetup = null;
-  });
-  workflowSnapshotSetup = setup;
+  }
+}
+
+async function clearWorkflowSnapshotSetup(setup: Promise<void>): Promise<void> {
+  await setup;
+  if (workflowSnapshotSetup === setup) workflowSnapshotSetup = null;
 }
 
 function stopWorkflowSnapshotListener(): void {

@@ -152,7 +152,7 @@
         {@const entry = commitFilesEntry(commitFilesState, commit.sha)}
         {@const sentence = describeCommitFiles(entry, commit.parentCount > 1)}
         <li class="commit-row min-w-0">
-          <Tooltip.Root delayDuration={500}>
+          <Tooltip.Root delayDuration={0}>
             <Tooltip.Trigger>
               {#snippet child({ props })}
                 <div {...props} class="min-w-0">

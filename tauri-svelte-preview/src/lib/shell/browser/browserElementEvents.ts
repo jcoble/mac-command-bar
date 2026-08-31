@@ -67,12 +67,22 @@ export async function listenToBrowserElementSelected(
   });
 }
 
-function ensureBrowserElementListener(): Promise<void> {
-  if (!isTauriRuntime() || browserElementUnlisten) return Promise.resolve();
-  if (browserElementSetup) return browserElementSetup;
+async function ensureBrowserElementListener(): Promise<void> {
+  if (!isTauriRuntime() || browserElementUnlisten) return;
+  if (browserElementSetup) {
+    await browserElementSetup;
+    return;
+  }
 
   const generation = browserElementGeneration;
-  const setup = (async () => {
+  const setup = setupBrowserElementListener(generation);
+  browserElementSetup = setup;
+  void clearBrowserElementSetup(setup);
+  await setup;
+}
+
+async function setupBrowserElementListener(generation: number): Promise<void> {
+  try {
     const { listen } = await import('@tauri-apps/api/event');
     const stopNative = await listen<BrowserElementSelectedEvent>(
       BROWSER_ELEMENT_SELECTED_EVENT,
@@ -86,11 +96,14 @@ function ensureBrowserElementListener(): Promise<void> {
       return;
     }
     browserElementUnlisten = stop;
-  })().catch(() => undefined).finally(() => {
-    if (browserElementSetup === setup) browserElementSetup = null;
-  });
-  browserElementSetup = setup;
-  return setup;
+  } catch {
+    // Older controllers have no picker event; callers still get a no-op path.
+  }
+}
+
+async function clearBrowserElementSetup(setup: Promise<void>): Promise<void> {
+  await setup;
+  if (browserElementSetup === setup) browserElementSetup = null;
 }
 
 function stopBrowserElementListener(): void {

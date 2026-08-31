@@ -19,6 +19,7 @@ import {
 import {
   activateBrowserWorkspace,
   BrowserModelError,
+  captureBrowserMarkup,
   captureBrowserWorkspace,
   closeBrowserTab,
   createBrowserTab,
@@ -40,6 +41,7 @@ import {
   type BrowserConversationAttachment,
   type BrowserConversationBridge,
   type BrowserFeedbackPreview,
+  type BrowserMarkupCapture,
   type BrowserModelContext,
   type BrowserPresentationMode,
   type BrowserTabNavigationEvent,
@@ -283,8 +285,14 @@ export function setBrowserViewportPreset(value: BrowserViewportPreset): void {
   }
 }
 
-export function captureBrowserView(options?: BrowserCaptureOptions): ReturnType<typeof captureBrowserWorkspace> {
-  return captureBrowserWorkspace(modelContext(), options);
+export function captureBrowserView(): ReturnType<typeof captureBrowserWorkspace> {
+  return captureBrowserWorkspace(modelContext());
+}
+
+export async function captureBrowserMarkupView(
+  options?: Omit<BrowserCaptureOptions, 'forMarkup'>
+): Promise<BrowserMarkupCapture> {
+  return await captureBrowserMarkup(modelContext(), options);
 }
 
 export function stageBrowserFeedback(options?: BrowserFeedbackStageOptions): BrowserFeedbackPreview {

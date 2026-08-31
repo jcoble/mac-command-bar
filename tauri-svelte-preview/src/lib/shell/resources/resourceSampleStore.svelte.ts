@@ -39,60 +39,59 @@ export function toggleResourceManager(): void {
   resourceManagerState.open = !resourceManagerState.open;
 }
 
-export function refreshResourceSample(): Promise<ResourceSnapshot | null> {
+export async function refreshResourceSample(): Promise<ResourceSnapshot | null> {
   if (refreshInFlight) return refreshInFlight;
   resourceSampleState.loading = true;
   resourceSampleState.error = null;
-  refreshInFlight = readResourceSample()
-    .then((native) => {
-      const snapshot = native
-        ? ({
-            capturedAtMs: native.generatedAtMs,
-            native,
-            frontend: resourceDiagnostics
-          } satisfies ResourceSnapshot)
-        : null;
-      resourceSampleState.snapshot = snapshot;
-      resourceSampleState.totals = native?.totals ?? null;
-      return snapshot;
-    })
-    .catch((error: unknown) => {
+  refreshInFlight = refreshResourceSampleOnce();
+  return refreshInFlight;
+}
+
+async function refreshResourceSampleOnce(): Promise<ResourceSnapshot | null> {
+  try {
+    const native = await readResourceSample();
+    const snapshot = native
+      ? ({
+          capturedAtMs: native.generatedAtMs,
+          native,
+          frontend: resourceDiagnostics
+        } satisfies ResourceSnapshot)
+      : null;
+    resourceSampleState.snapshot = snapshot;
+    resourceSampleState.totals = native?.totals ?? null;
+    return snapshot;
+  } catch (error: unknown) {
       resourceSampleState.error =
         error instanceof Error ? error.message : 'Resource usage could not be read.';
       return null;
-    })
-    .finally(() => {
-      resourceSampleState.loading = false;
-      refreshInFlight = null;
-    });
-  return refreshInFlight;
+  } finally {
+    resourceSampleState.loading = false;
+    refreshInFlight = null;
+  }
 }
 
 let totalsRefreshInFlight: Promise<ResourceSampleTotals | null> | null = null;
 
-export function refreshResourceTotals(): Promise<ResourceSampleTotals | null> {
-  if (!resourceSampleState.snapshot) {
-    return refreshResourceSample().then(
-      (snapshot) => snapshot?.native.totals ?? null
-    );
-  }
+export async function refreshResourceTotals(): Promise<ResourceSampleTotals | null> {
   if (totalsRefreshInFlight) return totalsRefreshInFlight;
-  totalsRefreshInFlight = readResourceTotals()
-    .then((totals) => {
-      if (totals) resourceSampleState.totals = totals;
-      return totals;
-    })
-    .catch((error: unknown) => {
+  totalsRefreshInFlight = refreshResourceTotalsOnce();
+  return totalsRefreshInFlight;
+}
+
+async function refreshResourceTotalsOnce(): Promise<ResourceSampleTotals | null> {
+  try {
+    const totals = await readResourceTotals();
+    if (totals) resourceSampleState.totals = totals;
+    return totals;
+  } catch (error: unknown) {
       resourceSampleState.error =
         error instanceof Error
           ? error.message
           : 'Resource usage could not be read.';
       return null;
-    })
-    .finally(() => {
-      totalsRefreshInFlight = null;
-    });
-  return totalsRefreshInFlight;
+  } finally {
+    totalsRefreshInFlight = null;
+  }
 }
 
 /**

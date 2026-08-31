@@ -66,7 +66,9 @@ type AssemblyResourceProfiler = {
   isEnabled(): boolean;
 };
 
-let resourceProfilingEnabled = import.meta.env.DEV;
+const resourceDiagnosticsDev =
+  (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
+let resourceProfilingEnabled = resourceDiagnosticsDev;
 let resourceProfileSequence = 0;
 
 function profileLine(label: string, metadata: ProfileMetadata = {}): string {
@@ -135,7 +137,7 @@ export function setConversationProjectionDiagnostics(
   eventCount: number,
   childTranscriptBytes: number
 ): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.loadedConversationProjections = Math.max(0, projections);
   resourceDiagnostics.loadedConversationEventCount = Math.max(0, Math.trunc(eventCount));
   resourceDiagnostics.loadedChildTranscriptBytes = Math.max(
@@ -145,7 +147,7 @@ export function setConversationProjectionDiagnostics(
 }
 
 export function setConversationSnapshotReadDiagnostics(count: number, invalidated: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.conversationSnapshotReadsInFlight = Math.max(0, Math.trunc(count));
   resourceDiagnostics.conversationSnapshotReadsInvalidated = Math.max(0, Math.trunc(invalidated));
 }
@@ -156,7 +158,7 @@ export function setConversationTimelineDiagnostics(
   measuredElementCacheEntries: number,
   measuredSizeCacheEntries: number
 ): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.conversationRenderedRows = Math.max(0, Math.trunc(renderedRows));
   resourceDiagnostics.conversationVirtualRows = Math.max(0, Math.trunc(virtualRows));
   resourceDiagnostics.conversationMeasuredElementCacheEntries = Math.max(
@@ -170,7 +172,7 @@ export function setConversationTimelineDiagnostics(
 }
 
 function trackConversationComponent(key: 'conversationTimelineItems' | 'conversationMessageRenderers'): () => void {
-  if (!import.meta.env.DEV) return () => {};
+  if (!resourceDiagnosticsDev) return () => {};
   resourceDiagnostics[key] += 1;
   return () => {
     resourceDiagnostics[key] = Math.max(0, resourceDiagnostics[key] - 1);
@@ -189,24 +191,24 @@ export function setSentAttachmentDiagnostics(
   mapEntries: number,
   attachmentCount: number
 ): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.sentAttachmentMapEntries = Math.max(0, Math.trunc(mapEntries));
   resourceDiagnostics.sentAttachmentCount = Math.max(0, Math.trunc(attachmentCount));
 }
 
 export function setLoadedTreeNodes(nodes: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.loadedTreeNodes = Math.max(0, nodes);
 }
 
 export function setGitSurfaceDiagnostics(historyRows: number, activeDiffs: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.loadedGitHistoryRows = Math.max(0, historyRows);
   resourceDiagnostics.activeDiffs = Math.max(0, activeDiffs);
 }
 
 export function trackTauriListener(unlisten: () => void): () => void {
-  if (!import.meta.env.DEV) return unlisten;
+  if (!resourceDiagnosticsDev) return unlisten;
   resourceDiagnostics.tauriRootListeners += 1;
   let listening = true;
   return () => {
@@ -224,7 +226,7 @@ export function trackTauriListener(unlisten: () => void): () => void {
 }
 
 export function trackTauriSubscriber(unsubscribe: () => void): () => void {
-  if (import.meta.env.DEV) resourceDiagnostics.tauriEventSubscribers += 1;
+  if (resourceDiagnosticsDev) resourceDiagnostics.tauriEventSubscribers += 1;
   let subscribed = true;
   return () => {
     if (!subscribed) return;
@@ -232,7 +234,7 @@ export function trackTauriSubscriber(unsubscribe: () => void): () => void {
     try {
       unsubscribe();
     } finally {
-      if (import.meta.env.DEV) {
+      if (resourceDiagnosticsDev) {
         resourceDiagnostics.tauriEventSubscribers = Math.max(
           0,
           resourceDiagnostics.tauriEventSubscribers - 1
@@ -243,19 +245,19 @@ export function trackTauriSubscriber(unsubscribe: () => void): () => void {
 }
 
 export function trackTauriChannel(): () => void {
-  if (import.meta.env.DEV) resourceDiagnostics.tauriChannels += 1;
+  if (resourceDiagnosticsDev) resourceDiagnostics.tauriChannels += 1;
   let active = true;
   return () => {
     if (!active) return;
     active = false;
-    if (import.meta.env.DEV) {
+    if (resourceDiagnosticsDev) {
       resourceDiagnostics.tauriChannels = Math.max(0, resourceDiagnostics.tauriChannels - 1);
     }
   };
 }
 
 export function trackFileWatcher(unwatch: () => void): () => void {
-  if (!import.meta.env.DEV) return unwatch;
+  if (!resourceDiagnosticsDev) return unwatch;
   resourceDiagnostics.fileWatchers += 1;
   let watching = true;
   return () => {
@@ -284,7 +286,7 @@ export function createTrackedObjectUrl(
   owner: ObjectUrlOwner = 'other'
 ): string {
   const url = URL.createObjectURL(value);
-  if (import.meta.env.DEV) {
+  if (resourceDiagnosticsDev) {
     trackedObjectUrls.set(url, owner);
     publishObjectUrlDiagnostics();
     bump('blobUrlsCreated');
@@ -294,49 +296,30 @@ export function createTrackedObjectUrl(
 
 export function revokeTrackedObjectUrl(url: string): void {
   URL.revokeObjectURL(url);
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   trackedObjectUrls.delete(url);
   publishObjectUrlDiagnostics();
   bump('blobUrlsRevoked');
 }
 
-const trackedAnimationFrames = new Set<number>();
-
-export function requestTrackedAnimationFrame(callback: FrameRequestCallback): number {
-  const frame = requestAnimationFrame((now) => {
-    if (import.meta.env.DEV) {
-      trackedAnimationFrames.delete(frame);
-      resourceDiagnostics.animationFrames = trackedAnimationFrames.size;
-    }
-    callback(now);
-  });
-  if (import.meta.env.DEV) {
-    trackedAnimationFrames.add(frame);
-    resourceDiagnostics.animationFrames = trackedAnimationFrames.size;
-  }
-  return frame;
-}
-
-export function cancelTrackedAnimationFrame(frame: number): void {
-  cancelAnimationFrame(frame);
-  if (!import.meta.env.DEV) return;
-  trackedAnimationFrames.delete(frame);
-  resourceDiagnostics.animationFrames = trackedAnimationFrames.size;
+export function markFrameDiagnostics(): void {
+  if (!resourceDiagnosticsDev) return;
+  resourceDiagnostics.animationFrames = 0;
 }
 
 export function textBytes(text: string): number {
-  if (!import.meta.env.DEV) return 0;
+  if (!resourceDiagnosticsDev) return 0;
   if (typeof TextEncoder === 'undefined') return text.length;
   return new TextEncoder().encode(text).byteLength;
 }
 
 export function addXtermView(delta: 1 | -1): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.xtermViews = Math.max(0, resourceDiagnostics.xtermViews + delta);
 }
 
 export function addCodeMirrorEditorView(delta: 1 | -1): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.codeMirrorEditorViews = Math.max(
     0,
     resourceDiagnostics.codeMirrorEditorViews + delta
@@ -344,50 +327,50 @@ export function addCodeMirrorEditorView(delta: 1 | -1): void {
 }
 
 export function setCodeMirrorEditorStateCount(count: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.codeMirrorEditorStates = Math.max(0, Math.trunc(count));
 }
 
 export function setCodeMirrorDocBytes(bytes: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.codeMirrorDocBytes = Math.max(0, Math.trunc(bytes));
 }
 
 export function setCodeMirrorUndoDepth(depth: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.codeMirrorUndoDepth = Math.max(0, Math.trunc(depth));
 }
 
 export function setOpenTabDocumentBytes(bytes: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.openTabDocumentBytes = Math.max(0, Math.trunc(bytes));
 }
 
 export function setEditorSourceReadDiagnostics(count: number, invalidated: number, bytes: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.editorSourceReadsInFlight = Math.max(0, Math.trunc(count));
   resourceDiagnostics.editorSourceReadsInvalidated = Math.max(0, Math.trunc(invalidated));
   resourceDiagnostics.editorSourceReadBytesInFlight = Math.max(0, Math.trunc(bytes));
 }
 
 export function addMergeView(delta: 1 | -1): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.mergeViews = Math.max(0, resourceDiagnostics.mergeViews + delta);
 }
 
 export function setMergeDocBytes(bytes: number): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.mergeDocBytes = Math.max(0, Math.trunc(bytes));
 }
 
 export function setElementVisibilityDiagnostics(watchers: number, observerActive: boolean): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.elementVisibilityWatchers = Math.max(0, watchers);
   resourceDiagnostics.elementVisibilityObserverActive = observerActive;
 }
 
 export function setRailElapsedDiagnostics(watchers: number, intervalMs: number | null): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.railElapsedWatchers = Math.max(0, watchers);
   resourceDiagnostics.railElapsedIntervalMs = intervalMs;
 }
@@ -403,7 +386,7 @@ export function setSourceIntelligenceDiagnostics(values: {
   sourcePreviewCacheEntries: number;
   rememberedReferenceCountEntries: number;
 }): void {
-  if (!import.meta.env.DEV) return;
+  if (!resourceDiagnosticsDev) return;
   resourceDiagnostics.semanticWaitingSpots = Math.max(0, values.semanticWaitingSpots);
   resourceDiagnostics.semanticSchedulerWaiting = Math.max(0, values.semanticSchedulerWaiting);
   resourceDiagnostics.semanticSchedulerInFlight = Math.max(0, values.semanticSchedulerInFlight);

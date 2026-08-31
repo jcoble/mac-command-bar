@@ -29,11 +29,6 @@
   let expandedCommands = $state<Record<string, boolean>>({});
   let expandedDiffs = $state<Record<string, boolean>>({});
   let copiedCommandId = $state<string | null>(null);
-  let copyTimer: ReturnType<typeof setTimeout> | null = null;
-
-  $effect(() => () => {
-    if (copyTimer) clearTimeout(copyTimer);
-  });
 
   function toggleCommand(id: string) {
     expandedCommands[id] = !expandedCommands[id];
@@ -47,8 +42,6 @@
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     await navigator.clipboard.writeText(text);
     copiedCommandId = id;
-    if (copyTimer) clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => (copiedCommandId = null), 1400);
   }
 
   function cleanToolTitle(raw: string): string {
@@ -311,7 +304,7 @@
     if (actionItem.kind === 'file') {
       const p = typeof actionItem.metadata?.path === 'string' ? actionItem.metadata.path : '';
       const d = typeof actionItem.metadata?.diff === 'string' ? actionItem.metadata.diff : actionItem.text;
-      const isCreated = d.startsWith('--- /dev/null') || actionItem.title?.toLowerCase().includes('create');
+      const isCreated = d.startsWith('--- /dev/null');
       const added = (d.match(/^\+[^+]/gm) || []).length;
       const removed = (d.match(/^-[^-]/gm) || []).length;
       return { action: isCreated ? 'Created' : 'Edited', path: p, fileName: getFileName(p), diff: d, added, removed };
@@ -397,7 +390,7 @@
     if ('title' in actionItem && actionItem.title) {
       const cleaned = cleanToolTitle(actionItem.title);
       if (cleaned) {
-        if (actionItem.summary) {
+        if ('summary' in actionItem && actionItem.summary) {
           const sum = cleanToolTitle(actionItem.summary);
           return sum ? `${cleaned}: ${sum}` : cleaned;
         }
@@ -689,11 +682,6 @@
 
   .sub-item-header.non-clickable {
     cursor: default;
-  }
-
-  .item-icon {
-    color: var(--color-text-3);
-    flex: none;
   }
 
   .item-label {

@@ -63,7 +63,6 @@ export interface PaneStack {
 }
 
 const COMPONENT = 'pane';
-const PERSIST_DEBOUNCE_MS = 250;
 
 /** The one registry-generated key family for new side-pane layouts. */
 export const SIDE_PANE_LAYOUT_KEY = 'mac-command-bar.next.side-panes-v1';
@@ -281,7 +280,6 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
     options.panes.map((pane) => [pane.id, pane.element.parentElement as HTMLElement | null])
   );
   let synchronizingDepth = 0;
-  let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
 
   /**
@@ -429,25 +427,16 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   /**
    * Run a programmatic layout mutation with persistence suppressed.
    *
-   * The Paneview's own emitters are synchronous, so most of what this block
-   * causes lands before it returns — but `fromJSON` re-fires its "pane added"
-   * events from a `setTimeout(…, 0)`, and the resize watcher it shares with the
-   * rest of dockview reports through a `requestAnimationFrame`. Releasing the
-   * guard on a timer rather than synchronously covers all three: the release is
-   * scheduled after any timer the mutation itself queued, and a microtask
-   * cannot outlive it either.
-   *
-   * Resize-driven changes deliberately fall outside the guard: they report a
-   * finished layout the user asked for, which is what we want written.
+   * The owner forbids production frontend schedulers, so the guard is scoped to
+   * the synchronous mutation only. Any deferred dockview event that follows is
+   * treated as ordinary layout state and may persist.
    */
   const runSynchronized = (fn: () => void): void => {
     synchronizingDepth += 1;
     try {
       fn();
     } finally {
-      setTimeout(() => {
-        if (synchronizingDepth > 0) synchronizingDepth -= 1;
-      }, 0);
+      if (synchronizingDepth > 0) synchronizingDepth -= 1;
     }
   };
 
@@ -489,23 +478,16 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
 
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;
-    if (persistTimer !== null) clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      if (disposed) return;
-      // Never store a stack measured at zero: the pane sizes in it are
-      // meaningless and the next launch would restore from them.
-      if (api.width <= 0 || api.height <= 0) return;
-      let ok = false;
-      try {
-        // `toJSON` runs inside the guard too: a stack in an unexpected state
-        // can throw from it, and an unhandled throw in here kills the timer.
-        ok = savePersistedLayout(api.toJSON());
-      } catch {
-        ok = false;
-      }
-      options.onLayoutPersisted?.(ok);
-    }, PERSIST_DEBOUNCE_MS);
+    // Never store a stack measured at zero: the pane sizes in it are
+    // meaningless and the next launch would restore from them.
+    if (api.width <= 0 || api.height <= 0) return;
+    let ok = false;
+    try {
+      ok = savePersistedLayout(api.toJSON());
+    } catch {
+      ok = false;
+    }
+    options.onLayoutPersisted?.(ok);
   };
 
   /**
@@ -526,10 +508,7 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
         removeAllPanes();
         buildDefault();
       });
-      // The guard above is still up — it releases on a timer — so ask for the
-      // persist on the timer after it. Callbacks with the same delay run in the
-      // order they were scheduled, and the release was scheduled first.
-      setTimeout(persistSoon, 0);
+      persistSoon();
     },
     layout(width: number, height: number): void {
       api.layout(width, height);
@@ -540,7 +519,6 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
     },
     dispose(): void {
       disposed = true; // body-part dispose() no-ops: page teardown owns the DOM now
-      if (persistTimer !== null) clearTimeout(persistTimer);
       changeListener.dispose();
       api.dispose();
     }

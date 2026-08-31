@@ -1,5 +1,5 @@
 /**
- * Covers the batching and remembering behind the editor's "N references"
+ * Covers the remembering behind the editor's "N references"
  * margin numbers. The rules live in `referenceCountBatcher.ts` (no Svelte
  * state, no backend calls) precisely so this test can run under plain Node —
  * `sourceIntelligence.ts` only wires them to the real backend.
@@ -28,14 +28,16 @@ const resultFor = (counts, approximate = false) => ({
 const exactly = (count) => ({ count, atLeast: false });
 /** A number the pass could only put a floor under. */
 const atLeast = (count) => ({ count, atLeast: true });
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 5; turn += 1) {
+    await Promise.resolve();
+  }
+}
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
-
-// every symbol asked about while the window is open travels in one request
+// every unremembered symbol is asked about immediately
 {
   const asked = [];
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences(symbolNames) {
@@ -51,15 +53,13 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   ]);
 
   assert.deepEqual(counts, [exactly(3), exactly(7), exactly(0)]);
-  assert.equal(asked.length, 1, 'three symbols must cost one request, not three');
-  assert.deepEqual(asked[0], ['Alpha', 'Beta', 'Gamma']);
+  assert.deepEqual(asked, [['Alpha'], ['Beta'], ['Gamma']]);
 }
 
-// the same symbol asked about twice in one window is asked about once
+// the same symbol asked about twice while pending is asked about once
 {
   const asked = [];
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences(symbolNames) {
@@ -78,7 +78,6 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 {
   let requests = 0;
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences() {
@@ -101,7 +100,6 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 // rather than as the exact number the margin has room for
 {
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences: () => Promise.resolve(resultFor({ Alpha: 812 }))
@@ -113,7 +111,6 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 // a pass that ran out of time reports "not counted", not "no references"
 {
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences: () => Promise.resolve(resultFor({ Alpha: 6, Beta: 0 }, true))
@@ -131,7 +128,6 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 // nothing was counted at all: every waiting symbol hears "unknown"
 {
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences: () => Promise.resolve(null)
@@ -146,7 +142,6 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 // a failed request answers "unknown" rather than leaving the margin hanging
 {
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences: () => Promise.reject(new Error('backend is gone'))
@@ -159,7 +154,6 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 {
   let requests = 0;
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences() {
@@ -173,11 +167,10 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(requests, 2);
 }
 
-// a symbol asked about after the window closed opens a new one
+// a symbol asked about after the first count resolves opens a new request
 {
   const asked = [];
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: createCountMemory({ cacheMs: 30_000 }),
     maxCount: 50,
     countReferences(symbolNames) {
@@ -187,7 +180,6 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
   });
 
   assert.deepEqual(await batcher.count('Alpha'), exactly(1));
-  await settle();
   assert.deepEqual(await batcher.count('Beta'), exactly(2));
   assert.deepEqual(asked, [['Alpha'], ['Beta']]);
 }
@@ -251,9 +243,18 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 /** A promise whose ending this test gets to choose, plus the key it was for. */
 function pendingAnswers() {
   const settle = new Map();
+  const waitFactory = Promise as PromiseConstructor & {
+    withResolvers<T>(): {
+      promise: Promise<T>;
+      resolve(value: T | PromiseLike<T>): void;
+      reject(reason?: unknown): void;
+    };
+  };
   return {
     countFor(key) {
-      return new Promise((resolve) => settle.set(key, resolve));
+      const { promise, resolve } = waitFactory.withResolvers();
+      settle.set(key, resolve);
+      return promise;
     },
     /** Let the answer for one key arrive. */
     answer(key, value) {
@@ -453,10 +454,10 @@ function pendingAnswers() {
   scheduler.request(['a', 'b']);
   await settle();
 
-  assert.deepEqual(landed, [
+  assert.equal(JSON.stringify(landed), JSON.stringify([
     ['a', null],
     ['b', exactly(2)]
-  ]);
+  ]));
   assert.equal(scheduler.inFlight, 0);
 }
 
@@ -541,7 +542,6 @@ function pendingAnswers() {
   let project = '/projects/alpha';
   const store = createReferenceCountStore({ cacheMs: 30_000 });
   const batcher = createReferenceCountBatcher({
-    windowMs: 5,
     memory: store.drawer(() => project, 'the whole project'),
     maxCount: 50,
     countReferences() {

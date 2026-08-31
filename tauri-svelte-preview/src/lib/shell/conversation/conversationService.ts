@@ -1,5 +1,4 @@
 import {
-  cancelAgentConversationSnapshotFromTauri,
   changeAgentConversationCheckoutFromTauri,
   extendAgentConversationImportFromTauri,
   listAgentConversationEventsAfterFromTauri,
@@ -92,6 +91,7 @@ let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
 let conversationEventsGeneration = 0;
 type ConversationSnapshotRead = {
+  abortController: AbortController;
   invalidated: boolean;
   readVersion: number;
   token: object;
@@ -99,7 +99,10 @@ type ConversationSnapshotRead = {
 };
 
 const resyncing = new Map<string, ConversationSnapshotRead>();
-const ensuring = new Map<string, { signature: string; work: Promise<AgentConversationConnection | null> }>();
+const ensuring = new Map<
+  string,
+  { signature: string; token: object; work: Promise<AgentConversationConnection | null> }
+>();
 const terminalProjections = new Map<string, string>();
 const readVersions = new Map<string, number>();
 
@@ -249,11 +252,11 @@ export function releaseConversationForRead(ownedId: string): void {
   const activeRead = resyncing.get(ownedId);
   if (activeRead) {
     activeRead.invalidated = true;
-    void cancelAgentConversationSnapshotFromTauri().catch(() => undefined);
+    activeRead.abortController.abort();
   }
   resyncing.delete(ownedId);
   ensuring.delete(ownedId);
-  terminalProjections.delete(ownedId);
+  stopConversationTerminalProjection(ownedId);
   publishConversationSnapshotReadDiagnostics();
   cancelChildConversationTranscriptRead(ownedId);
   const state = getConversationSession(ownedId);
@@ -310,13 +313,27 @@ export function restoreConversationAttachmentPreview(
   return { ...attachment, previewUrl };
 }
 
+function conversationGenerationMatches(ownedId: string, generation: number | undefined): generation is number {
+  return generation !== undefined && getConversationSession(ownedId)?.generation === generation;
+}
+
+function discardRestoredAttachments(attachments: readonly ConversationAttachment[]): void {
+  attachments.forEach(cleanupConversationAttachmentPreview);
+}
+
 /** Restore attachment metadata supplied by the existing owner-scoped vault. */
 export async function restoreConversationAttachments(
   ownedId: string,
   saved: readonly (Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[] = []
 ): Promise<ConversationAttachment[]> {
+  const generation = getConversationSession(ownedId)?.generation;
+  if (generation === undefined) return [];
   if (saved.length > 0) {
     const restored = saved.map(restoreConversationAttachmentPreview);
+    if (!conversationGenerationMatches(ownedId, generation)) {
+      discardRestoredAttachments(restored);
+      return [];
+    }
     setConversationAttachments(ownedId, restored);
     return restored;
   }
@@ -327,6 +344,10 @@ export async function restoreConversationAttachments(
       { ownedId }
     );
     const restored = Array.isArray(records) ? records.map(restoreConversationAttachmentPreview) : [];
+    if (!conversationGenerationMatches(ownedId, generation)) {
+      discardRestoredAttachments(restored);
+      return [];
+    }
     setConversationAttachments(ownedId, restored);
     return restored;
   } catch (_error) {
@@ -368,16 +389,20 @@ export async function loadConversationCapabilities(
   provider: AgentConversationProvider
 ): Promise<AgentCapabilities | null> {
   if (!isTauri()) return null;
-  const generation = getConversationSession(ownedId)?.generation ?? 0;
+  const generation = getConversationSession(ownedId)?.generation;
+  if (generation === undefined) return null;
   try {
     const capabilities = await readAgentConversationCapabilitiesFromTauri(ownedId);
     if (!capabilities) return null;
+    if (!conversationGenerationMatches(ownedId, generation)) return null;
     if (capabilities.provider !== provider) throw new Error('Capability provider does not match this session');
     setConversationCapabilities(ownedId, generation, capabilities);
     return capabilities;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    setConversationCapabilityError(ownedId, message);
+    if (conversationGenerationMatches(ownedId, generation)) {
+      setConversationCapabilityError(ownedId, message);
+    }
     throw error;
   }
 }
@@ -429,20 +454,44 @@ export function startConversationTerminalProjection(input: {
   const signature = `${input.provider}:${input.nativeSessionId}`;
   if (terminalProjections.get(input.ownedId) === signature) return;
   terminalProjections.set(input.ownedId, signature);
-  void invoke<Record<string, never>>('start_agent_conversation_terminal_projection', {
-    request: input
-  }).catch((_error) => {
-    // The invoke seam logged the sanitized failure before this retry state resets.
-    // The transcript may not exist until the agent accepts its first prompt.
-    // Dropping the signature lets the next activation register again.
-    if (terminalProjections.get(input.ownedId) === signature) terminalProjections.delete(input.ownedId);
-  });
+  void startTerminalProjection(input, signature);
 }
 
 /** Stops terminal transcript projection when this surface no longer needs it. */
 export function stopConversationTerminalProjection(ownedId: string): void {
   if (!terminalProjections.delete(ownedId) || !isTauri()) return;
-  void invoke<boolean>('stop_agent_conversation_terminal_projection', { ownedId });
+  void stopTerminalProjection(ownedId);
+}
+
+async function stopTerminalProjection(ownedId: string): Promise<void> {
+  try {
+    await invoke<boolean>('stop_agent_conversation_terminal_projection', { ownedId });
+  } catch {
+    // A stale projection owner was already released locally.
+  }
+}
+
+async function startTerminalProjection(
+  input: {
+    ownedId: string;
+    provider: AgentConversationProvider;
+    nativeSessionId: string;
+  },
+  signature: string
+): Promise<void> {
+  try {
+    await invoke<Record<string, never>>('start_agent_conversation_terminal_projection', {
+      request: input
+    });
+    if (terminalProjections.get(input.ownedId) !== signature) {
+      await stopTerminalProjection(input.ownedId);
+    }
+  } catch {
+    // The invoke seam logged the sanitized failure before this retry state resets.
+    // The transcript may not exist until the agent accepts its first prompt.
+    // Dropping the signature lets the next activation register again.
+    if (terminalProjections.get(input.ownedId) === signature) terminalProjections.delete(input.ownedId);
+  }
 }
 
 type HandoffInput = Omit<AgentConversationHandoffRequest, 'phase'>;
@@ -493,16 +542,19 @@ async function invokeHandoff(
   }
 }
 
-export function prepareConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
-  return invokeHandoff(input, 'prepare');
+export async function prepareConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
+  const receipt = await invokeHandoff(input, 'prepare');
+  return receipt;
 }
 
-export function commitConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
-  return invokeHandoff(input, 'commit');
+export async function commitConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
+  const receipt = await invokeHandoff(input, 'commit');
+  return receipt;
 }
 
-export function rollbackConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
-  return invokeHandoff(input, 'rollback');
+export async function rollbackConversationHandoff(input: HandoffInput): Promise<AgentConversationHandoffReceipt> {
+  const receipt = await invokeHandoff(input, 'rollback');
+  return receipt;
 }
 
 /** Hang the saved screenshots back on the replayed user messages that named
@@ -559,34 +611,49 @@ async function hydrateSentConversationAttachments(
 
 async function resyncConversation(ownedId: string) {
   const existing = resyncing.get(ownedId);
-  if (existing) return existing.work;
+  if (existing) {
+    await existing.work;
+    return;
+  }
   const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
   readVersions.set(ownedId, readVersion);
   const token = {};
-  const work = (async () => {
+  const abortController = new AbortController();
+  const work = resyncConversationOnce(ownedId, readVersion, token, abortController.signal);
+  resyncing.set(ownedId, { abortController, invalidated: false, readVersion, token, work });
+  publishConversationSnapshotReadDiagnostics();
+  await work;
+}
+
+async function resyncConversationOnce(
+  ownedId: string,
+  readVersion: number,
+  token: object,
+  signal: AbortSignal
+): Promise<void> {
+  try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
+      const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
       if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
       const sequenceBeforeApply = getConversationSession(ownedId)?.lastSequence ?? 0;
       applyAgentConversationSnapshot(snapshot);
       void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
       if (sequenceBeforeApply <= snapshot.lastSequence) return;
     }
-  })().finally(() => {
+  } finally {
     if (resyncing.get(ownedId)?.token === token) {
       resyncing.delete(ownedId);
       publishConversationSnapshotReadDiagnostics();
     }
-  });
-  resyncing.set(ownedId, { invalidated: false, readVersion, token, work });
-  publishConversationSnapshotReadDiagnostics();
-  return work;
+  }
 }
 
 export async function loadConversationForRead(
   ownedId: string,
-  includeAttachments = true
+  includeAttachments = true,
+  signal?: AbortSignal
 ): Promise<void> {
+  if (signal?.aborted) return;
   const existing = resyncing.get(ownedId);
   if (existing) {
     try {
@@ -594,22 +661,53 @@ export async function loadConversationForRead(
     } catch (error) {
       if (!getConversationSession(ownedId)) return;
       if (readVersions.get(ownedId) === existing.readVersion) throw error;
-      return loadConversationForRead(ownedId, includeAttachments);
+      await loadConversationForRead(ownedId, includeAttachments, signal);
+      return;
     }
     if (!getConversationSession(ownedId)) return;
     if (readVersions.get(ownedId) === existing.readVersion) return;
-    return loadConversationForRead(ownedId, includeAttachments);
+    await loadConversationForRead(ownedId, includeAttachments, signal);
+    return;
   }
   const generation = getConversationSession(ownedId)?.generation ?? 0;
   const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
   readVersions.set(ownedId, readVersion);
   const token = {};
-  const work = (async () => {
+  const abortController = new AbortController();
+  const abortFromOwner = (): void => abortController.abort();
+  signal?.addEventListener('abort', abortFromOwner, { once: true });
+  const work = loadConversationSnapshot(
+    ownedId,
+    generation,
+    readVersion,
+    token,
+    includeAttachments,
+    abortController.signal
+  );
+  resyncing.set(ownedId, { abortController, invalidated: false, readVersion, token, work });
+  publishConversationSnapshotReadDiagnostics();
+  try {
+    await work;
+  } finally {
+    signal?.removeEventListener('abort', abortFromOwner);
+  }
+}
+
+async function loadConversationSnapshot(
+  ownedId: string,
+  generation: number,
+  readVersion: number,
+  token: object,
+  includeAttachments: boolean,
+  signal?: AbortSignal
+): Promise<void> {
+  try {
     bump('hydrationsStarted');
-    const snapshot = await readAgentConversationSnapshotFromTauri(ownedId);
+    const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
     const current = getConversationSession(ownedId);
     if (
-      !snapshot
+      signal?.aborted
+      || !snapshot
       || readVersions.get(ownedId) !== readVersion
       || current?.generation !== generation
     ) {
@@ -620,15 +718,12 @@ export async function loadConversationForRead(
     if (includeAttachments) {
       void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events);
     }
-  })().finally(() => {
+  } finally {
     if (resyncing.get(ownedId)?.token === token) {
       resyncing.delete(ownedId);
       publishConversationSnapshotReadDiagnostics();
     }
-  });
-  resyncing.set(ownedId, { invalidated: false, readVersion, token, work });
-  publishConversationSnapshotReadDiagnostics();
-  return work;
+  }
 }
 
 /** How much older history one scroll to the top reads, in bytes of stored
@@ -781,64 +876,77 @@ export async function startConversationEvents(): Promise<void> {
   conversationEventsDisposed = false;
   if (conversationEventsSetup) return conversationEventsSetup;
   const streamGeneration = ++conversationEventsGeneration;
-  conversationEventsSetup = (async () => {
-    const registration = await registerAgentConversationStream(async (envelope: StreamEnvelope<AgentConversationEvent>) => {
-      if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-      const payload = envelope.chunk;
-      const active = rail.activeOwnedId === payload.ownedId;
-      if (active) applyAgentConversationEvent(payload);
-      else recordAgentConversationPresenceEvent(payload);
-      if (
-        payload.payload.kind === 'userMessage'
-        && typeof payload.payload.text === 'string'
-      ) {
-        const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
-        if (owned && !owned.title.trim()) {
-          const title = sessionTitleFromPrompt(payload.payload.text);
-          if (title) updateOwnedSession(payload.ownedId, { title });
-        }
-      }
-      if (active && getConversationSession(payload.ownedId)?.desynchronized) {
-        await resyncConversation(payload.ownedId);
-      }
-      if (active && shouldClearConversationSending(payload)) {
-        setConversationSending(payload.ownedId, false);
-      }
-    }, async () => {
-      if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-      const activeOwnedId = rail.activeOwnedId;
-      if (activeOwnedId) await resyncConversation(activeOwnedId);
-    });
-    // A session starts out named after the first words of its prompt. Once
-    // its first turn is done the app writes a short summary over that, and this
-    // is how the rail row hears about it.
-    let stopTitles: (() => void) | null = null;
-    try {
-      const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
-        'session-title-changed',
-        ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
-      );
-      stopTitles = trackTauriListener(stopTitleEvents);
-      if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
-        await registration?.unregister();
-        stopTitles();
-        stopTitles = null;
-        return;
-      }
-      conversationStream = registration;
-      unlistenTitles = stopTitles;
-      stopTitles = null;
-    } catch (error) {
-      stopTitles?.();
-      await registration?.unregister();
-      throw error;
-    }
-  })();
+  const setup = setupConversationEvents(streamGeneration);
+  conversationEventsSetup = setup;
   try {
-    await conversationEventsSetup;
+    await setup;
   } finally {
-    conversationEventsSetup = null;
+    if (conversationEventsSetup === setup) conversationEventsSetup = null;
   }
+}
+
+async function setupConversationEvents(streamGeneration: number): Promise<void> {
+  const registration = await registerAgentConversationStream(
+    (envelope) => handleConversationStreamEnvelope(streamGeneration, envelope),
+    () => handleConversationStreamResync(streamGeneration)
+  );
+  // A session starts out named after the first words of its prompt. Once
+  // its first turn is done the app writes a short summary over that, and this
+  // is how the rail row hears about it.
+  let stopTitles: (() => void) | null = null;
+  try {
+    const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
+      'session-title-changed',
+      ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
+    );
+    stopTitles = trackTauriListener(stopTitleEvents);
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
+      await registration?.unregister();
+      stopTitles();
+      stopTitles = null;
+      return;
+    }
+    conversationStream = registration;
+    unlistenTitles = stopTitles;
+    stopTitles = null;
+  } catch (error) {
+    stopTitles?.();
+    await registration?.unregister();
+    throw error;
+  }
+}
+
+async function handleConversationStreamEnvelope(
+  streamGeneration: number,
+  envelope: StreamEnvelope<AgentConversationEvent>
+): Promise<void> {
+  if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+  const payload = envelope.chunk;
+  const active = rail.activeOwnedId === payload.ownedId;
+  if (active) applyAgentConversationEvent(payload);
+  else recordAgentConversationPresenceEvent(payload);
+  if (
+    payload.payload.kind === 'userMessage'
+    && typeof payload.payload.text === 'string'
+  ) {
+    const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
+    if (owned && !owned.title.trim()) {
+      const title = sessionTitleFromPrompt(payload.payload.text);
+      if (title) updateOwnedSession(payload.ownedId, { title });
+    }
+  }
+  if (active && getConversationSession(payload.ownedId)?.desynchronized) {
+    await resyncConversation(payload.ownedId);
+  }
+  if (active && shouldClearConversationSending(payload)) {
+    setConversationSending(payload.ownedId, false);
+  }
+}
+
+async function handleConversationStreamResync(streamGeneration: number): Promise<void> {
+  if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+  const activeOwnedId = rail.activeOwnedId;
+  if (activeOwnedId) await resyncConversation(activeOwnedId);
 }
 
 export function stopConversationEvents(): void {
@@ -884,23 +992,42 @@ export async function ensureStructuredConversation(input: {
   };
   const signature = JSON.stringify(request);
   const active = ensuring.get(input.ownedId);
-  if (active?.signature === signature) return active.work;
-  const work = (async () => {
+  if (active?.signature === signature) {
+    const connection = await active.work;
+    return connection;
+  }
+  const token = {};
+  const work = ensureStructuredConversationOnce(input.ownedId, request, token);
+  ensuring.set(input.ownedId, { signature, token, work });
+  const connection = await work;
+  return connection;
+}
+
+async function ensureStructuredConversationOnce(
+  ownedId: string,
+  request: {
+    ownedId: string;
+    executionEnvironment: ExecutionEnvironment;
+    provider: AgentConversationProvider;
+    cwd: string;
+    nativeSessionId?: string | null;
+    nativeSessionMode: 'resume' | 'load';
+    reasoningEffort?: string | null;
+  },
+  token: object
+): Promise<AgentConversationConnection | null> {
+  try {
     const connection = await invoke<AgentConversationConnection>('ensure_agent_conversation', {
       request
     });
-    if (connection.nativeSessionId) {
-      updateOwnedSession(input.ownedId, { nativeSessionId: connection.nativeSessionId });
-    }
-    if (rail.activeOwnedId !== input.ownedId) return connection;
+    if (connection.nativeSessionId) updateOwnedSession(ownedId, { nativeSessionId: connection.nativeSessionId });
+    if (rail.activeOwnedId !== ownedId) return connection;
     setConversationConnection(connection);
-    await resyncConversation(input.ownedId);
+    await resyncConversation(ownedId);
     return connection;
-  })().finally(() => {
-    if (ensuring.get(input.ownedId)?.work === work) ensuring.delete(input.ownedId);
-  });
-  ensuring.set(input.ownedId, { signature, work });
-  return work;
+  } finally {
+    if (ensuring.get(ownedId)?.token === token) ensuring.delete(ownedId);
+  }
 }
 
 /** Changes a quiescent Codex session's durable checkout without changing its

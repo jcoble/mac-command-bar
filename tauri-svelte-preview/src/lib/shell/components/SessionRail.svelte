@@ -12,7 +12,6 @@
 	import type { OwnedSession } from "$lib/shell/ownedSessions";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import { buildMyWorkGroups, type MyWorkViewOptions } from "./myWorkViewOptions.ts";
-	import { railElapsedCadenceFor, watchRailElapsed, type RailElapsedCadence } from "./railElapsedTicker.ts";
 	import SessionRowContextMenu from "./SessionRowContextMenu.svelte";
 	import { sessionRowJump, type SessionRowSurface } from "./sessionRowJump.ts";
 	import { sessionRowMenuItems, type SessionRowMenuAction } from "./sessionRowMenu.ts";
@@ -23,6 +22,7 @@
 		options: MyWorkViewOptions;
 		activeOwnedId?: string | null;
 		onSelectSession?(ownedId: string): void | Promise<void>;
+		onOpenSession?(ownedId: string): void;
 		onComplete?(ownedId: string): void;
 		onReopen?(ownedId: string): void;
 		onSettle?(ownedId: string): void;
@@ -35,6 +35,7 @@
 		options,
 		activeOwnedId = null,
 		onSelectSession,
+		onOpenSession,
 		onComplete,
 		onReopen,
 		onSettle,
@@ -45,7 +46,7 @@
 	const groups = $derived(buildMyWorkGroups(sessions, options));
 	let collapsedGroups = $state<Record<string, boolean>>({});
 	let visualActiveOwnedId = $state<string | null>(null);
-	let nowMs = $state(Date.now());
+	const nowMs = Date.now();
 	let contextMenu = $state<{ session: OwnedSession; x: number; y: number } | null>(null);
 	const contextMenuItems = $derived(
 		contextMenu
@@ -59,41 +60,6 @@
 
 	$effect(() => {
 		if (activeOwnedId !== null) visualActiveOwnedId = activeOwnedId;
-	});
-
-	function sessionStartedAtMs(session: OwnedSession): number | null {
-		if (session.startedAtMs !== null && session.startedAtMs !== undefined) {
-			return session.startedAtMs;
-		}
-		if (!session.lastActivity) return null;
-		const parsed = Date.parse(session.lastActivity);
-		return Number.isFinite(parsed) ? parsed : null;
-	}
-
-	const elapsedCadence = $derived.by<RailElapsedCadence>(() => {
-		for (const session of sessions) {
-			const startedAtMs = sessionStartedAtMs(session);
-			if (startedAtMs === null) continue;
-			const working =
-				(session.activeTurnId !== null && session.activeTurnId !== undefined) ||
-				session.runtimeState === "starting" ||
-				session.runtimeState === "working" ||
-				session.runtimeState === "interrupting";
-			if (railElapsedCadenceFor(Math.max(0, nowMs - startedAtMs), working) === "second") {
-				return "second";
-			}
-		}
-		return "minute";
-	});
-
-	// The rail owns one clock subscription. Rows receive the same timestamp as
-	// data and therefore create no timers, watcher closures, or cleanup effects.
-	$effect(() => {
-		if (sessions.length === 0) return;
-		const cadence = elapsedCadence;
-		return watchRailElapsed((tick) => {
-			nowMs = tick;
-		}, cadence);
 	});
 
 	function sessionNeedsYou(session: OwnedSession): boolean {
@@ -121,6 +87,7 @@
 	async function jumpTo(session: OwnedSession, surface: SessionRowSurface): Promise<void> {
 		visualActiveOwnedId = session.ownedId;
 		if (!(await sessionRowJump(session.ownedId, surface))) await onSelectSession?.(session.ownedId);
+		if (surface === "session") onOpenSession?.(session.ownedId);
 	}
 
 	function openContextMenu(event: MouseEvent, session: OwnedSession): void {

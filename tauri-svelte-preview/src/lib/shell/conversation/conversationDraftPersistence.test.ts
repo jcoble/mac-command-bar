@@ -22,18 +22,17 @@ const backend: ConversationDraftBackend = {
 };
 const drafts = new ConversationDraftPersistence(
   backend,
-  (ownedId, text) => loaded.push(`${ownedId}:${text}`),
-  10
+  (ownedId, text) => loaded.push(`${ownedId}:${text}`)
 );
 
 drafts.schedule('owned-a', 'first');
 drafts.schedule('owned-a', 'second');
-await new Promise((resolve) => setTimeout(resolve, 20));
-assert.deepEqual(writes, ['owned-a:second'], 'typing collapses to one debounced write');
+await drafts.flush('owned-a');
+assert.deepEqual(writes, ['owned-a:first', 'owned-a:second'], 'typing writes drafts in order');
 
 drafts.schedule('owned-a', 'blurred');
 await drafts.flush('owned-a');
-assert.equal(stored.get('owned-a'), 'blurred', 'blur or session switch flushes immediately');
+assert.equal(stored.get('owned-a'), 'blurred', 'blur or session switch waits for queued writes');
 
 await drafts.load('owned-a');
 assert.deepEqual(loaded, ['owned-a:blurred'], 'activation restores the stored draft');

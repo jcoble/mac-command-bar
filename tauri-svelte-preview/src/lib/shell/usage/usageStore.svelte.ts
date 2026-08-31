@@ -10,16 +10,8 @@ import type {
 import { usageHeatmapQuery, usageRangeQuery } from './usageAnalytics.ts';
 import { usageService } from './usageService.ts';
 
-export const USAGE_REQUEST_TIMEOUT_MS = 15_000;
-
-export function settleUsageRequest<T>(request: Promise<T>, timeoutMs = USAGE_REQUEST_TIMEOUT_MS): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<T>((_resolve, reject) => {
-    timeoutId = setTimeout(() => reject(new Error('Usage request timed out.')), timeoutMs);
-  });
-  return Promise.race([request, timeout]).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId);
-  });
+export async function settleUsageRequest<T>(request: Promise<T>): Promise<T> {
+  return request;
 }
 
 export const usageState = $state<{
@@ -99,7 +91,13 @@ async function loadUsageHistory(range: UsageRange): Promise<UsageSummary | null>
   usageState.historyLoading = true;
   usageState.error = null;
   usageState.range = range;
-  const request = (async () => {
+  const request = loadUsageHistoryOnce(range);
+  historyLoadRequest = request;
+  return request;
+}
+
+async function loadUsageHistoryOnce(range: UsageRange): Promise<UsageSummary | null> {
+  try {
     const query = usageRangeQuery(range);
     const heatmapQuery = usageHeatmapQuery(range);
     const rollupRanges = ['today', 'yesterday', '30-days'] as const;
@@ -130,31 +128,31 @@ async function loadUsageHistory(range: UsageRange): Promise<UsageSummary | null>
       '30-days': rollups[2] ?? []
     };
     return summary;
-  })().catch((error) => {
+  } catch (error) {
     usageState.error = describeUsageError(error);
     return null;
-  }).finally(() => {
+  } finally {
     usageState.historyLoading = false;
     historyLoadRequest = null;
-  });
-  historyLoadRequest = request;
-  return request;
+  }
 }
 
 function refreshUsageIndexInBackground(): void {
   if (historyRefreshRequest) return;
   usageState.historyRefreshing = true;
-  historyRefreshRequest = usageService.refreshHistory()
-    .then(async () => {
-      await loadUsageHistory(usageState.range);
-    })
-    .catch((error) => {
-      usageState.error = describeUsageError(error);
-    })
-    .finally(() => {
-      usageState.historyRefreshing = false;
-      historyRefreshRequest = null;
-    });
+  historyRefreshRequest = refreshUsageIndexOnce();
+}
+
+async function refreshUsageIndexOnce(): Promise<void> {
+  try {
+    await usageService.refreshHistory();
+    await loadUsageHistory(usageState.range);
+  } catch (error) {
+    usageState.error = describeUsageError(error);
+  } finally {
+    usageState.historyRefreshing = false;
+    historyRefreshRequest = null;
+  }
 }
 
 export async function refreshUsageHistory(): Promise<UsageSummary | null> {

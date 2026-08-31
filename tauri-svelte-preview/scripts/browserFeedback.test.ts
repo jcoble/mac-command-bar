@@ -1,6 +1,26 @@
 import assert from 'node:assert/strict';
-import { createBrowserWorkspace } from '../src/lib/shell/browser/browserTypes.ts';
-import { createBrowserModel } from '../src/lib/shell/browser/browserModel.ts';
+
+(globalThis as typeof globalThis & { $state<T>(value: T): T }).$state = <T>(value: T): T => value;
+
+interface StagedAttachment {
+  [key: string]: unknown;
+}
+
+interface BridgeSnapshot {
+  ownedId: string;
+  generation: number;
+  draft: string;
+  attachments: StagedAttachment[];
+}
+
+interface BrowserFeedbackBridge {
+  read: () => BridgeSnapshot;
+  setDraft: (ownedId: string, value: string) => void;
+  setAttachments: (ownedId: string, value: StagedAttachment[]) => void;
+}
+
+const { createBrowserWorkspace } = await import('../src/lib/shell/browser/browserTypes.ts');
+const { createBrowserModel } = await import('../src/lib/shell/browser/browserModel.ts');
 
 const workspace = createBrowserWorkspace({ workspaceId: 'workspace-1', ownedId: 'owned-1' });
 const model = createBrowserModel({ workspace, now: () => '2026-08-05T00:00:00.000Z' });
@@ -13,14 +33,14 @@ model.acceptBrowserElementSelection({
 });
 const queued = model.queueBrowserAnnotation({ note: 'Make this button easier to find', intent: 'change' });
 
-let draft = 'Please review this page.';
-const stagedAttachments = [];
-const bridge = {
-  read: () => ({ ownedId: 'owned-1', generation: model.workspace.activeGeneration, draft, attachments: stagedAttachments }),
-  setDraft: (_ownedId, value) => {
+let draft: string = 'Please review this page.';
+const stagedAttachments: StagedAttachment[] = [];
+const bridge: BrowserFeedbackBridge = {
+  read: (): BridgeSnapshot => ({ ownedId: 'owned-1', generation: model.workspace.activeGeneration, draft, attachments: stagedAttachments }),
+  setDraft: (_ownedId: string, value: string): void => {
     draft = value;
   },
-  setAttachments: (_ownedId, value) => {
+  setAttachments: (_ownedId: string, value: StagedAttachment[]): void => {
     stagedAttachments.splice(0, stagedAttachments.length, ...value);
   }
 };
@@ -53,7 +73,7 @@ const markupModel = createBrowserModel({
   now: () => '2026-08-05T00:00:00.000Z'
 });
 markupModel.createBrowserTab({ url: 'https://example.com/' });
-await markupModel.captureBrowserWorkspace({ forMarkup: true });
+await markupModel.captureBrowserMarkup();
 const markup = markupModel.queueBrowserAnnotation({
   capture: {
     mimeType: 'image/png',

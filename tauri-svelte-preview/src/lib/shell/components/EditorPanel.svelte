@@ -114,6 +114,7 @@
     SourceCodeActionLookupRequest,
     SourceDiagnostic,
     SourceInlayHint,
+    SourcePreview,
     SourceRecord,
     SourceSymbol
   } from '$lib/sourceData';
@@ -155,6 +156,7 @@
     captureViewStates(paths: readonly string[]): Record<string, object>;
     disposeTabModel(path: string): boolean;
     disposeAllTabModels(): void;
+    refreshReferenceCounts(): void;
     releaseSessionResources(): void;
   } | null>(null);
   let editorLoadError = $state<string | null>(null);
@@ -203,23 +205,26 @@
   let destroyed = false;
   let fileStrip = $state<HTMLDivElement | null>(null);
 
-  function hydrateLanguageIntelligenceChoices(): Promise<void> {
-    if (languageIntelligenceHydrated) return Promise.resolve();
+  async function hydrateLanguageIntelligenceChoices(): Promise<void> {
+    if (languageIntelligenceHydrated) return;
     if (languageIntelligenceHydration) return languageIntelligenceHydration;
-    const hydration = readAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY)
-      .then((stored) => {
-        if (!destroyed) {
-          languageIntelligenceChoices = normalizeLanguageIntelligenceChoices(stored);
-        }
-        languageIntelligenceHydrated = true;
-      })
-      .finally(() => {
-        if (languageIntelligenceHydration === hydration) {
-          languageIntelligenceHydration = null;
-        }
-      });
+    const hydration = loadLanguageIntelligenceChoices();
     languageIntelligenceHydration = hydration;
-    return hydration;
+    try {
+      await hydration;
+    } finally {
+      if (languageIntelligenceHydration === hydration) {
+        languageIntelligenceHydration = null;
+      }
+    }
+  }
+
+  async function loadLanguageIntelligenceChoices(): Promise<void> {
+    const stored = await readAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY);
+    if (!destroyed) {
+      languageIntelligenceChoices = normalizeLanguageIntelligenceChoices(stored);
+    }
+    languageIntelligenceHydrated = true;
   }
 
   const activeFile = $derived(activeEditorFile());
@@ -338,20 +343,6 @@
    */
   const NO_DIAGNOSTICS: SourceDiagnostic[] = [];
   /**
-   * How long to wait before asking a second time, in milliseconds.
-   *
-   * LOAD-BEARING. The language server answers a file it has only just opened
-   * with an empty list, so the first read after a file lands usually comes back
-   * with nothing and the squiggles appear only when something else happens to
-   * ask again. The old shell has hidden this behind the same wait since it was
-   * written (`src/routes/+page.svelte`, `scheduleSourceLspDiagnostics`). Without
-   * it, "it worked when I clicked around" is the bug report.
-   */
-  const DIAGNOSTICS_SETTLE_MS = 650;
-  /** The pending second read, so switching files quickly does not queue several. */
-  let diagnosticsTimer: ReturnType<typeof setTimeout> | null = null;
-
-  /**
    * The last thing the desktop app said about the open file's language server —
    * either the answer to `read_source_lsp_status` or a pushed
    * pushed status message. Both carry the same `state` and
@@ -367,11 +358,13 @@
   /**
    * Holds back work that a server which is still starting up or reading the
    * project could not answer anyway. It lets everything through the moment the
-   * server says it is ready — and, if that never happens, on its own time limit.
+   * server says it is ready, or when this owner tears the wait down.
    */
   const languageServerGate = createLanguageServerGate();
   /** Counts inline-hint requests, so only the newest one survives a wait. */
   let inlayHintRequestCount = 0;
+  let releaseDiagnosticsReadyWait: (() => void) | null = null;
+  let releaseInlayReadyWait: (() => void) | null = null;
 
   /** The language of the file on screen, or null when nothing is open. */
   function activeFileLanguage(): string | null {
@@ -439,6 +432,11 @@
     applyLanguageServerStatus(status, { root, language });
   }
 
+  function handleReferenceCountUpdate(path: string): void {
+    if (destroyed || editorState.activePath !== path) return;
+    codeEditor?.refreshReferenceCounts();
+  }
+
   /** Ask what is wrong with the file on screen, and remember it against that file. */
   async function loadDiagnosticsForActiveFile(): Promise<void> {
     if (activeFileReadOnly) return;
@@ -452,43 +450,36 @@
     diagnosticsByPath = { ...diagnosticsByPath, [path]: diagnostics };
   }
 
-  /** Read the diagnostics now, and once more after the server has settled. */
-  function refreshDiagnosticsForActiveFile(): void {
-    if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
-    diagnosticsTimer = null;
-    if (activeFileReadOnly) return;
-    void loadDiagnosticsForActiveFile();
-    scheduleSecondDiagnosticsRead();
+  function clearDiagnosticsReadyWait(): void {
+    releaseDiagnosticsReadyWait?.();
+    releaseDiagnosticsReadyWait = null;
   }
 
-  /**
-   * Line up the second read.
-   *
-   * While the server is still starting up or reading the project the second
-   * read is pointless — it would come back empty for the same reason the first
-   * one did — so it waits for the server to say it is ready and only then
-   * starts the settle wait. When nothing is known about the server (an older
-   * desktop build, or a browser tab) this is the original behaviour with no
-   * delay of any kind added: the timer starts immediately, as it always did.
-   */
-  function scheduleSecondDiagnosticsRead(): void {
-    if (!languageServerGate.isBusy()) {
-      startDiagnosticsSettleTimer();
-      return;
-    }
+  /** Read diagnostics now, then again when a busy server reports ready. */
+  function refreshDiagnosticsForActiveFile(): void {
+    if (activeFileReadOnly) return;
+    clearDiagnosticsReadyWait();
+    void loadDiagnosticsForActiveFile();
+    scheduleDiagnosticsWhenServerReady();
+  }
+
+  function scheduleDiagnosticsWhenServerReady(): void {
+    if (!languageServerGate.isBusy()) return;
     const path = editorState.activePath;
-    void languageServerGate.waitUntilReady().then(() => {
-      if (destroyed || editorState.activePath !== path) return;
-      startDiagnosticsSettleTimer();
+    const generation = sessionResourceGeneration;
+    releaseDiagnosticsReadyWait = languageServerGate.onReady(() => {
+      releaseDiagnosticsReadyWait = null;
+      void loadDiagnosticsAfterServerReady(path, generation);
     });
   }
 
-  function startDiagnosticsSettleTimer(): void {
-    if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
-    diagnosticsTimer = setTimeout(() => {
-      diagnosticsTimer = null;
-      if (!destroyed) void loadDiagnosticsForActiveFile();
-    }, DIAGNOSTICS_SETTLE_MS);
+  async function loadDiagnosticsAfterServerReady(
+    path: string | null,
+    generation: number
+  ): Promise<void> {
+    if (destroyed || editorState.activePath !== path) return;
+    if (generation !== sessionResourceGeneration) return;
+    await loadDiagnosticsForActiveFile();
   }
 
   /**
@@ -508,15 +499,27 @@
     if (languageServerGate.isBusy()) {
       const path = editorState.activePath;
       const ticket = ++inlayHintRequestCount;
-      await languageServerGate.waitUntilReady();
-      // Only the newest request survives the wait. The editor asks again for
-      // every scroll, so answering a whole queue of stale ranges at once would
-      // simply move the pile-up to the end of the wait instead of removing it.
-      if (destroyed || ticket !== inlayHintRequestCount || editorState.activePath !== path) {
-        return [];
-      }
+      clearInlayReadyWait();
+      releaseInlayReadyWait = languageServerGate.onReady(() => {
+        releaseInlayReadyWait = null;
+        refreshInlayHintsAfterServerReady(path, ticket);
+      });
+      return [];
     }
     return sourceIntelligence.callbacks.onInlayHintLookup(request);
+  }
+
+  function clearInlayReadyWait(): void {
+    releaseInlayReadyWait?.();
+    releaseInlayReadyWait = null;
+  }
+
+  function refreshInlayHintsAfterServerReady(path: string | null, ticket: number): void {
+    // Only the newest request survives the wait. The editor asks again for
+    // every scroll, so answering a whole queue of stale ranges at once would
+    // simply move the pile-up to the end of the wait instead of removing it.
+    if (destroyed || ticket !== inlayHintRequestCount || editorState.activePath !== path) return;
+    void refreshEditorIntelligenceForActiveFile();
   }
 
   function describeError(error: unknown): string {
@@ -558,6 +561,40 @@
     }
   }
 
+  async function runLanguageIntelligenceOwnerTransition(
+    root: string | null,
+    enabled: boolean,
+    language: string | null
+  ): ReturnType<typeof setWorkspaceLanguageIntelligenceFromTauri> {
+    try {
+      await ownerTransitionTail;
+    } catch {
+      // A failed earlier owner transition must not block the latest owner.
+    }
+    if (!isNativeTauriRuntime()) return null;
+    const commandRoot = root ?? backendOwnerRoot;
+    if (!commandRoot) return null;
+    if (backendOwnerRoot !== root) warmedProjectRoots.clear();
+    countInvoke('set_workspace_language_intelligence');
+    const answer = await setWorkspaceLanguageIntelligenceFromTauri(
+      commandRoot,
+      Boolean(root && enabled),
+      root && enabled ? language : null
+    );
+    backendOwnerRoot = root && enabled ? root : null;
+    return answer;
+  }
+
+  async function retainLanguageIntelligenceOwnerOrder(
+    transition: ReturnType<typeof setWorkspaceLanguageIntelligenceFromTauri>
+  ): Promise<void> {
+    try {
+      await transition;
+    } catch {
+      // Keep later owner transitions ordered even when one command fails.
+    }
+  }
+
   function queueLanguageIntelligenceOwner(
     projectRoot: string | null,
     enabled: boolean,
@@ -569,50 +606,35 @@
     if (!force && requestedOwnerKey === ownerKey) return currentOwnerTransition;
     requestedOwnerKey = ownerKey;
 
-    const transition = ownerTransitionTail.then(async () => {
-      if (!isNativeTauriRuntime()) return null;
-      const commandRoot = root ?? backendOwnerRoot;
-      if (!commandRoot) return null;
-      if (backendOwnerRoot !== root) warmedProjectRoots.clear();
-      countInvoke('set_workspace_language_intelligence');
-      const answer = await setWorkspaceLanguageIntelligenceFromTauri(
-        commandRoot,
-        Boolean(root && enabled),
-        root && enabled ? language : null
-      );
-      backendOwnerRoot = root && enabled ? root : null;
-      return answer;
-    });
-    ownerTransitionTail = transition.then(() => undefined, () => undefined);
+    const transition = runLanguageIntelligenceOwnerTransition(root, enabled, language);
+    ownerTransitionTail = retainLanguageIntelligenceOwnerOrder(transition);
     currentOwnerTransition = transition;
     return transition;
   }
 
   /** Hand the ordered backend owner this project's current remembered choice. */
-  function applySavedModeForProject(projectRoot: string): Promise<void> {
+  async function applySavedModeForProject(projectRoot: string): Promise<void> {
     const root = workspaceKey(projectRoot);
-    return (async () => {
-      await hydrateLanguageIntelligenceChoices();
-      if (
-        destroyed
-        || !rootAvailable
-        || !editorState.projectRoot
-        || workspaceKey(editorState.projectRoot) !== root
-      ) return;
-      try {
-        const answer = await queueLanguageIntelligenceOwner(
-          root,
-          settings.intelligence.languageServers
-        );
-        if (destroyed || !answer) return;
-        if (editorState.projectRoot && workspaceKey(editorState.projectRoot) === root) {
-          languageServerPids = answer.serverPids;
-        }
-      } catch {
-        // A desktop build that has never heard of the switch leaves every
-        // project in read mode, which is the safe half of the choice.
+    await hydrateLanguageIntelligenceChoices();
+    if (
+      destroyed
+      || !rootAvailable
+      || !editorState.projectRoot
+      || workspaceKey(editorState.projectRoot) !== root
+    ) return;
+    try {
+      const answer = await queueLanguageIntelligenceOwner(
+        root,
+        settings.intelligence.languageServers
+      );
+      if (destroyed || !answer) return;
+      if (editorState.projectRoot && workspaceKey(editorState.projectRoot) === root) {
+        languageServerPids = answer.serverPids;
       }
-    })();
+    } catch {
+      // A desktop build that has never heard of the switch leaves every
+      // project in read mode, which is the safe half of the choice.
+    }
   }
 
   /**
@@ -730,6 +752,40 @@
     sourceIntelligence.setActivePreview(root ? activeEditorFile()?.preview ?? null : null);
   }
 
+  async function applyLanguageIntelligenceOwnerForEffect(
+    generation: number,
+    root: string | null,
+    languageServersEnabled: boolean
+  ): Promise<void> {
+    await hydrateLanguageIntelligenceChoices();
+    if (destroyed || generation !== ownerSelectionGeneration) return;
+    const enabled = Boolean(
+      root
+        && languageServersEnabled
+        && activeServerEnabled === true
+    );
+    try {
+      const answer = await queueLanguageIntelligenceOwner(root, enabled);
+      if (
+        destroyed
+        || !answer
+        || root !== activeLanguageRoot()
+      ) return;
+      languageServerPids = answer.serverPids;
+    } catch {
+      // An older desktop build leaves the selected project in read mode.
+    }
+  }
+
+  async function publishNativeCsharpActiveRoot(root: string | null): Promise<void> {
+    try {
+      const { setNativeCsharpActiveRoot } = await import('$lib/shell/editor/csharpLanguageClient');
+      setNativeCsharpActiveRoot(root);
+    } catch {
+      // A missing optional client leaves the active root unset.
+    }
+  }
+
   // Session restore and project switching update the shared editor store
   // without calling this panel's open/select handlers. Keep the extracted
   // intelligence service attached to that state continuously; otherwise the
@@ -747,36 +803,60 @@
     languageIntelligenceChoices;
     const languageServersEnabled = settings.intelligence.languageServers;
     const generation = ++ownerSelectionGeneration;
-    void (async () => {
-      await hydrateLanguageIntelligenceChoices();
-      if (destroyed || generation !== ownerSelectionGeneration) return;
-      const enabled = Boolean(
-        root
-          && languageServersEnabled
-          && activeServerEnabled === true
-      );
-      try {
-        const answer = await queueLanguageIntelligenceOwner(root, enabled);
-        if (
-          destroyed
-          || !answer
-          || root !== activeLanguageRoot()
-        ) return;
-        languageServerPids = answer.serverPids;
-      } catch {
-        // An older desktop build leaves the selected project in read mode.
-      }
-    })();
+    void applyLanguageIntelligenceOwnerForEffect(generation, root, languageServersEnabled);
   });
 
   $effect(() => {
     const root = fullMode ? activeLanguageRoot() : null;
     if (root === nativeCsharpRoot) return;
     nativeCsharpRoot = root;
-    void import('$lib/shell/editor/csharpLanguageClient').then(({ setNativeCsharpActiveRoot }) =>
-      setNativeCsharpActiveRoot(root)
-    ).catch(() => undefined);
+    void publishNativeCsharpActiveRoot(root);
   });
+
+  async function readFileIntoEditorForOwner(
+    record: SourceRecord,
+    generation: number,
+    readOnly: boolean,
+    projectRoot: string | null,
+    token: object
+  ): Promise<void> {
+    try {
+      // The record has to be built first: the read wrapper copies the relative
+      // path, language and size back out of it onto the preview it returns.
+      countInvoke('read_source_file');
+      const preview = await readSourceFromTauri(record);
+      if (
+        destroyed
+        || generation !== sessionResourceGeneration
+        || editorState.activePath !== record.path
+        || (!readOnly && editorState.projectRoot !== projectRoot)
+        || !editorFileFor(record.path)
+      ) {
+        if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
+          clearEditorFileLoading(record.path);
+        }
+        return;
+      }
+      if (preview) {
+        setEditorFilePreview(record.path, preview, null, readOnly);
+      } else {
+        setEditorFileError(record.path, 'This file could not be read from here.');
+      }
+    } catch (error) {
+      if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
+        setEditorFileError(record.path, `Could not read this file: ${describeError(error)}`);
+      }
+    } finally {
+      if (readsInFlight.get(record.path)?.token === token) {
+        readsInFlight.delete(record.path);
+        publishSourceReadDiagnostics();
+      }
+      if (!destroyed && generation === sessionResourceGeneration) {
+        syncIntelligenceWithActiveFile();
+        if (!readOnly) void refreshEditorIntelligenceForActiveFile();
+      }
+    }
+  }
 
   /** EXPLICIT IO: read one file and show it. */
   async function readFileIntoEditor(record: SourceRecord): Promise<void> {
@@ -794,44 +874,7 @@
     markEditorFileLoading(record.path);
     if (!readOnly) void warmLanguageServer(editorState.projectRoot);
     const token = {};
-    const work = (async () => {
-      try {
-        // The record has to be built first: the read wrapper copies the relative
-        // path, language and size back out of it onto the preview it returns.
-        countInvoke('read_source_file');
-        const preview = await readSourceFromTauri(record);
-        if (
-          destroyed
-          || generation !== sessionResourceGeneration
-          || editorState.activePath !== record.path
-          || (!readOnly && editorState.projectRoot !== projectRoot)
-          || !editorFileFor(record.path)
-        ) {
-          if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
-            clearEditorFileLoading(record.path);
-          }
-          return;
-        }
-        if (preview) {
-          setEditorFilePreview(record.path, preview, null, readOnly);
-        } else {
-          setEditorFileError(record.path, 'This file could not be read from here.');
-        }
-      } catch (error) {
-        if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
-          setEditorFileError(record.path, `Could not read this file: ${describeError(error)}`);
-        }
-      } finally {
-        if (readsInFlight.get(record.path)?.token === token) {
-          readsInFlight.delete(record.path);
-          publishSourceReadDiagnostics();
-        }
-        if (!destroyed && generation === sessionResourceGeneration) {
-          syncIntelligenceWithActiveFile();
-          if (!readOnly) void refreshEditorIntelligenceForActiveFile();
-        }
-      }
-    })();
+    const work = readFileIntoEditorForOwner(record, generation, readOnly, projectRoot, token);
     readsInFlight.set(record.path, { byteCount: record.byteCount, generation, token, work });
     publishSourceReadDiagnostics();
     return work;
@@ -881,7 +924,12 @@
       if (!file?.preview) {
         const record = recordForPath(fileEdit.path, root);
         countInvoke('read_source_file');
-        const preview = await readSourceFromTauri(record).catch(() => null);
+        let preview: SourcePreview | null;
+        try {
+          preview = await readSourceFromTauri(record);
+        } catch {
+          preview = null;
+        }
         if (
           !preview || destroyed || generation !== sessionResourceGeneration ||
           editorState.projectRoot !== root || editorState.activePath !== activePath || !fullMode
@@ -1207,19 +1255,27 @@
     delete restoredViewStates[path];
   }
 
+  async function cancelSourceReadsForReleasedSession(): Promise<void> {
+    try {
+      await cancelSourceFileReadsFromTauri();
+    } catch {
+      // Frontend teardown still releases local ownership if native cannot cancel.
+    }
+  }
+
   export function releaseSessionResources(paths: readonly string[]): void {
     sessionResourceGeneration += 1;
     if (readsInFlight.size > 0) {
-      void cancelSourceFileReadsFromTauri().catch(() => undefined);
+      void cancelSourceReadsForReleasedSession();
     }
     publishSourceReadDiagnostics();
     ownerSelectionGeneration += 1;
     inlayHintRequestCount += 1;
+    clearDiagnosticsReadyWait();
+    clearInlayReadyWait();
     languageServerGate.releaseAll();
     closeRequest = null;
     closeDialogOpen = false;
-    if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
-    diagnosticsTimer = null;
     sourceIntelligence.setActivePreview(null);
     codeEditor?.releaseSessionResources();
     for (const path of paths) {
@@ -1307,8 +1363,16 @@
     });
   });
 
+  async function hydrateLanguageIntelligenceChoicesForMount(): Promise<void> {
+    try {
+      await hydrateLanguageIntelligenceChoices();
+    } catch {
+      // The switch can still show its default choices if hydration fails.
+    }
+  }
+
   onMount(() => {
-    void hydrateLanguageIntelligenceChoices().catch(() => undefined);
+    void hydrateLanguageIntelligenceChoicesForMount();
 
     // Subscribing costs nothing and loads nothing; it just means a click in the
     // explorer made before this panel was ever shown still opens its file.
@@ -1323,13 +1387,17 @@
     const unsubscribeStatus = sourceIntelligence.subscribeToLanguageServerStatus(
       handleLanguageServerStatus
     );
+    const unsubscribeReferenceCounts = sourceIntelligence.subscribeToReferenceCountUpdates(
+      handleReferenceCountUpdate
+    );
 
     return () => {
       destroyed = true;
-      if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
-      diagnosticsTimer = null;
+      unsubscribeReferenceCounts();
       unsubscribeStatus();
       // Anything still waiting on the server has nowhere to go now.
+      clearDiagnosticsReadyWait();
+      clearInlayReadyWait();
       languageServerGate.releaseAll();
       // With no panel there is nothing truthful to show in the top strip.
       clearLanguageIntelligenceBar();

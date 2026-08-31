@@ -15,7 +15,6 @@
   import { agentDisplayName } from '$lib/shell/agentIcons.ts';
   import type { AgentKind } from '$lib/shell/ownedSessions.ts';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import { cancelTrackedAnimationFrame, requestTrackedAnimationFrame } from '$lib/shell/resourceDiagnostics.svelte';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
   import AttachmentLightbox from './AttachmentLightbox.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
@@ -226,23 +225,18 @@
 
   $effect(() => {
     if (!composerArea || !onHeightChange) return;
-    let frame: number | null = null;
     let publishedHeight = -1;
     const publish = (): void => {
-      frame = null;
       const nextHeight = Math.ceil(composerArea?.getBoundingClientRect().height ?? 0);
       if (nextHeight === publishedHeight) return;
       publishedHeight = nextHeight;
       onHeightChange(nextHeight);
     };
-    const observer = new ResizeObserver(() => {
-      if (frame === null) frame = requestTrackedAnimationFrame(publish);
-    });
+    const observer = new ResizeObserver(publish);
     observer.observe(composerArea);
     publish();
     return () => {
       observer.disconnect();
-      if (frame !== null) cancelTrackedAnimationFrame(frame);
     };
   });
 

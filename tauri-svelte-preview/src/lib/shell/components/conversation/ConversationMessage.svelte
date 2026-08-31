@@ -5,10 +5,6 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { userMessageOverflowsFold } from '$lib/shell/conversation/conversationTimeline.ts';
   import { parseSafeMarkdown, type SafeInlinePart, type SafeMarkdownBlock } from '$lib/shell/conversation/conversationMessageSafety.ts';
-  import {
-    cancelTrackedAnimationFrame,
-    requestTrackedAnimationFrame
-  } from '$lib/shell/resourceDiagnostics.svelte.ts';
   import { trackConversationMessageRenderer } from '$lib/shell/resourceDiagnostics.svelte.ts';
   import CodeBlock from './CodeBlock.svelte';
 
@@ -37,21 +33,11 @@
     const host = bodyHost;
     if (role !== 'user' || !host) return;
     void blocks;
-    let frame: number | null = null;
-    const measure = (): void => {
-      const nextFolded = userMessageOverflowsFold(
-        host.scrollHeight,
-        Number.parseFloat(getComputedStyle(host).lineHeight)
-      );
-      if (folded !== nextFolded) folded = nextFolded;
-    };
-    frame = requestTrackedAnimationFrame(() => {
-      frame = null;
-      measure();
-    });
-    return () => {
-      if (frame !== null) cancelTrackedAnimationFrame(frame);
-    };
+    const nextFolded = userMessageOverflowsFold(
+      host.scrollHeight,
+      Number.parseFloat(getComputedStyle(host).lineHeight)
+    );
+    if (folded !== nextFolded) folded = nextFolded;
   });
 </script>
 

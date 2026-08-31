@@ -8,9 +8,9 @@
  * Two things here can quietly lie and so are pinned down:
  *  1. A build that does not report a state, and a browser tab with no desktop
  *     app behind it, must produce NO chip at all — never a guessed one.
- *  2. The wait that holds back inline hints and the second diagnostics read
- *     must always end: on ready, on release, or on its own time limit. A wait
- *     that never ends looks exactly like a hang.
+ *  2. The callback that holds back inline hints and the second diagnostics read
+ *     must always run on ready or owner release. A callback that survives its
+ *     owner looks exactly like a hang.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -207,91 +207,75 @@ test('only a server that is starting up or reading the project makes work wait',
   assert.equal(languageServerIsBusy(null), false);
 });
 
-test('with no answer about the server, nothing waits', async () => {
+test('with no answer about the server, nothing waits', () => {
   const gate = createLanguageServerGate();
   let finished = false;
-  await gate.waitUntilReady().then(() => (finished = true));
+  gate.onReady(() => (finished = true));
   assert.equal(finished, true);
 });
 
-test('while the project is being read, work waits and then runs once', async () => {
+test('while the project is being read, work waits and then runs once', () => {
   const gate = createLanguageServerGate();
   gate.setState('indexing');
 
   let finishedCount = 0;
-  const first = gate.waitUntilReady().then(() => finishedCount++);
-  const second = gate.waitUntilReady().then(() => finishedCount++);
+  gate.onReady(() => finishedCount++);
+  gate.onReady(() => finishedCount++);
 
-  await Promise.resolve();
   assert.equal(finishedCount, 0, 'nothing should run while the project is being read');
 
   gate.setState('ready');
-  await Promise.all([first, second]);
   assert.equal(finishedCount, 2, 'every waiting job runs once the server is ready');
 });
 
-test('a server that turns out to be off or missing stops the waiting too', async () => {
+test('a server that turns out to be off or missing stops the waiting too', () => {
   const offGate = createLanguageServerGate();
   offGate.setState('starting');
-  const waiting = offGate.waitUntilReady();
+  let offFinished = false;
+  offGate.onReady(() => (offFinished = true));
   offGate.setState('disabled');
-  await waiting;
+  assert.equal(offFinished, true);
 
   const goneGate = createLanguageServerGate();
   goneGate.setState('indexing');
-  const alsoWaiting = goneGate.waitUntilReady();
+  let goneFinished = false;
+  goneGate.onReady(() => (goneFinished = true));
   goneGate.setState('not-running');
-  await alsoWaiting;
+  assert.equal(goneFinished, true);
 });
 
-test('closing the panel releases whatever was waiting', async () => {
+test('closing the panel releases whatever was waiting', () => {
   const gate = createLanguageServerGate();
   gate.setState('starting');
-  const waiting = gate.waitUntilReady();
+  let finished = false;
+  gate.onReady(() => (finished = true));
   gate.releaseAll();
-  await waiting;
+  assert.equal(finished, true);
 });
 
-test('a server that never gets ready still lets the work run in the end', async () => {
-  const scheduled: Array<{ run: () => void; afterMs: number }> = [];
-  const gate = createLanguageServerGate({
-    maxWaitMs: 20_000,
-    schedule: (run, afterMs) => {
-      const job = { run, afterMs };
-      scheduled.push(job);
-      return () => {
-        const at = scheduled.indexOf(job);
-        if (at >= 0) scheduled.splice(at, 1);
-      };
-    }
-  });
+test('a server that never gets ready waits until its owner releases the gate', () => {
+  const gate = createLanguageServerGate();
 
   gate.setState('indexing');
   let finished = false;
-  const waiting = gate.waitUntilReady().then(() => (finished = true));
+  gate.onReady(() => (finished = true));
 
-  await Promise.resolve();
   assert.equal(finished, false);
-  assert.equal(scheduled.length, 1);
-  assert.equal(scheduled[0].afterMs, 20_000);
 
-  scheduled[0].run();
-  await waiting;
-  assert.equal(finished, true, 'the time limit must let the work through');
+  gate.releaseAll();
+  assert.equal(finished, true, 'the owner release must let waiting work finish');
 });
 
-test('the time limit is called off once the server is ready', async () => {
-  let cancelled = false;
-  const gate = createLanguageServerGate({
-    schedule: () => () => {
-      cancelled = true;
-    }
-  });
-  gate.setState('starting');
-  const waiting = gate.waitUntilReady();
+test('the owner can release one waiting callback without running it', () => {
+  const gate = createLanguageServerGate();
+  gate.setState('indexing');
+
+  let finished = false;
+  const release = gate.onReady(() => (finished = true));
+  release();
+
   gate.setState('ready');
-  await waiting;
-  assert.equal(cancelled, true, 'a finished wait must not leave a timer behind');
+  assert.equal(finished, false);
 });
 
 test('the gate remembers the last state it was told', () => {

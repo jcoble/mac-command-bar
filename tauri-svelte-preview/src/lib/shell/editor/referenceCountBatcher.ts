@@ -8,18 +8,9 @@
  *
  * **The plain-text search over the project.** This is what the browser preview
  * has, and it is all it has: there is no language server behind a page served
- * by the dev server. One pass over the project can count any number of names at
- * once, so asking about each symbol separately would mean reading the whole
- * project once per symbol — which on a large project is what used to lock the
- * app up, and why the counts were simply switched off there. Two rules fix
- * that, and `createReferenceCountBatcher` holds them:
- *
- *  - **One question for all of them.** The first symbol asked about opens a
- *    short window; every symbol asked about while it is open travels in the
- *    same request, and they all get their answer from its result.
- *  - **An answer keeps for a while.** A project-wide count changes when files
- *    elsewhere change, not when the reader types, so answers are kept for a
- *    stretch instead of being thrown away on every keystroke.
+ * by the dev server. A project-wide count changes when files elsewhere change,
+ * not when the reader types, so answers are kept for a stretch instead of being
+ * thrown away on every keystroke.
  *
  * **The language server.** This is what the desktop app has, and its answer is
  * the better one: it counts the uses of the symbol the reader is looking at
@@ -110,8 +101,6 @@ export interface ReferenceCountBatcherOptions {
    * `createReferenceCountStore`, which hands out a drawer of itself for this.
    */
   memory: CountMemory;
-  /** How long the window stays open for more symbols, in milliseconds. */
-  windowMs: number;
   /** Counts at or above this are reported as this, matching the margin's "50+". */
   maxCount: number;
 }
@@ -127,54 +116,49 @@ export function createReferenceCountBatcher(
   options: ReferenceCountBatcherOptions
 ): ReferenceCountBatcher {
   const memory = options.memory;
-  let waiting = new Map<string, ((count: CodeLensCount | null) => void)[]>();
-  let windowTimer: ReturnType<typeof setTimeout> | null = null;
+  const pending = new Map<string, Promise<CodeLensCount | null>>();
   let generation = 0;
 
-  async function askForWaitingSymbols(): Promise<void> {
-    windowTimer = null;
-    const batch = waiting;
-    waiting = new Map();
+  async function askForSymbol(symbolName: string): Promise<CodeLensCount | null> {
     const startedIn = generation;
 
-    const result = await options.countReferences([...batch.keys()]).catch(() => null);
+    let result: SourceReferenceCountResult | null;
+    try {
+      result = await options.countReferences([symbolName]);
+    } catch {
+      result = null;
+    }
 
-    for (const [symbolName, callers] of batch) {
-      if (startedIn !== generation) {
-        for (const caller of callers) caller(null);
-        continue;
-      }
-      const count = countFromResult(result, symbolName, options.maxCount);
-      if (count !== null) memory.remember(symbolName, count);
-      for (const caller of callers) caller(count);
+    if (startedIn !== generation) {
+      return null;
+    }
+    const count = countFromResult(result, symbolName, options.maxCount);
+    if (count !== null) memory.remember(symbolName, count);
+    return count;
+  }
+
+  async function trackPendingSymbolRequest(symbolName: string): Promise<CodeLensCount | null> {
+    try {
+      return await askForSymbol(symbolName);
+    } finally {
+      pending.delete(symbolName);
     }
   }
 
   return {
-    count(symbolName: string): Promise<CodeLensCount | null> {
+    async count(symbolName: string): Promise<CodeLensCount | null> {
       const remembered = memory.get(symbolName);
-      if (remembered !== undefined) return Promise.resolve(remembered);
+      if (remembered !== undefined) return remembered;
 
-      return new Promise((resolve) => {
-        const callers = waiting.get(symbolName);
-        if (callers) {
-          callers.push(resolve);
-          return;
-        }
-
-        waiting.set(symbolName, [resolve]);
-        windowTimer ??= setTimeout(askForWaitingSymbols, options.windowMs);
-      });
+      const existing = pending.get(symbolName);
+      if (existing) return await existing;
+      const request = trackPendingSymbolRequest(symbolName);
+      pending.set(symbolName, request);
+      return await request;
     },
     forget(): void {
       generation += 1;
-      if (windowTimer !== null) clearTimeout(windowTimer);
-      windowTimer = null;
-      const abandoned = waiting;
-      waiting = new Map();
-      for (const callers of abandoned.values()) {
-        for (const caller of callers) caller(null);
-      }
+      pending.clear();
       memory.forget();
     }
   };
@@ -252,6 +236,24 @@ export function createSemanticReferenceCountScheduler(
   let asked = new Set<string>();
   let running = 0;
 
+  async function runSemanticCount(key: string, startedIn: number): Promise<void> {
+    let count: CodeLensCount | null;
+    try {
+      count = await options.countFor(key);
+    } catch {
+      count = null;
+    }
+    try {
+      running -= 1;
+      if (startedIn === generation) {
+        asked.delete(key);
+        options.onCounted(key, count);
+      }
+    } finally {
+      startWhatWeCan();
+    }
+  }
+
   function startWhatWeCan(): void {
     while (running < options.maxInFlight && queue.length > 0) {
       const key = queue.shift();
@@ -259,20 +261,7 @@ export function createSemanticReferenceCountScheduler(
       const startedIn = generation;
       running += 1;
 
-      options
-        .countFor(key)
-        .catch(() => null)
-        .then((count) => {
-          running -= 1;
-          try {
-            if (startedIn === generation) {
-              asked.delete(key);
-              options.onCounted(key, count);
-            }
-          } finally {
-            startWhatWeCan();
-          }
-        });
+      void runSemanticCount(key, startedIn);
     }
   }
 
@@ -351,7 +340,7 @@ export function createReferenceCountStore(
 ): ReferenceCountStore {
   const now = options.now ?? Date.now;
   /** No project open is a drawer of its own, not a missing one. */
-  const noProject = ' no project';
+  const noProject = 'no project';
   const projects = new Map<string, Map<string, Map<string, RememberedCount>>>();
 
   const drawerFor = (project: string | null) => project ?? noProject;

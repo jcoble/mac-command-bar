@@ -2434,6 +2434,19 @@ impl AgentRuntimeManager {
     /// is about to start. The request identity makes a delayed cancel harmless
     /// if a newer read has already taken ownership.
     pub fn cancel_snapshot(&self, request_id: u64) {
+        if self
+            .latest_snapshot_request
+            .compare_exchange(
+                request_id,
+                request_id.saturating_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.store.cancel_recent_events_read();
+            return;
+        }
         self.advance_snapshot_request(request_id);
     }
 

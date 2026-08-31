@@ -2,6 +2,12 @@
   let sharedObserver: IntersectionObserver | null = null;
   const observerCallbacks = new Map<Element, () => void>();
 
+  function releaseSharedObserverIfIdle(): void {
+    if (observerCallbacks.size > 0) return;
+    sharedObserver?.disconnect();
+    sharedObserver = null;
+  }
+
   function getSharedObserver(): IntersectionObserver | null {
     if (typeof IntersectionObserver === 'undefined') return null;
     if (!sharedObserver) {
@@ -13,6 +19,7 @@
               observerCallbacks.delete(entry.target);
               sharedObserver?.unobserve(entry.target);
               cb();
+              releaseSharedObserverIfIdle();
             }
           }
         }
@@ -32,6 +39,7 @@
     return () => {
       observerCallbacks.delete(el);
       obs.unobserve(el);
+      releaseSharedObserverIfIdle();
     };
   }
 </script>
@@ -63,7 +71,6 @@
   let copied = $state(false);
   let host = $state<HTMLDivElement | null>(null);
   let onScreen = $state(false);
-  let copyTimer: ReturnType<typeof setTimeout> | null = null;
   /** Plain until the block is worth scanning, so the code is readable at once. */
   const lines = $derived(
     onScreen ? highlightCode(value, language) : plainHighlightedLines(value)
@@ -78,16 +85,10 @@
     });
   });
 
-  $effect(() => () => {
-    if (copyTimer) clearTimeout(copyTimer);
-  });
-
   async function copyCode(): Promise<void> {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     await navigator.clipboard.writeText(value);
     copied = true;
-    if (copyTimer) clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => (copied = false), 1400);
   }
 </script>
 

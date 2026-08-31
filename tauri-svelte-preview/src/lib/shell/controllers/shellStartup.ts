@@ -16,6 +16,9 @@ export interface ShellStartupOptions {
 	onSelectInitial(ownedId: string): Promise<void>;
 }
 
+let shellGeneration = 0;
+let shellAbort: AbortController | null = null;
+
 export async function refreshRailSessions(): Promise<void> {
 	try {
 		const storedSessions = (await listAgentConversationSessionsFromTauri()) ?? [];
@@ -27,17 +30,19 @@ export async function refreshRailSessions(): Promise<void> {
 }
 
 export async function startShell(options: ShellStartupOptions): Promise<void> {
+	shellAbort?.abort();
+	const controller = new AbortController();
+	shellAbort = controller;
+	const generation = ++shellGeneration;
 	document.documentElement.classList.add('next-shell-document');
 	applyStoredTheme();
 	applyStoredFonts();
 
-	void hydrateSettings().then(() => {
-		applyStoredTheme();
-		applyStoredFonts();
-	}).catch(() => undefined);
+	void hydrateShellSettings(generation, controller.signal);
 
 	try {
 		const storedSessions = (await listAgentConversationSessionsFromTauri()) ?? [];
+		if (!shellActive(generation, controller.signal)) return;
 		const projected = storedSessions.map(ownedSessionFromBackend);
 
 		hydrateOwned(projected);
@@ -45,19 +50,48 @@ export async function startShell(options: ShellStartupOptions): Promise<void> {
 		const initial = projected[0] ?? null;
 		if (initial) {
 			await options.onSelectInitial(initial.ownedId);
+			if (!shellActive(generation, controller.signal)) return;
 		}
 
-		void startConversationEvents();
+		void startConversationEventsForOwner(generation, controller.signal);
 	} catch (error) {
+		if (!shellActive(generation, controller.signal)) return;
 		rail.error = `shell start-up failed: ${error instanceof Error ? error.message : String(error)}`;
 	} finally {
-		shellPanels.allowSessionLoads();
+		if (shellActive(generation, controller.signal)) shellPanels.allowSessionLoads();
 	}
 }
 
 export function stopShell(): void {
+	shellAbort?.abort();
+	shellAbort = null;
+	shellGeneration += 1;
 	stopConversationEvents();
 	clearTheme();
 	clearFonts();
 	document.documentElement.classList.remove('next-shell-document');
+}
+
+async function hydrateShellSettings(generation: number, signal: AbortSignal): Promise<void> {
+	try {
+		await hydrateSettings();
+		if (!shellActive(generation, signal)) return;
+		applyStoredTheme();
+		applyStoredFonts();
+	} catch {
+		// Stored settings are optional; startup continues with defaults.
+	}
+}
+
+function shellActive(generation: number, signal: AbortSignal): boolean {
+	return !signal.aborted && generation === shellGeneration;
+}
+
+async function startConversationEventsForOwner(generation: number, signal: AbortSignal): Promise<void> {
+	try {
+		await startConversationEvents();
+	} catch (error) {
+		if (!shellActive(generation, signal)) return;
+		rail.error = `shell event setup failed: ${error instanceof Error ? error.message : String(error)}`;
+	}
 }

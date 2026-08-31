@@ -841,11 +841,11 @@ export function createMcbExtensionApiProbe(
       };
     },
 
-    showInformationMessage(message, ...actions): Promise<string | undefined> {
+    async showInformationMessage(message, ...actions): Promise<string | undefined> {
       const { host } = requireActive(state);
       const text = nonEmpty(message, 'notification message');
       state.notificationCount += 1;
-      return host.window.showInformationMessage(text, ...actions);
+      return await host.window.showInformationMessage(text, ...actions);
     },
 
     withProgress(title, task) {
@@ -881,16 +881,15 @@ export function createMcbExtensionApiProbe(
         const { host, context } = requireActive(state);
         const checked = assertTerminalRequest(context, request);
         state.terminalRequestCount += 1;
-        return host.terminal.request(checked).then((lease) => {
-          if (
-            lease.ownedId !== context.ownedId ||
-            lease.generation !== context.generation ||
-            normalizeProbePath(lease.root) !== context.activeRoot
-          ) {
-            throw new Error('owned PTY adapter returned a mismatched lease.');
-          }
-          return lease;
-        });
+        const lease = await host.terminal.request(checked);
+        if (
+          lease.ownedId !== context.ownedId ||
+          lease.generation !== context.generation ||
+          normalizeProbePath(lease.root) !== context.activeRoot
+        ) {
+          throw new Error('owned PTY adapter returned a mismatched lease.');
+        }
+        return lease;
       },
       show(lease) {
         const { host, context } = requireActive(state);
@@ -936,9 +935,8 @@ export function createMcbExtensionApiProbe(
         const { host, context } = requireActive(state);
         const checked = assertScmRequest(context, request);
         state.scmReadCount += 1;
-        return host.scm.readStatus(checked).then((snapshot) =>
-          validateScmSnapshot(context, checked, snapshot)
-        );
+        const snapshot = await host.scm.readStatus(checked);
+        return validateScmSnapshot(context, checked, snapshot);
       },
       async selectResource(request, relativePath) {
         const { host, context } = requireActive(state);
@@ -959,9 +957,8 @@ export function createMcbExtensionApiProbe(
         const { host, context } = requireActive(state);
         const checked = assertScmRequest(context, request);
         state.scmRefreshCount += 1;
-        return host.scm.refresh(checked).then((snapshot) =>
-          validateScmSnapshot(context, checked, snapshot)
-        );
+        const snapshot = await host.scm.refresh(checked);
+        return validateScmSnapshot(context, checked, snapshot);
       },
       async dispose(request) {
         const { host, context } = requireActive(state);

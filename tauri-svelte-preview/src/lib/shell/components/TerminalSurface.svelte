@@ -15,10 +15,6 @@
    */
   import '@xterm/xterm/css/xterm.css';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
-  import {
-    cancelTrackedAnimationFrame,
-    requestTrackedAnimationFrame
-  } from '$lib/shell/resourceDiagnostics.svelte';
 
   interface Props {
     /** Sessions CommandBar owns (rail.owned). */
@@ -45,27 +41,6 @@
   const hosted = $derived(active && (active.state !== 'exited' || active.ptySessionId) ? active : null);
 
   /**
-   * How many animation frames to keep re-measuring for after a terminal appears.
-   *
-   * It is not one, and that is the whole fix. xterm works out how big one
-   * character is by measuring it on screen, and a terminal built inside a hidden
-   * host cannot do that — so it holds a character size of zero. Showing the host
-   * does start a re-measure, but xterm starts it from a browser notification
-   * ("this element is on screen now") that is not delivered until the end of the
-   * frame, well after the code that made the host visible has finished. Measuring
-   * the grid in that gap is the bug in screenshots 46 and 52: xterm still has no
-   * character size, so the fit does nothing and quietly reports the OLD grid,
-   * which is then what the session is resized to. Nothing measures it again
-   * afterwards, so the terminal stays wrong — the prompt sits above the line you
-   * type on, the top of the input box is cut off, and the bottom of the output
-   * runs past the end of the panel — until a divider is dragged.
-   *
-   * Four frames is comfortably past that first one, and the extra measurements
-   * are free: a grid that has not changed sends nothing to the session.
-   */
-  const FRAMES_AFTER_APPEARING = 4;
-
-  /**
    * Svelte action: publish the host element to the page, and from then on say
    * when this session's terminal needs measuring again.
    *
@@ -87,20 +62,10 @@
     /** Is this host the one on screen? A hidden host has nothing to measure. */
     const shown = (): boolean => node.style.display !== 'none';
 
-    let framesLeft = 0;
-    let frame = 0;
-
-    /** Ask for a measurement now and on the next few frames. */
+    /** Ask for a measurement now. */
     function remeasure(): void {
       if (!shown()) return;
-      framesLeft = FRAMES_AFTER_APPEARING;
-      if (frame !== 0) return;
-      const step = (): void => {
-        onHostLayout?.(ownedId);
-        framesLeft -= 1;
-        frame = framesLeft > 0 ? requestTrackedAnimationFrame(step) : 0;
-      };
-      frame = requestTrackedAnimationFrame(step);
+      onHostLayout?.(ownedId);
     }
 
     const sizes = new ResizeObserver(() => remeasure());
@@ -112,10 +77,10 @@
     const fonts = document.fonts ?? null;
     const onFontsLoaded = (): void => remeasure();
     fonts?.addEventListener('loadingdone', onFontsLoaded);
+    remeasure();
 
     return {
       destroy(): void {
-        if (frame !== 0) cancelTrackedAnimationFrame(frame);
         sizes.disconnect();
         shownOrHidden.disconnect();
         fonts?.removeEventListener('loadingdone', onFontsLoaded);

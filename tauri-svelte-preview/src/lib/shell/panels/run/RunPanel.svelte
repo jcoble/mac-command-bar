@@ -91,9 +91,15 @@
   // Read what is saved before showing anything. The store was only read once a
   // session had been picked, so opening this tab first showed "No actions
   // saved yet" over a full list on disk.
-  void hydrateStacks().catch((error) => {
-    stacks.error = `Could not load run configurations: ${error instanceof Error ? error.message : String(error)}`;
-  });
+  void hydrateSavedStacks();
+
+  async function hydrateSavedStacks(): Promise<void> {
+    try {
+      await hydrateStacks();
+    } catch (error) {
+      stacks.error = `Could not load run configurations: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
 
   // Every saved action, whichever folder it belongs to. The list was filtered
   // to the active session's working folder, which is not a project root — a
@@ -140,15 +146,12 @@
     const sessions = watchedSessions.split(' ').filter((id) => id !== '');
     if (!visible || sessions.length === 0) return;
     let watch: RunOutputWatch | null = null;
-    let cancelled = false;
-    void watchRunOutput(sessions, (sessionOwnedId, tail) => {
-      if (!cancelled) tails[sessionOwnedId] = tail;
-    }).then((handle) => {
+    const owner = { active: true };
+    void startRunOutputWatch(owner, sessions, (handle) => {
       watch = handle;
-      if (cancelled) handle.stop();
     });
     return () => {
-      cancelled = true;
+      owner.active = false;
       watch?.stop();
       // Drop the tails this watch collected. Without this, the tail of every
       // session the tab has ever watched stays in the record for as long as the
@@ -160,6 +163,22 @@
       }
     };
   });
+
+  async function startRunOutputWatch(
+    owner: { active: boolean },
+    sessions: string[],
+    rememberWatch: (handle: RunOutputWatch) => void
+  ): Promise<void> {
+    try {
+      const handle = await watchRunOutput(sessions, (sessionOwnedId, tail) => {
+        if (owner.active && sessions.includes(sessionOwnedId)) tails[sessionOwnedId] = tail;
+      });
+      rememberWatch(handle);
+      if (!owner.active) handle.stop();
+    } catch (_error) {
+      // The watch is opportunistic; run state is still rendered from stacks.
+    }
+  }
 
   /** Start an action, and show its page when it was set up to do that. */
   async function run(definition: StackDefinition): Promise<void> {

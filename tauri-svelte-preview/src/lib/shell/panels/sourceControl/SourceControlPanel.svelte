@@ -231,23 +231,34 @@
       setInspectionRoot('');
       return;
     }
-    void (async () => {
-      const validation = await validateProjectRootFromTauri(target);
-      if (
-        generation !== inspectionRestoreGeneration
-        || canonicalPath(root) !== sessionRootPath
-        || canonicalPath(inspectionRoot ?? '') !== target
-      ) return;
-      if (validation === null || (validation.exists && validation.isDirectory)) {
-        setInspectionRoot(target);
-      } else {
-        setInspectionRoot('');
-      }
-    })();
+    void validateInspectionRootForEffect(generation, target, sessionRootPath);
     return () => {
       inspectionRestoreGeneration += 1;
     };
   });
+
+  async function validateInspectionRootForEffect(
+    generation: number,
+    target: string,
+    sessionRootPath: string
+  ): Promise<void> {
+    let validation: Awaited<ReturnType<typeof validateProjectRootFromTauri>>;
+    try {
+      validation = await validateProjectRootFromTauri(target);
+    } catch {
+      validation = null;
+    }
+    if (
+      generation !== inspectionRestoreGeneration
+      || canonicalPath(root) !== sessionRootPath
+      || canonicalPath(inspectionRoot ?? '') !== target
+    ) return;
+    if (validation === null || (validation.exists && validation.isDirectory)) {
+      setInspectionRoot(target);
+    } else {
+      setInspectionRoot('');
+    }
+  }
 
   /** The one place a scope becomes a real read. `activate` ignores a repeat. */
   let historyRoot = '';

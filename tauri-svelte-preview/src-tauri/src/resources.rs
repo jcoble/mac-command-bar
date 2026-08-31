@@ -443,6 +443,7 @@ pub async fn read_resource_totals(
             .lock()
             .map_err(|_| "Resource sampler is unavailable".to_string())?
             .clone();
+        process_ids.push(std::process::id());
         process_ids.extend(
             resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?
                 .into_iter()

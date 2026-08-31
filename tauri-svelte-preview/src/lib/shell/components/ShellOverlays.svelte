@@ -10,7 +10,7 @@
 	 * here and not inside a panel.
 	 */
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-	import { onMount, tick } from "svelte";
+	import { onMount } from "svelte";
 
 	import type { ProblemsLocation } from "$lib/settingsStore.svelte";
 	import AssistanceHost from "$lib/shell/assistance/AssistanceHost.svelte";
@@ -50,6 +50,10 @@
 		return popoverHost(id)?.querySelector<HTMLButtonElement>(".trigger") ?? null;
 	}
 
+	function positionPopoverHost(id: UtilityId, anchor: UtilityAnchor): void {
+		popoverHost(id)?.setAttribute("style", utilityAnchorStyle(anchor));
+	}
+
 	/** Watch one surface's own trigger and report whether it is open, so the
 	 * bottom strip's button can read as on without owning that state itself. */
 	function observeUtilityState(id: UtilityId): () => void {
@@ -78,13 +82,13 @@
 	 *
 	 * The strip is inside the layout and these surfaces are mounted out here,
 	 * above it, so a card cannot be clipped by the column it was opened from.
-	 * The anchor is applied FIRST and the surface's own trigger clicked after
-	 * Svelte has written the rectangle, or the card opens where the last one was.
+	 * The anchor is applied to state and the mounted host before the surface's
+	 * own trigger is clicked, or the card opens where the last one was.
 	 */
-	export async function openUtility(id: UtilityId, anchor: UtilityAnchor): Promise<void> {
+	export function openUtility(id: UtilityId, anchor: UtilityAnchor): void {
 		if (id === "resources") resourceAnchor = anchor;
 		else usageAnchor = anchor;
-		await tick();
+		positionPopoverHost(id, anchor);
 		popoverTrigger(id)?.click();
 	}
 
@@ -189,22 +193,4 @@
 		bottom: 0;
 	}
 
-	/* Development-only readout of how many backend calls the shell has made.
-     Deliberately not part of the shared component set: it is a debugging
-     instrument, not chrome, and it never ships to a user. */
-	.invoke-counter {
-		position: absolute;
-		/* Clear of the Resources and Usage strip along the bottom of the right
-       column, which is 28px tall — otherwise this sits on top of it and spoils
-       every screenshot taken in development. */
-		bottom: 36px;
-		right: 10px;
-		border-radius: var(--radius-sm);
-		background: color-mix(in srgb, var(--color-surface) 92%, var(--color-bg));
-		color: var(--color-text-3);
-		font-family: var(--font-mono);
-		font-size: 12px;
-		padding: 3px 8px;
-		pointer-events: none;
-	}
 </style>

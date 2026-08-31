@@ -25,18 +25,11 @@
 	function handleClick(event: MouseEvent & { currentTarget: HTMLButtonElement }) {
 		onclick?.(event);
 		if (event.defaultPrevented) return;
-		// The button has to be captured now: the DOM clears `currentTarget` as soon
-		// as this handler returns, so reading it later would give null.
 		const trigger = event.currentTarget;
-		// This webview opens the menu on pointerdown and then dismisses it again on
-		// the same click's pointerup, so by the time the click lands it is shut.
-		// Reopening through the keyboard path avoids that pointer sequence entirely.
-		setTimeout(() => {
-			if (trigger.getAttribute("aria-expanded") !== "false") return;
-			trigger.dispatchEvent(
-				new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
-			);
-		}, 0);
+		if (trigger.getAttribute("aria-expanded") !== "false") return;
+		trigger.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
+		);
 	}
 </script>
 

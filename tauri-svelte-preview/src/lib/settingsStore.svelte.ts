@@ -245,7 +245,15 @@ let lastPersistedSettings: string | null = null;
 function persistSettings(value: Settings): void {
 	const serialized = JSON.stringify(value);
 	lastPersistedSettings = serialized;
-	void writeAssemblySettingFromTauri(SETTINGS_SETTING_KEY, value).catch(() => undefined);
+	void persistSettingsToStorage(value, serialized);
+}
+
+async function persistSettingsToStorage(value: Settings, serialized: string): Promise<void> {
+	try {
+		await writeAssemblySettingFromTauri(SETTINGS_SETTING_KEY, value);
+	} catch {
+		if (lastPersistedSettings === serialized) lastPersistedSettings = null;
+	}
 }
 
 function noteSettingsMutation(): void {
@@ -258,36 +266,40 @@ function noteSettingsMutation(): void {
  * A value changed after this read began is left alone rather than replaced by
  * the late SQLite result.
  */
-export function hydrateSettings(): Promise<void> {
-	if (settingsHydrated) return Promise.resolve();
+export async function hydrateSettings(): Promise<void> {
+	if (settingsHydrated) return;
 	if (hydrationPromise) return hydrationPromise;
 
 	const baseline = JSON.stringify($state.snapshot(settings) as Settings);
 	hydrationBaseline = baseline;
-	const hydration = readAssemblySettingFromTauri(SETTINGS_SETTING_KEY)
-		.then((stored) => {
-			const current = $state.snapshot(settings) as Settings;
-			const changed =
-				hydrationSawMutation ||
-				JSON.stringify(current) !== baseline ||
-				JSON.stringify(current) !== initialSettingsSnapshot;
-			if (!changed) {
-				const hydrated = mergeWithDefaults(stored);
-				for (const key of Object.keys(hydrated) as SettingsSection[]) {
-					settings[key] = hydrated[key] as never;
-				}
-				lastPersistedSettings = JSON.stringify($state.snapshot(settings) as Settings);
-			} else {
-				lastPersistedSettings = null;
-			}
-			settingsHydrated = true;
-		})
-		.finally(() => {
-			if (hydrationPromise === hydration) hydrationPromise = null;
-			hydrationBaseline = null;
-		});
+	const hydration = loadSettings(baseline);
 	hydrationPromise = hydration;
-	return hydration;
+	try {
+		await hydration;
+	} finally {
+		if (hydrationPromise === hydration) hydrationPromise = null;
+		hydrationBaseline = null;
+	}
+}
+
+async function loadSettings(baseline: string): Promise<void> {
+	const stored = await readAssemblySettingFromTauri(SETTINGS_SETTING_KEY);
+	if (hydrationBaseline !== baseline) return;
+	const current = $state.snapshot(settings) as Settings;
+	const changed =
+		hydrationSawMutation ||
+		JSON.stringify(current) !== baseline ||
+		JSON.stringify(current) !== initialSettingsSnapshot;
+	if (!changed) {
+		const hydrated = mergeWithDefaults(stored);
+		for (const key of Object.keys(hydrated) as SettingsSection[]) {
+			settings[key] = hydrated[key] as never;
+		}
+		lastPersistedSettings = JSON.stringify($state.snapshot(settings) as Settings);
+	} else {
+		lastPersistedSettings = null;
+	}
+	settingsHydrated = true;
 }
 
 // Save on any change. `$effect.root` lets us own an effect outside of a

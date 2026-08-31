@@ -19,7 +19,7 @@
     text,
     content,
     side = 'bottom',
-    delayDuration = 600,
+    delayDuration = 0,
     children,
   }: Props = $props();
 </script>

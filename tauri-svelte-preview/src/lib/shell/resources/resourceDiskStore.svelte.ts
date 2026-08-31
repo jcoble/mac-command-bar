@@ -3,7 +3,7 @@ import type { DiskUsageEntry, DiskUsageReport } from './resourceDiskTypes.ts';
 import { buildReclaimRequest } from './resourceDiskViewModel.ts';
 
 /**
- * Disk sizes are measured on demand, never on the three second sampler: a walk
+ * Disk sizes are measured on demand, never during process usage reads: a walk
  * over a workspace costs far more than reading process usage, and the backend
  * keeps each answer for five minutes anyway.
  */
@@ -31,25 +31,27 @@ export const resourceReclaimState = $state<{
 
 let loadInFlight: Promise<DiskUsageReport | null> | null = null;
 
-export function loadResourceDiskUsage(refresh = false): Promise<DiskUsageReport | null> {
+export async function loadResourceDiskUsage(refresh = false): Promise<DiskUsageReport | null> {
   if (loadInFlight) return loadInFlight;
   resourceDiskState.loading = true;
   resourceDiskState.error = null;
-  loadInFlight = readResourceDiskUsage(refresh)
-    .then((report) => {
-      resourceDiskState.report = report;
-      return report;
-    })
-    .catch((error: unknown) => {
-      resourceDiskState.error =
-        error instanceof Error ? error.message : 'Disk usage could not be measured.';
-      return null;
-    })
-    .finally(() => {
-      resourceDiskState.loading = false;
-      loadInFlight = null;
-    });
+  loadInFlight = loadResourceDiskUsageOnce(refresh);
   return loadInFlight;
+}
+
+async function loadResourceDiskUsageOnce(refresh: boolean): Promise<DiskUsageReport | null> {
+  try {
+    const report = await readResourceDiskUsage(refresh);
+    resourceDiskState.report = report;
+    return report;
+  } catch (error: unknown) {
+    resourceDiskState.error =
+      error instanceof Error ? error.message : 'Disk usage could not be measured.';
+    return null;
+  } finally {
+    resourceDiskState.loading = false;
+    loadInFlight = null;
+  }
 }
 
 export function askToReclaimDiskEntry(entry: DiskUsageEntry): void {

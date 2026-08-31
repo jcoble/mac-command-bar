@@ -13,20 +13,7 @@
   let { content, fileName, relativePath, dirty = false }: Props = $props();
   let blocks = $derived(parseSafeMarkdown(content));
   let summary = $derived(sourceMarkdownPreviewTextSummary(content) || 'Empty Markdown file');
-  let highlightReady = $state(false);
-
-  // Keep the first paint cheap, then colour the same token stream the
-  // conversation uses. The preview is mounted only while visible, so the
-  // frame is also the complete release boundary for this work.
-  $effect(() => {
-    const source = content;
-    highlightReady = false;
-    if (typeof window === 'undefined') return;
-    const frame = window.requestAnimationFrame(() => {
-      if (source === content) highlightReady = true;
-    });
-    return () => window.cancelAnimationFrame(frame);
-  });
+  const highlightReady = true;
 </script>
 
 <section

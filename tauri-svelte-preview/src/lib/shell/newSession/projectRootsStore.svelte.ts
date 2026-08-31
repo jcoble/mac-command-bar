@@ -112,17 +112,28 @@ let hydrationPromise: Promise<void> | null = null;
 /** Write the added folders to their SQLite setting. */
 function persistCustom(): void {
   const snapshot = $state.snapshot(projectRoots.custom) as CustomRoot[];
-  void writeAssemblySettingFromTauri(CUSTOM_PROJECT_ROOTS_SETTING_KEY, snapshot).catch(() => {
-    projectRoots.error = PERSISTENCE_WRITE_FAILED_MESSAGE;
-  });
+  void persistCustomRoots(snapshot);
 }
 
 /** Remember where the last session was started. Failing this is not worth a word. */
 function persistLastUsed(): void {
-  void writeAssemblySettingFromTauri(
-    LAST_PROJECT_ROOT_SETTING_KEY,
-    projectRoots.lastUsedPath
-  ).catch(() => undefined);
+  void persistLastUsedRoot(projectRoots.lastUsedPath);
+}
+
+async function persistCustomRoots(snapshot: CustomRoot[]): Promise<void> {
+  try {
+    await writeAssemblySettingFromTauri(CUSTOM_PROJECT_ROOTS_SETTING_KEY, snapshot);
+  } catch {
+    projectRoots.error = PERSISTENCE_WRITE_FAILED_MESSAGE;
+  }
+}
+
+async function persistLastUsedRoot(path: string | null): Promise<void> {
+  try {
+    await writeAssemblySettingFromTauri(LAST_PROJECT_ROOT_SETTING_KEY, path);
+  } catch {
+    // Best effort preference.
+  }
 }
 
 /**
@@ -130,17 +141,29 @@ function persistLastUsed(): void {
  * it does its work once. Tolerant: an unreadable setting means an empty value,
  * not a broken dialog. A user mutation made while the read is in flight wins.
  */
-export function hydrate(): Promise<void> {
-  if (projectRoots.hydrated) return Promise.resolve();
-  if (hydrationPromise) return hydrationPromise;
+export async function hydrate(): Promise<void> {
+  if (projectRoots.hydrated) return;
+  if (hydrationPromise) {
+    await hydrationPromise;
+    return;
+  }
   const customVersionAtStart = customVersion;
   const lastUsedVersionAtStart = lastUsedVersion;
 
-  hydrationPromise = Promise.all([
-    readAssemblySettingFromTauri(CUSTOM_PROJECT_ROOTS_SETTING_KEY),
-    readAssemblySettingFromTauri(LAST_PROJECT_ROOT_SETTING_KEY)
-  ])
-    .then(([storedCustom, storedLastUsed]) => {
+  hydrationPromise = hydrateProjectRoots(customVersionAtStart, lastUsedVersionAtStart);
+
+  await hydrationPromise;
+}
+
+async function hydrateProjectRoots(
+  customVersionAtStart: number,
+  lastUsedVersionAtStart: number
+): Promise<void> {
+  try {
+    const [storedCustom, storedLastUsed] = await Promise.all([
+      readAssemblySettingFromTauri(CUSTOM_PROJECT_ROOTS_SETTING_KEY),
+      readAssemblySettingFromTauri(LAST_PROJECT_ROOT_SETTING_KEY)
+    ]);
       if (customVersion === customVersionAtStart) {
         projectRoots.custom = parseStoredCustomRoots(
           storedCustom === null ? null : JSON.stringify(storedCustom)
@@ -150,17 +173,13 @@ export function hydrate(): Promise<void> {
         const last = normalizeRootPath(typeof storedLastUsed === 'string' ? storedLastUsed : '');
         projectRoots.lastUsedPath = last || null;
       }
-    })
-    .catch(() => {
-      if (customVersion === customVersionAtStart) projectRoots.custom = [];
-      if (lastUsedVersion === lastUsedVersionAtStart) projectRoots.lastUsedPath = null;
-    })
-    .finally(() => {
-      projectRoots.hydrated = true;
-      hydrationPromise = null;
-    });
-
-  return hydrationPromise;
+  } catch {
+    if (customVersion === customVersionAtStart) projectRoots.custom = [];
+    if (lastUsedVersion === lastUsedVersionAtStart) projectRoots.lastUsedPath = null;
+  } finally {
+    projectRoots.hydrated = true;
+    hydrationPromise = null;
+  }
 }
 
 // ── Mutations ─────────────────────────────────────────────────────────────────

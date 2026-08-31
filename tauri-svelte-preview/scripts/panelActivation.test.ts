@@ -31,7 +31,11 @@ test('files_panel_hidden_skips_explorer_on_session_pick', () => {
 
   root = '/repo/two';
   panels.sessionPicked();
-  assert.deepEqual(explorerCalls, ['/repo/one', '/repo/two'], 'a new visible root is loaded');
+  assert.deepEqual(explorerCalls, ['/repo/one'], 'rail traversal does not rebuild visible Files');
+
+  panels.filesVisible(false);
+  panels.filesVisible(true);
+  assert.deepEqual(explorerCalls, ['/repo/one', '/repo/two'], 'reopening Files loads the final root');
 });
 
 test('hidden_editor_does_not_follow_later_session_roots', () => {

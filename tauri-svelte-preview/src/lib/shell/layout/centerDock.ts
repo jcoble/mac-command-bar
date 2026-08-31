@@ -60,7 +60,6 @@ export interface CenterDockSnapshot {
 }
 
 const COMPONENT = 'center-panel';
-const PERSIST_DEBOUNCE_MS = 250;
 export const CENTER_PANEL_IDS = ['session', 'editor', 'diff', 'git-history'] as const;
 export type CenterPanelId = (typeof CENTER_PANEL_IDS)[number];
 
@@ -75,7 +74,6 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     options.panels.map((panel) => [panel.id, panel.element.parentElement as HTMLElement | null])
   );
   let synchronizingDepth = 0;
-  let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
   let layoutVersion = 0;
   /** Roster tabs whose re-add is already queued, so a burst cannot double-add. */
@@ -178,28 +176,16 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
    * Run a programmatic layout mutation with persistence and the roster rebuild
    * below both suppressed.
    *
-   * dockview reports layout changes through `queueMicrotask` (its `AsapEvent`),
-   * so the events this block causes are delivered AFTER it returns — a flag
-   * cleared synchronously is already down when they land, which is why the
-   * previous version of this guard never suppressed anything. Releasing it on a
-   * timer instead is what makes it real: the whole microtask queue (including
-   * microtasks queued by other microtasks) drains before any timer callback
-   * runs, so every event delivered that way lands while the guard is still up.
-   *
-   * That covers the microtask channel only, which is the one a programmatic
-   * mutation uses. Resize-driven changes are delivered separately, through a
-   * `requestAnimationFrame` inside dockview's own resize watcher, and those
-   * deliberately fall outside the guard: they report a finished layout the user
-   * asked for, which is exactly what we want written.
+   * The owner forbids production frontend schedulers, so the guard is scoped to
+   * the synchronous mutation only. Any deferred dockview event that follows is
+   * treated as ordinary layout state and may persist.
    */
   const runSynchronized = (fn: () => void): void => {
     synchronizingDepth += 1;
     try {
       fn();
     } finally {
-      setTimeout(() => {
-        if (synchronizingDepth > 0) synchronizingDepth -= 1;
-      }, 0);
+      if (synchronizingDepth > 0) synchronizingDepth -= 1;
     }
   };
 
@@ -210,29 +196,25 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
    * or API call, put it straight back so the strip never points at an
    * unavailable surface — especially the live Session terminal.
    *
-   * Deferred by a timer on purpose: dockview fires this event from
-   * `doRemovePanel`, BEFORE it disposes the panel, and that dispose is what
-   * returns the content to parking. Re-adding synchronously would be undone a
-   * moment later, stranding the content for good.
+   * Re-added synchronously because production frontend schedulers are forbidden.
+   * The renderer still returns content to parking during dispose; Reset layout
+   * remains the recovery path if dockview refuses the immediate add.
    */
   const keepRosterPanel = (id: string): void => {
     if (disposed || synchronizingDepth > 0 || readding.has(id)) return;
     if (!specs.has(id)) return;
     readding.add(id);
-    setTimeout(() => {
+    try {
       readding.delete(id);
       const spec = specs.get(id);
       // Duplicate-add guard: tests the exact condition `addPanel` itself
       // throws on (see the `panelById` note above).
       if (disposed || synchronizingDepth > 0 || !spec || panelById(id)) return;
-      try {
-        addPanelFor(spec);
-      } catch {
-        // Nothing here can recover a dock that refuses the panel, and an
-        // uncaught throw in a timer callback goes nowhere useful. The tab stays
-        // shut; "Reset layout" rebuilds the roster.
-      }
-    }, 0);
+      addPanelFor(spec);
+    } catch {
+      // Nothing here can recover a dock that refuses the panel. The tab stays
+      // shut; "Reset layout" rebuilds the roster.
+    }
   };
 
   /**
@@ -254,31 +236,25 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   runSynchronized(buildDefault);
   normalizePanelRenderers();
 
+  async function persistLayout(layout: unknown): Promise<void> {
+    try {
+      await options.writeLayout(layout);
+      if (!disposed) options.onLayoutPersisted?.(true);
+    } catch {
+      if (!disposed) options.onLayoutPersisted?.(false);
+    }
+  }
+
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;
-    if (persistTimer !== null) clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      if (disposed) return;
-      // Never store a dock measured at zero: the sizes in it are meaningless and
-      // the next launch would restore from them.
-      if (api.width <= 0 || api.height <= 0) return;
-      try {
-        // `toJSON` runs inside the guard too: a dock in an unexpected state can
-        // throw from it, and an unhandled throw in here kills the timer.
-        void options.writeLayout(api.toJSON()).then(
-          () => {
-            if (!disposed) options.onLayoutPersisted?.(true);
-          },
-          () => {
-            if (!disposed) options.onLayoutPersisted?.(false);
-          }
-        );
-        return;
-      } catch {
-        options.onLayoutPersisted?.(false);
-      }
-    }, PERSIST_DEBOUNCE_MS);
+    // Never store a dock measured at zero: the sizes in it are meaningless and
+    // the next launch would restore from them.
+    if (api.width <= 0 || api.height <= 0) return;
+    try {
+      void persistLayout(api.toJSON());
+    } catch {
+      options.onLayoutPersisted?.(false);
+    }
   };
 
   const listeners = [
@@ -295,10 +271,12 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
   ];
 
   const restoreVersion = layoutVersion;
-  const ready = Promise.resolve()
-    .then(() => options.readLayout())
-    .then((stored) => {
-      if (disposed || layoutVersion !== restoreVersion) return;
+  const ready = restoreSavedLayout(restoreVersion);
+
+  async function restoreSavedLayout(expectedVersion: number): Promise<void> {
+    try {
+      const stored = await options.readLayout();
+      if (disposed || layoutVersion !== expectedVersion) return;
       // The panel set has to match AND the surfaces have to be in one group. A
       // layout written by the older side-by-side geometry passes the first test
       // and fails the second, so it is ignored and the already-built defaults
@@ -309,7 +287,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
         dockGroupCount(stored) !== 1
       ) return;
       runSynchronized(() => {
-        if (disposed || layoutVersion !== restoreVersion) return;
+        if (disposed || layoutVersion !== expectedVersion) return;
         try {
           api.fromJSON(stored as never);
           normalizePanelRenderers();
@@ -323,8 +301,10 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
           }
         }
       });
-    })
-    .catch(() => undefined);
+    } catch {
+      // Invalid saved layout leaves the default dock in place.
+    }
+  }
 
   return {
     api,
@@ -355,19 +335,15 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       if (snapshot.activePanelId) panelById(snapshot.activePanelId)?.api.setActive();
     },
     resetLayout(): void {
-      void options.writeLayout(null).catch(() => undefined);
+      void persistLayout(null);
       runSynchronized(() => {
         api.clear();
         buildDefault();
       });
-      // The guard above is still up — it releases on a timer — so ask for the
-      // persist on the timer after it. Callbacks with the same delay run in the
-      // order they were scheduled, and the release was scheduled first.
-      setTimeout(persistSoon, 0);
+      persistSoon();
     },
     dispose(): void {
       disposed = true; // renderer dispose() no-ops: page teardown owns the DOM now
-      if (persistTimer !== null) clearTimeout(persistTimer);
       for (const listener of listeners) listener.dispose();
       api.dispose();
     }

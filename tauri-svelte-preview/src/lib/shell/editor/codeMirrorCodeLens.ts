@@ -203,21 +203,22 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
           return;
         }
         if (!row.request || !options.onReferences) return;
-        this.peek = { request: row.request, targets: null };
-        this.paint(true);
-        const request = row.request;
-        void options.onReferences(request)
-          .then((targets) => {
-            if (!this.alive || this.peek?.request !== request) return;
-            this.peek = { request, targets };
-            this.paint(true);
-          })
-          .catch(() => {
-            if (!this.alive || this.peek?.request !== request) return;
-            this.peek = { request, targets: [] };
-            this.paint(true);
-          });
+        void this.openReferences(row.request);
       };
+
+      private async openReferences(request: SourceLookupRequest): Promise<void> {
+        this.peek = { request, targets: null };
+        this.paint(true);
+        let targets: SourceReferenceTarget[] = [];
+        try {
+          targets = await options.onReferences?.(request) ?? [];
+        } catch {
+          targets = [];
+        }
+        if (!this.alive || this.peek?.request !== request) return;
+        this.peek = { request, targets };
+        this.paint(true);
+      }
 
       private paint(refresh = false): void {
         if (!this.alive) return;

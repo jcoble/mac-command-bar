@@ -575,6 +575,30 @@ impl SourceFileReadOwner {
     }
 }
 
+#[derive(Default)]
+struct ProjectRootValidationOwner {
+    generation: Arc<AtomicU64>,
+}
+
+impl ProjectRootValidationOwner {
+    fn advance(&self, generation: u64) -> bool {
+        generation >= self.generation.fetch_max(generation, Ordering::AcqRel)
+    }
+
+    fn cancel(&self, generation: u64) {
+        let _ = self.generation.compare_exchange(
+            generation,
+            generation.saturating_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn generation(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.generation)
+    }
+}
+
 struct SourceScanCancellation {
     cancelled: Arc<AtomicBool>,
     progress: Option<Arc<dyn Fn(SourceScanStats) + Send + Sync>>,
@@ -775,10 +799,30 @@ async fn cancel_source_scan(
 }
 
 #[tauri::command]
-async fn validate_project_root(path: String) -> Result<ProjectRootValidationResult, String> {
-    tauri::async_runtime::spawn_blocking(move || validate_project_root_sync(PathBuf::from(path)))
-        .await
-        .map_err(|error| format!("Project root validation task failed: {error}"))
+async fn validate_project_root(
+    owner: tauri::State<'_, ProjectRootValidationOwner>,
+    path: String,
+    generation: u64,
+) -> Result<Option<ProjectRootValidationResult>, String> {
+    if !owner.advance(generation) {
+        return Ok(None);
+    }
+    let current_generation = owner.generation();
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_project_root_sync_while(PathBuf::from(path), || {
+            current_generation.load(Ordering::Acquire) == generation
+        })
+    })
+    .await
+    .map_err(|error| format!("Project root validation task failed: {error}"))
+}
+
+#[tauri::command]
+fn cancel_project_root_validation(
+    owner: tauri::State<'_, ProjectRootValidationOwner>,
+    generation: u64,
+) {
+    owner.cancel(generation);
 }
 
 fn source_scan_cancellation_for_command(
@@ -2383,22 +2427,40 @@ fn list_source_directory_sync_with_cancellation(
     Ok(entries)
 }
 
+#[cfg(test)]
 fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
+    validate_project_root_sync_while(path, || true).unwrap_or_else(|| ProjectRootValidationResult {
+        path: String::new(),
+        exists: false,
+        is_directory: false,
+        is_git_repository: false,
+        git_root: None,
+        message: "Project validation was cancelled".to_string(),
+    })
+}
+
+fn validate_project_root_sync_while(
+    path: PathBuf,
+    is_current: impl Fn() -> bool,
+) -> Option<ProjectRootValidationResult> {
     let path_label = path.display().to_string();
+    if !is_current() {
+        return None;
+    }
     let metadata = std::fs::metadata(&path);
     let Ok(metadata) = metadata else {
-        return ProjectRootValidationResult {
+        return Some(ProjectRootValidationResult {
             path: path_label,
             exists: false,
             is_directory: false,
             is_git_repository: false,
             git_root: None,
             message: "Project path not found".to_string(),
-        };
+        });
     };
 
     if !metadata.is_dir() {
-        return ProjectRootValidationResult {
+        return Some(ProjectRootValidationResult {
             path: path_label,
             exists: true,
             is_directory: false,
@@ -2406,17 +2468,20 @@ fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
             git_root: None,
             message: "Project path points to a file. Choose the repository folder instead."
                 .to_string(),
-        };
+        });
     }
 
-    let git_root_path = git_repository_root(&path);
+    if !is_current() {
+        return None;
+    }
+    let git_root_path = git_repository_root_while(&path, is_current)?;
     let is_git_repository = git_root_path
         .as_ref()
         .is_some_and(|git_root| paths_refer_to_same_location(git_root, &path));
     let git_root = git_root_path
         .as_ref()
         .map(|root| normalized_path_string(root));
-    ProjectRootValidationResult {
+    Some(ProjectRootValidationResult {
         path: path_label,
         exists: true,
         is_directory: true,
@@ -2430,19 +2495,28 @@ fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
             "Folder is not a Git repository. Source browsing will work, but Git/worktree panels may be unavailable."
                 .to_string()
         },
-    }
+    })
 }
 
-fn git_repository_root(path: &Path) -> Option<PathBuf> {
+fn git_repository_root_while(
+    path: &Path,
+    is_current: impl Fn() -> bool,
+) -> Option<Option<PathBuf>> {
     let mut current = Some(path);
     while let Some(candidate) = current {
+        if !is_current() {
+            return None;
+        }
         if candidate.join(".git").exists() {
-            return Some(candidate.to_path_buf());
+            return Some(Some(candidate.to_path_buf()));
         }
         current = candidate.parent();
     }
 
-    let output = Command::new("git")
+    if !is_current() {
+        return None;
+    }
+    let output = match Command::new("git")
         .args([
             "-C",
             path.to_str().unwrap_or_default(),
@@ -2450,17 +2524,23 @@ fn git_repository_root(path: &Path) -> Option<PathBuf> {
             "--show-toplevel",
         ])
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(_) => return Some(None),
+    };
 
-    if !output.status.success() {
+    if !is_current() {
         return None;
     }
-
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() {
+        return Some(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let root = stdout.trim().to_string();
     if root.is_empty() {
-        None
+        Some(None)
     } else {
-        Some(PathBuf::from(root))
+        Some(Some(PathBuf::from(root)))
     }
 }
 
@@ -6475,6 +6555,7 @@ fn main() {
     let builder = tauri::Builder::default()
         .manage(SourceScanRegistry::default())
         .manage(SourceFileReadOwner::default())
+        .manage(ProjectRootValidationOwner::default())
         .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
         .manage(projection_streams::ProjectionStreams::default())
@@ -6585,6 +6666,7 @@ fn main() {
             list_source_directory,
             cancel_source_scan,
             validate_project_root,
+            cancel_project_root_validation,
             read_source_file,
             cancel_source_file_reads,
             read_native_csharp_file,

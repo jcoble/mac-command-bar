@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
   import { RefreshCw } from '@lucide/svelte';
   import { refreshCurrentUsage, refreshUsageHistory, usageState } from './usageStore.svelte.ts';
   import {
@@ -14,7 +14,6 @@
   } from './usageCurrent.ts';
   import UsageWorkspace from './UsageWorkspace.svelte';
   import type { ProviderUsageSnapshot } from './usageTypes.ts';
-  import { afterFloatingSurfacePaint } from '$lib/shell/floatingSurface.ts';
 
   interface Props { provider?: string | null; instanceId?: string | null; }
   let { provider = null, instanceId = null }: Props = $props();
@@ -30,15 +29,22 @@
   let displayModeVersion = 0;
 
   onMount(() => {
-    let mounted = true;
+    const owner = { active: true };
     const restoreVersion = displayModeVersion;
-    void readUsageDisplayMode().then((stored) => {
-      if (mounted && displayModeVersion === restoreVersion) displayMode = stored;
-    });
+    void restoreDisplayMode(owner, restoreVersion);
     return () => {
-      mounted = false;
+      owner.active = false;
     };
   });
+
+  async function restoreDisplayMode(owner: { active: boolean }, restoreVersion: number): Promise<void> {
+    try {
+      const stored = await readUsageDisplayMode();
+      if (owner.active && displayModeVersion === restoreVersion) displayMode = stored;
+    } catch (_error) {
+      // Keep the default display mode when persisted preference is unavailable.
+    }
+  }
 
   function toggleDisplayMode(): void {
     displayModeVersion += 1;
@@ -61,9 +67,27 @@
 
   async function refreshMenu(): Promise<void> {
     menuLoading = true;
-    await refreshCurrentUsage(provider, instanceId);
-    captureCurrentUsage();
-    menuLoading = false;
+    const forProvider = provider;
+    const forInstance = instanceId;
+    try {
+      await refreshCurrentUsage(forProvider, forInstance);
+      if (provider === forProvider && instanceId === forInstance) captureCurrentUsage();
+    } catch (_error) {
+      // The usage store owns unavailable-state text; the popover only mirrors it.
+    } finally {
+      if (provider === forProvider && instanceId === forInstance) menuLoading = false;
+    }
+  }
+
+  async function refreshUsageWorkspace(providerName: string | null, instance: string | null): Promise<void> {
+    try {
+      await Promise.all([
+        refreshCurrentUsage(providerName, instance),
+        refreshUsageHistory()
+      ]);
+    } catch (_error) {
+      // Manual refresh can fail without closing the stats surface.
+    }
   }
 
   function unavailableMessage(snapshot: ProviderUsageSnapshot | null): string {
@@ -76,7 +100,7 @@
     open = !open;
     if (open) {
       captureCurrentUsage();
-      afterFloatingSurfacePaint(() => void refreshMenu());
+      void refreshMenu();
     }
   }
 
@@ -87,29 +111,24 @@
   async function openStats(): Promise<void> {
     open = false;
     fullOpen = true;
-    afterFloatingSurfacePaint(() => {
-      void refreshCurrentUsage(provider, instanceId);
-      void refreshUsageHistory();
-    });
-    await tick();
+    void refreshUsageWorkspace(provider, instanceId);
     modalSurface?.focus();
   }
 
-  async function closeStats(): Promise<void> {
+  function closeStats(): void {
     fullOpen = false;
-    await tick();
     triggerButton?.focus();
   }
 
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape' && fullOpen) {
       event.preventDefault();
-      void closeStats();
+      closeStats();
     }
   }
 
   function handleBackdropClick(event: MouseEvent): void {
-    if (event.target === event.currentTarget) void closeStats();
+    if (event.target === event.currentTarget) closeStats();
   }
 </script>
 

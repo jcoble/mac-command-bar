@@ -22,33 +22,50 @@ import type { ResourceUnavailable } from './resourceTypes.ts';
 let refreshInFlight: Promise<ResourceSnapshot | null> | null = null;
 
 export const resourceService = {
-  refresh(): Promise<ResourceSnapshot | null> {
+  async refresh(): Promise<ResourceSnapshot | null> {
     if (!refreshInFlight) {
-      refreshInFlight = readResourceSnapshot().finally(() => {
-        refreshInFlight = null;
-      });
+      refreshInFlight = refreshResourceSnapshotOnce();
     }
-    return refreshInFlight;
+    const snapshot = await refreshInFlight;
+    return snapshot;
   },
-  readDisk(roots: ResourceDiskRoot[], options?: { maxDepth?: number; maxEntries?: number }): Promise<DiskScanReport | null> {
-    return readResourceDiskScan(roots, options);
+  async readDisk(
+    roots: ResourceDiskRoot[],
+    options?: { maxDepth?: number; maxEntries?: number }
+  ): Promise<DiskScanReport | null> {
+    const report = await readResourceDiskScan(roots, options);
+    return report;
   },
-  stop(request: ResourceStopRequest): Promise<ResourceCommandReceipt | null> {
-    return stopOwnedResource(request);
+  async stop(request: ResourceStopRequest): Promise<ResourceCommandReceipt | null> {
+    const receipt = await stopOwnedResource(request);
+    return receipt;
   },
-  restartLanguageServer(root: string): Promise<ResourceUnavailable | null> {
-    return restartLanguageServerRoot(root);
+  async restartLanguageServer(root: string): Promise<ResourceUnavailable | null> {
+    const unavailable = await restartLanguageServerRoot(root);
+    return unavailable;
   },
-  applyMemoryPressure(level: string): Promise<ResourceUnavailable | null> {
-    return applyResourceMemoryPressure(level);
+  async applyMemoryPressure(level: string): Promise<ResourceUnavailable | null> {
+    const unavailable = await applyResourceMemoryPressure(level);
+    return unavailable;
   },
-  readLanguageServerLog(root: string): Promise<ResourceUnavailable | null> {
-    return readLanguageServerLog(root);
+  async readLanguageServerLog(root: string): Promise<ResourceUnavailable | null> {
+    const unavailable = await readLanguageServerLog(root);
+    return unavailable;
   },
-  cleanup(request: ResourceCleanupRequest): Promise<ResourceCleanupReceipt | null> {
-    return cleanupWorkspaceDiskEntry(request);
+  async cleanup(request: ResourceCleanupRequest): Promise<ResourceCleanupReceipt | null> {
+    const receipt = await cleanupWorkspaceDiskEntry(request);
+    return receipt;
   },
-  setActiveRoot(root: string): Promise<string | null> {
-    return setActiveSourceRoot(root);
+  async setActiveRoot(root: string): Promise<string | null> {
+    const activeRoot = await setActiveSourceRoot(root);
+    return activeRoot;
   }
 };
+
+async function refreshResourceSnapshotOnce(): Promise<ResourceSnapshot | null> {
+  try {
+    return await readResourceSnapshot();
+  } finally {
+    refreshInFlight = null;
+  }
+}

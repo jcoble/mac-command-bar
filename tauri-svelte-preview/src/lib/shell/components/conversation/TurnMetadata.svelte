@@ -27,18 +27,11 @@
   });
 
   let copied = $state(false);
-  let confirmationTimer: ReturnType<typeof setTimeout> | null = null;
-
-  $effect(() => () => {
-    if (confirmationTimer) clearTimeout(confirmationTimer);
-  });
 
   async function copyTurn(): Promise<void> {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     await navigator.clipboard.writeText(text);
     copied = true;
-    if (confirmationTimer) clearTimeout(confirmationTimer);
-    confirmationTimer = setTimeout(() => (copied = false), 1400);
   }
 </script>
 

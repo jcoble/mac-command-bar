@@ -93,18 +93,11 @@
   const gutterWidth = $derived(Math.max(2, String(allRows.at(-1)?.number ?? '').length));
 
   let copied = $state(false);
-  let copyTimer: ReturnType<typeof setTimeout> | null = null;
-
-  $effect(() => () => {
-    if (copyTimer) clearTimeout(copyTimer);
-  });
 
   async function copyDiff(): Promise<void> {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     await navigator.clipboard.writeText(diff);
     copied = true;
-    if (copyTimer) clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => (copied = false), 1400);
   }
 </script>
 

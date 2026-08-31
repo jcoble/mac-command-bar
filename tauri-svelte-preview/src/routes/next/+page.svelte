@@ -36,21 +36,37 @@
 	let sessionsColumn = $state<SessionsColumn | null>(null);
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
+	let openedConversationOwnedId = $state<string | null>(null);
 
 	onMount(() => {
 		void startShell({
 			onSelectInitial: async (ownedId) => {
 				await selection.selectSession(ownedId);
+				await openConversation(ownedId);
 			},
 		});
 
 		return () => {
+			selection.dispose();
 			stopShell();
 		};
 	});
 
 	function handleAskRemoveSession(ownedId: string): void {
 		void selection.removeSession(ownedId);
+	}
+
+	async function selectSession(ownedId: string): Promise<void> {
+		openedConversationOwnedId = null;
+		await selection.selectSession(ownedId);
+	}
+
+	async function openConversation(ownedId: string | null): Promise<void> {
+		if (!ownedId || selection.activeOwnedId !== ownedId) return;
+		await selection.openConversation(ownedId);
+		if (selection.activeOwnedId === ownedId && selection.hasChatProjection) {
+			openedConversationOwnedId = ownedId;
+		}
 	}
 </script>
 
@@ -69,8 +85,9 @@
 				onCollapse={(collapsed) => workbench.collapseSessions(collapsed)}
 				onNewSession={() => {}}
 				onSelectSession={(ownedId) => {
-					void selection.selectSession(ownedId);
+					void selectSession(ownedId);
 				}}
+				onOpenSession={(ownedId) => void openConversation(ownedId)}
 				onAskRemove={handleAskRemoveSession}
 			/>
 		</div>
@@ -106,12 +123,17 @@
 
 {#snippet sessionArea()}
 	<div class="session-area">
-		{#if selection.activeOwnedId}
+		{#if selection.activeOwnedId && openedConversationOwnedId === selection.activeOwnedId}
 			<ConversationSurface
 				owned={selection.railOwned}
 				activeOwnedId={selection.activeOwnedId}
 				rootAvailable={selection.activeRootAvailable}
 			/>
+		{:else if selection.activeOwnedId}
+			<div class="conversation-data-isolation" aria-label="Conversation paused">
+				<p>Conversation paused while you move between sessions.</p>
+				<button type="button" onclick={() => void openConversation(selection.activeOwnedId)}>Open conversation</button>
+			</div>
 		{:else}
 			<div class="conversation-data-isolation" aria-label="No session selected">
 				<p>Select a session to view conversation.</p>
@@ -232,5 +254,16 @@
 		height: 100%;
 		color: var(--color-text-2);
 		font-size: 13px;
+		gap: 10px;
+	}
+
+	.conversation-data-isolation button {
+		padding: 6px 10px;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		background: var(--color-elevated);
+		color: var(--color-text);
+		font: inherit;
+		cursor: pointer;
 	}
 </style>

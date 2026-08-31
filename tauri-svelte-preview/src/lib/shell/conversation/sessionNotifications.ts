@@ -82,19 +82,30 @@ type NotificationPlugin = typeof import('@tauri-apps/plugin-notification');
 let notificationPlugin: Promise<NotificationPlugin> | null = null;
 let notificationPermission: Promise<boolean> | null = null;
 
-function loadNotificationPlugin(): Promise<NotificationPlugin> {
-  notificationPlugin ??= import('@tauri-apps/plugin-notification');
-  return notificationPlugin;
+async function loadNotificationPlugin(): Promise<NotificationPlugin> {
+  notificationPlugin ??= importNotificationPlugin();
+  const plugin = await notificationPlugin;
+  return plugin;
+}
+
+async function importNotificationPlugin(): Promise<NotificationPlugin> {
+  return await import('@tauri-apps/plugin-notification');
 }
 
 async function notificationPermissionGranted(): Promise<boolean> {
-  if (notificationPermission) return notificationPermission;
-  notificationPermission = (async () => {
-    const plugin = await loadNotificationPlugin();
-    if (await plugin.isPermissionGranted()) return true;
-    return (await plugin.requestPermission()) === 'granted';
-  })();
-  return notificationPermission;
+  if (notificationPermission) {
+    const granted = await notificationPermission;
+    return granted;
+  }
+  notificationPermission = requestNotificationPermission();
+  const granted = await notificationPermission;
+  return granted;
+}
+
+async function requestNotificationPermission(): Promise<boolean> {
+  const plugin = await loadNotificationPlugin();
+  if (await plugin.isPermissionGranted()) return true;
+  return (await plugin.requestPermission()) === 'granted';
 }
 
 const sendSystemNotification: SessionNotificationSender = async (notification) => {
@@ -145,7 +156,21 @@ export function recordConversationPresenceEvent(
     ?? EMPTY_SESSION_PRESENCE_HISTORY;
   if (presenceEvent.kind === 'turn-started') return;
 
-  void runtimeTransition(event, presenceEvent.kind, previous, next)
-    .then(dispatchSystemNotification)
-    .catch(() => undefined);
+  void dispatchAttentionTransition(event, presenceEvent.kind, previous, next);
+}
+
+async function dispatchAttentionTransition(
+  event: ConversationPresenceEventLike & { provider: AgentConversationProvider },
+  kind: SessionAttentionKind,
+  previous: SessionPresenceHistory,
+  next: SessionPresenceHistory
+): Promise<void> {
+  try {
+    const transition = await runtimeTransition(event, kind, previous, next);
+    const current = get(sessionPresenceHistory)[event.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY;
+    if (current !== next) return;
+    await dispatchSystemNotification(transition);
+  } catch {
+    // Notification delivery is best-effort; presence state was already recorded.
+  }
 }

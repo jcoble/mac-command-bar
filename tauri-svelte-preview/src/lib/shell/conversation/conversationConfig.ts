@@ -54,8 +54,9 @@ export function hasAgentConversationConfig(state: AgentConversationConfigState):
   );
 }
 
-export function readAgentConversationConfig(ownedId: string): Promise<AgentConversationConfigState> {
-  return invoke<AgentConversationConfigState>('read_agent_conversation_config', { ownedId });
+export async function readAgentConversationConfig(ownedId: string): Promise<AgentConversationConfigState> {
+  const state = await invoke<AgentConversationConfigState>('read_agent_conversation_config', { ownedId });
+  return state;
 }
 
 /**
@@ -66,18 +67,20 @@ export function readAgentConversationConfig(ownedId: string): Promise<AgentConve
  * are nowhere yet, and the composer has nothing to show. What comes back is
  * stored, so every read after this one is an ordinary read.
  */
-export function warmAgentConversationConfig(
+export async function warmAgentConversationConfig(
   ownedId: string,
   generation: number
 ): Promise<AgentConversationConfigState> {
-  return invoke<AgentConversationConfigState>('warm_agent_conversation_config', {
+  const state = await invoke<AgentConversationConfigState>('warm_agent_conversation_config', {
     ownedId,
     generation
   });
+  return state;
 }
 
-export function setAgentConversationConfig(
+export async function setAgentConversationConfig(
   request: AgentConversationConfigRequest
 ): Promise<AgentConversationConfigState> {
-  return invoke<AgentConversationConfigState>('set_agent_conversation_config', { request });
+  const state = await invoke<AgentConversationConfigState>('set_agent_conversation_config', { request });
+  return state;
 }

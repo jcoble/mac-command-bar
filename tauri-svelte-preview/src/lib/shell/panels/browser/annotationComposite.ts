@@ -205,6 +205,21 @@ function blobFrom(capture: BrowserMarkupCapture): Blob {
   return new Blob([Uint8Array.from(capture.bytes)], { type: capture.mimeType || 'image/png' });
 }
 
+function fileFromCanvasPng(canvas: HTMLCanvasElement, name: string): File {
+  const dataUrl = canvas.toDataURL('image/png');
+  const comma = dataUrl.indexOf(',');
+  if (!dataUrl.startsWith('data:image/png') || comma < 0) {
+    throw new Error('The marked-up picture could not be written.');
+  }
+
+  const binary = atob(dataUrl.slice(comma + 1));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new File([bytes], name, { type: 'image/png' });
+}
+
 /**
  * Burns the shapes onto the capture with a canvas and answers a PNG File named
  * after the page, ready for `saveConversationClipboardImage`.
@@ -234,7 +249,5 @@ export async function compositeAnnotations(
 
   drawShapes(context, scaleShapes(shapes, layer, { width, height }), layer.width > 0 ? width / layer.width : 1);
 
-  const painted = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-  if (!painted) throw new Error('The marked-up picture could not be written.');
-  return new File([painted], name, { type: 'image/png' });
+  return fileFromCanvasPng(canvas, name);
 }

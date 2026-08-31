@@ -93,23 +93,26 @@
       return;
     }
 
-    let current = true;
-    void listAgentConversationEventsFromTauri(forSession, 0)
-      .then((events: AgentConversationEvent[] | null) => {
-        if (!current) return;
-        filesTouched = sessionFilesTouched(events ?? []);
-        filesLoaded = true;
-      })
-      .catch(() => {
-        if (!current) return;
-        filesTouched = [];
-        filesLoaded = true;
-      });
+    const owner = { active: true };
+    void loadTouchedFiles(owner, forSession);
 
     return () => {
-      current = false;
+      owner.active = false;
     };
   });
+
+  async function loadTouchedFiles(owner: { active: boolean }, forSession: string): Promise<void> {
+    try {
+      const events = await listAgentConversationEventsFromTauri(forSession, 0);
+      if (!owner.active || ownedId !== forSession) return;
+      filesTouched = sessionFilesTouched(events ?? []);
+      filesLoaded = true;
+    } catch {
+      if (!owner.active || ownedId !== forSession) return;
+      filesTouched = [];
+      filesLoaded = true;
+    }
+  }
 
   function openTouchedFile(touch: SessionFileTouch): void {
     openFileInEditor({ path: touch.path, projectRoot: root.trim() || undefined });

@@ -111,21 +111,23 @@ export function createGitCommitFilesService(
   async function repositoryTopFor(root: string): Promise<string> {
     if (state.repositoryTop) return state.repositoryTop;
     if (!topRequest) {
-      topRequest = (async () => {
-        let resolved: string | null = null;
-        try {
-          resolved = await resolveTop(root);
-        } catch {
-          // Not knowing the top is not a failure worth showing: fall back to
-          // the folder we were given, which is the top in the usual case.
-          resolved = null;
-        }
-        const top = (resolved ?? '').trim() === '' ? root : (resolved as string).trim();
-        if (state.root === root) state.repositoryTop = top;
-        return top;
-      })();
+      topRequest = resolveRepositoryTopOnce(root);
     }
     return topRequest;
+  }
+
+  async function resolveRepositoryTopOnce(root: string): Promise<string> {
+    let resolved: string | null = null;
+    try {
+      resolved = await resolveTop(root);
+    } catch {
+      // Not knowing the top is not a failure worth showing: fall back to
+      // the folder we were given, which is the top in the usual case.
+      resolved = null;
+    }
+    const top = (resolved ?? '').trim() === '' ? root : (resolved as string).trim();
+    if (state.root === root) state.repositoryTop = top;
+    return top;
   }
 
   function writeEntry(
@@ -254,9 +256,9 @@ export function createGitCommitFilesService(
       void isMerge; // the merge wording is chosen when the row is drawn
     },
 
-    loadCommitFiles(sha: string, isMerge: boolean): Promise<void> {
+    async loadCommitFiles(sha: string, isMerge: boolean): Promise<void> {
       void isMerge;
-      return loadCommitFiles(sha);
+      await loadCommitFiles(sha);
     },
 
     selectCommitFile,

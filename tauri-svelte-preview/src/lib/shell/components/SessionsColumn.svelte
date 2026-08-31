@@ -55,6 +55,7 @@
     onNewSession(): void;
     onCollapse(collapsed: boolean): void;
     onSelectSession?(ownedId: string): void | Promise<void>;
+    onOpenSession?(ownedId: string): void;
     onComplete?(ownedId: string): void;
     onReopen?(ownedId: string): void;
     onSettle?(ownedId: string): void;
@@ -69,6 +70,7 @@
     onNewSession,
     onCollapse,
     onSelectSession,
+    onOpenSession,
     onComplete,
     onReopen,
     onSettle,
@@ -97,26 +99,37 @@
   ] as const;
 
   onMount(() => {
-    let mounted = true;
+    const owner = { active: true };
     const restoreVersion = viewOptionsVersion;
-    void readAssemblySettingFromTauri(MY_WORK_VIEW_OPTIONS_SETTING_KEY)
-      .then((stored) => {
-        if (mounted && viewOptionsVersion === restoreVersion) {
-          viewOptions = normalizeMyWorkViewOptions(stored);
-        }
-      })
-      .catch(() => undefined);
+    void restoreViewOptions(owner, restoreVersion);
     return () => {
-      mounted = false;
+      owner.active = false;
     };
   });
+
+  async function restoreViewOptions(owner: { active: boolean }, restoreVersion: number): Promise<void> {
+    try {
+      const stored = await readAssemblySettingFromTauri(MY_WORK_VIEW_OPTIONS_SETTING_KEY);
+      if (owner.active && viewOptionsVersion === restoreVersion) {
+        viewOptions = normalizeMyWorkViewOptions(stored);
+      }
+    } catch {
+      // View options fall back to defaults when local settings are unavailable.
+    }
+  }
 
   function setViewOptions(patch: Partial<MyWorkViewOptions>): void {
     viewOptionsVersion += 1;
     viewOptions = normalizeMyWorkViewOptions({ ...viewOptions, ...patch });
-    void writeAssemblySettingFromTauri(MY_WORK_VIEW_OPTIONS_SETTING_KEY, viewOptions).catch(
-      () => undefined
-    );
+    void persistViewOptions(viewOptions, viewOptionsVersion);
+  }
+
+  async function persistViewOptions(options: MyWorkViewOptions, version: number): Promise<void> {
+    try {
+      await writeAssemblySettingFromTauri(MY_WORK_VIEW_OPTIONS_SETTING_KEY, options);
+    } catch {
+      if (version !== viewOptionsVersion) return;
+    }
   }
 
   function toggleStatus(status: MyWorkStatus): void {
@@ -150,7 +163,7 @@
 
   function showFilter(): void {
     filterOpen = true;
-    queueMicrotask(() => filterInput?.focus());
+    filterInput?.focus();
   }
 
   function hideFilter(): void {
@@ -185,7 +198,7 @@
 
   {#if collapsed}
     <div class="flex h-full w-full flex-col items-center gap-1 overflow-hidden py-2">
-      <Tooltip.Provider delayDuration={250}>
+      <Tooltip.Provider delayDuration={0}>
         {@render action('Open the sessions column', PanelLeftOpen, () => onCollapse(false))}
       </Tooltip.Provider>
 
@@ -210,7 +223,7 @@
     </div>
   {:else}
     <div data-testid="sessions-column" class="sessions-column flex h-full min-h-0 flex-col text-[var(--color-text)]">
-      <Tooltip.Provider delayDuration={250}>
+      <Tooltip.Provider delayDuration={0}>
         <header class="sessions-header">
         <h2 class="text-[14px] font-semibold text-[var(--color-text)]">Sessions</h2>
         <div class="header-actions ml-auto flex items-center gap-2">
@@ -365,6 +378,7 @@
           options={viewOptions}
           {activeOwnedId}
           {onSelectSession}
+          {onOpenSession}
           {onComplete}
           {onReopen}
           {onSettle}

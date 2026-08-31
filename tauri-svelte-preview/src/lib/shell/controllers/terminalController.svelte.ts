@@ -11,20 +11,20 @@ import { recordStackStart } from '../stacks/stackStore.svelte';
 export class TerminalController {
 	service: ReturnType<typeof createTerminalService> | null = null;
 	private disposed = false;
-	private pendingHosts = new Map<string, (host: HTMLElement) => void>();
+	private hosts = new Map<string, HTMLElement>();
 
 	registerHost(ownedId: string, host: HTMLElement): void {
-		const pending = this.pendingHosts.get(ownedId);
-		if (pending) {
-			this.pendingHosts.delete(ownedId);
-			pending(host);
-		}
+		if (this.disposed) return;
+		this.hosts.set(ownedId, host);
 	}
 
-	hostFor(ownedId: string): Promise<HTMLElement> {
-		return new Promise<HTMLElement>((resolve) => {
-			this.pendingHosts.set(ownedId, resolve);
-		});
+	hostFor(ownedId: string): HTMLElement | null {
+		const host = this.hosts.get(ownedId) ?? null;
+		if (host?.isConnected === false) {
+			this.hosts.delete(ownedId);
+			return null;
+		}
+		return host;
 	}
 
 	handleLayout(ownedId: string): void {
@@ -67,7 +67,7 @@ export class TerminalController {
 
 	dispose(): void {
 		this.disposed = true;
-		this.pendingHosts.clear();
+		this.hosts.clear();
 		clearStackHandlers();
 		this.service?.dispose();
 		this.service = null;

@@ -76,18 +76,13 @@ assert.deepEqual(
 const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
 assert.match(
   page,
-  /console\.(?:debug|warn)\('mcb next: conversation activation'/,
-  'each activation attempt must be visible in future frontend logs'
+  /openedConversationOwnedId = null;\s+await selection\.selectSession\(ownedId\);/,
+  'rail selection must unmount the prior transcript before activating its replacement'
 );
 assert.match(
   page,
-  /const sessionReasoningEffort = reasoningEffort \?\? conversation\?\.agentConfig\.reasoningEffort/,
-  're-entry must retain the session-start effort when it reconnects an app session'
-);
-assert.match(
-  page,
-  /reasoningEffort: getConversationSession\(ownedId\)\?\.agentConfig\.reasoningEffort/,
-  'restart must retain the session-start effort when it reconnects an app session'
+  /openedConversationOwnedId === selection\.activeOwnedId/,
+  'only an explicitly opened final session may mount ConversationSurface'
 );
 
 console.log('conversationActivation.test.mjs passed');

@@ -26,41 +26,64 @@ import type {
 const currentInFlight = new Map<string, Promise<ProviderUsageSnapshot | null>>();
 
 export const usageService = {
-  readCurrent(provider: string | null, instanceId: string | null): Promise<ProviderUsageSnapshot | null> {
+  async readCurrent(provider: string | null, instanceId: string | null): Promise<ProviderUsageSnapshot | null> {
     const key = `${provider ?? 'unknown'}:${instanceId ?? 'unknown'}`;
     const existing = currentInFlight.get(key);
-    if (existing) return existing;
-    const request = readCurrentProviderUsage(provider, instanceId).finally(() => {
-      currentInFlight.delete(key);
-    });
+    if (existing) {
+      const snapshot = await existing;
+      return snapshot;
+    }
+    const request = readCurrentProviderUsageOnce(key, provider, instanceId);
     currentInFlight.set(key, request);
-    return request;
+    const snapshot = await request;
+    return snapshot;
   },
-  readSummary(query?: UsageHistoryQuery): Promise<UsageSummary | null> {
-    return readUsageSummary(query);
+  async readSummary(query?: UsageHistoryQuery): Promise<UsageSummary | null> {
+    const summary = await readUsageSummary(query);
+    return summary;
   },
-  readBreakdown(query?: UsageHistoryQuery): Promise<UsageBreakdownRow[] | null> {
-    return readUsageBreakdown(query);
+  async readBreakdown(query?: UsageHistoryQuery): Promise<UsageBreakdownRow[] | null> {
+    const breakdown = await readUsageBreakdown(query);
+    return breakdown;
   },
-  readProviderSummary(query?: UsageHistoryQuery): Promise<UsageProviderSummaryRow[] | null> {
-    return readUsageProviderSummary(query);
+  async readProviderSummary(query?: UsageHistoryQuery): Promise<UsageProviderSummaryRow[] | null> {
+    const summary = await readUsageProviderSummary(query);
+    return summary;
   },
-  readDaily(query?: UsageHistoryQuery): Promise<UsageDailyRow[] | null> {
-    return readUsageDaily(query);
+  async readDaily(query?: UsageHistoryQuery): Promise<UsageDailyRow[] | null> {
+    const daily = await readUsageDaily(query);
+    return daily;
   },
-  readDailyTotals(query?: UsageHistoryQuery): Promise<UsageDailyTotalsRow[] | null> {
-    return readUsageDailyTotals(query);
+  async readDailyTotals(query?: UsageHistoryQuery): Promise<UsageDailyTotalsRow[] | null> {
+    const totals = await readUsageDailyTotals(query);
+    return totals;
   },
-  readTokenBreakdown(query?: UsageHistoryQuery): Promise<UsageTokenBreakdown | null> {
-    return readUsageTokenBreakdown(query);
+  async readTokenBreakdown(query?: UsageHistoryQuery): Promise<UsageTokenBreakdown | null> {
+    const breakdown = await readUsageTokenBreakdown(query);
+    return breakdown;
   },
-  readProviderDailyTotals(query?: UsageHistoryQuery): Promise<UsageProviderDailyTotalsRow[] | null> {
-    return readUsageProviderDailyTotals(query);
+  async readProviderDailyTotals(query?: UsageHistoryQuery): Promise<UsageProviderDailyTotalsRow[] | null> {
+    const totals = await readUsageProviderDailyTotals(query);
+    return totals;
   },
-  readCostInputs(query?: UsageHistoryQuery): Promise<UsageCostInputRow[] | null> {
-    return readUsageCostInputs(query);
+  async readCostInputs(query?: UsageHistoryQuery): Promise<UsageCostInputRow[] | null> {
+    const inputs = await readUsageCostInputs(query);
+    return inputs;
   },
-  refreshHistory(): Promise<number | null> {
-    return refreshUsageHistory();
+  async refreshHistory(): Promise<number | null> {
+    const refreshed = await refreshUsageHistory();
+    return refreshed;
   }
 };
+
+async function readCurrentProviderUsageOnce(
+  key: string,
+  provider: string | null,
+  instanceId: string | null
+): Promise<ProviderUsageSnapshot | null> {
+  try {
+    return await readCurrentProviderUsage(provider, instanceId);
+  } finally {
+    currentInFlight.delete(key);
+  }
+}

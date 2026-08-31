@@ -19,7 +19,6 @@ import {
   type SourceDockLayout,
   type SourceDockPanelID
 } from './sourceDockLayout.ts';
-import { requestTrackedAnimationFrame } from './shell/resourceDiagnostics.svelte.ts';
 
 export const sourceDockviewStorageKey = 'mac-command-bar.source-browser.dockview-layout';
 export const sourceDockviewComponentID = 'source-panel';
@@ -392,7 +391,7 @@ export async function createSourceDockviewTabStackWorkspace<PanelID extends stri
     if (element.parentElement !== host) {
       host.replaceChildren(element);
     }
-    queueMicrotask(() => dispatchSourceDockviewLayout(element));
+    dispatchSourceDockviewLayout(element);
   };
 
   const api = createDockview(container, {
@@ -513,7 +512,7 @@ export async function createSourceDockviewWorkspace(
     if (element.parentElement !== host) {
       host.replaceChildren(element);
     }
-    queueMicrotask(() => dispatchSourceDockviewLayout(element));
+    dispatchSourceDockviewLayout(element);
   };
 
   const api = createDockview(container, {
@@ -632,8 +631,7 @@ export async function createSourcePaneviewStackWorkspace<PanelID extends string>
     if (element.parentElement !== host) {
       host.replaceChildren(element);
     }
-    queueMicrotask(() => dispatchSourceDockviewLayout(element));
-    requestTrackedAnimationFrame(() => dispatchSourceDockviewLayout(element));
+    dispatchSourceDockviewLayout(element);
   };
 
   const api = createPaneview(container, {

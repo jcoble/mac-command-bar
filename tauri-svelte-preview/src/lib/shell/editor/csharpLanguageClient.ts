@@ -27,12 +27,92 @@ type CodeMirrorCsharpSession = {
 let activeRoot: string | null = null;
 let activeSession: CodeMirrorCsharpSession | null = null;
 
+type CsharpClientState = {
+  disposed: boolean;
+  socket: WebSocket | null;
+  client: LSPClient | null;
+  detachSocketListeners: (() => void) | null;
+};
+
 function normalizedPath(path: string): string {
   return path.replaceAll('\\', '/').replace(/\/+$/, '');
 }
 
 function fileUri(path: string): string {
   return `file://${normalizedPath(path).split('/').map(encodeURIComponent).join('/')}`;
+}
+
+async function startCsharpLanguageClient(
+  requestedRoot: string,
+  state: CsharpClientState,
+  disposeOnFailure: () => void
+): Promise<LSPClient> {
+  try {
+    const endpoint = await ensureNativeCsharpLanguageClientFromTauri(requestedRoot);
+    if (state.disposed) throw new Error('The C# client left the visible editor.');
+    if (!endpoint || normalizedPath(endpoint.root) !== requestedRoot) {
+      throw new Error('Rust did not provide a C# endpoint for the active project.');
+    }
+
+    const handlers = new Set<(message: string) => void>();
+    let socketError: Error | null = null;
+    const socket = new WebSocket(endpoint.wsUrl);
+    state.socket = socket;
+    function handleSocketError(): void {
+      socketError = new Error('Could not connect to Roslyn.');
+    }
+    function handleSocketClose(): void {
+      if (!state.disposed && !state.client) socketError = new Error('Could not connect to Roslyn.');
+    }
+    function handleSocketMessage(event: MessageEvent): void {
+      const message = String(event.data);
+      for (const handler of handlers) handler(message);
+    }
+    socket.addEventListener('error', handleSocketError, { once: true });
+    socket.addEventListener('close', handleSocketClose, { once: true });
+    socket.addEventListener('message', handleSocketMessage);
+    state.detachSocketListeners = () => {
+      socket.removeEventListener('error', handleSocketError);
+      socket.removeEventListener('close', handleSocketClose);
+      socket.removeEventListener('message', handleSocketMessage);
+      handlers.clear();
+      state.detachSocketListeners = null;
+    };
+
+    const transport: Transport = {
+      send(message) {
+        socket.send(message);
+      },
+      subscribe(handler) {
+        handlers.add(handler);
+      },
+      unsubscribe(handler) {
+        handlers.delete(handler);
+      }
+    };
+    const client = new LSPClient({
+      rootUri: fileUri(requestedRoot),
+      timeout: 30_000,
+      extensions: [
+        serverCompletion({ override: true }),
+        hoverTooltips(),
+        keymap.of([...formatKeymap, ...renameKeymap, ...jumpToDefinitionKeymap, ...findReferencesKeymap]),
+        signatureHelp(),
+        serverDiagnostics()
+      ]
+    }).connect(transport);
+    state.client = client;
+    await client.initializing;
+    if (socketError) throw socketError;
+    if (state.disposed || activeRoot !== requestedRoot) {
+      throw new Error('The C# client left the active Supercharged project.');
+    }
+    await markNativeCsharpLanguageClientReadyFromTauri(requestedRoot);
+    return client;
+  } catch (error) {
+    disposeOnFailure();
+    throw error instanceof Error ? error : new Error(String(error));
+  }
 }
 
 /** Keep the browser-side client aligned with Rust's one active Supercharged root. */
@@ -55,67 +135,14 @@ export function connectCodeMirrorCsharpClient(root: string): CodeMirrorCsharpSes
   if (activeSession?.root === requestedRoot) return activeSession;
 
   activeSession?.dispose();
-  let disposed = false;
-  let socket: WebSocket | null = null;
-  let client: LSPClient | null = null;
-  let rejectReady: ((reason: Error) => void) | null = null;
-  let session!: CodeMirrorCsharpSession;
-  const ready = new Promise<LSPClient>(async (resolve, reject) => {
-    rejectReady = reject;
-    try {
-      const endpoint = await ensureNativeCsharpLanguageClientFromTauri(requestedRoot);
-      if (disposed) throw new Error('The C# client left the visible editor.');
-      if (!endpoint || normalizedPath(endpoint.root) !== requestedRoot) {
-        throw new Error('Rust did not provide a C# endpoint for the active project.');
-      }
-
-      const handlers = new Set<(message: string) => void>();
-      socket = new WebSocket(endpoint.wsUrl);
-      await new Promise<void>((opened, failed) => {
-        socket!.addEventListener('open', () => opened(), { once: true });
-        socket!.addEventListener('error', () => failed(new Error('Could not connect to Roslyn.')), {
-          once: true
-        });
-      });
-      if (disposed) throw new Error('The C# client left the visible editor.');
-
-      socket.addEventListener('message', (event) => {
-        const message = String(event.data);
-        for (const handler of handlers) handler(message);
-      });
-      const transport: Transport = {
-        send(message) {
-          socket?.send(message);
-        },
-        subscribe(handler) {
-          handlers.add(handler);
-        },
-        unsubscribe(handler) {
-          handlers.delete(handler);
-        }
-      };
-      client = new LSPClient({
-        rootUri: fileUri(requestedRoot),
-        timeout: 30_000,
-        extensions: [
-          serverCompletion({ override: true }),
-          hoverTooltips(),
-          keymap.of([...formatKeymap, ...renameKeymap, ...jumpToDefinitionKeymap, ...findReferencesKeymap]),
-          signatureHelp(),
-          serverDiagnostics()
-        ]
-      }).connect(transport);
-      await client.initializing;
-      if (disposed || activeRoot !== requestedRoot) {
-        throw new Error('The C# client left the active Supercharged project.');
-      }
-      await markNativeCsharpLanguageClientReadyFromTauri(requestedRoot);
-      resolve(client);
-    } catch (error) {
-      session.dispose();
-      reject(error instanceof Error ? error : new Error(String(error)));
-    }
-  });
+  const state: CsharpClientState = {
+    disposed: false,
+    socket: null,
+    client: null,
+    detachSocketListeners: null
+  };
+  let session: CodeMirrorCsharpSession | null = null;
+  const ready = startCsharpLanguageClient(requestedRoot, state, () => session?.dispose());
 
   session = {
     root: requestedRoot,
@@ -127,11 +154,11 @@ export function connectCodeMirrorCsharpClient(root: string): CodeMirrorCsharpSes
       return (await ready).plugin(fileUri(documentPath), 'csharp');
     },
     dispose() {
-      if (disposed) return;
-      disposed = true;
-      rejectReady?.(new Error('The C# client left the visible editor.'));
-      client?.disconnect();
-      socket?.close();
+      if (state.disposed) return;
+      state.disposed = true;
+      state.detachSocketListeners?.();
+      state.client?.disconnect();
+      state.socket?.close();
       if (activeSession === session) activeSession = null;
     }
   };

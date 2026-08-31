@@ -589,19 +589,53 @@ export function isNativeTauriRuntime(): boolean {
   return isTauriRuntime();
 }
 
+let projectRootValidationRequestId = 0;
+
 export async function validateProjectRootFromTauri(
-  path: string
+  path: string,
+  signal?: AbortSignal
 ): Promise<ProjectRootValidationResult | null> {
   if (!path.trim()) {
     return null;
   }
+  if (signal?.aborted) {
+    return null;
+  }
 
   if (!isTauriRuntime()) {
-    return postLocalSourceBridge<ProjectRootValidationResult>('validate', { path });
+    const result = await postLocalSourceBridge<ProjectRootValidationResult>('validate', { path });
+    return signal?.aborted ? null : result;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<ProjectRootValidationResult>('validate_project_root', { path });
+  const generation = ++projectRootValidationRequestId;
+  const cancel = (): void => {
+    void cancelProjectRootValidation(generation);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelProjectRootValidation(generation);
+      return null;
+    }
+    const result = await invoke<ProjectRootValidationResult | null>('validate_project_root', {
+      path,
+      generation
+    });
+    return signal?.aborted ? null : result;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+async function cancelProjectRootValidation(generation: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('cancel_project_root_validation', { generation });
+  } catch {
+    // The frontend owner has already abandoned this validation.
+  }
 }
 
 export async function listSourceFilesFromTauri(
@@ -694,7 +728,13 @@ export function subscribeToSourceScanProgress(
 function ensureSourceScanProgressListener(): void {
   if (!isTauriRuntime() || sourceScanProgressUnlisten || sourceScanProgressSetup) return;
   const generation = sourceScanProgressGeneration;
-  const setup = (async () => {
+  const setup = setupSourceScanProgressListener(generation);
+  sourceScanProgressSetup = setup;
+  void clearSourceScanProgressSetup(setup);
+}
+
+async function setupSourceScanProgressListener(generation: number): Promise<void> {
+  try {
     const { listen } = await import('@tauri-apps/api/event');
     const stopNative = await listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
       for (const current of sourceScanProgressSubscribers) current(event.payload);
@@ -705,10 +745,14 @@ function ensureSourceScanProgressListener(): void {
       return;
     }
     sourceScanProgressUnlisten = stop;
-  })().catch(() => undefined).finally(() => {
-    if (sourceScanProgressSetup === setup) sourceScanProgressSetup = null;
-  });
-  sourceScanProgressSetup = setup;
+  } catch {
+    // Older controllers have no progress event; source reads remain authoritative.
+  }
+}
+
+async function clearSourceScanProgressSetup(setup: Promise<void>): Promise<void> {
+  await setup;
+  if (sourceScanProgressSetup === setup) sourceScanProgressSetup = null;
 }
 
 function stopSourceScanProgressListener(): void {
@@ -967,13 +1011,13 @@ async function registerProjectionStream<T>(input: {
   const { invoke } = await import('@tauri-apps/api/core');
   const registrationId = globalThis.crypto.randomUUID();
   let active = true;
-  const ack = (frames: number, bytes: number): Promise<void> => {
-    if (!active) return Promise.resolve();
-    return invoke(input.acknowledgeCommand, {
+  const owner: ProjectionAckOwner = {
+    isActive: () => active,
+    acknowledge: (frames, bytes) => invoke(input.acknowledgeCommand, {
       registrationId,
       frames,
       bytes
-    }).then(() => undefined);
+    })
   };
   const channel = new Channel<ProjectionStreamWireEnvelope<T>>((envelope) => {
     if (!active) return;
@@ -991,7 +1035,7 @@ async function registerProjectionStream<T>(input: {
         });
       }
     } finally {
-      void ack(1, envelope.bytes).catch(() => undefined);
+      void acknowledgeProjectionEnvelope(owner, envelope.bytes);
     }
   });
   await invoke(input.registerCommand, { registrationId, channel });
@@ -1012,28 +1056,44 @@ async function registerProjectionStream<T>(input: {
   };
 }
 
-export function registerAgentConversationStream(
+type ProjectionAckOwner = {
+  isActive(): boolean;
+  acknowledge(frames: number, bytes: number): Promise<void>;
+};
+
+async function acknowledgeProjectionEnvelope(owner: ProjectionAckOwner, bytes: number): Promise<void> {
+  try {
+    if (!owner.isActive()) return;
+    await owner.acknowledge(1, bytes);
+  } catch {
+    // A closed stream is already bounded by Rust's registration window.
+  }
+}
+
+export async function registerAgentConversationStream(
   onEnvelope: (envelope: StreamEnvelope<AgentConversationEvent>) => void,
   onResync?: () => void
 ): Promise<ProjectionStreamRegistration | null> {
-  return registerProjectionStream({
+  const registration = await registerProjectionStream({
     registerCommand: 'register_agent_conversation_stream',
     acknowledgeCommand: 'acknowledge_agent_conversation_stream',
     unregisterCommand: 'unregister_agent_conversation_stream',
     onEnvelope,
     onResync
   });
+  return registration;
 }
 
-export function registerTerminalOutputStream(
+export async function registerTerminalOutputStream(
   onEnvelope: (envelope: StreamEnvelope<TerminalOutputPayload>) => void
 ): Promise<ProjectionStreamRegistration | null> {
-  return registerProjectionStream({
+  const registration = await registerProjectionStream({
     registerCommand: 'register_terminal_output_stream',
     acknowledgeCommand: 'acknowledge_terminal_output_stream',
     unregisterCommand: 'unregister_terminal_output_stream',
     onEnvelope
   });
+  return registration;
 }
 
 export async function listenToTerminalOutput(
@@ -1636,25 +1696,39 @@ export async function readAgentConversationCapabilitiesFromTauri(
 let latestConversationSnapshotRequest = Math.trunc(Date.now() * 1_000);
 
 export async function readAgentConversationSnapshotFromTauri(
-  ownedId: string
+  ownedId: string,
+  signal?: AbortSignal
 ): Promise<AgentConversationSnapshot | null> {
   if (!isTauriRuntime() || !ownedId.trim()) return null;
+  if (signal?.aborted) return null;
   latestConversationSnapshotRequest += 1;
   const requestId = latestConversationSnapshotRequest;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', {
-    ownedId,
-    requestId
-  });
+  const cancel = (): void => {
+    void cancelAgentConversationSnapshotFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationSnapshotFromTauri(requestId);
+      return null;
+    }
+    const snapshot = await invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', {
+      ownedId,
+      requestId
+    });
+    return signal?.aborted ? null : snapshot;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
-export async function cancelAgentConversationSnapshotFromTauri(): Promise<void> {
+export async function cancelAgentConversationSnapshotFromTauri(requestId?: number): Promise<void> {
   if (!isTauriRuntime()) return;
-  latestConversationSnapshotRequest += 1;
-  const requestId = latestConversationSnapshotRequest;
+  const cancelRequestId = requestId ?? (latestConversationSnapshotRequest += 1);
   const { invoke } = await import('@tauri-apps/api/core');
   await invoke('cancel_agent_conversation_snapshot', {
-    requestId
+    requestId: cancelRequestId
   });
 }
 
@@ -1818,35 +1892,54 @@ export async function clearAgentConversationWorkspaceTabsFromTauri(): Promise<vo
   await invoke<void>('clear_agent_conversation_workspace_tabs');
 }
 
+async function completedAssemblySettingWrite(): Promise<void> {}
+
+const completedAssemblySettingWritePromise = completedAssemblySettingWrite();
 const assemblySettingWriteQueues = new Map<string, Promise<void>>();
 
-export function writeAssemblySettingFromTauri(
+export async function writeAssemblySettingFromTauri(
   settingKey: string,
   value: unknown
 ): Promise<void> {
-  if (!isTauriRuntime() || !settingKey.trim()) return Promise.resolve();
-  const previous = assemblySettingWriteQueues.get(settingKey) ?? Promise.resolve();
-  const write = previous.catch(() => undefined).then(async () => {
+  if (!isTauriRuntime() || !settingKey.trim()) return;
+  const previous = assemblySettingWriteQueues.get(settingKey) ?? completedAssemblySettingWritePromise;
+  let write!: Promise<void>;
+  write = writeAssemblySettingInOrder(settingKey, value, previous, () => assemblySettingWriteQueues.get(settingKey) === write);
+  assemblySettingWriteQueues.set(settingKey, write);
+  await write;
+}
+
+async function writeAssemblySettingInOrder(
+  settingKey: string,
+  value: unknown,
+  previous: Promise<void>,
+  ownsQueueSlot: () => boolean
+): Promise<void> {
+  try {
+    await previous;
+  } catch {
+    // A failed older write must not block the latest value.
+  }
+  try {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke<void>('write_assembly_setting', {
       settingKey,
       valueJson: JSON.stringify(value)
     });
-  });
-  assemblySettingWriteQueues.set(settingKey, write);
-  void write
-    .finally(() => {
-      if (assemblySettingWriteQueues.get(settingKey) === write) {
-        assemblySettingWriteQueues.delete(settingKey);
-      }
-    })
-    .catch(() => undefined);
-  return write;
+  } finally {
+    if (ownsQueueSlot()) {
+      assemblySettingWriteQueues.delete(settingKey);
+    }
+  }
 }
 
 export async function readAssemblySettingFromTauri(settingKey: string): Promise<unknown> {
   if (!isTauriRuntime() || !settingKey.trim()) return null;
-  await assemblySettingWriteQueues.get(settingKey)?.catch(() => undefined);
+  try {
+    await assemblySettingWriteQueues.get(settingKey);
+  } catch {
+    // Reads should still proceed after a failed pending write.
+  }
   const { invoke } = await import('@tauri-apps/api/core');
   const valueJson = await invoke<string | null>('read_assembly_setting', { settingKey });
   return valueJson === null ? null : JSON.parse(valueJson) as unknown;

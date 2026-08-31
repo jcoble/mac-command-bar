@@ -112,7 +112,8 @@ export interface BrowserModelHandle {
   cancelBrowserAnnotation(): BrowserWorkspaceState;
   queueBrowserAnnotation(input?: BrowserAnnotationInput | BrowserMarkupInput): BrowserFeedbackAttachment | null;
   removeBrowserAnnotation(id: string): BrowserWorkspaceState;
-  captureBrowserWorkspace(options?: BrowserCaptureOptions): BrowserWorkspaceCapture | BrowserMarkupCapture | Promise<BrowserMarkupCapture>;
+  captureBrowserWorkspace(): BrowserWorkspaceCapture;
+  captureBrowserMarkup(options?: Omit<BrowserCaptureOptions, 'forMarkup'>): Promise<BrowserMarkupCapture>;
   formatBrowserFeedback(attachment: BrowserFeedbackAttachment): string;
   stageBrowserFeedbackPreview(options?: BrowserFeedbackStageOptions): BrowserFeedbackPreview;
 }
@@ -195,15 +196,34 @@ function describeError(error: unknown): string {
   return describeBrowserError(error);
 }
 
+function isPromiseLike<T>(value: BrowserBackendResult<T>): value is Promise<T> {
+  if (!value || typeof value !== 'object') return false;
+  return typeof Reflect.get(value, 'then') === 'function';
+}
+
+async function reportAsyncBackendError<T>(
+  result: Promise<T>,
+  onAsyncError?: (error: unknown) => void,
+  isCurrent: () => boolean = () => true
+): Promise<void> {
+  try {
+    await result;
+  } catch (error) {
+    if (!isCurrent()) return;
+    onAsyncError?.(error);
+  }
+}
+
 function callBackend<T>(
   context: BrowserModelContext,
   call: () => BrowserBackendResult<T>,
-  onAsyncError?: (error: unknown) => void
+  onAsyncError?: (error: unknown) => void,
+  isCurrent?: () => boolean
 ): BrowserBackendResult<T> | undefined {
   try {
     const result = call();
-    if (result && typeof (result as Promise<T>).then === 'function') {
-      void (result as Promise<T>).catch((error) => onAsyncError?.(error));
+    if (isPromiseLike(result)) {
+      void reportAsyncBackendError(result, onAsyncError, isCurrent);
     }
     return result;
   } catch (error) {
@@ -232,6 +252,15 @@ function activeTab(context: BrowserModelContext): BrowserTabState | null {
 
 function backendTarget(tab: BrowserTabState): BrowserBackendTarget {
   return { workspaceId: tab.workspaceId, tabId: tab.id, generation: tab.generation };
+}
+
+function isCurrentBackendTarget(context: BrowserModelContext, target: BrowserBackendTarget): boolean {
+  const tab = context.workspace.tabs[target.tabId];
+  return Boolean(tab && isExactBrowserTarget(target, tab.workspaceId, tab.id, tab.generation));
+}
+
+function isCurrentBrowserWorkspace(context: BrowserModelContext, workspaceId: string): boolean {
+  return context.workspace.workspaceId === workspaceId;
 }
 
 function setWorkspaceError(context: BrowserModelContext, error: unknown): void {
@@ -297,7 +326,8 @@ export function activateBrowserWorkspace(
   }
   const tab = activeTab(context);
   if (tab) {
-    callBackend(context, () => context.backend!.show_browser_tab(backendTarget(tab)), (error) => setWorkspaceError(context, error));
+    const target = backendTarget(tab);
+    callBackend(context, () => context.backend!.show_browser_tab(target), (error) => setWorkspaceError(context, error), () => isCurrentBackendTarget(context, target));
   }
   return workspace;
 }
@@ -306,7 +336,8 @@ export function deactivateBrowserWorkspace(
   target?: BrowserWorkspaceState | BrowserModelContext
 ): BrowserWorkspaceState {
   const context = contextFor(target);
-  callBackend(context, () => context.backend!.hide_browser_workspace({ workspaceId: context.workspace.workspaceId }), (error) => setWorkspaceError(context, error));
+  const workspaceId = context.workspace.workspaceId;
+  callBackend(context, () => context.backend!.hide_browser_workspace({ workspaceId }), (error) => setWorkspaceError(context, error), () => isCurrentBrowserWorkspace(context, workspaceId));
   context.workspace.activated = false;
   context.workspace.interaction = 'browse';
   context.workspace.pendingSelection = null;
@@ -356,12 +387,11 @@ export function createBrowserTab(
   workspace.activeGeneration = generation;
   workspace.activated = true;
   workspace.error = null;
+  const target = backendTarget(tab);
   callBackend(
     context,
     () => context.backend!.create_browser_tab({
-      workspaceId: workspace.workspaceId,
-      tabId,
-      generation,
+      ...target,
       url,
       bounds: workspace.floatingBounds,
       viewport,
@@ -371,7 +401,8 @@ export function createBrowserTab(
       tab.error = describeError(error);
       tab.loadState = 'error';
       setWorkspaceError(context, error);
-    }
+    },
+    () => isCurrentBackendTarget(context, target)
   );
   return tab;
 }
@@ -388,7 +419,8 @@ export function selectBrowserTab(
   context.workspace.error = null;
   const tab = context.workspace.tabs[tabId];
   if (context.workspace.activated) {
-    callBackend(context, () => context.backend!.show_browser_tab(backendTarget(tab)), (error) => setWorkspaceError(context, error));
+    const target = backendTarget(tab);
+    callBackend(context, () => context.backend!.show_browser_tab(target), (error) => setWorkspaceError(context, error), () => isCurrentBackendTarget(context, target));
   }
   return context.workspace;
 }
@@ -401,7 +433,8 @@ export function closeBrowserTab(
   const tabId = typeof first === 'string' ? first : typeof second === 'string' ? second : '';
   const tab = context.workspace.tabs[tabId];
   if (!tab) return context.workspace;
-  callBackend(context, () => context.backend!.close_browser_tab(backendTarget(tab)), (error) => setWorkspaceError(context, error));
+  const target = backendTarget(tab);
+  callBackend(context, () => context.backend!.close_browser_tab(target), (error) => setWorkspaceError(context, error), () => isCurrentBackendTarget(context, target));
   delete context.workspace.tabs[tabId];
   context.workspace.tabOrder = context.workspace.tabOrder.filter((id) => id !== tabId);
   if (context.workspace.activeTabId === tabId) {
@@ -433,11 +466,12 @@ export function navigateActiveBrowserTab(
   tab.canGoForward = false;
   context.workspace.activeGeneration = generation;
   context.workspace.error = null;
-  callBackend(context, () => context.backend!.navigate_browser_tab({ ...backendTarget(tab), url: normalized }), (error) => {
+  const target = backendTarget(tab);
+  callBackend(context, () => context.backend!.navigate_browser_tab({ ...target, url: normalized }), (error) => {
     tab.error = describeError(error);
     tab.loadState = 'error';
     setWorkspaceError(context, error);
-  });
+  }, () => isCurrentBackendTarget(context, target));
   return tab;
 }
 
@@ -458,7 +492,10 @@ export function setBrowserViewport(
     const method = (context.backend as BrowserBackend & {
       set_browser_tab_viewport?: (value: { workspaceId: string; tabId: string; generation: number; viewport: BrowserViewport }) => BrowserBackendResult<void>;
     }).set_browser_tab_viewport;
-    if (method) callBackend(context, () => method.call(context.backend, { ...backendTarget(tab), viewport }), (error) => setWorkspaceError(context, error));
+    if (method) {
+      const target = backendTarget(tab);
+      callBackend(context, () => method.call(context.backend, { ...target, viewport }), (error) => setWorkspaceError(context, error), () => isCurrentBackendTarget(context, target));
+    }
   }
   return tab;
 }
@@ -499,10 +536,14 @@ export function setBrowserPresentationMode(
   context.workspace.previousPresentation = transition.previousPresentation;
   const tab = activeTab(context);
   if (tab && isExpandedBrowserMode(mode)) {
-    callBackend(context, () => context.backend!.show_browser_tab(backendTarget(tab)), (error) => setWorkspaceError(context, error));
-    callBackend(context, () => context.backend!.set_browser_tab_bounds({ ...backendTarget(tab), bounds: context.workspace.floatingBounds }), (error) => setWorkspaceError(context, error));
+    const target = backendTarget(tab);
+    callBackend(context, () => context.backend!.show_browser_tab(target), (error) => setWorkspaceError(context, error), () => isCurrentBackendTarget(context, target));
+    callBackend(context, () => context.backend!.set_browser_tab_bounds({ ...target, bounds: context.workspace.floatingBounds }), (error) => setWorkspaceError(context, error), () =>
+      isCurrentBackendTarget(context, target)
+    );
   } else if (mode === 'collapsed') {
-    callBackend(context, () => context.backend!.hide_browser_workspace({ workspaceId: context.workspace.workspaceId }), (error) => setWorkspaceError(context, error));
+    const workspaceId = context.workspace.workspaceId;
+    callBackend(context, () => context.backend!.hide_browser_workspace({ workspaceId }), (error) => setWorkspaceError(context, error), () => isCurrentBrowserWorkspace(context, workspaceId));
   }
   return context.workspace;
 }
@@ -530,7 +571,8 @@ export function minimizeBrowserToPrevious(target?: BrowserWorkspaceState | Brows
   const targetMode = restorePresentationTarget(context.workspace.presentation, context.workspace.previousPresentation);
   const result = setBrowserPresentationMode(context, targetMode);
   if (targetMode === 'collapsed') {
-    callBackend(context, () => context.backend!.hide_browser_workspace({ workspaceId: context.workspace.workspaceId }), (error) => setWorkspaceError(context, error));
+    const workspaceId = context.workspace.workspaceId;
+    callBackend(context, () => context.backend!.hide_browser_workspace({ workspaceId }), (error) => setWorkspaceError(context, error), () => isCurrentBrowserWorkspace(context, workspaceId));
   }
   return result;
 }
@@ -551,7 +593,10 @@ export function beginBrowserElementPicker(
   context.workspace.pendingSelection = null;
   context.workspace.pendingSelectionKind = kind;
   context.workspace.pendingMarkup = null;
-  callBackend(context, () => context.backend!.arm_browser_element_picker({ ...backendTarget(tab), mode: kind }), (error) => setWorkspaceError(context, error));
+  const target = backendTarget(tab);
+  callBackend(context, () => context.backend!.arm_browser_element_picker({ ...target, mode: kind }), (error) => setWorkspaceError(context, error), () =>
+    isCurrentBackendTarget(context, target)
+  );
   return context.workspace;
 }
 
@@ -576,7 +621,10 @@ export function acceptBrowserElementSelection(
 export function cancelBrowserAnnotation(target?: BrowserWorkspaceState | BrowserModelContext): BrowserWorkspaceState {
   const context = contextFor(target);
   const tab = activeTab(context);
-  if (tab) callBackend(context, () => context.backend!.cancel_browser_element_picker(backendTarget(tab)), (error) => setWorkspaceError(context, error));
+  if (tab) {
+    const backend = backendTarget(tab);
+    callBackend(context, () => context.backend!.cancel_browser_element_picker(backend), (error) => setWorkspaceError(context, error), () => isCurrentBackendTarget(context, backend));
+  }
   context.workspace.pendingSelection = null;
   context.workspace.pendingSelectionKind = null;
   context.workspace.pendingMarkup = null;
@@ -687,34 +735,9 @@ export function removeBrowserAnnotation(
 }
 
 export function captureBrowserWorkspace(
-  first?: BrowserWorkspaceState | BrowserModelContext | BrowserCaptureOptions,
-  second?: BrowserCaptureOptions
-): BrowserWorkspaceCapture | BrowserMarkupCapture | Promise<BrowserMarkupCapture> {
-  const optionsFromFirst = first && !isWorkspace(first) && !isContext(first) ? first : undefined;
-  const context = contextFor(optionsFromFirst ? undefined : first);
-  const options = second ?? optionsFromFirst ?? {};
-  const tab = activeTab(context);
-  if (options.forMarkup) {
-    if (!tab) throw new BrowserModelError('Open a browser tab before capturing the viewport');
-    const result = callBackend(context, () => context.backend!.capture_browser_viewport(backendTarget(tab)), (error) => setWorkspaceError(context, error));
-    const apply = (capture: BrowserMarkupCapture): BrowserMarkupCapture => {
-      const pending: BrowserPendingMarkup = {
-        workspaceId: tab.workspaceId,
-        tabId: tab.id,
-        generation: tab.generation,
-        capture,
-        note: options.note?.trim() || null,
-        intent: options.intent ?? 'context'
-      };
-      context.workspace.pendingMarkup = pending;
-      context.workspace.interaction = 'drawing';
-      return capture;
-    };
-    if (result && typeof (result as Promise<BrowserMarkupCapture>).then === 'function') {
-      return (result as Promise<BrowserMarkupCapture>).then(apply);
-    }
-    return apply(result as BrowserMarkupCapture);
-  }
+  first?: BrowserWorkspaceState | BrowserModelContext
+): BrowserWorkspaceCapture {
+  const context = contextFor(first);
   const tabs = context.workspace.tabOrder.map((id) => context.workspace.tabs[id]).filter(Boolean).map(cloneTab);
   return {
     workspaceId: context.workspace.workspaceId,
@@ -740,6 +763,48 @@ export function captureBrowserWorkspace(
     tabs,
     activeGeneration: context.workspace.activeGeneration
   };
+}
+
+export async function captureBrowserMarkup(
+  first?: BrowserWorkspaceState | BrowserModelContext | Omit<BrowserCaptureOptions, 'forMarkup'>,
+  second?: Omit<BrowserCaptureOptions, 'forMarkup'>
+): Promise<BrowserMarkupCapture> {
+  const optionsFromFirst = first && !isWorkspace(first) && !isContext(first) ? first : undefined;
+  const context = contextFor(optionsFromFirst ? undefined : first);
+  const options = second ?? optionsFromFirst ?? {};
+  const tab = activeTab(context);
+  if (!tab) throw new BrowserModelError('Open a browser tab before capturing the viewport');
+
+  const target = backendTarget(tab);
+  const result = callBackend(
+    context,
+    () => context.backend!.capture_browser_viewport(target),
+    (error) => setWorkspaceError(context, error),
+    () => isCurrentBackendTarget(context, target)
+  );
+  const capture = await result;
+  if (!capture) throw new BrowserModelError('The browser viewport could not be captured');
+
+  const currentTab = context.workspace.tabs[tab.id];
+  if (
+    !currentTab ||
+    currentTab.workspaceId !== tab.workspaceId ||
+    currentTab.generation !== tab.generation ||
+    context.workspace.activeTabId !== tab.id
+  ) {
+    return capture;
+  }
+  const pending: BrowserPendingMarkup = {
+    workspaceId: tab.workspaceId,
+    tabId: tab.id,
+    generation: tab.generation,
+    capture,
+    note: options.note?.trim() || null,
+    intent: options.intent ?? 'context'
+  };
+  context.workspace.pendingMarkup = pending;
+  context.workspace.interaction = 'drawing';
+  return capture;
 }
 
 export function formatBrowserFeedback(attachment: BrowserFeedbackAttachment): string {
@@ -899,7 +964,8 @@ export function createBrowserModel(input: {
     cancelBrowserAnnotation: () => cancelBrowserAnnotation(context),
     queueBrowserAnnotation: (value) => queueBrowserAnnotation(context, value),
     removeBrowserAnnotation: (id) => removeBrowserAnnotation(context, id),
-    captureBrowserWorkspace: (options) => captureBrowserWorkspace(context, options),
+    captureBrowserWorkspace: () => captureBrowserWorkspace(context),
+    captureBrowserMarkup: (options) => captureBrowserMarkup(context, options),
     formatBrowserFeedback,
     stageBrowserFeedbackPreview: (options) => stageBrowserFeedbackPreview(context, options)
   };

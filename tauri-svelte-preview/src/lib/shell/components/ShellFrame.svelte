@@ -25,11 +25,6 @@
     readAssemblySettingFromTauri,
     writeAssemblySettingFromTauri
   } from '$lib/tauriSource';
-  import {
-    cancelTrackedAnimationFrame,
-    requestTrackedAnimationFrame
-  } from '$lib/shell/resourceDiagnostics.svelte.ts';
-
   const GRID_LAYOUT_SETTING_KEY = 'shell.grid-layout';
   const CENTER_LAYOUT_SETTING_KEY = 'shell.center-layout';
 
@@ -105,8 +100,7 @@
 
   onMount(() => {
     let observer: ResizeObserver | null = null;
-    let layoutRequest: number | null = null;
-    let mounted = true;
+    const owner = { active: true };
     let laidOutWidth = -1;
     let laidOutHeight = -1;
     const layoutFrame = () => {
@@ -118,13 +112,10 @@
       frame?.layout(width, height);
     };
     const scheduleFrameLayout = () => {
-      if (layoutRequest !== null) return;
-      layoutRequest = requestTrackedAnimationFrame(() => {
-        layoutRequest = null;
-        layoutFrame();
-      });
+      layoutFrame();
     };
-    void (async () => {
+
+    async function initializeShellFrame(): Promise<void> {
       try {
         frame = createShellFrame(gridHost, {
           readLayout: () => readAssemblySettingFromTauri(GRID_LAYOUT_SETTING_KEY),
@@ -137,7 +128,7 @@
           }
         });
         await frame.ready;
-        if (!mounted || !frame) return;
+        if (!owner.active || !frame) return;
         // Lay out the parent Gridview before the center Dockview restores or
         // builds its panels. Center Dockview's restore path deliberately measures
         // its host before calling `fromJSON`; doing that while the Gridview is
@@ -174,7 +165,7 @@
           }
         });
         await centerDock.ready;
-        if (!mounted || !centerDock) return;
+        if (!owner.active || !centerDock) return;
         observer = new ResizeObserver(scheduleFrameLayout);
         observer.observe(gridHost);
         ready = true;
@@ -193,14 +184,15 @@
           regionWidth: (id) => frame?.regionWidth(id) ?? null
         });
       } catch (error) {
-        if (mounted) onError?.(error instanceof Error ? error.message : String(error));
+        if (owner.active) onError?.(error instanceof Error ? error.message : String(error));
       }
-    })();
+    }
+
+    void initializeShellFrame();
 
     return () => {
-      mounted = false;
+      owner.active = false;
       observer?.disconnect();
-      if (layoutRequest !== null) cancelTrackedAnimationFrame(layoutRequest);
       centerDock?.dispose();
       centerDock = null;
       frame?.dispose();
