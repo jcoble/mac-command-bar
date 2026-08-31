@@ -57,7 +57,7 @@
 	import RefreshCw from "@lucide/svelte/icons/refresh-cw";
 	import Square from "@lucide/svelte/icons/square";
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-	import { onDestroy } from "svelte";
+	import { onDestroy, untrack } from "svelte";
 
 	interface Props {
 		visible: boolean;
@@ -234,38 +234,41 @@
 
 	$effect(() => {
 		const parentSignal = selectionSignal ?? undefined;
+		const sessionKey = `${ownedId ?? ""}:${canonicalPath(root)}`;
+		const nextRoot = canonicalPath(sessionRoot);
+		const shouldActivate = visible && nextRoot !== "";
 		const controller = new AbortController();
 		filesOwnerSignal = controller.signal;
 		const abortFromSelection = (): void => controller.abort();
 		parentSignal?.addEventListener("abort", abortFromSelection, { once: true });
-		const sessionKey = `${ownedId ?? ""}:${canonicalPath(root)}`;
-		if (sessionKey !== scopedSessionKey) {
-			scopedSessionKey = sessionKey;
-			inspectionGeneration += 1;
-			inspectedRoot = "";
-			checkouts = [];
-			cancelActiveSearch();
-			revealGeneration += 1;
-			hydratedRoot = "";
-			hydratedExpansionKey = "";
-			expansionRestoreGeneration += 1;
-			expanded = new Set();
-			pending = null;
-			fileClipboard = null;
-			contextMenu = null;
-			searchText = "";
-		}
-		const nextRoot = canonicalPath(sessionRoot);
-		if (nextRoot && canonicalPath(explorer.root ?? "") === nextRoot) {
-			for (const directory of loadedExplorerDirectories()) {
-				if (directory.path !== nextRoot) unloadDirectory(directory.path);
+		untrack(() => {
+			if (sessionKey !== scopedSessionKey) {
+				scopedSessionKey = sessionKey;
+				inspectionGeneration += 1;
+				inspectedRoot = "";
+				checkouts = [];
+				cancelActiveSearch();
+				revealGeneration += 1;
+				hydratedRoot = "";
+				hydratedExpansionKey = "";
+				expansionRestoreGeneration += 1;
+				expanded = new Set();
+				pending = null;
+				fileClipboard = null;
+				contextMenu = null;
+				searchText = "";
 			}
-		}
-		if (visible && nextRoot && !controller.signal.aborted) {
-			activateExplorer(nextRoot, false, controller.signal);
-		} else {
-			activateExplorer(null);
-		}
+			if (nextRoot && canonicalPath(explorer.root ?? "") === nextRoot) {
+				for (const directory of loadedExplorerDirectories()) {
+					if (directory.path !== nextRoot) unloadDirectory(directory.path);
+				}
+			}
+			if (shouldActivate && !controller.signal.aborted) {
+				activateExplorer(nextRoot, false, controller.signal);
+			} else {
+				activateExplorer(null);
+			}
+		});
 		return () => {
 			parentSignal?.removeEventListener("abort", abortFromSelection);
 			controller.abort();
