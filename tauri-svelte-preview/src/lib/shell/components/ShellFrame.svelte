@@ -143,11 +143,12 @@
           // here at all — it is a panel of the right column — but the changes it
           // shows are, because a diff wants the width of the middle.
           panels: [
-            { id: 'session', title: 'Session', element: sessionSlot },
+            { id: 'session', title: 'Session', element: sessionSlot, renderer: 'onlyWhenVisible' },
             {
               id: 'editor',
               title: 'Editor',
-              element: editorSlot
+              element: editorSlot,
+              renderer: 'onlyWhenVisible'
             },
             {
               id: 'diff',
@@ -155,7 +156,7 @@
               element: diffSlot,
               renderer: 'onlyWhenVisible'
             },
-            { id: 'git-history', title: 'Git History', element: gitHistorySlot }
+            { id: 'git-history', title: 'Git History', element: gitHistorySlot, renderer: 'onlyWhenVisible' }
           ],
           onPanelLayout: (id) => {
             if (id === 'session') onSessionPanelLayout?.();

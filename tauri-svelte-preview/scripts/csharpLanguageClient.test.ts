@@ -60,7 +60,12 @@ assert.match(
 );
 assert.match(
   editor,
-  /\.catch\(\(\) => \{[\s\S]*generation !== lspGeneration \|\| requestedLspKey !== key[\s\S]*intelligence\.reconfigure\(callbackIntelligence\)[\s\S]*setDiagnostics\(view\.state, diagnosticsFor\(view\.state\)\)/,
+  /button\.addEventListener\('mousedown', preventMouseDown\)[\s\S]*button\.addEventListener\('click', runAction\)[\s\S]*destroy: \(\) => \{[\s\S]*button\.removeEventListener\('mousedown', preventMouseDown\)[\s\S]*button\.removeEventListener\('click', runAction\)/,
+  'CodeMirror code-action tooltip listeners should be removed when the tooltip is destroyed'
+);
+assert.match(
+  editor,
+  /catch \{[\s\S]*generation !== lspGeneration \|\| requestedLspKey !== key[\s\S]*intelligence\.reconfigure\(callbackIntelligence\)[\s\S]*setDiagnostics\(view\.state, diagnosticsFor\(view\.state\)\)/,
   'a current failed official client load should restore callback intelligence and diagnostics'
 );
 assert.match(editor, /if \(visible\)[\s\S]*loadVisibleLspSupport\(\)[\s\S]*else \{[\s\S]*clearLspSupport\(\)/);

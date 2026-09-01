@@ -82,6 +82,10 @@ const selectionLayers = readFileSync(
   new URL('../src/lib/shell/sessionSelectionLayers.svelte.ts', import.meta.url),
   'utf8'
 );
+const shellFrame = readFileSync(
+  new URL('../src/lib/shell/components/ShellFrame.svelte', import.meta.url),
+  'utf8'
+);
 assert.match(
   page,
   /async function selectSession\(ownedId: string\): Promise<void> \{\s+await selection\.selectSession\(ownedId\);\s+\}/,
@@ -94,9 +98,31 @@ assert.match(
 );
 assert.match(
   page,
+  /\.conversation-surface-shell\[hidden\]\s*\{[\s\S]*?display:\s*none/,
+  'inactive conversation surfaces are removed from layout and paint while retained'
+);
+assert.match(
+  page,
   /selection\.activeOwnedId && \(!selection\.hasChatProjection \|\| selection\.chatOwnedId !== selection\.activeOwnedId\)[\s\S]*?Loading conversation/,
   'loading state is shown when the active rail session differs from the mounted chat projection'
 );
+assert.match(
+  page,
+  /\.conversation-data-isolation \{[\s\S]*?inset:\s*0;[\s\S]*?position:\s*absolute;[\s\S]*?z-index:\s*1;[\s\S]*?background:\s*var\(--color-bg\);/,
+  'the loading state is an opaque overlay that covers the retained conversation surface'
+);
+assert.doesNotMatch(
+  page,
+  /conversation-surface-shell[\s\S]{0,180}opacity:\s*0/,
+  'inactive conversation surfaces do not add an opacity compositor layer'
+);
+for (const id of ['session', 'editor', 'diff', 'git-history']) {
+  assert.match(
+    shellFrame,
+    new RegExp(`id: '${id}'[\\s\\S]*?renderer: 'onlyWhenVisible'`),
+    `${id} center panel only keeps a renderer while it is visible`
+  );
+}
 assert.doesNotMatch(
   selectionController,
   /setActiveOwned\(ownedId\);[\s\S]{0,160}clearChatHistory\(\);[\s\S]{0,160}const session = rail\.owned\.find/,

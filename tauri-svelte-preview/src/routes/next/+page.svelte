@@ -241,11 +241,13 @@
 		width: 100%;
 		min-height: 0;
 		overflow: hidden;
+		position: relative;
 	}
 
 	.conversation-surface-shell {
 		display: flex;
 		flex: 1;
+		height: 100%;
 		min-height: 0;
 	}
 
@@ -262,6 +264,10 @@
 		color: var(--color-text-2);
 		font-size: 13px;
 		gap: 10px;
+		inset: 0;
+		position: absolute;
+		z-index: 1;
+		background: var(--color-bg);
 	}
 
 </style>

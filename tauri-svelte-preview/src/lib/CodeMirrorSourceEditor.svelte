@@ -176,16 +176,33 @@
           dom.className = 'cm-code-actions';
           dom.setAttribute('role', 'menu');
           dom.setAttribute('aria-label', 'Code actions');
+          const listeners: Array<{
+            button: HTMLButtonElement;
+            preventMouseDown: (event: MouseEvent) => void;
+            runAction: () => void;
+          }> = [];
           for (const action of menu.actions) {
             const button = document.createElement('button');
             button.type = 'button';
             button.setAttribute('role', 'menuitem');
             button.textContent = action.title;
-            button.addEventListener('mousedown', (event) => event.preventDefault());
-            button.addEventListener('click', () => applyCodeAction(editor, action));
+            const preventMouseDown = (event: MouseEvent): void => event.preventDefault();
+            const runAction = (): void => applyCodeAction(editor, action);
+            button.addEventListener('mousedown', preventMouseDown);
+            button.addEventListener('click', runAction);
+            listeners.push({ button, preventMouseDown, runAction });
             dom.append(button);
           }
-          return { dom };
+          return {
+            dom,
+            destroy: () => {
+              for (const { button, preventMouseDown, runAction } of listeners) {
+                button.removeEventListener('mousedown', preventMouseDown);
+                button.removeEventListener('click', runAction);
+              }
+              listeners.length = 0;
+            }
+          };
         }
       }];
     })
