@@ -71,8 +71,10 @@
     loading = true;
     listError = '';
     try {
-      const branchList = await service.listBranches();
-      const stashList = await service.listStashes();
+      const [branchList, stashList] = await Promise.all([
+        service.listBranches(),
+        service.listStashes()
+      ]);
       branches = branchList?.branches ?? [];
       stashes = stashList ?? [];
     } catch (error) {

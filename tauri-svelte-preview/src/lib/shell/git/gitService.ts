@@ -445,8 +445,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   async function refresh(): Promise<void> {
-    await refreshStatus();
-    await refreshHistory();
+    await Promise.all([refreshStatus(), refreshHistory()]);
   }
 
   async function showFileHistory(root: string, relativePath: string): Promise<void> {

@@ -60,17 +60,13 @@ export async function refreshCurrentUsage(provider: string | null, instanceId: s
   usageState.error = null;
   try {
     const providers = provider ? [provider] : ['codex', 'claude'];
-    const snapshots: Array<ProviderUsageSnapshot | null> = [];
-    let failure: unknown = null;
-    for (const name of providers) {
-      try {
-        snapshots.push(await settleUsageRequest(usageService.readCurrent(name, instanceId ?? 'local')));
-      } catch (error) {
-        failure ??= error;
-      }
-    }
+    const results = await Promise.allSettled(
+      providers.map((name) => settleUsageRequest(usageService.readCurrent(name, instanceId ?? 'local')))
+    );
+    const snapshots = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
     if (snapshots.length === 0) {
-      if (failure) throw failure;
+      const failure = results.find((result) => result.status === 'rejected');
+      if (failure?.status === 'rejected') throw failure.reason;
     }
     const current = snapshots.find((snapshot) => snapshot?.state === 'available') ?? snapshots[0] ?? null;
     for (const snapshot of snapshots) {
@@ -105,18 +101,23 @@ async function loadUsageHistoryOnce(range: UsageRange): Promise<UsageSummary | n
     const query = usageRangeQuery(range);
     const heatmapQuery = usageHeatmapQuery(range);
     const rollupRanges = ['today', 'yesterday', '30-days'] as const;
+    const rollupRequests = rollupRanges.map((rollupRange) =>
+      usageService.readProviderSummary({ ...usageRangeQuery(rollupRange), limit: 20, offset: 0 })
+    );
+    const selectedProviderSummary = range === 'all'
+      ? usageService.readProviderSummary({ ...query, limit: 20, offset: 0 })
+      : rollupRequests[rollupRanges.indexOf(range)];
     // Every displayed metric is returned as a bounded DB-side aggregate. No
     // event or turn rows cross IPC, and no displayed totals are summed in JS.
-    const summary = await settleUsageRequest(usageService.readSummary(query));
-    const rollups: UsageProviderSummaryRow[][] = [];
-    for (const rollupRange of rollupRanges) {
-      rollups.push(await usageService.readProviderSummary({ ...usageRangeQuery(rollupRange), limit: 20, offset: 0 }) ?? []);
-    }
-    const providerSummary = range === 'all'
-      ? await usageService.readProviderSummary({ ...query, limit: 20, offset: 0 })
-      : rollups[rollupRanges.indexOf(range)];
-    const dailyTotals = await usageService.readDailyTotals({ ...heatmapQuery, limit: 42, offset: 0 });
-    const providerDailyTotals = await usageService.readProviderDailyTotals({ ...usageRangeQuery('30-days'), limit: 200, offset: 0 });
+    const [summary, providerSummary, dailyTotals, providerDailyTotals, ...rollups] = await settleUsageRequest(
+      Promise.all([
+        usageService.readSummary(query),
+        selectedProviderSummary,
+        usageService.readDailyTotals({ ...heatmapQuery, limit: 42, offset: 0 }),
+        usageService.readProviderDailyTotals({ ...usageRangeQuery('30-days'), limit: 200, offset: 0 }),
+        ...rollupRequests
+      ])
+    );
     usageState.summary = summary;
     usageState.providerSummary = providerSummary ?? [];
     usageState.dailyTotals = dailyTotals ?? [];

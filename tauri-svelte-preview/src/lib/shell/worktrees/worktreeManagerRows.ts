@@ -27,6 +27,7 @@
  * options. Re-deriving any of that here would be a second opinion nobody asked
  * for.
  */
+import { formatLastActivity } from '../relativeTime.ts';
 import type { GitRepositorySummary, ProjectWorktree } from '../../tauriSource.ts';
 import {
   buildWorktreeSafetySummary,
@@ -34,7 +35,6 @@ import {
   type WorktreeDecisionLane,
   type WorktreeSafetySummary
 } from '../../worktreeSafety.ts';
-import { formatLastActivity } from '../relativeTime.ts';
 
 /** A session as this pane needs to see one: where it works and whether it runs. */
 export interface WorktreeSessionInput {

@@ -120,9 +120,11 @@ export async function loadXtermModules(): Promise<{
   SerializeAddon: typeof import('@xterm/addon-serialize').SerializeAddon;
   WebglAddon: typeof import('@xterm/addon-webgl').WebglAddon | null;
 }> {
-  const { Terminal } = await import('@xterm/xterm');
-  const { FitAddon } = await import('@xterm/addon-fit');
-  const { SerializeAddon } = await import('@xterm/addon-serialize');
+  const [{ Terminal }, { FitAddon }, { SerializeAddon }] = await Promise.all([
+    import('@xterm/xterm'),
+    import('@xterm/addon-fit'),
+    import('@xterm/addon-serialize')
+  ]);
 
   let WebglAddon: typeof import('@xterm/addon-webgl').WebglAddon | null = null;
   try {
