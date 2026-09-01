@@ -1135,11 +1135,9 @@ export async function listenToTerminalOutput(
     : null;
 }
 
-export async function readSourceFromTauri(record: SourceRecord, signal?: AbortSignal): Promise<SourcePreview | null> {
-  if (signal?.aborted) return null;
+export async function readSourceFromTauri(record: SourceRecord): Promise<SourcePreview | null> {
   if (!isTauriRuntime()) {
     const preview = await postLocalSourceBridge<SourcePreview>('read', { path: record.path });
-    if (signal?.aborted) return null;
     return preview
       ? {
           ...preview,
@@ -1152,24 +1150,10 @@ export async function readSourceFromTauri(record: SourceRecord, signal?: AbortSi
 
   const generation = sourceFileReadGeneration;
   const { invoke } = await import('@tauri-apps/api/core');
-  const cancel = (): void => {
-    void cancelSourceFileReadsFromTauri();
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
-  let preview: SourcePreview | null;
-  try {
-    if (signal?.aborted) {
-      await cancelSourceFileReadsFromTauri();
-      return null;
-    }
-    preview = await invoke<SourcePreview | null>('read_source_file', {
-      path: record.path,
-      generation
-    });
-  } finally {
-    signal?.removeEventListener('abort', cancel);
-  }
-  if (signal?.aborted) return null;
+  const preview = await invoke<SourcePreview | null>('read_source_file', {
+    path: record.path,
+    generation
+  });
   if (!preview) return null;
   return {
     ...preview,

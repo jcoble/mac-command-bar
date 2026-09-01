@@ -370,13 +370,13 @@
     ownedId: string,
     attachments: ConversationAttachment[]
   ): Promise<void> {
-    for (const attachment of attachments) {
+    await Promise.all(attachments.map(async (attachment) => {
       try {
         await cleanupConversationAttachment(ownedId, attachment);
       } catch (_error) {
         // A failed cleanup is already best-effort; previews are revoked by the service.
       }
-    }
+    }));
   }
 
   async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {

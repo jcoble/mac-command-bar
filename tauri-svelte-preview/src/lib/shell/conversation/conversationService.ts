@@ -1225,9 +1225,9 @@ export async function sendStructuredMessage(
     // sent with one arrives as nothing at all. The message still goes; the
     // notice beside the box says what was left behind.
     if (state.provider === 'antigravity' && state.attachments.length > 0) {
-      for (const attachment of state.attachments) {
-        await cleanupConversationAttachment(ownedId, attachment);
-      }
+      await Promise.all(
+        state.attachments.map((attachment) => cleanupConversationAttachment(ownedId, attachment))
+      );
       setConversationAttachments(ownedId, []);
       setConversationProviderNotice(ownedId, 'Antigravity cannot take images yet; they were left out.');
       // A screenshot on its own leaves nothing to say, so nothing is sent.
@@ -1240,14 +1240,9 @@ export async function sendStructuredMessage(
     // send here left a screenshot that could never go out and no way to learn
     // why, so only a connected session's own answer refuses.
     const supportsImages = sendSupportsImages(state.capabilities, state.connectionState);
-    const hydratedAttachments: AttachmentWithBytes[] = supportsImages
-      ? []
+    const hydratedAttachments = supportsImages
+      ? await Promise.all(state.attachments.map((attachment) => hydrateAttachmentBytes(attachment as AttachmentWithBytes)))
       : state.attachments as AttachmentWithBytes[];
-    if (supportsImages) {
-      for (const attachment of state.attachments) {
-        hydratedAttachments.push(await hydrateAttachmentBytes(attachment as AttachmentWithBytes));
-      }
-    }
     const prompt = buildConversationPrompt(text, hydratedAttachments, supportsImages);
     const liveConversationEvents = await hasBackendCapability(
       ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY
