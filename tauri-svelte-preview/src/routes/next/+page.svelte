@@ -91,7 +91,6 @@
 		ownedId={selection.activeOwnedId}
 		filesRoot={selection.activeRootRemote ? "" : selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
-		selectionSignal={selection.selectionSignal}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(root, paths) => selection.rememberExpandedPaths(root, paths)}
 		filesInspectionRoot={null}

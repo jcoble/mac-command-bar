@@ -179,8 +179,13 @@ assert.match(
 );
 assert.match(
   selectionLayers,
-  /if \(departingOwnedId && departingOwnedId !== session\.ownedId\) \{[\s\S]*?releaseConversationForRead\(departingOwnedId\);[\s\S]*?this\.hasChatProjection = false;[\s\S]*?this\.chatOwnedId = null;[\s\S]*?evictInactiveConversationSessions\(null\);[\s\S]*?await loadConversationForRead\(session\.ownedId, false, owner\.signal\);/,
-  'the departing projection is released before the next conversation snapshot is awaited'
+  /if \(departingOwnedId && departingOwnedId !== session\.ownedId\) \{[\s\S]*?cancelConversationReadWork\(departingOwnedId\);[\s\S]*?await loadConversationForRead\(session\.ownedId, false, owner\.signal\);/,
+  'departing async work is cancelled before the next conversation snapshot is awaited'
+);
+assert.match(
+  selectionLayers,
+  /this\.chatOwnedId = session\.ownedId;[\s\S]*?releaseConversationForRead\(departingOwnedId\);/,
+  'departing data is evicted only after the hidden surface has swapped to the new conversation'
 );
 assert.doesNotMatch(page, /Open conversation|Conversation paused/, 'conversation activation has no manual workaround gate');
 

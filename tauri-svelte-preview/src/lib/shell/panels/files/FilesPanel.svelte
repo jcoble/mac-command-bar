@@ -63,7 +63,6 @@
 		visible: boolean;
 		root: string;
 		ownedId: string | null;
-		selectionSignal?: AbortSignal | null;
 		onRootUnavailable?(root: string): void | Promise<void>;
 		expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
 		onExpandedPathsChange?(root: string, paths: readonly string[]): void;
@@ -103,7 +102,6 @@
 		visible,
 		root,
 		ownedId,
-		selectionSignal,
 		onRootUnavailable,
 		expandedPathsByRoot,
 		onExpandedPathsChange,
@@ -138,7 +136,7 @@
 	let hydratedRoot = "";
 	let hydratedExpansionKey = "";
 	let expansionRestoreGeneration = 0;
-	let scopedSessionKey = "";
+	let scopedRoot = "";
 	let inspectionGeneration = 0;
 	let filesOwnerSignal: AbortSignal | undefined;
 
@@ -233,17 +231,13 @@
 	});
 
 	$effect(() => {
-		const parentSignal = selectionSignal ?? undefined;
-		const sessionKey = `${ownedId ?? ""}:${canonicalPath(root)}`;
 		const nextRoot = canonicalPath(sessionRoot);
 		const shouldActivate = visible && nextRoot !== "";
 		const controller = new AbortController();
 		filesOwnerSignal = controller.signal;
-		const abortFromSelection = (): void => controller.abort();
-		parentSignal?.addEventListener("abort", abortFromSelection, { once: true });
 		untrack(() => {
-			if (sessionKey !== scopedSessionKey) {
-				scopedSessionKey = sessionKey;
+			if (nextRoot !== scopedRoot) {
+				scopedRoot = nextRoot;
 				inspectionGeneration += 1;
 				inspectedRoot = "";
 				checkouts = [];
@@ -270,7 +264,6 @@
 			}
 		});
 		return () => {
-			parentSignal?.removeEventListener("abort", abortFromSelection);
 			controller.abort();
 			if (filesOwnerSignal === controller.signal) filesOwnerSignal = undefined;
 			stopScan();
@@ -453,7 +446,7 @@
 			actionError = null;
 			searchText = "";
 			cancelActiveSearch();
-			activateExplorer(sessionRoot || null, false, selectionSignal ?? undefined);
+			activateExplorer(sessionRoot || null, false, filesOwnerSignal);
 			onInspectionRootChange?.(null);
 			return;
 		}
@@ -468,7 +461,7 @@
 		actionError = null;
 		searchText = "";
 		cancelActiveSearch();
-		activateExplorer(target, false, selectionSignal ?? undefined);
+		activateExplorer(target, false, filesOwnerSignal);
 		onInspectionRootChange?.(target);
 	}
 

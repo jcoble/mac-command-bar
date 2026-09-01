@@ -259,8 +259,8 @@ export function cleanupConversationAttachmentPreview(attachment: ConversationAtt
   if (attachment.previewUrl.startsWith('blob:')) revokeTrackedObjectUrl(attachment.previewUrl);
 }
 
-/** Drop frontend-only conversation data after its workspace has been saved. */
-export function releaseConversationForRead(ownedId: string): void {
+/** Stop work owned by a conversation surface without evicting its hidden data yet. */
+export function cancelConversationReadWork(ownedId: string): void {
   readVersions.delete(ownedId);
   const activeRead = resyncing.get(ownedId);
   if (activeRead) {
@@ -277,6 +277,11 @@ export function releaseConversationForRead(ownedId: string): void {
   stopConversationTerminalProjection(ownedId);
   publishConversationSnapshotReadDiagnostics();
   cancelChildConversationTranscriptRead(ownedId);
+}
+
+/** Drop frontend-only conversation data after its workspace has been saved. */
+export function releaseConversationForRead(ownedId: string): void {
+  cancelConversationReadWork(ownedId);
   const state = getConversationSession(ownedId);
   if (!state) {
     evictConversationSession(ownedId);

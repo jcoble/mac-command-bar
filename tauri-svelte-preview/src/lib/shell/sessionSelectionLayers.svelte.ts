@@ -6,6 +6,7 @@
  */
 import { validateProjectRootFromTauri } from '../tauriSource';
 import {
+  cancelConversationReadWork,
   loadConversationForRead,
   releaseConversationForRead
 } from './conversation/conversationService';
@@ -99,10 +100,7 @@ export class SessionSelectionLayers {
     }
 
     if (departingOwnedId && departingOwnedId !== session.ownedId) {
-      releaseConversationForRead(departingOwnedId);
-      this.hasChatProjection = false;
-      this.chatOwnedId = null;
-      evictInactiveConversationSessions(null);
+      cancelConversationReadWork(departingOwnedId);
     }
 
     ensureConversationSession(session.ownedId, provider);
@@ -114,6 +112,9 @@ export class SessionSelectionLayers {
     }
     this.hasChatProjection = true;
     this.chatOwnedId = session.ownedId;
+    if (departingOwnedId && departingOwnedId !== session.ownedId) {
+      releaseConversationForRead(departingOwnedId);
+    }
     evictInactiveConversationSessions(session.ownedId);
   }
 

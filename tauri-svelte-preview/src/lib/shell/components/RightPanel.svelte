@@ -43,7 +43,6 @@
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
     filesRoot?: string;
     filesOwnedId?: string | null;
-    selectionSignal?: AbortSignal | null;
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(root: string, paths: readonly string[]): void;
@@ -62,7 +61,6 @@
     ownedId,
     filesRoot,
     filesOwnedId,
-    selectionSignal,
     onRootUnavailable,
     expandedPathsByRoot,
     onExpandedPathsChange,
@@ -83,7 +81,6 @@
         visible={activeId === 'files'}
         root={filesRoot ?? root}
         ownedId={filesOwnedId === undefined ? ownedId : filesOwnedId}
-        {selectionSignal}
         {onRootUnavailable}
         {expandedPathsByRoot}
         {onExpandedPathsChange}
