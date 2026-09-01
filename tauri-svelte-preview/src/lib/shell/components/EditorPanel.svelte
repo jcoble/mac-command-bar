@@ -166,9 +166,15 @@
   let closeDialogOpen = $state(false);
   let closeActionBusy = $state(false);
 
-  type EditorSourceRead = { byteCount: number; generation: number; token: object; work: Promise<void> };
+  type EditorSourceRead = {
+    abortController: AbortController;
+    byteCount: number;
+    generation: number;
+    token: object;
+    work: Promise<void>;
+  };
 
-  /** Native reads cannot be cancelled, so keep them owned until they settle. */
+  /** In-flight reads belong to the visible session and are aborted when that owner changes. */
   const readsInFlight = new Map<string, EditorSourceRead>();
 
   function publishSourceReadDiagnostics(): void {
@@ -181,6 +187,7 @@
     );
   }
   let sessionResourceGeneration = 0;
+  let editorOwnerAbortController = new AbortController();
   let restoredViewStates = $state<Record<string, object>>({});
   /** Projects whose language server has already been pointed at the project. */
   const warmedProjectRoots = new Set<string>();
@@ -818,15 +825,18 @@
     generation: number,
     readOnly: boolean,
     projectRoot: string | null,
-    token: object
+    token: object,
+    signal: AbortSignal
   ): Promise<void> {
     try {
+      if (signal.aborted) return;
       // The record has to be built first: the read wrapper copies the relative
       // path, language and size back out of it onto the preview it returns.
       countInvoke('read_source_file');
-      const preview = await readSourceFromTauri(record);
+      const preview = await readSourceFromTauri(record, signal);
       if (
-        destroyed
+        signal.aborted
+        || destroyed
         || generation !== sessionResourceGeneration
         || editorState.activePath !== record.path
         || (!readOnly && editorState.projectRoot !== projectRoot)
@@ -874,8 +884,9 @@
     markEditorFileLoading(record.path);
     if (!readOnly) void warmLanguageServer(editorState.projectRoot);
     const token = {};
-    const work = readFileIntoEditorForOwner(record, generation, readOnly, projectRoot, token);
-    readsInFlight.set(record.path, { byteCount: record.byteCount, generation, token, work });
+    const abortController = new AbortController();
+    const work = readFileIntoEditorForOwner(record, generation, readOnly, projectRoot, token, abortController.signal);
+    readsInFlight.set(record.path, { abortController, byteCount: record.byteCount, generation, token, work });
     publishSourceReadDiagnostics();
     return work;
   }
@@ -917,8 +928,10 @@
     const activePath = editorState.activePath;
     const root = editorState.projectRoot;
     const generation = sessionResourceGeneration;
+    const ownerSignal = editorOwnerAbortController.signal;
     if (!activePath || !root || !fullMode) return;
     for (const fileEdit of action.files) {
+      if (ownerSignal.aborted) return;
       if (fileEdit.path === activePath || fileEdit.edits.length === 0) continue;
       let file = editorFileFor(fileEdit.path);
       if (!file?.preview) {
@@ -926,12 +939,12 @@
         countInvoke('read_source_file');
         let preview: SourcePreview | null;
         try {
-          preview = await readSourceFromTauri(record);
+          preview = await readSourceFromTauri(record, ownerSignal);
         } catch {
           preview = null;
         }
         if (
-          !preview || destroyed || generation !== sessionResourceGeneration ||
+          !preview || ownerSignal.aborted || destroyed || generation !== sessionResourceGeneration ||
           editorState.projectRoot !== root || editorState.activePath !== activePath || !fullMode
         ) return;
         openEditorFile(record);
@@ -1265,7 +1278,10 @@
 
   export function releaseSessionResources(paths: readonly string[]): void {
     sessionResourceGeneration += 1;
+    editorOwnerAbortController.abort();
+    editorOwnerAbortController = new AbortController();
     if (readsInFlight.size > 0) {
+      for (const read of readsInFlight.values()) read.abortController.abort();
       void cancelSourceReadsForReleasedSession();
     }
     publishSourceReadDiagnostics();

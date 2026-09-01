@@ -71,17 +71,18 @@
     const parentGeneration = conversation.generation;
     const nativeSessionId = rail.owned.find((session) => session.ownedId === ownedId)?.nativeSessionId;
 
-    let active = true;
+    const controller = new AbortController();
     if (nativeSessionId && selectedChildRunning) void readSelectedChildTranscript({
       ownedId,
       generation: parentGeneration,
       provider: conversation.provider,
       nativeSessionId,
       childSessionId: selectedChildId,
-      isCurrent: () => active && visible && conversation?.generation === parentGeneration
+      signal: controller.signal,
+      isCurrent: () => !controller.signal.aborted && visible && conversation?.generation === parentGeneration
     });
     return () => {
-      active = false;
+      controller.abort();
       cancelChildConversationTranscriptRead(ownedId);
     };
   });
@@ -92,6 +93,7 @@
     provider: AgentConversationProvider;
     nativeSessionId: string;
     childSessionId: string;
+    signal: AbortSignal;
     isCurrent: () => boolean;
   }): Promise<void> {
     if (!request.isCurrent()) return;
@@ -100,7 +102,8 @@
         ownedId: request.ownedId,
         provider: request.provider,
         nativeSessionId: request.nativeSessionId,
-        childSessionId: request.childSessionId
+        childSessionId: request.childSessionId,
+        signal: request.signal
       });
     } catch {
       // A child transcript read is opportunistic; the selected row remains valid.
@@ -121,14 +124,20 @@
     const nativeSessionId = rail.owned.find((session) => session.ownedId === ownedId)?.nativeSessionId;
     if (!nativeSessionId) return;
     const generation = conversation.generation;
-    await readSelectedChildTranscript({
-      ownedId,
-      generation,
-      provider: conversation.provider,
-      nativeSessionId,
-      childSessionId: next,
-      isCurrent: () => getConversationSession(ownedId)?.generation === generation
-    });
+    const controller = new AbortController();
+    try {
+      await readSelectedChildTranscript({
+        ownedId,
+        generation,
+        provider: conversation.provider,
+        nativeSessionId,
+        childSessionId: next,
+        signal: controller.signal,
+        isCurrent: () => !controller.signal.aborted && getConversationSession(ownedId)?.generation === generation
+      });
+    } finally {
+      controller.abort();
+    }
   }
 </script>
 

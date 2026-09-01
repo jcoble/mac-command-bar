@@ -227,9 +227,10 @@ pub async fn read_agent_conversation_workspace_expanded_paths(
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     root: String,
+    request_id: u64,
 ) -> CommandResult<Vec<String>> {
     if remote.owns(&owned_id) {
-        return command_result(remote.read_expanded_paths(owned_id, root).await);
+        return command_result(remote.read_expanded_paths(owned_id, root, request_id).await);
     }
     command_result(manager.read_workspace_expanded_paths(&owned_id, &root))
 }
@@ -484,9 +485,10 @@ pub async fn read_agent_conversation_config(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
+    request_id: u64,
 ) -> CommandResult<AgentConversationConfigState> {
     if remote.owns(&owned_id) {
-        return command_result(remote.config(owned_id).await);
+        return command_result(remote.config(owned_id, request_id).await);
     }
     command_result(manager.conversation_config(&owned_id))
 }
@@ -497,9 +499,10 @@ pub async fn read_agent_conversation_capabilities(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
+    request_id: u64,
 ) -> CommandResult<AgentCapabilities> {
     if remote.owns(&owned_id) {
-        return command_result(remote.capabilities(owned_id).await);
+        return command_result(remote.capabilities(owned_id, request_id).await);
     }
     command_result(manager.capabilities_for_owned_id(&owned_id))
 }
@@ -548,35 +551,47 @@ pub async fn read_agent_conversation_snapshot(
 }
 
 #[tauri::command]
-/// Cancels a snapshot whose frontend projection owner has been released.
-pub async fn cancel_agent_conversation_snapshot(
+/// Cancels a frontend-owned conversation request whose owner has been released.
+pub async fn cancel_agent_conversation_request(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     request_id: u64,
 ) -> CommandResult<()> {
     manager.cancel_snapshot(request_id);
-    remote.cancel_snapshot(request_id).await;
+    remote.cancel_request(request_id).await;
     Ok(())
+}
+
+#[tauri::command]
+/// Compatibility wrapper for older snapshot callers.
+pub async fn cancel_agent_conversation_snapshot(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    request_id: u64,
+) -> CommandResult<()> {
+    cancel_agent_conversation_request(manager, remote, request_id).await
 }
 
 #[tauri::command]
 /// Lists durable conversation sessions with typed storage failures.
 pub async fn list_agent_conversation_sessions(
     manager: tauri::State<'_, AgentRuntimeManager>,
-    remote: tauri::State<'_, RemoteConnectionManager>,
 ) -> CommandResult<Vec<AgentConversationSessionRecord>> {
-    let mut sessions = manager
+    manager
         .list_sessions()
-        .map_err(protocol::CommandError::from)?;
-    if remote.is_configured() {
-        match remote.list_sessions().await {
-            Ok(remote_sessions) => sessions.extend(remote_sessions),
-            Err(error) => crate::debug_log::stderr_log!(
-                "Remote Assembly session list unavailable; keeping local sessions visible: {error}"
-            ),
-        }
+        .map_err(protocol::CommandError::from)
+}
+
+#[tauri::command]
+/// Lists remote sessions separately so an unavailable machine cannot hold the local rail open.
+pub async fn list_remote_agent_conversation_sessions(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    request_id: u64,
+) -> CommandResult<Vec<AgentConversationSessionRecord>> {
+    if !remote.is_configured() {
+        return Ok(Vec::new());
     }
-    Ok(sessions)
+    command_result(remote.list_sessions(request_id).await)
 }
 
 #[tauri::command]
@@ -597,11 +612,12 @@ pub async fn list_agent_conversation_events_before(
     owned_id: String,
     before_sequence: i64,
     max_bytes: u32,
+    request_id: u64,
 ) -> CommandResult<AgentConversationEventPage> {
     if remote.owns(&owned_id) {
         return command_result(
             remote
-                .events_before(owned_id, before_sequence, max_bytes)
+                .events_before(owned_id, before_sequence, max_bytes, request_id)
                 .await,
         );
     }
@@ -616,11 +632,12 @@ pub async fn list_agent_conversation_events_after(
     owned_id: String,
     after_sequence: i64,
     max_bytes: u32,
+    request_id: u64,
 ) -> CommandResult<AgentConversationEventPage> {
     if remote.owns(&owned_id) {
         return command_result(
             remote
-                .events_after(owned_id, after_sequence, max_bytes)
+                .events_after(owned_id, after_sequence, max_bytes, request_id)
                 .await,
         );
     }

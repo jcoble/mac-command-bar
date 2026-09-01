@@ -177,7 +177,7 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
           }))
         ];
         this.paint(true);
-        await Promise.all(requests.map(async (request) => {
+        for (const request of requests) {
           const key = sourceCodeLensCountKey(options.preview.path, request);
           let count: Count | null | undefined;
           try {
@@ -194,7 +194,7 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
             title: count ? formatSourceCodeLensTitle(count.count, count.atLeast) : 'References unavailable'
           };
           this.paint(true);
-        }));
+        }
       }
 
       private run = (row: LensRow): void => {

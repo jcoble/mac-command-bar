@@ -86,6 +86,15 @@ const shellFrame = readFileSync(
   new URL('../src/lib/shell/components/ShellFrame.svelte', import.meta.url),
   'utf8'
 );
+const shellStartup = readFileSync(
+  new URL('../src/lib/shell/controllers/shellStartup.ts', import.meta.url),
+  'utf8'
+);
+const tauriSource = readFileSync(new URL('../src/lib/tauriSource.ts', import.meta.url), 'utf8');
+const remoteConversation = readFileSync(
+  new URL('../src-tauri/src/agent_conversation/remote.rs', import.meta.url),
+  'utf8'
+);
 assert.match(
   page,
   /async function selectSession\(ownedId: string\): Promise<void> \{\s+await selection\.selectSession\(ownedId\);\s+\}/,
@@ -123,6 +132,41 @@ for (const id of ['session', 'editor', 'diff', 'git-history']) {
     `${id} center panel only keeps a renderer while it is visible`
   );
 }
+assert.match(
+  shellStartup,
+  /const storedSessions = \(await listAgentConversationSessionsFromTauri\(\)\)[\s\S]*?hydrateOwned\(projected\)[\s\S]*?void hydrateRemoteSessionsForOwner\(generation, controller\.signal\)/,
+  'local sessions publish before cancellable remote discovery begins'
+);
+assert.match(
+  tauriSource,
+  /listRemoteAgentConversationSessionsFromTauri\([\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
+  'remote session discovery removes its abort listener when the invoke settles'
+);
+assert.match(
+  remoteConversation,
+  /pub async fn cancel_request[\s\S]*?try_send\(ClientRequest::Cancel \{ id: request_id \}\)/,
+  'remote request cancellation never waits behind a saturated request queue'
+);
+assert.match(
+  tauriSource,
+  /readAgentConversationCapabilitiesFromTauri\([\s\S]*?requestId[\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?read_agent_conversation_capabilities[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
+  'remote capability reads are owned by the surface abort signal'
+);
+assert.match(
+  tauriSource,
+  /listAgentConversationEventsBeforeFromTauri\([\s\S]*?requestId[\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?list_agent_conversation_events_before[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
+  'older event page reads are owned by the surface abort signal'
+);
+assert.match(
+  tauriSource,
+  /listAgentConversationEventsAfterFromTauri\([\s\S]*?requestId[\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?list_agent_conversation_events_after[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
+  'newer event page reads are owned by the surface abort signal'
+);
+assert.match(
+  tauriSource,
+  /readAgentConversationWorkspaceExpandedPathsFromTauri\([\s\S]*?requestId[\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?read_agent_conversation_workspace_expanded_paths[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
+  'expanded-path reads are owned by the selection abort signal'
+);
 assert.doesNotMatch(
   selectionController,
   /setActiveOwned\(ownedId\);[\s\S]{0,160}clearChatHistory\(\);[\s\S]{0,160}const session = rail\.owned\.find/,
@@ -135,8 +179,8 @@ assert.match(
 );
 assert.match(
   selectionLayers,
-  /this\.hasChatProjection = true;[\s\S]*?this\.chatOwnedId = session\.ownedId;[\s\S]*?releaseConversationForRead\(departingOwnedId\);[\s\S]*?evictInactiveConversationSessions\(session\.ownedId\);/,
-  'the departing projection is released only after the candidate projection is published'
+  /if \(departingOwnedId && departingOwnedId !== session\.ownedId\) \{[\s\S]*?releaseConversationForRead\(departingOwnedId\);[\s\S]*?this\.hasChatProjection = false;[\s\S]*?this\.chatOwnedId = null;[\s\S]*?evictInactiveConversationSessions\(null\);[\s\S]*?await loadConversationForRead\(session\.ownedId, false, owner\.signal\);/,
+  'the departing projection is released before the next conversation snapshot is awaited'
 );
 assert.doesNotMatch(page, /Open conversation|Conversation paused/, 'conversation activation has no manual workaround gate');
 

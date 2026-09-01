@@ -122,10 +122,8 @@ async function runtimeTransition(
   previous: SessionPresenceHistory,
   next: SessionPresenceHistory
 ): Promise<SessionNotificationTransition> {
-  const [{ getCurrentWindow }, { rail }] = await Promise.all([
-    import('@tauri-apps/api/window'),
-    import('../stores/sessionRailStore.svelte.ts')
-  ]);
+  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+  const { rail } = await import('../stores/sessionRailStore.svelte.ts');
   const session = rail.owned.find((entry) => entry.ownedId === event.ownedId);
   return {
     ownedId: event.ownedId,

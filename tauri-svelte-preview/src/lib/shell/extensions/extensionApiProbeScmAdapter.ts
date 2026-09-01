@@ -122,10 +122,8 @@ export function createExtensionApiProbeScmLease(
 export async function acquireExtensionApiProbeScmLease(
   context: RustGitScmOwnerContext
 ): Promise<ExtensionApiProbeScmLease | null> {
-  const [{ gitService }, providerModule] = await Promise.all([
-    import('../git/gitService.ts'),
-    import('./rustGitScmProvider.ts')
-  ]);
+  const { gitService } = await import('../git/gitService.ts');
+  const providerModule = await import('./rustGitScmProvider.ts');
   return createExtensionApiProbeScmLease(gitService, {
     acquireOwner: providerModule.acquireRustGitScmProbeOwner,
     isOwnerCurrent: providerModule.isRustGitScmProbeOwnerCurrent,

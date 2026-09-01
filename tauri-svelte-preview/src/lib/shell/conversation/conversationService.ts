@@ -98,11 +98,16 @@ type ConversationSnapshotRead = {
   work: Promise<void>;
 };
 
+type ConversationEnsure = {
+  abortController: AbortController;
+  invalidated: boolean;
+  signature: string;
+  token: object;
+  work: Promise<AgentConversationConnection | null>;
+};
+
 const resyncing = new Map<string, ConversationSnapshotRead>();
-const ensuring = new Map<
-  string,
-  { signature: string; token: object; work: Promise<AgentConversationConnection | null> }
->();
+const ensuring = new Map<string, ConversationEnsure>();
 const terminalProjections = new Map<string, string>();
 const readVersions = new Map<string, number>();
 
@@ -155,7 +160,9 @@ export async function readChildConversationTranscript(input: {
   provider: AgentConversationProvider;
   nativeSessionId: string;
   childSessionId: string;
+  signal?: AbortSignal;
 }): Promise<void> {
+  if (input.signal?.aborted) return;
   const generation = getConversationSession(input.ownedId)?.generation ?? 0;
   const active = childTranscriptReads.get(input.ownedId);
   if (active?.generation === generation && active.childSessionId === input.childSessionId) return;
@@ -163,6 +170,10 @@ export async function readChildConversationTranscript(input: {
     generation,
     childSessionId: input.childSessionId
   };
+  const abortFromOwner = (): void => {
+    if (childTranscriptReads.get(input.ownedId) === readToken) childTranscriptReads.delete(input.ownedId);
+  };
+  input.signal?.addEventListener('abort', abortFromOwner, { once: true });
   childTranscriptReads.set(input.ownedId, readToken);
   let snapshot: ConversationTranscriptSnapshot;
   try {
@@ -174,9 +185,11 @@ export async function readChildConversationTranscript(input: {
   } catch (error) {
     if (childTranscriptReads.get(input.ownedId) === readToken) childTranscriptReads.delete(input.ownedId);
     throw error;
+  } finally {
+    input.signal?.removeEventListener('abort', abortFromOwner);
   }
   const current = getConversationSession(input.ownedId);
-  if (childTranscriptReads.get(input.ownedId) !== readToken) return;
+  if (input.signal?.aborted || childTranscriptReads.get(input.ownedId) !== readToken) return;
   childTranscriptReads.delete(input.ownedId);
   if (
     !current
@@ -255,6 +268,11 @@ export function releaseConversationForRead(ownedId: string): void {
     activeRead.abortController.abort();
   }
   resyncing.delete(ownedId);
+  const activeEnsure = ensuring.get(ownedId);
+  if (activeEnsure) {
+    activeEnsure.invalidated = true;
+    activeEnsure.abortController.abort();
+  }
   ensuring.delete(ownedId);
   stopConversationTerminalProjection(ownedId);
   publishConversationSnapshotReadDiagnostics();
@@ -616,7 +634,8 @@ async function hydrateSentConversationAttachments(
   }
 }
 
-async function resyncConversation(ownedId: string) {
+async function resyncConversation(ownedId: string, signal?: AbortSignal) {
+  if (signal?.aborted) return;
   const existing = resyncing.get(ownedId);
   if (existing) {
     await existing.work;
@@ -626,10 +645,16 @@ async function resyncConversation(ownedId: string) {
   readVersions.set(ownedId, readVersion);
   const token = {};
   const abortController = new AbortController();
+  const abortFromOwner = (): void => abortController.abort();
+  signal?.addEventListener('abort', abortFromOwner, { once: true });
   const work = resyncConversationOnce(ownedId, readVersion, token, abortController.signal);
   resyncing.set(ownedId, { abortController, invalidated: false, readVersion, token, work });
   publishConversationSnapshotReadDiagnostics();
-  await work;
+  try {
+    await work;
+  } finally {
+    signal?.removeEventListener('abort', abortFromOwner);
+  }
 }
 
 async function resyncConversationOnce(
@@ -804,7 +829,7 @@ export async function loadOlderConversationEvents(
       failLoadingOlderConversationEvents(ownedId);
       return;
     }
-    const extended = await extendAgentConversationImportFromTauri(ownedId);
+    const extended = await extendAgentConversationImportFromTauri(ownedId, signal);
     const afterExtend = getConversationSession(ownedId);
     if (
       signal?.aborted
@@ -1013,7 +1038,9 @@ export async function ensureStructuredConversation(input: {
   nativeSessionId?: string | null;
   nativeSessionMode?: 'resume' | 'load';
   reasoningEffort?: string | null;
+  signal?: AbortSignal;
 }): Promise<AgentConversationConnection | null> {
+  if (input.signal?.aborted) return null;
   if (rail.activeOwnedId === input.ownedId) {
     ensureConversationSession(input.ownedId, input.provider);
   }
@@ -1027,13 +1054,20 @@ export async function ensureStructuredConversation(input: {
   const active = ensuring.get(input.ownedId);
   if (active?.signature === signature) {
     const connection = await active.work;
-    return connection;
+    return input.signal?.aborted || active.invalidated ? null : connection;
   }
   const token = {};
-  const work = ensureStructuredConversationOnce(input.ownedId, request, token);
-  ensuring.set(input.ownedId, { signature, token, work });
-  const connection = await work;
-  return connection;
+  const abortController = new AbortController();
+  const abortFromOwner = (): void => abortController.abort();
+  input.signal?.addEventListener('abort', abortFromOwner, { once: true });
+  const work = ensureStructuredConversationOnce(input.ownedId, request, token, abortController.signal);
+  ensuring.set(input.ownedId, { abortController, invalidated: false, signature, token, work });
+  try {
+    const connection = await work;
+    return input.signal?.aborted ? null : connection;
+  } finally {
+    input.signal?.removeEventListener('abort', abortFromOwner);
+  }
 }
 
 async function ensureStructuredConversationOnce(
@@ -1047,16 +1081,19 @@ async function ensureStructuredConversationOnce(
     nativeSessionMode: 'resume' | 'load';
     reasoningEffort?: string | null;
   },
-  token: object
+  token: object,
+  signal: AbortSignal
 ): Promise<AgentConversationConnection | null> {
   try {
+    if (signal.aborted) return null;
     const connection = await invoke<AgentConversationConnection>('ensure_agent_conversation', {
       request
     });
+    if (signal.aborted) return null;
     if (connection.nativeSessionId) updateOwnedSession(ownedId, { nativeSessionId: connection.nativeSessionId });
     if (rail.activeOwnedId !== ownedId) return connection;
     setConversationConnection(connection);
-    await resyncConversation(ownedId);
+    await resyncConversation(ownedId, signal);
     return connection;
   } finally {
     if (ensuring.get(ownedId)?.token === token) ensuring.delete(ownedId);
@@ -1188,9 +1225,9 @@ export async function sendStructuredMessage(
     // sent with one arrives as nothing at all. The message still goes; the
     // notice beside the box says what was left behind.
     if (state.provider === 'antigravity' && state.attachments.length > 0) {
-      await Promise.all(
-        state.attachments.map((attachment) => cleanupConversationAttachment(ownedId, attachment))
-      );
+      for (const attachment of state.attachments) {
+        await cleanupConversationAttachment(ownedId, attachment);
+      }
       setConversationAttachments(ownedId, []);
       setConversationProviderNotice(ownedId, 'Antigravity cannot take images yet; they were left out.');
       // A screenshot on its own leaves nothing to say, so nothing is sent.
@@ -1203,9 +1240,14 @@ export async function sendStructuredMessage(
     // send here left a screenshot that could never go out and no way to learn
     // why, so only a connected session's own answer refuses.
     const supportsImages = sendSupportsImages(state.capabilities, state.connectionState);
-    const hydratedAttachments = supportsImages
-      ? await Promise.all(state.attachments.map((attachment) => hydrateAttachmentBytes(attachment as AttachmentWithBytes)))
+    const hydratedAttachments: AttachmentWithBytes[] = supportsImages
+      ? []
       : state.attachments as AttachmentWithBytes[];
+    if (supportsImages) {
+      for (const attachment of state.attachments) {
+        hydratedAttachments.push(await hydrateAttachmentBytes(attachment as AttachmentWithBytes));
+      }
+    }
     const prompt = buildConversationPrompt(text, hydratedAttachments, supportsImages);
     const liveConversationEvents = await hasBackendCapability(
       ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY

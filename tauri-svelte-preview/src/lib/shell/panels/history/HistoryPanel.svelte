@@ -276,12 +276,24 @@
     if (!fullyHeld) host.service.release(keys);
 
     try {
-      const [refreshed, nextCheckouts] = await Promise.allSettled([
-        fullyHeld
-          ? Promise.resolve(heldRecords)
-          : host.service.refresh(keys, { projectPath: project.path }),
-        listRepositoryCheckoutsFromTauri([project.path])
-      ]);
+      let refreshed: PromiseSettledResult<typeof heldRecords>;
+      try {
+        refreshed = {
+          status: 'fulfilled',
+          value: fullyHeld ? heldRecords : await host.service.refresh(keys, { projectPath: project.path })
+        };
+      } catch (reason) {
+        refreshed = { status: 'rejected', reason };
+      }
+      let nextCheckouts: PromiseSettledResult<Awaited<ReturnType<typeof listRepositoryCheckoutsFromTauri>>>;
+      try {
+        nextCheckouts = {
+          status: 'fulfilled',
+          value: await listRepositoryCheckoutsFromTauri([project.path])
+        };
+      } catch (reason) {
+        nextCheckouts = { status: 'rejected', reason };
+      }
       if (!visible || version !== loadVersion) {
         if (!fullyHeld) host.service.release(keys);
         return;
@@ -384,9 +396,8 @@
     if (!request) return;
     try {
       // Naming the session reads none of its transcript, so the rail, the title
-      // and the agent are all there straight away. The two slow halves — reading
-      // the records, and starting the agent — then run together below rather
-      // than one behind the other.
+      // and the agent are all there straight away. The two slow halves below
+      // can fail independently, so each result is captured explicitly.
       const ownedId = await beginAgentConversationImportFromTauri(request);
       if (!ownedId) return;
       const stored = (await listAgentConversationSessionsFromTauri()) ?? [];
@@ -401,21 +412,35 @@
       // A session you asked to resume is one you want to look at, so bring it
       // forward the same way adopting a scanned session does.
       showCenterTab('session');
-      const [transcript, conversation] = await Promise.allSettled([
-        finishAgentConversationImportFromTauri(ownedId),
-        ensureStructuredConversation({
-          ownedId,
-          provider: request.provider,
-          cwd: request.cwd,
-          nativeSessionId: request.nativeSessionId,
-          nativeSessionMode: 'resume'
-        })
-      ]);
       // Both halves wrote to the same session and either could have landed last.
       // Starting the agent reads the conversation back as part of its own work,
       // and when that read wins the race it happens before the records exist.
       // Reading it once more, after both are done, is what makes the transcript
       // appear rather than an empty session under a correct title.
+      let transcript: PromiseSettledResult<Awaited<ReturnType<typeof finishAgentConversationImportFromTauri>>>;
+      try {
+        transcript = {
+          status: 'fulfilled',
+          value: await finishAgentConversationImportFromTauri(ownedId)
+        };
+      } catch (reason) {
+        transcript = { status: 'rejected', reason };
+      }
+      let conversation: PromiseSettledResult<Awaited<ReturnType<typeof ensureStructuredConversation>>>;
+      try {
+        conversation = {
+          status: 'fulfilled',
+          value: await ensureStructuredConversation({
+            ownedId,
+            provider: request.provider,
+            cwd: request.cwd,
+            nativeSessionId: request.nativeSessionId,
+            nativeSessionMode: 'resume'
+          })
+        };
+      } catch (reason) {
+        conversation = { status: 'rejected', reason };
+      }
       await loadConversationForRead(ownedId);
       // Either half can fail on its own and the other still has value. A
       // transcript that would not load is a failed resume and is said so. An

@@ -291,6 +291,7 @@ export function createSourceIntelligence(): SourceIntelligence {
   let projectRoot: string | null = null;
   let projectRootGeneration = 0;
   let externalPreviewGeneration = 0;
+  let externalPreviewAbort = new AbortController();
   let activePreview: SourcePreview | null = null;
   let draftContent = '';
   /**
@@ -319,6 +320,11 @@ export function createSourceIntelligence(): SourceIntelligence {
       if (oldest === undefined) break;
       externalPreviewCache.delete(oldest);
     }
+  }
+
+  function abortExternalPreviewReads(): void {
+    externalPreviewAbort.abort();
+    externalPreviewAbort = new AbortController();
   }
 
   /** Does the file on screen have a language server behind it? */
@@ -1005,6 +1011,8 @@ export function createSourceIntelligence(): SourceIntelligence {
     const requestRoot = projectRoot;
     const generation = projectRootGeneration;
     const previewGeneration = externalPreviewGeneration;
+    const signal = externalPreviewAbort.signal;
+    if (signal.aborted) return null;
     const sourceRecord = sourceRecordFromPath(requestRoot, record.path);
 
     if (activePreview?.path === sourceRecord.path) {
@@ -1023,12 +1031,13 @@ export function createSourceIntelligence(): SourceIntelligence {
     countInvoke('read_source_file');
     let preview: SourcePreview | null;
     try {
-      preview = await readSourceFromTauri(sourceRecord);
+      preview = await readSourceFromTauri(sourceRecord, signal);
     } catch {
       preview = null;
     }
     if (
-      generation !== projectRootGeneration
+      signal.aborted
+      || generation !== projectRootGeneration
       || previewGeneration !== externalPreviewGeneration
       || projectRoot !== requestRoot
     ) return null;
@@ -1169,6 +1178,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       referenceCountSubscribers.clear();
       projectRootGeneration += 1;
       externalPreviewGeneration += 1;
+      abortExternalPreviewReads();
       rememberedReadiness.clear();
       externalPreviewCache.clear();
       stopCountingForTheOldFile();
@@ -1190,6 +1200,7 @@ export function createSourceIntelligence(): SourceIntelligence {
       if (normalized === projectRoot) return;
       projectRootGeneration += 1;
       projectRoot = normalized;
+      abortExternalPreviewReads();
       rememberedReadiness.clear();
       // The old project's live answers belong to the view that just left it.
       // Stop that work and release those answers before pointing at the new root.
@@ -1215,6 +1226,7 @@ export function createSourceIntelligence(): SourceIntelligence {
     },
     invalidateAllPreviews(): void {
       externalPreviewGeneration += 1;
+      abortExternalPreviewReads();
       externalPreviewCache.clear();
       forgetReferenceCounts();
     },

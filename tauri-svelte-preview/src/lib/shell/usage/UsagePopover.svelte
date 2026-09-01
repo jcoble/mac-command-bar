@@ -81,10 +81,8 @@
 
   async function refreshUsageWorkspace(providerName: string | null, instance: string | null): Promise<void> {
     try {
-      await Promise.all([
-        refreshCurrentUsage(providerName, instance),
-        refreshUsageHistory()
-      ]);
+      await refreshCurrentUsage(providerName, instance);
+      await refreshUsageHistory();
     } catch (_error) {
       // Manual refresh can fail without closing the stats surface.
     }

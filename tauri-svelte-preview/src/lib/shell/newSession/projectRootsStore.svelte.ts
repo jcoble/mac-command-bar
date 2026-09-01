@@ -160,10 +160,8 @@ async function hydrateProjectRoots(
   lastUsedVersionAtStart: number
 ): Promise<void> {
   try {
-    const [storedCustom, storedLastUsed] = await Promise.all([
-      readAssemblySettingFromTauri(CUSTOM_PROJECT_ROOTS_SETTING_KEY),
-      readAssemblySettingFromTauri(LAST_PROJECT_ROOT_SETTING_KEY)
-    ]);
+    const storedCustom = await readAssemblySettingFromTauri(CUSTOM_PROJECT_ROOTS_SETTING_KEY);
+    const storedLastUsed = await readAssemblySettingFromTauri(LAST_PROJECT_ROOT_SETTING_KEY);
       if (customVersion === customVersionAtStart) {
         projectRoots.custom = parseStoredCustomRoots(
           storedCustom === null ? null : JSON.stringify(storedCustom)

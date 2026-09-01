@@ -349,32 +349,34 @@
     provider: AgentConversationProvider,
     nativeSessionId: string,
     childSessionId: string,
-    generation: number
+    generation: number,
+    signal: AbortSignal
   ): Promise<void> {
     try {
       await readChildConversationTranscript({
         ownedId,
         provider,
         nativeSessionId,
-        childSessionId
+        childSessionId,
+        signal
       });
     } catch (_error) {
       // The transcript read is opportunistic; the selector remains usable.
     }
-    if (conversationSessions[ownedId]?.generation !== generation) return;
+    if (signal.aborted || conversationSessions[ownedId]?.generation !== generation) return;
   }
 
   async function cleanupSavedAttachments(
     ownedId: string,
     attachments: ConversationAttachment[]
   ): Promise<void> {
-    await Promise.all(attachments.map(async (attachment) => {
+    for (const attachment of attachments) {
       try {
         await cleanupConversationAttachment(ownedId, attachment);
       } catch (_error) {
         // A failed cleanup is already best-effort; previews are revoked by the service.
       }
-    }));
+    }
   }
 
   async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {
@@ -452,7 +454,14 @@
     if (!childId || !active.nativeSessionId) return;
     const child = conversation.children.find((candidate) => candidate.childId === childId);
     if (!child?.transcriptAvailable) return;
-    await readSelectedChildTranscript(active.ownedId, conversation.provider, active.nativeSessionId, childId, conversation.generation);
+    await readSelectedChildTranscript(
+      active.ownedId,
+      conversation.provider,
+      active.nativeSessionId,
+      childId,
+      conversation.generation,
+      surfaceController.signal
+    );
   }
 
   $effect(() => {

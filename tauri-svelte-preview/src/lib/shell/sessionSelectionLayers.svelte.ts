@@ -98,6 +98,13 @@ export class SessionSelectionLayers {
       return;
     }
 
+    if (departingOwnedId && departingOwnedId !== session.ownedId) {
+      releaseConversationForRead(departingOwnedId);
+      this.hasChatProjection = false;
+      this.chatOwnedId = null;
+      evictInactiveConversationSessions(null);
+    }
+
     ensureConversationSession(session.ownedId, provider);
     setConversationMode(session.ownedId, 'structured');
     await loadConversationForRead(session.ownedId, false, owner.signal);
@@ -107,9 +114,6 @@ export class SessionSelectionLayers {
     }
     this.hasChatProjection = true;
     this.chatOwnedId = session.ownedId;
-    if (departingOwnedId && departingOwnedId !== session.ownedId) {
-      releaseConversationForRead(departingOwnedId);
-    }
     evictInactiveConversationSessions(session.ownedId);
   }
 

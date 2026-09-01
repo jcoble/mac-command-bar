@@ -28,7 +28,7 @@
 
 	import { SessionSelectionController } from "$lib/shell/controllers/sessionSelectionController.svelte";
 	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
-	import { refreshRailSessions, startShell, stopShell } from "$lib/shell/controllers/shellStartup";
+	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
 
 	const selection = new SessionSelectionController();
 	const workbench = new WorkbenchController();

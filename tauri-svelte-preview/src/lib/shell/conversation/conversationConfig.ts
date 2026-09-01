@@ -1,4 +1,8 @@
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
+import {
+  cancelAgentConversationRequestFromTauri,
+  createAgentConversationRequestId
+} from '../../tauriSource.ts';
 
 export type AgentConversationConfigState = {
   model: string | null;
@@ -59,8 +63,27 @@ export async function readAgentConversationConfig(
   signal?: AbortSignal
 ): Promise<AgentConversationConfigState | null> {
   if (signal?.aborted) return null;
-  const state = await invoke<AgentConversationConfigState>('read_agent_conversation_config', { ownedId });
-  return signal?.aborted ? null : state;
+  const requestId = createAgentConversationRequestId();
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    const state = await invoke<AgentConversationConfigState>('read_agent_conversation_config', {
+      ownedId,
+      requestId
+    });
+    return signal?.aborted ? null : state;
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 /**

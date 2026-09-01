@@ -615,10 +615,8 @@ export async function hydrateStacks(): Promise<void> {
 async function hydrateStacksOnce(generation: number, token: object): Promise<void> {
   try {
     if (!persistence) throw new Error('Run configuration persistence is not configured.');
-    const [savedDefinitions, savedRuns] = await Promise.all([
-      persistence.read(STACK_DEFINITIONS_SETTING_KEY),
-      persistence.read(STACK_RUNS_SETTING_KEY)
-    ]);
+    const savedDefinitions = await persistence.read(STACK_DEFINITIONS_SETTING_KEY);
+    const savedRuns = await persistence.read(STACK_RUNS_SETTING_KEY);
     const definitions = parseStackDefinitions(persistedJson(savedDefinitions));
     const known = new Set(definitions.map((definition) => definition.id));
     const runs: Record<string, StackRunRecord> = {};

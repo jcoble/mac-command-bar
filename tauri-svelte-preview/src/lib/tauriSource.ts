@@ -1135,9 +1135,11 @@ export async function listenToTerminalOutput(
     : null;
 }
 
-export async function readSourceFromTauri(record: SourceRecord): Promise<SourcePreview | null> {
+export async function readSourceFromTauri(record: SourceRecord, signal?: AbortSignal): Promise<SourcePreview | null> {
+  if (signal?.aborted) return null;
   if (!isTauriRuntime()) {
     const preview = await postLocalSourceBridge<SourcePreview>('read', { path: record.path });
+    if (signal?.aborted) return null;
     return preview
       ? {
           ...preview,
@@ -1150,10 +1152,24 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
 
   const generation = sourceFileReadGeneration;
   const { invoke } = await import('@tauri-apps/api/core');
-  const preview = await invoke<SourcePreview | null>('read_source_file', {
-    path: record.path,
-    generation
-  });
+  const cancel = (): void => {
+    void cancelSourceFileReadsFromTauri();
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  let preview: SourcePreview | null;
+  try {
+    if (signal?.aborted) {
+      await cancelSourceFileReadsFromTauri();
+      return null;
+    }
+    preview = await invoke<SourcePreview | null>('read_source_file', {
+      path: record.path,
+      generation
+    });
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+  if (signal?.aborted) return null;
   if (!preview) return null;
   return {
     ...preview,
@@ -1716,15 +1732,44 @@ export async function readAgentConversationCapabilitiesFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationCapabilities | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('@tauri-apps/api/core');
-  if (signal?.aborted) return null;
-  const capabilities = await invoke<AgentConversationCapabilities>('read_agent_conversation_capabilities', { ownedId });
-  return signal?.aborted ? null : capabilities;
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    const capabilities = await invoke<AgentConversationCapabilities>('read_agent_conversation_capabilities', {
+      ownedId,
+      requestId
+    });
+    return signal?.aborted ? null : capabilities;
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 // Millisecond epoch plus room for rapid calls stays within JavaScript's exact
 // integer range and remains newer after a frontend hot reload.
-let latestConversationSnapshotRequest = Math.trunc(Date.now() * 1_000);
+let latestAgentConversationRequest = Math.trunc(Date.now() * 1_000);
+
+export function createAgentConversationRequestId(): number {
+  latestAgentConversationRequest += 1;
+  return latestAgentConversationRequest;
+}
+
+export async function cancelAgentConversationRequestFromTauri(requestId: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_agent_conversation_request', { requestId });
+}
 
 export async function readAgentConversationSnapshotFromTauri(
   ownedId: string,
@@ -1732,16 +1777,15 @@ export async function readAgentConversationSnapshotFromTauri(
 ): Promise<AgentConversationSnapshot | null> {
   if (!isTauriRuntime() || !ownedId.trim()) return null;
   if (signal?.aborted) return null;
-  latestConversationSnapshotRequest += 1;
-  const requestId = latestConversationSnapshotRequest;
+  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('@tauri-apps/api/core');
   const cancel = (): void => {
-    void cancelAgentConversationSnapshotFromTauri(requestId);
+    void cancelAgentConversationRequestFromTauri(requestId);
   };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     if (signal?.aborted) {
-      await cancelAgentConversationSnapshotFromTauri(requestId);
+      await cancelAgentConversationRequestFromTauri(requestId);
       return null;
     }
     try {
@@ -1760,18 +1804,40 @@ export async function readAgentConversationSnapshotFromTauri(
 }
 
 export async function cancelAgentConversationSnapshotFromTauri(requestId?: number): Promise<void> {
-  if (!isTauriRuntime()) return;
-  const cancelRequestId = requestId ?? (latestConversationSnapshotRequest += 1);
-  const { invoke } = await import('@tauri-apps/api/core');
-  await invoke('cancel_agent_conversation_snapshot', {
-    requestId: cancelRequestId
-  });
+  const cancelRequestId = requestId ?? createAgentConversationRequestId();
+  await cancelAgentConversationRequestFromTauri(cancelRequestId);
 }
 
 export async function listAgentConversationSessionsFromTauri(): Promise<AgentConversationSessionRecord[] | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
+}
+
+export async function listRemoteAgentConversationSessionsFromTauri(
+  signal?: AbortSignal
+): Promise<AgentConversationSessionRecord[] | null> {
+  if (!isTauriRuntime() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('@tauri-apps/api/core');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    return await invoke<AgentConversationSessionRecord[]>('list_remote_agent_conversation_sessions', {
+      requestId
+    });
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function readRemoteAssemblyEnvironmentFromTauri(): Promise<RemoteAssemblyEnvironment> {
@@ -1819,14 +1885,30 @@ export async function listAgentConversationEventsBeforeFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationEventPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('@tauri-apps/api/core');
-  if (signal?.aborted) return null;
-  const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
-    ownedId,
-    beforeSequence,
-    maxBytes
-  });
-  return signal?.aborted ? null : page;
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
+      ownedId,
+      beforeSequence,
+      maxBytes,
+      requestId
+    });
+    return signal?.aborted ? null : page;
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 /** The page of stored events just newer than `afterSequence`, for scrolling down. */
@@ -1837,14 +1919,30 @@ export async function listAgentConversationEventsAfterFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationEventPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('@tauri-apps/api/core');
-  if (signal?.aborted) return null;
-  const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
-    ownedId,
-    afterSequence,
-    maxBytes
-  });
-  return signal?.aborted ? null : page;
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
+      ownedId,
+      afterSequence,
+      maxBytes,
+      requestId
+    });
+    return signal?.aborted ? null : page;
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function updateAgentConversationSessionMetaFromTauri(input: {
@@ -1899,10 +1997,29 @@ export async function readAgentConversationWorkspaceExpandedPathsFromTauri(
   signal?: AbortSignal
 ): Promise<string[]> {
   if (!isTauriRuntime() || !ownedId.trim() || !root.trim() || signal?.aborted) return [];
+  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('@tauri-apps/api/core');
-  if (signal?.aborted) return [];
-  const paths = await invoke<string[]>('read_agent_conversation_workspace_expanded_paths', { ownedId, root });
-  return signal?.aborted ? [] : paths;
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return [];
+    }
+    const paths = await invoke<string[]>('read_agent_conversation_workspace_expanded_paths', {
+      ownedId,
+      root,
+      requestId
+    });
+    return signal?.aborted ? [] : paths;
+  } catch (error) {
+    if (signal?.aborted) return [];
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function writeAgentConversationWorkspaceExpandedPathsFromTauri(
@@ -2041,11 +2158,14 @@ export interface ExtendedImport {
  * stretch of transcript holding nothing a reader wants is not the beginning,
  * so the two are answered separately. */
 export async function extendAgentConversationImportFromTauri(
-  ownedId: string
+  ownedId: string,
+  signal?: AbortSignal
 ): Promise<ExtendedImport | null> {
-  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<ExtendedImport>('extend_agent_conversation_import', { ownedId });
+  if (signal?.aborted) return null;
+  const result = await invoke<ExtendedImport>('extend_agent_conversation_import', { ownedId });
+  return signal?.aborted ? null : result;
 }
 
 export async function listAgentSessionsFromLocalBridge(): Promise<AgentSession[] | null> {

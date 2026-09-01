@@ -351,22 +351,28 @@ impl RemoteConnectionManager {
             })?;
         let (reply, answer) = oneshot::channel();
         sender
-            .send(ClientRequest::Execute { id, command, reply })
-            .await
-            .map_err(|_| "The Remote Assembly connection task stopped".to_string())?;
+            .try_send(ClientRequest::Execute { id, command, reply })
+            .map_err(|error| {
+                format!("The Remote Assembly request queue is unavailable: {error}")
+            })?;
         match tokio::time::timeout(Duration::from_secs(15), answer).await {
             Ok(answer) => answer.map_err(|_| {
                 "The Remote Assembly connection closed before answering".to_string()
             })?,
             Err(_) => {
-                let _ = sender.send(ClientRequest::Cancel { id }).await;
+                let _ = sender.try_send(ClientRequest::Cancel { id });
                 Err("The remote machine did not answer within 15 seconds".to_string())
             }
         }
     }
 
-    pub async fn list_sessions(&self) -> Result<Vec<AgentConversationSessionRecord>, String> {
-        let RemoteResponse::Sessions(sessions) = self.request(RemoteCommand::ListSessions).await?
+    pub async fn list_sessions(
+        &self,
+        request_id: u64,
+    ) -> Result<Vec<AgentConversationSessionRecord>, String> {
+        let RemoteResponse::Sessions(sessions) = self
+            .request_with_id(request_id, RemoteCommand::ListSessions)
+            .await?
         else {
             return Err("Remote Assembly returned the wrong list response".to_string());
         };
@@ -410,7 +416,7 @@ impl RemoteConnectionManager {
         Ok(snapshot)
     }
 
-    pub async fn cancel_snapshot(&self, request_id: u64) {
+    pub async fn cancel_request(&self, request_id: u64) {
         let sender = self
             .client
             .lock()
@@ -418,7 +424,7 @@ impl RemoteConnectionManager {
             .requests
             .clone();
         if let Some(sender) = sender {
-            let _ = sender.send(ClientRequest::Cancel { id: request_id }).await;
+            let _ = sender.try_send(ClientRequest::Cancel { id: request_id });
         }
     }
 
@@ -427,9 +433,10 @@ impl RemoteConnectionManager {
         owned_id: String,
         before_sequence: i64,
         max_bytes: u32,
+        request_id: u64,
     ) -> Result<AgentConversationEventPage, String> {
         let RemoteResponse::EventPage(page) = self
-            .request(RemoteCommand::EventsBefore {
+            .request_with_id(request_id, RemoteCommand::EventsBefore {
                 owned_id,
                 before_sequence,
                 max_bytes,
@@ -446,9 +453,10 @@ impl RemoteConnectionManager {
         owned_id: String,
         after_sequence: i64,
         max_bytes: u32,
+        request_id: u64,
     ) -> Result<AgentConversationEventPage, String> {
         let RemoteResponse::EventPage(page) = self
-            .request(RemoteCommand::EventsAfter {
+            .request_with_id(request_id, RemoteCommand::EventsAfter {
                 owned_id,
                 after_sequence,
                 max_bytes,
@@ -460,9 +468,13 @@ impl RemoteConnectionManager {
         Ok(page)
     }
 
-    pub async fn capabilities(&self, owned_id: String) -> Result<AgentCapabilities, String> {
+    pub async fn capabilities(
+        &self,
+        owned_id: String,
+        request_id: u64,
+    ) -> Result<AgentCapabilities, String> {
         let RemoteResponse::Capabilities(capabilities) = self
-            .request(RemoteCommand::Capabilities { owned_id })
+            .request_with_id(request_id, RemoteCommand::Capabilities { owned_id })
             .await?
         else {
             return Err("Remote Assembly returned the wrong capabilities response".to_string());
@@ -470,9 +482,13 @@ impl RemoteConnectionManager {
         Ok(capabilities)
     }
 
-    pub async fn config(&self, owned_id: String) -> Result<AgentConversationConfigState, String> {
+    pub async fn config(
+        &self,
+        owned_id: String,
+        request_id: u64,
+    ) -> Result<AgentConversationConfigState, String> {
         let RemoteResponse::Config(config) =
-            self.request(RemoteCommand::Config { owned_id }).await?
+            self.request_with_id(request_id, RemoteCommand::Config { owned_id }).await?
         else {
             return Err("Remote Assembly returned the wrong config response".to_string());
         };
@@ -564,9 +580,10 @@ impl RemoteConnectionManager {
         &self,
         owned_id: String,
         root: String,
+        request_id: u64,
     ) -> Result<Vec<String>, String> {
         let RemoteResponse::Strings(paths) = self
-            .request(RemoteCommand::ReadExpandedPaths { owned_id, root })
+            .request_with_id(request_id, RemoteCommand::ReadExpandedPaths { owned_id, root })
             .await?
         else {
             return Err("Remote Assembly returned the wrong expanded-path response".to_string());
