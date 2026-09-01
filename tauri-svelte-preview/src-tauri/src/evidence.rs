@@ -3,7 +3,7 @@ use std::io::Cursor;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use image::{GenericImageView, ImageFormat, ImageReader};
+use image::{ImageFormat, ImageReader};
 use mcb_core::session_store::{EvidenceArtifact, EvidenceArtifactQuery, EvidenceDiskUsage};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
