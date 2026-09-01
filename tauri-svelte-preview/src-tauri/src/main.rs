@@ -32,6 +32,7 @@ mod agent_conversation;
 mod browser;
 mod claude_quota;
 mod debug_log;
+mod evidence;
 mod git_diff_models;
 mod git_pr;
 mod git_workspace;
@@ -6776,6 +6777,12 @@ fn main() {
             read_usage_provider_daily_totals,
             read_usage_cost_inputs,
             usage_history::refresh_usage_history,
+            evidence::copy_evidence_original,
+            evidence::delete_evidence,
+            evidence::list_evidence_gallery,
+            evidence::read_evidence_disk_usage,
+            evidence::resolve_evidence_original,
+            evidence::set_evidence_pinned,
             list_orchestration_runs,
             record_orchestration_event,
             list_workflow_runs,

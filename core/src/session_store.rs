@@ -4,9 +4,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{params, Connection, InterruptHandle, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{
+    params, params_from_iter, Connection, InterruptHandle, OptionalExtension, Row,
+    TransactionBehavior,
+};
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -116,6 +119,7 @@ const EVIDENCE_ARTIFACT_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS evidence_arti
     byte_size INTEGER NOT NULL,
     original_ref TEXT NOT NULL,
     thumbnail_ref TEXT,
+    thumbnail_byte_size INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL CHECK (pinned IN (0, 1)),
     expires_at_ms INTEGER
 );
@@ -344,8 +348,35 @@ pub struct EvidenceArtifact {
     pub byte_size: i64,
     pub original_ref: String,
     pub thumbnail_ref: Option<String>,
+    pub thumbnail_byte_size: i64,
     pub pinned: bool,
     pub expires_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EvidenceArtifactQuery {
+    pub before_captured_at_ms: Option<i64>,
+    pub before_id: Option<String>,
+    pub limit: u32,
+    pub task_id: Option<String>,
+    pub commit_hash: Option<String>,
+    pub orchestration_run_id: Option<String>,
+    pub agent: Option<String>,
+    pub scenario: Option<String>,
+    pub captured_from_ms: Option<i64>,
+    pub captured_to_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceRunDiskUsage {
+    pub orchestration_run_id: String,
+    pub byte_size: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceDiskUsage {
+    pub total_bytes: i64,
+    pub runs: Vec<EvidenceRunDiskUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -788,6 +819,7 @@ impl SessionStore {
                             error,
                         )
                     })?;
+                add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -796,6 +828,22 @@ impl SessionStore {
                     })?;
                 transaction.commit().map_err(|error| {
                     StoreError::sqlite("could not finish the Notion task projection upgrade", error)
+                })?;
+            }
+            12 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not begin the evidence disk usage upgrade", error)
+                    })?;
+                add_evidence_artifact_schema(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| {
+                        StoreError::sqlite("could not record the upgraded schema version", error)
+                    })?;
+                transaction.commit().map_err(|error| {
+                    StoreError::sqlite("could not finish the evidence disk usage upgrade", error)
                 })?;
             }
             SCHEMA_VERSION => {}
@@ -1264,9 +1312,9 @@ impl SessionStore {
                 "INSERT INTO evidence_artifacts (
                     id, orchestration_run_id, task_id, agent, provider, scenario,
                     commit_hash, branch, worktree, captured_at_ms, kind, status, byte_size,
-                    original_ref, thumbnail_ref, pinned, expires_at_ms
+                    original_ref, thumbnail_ref, thumbnail_byte_size, pinned, expires_at_ms
                  )
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                     orchestration_run_id = excluded.orchestration_run_id,
                     task_id = excluded.task_id,
@@ -1282,6 +1330,7 @@ impl SessionStore {
                     byte_size = excluded.byte_size,
                     original_ref = excluded.original_ref,
                     thumbnail_ref = excluded.thumbnail_ref,
+                    thumbnail_byte_size = excluded.thumbnail_byte_size,
                     pinned = excluded.pinned,
                     expires_at_ms = excluded.expires_at_ms",
                 params![
@@ -1300,6 +1349,7 @@ impl SessionStore {
                     artifact.byte_size,
                     artifact.original_ref,
                     artifact.thumbnail_ref,
+                    artifact.thumbnail_byte_size,
                     artifact.pinned,
                     artifact.expires_at_ms,
                 ],
@@ -1312,26 +1362,47 @@ impl SessionStore {
 
     pub fn list_evidence_artifacts(
         &self,
-        before_captured_at_ms: Option<i64>,
-        limit: u32,
+        query: &EvidenceArtifactQuery,
     ) -> Result<Vec<EvidenceArtifact>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT id, orchestration_run_id, task_id, agent, provider, scenario,
                         commit_hash, branch, worktree, captured_at_ms, kind, status, byte_size,
-                        original_ref, thumbnail_ref, pinned, expires_at_ms
+                        original_ref, thumbnail_ref, thumbnail_byte_size, pinned, expires_at_ms
                  FROM evidence_artifacts
-                 WHERE (?1 IS NULL OR captured_at_ms < ?1)
+                 WHERE (
+                    ?1 IS NULL
+                    OR captured_at_ms < ?1
+                    OR (captured_at_ms = ?1 AND id > ?2)
+                 )
+                   AND (?3 IS NULL OR task_id = ?3)
+                   AND (?4 IS NULL OR commit_hash = ?4)
+                   AND (?5 IS NULL OR orchestration_run_id = ?5)
+                   AND (?6 IS NULL OR agent = ?6)
+                   AND (?7 IS NULL OR scenario = ?7)
+                   AND (?8 IS NULL OR captured_at_ms >= ?8)
+                   AND (?9 IS NULL OR captured_at_ms <= ?9)
                  ORDER BY captured_at_ms DESC, id ASC
-                 LIMIT ?2",
+                 LIMIT ?10",
             )
             .map_err(|error| {
                 StoreError::sqlite("could not prepare the evidence artifact page", error)
             })?;
         let rows = statement
             .query_map(
-                params![before_captured_at_ms, i64::from(limit)],
+                params![
+                    query.before_captured_at_ms,
+                    query.before_id,
+                    query.task_id,
+                    query.commit_hash,
+                    query.orchestration_run_id,
+                    query.agent,
+                    query.scenario,
+                    query.captured_from_ms,
+                    query.captured_to_ms,
+                    i64::from(query.limit),
+                ],
                 evidence_artifact_from_row,
             )
             .map_err(|error| StoreError::sqlite("could not list evidence artifacts", error))?;
@@ -1339,19 +1410,216 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the evidence artifact page", error))
     }
 
-    pub fn delete_evidence_artifact(&self, id: &str) -> Result<()> {
+    pub fn evidence_artifact(&self, id: &str) -> Result<Option<EvidenceArtifact>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT id, orchestration_run_id, task_id, agent, provider, scenario,
+                        commit_hash, branch, worktree, captured_at_ms, kind, status, byte_size,
+                        original_ref, thumbnail_ref, thumbnail_byte_size, pinned, expires_at_ms
+                 FROM evidence_artifacts
+                 WHERE id = ?",
+                [id],
+                evidence_artifact_from_row,
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not read the evidence artifact", error))
+    }
+
+    pub fn evidence_disk_usage(&self) -> Result<EvidenceDiskUsage> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT orchestration_run_id,
+                        SUM(byte_size + thumbnail_byte_size) AS run_bytes,
+                        SUM(SUM(byte_size + thumbnail_byte_size)) OVER () AS total_bytes
+                 FROM evidence_artifacts
+                 GROUP BY orchestration_run_id
+                 ORDER BY run_bytes DESC, orchestration_run_id ASC",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare evidence disk usage", error))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    EvidenceRunDiskUsage {
+                        orchestration_run_id: row.get(0)?,
+                        byte_size: row.get(1)?,
+                    },
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|error| StoreError::sqlite("could not read evidence disk usage", error))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| StoreError::sqlite("could not read evidence disk usage", error))?;
+        Ok(EvidenceDiskUsage {
+            total_bytes: rows.first().map(|(_, total)| *total).unwrap_or(0),
+            runs: rows.into_iter().map(|(run, _)| run).collect(),
+        })
+    }
+
+    pub fn delete_expired_unpinned_evidence_artifacts(
+        &self,
+        now_ms: i64,
+        retention_ms: i64,
+        limit: u32,
+    ) -> Result<Vec<EvidenceArtifact>> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin expired evidence cleanup", error)
+            })?;
+        let artifacts = {
+            let mut statement = transaction
+                .prepare(
+                    "DELETE FROM evidence_artifacts
+                     WHERE id IN (
+                        SELECT id
+                        FROM evidence_artifacts
+                        WHERE pinned = 0
+                          AND COALESCE(expires_at_ms, captured_at_ms + ?2) <= ?1
+                        ORDER BY COALESCE(expires_at_ms, captured_at_ms + ?2) ASC, id ASC
+                        LIMIT ?3
+                     )
+                     RETURNING id, orchestration_run_id, task_id, agent, provider, scenario,
+                               commit_hash, branch, worktree, captured_at_ms, kind, status,
+                               byte_size, original_ref, thumbnail_ref, thumbnail_byte_size,
+                               pinned, expires_at_ms",
+                )
+                .map_err(|error| {
+                    StoreError::sqlite("could not prepare expired evidence cleanup", error)
+                })?;
+            let rows = statement
+                .query_map(
+                    params![now_ms, retention_ms, i64::from(limit)],
+                    evidence_artifact_from_row,
+                )
+                .map_err(|error| {
+                    StoreError::sqlite("could not remove expired evidence rows", error)
+                })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| {
+                    StoreError::sqlite("could not read removed evidence rows", error)
+                })?
+        };
+        transaction.commit().map_err(|error| {
+            StoreError::sqlite("could not finish expired evidence cleanup", error)
+        })?;
+        Ok(artifacts)
+    }
+
+    pub fn set_evidence_artifact_pinned(&self, id: &str, pinned: bool) -> Result<bool> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the evidence artifact pin update", error)
+            })?;
+        let updated = transaction
+            .execute(
+                "UPDATE evidence_artifacts SET pinned = ? WHERE id = ?",
+                params![pinned, id],
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not update the evidence artifact pin", error)
+            })?;
+        transaction.commit().map_err(|error| {
+            StoreError::sqlite("could not finish the evidence artifact pin update", error)
+        })?;
+        Ok(updated > 0)
+    }
+
+    pub fn set_evidence_run_pinned(&self, run_id: &str, pinned: bool) -> Result<usize> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the evidence run pin update", error)
+            })?;
+        let updated = transaction
+            .execute(
+                "UPDATE evidence_artifacts SET pinned = ? WHERE orchestration_run_id = ?",
+                params![pinned, run_id],
+            )
+            .map_err(|error| StoreError::sqlite("could not update the evidence run pin", error))?;
+        transaction.commit().map_err(|error| {
+            StoreError::sqlite("could not finish the evidence run pin update", error)
+        })?;
+        Ok(updated)
+    }
+
+    pub fn delete_evidence_artifacts(&self, ids: &[String]) -> Result<Vec<EvidenceArtifact>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut connection = self.lock_write()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
                 StoreError::sqlite("could not begin the evidence artifact delete", error)
             })?;
-        transaction
-            .execute("DELETE FROM evidence_artifacts WHERE id = ?", [id])
-            .map_err(|error| StoreError::sqlite("could not delete the evidence artifact", error))?;
+        let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
+        let artifacts = {
+            let mut statement = transaction
+                .prepare(&format!(
+                    "DELETE FROM evidence_artifacts
+                     WHERE id IN ({placeholders})
+                     RETURNING id, orchestration_run_id, task_id, agent, provider, scenario,
+                               commit_hash, branch, worktree, captured_at_ms, kind, status,
+                               byte_size, original_ref, thumbnail_ref, thumbnail_byte_size,
+                               pinned, expires_at_ms"
+                ))
+                .map_err(|error| {
+                    StoreError::sqlite("could not prepare the evidence artifact delete", error)
+                })?;
+            let rows = statement
+                .query_map(params_from_iter(ids), evidence_artifact_from_row)
+                .map_err(|error| {
+                    StoreError::sqlite("could not delete the evidence artifacts", error)
+                })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| {
+                    StoreError::sqlite("could not read the deleted evidence artifacts", error)
+                })?
+        };
         transaction.commit().map_err(|error| {
             StoreError::sqlite("could not finish the evidence artifact delete", error)
-        })
+        })?;
+        Ok(artifacts)
+    }
+
+    pub fn delete_evidence_run(&self, run_id: &str) -> Result<Vec<EvidenceArtifact>> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                StoreError::sqlite("could not begin the evidence run delete", error)
+            })?;
+        let artifacts = {
+            let mut statement = transaction
+                .prepare(
+                    "DELETE FROM evidence_artifacts
+                     WHERE orchestration_run_id = ?
+                     RETURNING id, orchestration_run_id, task_id, agent, provider, scenario,
+                               commit_hash, branch, worktree, captured_at_ms, kind, status,
+                               byte_size, original_ref, thumbnail_ref, thumbnail_byte_size,
+                               pinned, expires_at_ms",
+                )
+                .map_err(|error| {
+                    StoreError::sqlite("could not prepare the evidence run delete", error)
+                })?;
+            let rows = statement
+                .query_map([run_id], evidence_artifact_from_row)
+                .map_err(|error| StoreError::sqlite("could not delete the evidence run", error))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|error| {
+                    StoreError::sqlite("could not read the deleted evidence run", error)
+                })?
+        };
+        transaction.commit().map_err(|error| {
+            StoreError::sqlite("could not finish the evidence run delete", error)
+        })?;
+        Ok(artifacts)
     }
 
     pub fn replace_notion_task_projections(&self, tasks: &[NotionTaskProjection]) -> Result<()> {
@@ -2205,7 +2473,32 @@ fn add_attachment_thumbnail_schema(connection: &Connection) -> Result<()> {
 fn add_evidence_artifact_schema(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(EVIDENCE_ARTIFACT_SCHEMA)
-        .map_err(|error| StoreError::sqlite("could not create the evidence artifact table", error))
+        .map_err(|error| {
+            StoreError::sqlite("could not create the evidence artifact table", error)
+        })?;
+    let has_thumbnail_bytes: bool = connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM pragma_table_info('evidence_artifacts')
+                WHERE name = 'thumbnail_byte_size'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            StoreError::sqlite("could not inspect the evidence artifact columns", error)
+        })?;
+    if !has_thumbnail_bytes {
+        connection
+            .execute_batch(
+                "ALTER TABLE evidence_artifacts
+                 ADD COLUMN thumbnail_byte_size INTEGER NOT NULL DEFAULT 0",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not add evidence thumbnail byte size", error)
+            })?;
+    }
+    Ok(())
 }
 
 fn add_notion_task_projection_schema(connection: &Connection) -> Result<()> {
@@ -2401,8 +2694,9 @@ fn evidence_artifact_from_row(row: &Row<'_>) -> rusqlite::Result<EvidenceArtifac
         byte_size: row.get(12)?,
         original_ref: row.get(13)?,
         thumbnail_ref: row.get(14)?,
-        pinned: row.get(15)?,
-        expires_at_ms: row.get(16)?,
+        thumbnail_byte_size: row.get(15)?,
+        pinned: row.get(16)?,
+        expires_at_ms: row.get(17)?,
     })
 }
 
@@ -2487,7 +2781,10 @@ mod tests {
     use rusqlite::Connection;
     use tempfile::TempDir;
 
-    use super::{EventRow, EvidenceArtifact, NotionTaskProjection, SessionRow, SessionStore};
+    use super::{
+        EventRow, EvidenceArtifact, EvidenceArtifactQuery, EvidenceDiskUsage, EvidenceRunDiskUsage,
+        NotionTaskProjection, SessionRow, SessionStore,
+    };
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {
         SessionRow {
@@ -2604,6 +2901,7 @@ mod tests {
             byte_size: 1234,
             original_ref: format!("managed/originals/{id}.png"),
             thumbnail_ref: Some(format!("managed/thumbs/{id}.png")),
+            thumbnail_byte_size: 0,
             pinned: false,
             expires_at_ms: Some(captured_at_ms + 10_000),
         }
@@ -2969,6 +3267,50 @@ mod tests {
     }
 
     #[test]
+    fn schema_v12_upgrade_adds_thumbnail_bytes_without_losing_evidence() {
+        let directory = TempDir::new().expect("create temporary directory");
+        let path = directory.path().join("sessions.db");
+        let connection = Connection::open(&path).expect("create version twelve database");
+        connection
+            .execute_batch(super::EVIDENCE_ARTIFACT_SCHEMA)
+            .expect("create current evidence schema");
+        connection
+            .execute_batch(
+                "ALTER TABLE evidence_artifacts DROP COLUMN thumbnail_byte_size;
+                 INSERT INTO evidence_artifacts (
+                    id, orchestration_run_id, agent, provider, scenario, commit_hash, branch,
+                    worktree, captured_at_ms, kind, status, byte_size, original_ref,
+                    thumbnail_ref, pinned
+                 ) VALUES (
+                    'sentinel', 'run-1', 'Codex', 'openai', 'restart', 'abc123', 'main',
+                    '/repo', 1000, 'screenshot', 'ready', 100, 'evidence/originals/sentinel.png',
+                    'evidence/thumbnails/sentinel.webp', 0
+                 );
+                 PRAGMA user_version = 12;",
+            )
+            .expect("create version twelve evidence row");
+        drop(connection);
+
+        let store = SessionStore::open(&path).expect("upgrade database");
+        let artifacts = store
+            .list_evidence_artifacts(&EvidenceArtifactQuery {
+                limit: 1,
+                ..Default::default()
+            })
+            .expect("read migrated evidence");
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].id, "sentinel");
+        assert_eq!(artifacts[0].thumbnail_byte_size, 0);
+        drop(store);
+
+        let connection = Connection::open(&path).expect("inspect upgraded database");
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read schema version");
+        assert_eq!(version, super::SCHEMA_VERSION);
+    }
+
+    #[test]
     fn schema_v11_upgrade_adds_notion_projection_and_keeps_evidence() {
         let directory = TempDir::new().expect("create temporary directory");
         let path = directory.path().join("sessions.db");
@@ -2976,6 +3318,9 @@ mod tests {
         connection
             .execute_batch(super::EVIDENCE_ARTIFACT_SCHEMA)
             .expect("create evidence artifact schema");
+        connection
+            .execute_batch("ALTER TABLE evidence_artifacts DROP COLUMN thumbnail_byte_size")
+            .expect("restore version eleven evidence columns");
         let artifact = fixture_evidence_artifact("sentinel", 55_000);
         connection
             .execute(
@@ -3014,7 +3359,10 @@ mod tests {
         let store = SessionStore::open(&path).expect("upgrade database");
         assert_eq!(
             store
-                .list_evidence_artifacts(None, 10)
+                .list_evidence_artifacts(&EvidenceArtifactQuery {
+                    limit: 10,
+                    ..Default::default()
+                })
                 .expect("read evidence sentinel"),
             [artifact]
         );
@@ -3066,6 +3414,31 @@ mod tests {
                 statuses: vec!["Doing".to_string()],
                 has_more: false,
             }
+        );
+    }
+
+    #[test]
+    fn notion_task_projection_is_available_after_store_reopen() {
+        let (_directory, path, store) = open_temp_store();
+        let tasks = [fixture_notion_task(
+            "task-offline",
+            "Assembly",
+            "Doing",
+            "Offline projection",
+            Some("2026-08-27"),
+        )];
+        store
+            .replace_notion_task_projections(&tasks)
+            .expect("write Notion task snapshot");
+        drop(store);
+
+        let reopened = SessionStore::open(&path).expect("reopen session store offline");
+        assert_eq!(
+            reopened
+                .query_notion_task_projections(0, 10, "", "", "")
+                .expect("read offline Notion task snapshot")
+                .tasks,
+            tasks
         );
     }
 
@@ -3142,7 +3515,10 @@ mod tests {
         }
 
         let first_page = store
-            .list_evidence_artifacts(None, 2)
+            .list_evidence_artifacts(&EvidenceArtifactQuery {
+                limit: 2,
+                ..Default::default()
+            })
             .expect("list newest evidence page");
         assert_eq!(
             first_page
@@ -3153,7 +3529,12 @@ mod tests {
         );
 
         let second_page = store
-            .list_evidence_artifacts(first_page.last().map(|artifact| artifact.captured_at_ms), 2)
+            .list_evidence_artifacts(&EvidenceArtifactQuery {
+                before_captured_at_ms: first_page.last().map(|artifact| artifact.captured_at_ms),
+                before_id: first_page.last().map(|artifact| artifact.id.clone()),
+                limit: 2,
+                ..Default::default()
+            })
             .expect("list older evidence page");
         assert_eq!(
             second_page
@@ -3171,19 +3552,271 @@ mod tests {
             .expect("update evidence artifact");
         assert_eq!(
             store
-                .list_evidence_artifacts(None, 1)
+                .list_evidence_artifacts(&EvidenceArtifactQuery {
+                    limit: 1,
+                    ..Default::default()
+                })
                 .expect("read updated evidence artifact"),
             [updated.clone()]
         );
+        assert_eq!(
+            store
+                .evidence_artifact("middle")
+                .expect("read evidence artifact by id"),
+            Some(updated)
+        );
 
-        store
-            .delete_evidence_artifact("middle")
-            .expect("delete evidence artifact");
+        let deleted = store
+            .delete_evidence_artifacts(&["middle".to_owned(), "missing".to_owned()])
+            .expect("delete selected evidence artifacts");
+        assert_eq!(
+            deleted
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["middle"]
+        );
         assert!(!store
-            .list_evidence_artifacts(None, 10)
+            .list_evidence_artifacts(&EvidenceArtifactQuery {
+                limit: 10,
+                ..Default::default()
+            })
             .expect("list after evidence delete")
             .iter()
             .any(|artifact| artifact.id == "middle"));
+    }
+
+    #[test]
+    fn evidence_artifact_query_filters_in_sql_and_pages_tied_timestamps() {
+        let (_directory, _path, store) = open_temp_store();
+        for id in ["a", "b", "c"] {
+            store
+                .upsert_evidence_artifact(&fixture_evidence_artifact(id, 2_000))
+                .expect("upsert tied evidence artifact");
+        }
+        let first_page = store
+            .list_evidence_artifacts(&EvidenceArtifactQuery {
+                limit: 2,
+                ..Default::default()
+            })
+            .expect("list first tied page");
+        let second_page = store
+            .list_evidence_artifacts(&EvidenceArtifactQuery {
+                before_captured_at_ms: Some(2_000),
+                before_id: Some("b".to_owned()),
+                limit: 2,
+                ..Default::default()
+            })
+            .expect("list second tied page");
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["c"]
+        );
+
+        let mut target = fixture_evidence_artifact("target", 3_000);
+        target.task_id = Some("TSK-900".to_owned());
+        target.commit_hash = "fedcba9".to_owned();
+        target.orchestration_run_id = "run-2".to_owned();
+        target.agent = "Claude".to_owned();
+        target.scenario = "filtered".to_owned();
+        store
+            .upsert_evidence_artifact(&target)
+            .expect("upsert filtered evidence artifact");
+        assert_eq!(
+            store
+                .list_evidence_artifacts(&EvidenceArtifactQuery {
+                    limit: 10,
+                    task_id: target.task_id.clone(),
+                    commit_hash: Some(target.commit_hash.clone()),
+                    orchestration_run_id: Some(target.orchestration_run_id.clone()),
+                    agent: Some(target.agent.clone()),
+                    scenario: Some(target.scenario.clone()),
+                    captured_from_ms: Some(2_500),
+                    captured_to_ms: Some(3_500),
+                    ..Default::default()
+                })
+                .expect("filter evidence artifacts"),
+            [target]
+        );
+    }
+
+    #[test]
+    fn evidence_artifact_and_run_pins_update_the_selected_rows() {
+        let (_directory, _path, store) = open_temp_store();
+        let first = fixture_evidence_artifact("first", 1_000);
+        let second = fixture_evidence_artifact("second", 2_000);
+        let mut other_run = fixture_evidence_artifact("other-run", 3_000);
+        other_run.orchestration_run_id = "run-2".to_owned();
+        for artifact in [&first, &second, &other_run] {
+            store
+                .upsert_evidence_artifact(artifact)
+                .expect("upsert evidence artifact");
+        }
+
+        assert!(store
+            .set_evidence_artifact_pinned("other-run", true)
+            .expect("pin one artifact"));
+        assert!(!store
+            .set_evidence_artifact_pinned("missing", true)
+            .expect("missing artifact is unchanged"));
+        assert_eq!(
+            store
+                .set_evidence_run_pinned("run-1", true)
+                .expect("pin one run"),
+            2
+        );
+
+        let artifacts = store
+            .list_evidence_artifacts(&EvidenceArtifactQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("list pinned artifacts");
+        assert!(artifacts.iter().all(|artifact| artifact.pinned));
+        assert_eq!(
+            store
+                .set_evidence_run_pinned("run-1", false)
+                .expect("unpin one run"),
+            2
+        );
+        let artifacts = store
+            .list_evidence_artifacts(&EvidenceArtifactQuery {
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("list after unpinning run");
+        assert!(artifacts
+            .iter()
+            .filter(|artifact| artifact.orchestration_run_id == "run-1")
+            .all(|artifact| !artifact.pinned));
+        assert!(
+            artifacts
+                .iter()
+                .find(|artifact| artifact.id == "other-run")
+                .expect("other run artifact")
+                .pinned
+        );
+    }
+
+    #[test]
+    fn evidence_run_delete_returns_only_the_deleted_run() {
+        let (_directory, _path, store) = open_temp_store();
+        let first = fixture_evidence_artifact("first", 1_000);
+        let second = fixture_evidence_artifact("second", 2_000);
+        let mut other_run = fixture_evidence_artifact("other-run", 3_000);
+        other_run.orchestration_run_id = "run-2".to_owned();
+        for artifact in [&first, &second, &other_run] {
+            store
+                .upsert_evidence_artifact(artifact)
+                .expect("upsert evidence artifact");
+        }
+
+        let deleted = store
+            .delete_evidence_run("run-1")
+            .expect("delete evidence run");
+        assert_eq!(deleted.len(), 2);
+        assert!(deleted
+            .iter()
+            .all(|artifact| artifact.orchestration_run_id == "run-1"));
+        assert_eq!(
+            store
+                .list_evidence_artifacts(&EvidenceArtifactQuery {
+                    limit: 10,
+                    ..Default::default()
+                })
+                .expect("list after evidence run delete"),
+            [other_run]
+        );
+    }
+
+    #[test]
+    fn evidence_disk_usage_is_aggregated_by_sql_for_originals_and_thumbnails() {
+        let (_directory, _path, store) = open_temp_store();
+        let mut first = fixture_evidence_artifact("first", 1_000);
+        first.byte_size = 100;
+        first.thumbnail_byte_size = 10;
+        let mut second = fixture_evidence_artifact("second", 2_000);
+        second.byte_size = 200;
+        second.thumbnail_byte_size = 20;
+        let mut other_run = fixture_evidence_artifact("other-run", 3_000);
+        other_run.orchestration_run_id = "run-2".to_owned();
+        other_run.byte_size = 50;
+        other_run.thumbnail_byte_size = 5;
+        for artifact in [&first, &second, &other_run] {
+            store
+                .upsert_evidence_artifact(artifact)
+                .expect("upsert evidence artifact");
+        }
+
+        assert_eq!(
+            store.evidence_disk_usage().expect("read disk usage"),
+            EvidenceDiskUsage {
+                total_bytes: 385,
+                runs: vec![
+                    EvidenceRunDiskUsage {
+                        orchestration_run_id: "run-1".to_owned(),
+                        byte_size: 330,
+                    },
+                    EvidenceRunDiskUsage {
+                        orchestration_run_id: "run-2".to_owned(),
+                        byte_size: 55,
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn expired_evidence_cleanup_deletes_only_unpinned_rows() {
+        let (_directory, _path, store) = open_temp_store();
+        let mut expired = fixture_evidence_artifact("expired", 1_000);
+        expired.expires_at_ms = Some(2_000);
+        let mut pinned = fixture_evidence_artifact("pinned", 1_000);
+        pinned.expires_at_ms = Some(2_000);
+        pinned.pinned = true;
+        let mut default_expired = fixture_evidence_artifact("default-expired", 1_000);
+        default_expired.expires_at_ms = None;
+        let mut recent = fixture_evidence_artifact("recent", 9_000);
+        recent.expires_at_ms = None;
+        for artifact in [&expired, &pinned, &default_expired, &recent] {
+            store
+                .upsert_evidence_artifact(artifact)
+                .expect("upsert evidence artifact");
+        }
+
+        let mut deleted = store
+            .delete_expired_unpinned_evidence_artifacts(10_000, 5_000, 10)
+            .expect("delete expired evidence");
+        deleted.sort_by(|left, right| left.id.cmp(&right.id));
+        assert_eq!(
+            deleted
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["default-expired", "expired"]
+        );
+        assert_eq!(
+            store
+                .list_evidence_artifacts(&EvidenceArtifactQuery {
+                    limit: 10,
+                    ..Default::default()
+                })
+                .expect("list retained evidence")
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["recent", "pinned"]
+        );
     }
 
     #[test]
