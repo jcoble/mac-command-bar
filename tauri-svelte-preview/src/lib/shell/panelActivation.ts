@@ -32,11 +32,11 @@
  * rebuild the same answer. So each panel remembers the folder it was last
  * loaded for, and a pick that does not change it loads nothing.
  *
- * Four panels are neither a tab nor always on screen: **source control**, the
- * **worktree manager**, the **stacks pane** and the **context cards**. All four
- * live in the tool column on the right, as four of the five views its icon strip
- * switches between, and the shell opens on none of them. So all four follow the
- * same principle by a third route — they load when you can actually see them.
+ * Four panels are neither a tab nor always on screen: the **file tree**,
+ * **source control**, the **worktree manager** and the **stacks pane**. All four
+ * live in the tool column on the right, as views its icon strip switches
+ * between, and the shell opens on none of them. So all four follow the same principle
+ * by a third route — they load when you can actually see them.
  * Picking a session loads one only while it is in view, and opening one loads it
  * if a session is already picked. Out of view they cost nothing; in view they
  * are never stale.
@@ -73,8 +73,7 @@ export interface PanelActivators {
   editor(root: string | null): void;
   git(root: string | null): void;
   browser(): void;
-  explorer(root: string): void;
-  context(selection: ProjectSelection): void;
+  explorer(root: string | null, checkoutDeleted: boolean): void;
   worktrees(selection: ProjectSelection): void;
   stacks(root: string | null): void;
   problems(root: string | null): void;
@@ -92,14 +91,13 @@ export interface PanelActivation {
   /** A center tab came to the front. */
   panelShown(id: string): void;
   /** The user picked a session in the rail. */
-  sessionPicked(): void;
+  sessionPicked(rootAvailable?: boolean): void;
+  /** Files came into view, or went out of it. Same contract as source control. */
+  filesVisible(visible: boolean): void;
   /** Source control came into view, or went out of it. Report where it stands
    * now; the tool column reports it once at start-up too, so this is never
    * guesswork. */
   sourceControlVisible(visible: boolean): void;
-  /** The context cards came into view, or went out of it. Same contract as
-   * source control above. */
-  contextVisible(visible: boolean): void;
   /** The worktree manager came into view, or went out of it. Same contract. */
   worktreesVisible(visible: boolean): void;
   /** The stacks pane came into view, or went out of it. Same contract. */
@@ -116,29 +114,31 @@ export interface PanelActivation {
 /** Center tabs that have something to load. "session" is the terminal: it is
  * owned by the page's own start-up and must never be re-loaded from here.
  *
- * Source control and the context cards are deliberately absent: both are views
- * of the tool column, not tabs, so nothing ever brings them to the front. Their
- * own rule is in `loadSourceControl` and `loadContext` below. */
+ * Source control is deliberately absent: it is a view of the tool column, not a
+ * tab, so nothing ever brings it to the front. Its own rule is in
+ * `loadSourceControl` below. */
 const LOADABLE_PANELS = new Set(['editor', 'browser']);
 
 export function createPanelActivation(
   activators: PanelActivators,
   readSelection: () => ProjectSelection
 ): PanelActivation {
-  /** Every center tab that has been on screen, whether or not it has loaded. */
-  const shownPanels = new Set<string>();
+  /** The center tab that is actually visible. Hidden tabs do not follow session
+   * roots: they are re-pointed when they come back to the front. */
+  let activePanelId: string | null = null;
   let panelLoadsAllowed = false;
   let sessionLoadsAllowed = false;
   let sessionPanelsShown = false;
+  let selectedRootAvailable = true;
+  /** Can the user see the file tree right now? */
+  let filesInView = false;
+  /** The folder the file tree was last loaded for. */
+  let filesLoadedFor: string | null = null;
   /** Can the user see source control right now? */
   let sourceControlInView = false;
   /** The folder source control was last loaded for, or `null` if it never has
    * been. `''` is a real value here — it means "loaded, for no folder". */
   let gitLoadedFor: string | null = null;
-  /** Can the user see the context cards right now? */
-  let contextInView = false;
-  /** Same bookkeeping as `gitLoadedFor`, for the context cards. */
-  let contextLoadedFor: string | null = null;
   /** Can the user see the worktree manager right now? */
   let worktreesInView = false;
   /** Same bookkeeping as `gitLoadedFor`, for the worktree manager. */
@@ -156,67 +156,69 @@ export function createPanelActivation(
    * loaded is absent, which is different from one loaded for no folder. */
   const panelLoadedFor = new Map<string, string>();
 
+  const selectionKey = (selection: ProjectSelection): string =>
+    selectedRootAvailable ? selection.root.trim() : '\0checkout-deleted';
+
   const loadPanel = (id: string, selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    panelLoadedFor.set(id, root);
+    panelLoadedFor.set(id, selectionKey(selection));
     if (id === 'editor') activators.editor(root || null);
     else if (id === 'browser') activators.browser();
+  };
+
+  /** Point the file tree at this folder. There is nothing to list without one. */
+  const loadFiles = (selection: ProjectSelection): void => {
+    const root = selection.root.trim();
+    filesLoadedFor = selectionKey(selection);
+    activators.explorer(root || null, !selectedRootAvailable);
+  };
+
+  const currentSelection = (): ProjectSelection => {
+    const selection = readSelection();
+    return selectedRootAvailable ? selection : { ...selection, root: '' };
   };
 
   /** Point source control at this folder. A session with no folder still calls
    * it, which is what tells the panel there is no repository to show. */
   const loadSourceControl = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    gitLoadedFor = root;
+    gitLoadedFor = selectionKey(selection);
     activators.git(root || null);
-  };
-
-  /** Point the context cards at this selection. They are machine-wide, so a
-   * session with no folder still has something to show. */
-  const loadContext = (selection: ProjectSelection): void => {
-    contextLoadedFor = selection.root.trim();
-    activators.context({ root: selection.root, projects: selection.projects });
   };
 
   /** Point the worktree manager at this selection. It needs the whole selection
    * rather than a bare folder: it lists the checkouts of the project the session
    * is in, and joins the shell's own sessions onto them. */
   const loadWorktrees = (selection: ProjectSelection): void => {
-    worktreesLoadedFor = selection.root.trim();
+    worktreesLoadedFor = selectionKey(selection);
     activators.worktrees({ root: selection.root, projects: selection.projects });
   };
 
   /** Point the stacks pane at this folder. The saved stacks are per project. */
   const loadStacks = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    stacksLoadedFor = root;
+    stacksLoadedFor = selectionKey(selection);
     activators.stacks(root || null);
   };
 
   /** Point the Problems panel at this folder. */
   const loadProblems = (selection: ProjectSelection): void => {
     const root = selection.root.trim();
-    problemsLoadedFor = root;
+    problemsLoadedFor = selectionKey(selection);
     activators.problems(root || null);
   };
 
-  /** The panels that come with the session the user just picked: the file tree,
-   * plus every view-gated panel that is in view AND is not already showing this
+  /** Load each view-gated panel that is in view and is not already showing this
    * folder — the same "coming back to it is not a reason to read it again" rule
-   * the visibility reports below have always used.
-   *
-   * The file tree is the exception, and deliberately: its own service already
-   * refuses to re-list a folder it is showing, and it is also the one that
-   * retries after a scan that failed. Refusing the call here would take that
-   * retry away and give nothing back. */
+   * the visibility reports below have always used. */
   const loadSessionPanels = (selection: ProjectSelection): void => {
-    const root = selection.root.trim();
-    if (root) activators.explorer(root);
-    if (sourceControlInView && gitLoadedFor !== root) loadSourceControl(selection);
-    if (contextInView && contextLoadedFor !== root) loadContext(selection);
-    if (worktreesInView && worktreesLoadedFor !== root) loadWorktrees(selection);
-    if (stacksInView && stacksLoadedFor !== root) loadStacks(selection);
-    if (problemsInView && problemsLoadedFor !== root) loadProblems(selection);
+    const key = selectionKey(selection);
+    if (sourceControlInView && gitLoadedFor !== key) loadSourceControl(selection);
+    if ((worktreesInView || sourceControlInView) && worktreesLoadedFor !== key) {
+      loadWorktrees(selection);
+    }
+    if (stacksInView && stacksLoadedFor !== key) loadStacks(selection);
+    if (problemsInView && problemsLoadedFor !== key) loadProblems(selection);
   };
 
   return {
@@ -233,32 +235,43 @@ export function createPanelActivation(
     },
 
     panelShown(id: string): void {
+      activePanelId = id;
       if (!LOADABLE_PANELS.has(id)) return;
       // Remembered even while loads are switched off. The tab the dock puts
       // back at launch announces itself before that gate opens, and it must
       // load nothing then — but it is on screen, and forgetting it altogether
       // is what left a restored editor tab never being told which project it
       // was in: the session picked next only points the tabs it knows about.
-      shownPanels.add(id);
       if (!panelLoadsAllowed) return;
-      loadPanel(id, readSelection());
+      const selection = currentSelection();
+      if (panelLoadedFor.get(id) !== selectionKey(selection)) loadPanel(id, selection);
     },
 
-    sessionPicked(): void {
+    sessionPicked(rootAvailable = true): void {
       if (!sessionLoadsAllowed) return;
-      const selection = readSelection();
+      selectedRootAvailable = rootAvailable;
+      const selection = currentSelection();
       sessionPanelsShown = true;
       loadSessionPanels(selection);
-      // Re-point the tabs that are open at the new project. A tab never opened
-      // stays untouched, so switching session costs nothing for it — and
-      // neither does a tab already pointed at this project, which is what makes
-      // switching between two sessions in one repository cheap. The browser tab
-      // is left out of both: it shows a web page rather than a project, so a
-      // session is nothing to it whether it has loaded or not.
-      for (const id of shownPanels) {
-        if (id === 'browser') continue;
-        if (panelLoadedFor.get(id) !== selection.root.trim()) loadPanel(id, selection);
+      // Re-point only the center tab that is visible. Remembering every tab
+      // ever shown made a hidden editor change roots on every later session
+      // switch, which woke its language-service ownership even with zero files.
+      if (
+        activePanelId
+        && activePanelId !== 'browser'
+        && LOADABLE_PANELS.has(activePanelId)
+        && panelLoadedFor.get(activePanelId) !== selectionKey(selection)
+      ) {
+        loadPanel(activePanelId, selection);
       }
+    },
+
+    filesVisible(visible: boolean): void {
+      filesInView = visible;
+      if (!visible || !sessionPanelsShown) return;
+      const selection = currentSelection();
+      if (filesLoadedFor === selectionKey(selection)) return;
+      loadFiles(selection);
     },
 
     sourceControlVisible(visible: boolean): void {
@@ -267,47 +280,34 @@ export function createPanelActivation(
       // session has been picked — there is no folder to read yet, and the pick
       // that follows will load it.
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
+      const selection = currentSelection();
       // Already showing this folder: coming back to it is not a reason to read
       // the repository again.
-      if (gitLoadedFor === selection.root.trim()) return;
-      loadSourceControl(selection);
-    },
-
-    contextVisible(visible: boolean): void {
-      contextInView = visible;
-      // Same two reasons to do nothing as source control: looking away loads
-      // nothing, and looking at it before a session has been picked has nothing
-      // to point at — the pick that follows will load it.
-      if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      // Already showing this folder: coming back to it is not a reason to read
-      // the machine again.
-      if (contextLoadedFor === selection.root.trim()) return;
-      loadContext(selection);
+      if (gitLoadedFor !== selectionKey(selection)) loadSourceControl(selection);
+      if (worktreesLoadedFor !== selectionKey(selection)) loadWorktrees(selection);
     },
 
     worktreesVisible(visible: boolean): void {
       worktreesInView = visible;
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      if (worktreesLoadedFor === selection.root.trim()) return;
+      const selection = currentSelection();
+      if (worktreesLoadedFor === selectionKey(selection)) return;
       loadWorktrees(selection);
     },
 
     stacksVisible(visible: boolean): void {
       stacksInView = visible;
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      if (stacksLoadedFor === selection.root.trim()) return;
+      const selection = currentSelection();
+      if (stacksLoadedFor === selectionKey(selection)) return;
       loadStacks(selection);
     },
 
     problemsVisible(visible: boolean): void {
       problemsInView = visible;
       if (!visible || !sessionPanelsShown) return;
-      const selection = readSelection();
-      if (problemsLoadedFor === selection.root.trim()) return;
+      const selection = currentSelection();
+      if (problemsLoadedFor === selectionKey(selection)) return;
       loadProblems(selection);
     },
 
@@ -316,9 +316,8 @@ export function createPanelActivation(
       // on screen: one the dock put back at launch is on screen without having
       // loaded anything.
       const loaded = [...panelLoadedFor.keys()];
-      if (sessionPanelsShown) loaded.push('explorer');
+      if (filesLoadedFor !== null) loaded.push('explorer');
       if (gitLoadedFor !== null) loaded.push('git');
-      if (contextLoadedFor !== null) loaded.push('context');
       if (worktreesLoadedFor !== null) loaded.push('worktrees');
       if (stacksLoadedFor !== null) loaded.push('stacks');
       if (problemsLoadedFor !== null) loaded.push('problems');

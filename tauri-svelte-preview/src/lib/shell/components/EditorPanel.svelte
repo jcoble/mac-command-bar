@@ -5,42 +5,75 @@
    * Thin by construction. It owns three things and nothing else:
    *  1. the strip of open files,
    *  2. reading a file when one is requested, and
-   *  3. handing `MonacoSourceEditor` the lookup callbacks from
+   *  3. handing `CodeMirrorSourceEditor` the lookup callbacks from
    *     `sourceIntelligence`.
    *
    * Rules it exists to keep:
-   *  - **One editor, ever.** Monaco registers its providers for the whole
-   *    page, so a second editor anywhere would quietly take over every
-   *    lookup. Switching files swaps the file INSIDE this one editor.
+   *  - **One editor, ever.** Switching files swaps the document inside one
+   *    CodeMirror view, so inactive tabs hold only their saved text and view state.
    *  - **Nothing loads at start-up.** The panel subscribes to open-file
-   *    requests when it mounts (free, no backend), and Monaco itself is only
-   *    downloaded once a file is actually opened. The language server is
-   *    warmed on the first file opened per project, never before.
-   *  - **No `$effect` calls the backend.** Every read is started by a user
-   *    action: a file-open request, or a click in the strip.
+   *    requests when it mounts (free, no backend), and CodeMirror itself is only
+   *    downloaded once a file is on screen in front of the reader — not merely
+   *    in the strip, because putting a session's files back fills the strip out
+   *    of sight. The language server is warmed on the first file opened per
+   *    project, never before.
+   *  - **Read mode is the default.** Opening a file colours it and stops
+   *    there. A language server starts only for a project whose switch in the
+   *    top strip has been turned on, and turning it off stops that server. The
+   *    choice belongs to the project — one server serves every session and
+   *    every view on it — and is remembered between launches.
+   *  - **No `$effect` reads a file.** Every read is started by a user action: a
+   *    file-open request, or a click in the strip. The one effect that starts
+   *    anything starts the editor, and only for a file already on screen.
    */
   import { onMount } from 'svelte';
+  import X from '@lucide/svelte/icons/x';
+  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
 
   import { upgradeUnknownLanguage } from './editor/editorLanguage.ts';
   import {
     createLanguageServerGate,
     readLanguageServerState,
-    statusMessageIsAboutThisFile,
-    type LanguageServerStatusMessage
+    statusMessageIsAboutThisFile
   } from './editor/languageServerStatus.ts';
   import FileIcon from './explorer/FileIcon.svelte';
-  import LanguageServerStatusChip from './LanguageServerStatusChip.svelte';
+  import { canonicalPath } from '$lib/shell/explorer/explorerStore.svelte';
+  import {
+    isMarkdownFile,
+    markdownPreviewDefault,
+    type MarkdownView
+  } from './editor/markdownPreview.ts';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
+  import {
+    languageIntelligenceOn,
+    LANGUAGE_INTELLIGENCE_SETTING_KEY,
+    normalizeLanguageIntelligenceChoices,
+    withLanguageIntelligenceChoice,
+    workspaceKey,
+    type LanguageIntelligenceChoices
+  } from '$lib/shell/editor/languageIntelligenceMode';
+  import {
+    clearLanguageIntelligenceBar,
+    publishLanguageIntelligenceBar,
+    setLanguageIntelligenceSwitch
+  } from '$lib/shell/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
-  import { hasBackendCapability } from '$lib/shell/backendCapabilities';
+  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
+  import { setEditorSourceReadDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import {
     activateEditor,
     activeEditorFile,
+    clearEditorFileLoading,
     closeEditorFile,
     editorFileFor,
     editorState,
     markEditorFileLoading,
     openEditorFile,
+    pinEditorFile,
+    resetEditorState,
     revealEditorLine,
     setActiveEditorFile,
     setEditorFileDraft,
@@ -49,31 +82,42 @@
     setEditorFileSaving,
     setEditorSymbols
   } from '$lib/shell/editor/editorStore.svelte';
-  import { needsRead } from '$lib/shell/editor/editorStoreOps';
+  import { modelPathToDisposeOnClose, needsRead } from '$lib/shell/editor/editorStoreOps';
   import {
     sourceIntelligence,
     type SourceInlayHintRequest
   } from '$lib/shell/editor/sourceIntelligence';
+  import { settings } from '$lib/settingsStore.svelte';
   import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
-  import {
-    isNativeTauriRuntime,
-    readSourceFromTauri,
-    readSourceLspStatusFromTauri,
-    warmSourceLspForRootFromTauri,
-    writeSourceToTauri
-  } from '$lib/tauriSource';
   import {
     dotnetWorkspaceSessionRequest,
     type DotnetWorkspaceAction,
     type WorkspaceCommandSessionRequest
   } from '$lib/workspaceCodeLens';
-  import type MonacoSourceEditor from '$lib/MonacoSourceEditor.svelte';
+  import { openFileTimeline } from '$lib/shell/workbenchNavigation';
+  import {
+    findSourceLspCodeActionsFromTauri,
+    cancelSourceFileReadsFromTauri,
+    isNativeTauriRuntime,
+    readAssemblySettingFromTauri,
+    readSourceFromTauri,
+    readSourceLspStatusFromTauri,
+    setWorkspaceLanguageIntelligenceFromTauri,
+    warmSourceLspForRootFromTauri,
+    writeAssemblySettingFromTauri,
+    writeSourceToTauri
+  } from '$lib/tauriSource';
+  import type CodeMirrorSourceEditor from '$lib/CodeMirrorSourceEditor.svelte';
   import type {
+    SourceCodeAction,
+    SourceCodeActionLookupRequest,
     SourceDiagnostic,
     SourceInlayHint,
+    SourcePreview,
     SourceRecord,
     SourceSymbol
   } from '$lib/sourceData';
+  import { applySourceTextEdits } from '$lib/sourceData';
 
   /**
    * The code editor is a large download, so it is fetched with the first file
@@ -86,35 +130,216 @@
      * bring this panel's tab to the front. The panel itself stays unaware of the
      * tab area — it just says a file arrived. */
     onFileOpened?: () => void;
-    /** Start a fixed workspace command as an ordinary owned terminal session. */
-    onStartWorkspaceCommand?: (
-      request: WorkspaceCommandSessionRequest
-    ) => Promise<string | null>;
+    /** Whether this panel is the center tab in front. Putting a session's files
+     * back opens them out of sight, and the code editor is far too expensive to
+     * start for a file nobody is looking at. */
+    showing?: boolean;
+    /** False when the selected session's checkout no longer exists. */
+    rootAvailable?: boolean;
+    /** Clears every session's saved editor strip after the close outcome succeeds. */
+    onCloseAllEditors?: () => void | Promise<boolean | void>;
+    /** Starts a fixed .NET workspace action in the page-owned terminal rail. */
+    onStartWorkspaceCommand?: (request: WorkspaceCommandSessionRequest) => void | Promise<void>;
   }
-  let { onFileOpened, onStartWorkspaceCommand }: Props = $props();
+  let {
+    onFileOpened,
+    showing = false,
+    rootAvailable = true,
+    onCloseAllEditors,
+    onStartWorkspaceCommand
+  }: Props = $props();
 
-  type CodeEditorComponent = typeof MonacoSourceEditor;
+  type CodeEditorComponent = typeof CodeMirrorSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
+  let codeEditor = $state<{
+    captureViewStates(paths: readonly string[]): Record<string, object>;
+    disposeTabModel(path: string): boolean;
+    disposeAllTabModels(): void;
+    refreshReferenceCounts(): void;
+    releaseSessionResources(): void;
+  } | null>(null);
   let editorLoadError = $state<string | null>(null);
   let loadingEditorComponent = false;
-  let nativeCsharpRoot = $state<string | null>(null);
-  let nativeCsharpPath = $state<string | null>(null);
-  let stopNativeCsharpActions: (() => void) | null = null;
-  let stopNativeCsharpDiagnostics: (() => void) | null = null;
+  type CloseRequest = { kind: 'file'; path: string } | { kind: 'all' };
+  let closeRequest = $state<CloseRequest | null>(null);
+  let closeDialogOpen = $state(false);
+  let closeActionBusy = $state(false);
 
-  /** Paths whose read is in flight, so a double click cannot read twice. */
-  const readsInFlight = new Set<string>();
+  type EditorSourceRead = { byteCount: number; generation: number; token: object; work: Promise<void> };
+
+  /** Native reads cannot be cancelled, so keep them owned until they settle. */
+  const readsInFlight = new Map<string, EditorSourceRead>();
+
+  function publishSourceReadDiagnostics(): void {
+    setEditorSourceReadDiagnostics(
+      readsInFlight.size,
+      [...readsInFlight].filter(([path, read]) =>
+        read.generation !== sessionResourceGeneration || path !== editorState.activePath
+      ).length,
+      [...readsInFlight.values()].reduce((total, read) => total + read.byteCount, 0)
+    );
+  }
+  let sessionResourceGeneration = 0;
+  let sessionStopController = new AbortController();
+  let restoredViewStates = $state<Record<string, object>>({});
   /** Projects whose language server has already been pointed at the project. */
   const warmedProjectRoots = new Set<string>();
 
+  /** The remembered choices. SQLite hydrates them once; every change writes them back. */
+  let languageIntelligenceChoices = $state<LanguageIntelligenceChoices>({});
+  let languageIntelligenceHydrated = false;
+  let languageIntelligenceHydration: Promise<void> | null = null;
+  /** What the desktop app last said about this project's mode. */
+  let languageIntelligenceNote = $state<string | null>(null);
+  /** True while a switch is being acted on, so it cannot be flipped twice. */
+  let languageIntelligenceBusy = $state(false);
+  let nativeCsharpRoot: string | null = null;
+  let backendOwnerRoot: string | null = null;
+  let requestedOwnerKey: string | null = null;
+  let ownerSelectionGeneration = 0;
+  let ownerTransitionTail: Promise<void> = Promise.resolve();
+  let currentOwnerTransition: ReturnType<typeof setWorkspaceLanguageIntelligenceFromTauri> =
+    Promise.resolve(null);
+  /** Language-server processes the desktop app reports for this project. */
+  let languageServerPids = $state<number[]>([]);
   let destroyed = false;
+  let fileStrip = $state<HTMLDivElement | null>(null);
+
+  async function hydrateLanguageIntelligenceChoices(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    if (languageIntelligenceHydrated) return;
+    if (languageIntelligenceHydration) {
+      await languageIntelligenceHydration;
+      if (stopSignal.aborted) return;
+      return;
+    }
+    const hydration = loadLanguageIntelligenceChoices();
+    languageIntelligenceHydration = hydration;
+    try {
+      if (stopSignal.aborted) return;
+      await hydration;
+      if (stopSignal.aborted) return;
+    } finally {
+      if (languageIntelligenceHydration === hydration) {
+        languageIntelligenceHydration = null;
+      }
+    }
+  }
+
+  async function loadLanguageIntelligenceChoices(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    const stored = await readAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY);
+    if (stopSignal.aborted) return;
+    if (!destroyed) {
+      languageIntelligenceChoices = normalizeLanguageIntelligenceChoices(stored);
+    }
+    languageIntelligenceHydrated = true;
+  }
 
   const activeFile = $derived(activeEditorFile());
-  const nativeCsharpActive = $derived(
-    activeFile?.language === 'csharp' &&
-      nativeCsharpRoot === editorState.projectRoot &&
-      nativeCsharpPath === activeFile.path
+  const activePreview = $derived(activeFile?.preview ?? (activeFile
+    ? {
+        path: activeFile.path,
+        relativePath: activeFile.relativePath,
+        fileName: activeFile.fileName,
+        language: activeFile.language,
+        byteCount: 0,
+        content: '',
+        lineCount: 1
+      }
+    : null));
+  const activeFileMissing = $derived(
+    Boolean(activeFile?.error && /(?:os error 2|No such file)/i.test(activeFile.error))
   );
+  /**
+   * Files opened for reading only, keyed by path. A file link in a conversation
+   * that points outside the workspace opens this way: the reader can see what
+   * it pointed at, but the session does not own the file, so nothing here may
+   * edit or save over it.
+   */
+  /** Inspection root for read-only tabs; a path alone is not enough context. */
+  let readOnlyByPath = $state<Record<string, string>>({});
+  const activeFileReadOnly = $derived(Boolean(activeFile && readOnlyByPath[activeFile.path]));
+  const activeServerEnabled = $derived.by(() => {
+    const language = activeFile?.language?.toLowerCase();
+    if (language === 'csharp' || language === 'c#') return settings.intelligence.languageServerEnabled.csharp;
+    if (language === 'typescript' || language === 'javascript' || language === 'tsx' || language === 'jsx') {
+      return settings.intelligence.languageServerEnabled.typescript;
+    }
+    if (language === 'rust') return settings.intelligence.languageServerEnabled.rust;
+    return null;
+  });
+  /** Is this project in full mode — language server allowed to run? Settings
+   * can switch every server off at once, and then no project is, whatever its
+   * own switch says: the switch reads Off, and its title says which one held. */
+  const fullMode = $derived(
+    !activeFileReadOnly
+      && settings.intelligence.languageServers
+      && activeServerEnabled === true
+  );
+  /**
+   * The sentence on hover: what the mode means for this project, and the
+   * process numbers behind it so they can be found in the resource view.
+   */
+  const languageIntelligenceTitle = $derived.by(() => {
+    if (!editorState.projectRoot) return 'Open a file in a project to switch this on.';
+    if (!settings.intelligence.languageServers) {
+      return 'Editor-only — Supercharged is switched off in Settings.';
+    }
+    if (activeServerEnabled === false) {
+      return 'Editor-only — this language server is switched off in Settings.';
+    }
+    if (activeFile?.language && activeServerEnabled === null) {
+      return `Editor-only — no language server for ${activeFile.language}.`;
+    }
+    const note =
+      languageIntelligenceNote ??
+      (fullMode
+        ? 'Language intelligence is on for this project. One language server serves every session and view on it.'
+        : 'Read mode: files open with colouring only, and no language server is started.');
+    if (languageServerPids.length === 0) return note;
+    const numbers = languageServerPids.join(', ');
+    const noun = languageServerPids.length === 1 ? 'Process' : 'Processes';
+    return `${note} ${noun} ${numbers}.`;
+  });
+  /**
+   * Which view each Markdown file is on. Markdown opens source-first; the only
+   * way to write `rendered` here is the active file's explicit Preview toggle.
+   * Leaving a file releases that preview choice instead of keeping rendered DOM
+   * logically hidden behind the strip.
+   */
+  let markdownViewByPath = $state<Record<string, MarkdownView>>({});
+  const activeFileIsMarkdown = $derived(isMarkdownFile(activeFile?.fileName));
+  const markdownView = $derived(
+    activeFile && activeFileIsMarkdown ? (markdownViewByPath[activeFile.path] ?? 'raw') : 'raw'
+  );
+  const MARKDOWN_VIEW_ITEMS = [
+    { value: 'raw', label: 'Source' },
+    { value: 'rendered', label: 'Preview' }
+  ] as const;
+
+  /** Record the first view for a file, without overwriting a person's choice. */
+  function rememberMarkdownDefault(path: string, fileName: string, origin: 'jump' | 'strip'): void {
+    if (!isMarkdownFile(fileName) || markdownViewByPath[path]) return;
+    markdownViewByPath = {
+      ...markdownViewByPath,
+      [path]: markdownPreviewDefault(fileName, origin)
+    };
+  }
+
+  function setMarkdownView(view: MarkdownView): void {
+    const path = activeFile?.path;
+    if (!path) return;
+    markdownViewByPath = { ...markdownViewByPath, [path]: view };
+  }
+
+  function releaseMarkdownView(path: string): void {
+    if (!markdownViewByPath[path]) return;
+    const { [path]: _released, ...rest } = markdownViewByPath;
+    markdownViewByPath = rest;
+  }
 
   /**
    * What the language server says is wrong, per file. Kept per file rather than
@@ -123,23 +348,15 @@
    */
   let diagnosticsByPath = $state<Record<string, SourceDiagnostic[]>>({});
   /**
-   * How long to wait before asking a second time, in milliseconds.
-   *
-   * LOAD-BEARING. The language server answers a file it has only just opened
-   * with an empty list, so the first read after a file lands usually comes back
-   * with nothing and the squiggles appear only when something else happens to
-   * ask again. The old shell has hidden this behind the same wait since it was
-   * written (`src/routes/+page.svelte`, `scheduleSourceLspDiagnostics`). Without
-   * it, "it worked when I clicked around" is the bug report.
+   * The one empty answer, reused. The fallback below must keep a stable
+   * identity: a fresh `[]` per template evaluation reads as a changed prop
+   * to the editor's effect and can spin it in a loop.
    */
-  const DIAGNOSTICS_SETTLE_MS = 650;
-  /** The pending second read, so switching files quickly does not queue several. */
-  let diagnosticsTimer: ReturnType<typeof setTimeout> | null = null;
-
+  const NO_DIAGNOSTICS: SourceDiagnostic[] = [];
   /**
    * The last thing the desktop app said about the open file's language server —
    * either the answer to `read_source_lsp_status` or a pushed
-   * `source-lsp-status-changed` message. Both carry the same `state` and
+   * pushed status message. Both carry the same `state` and
    * `detail` fields, so either one can be shown as-is.
    *
    * `null` means nobody has said anything: a browser tab (there is no language
@@ -152,11 +369,13 @@
   /**
    * Holds back work that a server which is still starting up or reading the
    * project could not answer anyway. It lets everything through the moment the
-   * server says it is ready — and, if that never happens, on its own time limit.
+   * server says it is ready, or when this owner tears the wait down.
    */
   const languageServerGate = createLanguageServerGate();
   /** Counts inline-hint requests, so only the newest one survives a wait. */
   let inlayHintRequestCount = 0;
+  let releaseDiagnosticsReadyWait: (() => void) | null = null;
+  let releaseInlayReadyWait: (() => void) | null = null;
 
   /** The language of the file on screen, or null when nothing is open. */
   function activeFileLanguage(): string | null {
@@ -179,6 +398,14 @@
    * that arrives as a pushed message.
    */
   async function refreshLanguageServerStatus(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    if (activeFileReadOnly) {
+      if (languageServerStatus !== null || languageServerSubject !== null) {
+        applyLanguageServerStatus(null, null);
+      }
+      return;
+    }
     const root = editorState.projectRoot;
     const language = activeFileLanguage();
 
@@ -196,7 +423,9 @@
     countInvoke('read_source_lsp_status');
     let answer: unknown = null;
     try {
+      if (stopSignal.aborted) return;
       answer = await readSourceLspStatusFromTauri(root, language);
+      if (stopSignal.aborted) return;
     } catch {
       // No answer is not a state worth reporting, so the chip stays away.
       answer = null;
@@ -206,72 +435,73 @@
     applyLanguageServerStatus(answer, { root, language });
   }
 
-  /** Listen for the desktop app telling us the server moved on. */
-  async function listenForLanguageServerStatus(): Promise<(() => void) | null> {
-    if (!isNativeTauriRuntime()) return null;
-    // An older desktop build never sends these, and asking it to listen would
-    // leave the panel waiting for a message that cannot arrive.
-    if (!(await hasBackendCapability('lspStatusEvents'))) return null;
+  /** Apply status updates fanned out by the shared source-intelligence listener. */
+  function handleLanguageServerStatus(status: unknown): void {
+    if (activeFileReadOnly) return;
+    const root = editorState.projectRoot;
+    const language = activeFileLanguage();
+    if (!root || !language) return;
+    // Several servers can be running at once, so a message about another
+    // project or another language must not move this file's chip.
+    if (!statusMessageIsAboutThisFile(status, root, language)) return;
+    applyLanguageServerStatus(status, { root, language });
+  }
 
-    const { listen } = await import('@tauri-apps/api/event');
-    return listen<LanguageServerStatusMessage>('source-lsp-status-changed', (event) => {
-      const root = editorState.projectRoot;
-      const language = activeFileLanguage();
-      if (!root || !language) return;
-      // Several servers can be running at once, so a message about another
-      // project or another language must not move this file's chip.
-      if (!statusMessageIsAboutThisFile(event.payload, root, language)) return;
-      applyLanguageServerStatus(event.payload, { root, language });
-    });
+  function handleReferenceCountUpdate(path: string): void {
+    if (destroyed || editorState.activePath !== path) return;
+    codeEditor?.refreshReferenceCounts();
   }
 
   /** Ask what is wrong with the file on screen, and remember it against that file. */
   async function loadDiagnosticsForActiveFile(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    if (activeFileReadOnly) return;
     const path = editorState.activePath;
     if (!path) return;
+    const generation = sessionResourceGeneration;
+    if (stopSignal.aborted) return;
     const diagnostics = await sourceIntelligence.loadActiveFileDiagnostics();
+    if (stopSignal.aborted) return;
     // Superseded: the user moved on while this was in flight, so this answer is
     // about a file that is no longer on screen.
-    if (destroyed || editorState.activePath !== path) return;
+    if (destroyed || generation !== sessionResourceGeneration || editorState.activePath !== path) return;
     diagnosticsByPath = { ...diagnosticsByPath, [path]: diagnostics };
   }
 
-  /** Read the diagnostics now, and once more after the server has settled. */
-  function refreshDiagnosticsForActiveFile(): void {
-    if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
-    diagnosticsTimer = null;
-    void loadDiagnosticsForActiveFile();
-    scheduleSecondDiagnosticsRead();
+  function clearDiagnosticsReadyWait(): void {
+    releaseDiagnosticsReadyWait?.();
+    releaseDiagnosticsReadyWait = null;
   }
 
-  /**
-   * Line up the second read.
-   *
-   * While the server is still starting up or reading the project the second
-   * read is pointless — it would come back empty for the same reason the first
-   * one did — so it waits for the server to say it is ready and only then
-   * starts the settle wait. When nothing is known about the server (an older
-   * desktop build, or a browser tab) this is the original behaviour with no
-   * delay of any kind added: the timer starts immediately, as it always did.
-   */
-  function scheduleSecondDiagnosticsRead(): void {
-    if (!languageServerGate.isBusy()) {
-      startDiagnosticsSettleTimer();
-      return;
-    }
+  /** Read diagnostics now, then again when a busy server reports ready. */
+  function refreshDiagnosticsForActiveFile(): void {
+    if (activeFileReadOnly) return;
+    clearDiagnosticsReadyWait();
+    void loadDiagnosticsForActiveFile();
+    scheduleDiagnosticsWhenServerReady();
+  }
+
+  function scheduleDiagnosticsWhenServerReady(): void {
+    if (!languageServerGate.isBusy()) return;
     const path = editorState.activePath;
-    void languageServerGate.waitUntilReady().then(() => {
-      if (destroyed || editorState.activePath !== path) return;
-      startDiagnosticsSettleTimer();
+    const generation = sessionResourceGeneration;
+    releaseDiagnosticsReadyWait = languageServerGate.onReady(() => {
+      releaseDiagnosticsReadyWait = null;
+      void loadDiagnosticsAfterServerReady(path, generation);
     });
   }
 
-  function startDiagnosticsSettleTimer(): void {
-    if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
-    diagnosticsTimer = setTimeout(() => {
-      diagnosticsTimer = null;
-      if (!destroyed) void loadDiagnosticsForActiveFile();
-    }, DIAGNOSTICS_SETTLE_MS);
+  async function loadDiagnosticsAfterServerReady(
+    path: string | null,
+    generation: number
+  ): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    if (destroyed || editorState.activePath !== path) return;
+    if (generation !== sessionResourceGeneration) return;
+    await loadDiagnosticsForActiveFile();
+    if (stopSignal.aborted) return;
   }
 
   /**
@@ -287,18 +517,36 @@
   async function lookupInlayHintsWhenServerCanAnswer(
     request: SourceInlayHintRequest
   ): Promise<SourceInlayHint[]> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return [];
+    if (activeFileReadOnly) return [];
     if (languageServerGate.isBusy()) {
       const path = editorState.activePath;
       const ticket = ++inlayHintRequestCount;
-      await languageServerGate.waitUntilReady();
-      // Only the newest request survives the wait. The editor asks again for
-      // every scroll, so answering a whole queue of stale ranges at once would
-      // simply move the pile-up to the end of the wait instead of removing it.
-      if (destroyed || ticket !== inlayHintRequestCount || editorState.activePath !== path) {
-        return [];
-      }
+      clearInlayReadyWait();
+      releaseInlayReadyWait = languageServerGate.onReady(() => {
+        releaseInlayReadyWait = null;
+        refreshInlayHintsAfterServerReady(path, ticket);
+      });
+      return [];
     }
-    return sourceIntelligence.callbacks.onInlayHintLookup(request);
+    if (stopSignal.aborted) return [];
+    const hints = await sourceIntelligence.callbacks.onInlayHintLookup(request);
+    if (stopSignal.aborted) return [];
+    return hints;
+  }
+
+  function clearInlayReadyWait(): void {
+    releaseInlayReadyWait?.();
+    releaseInlayReadyWait = null;
+  }
+
+  function refreshInlayHintsAfterServerReady(path: string | null, ticket: number): void {
+    // Only the newest request survives the wait. The editor asks again for
+    // every scroll, so answering a whole queue of stale ranges at once would
+    // simply move the pile-up to the end of the wait instead of removing it.
+    if (destroyed || ticket !== inlayHintRequestCount || editorState.activePath !== path) return;
+    void refreshEditorIntelligenceForActiveFile();
   }
 
   function describeError(error: unknown): string {
@@ -315,111 +563,293 @@
    * LOAD-BEARING ORDER: the record is what the read wrapper copies the language
    * back out of, so it has to be right before the file is read, not after.
    */
-  function recordForPath(path: string): SourceRecord {
-    const record = sourceRecordFromPath(editorState.projectRoot, path);
+  function recordForPath(path: string, projectRoot = editorState.projectRoot): SourceRecord {
+    const record = sourceRecordFromPath(projectRoot, path);
     const language = upgradeUnknownLanguage(record.path, record.language);
     return language === record.language ? record : { ...record, language };
   }
 
   /** Download the code editor the first time it is needed. */
   async function ensureCodeEditor(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
     if (loadingEditorComponent) return;
     loadingEditorComponent = true;
     try {
       const root = editorState.projectRoot;
-      let native: typeof import('$lib/shell/editor/csharpLanguageClient') | null = null;
-      if (root) {
-        try {
-          const editorServices = await import('$lib/shell/editor/csharpLanguageClient');
-          await editorServices.prepareNativeCsharpEditorServices(root);
-          if (isNativeTauriRuntime()) native = editorServices;
-        } catch (error) {
-          console.error('Could not prepare Monaco editor services', error);
-        }
-      }
+      // Wait until the first editor can receive the real, path-bearing root.
+      if (!root) return;
       if (!CodeEditor) {
-        const module = await import('$lib/MonacoSourceEditor.svelte');
+        if (stopSignal.aborted) return;
+        const module = await import('$lib/CodeMirrorSourceEditor.svelte');
+        if (stopSignal.aborted) return;
         if (!destroyed) CodeEditor = module.default;
       }
-      // Roslyn project loading is deliberately not on the file-rendering path.
-      // The editor appears as soon as Monaco is ready; native CodeLens cuts over
-      // only after this background attachment has opened the real document.
-      if (native && activeFileLanguage() === 'csharp' && editorState.activePath) {
-        void ensureNativeCsharpForActiveFile(editorState.activePath, native).catch((error) => {
-          console.error('Could not attach the native C# document', error);
-        });
-      }
     } catch (error) {
-      if (!destroyed) editorLoadError = `Could not start the code editor: ${describeError(error)}`;
+      if (!stopSignal.aborted && !destroyed) editorLoadError = `Could not start the code editor: ${describeError(error)}`;
     } finally {
       loadingEditorComponent = false;
     }
   }
 
-  async function ensureNativeCsharpForActiveFile(
-    path = editorState.activePath,
-    loadedNative?: typeof import('$lib/shell/editor/csharpLanguageClient')
+  async function runLanguageIntelligenceOwnerTransition(
+    root: string | null,
+    enabled: boolean,
+    language: string | null
+  ): ReturnType<typeof setWorkspaceLanguageIntelligenceFromTauri> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return null;
+    try {
+      if (stopSignal.aborted) return null;
+      await ownerTransitionTail;
+      if (stopSignal.aborted) return null;
+    } catch {
+      // A failed earlier owner transition must not block the latest owner.
+    }
+    if (!isNativeTauriRuntime()) return null;
+    const commandRoot = root ?? backendOwnerRoot;
+    if (!commandRoot) return null;
+    if (backendOwnerRoot !== root) warmedProjectRoots.clear();
+    countInvoke('set_workspace_language_intelligence');
+    if (stopSignal.aborted) return null;
+    const answer = await setWorkspaceLanguageIntelligenceFromTauri(
+      commandRoot,
+      Boolean(root && enabled),
+      root && enabled ? language : null
+    );
+    if (stopSignal.aborted) return null;
+    backendOwnerRoot = root && enabled ? root : null;
+    return answer;
+  }
+
+  async function retainLanguageIntelligenceOwnerOrder(
+    transition: ReturnType<typeof setWorkspaceLanguageIntelligenceFromTauri>
   ): Promise<void> {
-    const root = editorState.projectRoot;
-    const entry = path ? editorFileFor(path) : null;
-    if (
-      !root ||
-      !path ||
-      entry?.language !== 'csharp' ||
-      !isNativeTauriRuntime() ||
-      (nativeCsharpRoot === root && nativeCsharpPath === path)
-    ) {
-      return;
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    try {
+      await transition;
+      if (stopSignal.aborted) return;
+    } catch {
+      // Keep later owner transitions ordered even when one command fails.
     }
-    const native = loadedNative ?? (await import('$lib/shell/editor/csharpLanguageClient'));
-    const ensured = await native.ensureNativeCsharpDocument(root, path);
+  }
+
+  function queueLanguageIntelligenceOwner(
+    projectRoot: string | null,
+    enabled: boolean,
+    language: string | null = null,
+    force = false
+  ): ReturnType<typeof setWorkspaceLanguageIntelligenceFromTauri> {
+    const root = projectRoot ? workspaceKey(projectRoot) : null;
+    const ownerKey = `${root ?? ''}|${enabled}`;
+    if (!force && requestedOwnerKey === ownerKey) return currentOwnerTransition;
+    requestedOwnerKey = ownerKey;
+
+    const transition = runLanguageIntelligenceOwnerTransition(root, enabled, language);
+    ownerTransitionTail = retainLanguageIntelligenceOwnerOrder(transition);
+    currentOwnerTransition = transition;
+    return transition;
+  }
+
+  /** Hand the ordered backend owner this project's current remembered choice. */
+  async function applySavedModeForProject(projectRoot: string): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    const root = workspaceKey(projectRoot);
+    if (stopSignal.aborted) return;
+    await hydrateLanguageIntelligenceChoices();
+    if (stopSignal.aborted) return;
     if (
-      destroyed ||
-      editorState.projectRoot !== root ||
-      editorState.activePath !== path ||
-      activeFileLanguage() !== 'csharp'
-    ) {
-      return;
+      destroyed
+      || !rootAvailable
+      || !editorState.projectRoot
+      || workspaceKey(editorState.projectRoot) !== root
+    ) return;
+    try {
+      if (stopSignal.aborted) return;
+      const answer = await queueLanguageIntelligenceOwner(
+        root,
+        settings.intelligence.languageServers
+      );
+      if (stopSignal.aborted || destroyed || !answer) return;
+      if (editorState.projectRoot && workspaceKey(editorState.projectRoot) === root) {
+        languageServerPids = answer.serverPids;
+      }
+    } catch {
+      // A desktop build that has never heard of the switch leaves every
+      // project in read mode, which is the safe half of the choice.
     }
-    nativeCsharpRoot = ensured.root;
-    nativeCsharpPath = ensured.path;
-    stopNativeCsharpActions?.();
-    stopNativeCsharpActions = native.setNativeCsharpDocumentActions({
-      build: (documentUri) => runDotnetWorkspaceAction('build', documentUri),
-      test: (documentUri) => runDotnetWorkspaceAction('test', documentUri)
-    });
-    stopNativeCsharpDiagnostics?.();
-    stopNativeCsharpDiagnostics = native.subscribeNativeCsharpDiagnostics((diagnostics) => {
-      if (destroyed || editorState.projectRoot !== root) return;
-      const next = { ...diagnosticsByPath };
-      for (const path of Object.keys(next)) {
-        if (path.endsWith('.cs')) delete next[path];
-      }
-      for (const diagnostic of diagnostics) {
-        const current = next[diagnostic.path] ?? [];
-        next[diagnostic.path] = [...current, diagnostic];
-      }
-      diagnosticsByPath = next;
-    });
   }
 
   /**
-   * Tell the language server which project this file belongs to, once per
-   * project. A no-op unless a server is already running for that language.
+   * Tell the language server which project this file belongs to before warming
+   * the file's language.
    */
-  function warmLanguageServer(projectRoot: string | null): void {
-    if (!projectRoot || warmedProjectRoots.has(projectRoot)) return;
+  async function warmLanguageServer(projectRoot: string | null): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    if (!projectRoot || activeServerEnabled !== true) return;
+    try {
+      if (stopSignal.aborted) return;
+      await applySavedModeForProject(projectRoot);
+      if (stopSignal.aborted) return;
+    } catch (error) {
+      if (!stopSignal.aborted && !destroyed) {
+        languageIntelligenceNote = `The saved editor mode could not be read: ${describeError(error)}`;
+      }
+      return;
+    }
+    if (destroyed || !settings.intelligence.languageServers) return;
+    if (warmedProjectRoots.has(projectRoot)) return;
     warmedProjectRoots.add(projectRoot);
     countInvoke('warm_source_lsp_for_root');
-    void warmSourceLspForRootFromTauri(projectRoot).catch(() => {
-      // Warming is best effort: a failure costs nothing but a cold first lookup.
-    });
+    try {
+      if (stopSignal.aborted) return;
+      await warmSourceLspForRootFromTauri(projectRoot);
+      if (stopSignal.aborted) return;
+    } catch (error) {
+      // Warming only costs a cold first lookup, but a reader who has the switch
+      // on is owed the reason rather than a project that quietly stays cold.
+      if (!stopSignal.aborted && !destroyed) {
+        languageIntelligenceNote = `This project's language server could not be warmed: ${describeError(error)}`;
+      }
+    }
+  }
+
+  /**
+   * Turn language intelligence on or off for the project on screen.
+   *
+   * Off asks the desktop app to stop the process and reclaim its memory. On
+   * records the choice and starts the server for the file already open, saying
+   * so — including when there is no server to start.
+   */
+  async function switchLanguageIntelligence(enabled: boolean): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    const root = editorState.projectRoot;
+    if (!root || activeFileReadOnly || languageIntelligenceBusy) return;
+    languageIntelligenceBusy = true;
+    try {
+      if (stopSignal.aborted) return;
+      await hydrateLanguageIntelligenceChoices();
+      if (stopSignal.aborted || destroyed) return;
+      // Persisted before the desktop call, so the next launch keeps the choice
+      // even if an older desktop build cannot act on it.
+      const nextChoices = withLanguageIntelligenceChoice(
+        languageIntelligenceChoices,
+        root,
+        enabled
+      );
+      if (stopSignal.aborted) return;
+      await writeAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY, nextChoices);
+      if (stopSignal.aborted) return;
+      if (
+        destroyed
+        || !rootAvailable
+        || !editorState.projectRoot
+        || workspaceKey(editorState.projectRoot) !== workspaceKey(root)
+      ) return;
+      languageIntelligenceChoices = nextChoices;
+      if (!enabled) {
+        warmedProjectRoots.delete(root);
+        diagnosticsByPath = {};
+      }
+
+      // Settings is where the C# server is switched off, and that holds. This
+      // switch used to lift that setting back on whenever it was flipped on for
+      // a project — so turning the server off in Settings kept undoing itself,
+      // and the two switches read as one that "would not stay off". A C# start
+      // that Settings has refused now says so in the note under the switch.
+
+      // The file already on screen is the one the reader wants answered, so its
+      // language is what the desktop app starts a server for — now, rather than
+      // at the next file opened. With nothing open there is nothing to start,
+      // and the answer says so.
+      if (stopSignal.aborted) return;
+      const answer = await queueLanguageIntelligenceOwner(
+        root,
+        enabled,
+        enabled ? activeFileLanguage() : null,
+        true
+      );
+      if (stopSignal.aborted || destroyed) return;
+      languageIntelligenceNote = answer?.message ?? null;
+      languageServerPids = answer?.serverPids ?? [];
+
+      if (enabled) {
+        if (stopSignal.aborted) return;
+        await warmLanguageServer(root);
+        if (stopSignal.aborted || destroyed) return;
+        void ensureCodeEditor();
+      }
+      if (!destroyed) void refreshEditorIntelligenceForActiveFile();
+    } catch (error) {
+      if (!stopSignal.aborted && !destroyed) {
+        languageIntelligenceNote = `The switch could not be changed: ${describeError(error)}`;
+      }
+    } finally {
+      if (!destroyed) languageIntelligenceBusy = false;
+    }
+  }
+
+  /** A language service exists only for a visible, editable source document. */
+  function activeLanguageRoot(): string | null {
+    return showing && rootAvailable && editorState.activePath && !activeFileReadOnly
+      ? editorState.projectRoot
+      : null;
   }
 
   /** Keep the lookup service pointed at whatever is on screen. */
   function syncIntelligenceWithActiveFile(): void {
-    sourceIntelligence.setProjectRoot(editorState.projectRoot);
-    sourceIntelligence.setActivePreview(activeEditorFile()?.preview ?? null);
+    if (activeFileReadOnly && (languageServerStatus !== null || languageServerSubject !== null)) {
+      applyLanguageServerStatus(null, null);
+    }
+    const root = activeLanguageRoot();
+    sourceIntelligence.setProjectRoot(root);
+    sourceIntelligence.setActivePreview(root ? activeEditorFile()?.preview ?? null : null);
+  }
+
+  async function applyLanguageIntelligenceOwnerForEffect(
+    generation: number,
+    root: string | null,
+    languageServersEnabled: boolean
+  ): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    await hydrateLanguageIntelligenceChoices();
+    if (stopSignal.aborted || destroyed || generation !== ownerSelectionGeneration) return;
+    const enabled = Boolean(
+      root
+        && languageServersEnabled
+        && activeServerEnabled === true
+    );
+    try {
+      if (stopSignal.aborted) return;
+      const answer = await queueLanguageIntelligenceOwner(root, enabled);
+      if (
+        stopSignal.aborted
+        || destroyed
+        || !answer
+        || root !== activeLanguageRoot()
+      ) return;
+      languageServerPids = answer.serverPids;
+    } catch {
+      // An older desktop build leaves the selected project in read mode.
+    }
+  }
+
+  async function publishNativeCsharpActiveRoot(root: string | null): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    try {
+      if (stopSignal.aborted) return;
+      const { setNativeCsharpActiveRoot } = await import('$lib/shell/editor/csharpLanguageClient');
+      if (stopSignal.aborted) return;
+      setNativeCsharpActiveRoot(root);
+    } catch {
+      // A missing optional client leaves the active root unset.
+    }
   }
 
   // Session restore and project switching update the shared editor store
@@ -427,62 +857,209 @@
   // intelligence service attached to that state continuously; otherwise the
   // file can be visible while counts are asked with projectRoot = null.
   $effect(() => {
+    showing;
     editorState.projectRoot;
     editorState.activePath;
     activeEditorFile()?.preview;
     syncIntelligenceWithActiveFile();
   });
 
-  /** EXPLICIT IO: read one file and show it. */
-  async function readFileIntoEditor(record: SourceRecord): Promise<void> {
-    if (readsInFlight.has(record.path)) return;
-    readsInFlight.add(record.path);
-    markEditorFileLoading(record.path);
-    if (record.language !== 'csharp' || !isNativeTauriRuntime()) {
-      warmLanguageServer(editorState.projectRoot);
-    }
+  $effect(() => {
+    const root = activeLanguageRoot();
+    languageIntelligenceChoices;
+    const languageServersEnabled = settings.intelligence.languageServers;
+    const generation = ++ownerSelectionGeneration;
+    void applyLanguageIntelligenceOwnerForEffect(generation, root, languageServersEnabled);
+  });
+
+  $effect(() => {
+    const root = fullMode ? activeLanguageRoot() : null;
+    if (root === nativeCsharpRoot) return;
+    nativeCsharpRoot = root;
+    void publishNativeCsharpActiveRoot(root);
+  });
+
+  async function readFileIntoEditorForOwner(
+    record: SourceRecord,
+    generation: number,
+    readOnly: boolean,
+    projectRoot: string | null,
+    token: object
+  ): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
     try {
       // The record has to be built first: the read wrapper copies the relative
       // path, language and size back out of it onto the preview it returns.
       countInvoke('read_source_file');
+      if (stopSignal.aborted) return;
       const preview = await readSourceFromTauri(record);
-      if (destroyed || !editorFileFor(record.path)) return;
+      if (stopSignal.aborted) return;
+      if (
+        destroyed
+        || generation !== sessionResourceGeneration
+        || editorState.activePath !== record.path
+        || (!readOnly && editorState.projectRoot !== projectRoot)
+        || !editorFileFor(record.path)
+      ) {
+        if (!destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
+          clearEditorFileLoading(record.path);
+        }
+        return;
+      }
       if (preview) {
-        setEditorFilePreview(record.path, preview);
+        setEditorFilePreview(record.path, preview, null, readOnly);
       } else {
         setEditorFileError(record.path, 'This file could not be read from here.');
       }
     } catch (error) {
-      if (!destroyed && editorFileFor(record.path)) {
+      if (!stopSignal.aborted && !destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
         setEditorFileError(record.path, `Could not read this file: ${describeError(error)}`);
       }
     } finally {
-      readsInFlight.delete(record.path);
-      syncIntelligenceWithActiveFile();
-      void refreshEditorIntelligenceForActiveFile();
+      if (readsInFlight.get(record.path)?.token === token) {
+        readsInFlight.delete(record.path);
+        publishSourceReadDiagnostics();
+      }
+      if (!stopSignal.aborted && !destroyed && generation === sessionResourceGeneration) {
+        syncIntelligenceWithActiveFile();
+        if (!readOnly) void refreshEditorIntelligenceForActiveFile();
+      }
     }
   }
 
+  /** EXPLICIT IO: read one file and show it. */
+  async function readFileIntoEditor(record: SourceRecord): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted || closeActionBusy || !rootAvailable) return;
+    const existing = readsInFlight.get(record.path);
+    if (existing) {
+      if (stopSignal.aborted) return;
+      await existing.work;
+      if (stopSignal.aborted) return;
+      const file = editorFileFor(record.path);
+      if (!file || !needsRead(file)) return;
+      return readFileIntoEditor(record);
+    }
+    const generation = sessionResourceGeneration;
+    const readOnly = Boolean(readOnlyByPath[record.path]);
+    const projectRoot = editorState.projectRoot;
+    markEditorFileLoading(record.path);
+    if (!readOnly) void warmLanguageServer(editorState.projectRoot);
+    const token = {};
+    const work = readFileIntoEditorForOwner(record, generation, readOnly, projectRoot, token);
+    readsInFlight.set(record.path, { byteCount: record.byteCount, generation, token, work });
+    publishSourceReadDiagnostics();
+    return work;
+  }
+
   function updateActiveDraft(content: string): void {
+    if (closeActionBusy) return;
     const file = activeEditorFile();
-    if (!file) return;
+    if (!file || readOnlyByPath[file.path]) return;
     setEditorFileDraft(file.path, content);
   }
 
-  async function saveActiveFile(): Promise<void> {
+  async function lookupCodeActions(
+    request: SourceCodeActionLookupRequest
+  ): Promise<SourceCodeAction[]> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return [];
     const file = activeEditorFile();
-    if (!file?.preview || !file.dirty || file.saving) return;
-    const content = file.draftContent ?? file.preview.content;
+    const root = editorState.projectRoot;
+    if (!fullMode || !file?.preview || !root || activeFileReadOnly) return [];
+    const language = file.language.toLowerCase();
+    if (language !== 'csharp' && language !== 'c#') return [];
+    const generation = sessionResourceGeneration;
+    const path = file.path;
+    try {
+      countInvoke('find_source_lsp_code_actions');
+      if (stopSignal.aborted) return [];
+      const actions = await findSourceLspCodeActionsFromTauri(
+        { ...file.preview, content: file.draftContent ?? file.preview.content },
+        { ...request, root, limit: 50 }
+      );
+      if (stopSignal.aborted) return [];
+      if (
+        destroyed || generation !== sessionResourceGeneration ||
+        editorState.projectRoot !== root || editorState.activePath !== path || !fullMode
+      ) return [];
+      return actions ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function applyExternalWorkspaceEdits(action: SourceCodeAction): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    const activePath = editorState.activePath;
+    const root = editorState.projectRoot;
+    const generation = sessionResourceGeneration;
+    if (!activePath || !root || !fullMode) return;
+    for (const fileEdit of action.files) {
+      if (fileEdit.path === activePath || fileEdit.edits.length === 0) continue;
+      let file = editorFileFor(fileEdit.path);
+      if (!file?.preview) {
+        const record = recordForPath(fileEdit.path, root);
+        countInvoke('read_source_file');
+        let preview: SourcePreview | null;
+        try {
+          if (stopSignal.aborted) return;
+          preview = await readSourceFromTauri(record);
+          if (stopSignal.aborted) return;
+        } catch {
+          preview = null;
+        }
+        if (
+          !preview || destroyed || generation !== sessionResourceGeneration ||
+          editorState.projectRoot !== root || editorState.activePath !== activePath || !fullMode
+        ) return;
+        openEditorFile(record);
+        setEditorFilePreview(record.path, preview);
+        setActiveEditorFile(activePath);
+        file = editorFileFor(record.path);
+      }
+      if (!file?.preview) continue;
+      const content = file.draftContent ?? file.preview.content;
+      setEditorFileDraft(file.path, applySourceTextEdits(content, fileEdit.edits));
+    }
+  }
+
+  async function saveEditorFile(path: string): Promise<boolean> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted || !rootAvailable) return false;
+    const file = editorFileFor(path);
+    if (!file?.dirty) return true;
+    if (file.saving || readOnlyByPath[path] || file.draftContent === null || file.conflict) return false;
+    const generation = sessionResourceGeneration;
+    const content = file.draftContent;
     setEditorFileSaving(file.path, true);
     try {
+      if (stopSignal.aborted) return false;
       const saved = await writeSourceToTauri(recordForPath(file.path), content);
+      if (stopSignal.aborted) return false;
       if (!saved) throw new Error('The file could not be written from here.');
-      if (!destroyed && editorFileFor(file.path)) setEditorFilePreview(file.path, saved);
+      if (destroyed || generation !== sessionResourceGeneration || !editorFileFor(file.path)) return false;
+      setEditorFilePreview(file.path, saved, content);
+      return true;
     } catch (error) {
-      if (!destroyed && editorFileFor(file.path)) {
+      if (!stopSignal.aborted && !destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
         setEditorFileSaving(file.path, false);
         setEditorFileError(file.path, `Could not save this file: ${describeError(error)}`);
       }
+      return false;
+    }
+  }
+
+  async function saveActiveFile(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted || closeActionBusy) return;
+    const file = activeEditorFile();
+    if (file) {
+      if (stopSignal.aborted) return;
+      await saveEditorFile(file.path);
+      if (stopSignal.aborted) return;
     }
   }
 
@@ -494,8 +1071,10 @@
    * firing everything at it the instant a file lands.
    */
   async function refreshEditorIntelligenceForActiveFile(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted || activeFileReadOnly) return;
     await refreshLanguageServerStatus();
-    if (destroyed) return;
+    if (stopSignal.aborted || destroyed || activeFileReadOnly) return;
     refreshDiagnosticsForActiveFile();
   }
 
@@ -510,38 +1089,100 @@
   function openPath(
     path: string,
     line?: number | null,
-    projectRoot?: string
+    projectRoot?: string,
+    origin: 'jump' | 'strip' = 'jump',
+    readOnly = false,
+    previewTab = false,
+    pinTab = false
   ): boolean {
-    if (!path.trim()) return false;
-    activateEditor(projectRoot);
-    const record = recordForPath(path);
-    const entry = openEditorFile(record);
+    if (closeActionBusy || !rootAvailable || !path.trim()) return false;
+    if (editorState.activePath && editorState.activePath !== path) {
+      releaseReadOnlyEditorModel(editorState.activePath);
+      releaseMarkdownView(editorState.activePath);
+    }
+    if (!readOnly) activateEditor(projectRoot);
+    const record = recordForPath(path, projectRoot);
+    const previewToReplace = editorState.openFiles.find(
+      (file) => file.previewTab && file.path !== record.path
+    );
+    const replacedPreviewPath =
+      previewTab && !pinTab ? previewToReplace?.path ?? null : null;
+    const entry = openEditorFile(record, { preview: previewTab, pin: pinTab });
+    if (replacedPreviewPath) {
+      releaseMarkdownView(replacedPreviewPath);
+      codeEditor?.disposeTabModel(replacedPreviewPath);
+      sourceIntelligence.releasePreview(replacedPreviewPath);
+      const { [replacedPreviewPath]: _closed, ...rest } = diagnosticsByPath;
+      diagnosticsByPath = rest;
+      const { [replacedPreviewPath]: _wasReadOnly, ...remaining } = readOnlyByPath;
+      readOnlyByPath = remaining;
+    }
+    rememberMarkdownDefault(record.path, entry.fileName, origin);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
     syncIntelligenceWithActiveFile();
-    void ensureCodeEditor();
     if (needsRead(entry)) void readFileIntoEditor(record);
     return true;
   }
 
   function handleOpenFileRequest(request: OpenFileRequest): void {
+    if (closeActionBusy) return;
+    // Marked before the open, so the file is never editable for a frame. The
+    // record's path is the key: it is what the strip and the editor hold.
+    const record = recordForPath(request.path, request.projectRoot);
+    if (request.readOnly) {
+      readOnlyByPath = {
+        ...readOnlyByPath,
+        [record.path]: request.projectRoot?.trim() || 'outside the session workspace'
+      };
+    } else if (readOnlyByPath[record.path]) {
+      const { [record.path]: _wasReadOnly, ...remaining } = readOnlyByPath;
+      readOnlyByPath = remaining;
+    }
     // Only once the file is in the strip. The read runs after this and may still
     // fail — the tab is the right place to show that, so it stays in front.
-    if (openPath(request.path, request.line, request.projectRoot)) onFileOpened?.();
+    if (
+      openPath(
+        request.path,
+        request.line,
+        request.projectRoot,
+        'jump',
+        Boolean(request.readOnly),
+        Boolean(request.preview),
+        Boolean(request.pin)
+      )
+    ) {
+      onFileOpened?.();
+    }
   }
 
   function selectOpenFile(path: string): void {
+    if (closeActionBusy) return;
+    if (editorState.activePath && editorState.activePath !== path) {
+      releaseReadOnlyEditorModel(editorState.activePath);
+      releaseMarkdownView(editorState.activePath);
+    }
     setActiveEditorFile(path);
     syncIntelligenceWithActiveFile();
-    void refreshEditorIntelligenceForActiveFile();
+    if (!activeFileReadOnly) void refreshEditorIntelligenceForActiveFile();
     const entry = editorFileFor(path);
-    if (entry?.language === 'csharp') void ensureCodeEditor();
+    // A file restored into the strip never went through `openPath`, so this is
+    // where it gets its first view. Picking a tab is editing, not reading.
+    if (entry) rememberMarkdownDefault(path, entry.fileName, 'strip');
     if (entry && needsRead(entry)) {
       void readFileIntoEditor(recordForPath(path));
     }
   }
 
-  function closeOpenFileAt(path: string): void {
+  /** Read-only tabs must not leave an editable CodeMirror history behind. */
+  function releaseReadOnlyEditorModel(path: string | null): void {
+    if (path && readOnlyByPath[path]) codeEditor?.disposeTabModel(path);
+  }
+
+  function closeFileNow(path: string, discard = false): void {
+    const disposePath = discard ? path : modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
+    releaseMarkdownView(path);
+    if (disposePath) codeEditor?.disposeTabModel(disposePath);
     sourceIntelligence.releasePreview(path);
     syncIntelligenceWithActiveFile();
     // Whatever is in front now may be a different language, with a different
@@ -550,18 +1191,233 @@
     // A closed file stops holding its diagnostics; nothing can show them now.
     const { [path]: _closed, ...rest } = diagnosticsByPath;
     diagnosticsByPath = rest;
+    // The read-only mark belongs to the request that opened the file. Keeping
+    // it meant a later open of the same path arrived already locked.
+    const { [path]: _wasReadOnly, ...remaining } = readOnlyByPath;
+    readOnlyByPath = remaining;
+  }
+
+  function closeOpenFileAt(path: string): void {
+    if (closeActionBusy) return;
+    if (editorFileFor(path)?.dirty) {
+      closeRequest = { kind: 'file', path };
+      closeDialogOpen = true;
+      return;
+    }
+    closeFileNow(path);
+  }
+
+  function closeOtherOpenFiles(path: string): void {
+    if (closeActionBusy) return;
+    for (const file of editorState.openFiles) {
+      if (file.path !== path && !file.dirty) closeFileNow(file.path);
+    }
+  }
+
+  function closeSavedOpenFiles(): void {
+    if (closeActionBusy) return;
+    for (const file of editorState.openFiles) {
+      if (!file.dirty) closeFileNow(file.path);
+    }
+  }
+
+  async function closeAllOpenEditorsNow(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    const generation = sessionResourceGeneration;
+    closeActionBusy = true;
+    try {
+      if (stopSignal.aborted) return;
+      const cleared = await onCloseAllEditors?.();
+      if (stopSignal.aborted || generation !== sessionResourceGeneration) return;
+      if (cleared === false) {
+        editorLoadError = 'Could not clear saved editor tabs.';
+        return;
+      }
+      for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
+      codeEditor?.disposeAllTabModels();
+      resetEditorState();
+      markdownViewByPath = {};
+      diagnosticsByPath = {};
+      readOnlyByPath = {};
+    } catch (error) {
+      if (!stopSignal.aborted && generation === sessionResourceGeneration) editorLoadError = `Could not clear saved editor tabs: ${describeError(error)}`;
+    } finally {
+      closeActionBusy = false;
+    }
+  }
+
+  function closeAllOpenEditors(): void {
+    if (closeActionBusy) return;
+    if (editorState.openFiles.some((file) => file.dirty)) {
+      closeRequest = { kind: 'all' };
+      closeDialogOpen = true;
+      return;
+    }
+    void closeAllOpenEditorsNow();
+  }
+
+  async function confirmCloseSave(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    const request = closeRequest;
+    if (!request) return;
+    const generation = sessionResourceGeneration;
+    closeActionBusy = true;
+    if (request.kind === 'file') {
+      if (stopSignal.aborted) return;
+      const saved = await saveEditorFile(request.path);
+      if (stopSignal.aborted || generation !== sessionResourceGeneration) {
+        closeActionBusy = false;
+        return;
+      }
+      closeActionBusy = false;
+      closeDialogOpen = false;
+      closeRequest = null;
+      if (saved) closeFileNow(request.path);
+      return;
+    }
+    const dirtyPaths = editorState.openFiles.filter((file) => file.dirty).map((file) => file.path);
+    let saved = true;
+    for (const path of dirtyPaths) {
+      if (generation !== sessionResourceGeneration) {
+        saved = false;
+        break;
+      }
+      if (stopSignal.aborted) {
+        saved = false;
+        break;
+      }
+      const fileSaved = await saveEditorFile(path);
+      if (stopSignal.aborted) {
+        saved = false;
+        break;
+      }
+      if (!fileSaved) {
+        saved = false;
+        break;
+      }
+    }
+    if (generation !== sessionResourceGeneration) {
+      closeActionBusy = false;
+      return;
+    }
+    if (!saved) closeActionBusy = false;
+    closeDialogOpen = false;
+    closeRequest = null;
+    if (saved) {
+      closeActionBusy = false;
+      if (stopSignal.aborted) return;
+      await closeAllOpenEditorsNow();
+      if (stopSignal.aborted) return;
+    }
+  }
+
+  function confirmCloseDiscard(): void {
+    const request = closeRequest;
+    closeDialogOpen = false;
+    closeRequest = null;
+    if (!request) return;
+    if (request.kind === 'file') closeFileNow(request.path, true);
+    else void closeAllOpenEditorsNow();
+  }
+
+  function handleCloseDialogChange(open: boolean): void {
+    closeDialogOpen = open;
+    if (!open && !closeActionBusy) closeRequest = null;
+  }
+
+  export function requestCloseActive(): void {
+    if (editorState.activePath) closeOpenFileAt(editorState.activePath);
+  }
+
+  function openTimelineFor(file: { relativePath: string }): void {
+    const projectRoot = canonicalPath(editorState.projectRoot ?? '');
+    if (!projectRoot) return;
+    void openFileTimeline({ projectRoot, relativePath: file.relativePath });
+  }
+
+  export function captureViewStates(paths: readonly string[]): Record<string, object> {
+    return codeEditor?.captureViewStates(paths) ?? {};
+  }
+
+  /** Linked-worktree inspection tabs are live-only and never belong to SQLite. */
+  export function workspaceOwnedPaths(): string[] {
+    return editorState.openFiles
+      .filter((file) => !readOnlyByPath[file.path] && !file.previewTab)
+      .map((file) => file.path);
+  }
+
+  export function restoreViewStates(
+    files: readonly { path: string; viewState?: object }[]
+  ): void {
+    const next: Record<string, object> = {};
+    for (const file of files) {
+      if (file.viewState) next[file.path] = file.viewState;
+    }
+    restoredViewStates = next;
+  }
+
+  function consumeRestoredViewState(path: string): void {
+    delete restoredViewStates[path];
+  }
+
+  async function cancelSourceReadsForReleasedSession(stopSignal: AbortSignal): Promise<void> {
+    if (stopSignal.aborted) return;
+    try {
+      if (stopSignal.aborted) return;
+      await cancelSourceFileReadsFromTauri();
+      if (stopSignal.aborted) return;
+    } catch {
+      // Frontend teardown still releases local ownership if native cannot cancel.
+    }
+  }
+
+  export function releaseSessionResources(paths: readonly string[]): void {
+    const stopSignal = sessionStopController.signal;
+    sessionResourceGeneration += 1;
+    if (readsInFlight.size > 0) {
+      void cancelSourceReadsForReleasedSession(stopSignal);
+    }
+    sessionStopController.abort();
+    sessionStopController = new AbortController();
+    publishSourceReadDiagnostics();
+    ownerSelectionGeneration += 1;
+    inlayHintRequestCount += 1;
+    clearDiagnosticsReadyWait();
+    clearInlayReadyWait();
+    languageServerGate.releaseAll();
+    closeRequest = null;
+    closeDialogOpen = false;
+    sourceIntelligence.setActivePreview(null);
+    codeEditor?.releaseSessionResources();
+    for (const path of paths) {
+      sourceIntelligence.releasePreview(path);
+      releaseMarkdownView(path);
+    }
+    const departing = new Set(paths);
+    diagnosticsByPath = Object.fromEntries(
+      Object.entries(diagnosticsByPath).filter(([path]) => !departing.has(path))
+    );
+    readOnlyByPath = Object.fromEntries(
+      Object.entries(readOnlyByPath).filter(([path]) => !departing.has(path))
+    );
+    restoredViewStates = {};
+    resetEditorState();
   }
 
   function retryRead(path: string): void {
+    if (closeActionBusy || !rootAvailable) return;
     void readFileIntoEditor(recordForPath(path));
   }
 
-  /** Monaco followed a definition or a reference into another file. */
+  /** The code editor followed a definition or a reference into another file. */
   function navigateToExternalSource(request: {
     path: string;
     line: number;
     column: number;
   }): void {
+    if (activeFileReadOnly) return;
     openPath(request.path, request.line);
   }
 
@@ -569,56 +1425,101 @@
     setEditorSymbols(symbols);
   }
 
-  async function runDotnetWorkspaceAction(
-    action: DotnetWorkspaceAction,
-    documentUri?: string
-  ): Promise<void> {
+  function runDotnetWorkspace(action: DotnetWorkspaceAction): void | Promise<void> {
     const root = editorState.projectRoot;
-    if (!root) throw new Error('No workspace is active.');
-    if (documentUri) {
-      const documentPath = decodeURIComponent(new URL(documentUri).pathname);
-      const normalizedRoot = root.replaceAll('\\', '/').replace(/\/+$/, '');
-      const normalizedDocument = documentPath.replaceAll('\\', '/');
-      if (
-        normalizedDocument !== normalizedRoot &&
-        !normalizedDocument.startsWith(`${normalizedRoot}/`)
-      ) {
-        throw new Error('The CodeLens document is outside the active workspace.');
-      }
-    }
-    if (!onStartWorkspaceCommand) {
-      throw new Error('The shell has not wired workspace commands to terminal sessions.');
-    }
+    if (!root || activeFileReadOnly || !onStartWorkspaceCommand) return;
+    return onStartWorkspaceCommand(dotnetWorkspaceSessionRequest(action, root));
+  }
 
-    const ownedId = await onStartWorkspaceCommand(dotnetWorkspaceSessionRequest(action, root));
-    if (!ownedId) throw new Error(`No terminal opened for .NET ${action}.`);
+  /**
+   * Fetch and start the code editor for the file on screen.
+   *
+   * This is the only route to `ensureCodeEditor` other than the language switch,
+   * and it is deliberately tied to the panel being in front rather than to a
+   * file arriving in the strip. Even the lightweight editor is kept off the
+   * startup path when a restored file is not visible.
+   */
+  $effect(() => {
+    if (!showing || !editorState.activePath) return;
+    const entry = activeEditorFile();
+    if (entry && needsRead(entry)) void readFileIntoEditor(recordForPath(entry.path));
+    void ensureCodeEditor();
+  });
+
+  // Keep the selected tab on screen when opening, selecting, or restoring files.
+  $effect(() => {
+    const activePath = editorState.activePath;
+    const openFiles = editorState.openFiles;
+    if (!activePath || openFiles.length === 0 || !fileStrip) return;
+    fileStrip
+      .querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  });
+
+  /**
+   * Keep the top strip's copy of the language-server controls in step.
+   *
+   * It calls nothing: it copies state the panel already holds into the shared
+   * module the top strip reads, so the chip and the switch can sit beside the
+   * run button while this panel stays their only owner. The status pipeline is
+   * not run twice.
+   */
+  $effect(() => {
+    publishLanguageIntelligenceBar({
+      language: activeFile?.language ?? null,
+      status: languageServerStatus,
+      fullMode,
+      busy: languageIntelligenceBusy,
+      hasProject: Boolean(editorState.projectRoot) && !activeFileReadOnly,
+      title: languageIntelligenceTitle
+    });
+  });
+
+  async function hydrateLanguageIntelligenceChoicesForMount(): Promise<void> {
+    const stopSignal = sessionStopController.signal;
+    if (stopSignal.aborted) return;
+    try {
+      if (stopSignal.aborted) return;
+      await hydrateLanguageIntelligenceChoices();
+      if (stopSignal.aborted) return;
+    } catch {
+      // The switch can still show its default choices if hydration fails.
+    }
   }
 
   onMount(() => {
+    void hydrateLanguageIntelligenceChoicesForMount();
+
     // Subscribing costs nothing and loads nothing; it just means a click in the
     // explorer made before this panel was ever shown still opens its file.
     const unsubscribe = onOpenFile(handleOpenFileRequest);
 
+    // The switch in the top strip is this panel's own; flipping it there runs
+    // exactly the same code as flipping it here once did.
+    setLanguageIntelligenceSwitch((enabled) => void switchLanguageIntelligence(enabled));
+
     // Listening for status updates is likewise free, and it is the only way the
     // chip ever changes after a file opens — nothing here polls.
-    let stopStatusUpdates: (() => void) | null = null;
-    let panelClosed = false;
-    void listenForLanguageServerStatus().then((stop) => {
-      if (panelClosed) stop?.();
-      else stopStatusUpdates = stop;
-    });
+    const unsubscribeStatus = sourceIntelligence.subscribeToLanguageServerStatus(
+      handleLanguageServerStatus
+    );
+    const unsubscribeReferenceCounts = sourceIntelligence.subscribeToReferenceCountUpdates(
+      handleReferenceCountUpdate
+    );
 
     return () => {
       destroyed = true;
-      panelClosed = true;
-      if (diagnosticsTimer !== null) clearTimeout(diagnosticsTimer);
-      diagnosticsTimer = null;
-      stopStatusUpdates?.();
-      stopNativeCsharpActions?.();
-      stopNativeCsharpDiagnostics?.();
+      sessionStopController.abort();
+      unsubscribeReferenceCounts();
+      unsubscribeStatus();
       // Anything still waiting on the server has nowhere to go now.
+      clearDiagnosticsReadyWait();
+      clearInlayReadyWait();
       languageServerGate.releaseAll();
+      // With no panel there is nothing truthful to show in the top strip.
+      clearLanguageIntelligenceBar();
       unsubscribe();
+      resetEditorState();
     };
   });
 </script>
@@ -631,46 +1532,97 @@
     </div>
   {:else}
     <div class="editor-header">
-      <div class="file-strip" role="tablist" aria-label="Open files">
+      <div bind:this={fileStrip} class="file-strip" role="tablist" aria-label="Open files">
         {#each editorState.openFiles as file (file.path)}
-          <div class="file-chip" class:active={file.path === editorState.activePath}>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={file.path === editorState.activePath}
-              class="file-name"
-              title={file.relativePath}
-              onclick={() => selectOpenFile(file.path)}
-            >
-              <FileIcon fileName={file.fileName} size={13} />
-              {file.fileName}
-              {#if file.loading}<span class="chip-note">reading</span>{/if}
-              {#if file.error}<span class="chip-note error">failed</span>{/if}
-            </button>
-            <button
-              type="button"
-              class="file-close"
-              aria-label={`Close ${file.fileName}`}
-              title={`Close ${file.fileName}`}
-              onclick={() => closeOpenFileAt(file.path)}
-            >
-              ×
-            </button>
-          </div>
+          <ContextMenu.Root>
+            <ContextMenu.Trigger>
+              {#snippet child({ props })}
+                <div {...props} class="file-chip" class:active={file.path === editorState.activePath}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={file.path === editorState.activePath}
+                    aria-label={readOnlyByPath[file.path]
+                      ? `${file.fileName} (read-only: ${readOnlyByPath[file.path]})`
+                      : file.fileName}
+                    class="file-name"
+                    title={readOnlyByPath[file.path]
+                      ? `Read-only inspection in ${readOnlyByPath[file.path]}\n${file.relativePath}`
+                      : file.relativePath}
+                    onclick={() => selectOpenFile(file.path)}
+                  >
+                    <FileIcon fileName={file.fileName} size={13} />
+                    {#if file.previewTab}<em>{file.fileName}</em>{:else}{file.fileName}{/if}
+                    {#if readOnlyByPath[file.path]}<span class="chip-note">read-only</span>{/if}
+                    {#if file.loading}<span class="chip-note">reading</span>{/if}
+                    {#if file.error}<span class="chip-note error">failed</span>{/if}
+                    {#if file.conflict}<span class="chip-note error">conflict</span>{/if}
+                  </button>
+                  <IconButton
+                    label={`Close ${file.fileName}`}
+                    size="sm"
+                    side="bottom"
+                    class="file-close text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
+                    onclick={() => closeOpenFileAt(file.path)}
+                  >
+                    <X class="size-3.5" aria-hidden="true" />
+                  </IconButton>
+                </div>
+              {/snippet}
+            </ContextMenu.Trigger>
+            <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${file.fileName}`}>
+              {#if file.previewTab}
+                <ContextMenu.Item
+                  onSelect={() => pinEditorFile(file.path)}
+                >Pin Tab</ContextMenu.Item>
+              {/if}
+              <ContextMenu.Item
+                onSelect={() => closeOpenFileAt(file.path)}
+              >Close</ContextMenu.Item>
+              <ContextMenu.Item
+                disabled={!editorState.openFiles.some((candidate) => candidate.path !== file.path && !candidate.dirty)}
+                onSelect={() => closeOtherOpenFiles(file.path)}
+              >Close other clean files</ContextMenu.Item>
+              <ContextMenu.Item
+                disabled={!editorState.openFiles.some((candidate) => !candidate.dirty)}
+                onSelect={closeSavedOpenFiles}
+              >Close saved files</ContextMenu.Item>
+              <ContextMenu.Item
+                onSelect={() => openTimelineFor(file)}
+              >File Timeline</ContextMenu.Item>
+            </ContextMenu.Content>
+          </ContextMenu.Root>
         {/each}
       </div>
 
-      <!-- Nothing renders here in a browser tab or on an older desktop build:
-           there is no language server to report on, so there is no chip. -->
-      <LanguageServerStatusChip
-        language={activeFile?.language ?? null}
-        status={languageServerStatus}
-      />
+      <!-- Only the open file's own controls belong here. The project's
+           language-server chip and switch sit in the strip along the top of the
+           shell, in `LanguageIntelligenceControls.svelte`. -->
+      <div class="editor-controls">
+        <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
+          <X class="size-3.5" aria-hidden="true" />
+        </IconButton>
+        <!-- Markdown reads two ways, so the file says which one it is on. Source
+             is the ordinary editor; Preview is the same document rendered. -->
+        {#if activeFileIsMarkdown}
+          <span data-testid="markdown-view-toggle" class="shrink-0">
+            <SegmentedControl
+              size="sm"
+              items={MARKDOWN_VIEW_ITEMS}
+              value={markdownView}
+              aria-label="Markdown view"
+              onValueChange={(value) => setMarkdownView(value as MarkdownView)}
+            />
+          </span>
+        {/if}
+      </div>
     </div>
 
     <div class="editor-canvas">
       {#if editorLoadError}
         <p class="canvas-message error">{editorLoadError}</p>
+      {:else if activeFile?.error && activeFileMissing}
+        <p class="canvas-message">File no longer exists at {activeFile.path}</p>
       {:else if activeFile?.error}
         <div class="canvas-message error">
           <p>{activeFile.error}</p>
@@ -682,28 +1634,41 @@
             Try again
           </button>
         </div>
-      {:else if activeFile?.preview}
+      {:else if !rootAvailable}
+        <p class="canvas-message">Checkout/Worktree deleted.</p>
+      {:else if showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
+        <SourceMarkdownPreview
+          content={activeFile.draftContent ?? activeFile.preview.content}
+          fileName={activeFile.fileName}
+          relativePath={activeFile.relativePath}
+          dirty={activeFile.dirty ?? false}
+        />
+      {:else if activeFile && activePreview}
         {#if CodeEditor}
-          {#key nativeCsharpActive}
-            <CodeEditor
-              {...sourceIntelligence.callbacks}
-              onInlayHintLookup={lookupInlayHintsWhenServerCanAnswer}
-              preview={activeFile.preview}
-              content={activeFile.draftContent ?? activeFile.preview.content}
-              editable={true}
-              loading={activeFile.loading}
-              targetLine={activeFile.targetLine}
-              targetLineRequestId={activeFile.targetLineRequestId}
-              externalDiagnostics={diagnosticsByPath[activeFile.path] ?? []}
-              nativeCsharpLanguageClient={nativeCsharpActive}
-              onExternalNavigation={navigateToExternalSource}
-              onDotnetBuildRequest={() => runDotnetWorkspaceAction('build')}
-              onDotnetTestRequest={() => runDotnetWorkspaceAction('test')}
-              onContentChange={updateActiveDraft}
-              onSaveRequest={() => void saveActiveFile()}
-              onSymbolsChange={handleSymbolsChange}
-            />
-          {/key}
+          <CodeEditor
+            bind:this={codeEditor}
+            {...sourceIntelligence.callbacks}
+            onInlayHintLookup={activeFileReadOnly ? undefined : lookupInlayHintsWhenServerCanAnswer}
+            onCodeActionLookup={fullMode && !activeFileReadOnly ? lookupCodeActions : undefined}
+            onWorkspaceEditAction={fullMode && !activeFileReadOnly ? applyExternalWorkspaceEdits : undefined}
+            preview={activePreview}
+            content={activeFile.draftContent ?? activeFile.preview?.content ?? ''}
+            editable={rootAvailable && !activeFileReadOnly && !closeActionBusy}
+            visible={showing}
+            languageServerRoot={fullMode ? editorState.projectRoot : null}
+            loading={activeFile.loading}
+            targetLine={activeFile.targetLine}
+            targetLineRequestId={activeFile.targetLineRequestId}
+            externalDiagnostics={activeFileReadOnly ? NO_DIAGNOSTICS : diagnosticsByPath[activeFile.path] ?? NO_DIAGNOSTICS}
+            {restoredViewStates}
+            onExternalNavigation={activeFileReadOnly ? undefined : navigateToExternalSource}
+            onContentChange={activeFileReadOnly ? undefined : updateActiveDraft}
+            onRestoredViewStateConsumed={consumeRestoredViewState}
+            onSaveRequest={() => void saveActiveFile()}
+            onSymbolsChange={handleSymbolsChange}
+            onDotnetBuildRequest={() => runDotnetWorkspace('build')}
+            onDotnetTestRequest={() => runDotnetWorkspace('test')}
+          />
         {:else}
           <p class="canvas-message">Starting the code editor…</p>
         {/if}
@@ -714,14 +1679,18 @@
 
     <div class="editor-status">
       <span class="status-path">{activeFile?.relativePath ?? ''}</span>
-      <span class="status-detail">
+      <span class="status-detail" title={activeFile?.conflict ?? undefined}>
         {activeFile?.language ?? ''}
         {#if editorState.symbols.length > 0}
           · {editorState.symbols.length}
           {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
         {/if}
-        {#if activeFile?.saving}
+        {#if activeFileReadOnly}
+          · read-only
+        {:else if activeFile?.saving}
           · saving
+        {:else if activeFile?.conflict}
+          · conflict
         {:else if activeFile?.dirty}
           · unsaved
         {:else}
@@ -732,14 +1701,47 @@
   {/if}
 </div>
 
+{#if closeRequest}
+  <AlertDialog.Root open={closeDialogOpen} onOpenChange={handleCloseDialogChange}>
+    <AlertDialog.Content>
+      <AlertDialog.Header>
+        <AlertDialog.Title>Unsaved changes</AlertDialog.Title>
+        <AlertDialog.Description>
+          {closeRequest.kind === 'all'
+            ? 'Some open files have unsaved drafts. Save all before closing them?'
+            : 'This file has an unsaved draft. Save it before closing?'}
+        </AlertDialog.Description>
+      </AlertDialog.Header>
+      <AlertDialog.Footer>
+        <AlertDialog.Cancel disabled={closeActionBusy}>Cancel</AlertDialog.Cancel>
+        <AlertDialog.Action
+          disabled={closeActionBusy || !rootAvailable}
+          onclick={() => void confirmCloseSave()}
+        >{closeRequest.kind === 'all' ? 'Save All' : 'Save'}</AlertDialog.Action>
+        <AlertDialog.Action
+          variant="destructive"
+          disabled={closeActionBusy}
+          onclick={confirmCloseDiscard}
+        >{closeRequest.kind === 'all' ? 'Discard All' : 'Discard'}</AlertDialog.Action>
+      </AlertDialog.Footer>
+    </AlertDialog.Content>
+  </AlertDialog.Root>
+{/if}
+
 <style>
   .editor-panel {
     display: flex;
     flex-direction: column;
     height: 100%;
     width: 100%;
+    min-width: 0;
     overflow: hidden;
-    background: var(--color-bg);
+    /* No fill of its own. This is a panel body in normal flow covering nothing,
+       and filling it with the backdrop colour painted a black rectangle over
+       the card underneath — which carries the surface colour and the light
+       gradient down its top edge. Most visible with no file open, where the
+       body IS the whole panel. The header and status rows still state their own
+       surface, because those are bands rather than the body. */
     color: var(--color-text);
     font-family: ui-sans-serif, -apple-system, system-ui, sans-serif;
   }
@@ -765,18 +1767,28 @@
     font-size: 12px;
   }
 
-  /* The strip of open files and, pinned to the right, what the language server
-   * is doing. The strip scrolls when there are many files; the chip does not go
-   * with it, so it stays readable however many tabs are open. */
+  /* The strip of open files and, pinned to the right, the controls that belong
+   * to the open file. The strip scrolls when there are many files; those
+   * controls do not go with it, so they stay reachable however many tabs are
+   * open.
+   *
+   * The height is stated rather than left to the tallest child because the
+   * centre pane's pill tabs are placed directly beneath this row and read the
+   * same value. It is what the row already measured — a 28px close button
+   * between 3px of padding, over a hairline — so nothing moves. */
   .editor-header {
     display: flex;
     align-items: center;
     gap: 8px;
     flex: 0 0 auto;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    height: var(--editor-tab-row-height);
+    overflow: hidden;
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
     padding: 3px 8px 3px 4px;
-    min-width: 0;
   }
 
   .file-strip {
@@ -786,12 +1798,24 @@
     flex: 1 1 auto;
     min-width: 0;
     overflow-x: auto;
+    overflow-y: hidden;
     scrollbar-width: thin;
+    scrollbar-color: var(--color-border-strong) transparent;
+  }
+
+  .file-strip::-webkit-scrollbar {
+    height: 4px;
+  }
+
+  .file-strip::-webkit-scrollbar-thumb {
+    border-radius: 2px;
+    background: var(--color-border-strong);
   }
 
   .file-chip {
     display: flex;
     align-items: center;
+    flex: 0 0 auto;
     border: 1px solid transparent;
     border-radius: 5px;
     background: transparent;
@@ -802,8 +1826,7 @@
     border-color: var(--color-border);
   }
 
-  .file-name,
-  .file-close {
+  .file-name {
     background: transparent;
     border: none;
     color: var(--color-text-2);
@@ -822,19 +1845,23 @@
     gap: 5px;
   }
 
-  .file-close {
-    padding: 3px 7px 3px 3px;
-    font-size: 13px;
-    line-height: 1;
-  }
-
   .file-chip.active .file-name {
     color: var(--color-text);
   }
 
-  .file-name:hover,
-  .file-close:hover {
+  .file-name:hover {
     color: var(--color-text);
+  }
+
+  /* The complete right edge is one non-shrinking sibling of the scrollable
+   * file strip. Tabs can move underneath their own clip, but these controls
+   * retain their full width and never enter that scrolling region. */
+  .editor-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    min-width: max-content;
   }
 
   .chip-note {
@@ -877,19 +1904,19 @@
   }
 
   .retry {
-    background: transparent;
-    border: 1px solid var(--color-border);
+    background: var(--color-elevated);
+    border: 0;
     border-radius: 5px;
     color: var(--color-text-2);
     cursor: pointer;
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     padding: 2px 7px;
   }
 
   .retry:hover {
     color: var(--color-text);
-    border-color: var(--color-text-3);
+    background: var(--color-hover);
   }
 
   .editor-status {
@@ -901,7 +1928,7 @@
     background: var(--color-surface);
     border-top: 1px solid var(--color-border);
     color: var(--color-text-2);
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     padding: 3px 8px;
   }

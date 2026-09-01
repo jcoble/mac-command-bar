@@ -1,144 +1,213 @@
 /**
- * explorerService.ts — the file explorer's ONLY backend path.
+ * Lazy directory loader for the /next Files panel.
  *
- * One job: ask the backend for the list of source files under a project root
- * and put the answer in `explorerStore`. Imperative by rule — every call is made
- * from a user action (opening the panel, pressing Refresh), never from an
- * `$effect`, and every call is counted with `countInvoke` immediately before it.
- *
- * Nothing here runs until `activate(root)` is called. That is the constitution's
- * "nothing loads at launch": opening the shell must add zero backend calls from
- * this lane until the file panel is actually shown.
- *
- * Two behaviours are load-bearing:
- *
- * 1. **A superseded scan is cancelled, not just ignored.** Each scan carries a
- *    `scanId`. When a new scan starts, the previous one's id is passed to
- *    `cancel_source_scan` so the Rust directory walk actually stops. Discarding
- *    only the result (what the old shell did before commit cd2f525) left a
- *    second full walk running in parallel and doubled the time the first list
- *    took to appear.
- * 2. **No cache.** The old shell cached scans in localStorage with no size cap;
- *    on a large repository the write failed and the cache quietly stopped
- *    working. This wave scans on activation and on an explicit refresh only,
- *    which is also why the panel says the list is not watched for changes.
+ * Activation lists only the project root. A folder click lists only that
+ * folder, and collapsing it releases its descendants. There is no recursive
+ * project scan or cross-project explorer cache in this path.
  */
 import {
   cancelSourceScanFromTauri,
-  createSourceScanId,
-  defaultSourceScanLimit,
   isNativeTauriRuntime,
-  listSourceFilesFromTauri
+  listSourceDirectoryFromTauri
 } from '../../tauriSource.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
-  forgetProjectSourceRecords,
-  setProjectSourceRecords
-} from '../projectSourceIndex.ts';
-import {
-  applyScanResult,
+  applyDirectoryResult,
   beginScan,
+  canonicalPath,
+  discardDirectory,
   endScan,
   explorer,
+  explorerScanGeneration,
   failScan,
-  resetExplorer
+  loadedExplorerDirectories,
+  loadedExplorerDirectoryDepth,
+  isExplorerDirectoryPresent,
+  isExplorerPathAtOrBelow,
+  markCheckoutDeleted,
+  resetExplorer,
+  setExplorerError
 } from './explorerStore.svelte.ts';
 
-/** Files one scan will return at most. Past it the backend reports `truncated`
- * and the panel says so. */
-export const EXPLORER_SCAN_LIMIT = defaultSourceScanLimit;
-
-/** Shown when neither the app's own file scanner nor the dev-server bridge
- * answered — there is nothing to list and nothing to retry usefully. */
 export const SCANNER_UNAVAILABLE_MESSAGE =
-  'The file scanner is not available here. Open this window in the CommandBar app to browse project files.';
+  'The file browser is not available here. Open this window in the CommandBar app to browse project files.';
 
-/** Bumped by every scan start and by Stop. A scan whose number no longer
- * matches has been superseded and must not write anything. */
-let scanGeneration = 0;
+let nextRequestId = 0;
+const directoryRequests = new Map<string, string>();
+let activeExplorerSignal: AbortSignal | undefined;
+
+function cancelDirectoryRequests(atOrBelow?: string): void {
+  for (const [path, scanId] of directoryRequests) {
+    if (atOrBelow && !isExplorerPathAtOrBelow(path, atOrBelow)) continue;
+    directoryRequests.delete(path);
+    void cancelSourceScanFromTauri(scanId);
+  }
+}
+
+function isCurrentDirectoryRequest(
+  directory: string,
+  root: string,
+  generation: number,
+  requestId: string
+): boolean {
+  return directoryRequests.get(directory) === requestId &&
+    explorerScanGeneration() === generation &&
+    canonicalPath(explorer.root ?? '') === root &&
+    isExplorerDirectoryPresent(directory);
+}
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Stop a backend directory walk. Off the desktop app there is no walk to stop
- * (`cancelSourceScanFromTauri` returns immediately without calling anything),
- * so nothing is counted either.
- */
-function cancelScan(scanId: string): void {
-  if (!scanId.trim() || !isNativeTauriRuntime()) return;
-  countInvoke('cancel_source_scan');
-  void cancelSourceScanFromTauri(scanId).catch(() => {
-    // Best effort: the result of the walk we abandoned is discarded anyway.
-  });
+function checkoutWasDeleted(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (normalized.includes('could not read source root metadata:') ||
+    normalized.includes('could not read source directory metadata:')) &&
+    (normalized.includes('no such file or directory') || normalized.includes('os error 2'));
 }
 
-/**
- * List the files under `root`, replacing whatever is on screen.
- *
- * Exported for the panel's Refresh button and for a future "point the explorer
- * somewhere else" caller. `activate` is the one the integrator calls.
- */
-export async function scanRoot(root: string): Promise<void> {
-  const target = root.trim();
-  if (!target) return;
-
-  const generation = (scanGeneration += 1);
-  const scanId = createSourceScanId();
-  // Supersede the previous walk BEFORE starting a new one — see the note above.
-  const supersededScanId = explorer.activeScanId;
-  if (supersededScanId && supersededScanId !== scanId) cancelScan(supersededScanId);
-  beginScan(target, scanId);
+export async function loadDirectory(
+  directory: string,
+  depth: number,
+  signal?: AbortSignal
+): Promise<boolean> {
+  const ownerSignal = signal ?? activeExplorerSignal;
+  if (ownerSignal?.aborted) return false;
+  const root = canonicalPath(explorer.root ?? '');
+  const target = canonicalPath(directory);
+  if (!root || !target) return false;
+  const generation = explorerScanGeneration();
+  const previousRequestId = directoryRequests.get(target);
+  if (previousRequestId) void cancelSourceScanFromTauri(previousRequestId);
+  const requestId = `directory:${++nextRequestId}`;
+  directoryRequests.set(target, requestId);
+  setExplorerError(null);
 
   try {
-    countInvoke(isNativeTauriRuntime() ? 'list_source_files' : 'bridge:list-source-files');
-    const result = await listSourceFilesFromTauri(target, '', EXPLORER_SCAN_LIMIT, scanId);
-    // A newer scan (or Stop) took over while we waited: it owns the state now.
-    if (generation !== scanGeneration) return;
-
-    if (!result) {
-      forgetProjectSourceRecords(target);
-      failScan(SCANNER_UNAVAILABLE_MESSAGE);
-      return;
+    countInvoke(isNativeTauriRuntime() ? 'list_source_directory' : 'bridge:list-source-directory');
+    const entries = await listSourceDirectoryFromTauri(
+      root,
+      target,
+      explorer.includeExcluded,
+      requestId,
+      ownerSignal
+    );
+    if (ownerSignal?.aborted) return false;
+    if (!isCurrentDirectoryRequest(target, root, generation, requestId)) return false;
+    if (!entries) {
+      if (target === root) failScan(SCANNER_UNAVAILABLE_MESSAGE);
+      else setExplorerError(SCANNER_UNAVAILABLE_MESSAGE);
+      return false;
     }
-    setProjectSourceRecords(target, result.records);
-    applyScanResult(result.records, result.limit, result.truncated);
+    applyDirectoryResult(target, depth, entries);
+    return true;
   } catch (error) {
-    if (generation !== scanGeneration) return;
-    forgetProjectSourceRecords(target);
-    failScan(`Could not list the files in this project: ${describeError(error)}`);
+    if (!isCurrentDirectoryRequest(target, root, generation, requestId)) return false;
+    const detail = describeError(error);
+    const message = `Could not list this folder: ${detail}`;
+    if (target === root && checkoutWasDeleted(detail)) {
+      failScan('This session’s checkout/worktree no longer exists.', 'checkout-deleted');
+    } else if (target === root) failScan(message);
+    else setExplorerError(message);
+    return false;
   } finally {
-    if (generation === scanGeneration) endScan();
+    if (directoryRequests.get(target) === requestId) directoryRequests.delete(target);
   }
 }
 
-/**
- * First user activation of the file panel: list the files under `root`.
- *
- * Idempotent — calling it again with the same root does nothing, so wiring it
- * to "every time this tab becomes active" is safe. A different root clears the
- * previous project's tree and scans afresh. A root whose last scan failed is
- * retried, so re-opening the panel is a way to try again.
- */
-export function activate(root: string): void {
-  const target = root.trim();
+/** Load the root and each missing directory on the path to a file, in order. */
+export async function revealExplorerPath(path: string, signal?: AbortSignal): Promise<string[]> {
+  const ownerSignal = signal ?? activeExplorerSignal;
+  if (ownerSignal?.aborted) return [];
+  const root = canonicalPath(explorer.root ?? '');
+  const target = canonicalPath(path);
+  if (!root || !target || !isExplorerPathAtOrBelow(target, root) || target === root) return [];
+  const generation = explorerScanGeneration();
+
+  const relative = target.slice(root.length).replace(/^\/+/, '');
+  const components = relative.split('/').filter(Boolean).slice(0, -1);
+  const directories: string[] = [];
+  let directory = root;
+  for (const component of components) {
+    directory = `${directory}/${component}`;
+    directories.push(directory);
+  }
+
+  const loaded: string[] = [];
+  for (const [index, candidate] of [root, ...directories].entries()) {
+    if (ownerSignal?.aborted) break;
+    if (generation !== explorerScanGeneration() || canonicalPath(explorer.root ?? '') !== root) break;
+    const depth = index;
+    if (loadedExplorerDirectoryDepth(candidate) === null && !(await loadDirectory(candidate, depth, ownerSignal))) {
+      break;
+    }
+    if (candidate !== root) loaded.push(candidate);
+  }
+  return loaded;
+}
+
+export function unloadDirectory(directory: string): void {
+  const target = canonicalPath(directory);
+  cancelDirectoryRequests(target);
+  discardDirectory(target);
+}
+
+export async function scanRoot(root: string, signal?: AbortSignal): Promise<void> {
+  const ownerSignal = signal ?? activeExplorerSignal;
+  if (ownerSignal?.aborted) return;
+  const target = canonicalPath(root);
   if (!target) return;
+  cancelDirectoryRequests();
+  resetExplorer();
+  beginScan(target);
+  const generation = explorerScanGeneration();
+  try {
+    await loadDirectory(target, 0, ownerSignal);
+  } finally {
+    if (explorer.root === target && explorerScanGeneration() === generation) endScan();
+  }
+}
+
+export function activate(
+  root: string | null,
+  checkoutDeleted = false,
+  signal?: AbortSignal
+): void {
+  const target = canonicalPath(root ?? '');
+  activeExplorerSignal = signal;
+  if (!target || signal?.aborted) {
+    cancelDirectoryRequests();
+    if (checkoutDeleted) markCheckoutDeleted();
+    else resetExplorer();
+    return;
+  }
   if (explorer.activated && explorer.root === target && explorer.error === null) return;
-  if (explorer.root !== target) resetExplorer();
-  void scanRoot(target);
+  void scanRoot(target, signal);
 }
 
-/** Re-list the current project. No-op before the first activation. */
 export function refresh(): void {
-  if (!explorer.root) return;
-  void scanRoot(explorer.root);
+  if (activeExplorerSignal?.aborted) return;
+  const directories = loadedExplorerDirectories();
+  if (directories.length === 0 && explorer.root) {
+    void loadDirectory(explorer.root, 0, activeExplorerSignal);
+    return;
+  }
+  for (const directory of directories) void loadDirectory(directory.path, directory.depth, activeExplorerSignal);
 }
 
-/** Abandon the running scan: stop the backend walk and drop its result. */
+export function refreshChangedPath(path: string): void {
+  const root = canonicalPath(explorer.root ?? '');
+  if (!root) return;
+  const target = canonicalPath(path);
+  const cut = target.lastIndexOf('/');
+  const parent = cut <= 0 ? root : target.slice(0, cut);
+  const depth = loadedExplorerDirectoryDepth(parent);
+  if (depth !== null) void loadDirectory(parent, depth);
+}
+
 export function stopScan(): void {
-  if (!explorer.scanning) return;
-  cancelScan(explorer.activeScanId);
-  scanGeneration += 1;
+  cancelDirectoryRequests();
+  activeExplorerSignal = undefined;
   endScan();
 }

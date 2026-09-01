@@ -101,14 +101,15 @@ assert.equal(plan.snapshot.selectedLine, 23);
 assert.deepEqual(plan.snapshot.openPaths, [expectedSelectedPath, expectedLibPath]);
 assert.equal(plan.snapshot.resumeCommand, 'codex resume 019c-session');
 assert.equal(plan.snapshot.browserUrl, 'http://localhost:5177/source');
-assert.equal(plan.panelSelection.activePanelByGroup.bottom, 'browser');
+assert.equal(plan.panelSelection.activePanelByGroup.center, 'browser');
+assert.equal(plan.panelSelection.activePanelByGroup.bottom, undefined);
 assert.deepEqual(plan.panelSelection.visiblePanelIDs, [
   'activity',
   'editor',
-  'context',
-  'insights',
   'terminal',
-  'browser'
+  'browser',
+  'context',
+  'insights'
 ]);
 assert.equal(plan.panelSelection.activeContextCardID, 'agents');
 assert.equal(plan.panelSelection.sourceIntelligencePanel, 'git');
@@ -130,7 +131,7 @@ assert.ok(
   'snapshot plan should summarize remembered tab count'
 );
 assert.ok(
-  plan.summaryLines.includes('Selected panels: Activity, Editor, Context, Insights, Browser'),
+  plan.summaryLines.includes('Selected panels: Activity, Browser, Context, Insights'),
   'snapshot plan should summarize active selected panels'
 );
 

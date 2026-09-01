@@ -24,6 +24,9 @@ pub(crate) async fn run_provider(
         AgentConversationProvider::Claude => {
             run_claude(&registry, &app, &connection, &cwd, commands).await
         }
+        AgentConversationProvider::Antigravity => {
+            Err("Antigravity is handled by the ACP runtime".to_string())
+        }
     };
     if let Err(message) = result {
         emit(
@@ -135,7 +138,7 @@ async fn run_codex(
                 normalize_codex(registry, app, c, &value, &mut turn_id);
             },
             line = process.stderr.next_line() => {
-                if let Ok(Some(line)) = line { eprintln!("mcb structured codex [{}]: {}", c.owned_id, line); }
+                if let Ok(Some(line)) = line { crate::debug_log::stderr_log!("mcb structured codex [{}]: {}", c.owned_id, line); }
             }
         }
     }
@@ -203,18 +206,21 @@ fn normalize_codex(
         "item/completed"
             if p.pointer("/item/type").and_then(Value::as_str) == Some("agentMessage") =>
         {
+            let text = p
+                .pointer("/item/text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&text);
             emit(
                 registry,
                 app,
                 c,
                 AgentConversationPayload::AssistantMessage {
                     item_id: item_id(),
-                    text: p
-                        .pointer("/item/text")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
+                    text,
                     completed: true,
+                    blocks: Some(blocks),
                 },
             )
         }
@@ -300,6 +306,7 @@ async fn run_claude(
                         item_id: user_item_id,
                         text: text.clone(),
                         completed: true,
+                        attachment_ids: Vec::new(),
                     });
                     write_json(&mut process,json!({"type":"user","message":{"role":"user","content":text}})).await?
                 },
@@ -308,7 +315,7 @@ async fn run_claude(
                 Some(ProviderCommand::Close)|None=>{process.stop().await;return Ok(());}
             },
             line=process.stdout.next_line()=>{ let Some(line)=line.map_err(|e|e.to_string())? else{return Err("Claude exited".into())}; if let Ok(v)=serde_json::from_str::<Value>(&line){normalize_claude(registry,app,c,&v,&mut assistant_item_id,&mut assistant_text);} },
-            line=process.stderr.next_line()=>{if let Ok(Some(line))=line{eprintln!("mcb structured claude [{}]: {}",c.owned_id,line);}}
+            line=process.stderr.next_line()=>{if let Ok(Some(line))=line{crate::debug_log::stderr_log!("mcb structured claude [{}]: {}",c.owned_id,line);}}
         }
     }
 }
@@ -425,6 +432,7 @@ fn normalize_claude(
                     .map(str::to_string)
                     .or_else(|| assistant_item_id.clone())
                     .unwrap_or_else(|| format!("assistant-{}", c.generation));
+                let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&completed_text);
                 emit(
                     registry,
                     app,
@@ -433,6 +441,7 @@ fn normalize_claude(
                         item_id,
                         text: completed_text,
                         completed: true,
+                        blocks: Some(blocks),
                     },
                 );
             }

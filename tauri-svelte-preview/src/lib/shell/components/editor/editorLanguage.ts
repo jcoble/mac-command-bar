@@ -15,10 +15,9 @@
  * opening exactly as it did.
  *
  * HONEST BY CONSTRUCTION
- * Every language named here is one the editor actually loads rules for (see the
- * list of grammars imported in `MonacoSourceEditor.svelte`). Claiming a language
- * the editor cannot colour would be worse than plain text: the file would be
- * labelled SQL, or Go, and still show up grey with no hint as to why.
+ * The source record keeps the precise language name even when CodeMirror has
+ * no dedicated parser for it. `codeMirrorLanguage.ts` is the single place that
+ * decides which of those names has syntax colouring.
  *
  * PURE: no Svelte, no DOM, no backend — covered by
  * `scripts/explorerFileIcons.test.mjs`.

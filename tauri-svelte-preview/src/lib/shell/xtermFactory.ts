@@ -6,10 +6,10 @@
  * {@link loadXtermModules}; {@link makeTerminalView} then only constructs.
  *
  * WebGL is treated as a per-view RESOURCE, not a setting: a page may only hold
- * ~16 live WebGL contexts, and this shell keeps N terminals alive while showing
- * one. So the addon is acquired on `setVisible(true)` and released on
- * `setVisible(false)` — the canvas renderer keeps the hidden view correct (and
- * still receiving output), it is just slower, which nobody can see.
+ * ~16 live WebGL contexts. So the addon is acquired on `setVisible(true)` and
+ * released on `setVisible(false)` — a hidden view that is kept (a finished
+ * session's, see `liveConversationTerminals`) falls back to the canvas
+ * renderer, which is slower and nobody can see it.
  *
  * The terminal options below are copied from the proven old-shell config
  * (`src/routes/+page.svelte`), so /next behaves identically to the terminal
@@ -20,15 +20,16 @@
  */
 import type { TerminalView } from '../liveConversationTerminals';
 import { defaultSettings, settings } from '../settingsStore.svelte';
+import { addXtermView } from './resourceDiagnostics.svelte.ts';
 import { currentTheme, registerTerminalApplier } from './themes/themeService';
 
 /**
  * Every terminal this factory has built and not yet disposed.
  *
- * The shell keeps one terminal per owned session alive at all times and shows
- * one of them, so a theme switch has to walk all of them — repainting only the
- * visible one leaves every other session wearing the old colours until it is
- * looked at.
+ * Usually that is the visible one plus any finished session whose view is kept
+ * so its last output stays readable. A theme switch has to walk all of them —
+ * repainting only the visible one leaves a kept view wearing the old colours
+ * until it is looked at.
  */
 const liveTerminals = new Set<import('@xterm/xterm').Terminal>();
 
@@ -55,7 +56,7 @@ export type ViewHooks = {
  * exactly as it did before.
  */
 const TERMINAL_FONT_DEFAULTS = {
-  fontFamily: '"Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace',
+  fontFamily: '"Google Sans Mono", "SF Mono", var(--font-mono)',
   fontSize: 15,
   lineHeight: 1.2
 } as const;
@@ -157,13 +158,13 @@ export function makeTerminalView(
     fontWeight: 500,
     fontWeightBold: 760,
     lineHeight: appearance.lineHeight,
-    // The view's own history, in lines. Raised from 8000 once the backend ring
-    // grew to 16 MB — 8000 lines was the new bottleneck, silently discarding
-    // most of a replayed long session. RAM tradeoff: xterm holds roughly
-    // cols x 8 bytes per line, so ~20 MB per view at 120 cols, and EVERY view
-    // pays it including the hidden ones (this shell keeps one view per owned
-    // session alive across switches).
-    scrollback: 20000,
+    // The view's own history, in lines. The DEEP buffer is the backend's 16 MB
+    // ring, which survives a hidden view and is replayed on re-attach, so the
+    // view only has to hold what a reader can plausibly scroll back through.
+    // That matters because xterm holds roughly cols x 8 bytes per line — 8000
+    // lines is about 8 MB at 120 columns, and the resident cost is paid in
+    // WebKit, where this app can least afford it.
+    scrollback: 8000,
     theme: { ...currentTheme().terminal }
   });
 
@@ -173,6 +174,7 @@ export function makeTerminalView(
   terminal.loadAddon(serializeAddon);
   terminal.open(host);
   liveTerminals.add(terminal);
+  addXtermView(1);
 
   const inputDisposable = terminal.onData((data) => hooks.onData(data));
 
@@ -263,6 +265,7 @@ export function makeTerminalView(
       if (disposed) return;
       disposed = true;
       liveTerminals.delete(terminal);
+      addXtermView(-1);
       inputDisposable.dispose();
       releaseWebgl();
       try {

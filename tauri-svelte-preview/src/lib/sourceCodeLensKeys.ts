@@ -1,10 +1,10 @@
 /**
  * sourceCodeLensKeys.ts — the two names behind the "N references" number that
- * Monaco draws above a symbol.
+ * CodeMirror draws above a symbol.
  *
  * There are two of them and they are easy to confuse:
  *
- *  - the **lens id**, which is how Monaco decides whether the lens it is
+ *  - the **lens id**, which is how the editor decides whether the lens it is
  *    looking at is the same one it saw a moment ago, and which also carries the
  *    spot back to us when the user clicks the number; and
  *  - the **count key**, which is how the editor remembers a number it has
@@ -17,8 +17,8 @@
  * so where the symbol sits is identity enough and an old number is simply let
  * go after a while.
  *
- * Kept out of `MonacoSourceEditor.svelte` so these rules can be tested without
- * a browser or a Monaco instance.
+ * Kept out of `CodeMirrorSourceEditor.svelte` so these rules can be tested
+ * without a browser or an editor instance.
  */
 
 /** Where a code lens sits, and what it is about. */

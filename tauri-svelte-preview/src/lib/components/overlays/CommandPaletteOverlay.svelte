@@ -19,7 +19,6 @@
    * as CSS — after which the component has no default export and every file that
    * imports it fails to type-check.)
    */
-  import { tick } from 'svelte';
   import { Search, MoreHorizontal } from '@lucide/svelte';
 
   /** A single command palette row. Matches the page's `SourceCommandPaletteItem`
@@ -66,7 +65,7 @@
   // imperatively; the element now lives here, so the focus follows it.
   $effect(() => {
     if (visible) {
-      tick().then(() => inputEl?.focus());
+      inputEl?.focus();
     }
   });
 </script>
@@ -190,7 +189,7 @@
 
   .command-palette-search kbd {
     color: #7f8b87;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 800;
   }

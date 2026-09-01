@@ -22,7 +22,7 @@ export type SourcePreviewAppearance = {
 };
 
 export const sourcePreviewAppearance: SourcePreviewAppearance = {
-	fontFamily: '"Google Sans Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace',
+	fontFamily: '"Google Sans Mono", "SF Mono", var(--font-mono)',
 	fontLigatures: false,
 	fontSize: 13,
 	letterSpacing: 0,

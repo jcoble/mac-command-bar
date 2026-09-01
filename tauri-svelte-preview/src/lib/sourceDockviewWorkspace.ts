@@ -12,19 +12,15 @@ import type {
 } from 'dockview-core';
 import {
   activateSourceDockPanel,
-  createDefaultSourceDockLayout,
   hideSourceDockPanel,
   normalizeSourceDockLayout,
   sourceDockPanelDescriptors,
-  visibleSourceDockPanelIDs,
   type SourceDockGroupID,
   type SourceDockLayout,
   type SourceDockPanelID
 } from './sourceDockLayout.ts';
 
 export const sourceDockviewStorageKey = 'mac-command-bar.source-browser.dockview-layout';
-export const sourceWorkbenchStorageKey = 'mac-command-bar.source-browser.workbench-layout';
-export const sourceWorkbenchLayoutVersion = 1;
 export const sourceDockviewComponentID = 'source-panel';
 export const sourcePaneviewComponentID = 'source-pane-panel';
 
@@ -70,29 +66,6 @@ export type SourceDockviewWorkspace = {
   syncLayout(layout: SourceDockLayout): void;
   toJSON(): SerializedDockview;
   dispose(): void;
-};
-
-export type SourceWorkbench = {
-  api: DockviewApi;
-  setPanelElement(panelID: SourceDockPanelID, element: HTMLElement | null): void;
-  dispose(): void;
-  toJSON(): SerializedDockview;
-  fromJSON(layout: SerializedDockview): void;
-};
-
-export type SourceWorkbenchOptions = {
-  layout?: SourceDockLayout;
-  storedLayout?: SerializedDockview | null;
-  restoreStoredLayout?: boolean;
-  onDidLayoutChange?: (layout: SerializedDockview) => void;
-  onDidPanelClose?: (panelID: SourceDockPanelID, layout: SerializedDockview) => void;
-  onDidActivePanelChange?: (panelID: SourceDockPanelID | null, layout: SerializedDockview) => void;
-  onDidPanelMove?: (panelID: SourceDockPanelID, layout: SerializedDockview) => void;
-};
-
-export type SerializedSourceWorkbench = {
-  version: number;
-  layout: SerializedDockview;
 };
 
 export type SourceDockviewTabStackPanel<PanelID extends string> = {
@@ -418,7 +391,7 @@ export async function createSourceDockviewTabStackWorkspace<PanelID extends stri
     if (element.parentElement !== host) {
       host.replaceChildren(element);
     }
-    queueMicrotask(() => dispatchSourceDockviewLayout(element));
+    dispatchSourceDockviewLayout(element);
   };
 
   const api = createDockview(container, {
@@ -539,7 +512,7 @@ export async function createSourceDockviewWorkspace(
     if (element.parentElement !== host) {
       host.replaceChildren(element);
     }
-    queueMicrotask(() => dispatchSourceDockviewLayout(element));
+    dispatchSourceDockviewLayout(element);
   };
 
   const api = createDockview(container, {
@@ -637,256 +610,6 @@ export async function createSourceDockviewWorkspace(
   };
 }
 
-export async function createSourceWorkbench(
-  container: HTMLElement,
-  options: SourceWorkbenchOptions = {}
-): Promise<SourceWorkbench> {
-  const { createDockview, themeDracula } = await import('dockview-core');
-  const layout = normalizeSourceDockLayout(options.layout ?? createDefaultSourceDockLayout());
-  const panelHosts = new Map<SourceDockPanelID, HTMLElement>();
-  const panelElements = new Map<SourceDockPanelID, HTMLElement>();
-  const disposables: DockviewIDisposable[] = [];
-  let synchronizingDockview = false;
-
-  const attachPanelElement = (panelID: SourceDockPanelID) => {
-    const host = panelHosts.get(panelID);
-    const element = panelElements.get(panelID);
-    if (!host || !element) return;
-
-    element.classList.add('source-dockview-attached-panel');
-    if (element.parentElement !== host) {
-      host.replaceChildren(element);
-    }
-    queueMicrotask(() => dispatchSourceDockviewLayout(element));
-  };
-
-  const api = createDockview(container, {
-    className: 'source-dockview-core source-workbench-core',
-    defaultRenderer: 'always',
-    dndStrategy: 'pointer',
-    hideBorders: true,
-    scrollbars: 'native',
-    singleTabMode: 'default',
-    theme: { ...themeDracula, gap: 0 },
-    getTabContextMenuItems: () => ['close', 'closeOthers', 'separator', 'closeAll'],
-    createComponent: () => createSourceDockviewContentRenderer(panelHosts, attachPanelElement)
-  });
-
-  container.classList.add('dockview-theme-dark', 'dockview-theme-dracula', 'source-dockview-host');
-  layoutDockviewApiToContainer(api, container);
-
-  const runDockviewSync = (sync: () => void) => {
-    synchronizingDockview = true;
-    try {
-      sync();
-    } finally {
-      synchronizingDockview = false;
-    }
-  };
-
-  try {
-    const storedLayout = options.storedLayout;
-    const plans = createSourceWorkbenchPanelPlans(layout);
-    if (
-      options.restoreStoredLayout !== false &&
-      storedLayout &&
-      sourceDockviewStoredLayoutMatchesPanelPlans(storedLayout, plans)
-    ) {
-      runDockviewSync(() => api.fromJSON(storedLayout, { reuseExistingPanels: true }));
-    } else {
-      runDockviewSync(() => addSourceWorkbenchPanels(api, layout));
-    }
-  } catch {
-    runDockviewSync(() => {
-      api.clear();
-      addSourceWorkbenchPanels(api, layout);
-    });
-  }
-
-  if (options.onDidLayoutChange) {
-    disposables.push(
-      api.onDidLayoutChange(() => {
-        if (synchronizingDockview) return;
-        options.onDidLayoutChange?.(api.toJSON());
-      })
-    );
-  }
-
-  disposables.push(
-    api.onDidRemovePanel((panel) => {
-      const panelID = sourceDockviewPanelID(panel);
-      if (synchronizingDockview || !panelID) return;
-      options.onDidPanelClose?.(panelID, api.toJSON());
-    }),
-    api.onDidActivePanelChange((panel) => {
-      const panelID = sourceDockviewPanelID(panel);
-      if (synchronizingDockview) return;
-      options.onDidActivePanelChange?.(panelID, api.toJSON());
-    }),
-    api.onDidMovePanel((event) => {
-      const panelID = sourceDockviewPanelID(event.panel);
-      if (synchronizingDockview || !panelID) return;
-      options.onDidPanelMove?.(panelID, api.toJSON());
-    })
-  );
-
-  return {
-    api,
-    setPanelElement(panelID, element) {
-      if (element) {
-        panelElements.set(panelID, element);
-        attachPanelElement(panelID);
-        return;
-      }
-      panelElements.delete(panelID);
-    },
-    toJSON() {
-      return api.toJSON();
-    },
-    fromJSON(serializedLayout) {
-      runDockviewSync(() => api.fromJSON(serializedLayout, { reuseExistingPanels: true }));
-    },
-    dispose() {
-      for (const disposable of disposables) {
-        disposable.dispose();
-      }
-      api.dispose();
-    }
-  };
-}
-
-const REGION_GROUP_DIRECTIONS: ReadonlyArray<
-  [SourceDockGroupID, NonNullable<SourceDockviewPanelPlan['position']>['direction']]
-> = [
-  ['left', 'left'],
-  ['right', 'right'],
-  ['bottom', 'below']
-];
-
-export function createSourceWorkbenchPanelPlans(
-  layout: SourceDockLayout
-): SourceDockviewPanelPlan[] {
-  const normalized = normalizeSourceDockLayout(layout);
-  const groupByID = new Map(normalized.groups.map((group) => [group.id, group]));
-  const visiblePanelIDs = new Set(visibleSourceDockPanelIDs(normalized));
-  const plans: SourceDockviewPanelPlan[] = [];
-  const plannedPanelIDs = new Set<SourceDockPanelID>();
-
-  const planPanel = (
-    panelID: SourceDockPanelID,
-    position?: SourceDockviewPanelPlan['position'],
-    initialWidth?: number,
-    initialHeight?: number
-  ) => {
-    if (plannedPanelIDs.has(panelID) || !visiblePanelIDs.has(panelID)) return;
-    const plan = createSourceWorkbenchPanelPlan(
-      panelID,
-      sourceDockviewPanelTitle(panelID),
-      position
-    );
-    if (initialWidth !== undefined) plan.initialWidth = initialWidth;
-    if (initialHeight !== undefined) plan.initialHeight = initialHeight;
-    plans.push(plan);
-    plannedPanelIDs.add(panelID);
-  };
-
-  // Seed the center group with the editor first (always visible, no reference panel).
-  planPanel('editor');
-
-  // Region groups anchored to the editor: left, right, then bottom. The first visible
-  // panel of each group opens a new region; the rest stack as tabs within that region.
-  for (const [groupID, direction] of REGION_GROUP_DIRECTIONS) {
-    const group = groupByID.get(groupID);
-    if (!group) continue;
-
-    let regionRootPanelID: SourceDockPanelID | null = null;
-    for (const panelID of group.panelIDs) {
-      if (!visiblePanelIDs.has(panelID)) continue;
-      if (!regionRootPanelID) {
-        planPanel(
-          panelID,
-          { referencePanel: 'editor', direction },
-          direction === 'below' ? undefined : group.size,
-          direction === 'below' ? group.size : undefined
-        );
-        regionRootPanelID = panelID;
-      } else {
-        planPanel(panelID, { referencePanel: regionRootPanelID, direction: 'within' });
-      }
-    }
-  }
-
-  // Center runtime panels (terminal/browser/markdown) tab within the editor.
-  const centerGroup = groupByID.get('center');
-  if (centerGroup) {
-    for (const panelID of centerGroup.panelIDs) {
-      if (panelID === 'editor' || !visiblePanelIDs.has(panelID)) continue;
-      planPanel(panelID, { referencePanel: 'editor', direction: 'within' });
-    }
-  }
-
-  return plans;
-}
-
-export function addSourceWorkbenchPanels(api: DockviewApi, layout: SourceDockLayout) {
-  for (const panel of [...api.panels]) {
-    api.removePanel(panel);
-  }
-
-  for (const plan of createSourceWorkbenchPanelPlans(layout)) {
-    api.addPanel(plan);
-  }
-
-  syncSourceDockviewActivePanels(api, layout);
-}
-
-export function serializeWorkbench(workbench: SourceWorkbench): SerializedSourceWorkbench {
-  return {
-    version: sourceWorkbenchLayoutVersion,
-    layout: workbench.toJSON()
-  };
-}
-
-export function hydrateWorkbench(
-  workbench: SourceWorkbench,
-  serialized: SerializedSourceWorkbench | null | undefined
-): boolean {
-  const layout = readSerializedWorkbenchLayout(serialized);
-  if (!layout) return false;
-  workbench.fromJSON(layout);
-  return true;
-}
-
-export function readSerializedWorkbenchLayout(
-  serialized: SerializedSourceWorkbench | null | undefined
-): SerializedDockview | null {
-  if (
-    !serialized ||
-    typeof serialized !== 'object' ||
-    serialized.version !== sourceWorkbenchLayoutVersion ||
-    !serialized.layout ||
-    typeof serialized.layout !== 'object'
-  ) {
-    return null;
-  }
-  return serialized.layout;
-}
-
-function createSourceWorkbenchPanelPlan(
-  panelID: SourceDockPanelID,
-  title: string,
-  position?: SourceDockviewPanelPlan['position']
-): SourceDockviewPanelPlan {
-  return {
-    id: panelID,
-    title,
-    component: sourceDockviewComponentID,
-    params: { panelID },
-    renderer: 'always',
-    position
-  };
-}
-
 export async function createSourcePaneviewStackWorkspace<PanelID extends string>(
   container: HTMLElement,
   options: SourcePaneviewStackWorkspaceOptions<PanelID>
@@ -908,8 +631,7 @@ export async function createSourcePaneviewStackWorkspace<PanelID extends string>
     if (element.parentElement !== host) {
       host.replaceChildren(element);
     }
-    queueMicrotask(() => dispatchSourceDockviewLayout(element));
-    window.requestAnimationFrame(() => dispatchSourceDockviewLayout(element));
+    dispatchSourceDockviewLayout(element);
   };
 
   const api = createPaneview(container, {

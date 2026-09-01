@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * PlaywrightCard.svelte — the "Playwright processes" card in the /next context
-   * region.
+   * PlaywrightCard.svelte — the "Playwright processes" card at the bottom of the
+   * Resources panel.
    *
    * THE PROBLEM IT SOLVES
    * When a Playwright run or an agent's browser session is interrupted, its
@@ -15,15 +15,11 @@
    * the desktop side only signals process ids it listed in the same call.
    *
    * SHAPE
-   * NO props, NO IO at mount, NO `$effect` — the same contract every other card
-   * in this region keeps. It renders an inert line until the shell calls
-   * `activate()` on `playwrightService`; after that the only things that reach
-   * the backend are the refresh button and the two stop buttons, each behind a
-   * confirmation dialog.
-   *
-   * The chrome (card head, chips, row rhythm) is deliberately styled to match
-   * `ContextPanel.svelte`, so this card reads as one more section of the same
-   * panel rather than a visitor.
+   * NO props, NO IO at mount, NO `$effect`. It renders an inert line until the
+   * shell calls `activate()` on `playwrightService`, which the Resources panel
+   * does when it opens; after that the only things that reach the backend are
+   * the refresh button and the two stop buttons, each behind a confirmation
+   * dialog.
    */
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Drama from '@lucide/svelte/icons/drama';
@@ -422,7 +418,7 @@
   }
 
   .mono {
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
   }
 
   .chip {
@@ -485,7 +481,7 @@
   }
 
   .stop {
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 5px;
     background: transparent;
     color: var(--color-text-2);
@@ -496,12 +492,13 @@
   }
 
   .stop:hover:not(:disabled) {
-    border-color: var(--color-bad);
+    background: var(--color-bad-bg);
     color: var(--color-bad);
   }
 
   .stop.danger {
-    border-color: var(--color-bad);
+    border: 0;
+    background: var(--color-bad-bg);
     color: var(--color-bad);
   }
 
@@ -572,8 +569,8 @@
   }
 
   button:focus-visible {
-    outline: 1px solid var(--color-accent);
-    outline-offset: -1px;
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   @media (prefers-reduced-motion: reduce) {

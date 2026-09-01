@@ -1,17 +1,18 @@
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use crate::RuntimeContextProject;
+use mcb_core::session_store::{OrchestrationEventRow, SessionStore};
 
 const ORCHESTRATION_SCHEMA_VERSION: u16 = 1;
-const ORCHESTRATION_EVENT_STORE_ENV: &str = "MAC_COMMAND_BAR_ORCHESTRATION_EVENTS";
+const ASSEMBLY_ORCHESTRATION_EVENTS_ENV: &str = "ASSEMBLY_ORCHESTRATION_EVENTS";
+const LEGACY_ORCHESTRATION_EVENTS_ENV: &str = "MAC_COMMAND_BAR_ORCHESTRATION_EVENTS";
 const ORCHESTRATION_EVENT_STORE_FILE: &str = "orchestration-events.jsonl";
 /// Set this to 1 to see the made-up sample runs on a machine that has never recorded one.
 const DEMO_ORCHESTRATION_RUNS_ENV: &str = "MCB_DEMO_RUNS";
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OrchestrationEvent {
     #[serde(rename = "schemaVersion", alias = "schema_version", default)]
@@ -95,6 +96,45 @@ pub(crate) struct OrchestrationEvent {
     approval_count: Option<u32>,
     #[serde(alias = "failed_count")]
     failed_count: Option<u32>,
+    // WorkflowEngine fields are additive so schema-v1 rows and the existing presentation
+    // reducer keep their exact meaning. The authoritative workflow read model is rebuilt from
+    // these same rows; there is deliberately no workflow-side event file.
+    #[serde(alias = "workflow_id", default)]
+    workflow_id: Option<String>,
+    #[serde(alias = "workflow_version", default)]
+    workflow_version: Option<u16>,
+    #[serde(alias = "node_id", default)]
+    node_id: Option<String>,
+    #[serde(alias = "node_run_id", default)]
+    node_run_id: Option<String>,
+    #[serde(alias = "parent_node_run_id", default)]
+    parent_node_run_id: Option<String>,
+    #[serde(rename = "ownedId", alias = "owned_id", default)]
+    owned_id: Option<String>,
+    #[serde(default)]
+    attempt: Option<u32>,
+    #[serde(default)]
+    depth: Option<u32>,
+    #[serde(alias = "input_hash", default)]
+    input_hash: Option<String>,
+    #[serde(alias = "output_contract", default)]
+    output_contract: Option<String>,
+    #[serde(alias = "workflow_artifacts", default)]
+    workflow_artifacts: Option<serde_json::Value>,
+    #[serde(alias = "gate_id", default)]
+    gate_id: Option<String>,
+    #[serde(alias = "lease_id", default)]
+    lease_id: Option<String>,
+    #[serde(alias = "provider_instance_id", default)]
+    provider_instance_id: Option<String>,
+    #[serde(default)]
+    provenance: Option<String>,
+    #[serde(default)]
+    sequence: Option<u64>,
+    #[serde(alias = "idempotency_key", default)]
+    idempotency_key: Option<String>,
+    #[serde(alias = "workflow_payload", default)]
+    workflow_payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -175,9 +215,10 @@ struct OrchestrationRunDraft {
 }
 
 pub(crate) fn list_orchestration_runs_sync(
+    store: &SessionStore,
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<OrchestrationRun>, String> {
-    let events = read_orchestration_events()?;
+    let events = read_orchestration_events(store)?;
     let recorded = reduce_orchestration_events(events);
     let mut runs = orchestration_runs_or_samples(
         recorded,
@@ -216,15 +257,93 @@ fn demo_orchestration_runs_requested(value: Option<&str>) -> bool {
 }
 
 pub(crate) fn record_orchestration_event_sync(
+    store: &SessionStore,
     mut event: OrchestrationEvent,
 ) -> Result<OrchestrationRun, String> {
+    if event.workflow_id.is_some() || event.kind.starts_with("workflow.") {
+        return Err("Workflow transitions may only be appended by WorkflowEngine".to_string());
+    }
+    let _writer = orchestration_writer_lock()
+        .lock()
+        .map_err(|_| "Orchestration event writer is unavailable".to_string())?;
     normalize_orchestration_event(&mut event)?;
-    append_orchestration_event(&event)?;
+    append_orchestration_event(store, &event)?;
 
-    let runs = reduce_orchestration_events(read_orchestration_events()?);
+    let runs = reduce_orchestration_events(read_orchestration_events(store)?);
     runs.into_iter()
         .find(|run| run.id == event.run_id)
         .ok_or_else(|| "Recorded orchestration event, but could not rebuild its run".to_string())
+}
+
+fn orchestration_writer_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Append a WorkflowEngine transition to the one orchestration ledger. Sequence allocation and
+/// idempotency are guarded by the same writer lock so a single app process has one total order.
+pub(crate) fn append_workflow_event_value(
+    store: &SessionStore,
+    value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let _writer = orchestration_writer_lock()
+        .lock()
+        .map_err(|_| "Orchestration event writer is unavailable".to_string())?;
+    let mut event = serde_json::from_value::<OrchestrationEvent>(value)
+        .map_err(|error| format!("Invalid workflow event: {error}"))?;
+    if event
+        .workflow_id
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+        || !event.kind.starts_with("workflow.")
+    {
+        return Err("Workflow event requires workflowId and a workflow.* kind".to_string());
+    }
+    normalize_orchestration_event(&mut event)?;
+    if let Some(key) = event.idempotency_key.as_deref() {
+        if let Some(prior) = store
+            .find_orchestration_event_by_idempotency_key(&event.run_id, key)
+            .map_err(|error| error.to_string())?
+        {
+            return serde_json::from_str(&prior.payload_json)
+                .map_err(|error| format!("Could not serialize workflow event: {error}"));
+        }
+    }
+    let current_sequence = store
+        .latest_orchestration_sequence(&event.run_id)
+        .map_err(|error| error.to_string())? as u64;
+    let expected_sequence = event
+        .workflow_payload
+        .as_ref()
+        .and_then(|payload| payload.get("run"))
+        .and_then(|run| run.get("lastSequence"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    if expected_sequence != current_sequence {
+        return Err(format!(
+            "Stale workflow transition: expected sequence {expected_sequence}, current sequence {current_sequence}"
+        ));
+    }
+    event.sequence = Some(current_sequence.saturating_add(1));
+    append_orchestration_event(store, &event)?;
+    serde_json::to_value(event)
+        .map_err(|error| format!("Could not serialize workflow event: {error}"))
+}
+
+pub(crate) fn read_workflow_event_values(
+    store: &SessionStore,
+) -> Result<Vec<serde_json::Value>, String> {
+    store
+        .list_workflow_orchestration_events()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|row| {
+            serde_json::from_str(&row.payload_json)
+                .map_err(|error| format!("Could not serialize workflow event: {error}"))
+        })
+        .collect()
 }
 
 fn normalize_orchestration_event(event: &mut OrchestrationEvent) -> Result<(), String> {
@@ -263,11 +382,8 @@ fn normalize_orchestration_event(event: &mut OrchestrationEvent) -> Result<(), S
 }
 
 fn orchestration_event_store_path() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var(ORCHESTRATION_EVENT_STORE_ENV) {
-        let trimmed = path.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
+    if let Some(path) = orchestration_event_store_override() {
+        return Ok(path);
     }
 
     let home = std::env::var_os("HOME")
@@ -280,20 +396,56 @@ fn orchestration_event_store_path() -> Result<PathBuf, String> {
         .join(ORCHESTRATION_EVENT_STORE_FILE))
 }
 
-fn read_orchestration_events() -> Result<Vec<OrchestrationEvent>, String> {
+fn orchestration_event_store_override() -> Option<PathBuf> {
+    [
+        ASSEMBLY_ORCHESTRATION_EVENTS_ENV,
+        LEGACY_ORCHESTRATION_EVENTS_ENV,
+    ]
+    .into_iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .map(|path| path.trim().to_string())
+    .find(|path| !path.is_empty())
+    .map(PathBuf::from)
+}
+
+pub(crate) fn import_legacy_orchestration_events(store: &SessionStore) -> Result<(), String> {
     let path = orchestration_event_store_path()?;
     if !path.exists() {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
     let contents = std::fs::read_to_string(&path).map_err(|error| {
         format!(
-            "Could not read orchestration event store {}: {error}",
+            "Could not read legacy orchestration event store {}: {error}",
             path.display()
         )
     })?;
+    let rows = parse_orchestration_events_jsonl(&contents)?
+        .iter()
+        .map(orchestration_event_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    store
+        .import_orchestration_events(&rows)
+        .map_err(|error| error.to_string())?;
+    if let Err(error) = std::fs::remove_file(&path) {
+        eprintln!(
+            "Imported legacy orchestration event store {}, but could not remove it: {error}",
+            path.display()
+        );
+    }
+    Ok(())
+}
 
-    parse_orchestration_events_jsonl(&contents)
+fn read_orchestration_events(store: &SessionStore) -> Result<Vec<OrchestrationEvent>, String> {
+    store
+        .list_orchestration_events()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|row| {
+            serde_json::from_str::<OrchestrationEvent>(&row.payload_json)
+                .map_err(|error| format!("Could not read orchestration event {}: {error}", row.id))
+        })
+        .collect()
 }
 
 fn parse_orchestration_events_jsonl(input: &str) -> Result<Vec<OrchestrationEvent>, String> {
@@ -317,31 +469,33 @@ fn parse_orchestration_events_jsonl(input: &str) -> Result<Vec<OrchestrationEven
     Ok(events)
 }
 
-fn append_orchestration_event(event: &OrchestrationEvent) -> Result<(), String> {
-    let path = orchestration_event_store_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "Could not create orchestration event store directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
+fn append_orchestration_event(
+    store: &SessionStore,
+    event: &OrchestrationEvent,
+) -> Result<(), String> {
+    store
+        .append_orchestration_event(&orchestration_event_row(event)?)
+        .map_err(|error| error.to_string())
+}
 
-    let line = serde_json::to_string(event)
+fn orchestration_event_row(event: &OrchestrationEvent) -> Result<OrchestrationEventRow, String> {
+    let payload_json = serde_json::to_string(event)
         .map_err(|error| format!("Could not serialize orchestration event: {error}"))?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| {
-            format!(
-                "Could not open orchestration event store {}: {error}",
-                path.display()
-            )
-        })?;
-    writeln!(file, "{line}")
-        .map_err(|error| format!("Could not append orchestration event: {error}"))
+    let sequence = event
+        .sequence
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "Orchestration event sequence is too large".to_string())?;
+    Ok(OrchestrationEventRow {
+        id: event.id.clone(),
+        run_id: event.run_id.clone(),
+        kind: event.kind.clone(),
+        timestamp: event.timestamp.clone(),
+        sequence,
+        workflow_id: event.workflow_id.clone(),
+        idempotency_key: event.idempotency_key.clone(),
+        payload_json,
+    })
 }
 
 fn reduce_orchestration_events(events: Vec<OrchestrationEvent>) -> Vec<OrchestrationRun> {
@@ -738,6 +892,7 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     decision_count: None,
                     approval_count: None,
                     failed_count: None,
+                    ..Default::default()
                 },
                 OrchestrationEvent {
                     schema_version: ORCHESTRATION_SCHEMA_VERSION,
@@ -782,6 +937,7 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     decision_count: None,
                     approval_count: None,
                     failed_count: None,
+                    ..Default::default()
                 },
                 OrchestrationEvent {
                     schema_version: ORCHESTRATION_SCHEMA_VERSION,
@@ -826,6 +982,7 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     decision_count: None,
                     approval_count: None,
                     failed_count: None,
+                    ..Default::default()
                 },
             ];
 
@@ -873,6 +1030,7 @@ fn demo_orchestration_runs(projects: Vec<RuntimeContextProject>) -> Vec<Orchestr
                     decision_count: None,
                     approval_count: None,
                     failed_count: None,
+                    ..Default::default()
                 });
             }
 
@@ -1088,6 +1246,67 @@ fn unix_epoch_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    fn identity_env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn restore_env(name: &str, value: Option<OsString>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+
+    #[test]
+    fn product_identity_orchestration_prefers_assembly_env() {
+        let _lock = identity_env_test_lock();
+        let assembly = std::env::var_os(ASSEMBLY_ORCHESTRATION_EVENTS_ENV);
+        let legacy = std::env::var_os(LEGACY_ORCHESTRATION_EVENTS_ENV);
+        std::env::set_var(ASSEMBLY_ORCHESTRATION_EVENTS_ENV, "/tmp/assembly-events");
+        std::env::set_var(LEGACY_ORCHESTRATION_EVENTS_ENV, "/tmp/legacy-events");
+
+        assert_eq!(
+            orchestration_event_store_override(),
+            Some(PathBuf::from("/tmp/assembly-events"))
+        );
+
+        restore_env(ASSEMBLY_ORCHESTRATION_EVENTS_ENV, assembly);
+        restore_env(LEGACY_ORCHESTRATION_EVENTS_ENV, legacy);
+    }
+
+    #[test]
+    fn product_identity_orchestration_falls_back_to_legacy_env() {
+        let _lock = identity_env_test_lock();
+        let assembly = std::env::var_os(ASSEMBLY_ORCHESTRATION_EVENTS_ENV);
+        let legacy = std::env::var_os(LEGACY_ORCHESTRATION_EVENTS_ENV);
+        std::env::set_var(ASSEMBLY_ORCHESTRATION_EVENTS_ENV, " ");
+        std::env::set_var(LEGACY_ORCHESTRATION_EVENTS_ENV, "/tmp/legacy-events");
+
+        assert_eq!(
+            orchestration_event_store_override(),
+            Some(PathBuf::from("/tmp/legacy-events"))
+        );
+
+        restore_env(ASSEMBLY_ORCHESTRATION_EVENTS_ENV, assembly);
+        restore_env(LEGACY_ORCHESTRATION_EVENTS_ENV, legacy);
+    }
+
+    #[test]
+    fn product_identity_orchestration_preserves_legacy_support_path() {
+        let home = PathBuf::from("/Users/example");
+        assert_eq!(
+            home.join("Library")
+                .join("Application Support")
+                .join("MacCommandBar")
+                .join(ORCHESTRATION_EVENT_STORE_FILE),
+            PathBuf::from(
+                "/Users/example/Library/Application Support/MacCommandBar/orchestration-events.jsonl"
+            )
+        );
+    }
 
     fn demo_projects() -> Vec<RuntimeContextProject> {
         vec![RuntimeContextProject {

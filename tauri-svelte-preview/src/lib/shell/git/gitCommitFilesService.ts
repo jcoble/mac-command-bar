@@ -71,6 +71,8 @@ export interface GitCommitFilesService {
   readonly state: GitCommitFilesState;
   /** Point at a repository. Calling it again with the same folder does nothing. */
   activate(root: string | null): void;
+  /** Release expanded commit rows and their loaded file payloads. */
+  release(): void;
   /** Open or close one commit, reading its file list the first time it opens. */
   toggleCommit(sha: string, isMerge: boolean): Promise<void>;
   /** Read one commit's file list, whether or not the row is open. */
@@ -109,21 +111,23 @@ export function createGitCommitFilesService(
   async function repositoryTopFor(root: string): Promise<string> {
     if (state.repositoryTop) return state.repositoryTop;
     if (!topRequest) {
-      topRequest = (async () => {
-        let resolved: string | null = null;
-        try {
-          resolved = await resolveTop(root);
-        } catch {
-          // Not knowing the top is not a failure worth showing: fall back to
-          // the folder we were given, which is the top in the usual case.
-          resolved = null;
-        }
-        const top = (resolved ?? '').trim() === '' ? root : (resolved as string).trim();
-        if (state.root === root) state.repositoryTop = top;
-        return top;
-      })();
+      topRequest = resolveRepositoryTopOnce(root);
     }
     return topRequest;
+  }
+
+  async function resolveRepositoryTopOnce(root: string): Promise<string> {
+    let resolved: string | null = null;
+    try {
+      resolved = await resolveTop(root);
+    } catch {
+      // Not knowing the top is not a failure worth showing: fall back to
+      // the folder we were given, which is the top in the usual case.
+      resolved = null;
+    }
+    const top = (resolved ?? '').trim() === '' ? root : (resolved as string).trim();
+    if (state.root === root) state.repositoryTop = top;
+    return top;
   }
 
   function writeEntry(
@@ -137,11 +141,13 @@ export function createGitCommitFilesService(
     const root = currentRoot();
     if (!root || sha.trim() === '') return;
 
+    const revision = state.revision;
     const id = (fileRequests.get(sha) ?? 0) + 1;
     fileRequests.set(sha, id);
     writeEntry(sha, { loading: true, error: '' });
 
-    const stillCurrent = () => fileRequests.get(sha) === id && state.root === root;
+    const stillCurrent = () =>
+      fileRequests.get(sha) === id && state.root === root && state.revision === revision;
 
     try {
       const top = await repositoryTopFor(root);
@@ -167,6 +173,7 @@ export function createGitCommitFilesService(
   async function selectCommitFile(sha: string, file: GitCommitFileChange): Promise<void> {
     const root = currentRoot();
     if (!root) return;
+    const revision = state.revision;
 
     // Whatever the working-copy side was showing is let go of first, so its own
     // in-flight read cannot land on top of this one.
@@ -187,7 +194,8 @@ export function createGitCommitFilesService(
     diffRequest += 1;
     const id = diffRequest;
     panel.diffLoading = true;
-    const stillCurrent = () => diffRequest === id && state.root === root;
+    const stillCurrent = () =>
+      diffRequest === id && state.root === root && state.revision === revision;
 
     try {
       const top = await repositoryTopFor(root);
@@ -206,6 +214,13 @@ export function createGitCommitFilesService(
     }
   }
 
+  function clearSelection(): void {
+    diffRequest += 1;
+    state.selectedCommitSha = '';
+    state.selectedRelativePath = '';
+    clearPanelSelection();
+  }
+
   return {
     state,
 
@@ -214,12 +229,24 @@ export function createGitCommitFilesService(
       topRequest = null;
       fileRequests.clear();
       diffRequest += 1;
+      clearPanelSelection();
       resetGitCommitFilesState(state, root);
+    },
+
+    release(): void {
+      topRequest = null;
+      fileRequests.clear();
+      diffRequest += 1;
+      clearPanelSelection();
+      resetGitCommitFilesState(state, null);
     },
 
     async toggleCommit(sha: string, isMerge: boolean): Promise<void> {
       if (isCommitExpanded(state, sha)) {
         state.expanded[sha] = false;
+        fileRequests.delete(sha);
+        delete state.byCommit[sha];
+        if (state.selectedCommitSha === sha) clearSelection();
         return;
       }
       state.expanded[sha] = true;
@@ -229,18 +256,14 @@ export function createGitCommitFilesService(
       void isMerge; // the merge wording is chosen when the row is drawn
     },
 
-    loadCommitFiles(sha: string, isMerge: boolean): Promise<void> {
+    async loadCommitFiles(sha: string, isMerge: boolean): Promise<void> {
       void isMerge;
-      return loadCommitFiles(sha);
+      await loadCommitFiles(sha);
     },
 
     selectCommitFile,
 
-    clearSelection(): void {
-      diffRequest += 1;
-      state.selectedCommitSha = '';
-      state.selectedRelativePath = '';
-    }
+    clearSelection
   };
 }
 

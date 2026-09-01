@@ -19,10 +19,9 @@
  *     read here is defensive and returns null when it is not certain.
  *
  *  2. Hold back the extra lookups while the server is still getting started.
- *     `createLanguageServerGate` is a waiting room: ask it to wait, and it lets
- *     the work through the moment the server is ready — or, if that moment
- *     never comes, when its own time limit runs out. A wait that never ends
- *     would be indistinguishable from a hang, so the limit is not optional.
+ *     `createLanguageServerGate` is a waiting room: register work with it, and
+ *     it runs that work the moment the server is ready. The owner gets back an
+ *     unsubscribe function for the exact wait it created.
  */
 
 /** How far along the language server is, as the desktop app reports it. */
@@ -98,6 +97,40 @@ export function languageDisplayName(language: string): string {
   const key = language.trim().toLowerCase();
   if (!key) return 'This file';
   return LANGUAGE_NAMES[key] ?? key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/**
+ * The same names cut down to the two or three characters that fit inside a
+ * control. The switch beside the centre pane's tabs has room for a badge and
+ * nothing more, and a badge is enough: it only has to say WHICH language the
+ * switch is currently about, not spell it out.
+ */
+const SHORT_LANGUAGE_LABELS: Record<string, string> = {
+  csharp: 'C#',
+  typescript: 'TS',
+  typescriptreact: 'TS',
+  javascript: 'JS',
+  javascriptreact: 'JS',
+  rust: 'RS',
+  svelte: 'SV',
+  python: 'PY',
+  go: 'GO',
+  json: 'JSN',
+  sql: 'SQL',
+  html: 'HT',
+  css: 'CSS',
+  yaml: 'YML',
+  markdown: 'MD'
+};
+
+/** No file open means no language, and a dash says that without guessing. */
+export const NO_LANGUAGE_LABEL = '—';
+
+/** This language in two or three characters, for a badge inside a control. */
+export function languageShortLabel(language: string | null): string {
+  const key = language?.trim().toLowerCase() ?? '';
+  if (!key) return NO_LANGUAGE_LABEL;
+  return SHORT_LANGUAGE_LABELS[key] ?? key.slice(0, 2).toUpperCase();
 }
 
 /**
@@ -200,9 +233,6 @@ export function languageServerIsBusy(state: LanguageServerState | null): boolean
   return state === 'starting' || state === 'indexing';
 }
 
-/** Start a timer; the returned function calls it off. */
-export type ScheduleWaitLimit = (run: () => void, afterMs: number) => () => void;
-
 export interface LanguageServerGate {
   /** The last state the gate was told about. */
   readonly state: LanguageServerState | null;
@@ -210,44 +240,17 @@ export interface LanguageServerGate {
   setState(next: LanguageServerState | null): void;
   /** Is work being held back right now? */
   isBusy(): boolean;
-  /** Resolves as soon as it is worth asking the server anything. */
-  waitUntilReady(): Promise<void>;
+  /** Run this callback as soon as it is worth asking the server anything. */
+  onReady(callback: () => void): () => void;
   /** Let everything through at once — the panel is closing or the file changed. */
   releaseAll(): void;
 }
 
-export interface LanguageServerGateOptions {
-  /** How long a job may be held back before it runs anyway. */
-  maxWaitMs?: number;
-  /** How the time limit is kept. Replaced in tests so no test has to sleep. */
-  schedule?: ScheduleWaitLimit;
-}
-
-/**
- * Long enough that a big solution usually finishes reading itself first, short
- * enough that a server which never reports being ready does not strand the
- * editor's inline hints and squiggles forever.
- */
-const DEFAULT_MAX_WAIT_MS = 20_000;
-
-export function createLanguageServerGate(
-  options: LanguageServerGateOptions = {}
-): LanguageServerGate {
-  const maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
-  const schedule: ScheduleWaitLimit =
-    options.schedule ??
-    ((run, afterMs) => {
-      const timer = setTimeout(run, afterMs);
-      return () => clearTimeout(timer);
-    });
-
+export function createLanguageServerGate(): LanguageServerGate {
   let state: LanguageServerState | null = null;
   let waiting: Array<() => void> = [];
-  let cancelLimit: (() => void) | null = null;
 
   function letEveryoneThrough(): void {
-    cancelLimit?.();
-    cancelLimit = null;
     const released = waiting;
     waiting = [];
     for (const resume of released) resume();
@@ -267,12 +270,24 @@ export function createLanguageServerGate(
       return languageServerIsBusy(state);
     },
 
-    waitUntilReady(): Promise<void> {
-      if (!languageServerIsBusy(state)) return Promise.resolve();
-      return new Promise<void>((resume) => {
-        waiting.push(resume);
-        cancelLimit ??= schedule(letEveryoneThrough, maxWaitMs);
-      });
+    onReady(callback: () => void): () => void {
+      if (!languageServerIsBusy(state)) {
+        callback();
+        return () => {};
+      }
+
+      let active = true;
+      const release = () => {
+        if (!active) return;
+        active = false;
+        callback();
+      };
+      waiting.push(release);
+      return () => {
+        if (!active) return;
+        active = false;
+        waiting = waiting.filter((candidate) => candidate !== release);
+      };
     },
 
     releaseAll(): void {

@@ -38,7 +38,7 @@ import type { GitBackend } from './gitService.ts';
 import { validateProjectRootFromTauri } from '../../tauriSource.ts';
 import type {
   GitActionResult,
-  GitCommitHistoryEntry,
+  GitHistoryPage,
   ProjectGitStatus,
   SourceGitDiff
 } from '../../tauriSource.ts';
@@ -235,11 +235,23 @@ export function bridgeGitBackend(): GitBackend {
     readStatus: (root) => postGitBridge<ProjectGitStatus>('status', { root }),
     readDiff: (root, absolutePath) =>
       postGitBridge<SourceGitDiff>('file-diff', { root, path: absolutePath }),
-    readHistory: (root, limit) =>
-      postGitBridge<GitCommitHistoryEntry[]>('history', { root, limit }),
+    readHistory: (root, cursor, relativePath) =>
+      postGitBridge<GitHistoryPage>('history', { root, cursor, relativePath }),
     stage: refuse,
     unstage: refuse,
     commit: refuse,
+    amend: refuse,
+    // Discarding, branching and stashing all change the repository, so the
+    // browser refuses them for the same reason it refuses a commit — and a
+    // discard in particular must never be reachable from a tab left open.
+    discard: refuse,
+    discardAll: refuse,
+    createBranch: refuse,
+    switchBranch: refuse,
+    stash: refuse,
+    popStash: refuse,
+    listBranches: async () => null,
+    listStashes: async () => null,
     fetch: refuse,
     pull: refuse,
     push: refuse

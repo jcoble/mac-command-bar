@@ -2,11 +2,14 @@
  * Pure, DOM-free-testable multi-terminal manager — the core of
  * "P3 — conversations as live workspaces".
  *
- * Keeps N terminals alive while only one is shown. The intent: switching
- * conversations must NEVER kill a PTY. There is one DOM host per conversation
- * view, N xterm-style views, and exactly one visible at a time. Inactive
- * conversations keep receiving output (so they stay "live") even though their
- * view is hidden.
+ * Keeps N conversations live while holding ONE terminal buffer. Switching
+ * conversations must NEVER kill a PTY — but it must not keep the outgoing
+ * conversation's scrollback in memory either. So hiding a view RELEASES it:
+ * the view is disposed and the record survives, keeping the PTY binding and
+ * the DOM host, and the next show rebuilds the view and replays the backend's
+ * ring into it. Output for a released conversation keeps arriving at the
+ * backend, which is the authority for everything a hidden conversation
+ * printed.
  *
  * All collaborators are INJECTED so the manager can be unit-tested with spies
  * and no real xterm/DOM/Tauri dependency.
@@ -61,7 +64,14 @@ export type EnsureViewOptions = {
  */
 export type LiveConversationTerminalRecord = {
   key: string;
-  view: TerminalView;
+  /**
+   * The DOM host this conversation's view is built on. Kept because a released
+   * record has to be able to build a new view without the surface handing the
+   * host over again.
+   */
+  host: HTMLElement;
+  /** `null` while the record is RELEASED: the PTY lives on, the buffer does not. */
+  view: TerminalView | null;
   sessionId: string | null;
   visible: boolean;
   terminated: boolean;
@@ -73,9 +83,12 @@ export type LiveConversationTerminals = {
    * The EXISTING view for `key`, or `null` when there is none. Read-only on
    * purpose: unlike `ensureView` it never builds a view, so a caller that just
    * wants to talk to a terminal that is already on screen cannot accidentally
-   * conjure one for a key that has none.
+   * conjure one for a key that has none. A RELEASED record answers `null` too —
+   * its conversation is still live, its buffer is not.
    */
   viewFor(key: string): TerminalView | null;
+  /** The DOM host `key` is (or was) built on, so its owner can rebuild it. */
+  hostFor(key: string): HTMLElement | null;
   showView(key: string): void;
   activeKey(): string | null;
   liveKeys(): string[];
@@ -85,6 +98,8 @@ export type LiveConversationTerminals = {
   feed(key: string, data: string): void;
   feedSession(sessionId: string, data: string): void;
   markTerminated(key: string): void;
+  /** Dispose one view's buffer, keeping its record, PTY binding and host. */
+  releaseView(key: string): void;
   closeView(key: string): void;
   disposeAll(): void;
 };
@@ -125,6 +140,23 @@ export function createLiveConversationTerminals(
     }
   }
 
+  /**
+   * Build this record's view and hydrate it from whatever scrollback the owner
+   * has staged for its session. Used for a first view and for rebuilding one
+   * that was released while hidden — the two are the same job.
+   */
+  function buildView(record: LiveConversationTerminalRecord): TerminalView {
+    const view = createTerminal(record.host);
+    record.view = view;
+    if (record.sessionId != null) {
+      const scrollback = readScrollback?.(record.sessionId);
+      if (scrollback) {
+        view.write(scrollback);
+      }
+    }
+    return view;
+  }
+
   function ensureView(key: string, opts: EnsureViewOptions): TerminalView {
     const existing = records.get(key);
     if (existing) {
@@ -133,32 +165,36 @@ export function createLiveConversationTerminals(
       if (opts?.sessionId != null && existing.sessionId == null) {
         bindSession(key, opts.sessionId);
       }
-      return existing.view;
+      // A remounted surface hands over a fresh host. Take it: the previous one
+      // is off the page, and a rebuilt view attached to it would be invisible.
+      if (opts?.host != null) {
+        existing.host = opts.host;
+      }
+      // No view means this record was released while hidden — build it again
+      // and replay whatever the owner staged for its session.
+      return existing.view ?? buildView(existing);
     }
 
     if (!opts || opts.host == null) {
       throw new TypeError(`ensureView("${key}") requires opts.host`);
     }
 
-    const view = createTerminal(opts.host);
     const sessionId = opts.sessionId ?? null;
     const record: LiveConversationTerminalRecord = {
       key,
-      view,
+      host: opts.host,
+      view: null,
       sessionId,
       visible: false,
       terminated: false
     };
     records.set(key, record);
-
     if (sessionId != null) {
       sessionToKey.set(sessionId, key);
-      // Hydrate from saved scrollback if the backend has any for this session.
-      const scrollback = readScrollback?.(sessionId);
-      if (scrollback) {
-        view.write(scrollback);
-      }
     }
+    // Map the session before the view exists, so output that arrives during
+    // construction already routes here.
+    const view = buildView(record);
 
     // The first view created becomes active when nothing else is showing.
     if (active === null) {
@@ -172,6 +208,10 @@ export function createLiveConversationTerminals(
     return records.get(key)?.view ?? null;
   }
 
+  function hostFor(key: string): HTMLElement | null {
+    return records.get(key)?.host ?? null;
+  }
+
   function showView(key: string): void {
     const target = records.get(key);
     if (!target) {
@@ -182,17 +222,24 @@ export function createLiveConversationTerminals(
       if (record === target) {
         continue;
       }
-      // Spec: every OTHER record is set invisible on each show. Calling
-      // setVisible(false) unconditionally (even on already-hidden views) keeps
-      // the contract simple and is harmless/idempotent on a real xterm view.
       record.visible = false;
-      record.view.setVisible(false);
+      if (record.terminated) {
+        // Kept on purpose (see `releaseView`), so it has to be hidden instead.
+        record.view?.setVisible(false);
+      } else {
+        // A hidden buffer is wasted memory. Releasing keeps the record, so the
+        // PTY stays bound and the next show rebuilds from the backend's ring.
+        releaseView(record.key);
+      }
     }
 
     target.visible = true;
-    target.view.setVisible(true);
-    target.view.fit();
-    target.view.focus();
+    // A released target has no buffer yet. Rebuilding one means replaying the
+    // backend ring, which is an asynchronous read this manager cannot do — its
+    // owner calls `ensureView` and then shows it again.
+    target.view?.setVisible(true);
+    target.view?.fit();
+    target.view?.focus();
     active = key;
 
     // Only the shown terminal needs a PTY resize; inactive ones are untouched.
@@ -247,9 +294,11 @@ export function createLiveConversationTerminals(
     if (!record) {
       return;
     }
-    // Write REGARDLESS of visibility — this is what keeps inactive
-    // conversations live in the background.
-    record.view.write(data);
+    // Write REGARDLESS of visibility — a kept-but-hidden view still shows this
+    // when it is looked at. A RELEASED record has no buffer to write to, and
+    // dropping the bytes here is the point: the backend's ring keeps them and a
+    // later show replays them.
+    record.view?.write(data);
   }
 
   function feedSession(sessionId: string, data: string): void {
@@ -266,8 +315,36 @@ export function createLiveConversationTerminals(
       return;
     }
     // Keep the view + scrollback on screen; do NOT auto-remove. The user can
-    // still read the final output of a finished conversation.
+    // still read the final output of a finished conversation, and `releaseView`
+    // leaves a terminated record's buffer alone for the same reason.
     record.terminated = true;
+  }
+
+  /**
+   * Dispose one view's buffer while keeping everything that makes the
+   * conversation live: the record, its `sessionId` binding and the host it was
+   * built on. `ensureView` rebuilds it, `showView` shows it again.
+   *
+   * A TERMINATED conversation is the exception. Its process is gone, so nothing
+   * can tell a rebuilt view the width its output was written at and the final
+   * frame would re-wrap at xterm's 80-column default. That buffer has also
+   * stopped growing, so keeping it until `closeView` costs a fixed amount.
+   */
+  function releaseView(key: string): void {
+    const record = records.get(key);
+    if (!record || record.view == null || record.terminated) {
+      return;
+    }
+    const view = record.view;
+    record.view = null;
+    record.visible = false;
+    if (active === key) {
+      active = null;
+    }
+    // Hide BEFORE disposing: the host keeps whatever `display` the view last
+    // set it to, and a leftover `display: block` host covers the live terminal.
+    view.setVisible(false);
+    view.dispose();
   }
 
   function closeView(key: string): void {
@@ -278,8 +355,9 @@ export function createLiveConversationTerminals(
 
     clearSessionMappingFor(key);
     records.delete(key);
-    // Dispose ONLY this view — never touch the others' PTYs/views.
-    record.view.dispose();
+    // Dispose ONLY this view — never touch the others' PTYs/views. A released
+    // record has none left to dispose.
+    record.view?.dispose();
 
     if (active === key) {
       // Pick the next surviving view (most-recently-inserted) as active, or
@@ -295,7 +373,7 @@ export function createLiveConversationTerminals(
 
   function disposeAll(): void {
     for (const record of records.values()) {
-      record.view.dispose();
+      record.view?.dispose();
     }
     records.clear();
     sessionToKey.clear();
@@ -305,6 +383,7 @@ export function createLiveConversationTerminals(
   return {
     ensureView,
     viewFor,
+    hostFor,
     showView,
     activeKey,
     liveKeys,
@@ -314,6 +393,7 @@ export function createLiveConversationTerminals(
     feed,
     feedSession,
     markTerminated,
+    releaseView,
     closeView,
     disposeAll
   };

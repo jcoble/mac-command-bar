@@ -2,10 +2,8 @@
  * stackService.ts — the ONLY place run configurations talk to the rest of the app.
  *
  * On screen this feature is called "Run" and one saved entry is a "run
- * configuration". In here it is still called a stack, because renaming the
- * functions would mean renaming the storage keys they save under and every
- * user's saved entries would come back empty. See the note at the top of
- * `stackStore.svelte.ts`.
+ * configuration". The internal stack vocabulary predates that product name;
+ * see the note at the top of `stackStore.svelte.ts`.
  *
  * Two kinds of outside world, kept apart on purpose:
  *
@@ -18,7 +16,8 @@
  *    page — it owns the session rail, the terminal service and the terminal
  *    hosts. So this service does not do either: the page REGISTERS three
  *    handlers here (`registerStackHandlers`), and this service calls them and
- *    keeps the bookkeeping. See `_(stacks)-INTEGRATION.md` for the exact wiring.
+ *    keeps the bookkeeping. The page's side of that is `registerStackHandlers`
+ *    in its `onMount`.
  *
  * Every backend call is counted with `countInvoke('<command name>')` right
  * before it, so the dev invoke counter stays honest. A `null` result from a
@@ -26,11 +25,16 @@
  * invoked, and the panel says so rather than showing made-up data.
  */
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
-import { listRuntimeContextsFromTauri } from '../../tauriSource.ts';
+import {
+  listRuntimeContextsFromTauri,
+  readAssemblySettingFromTauri,
+  writeAssemblySettingFromTauri
+} from '../../tauriSource.ts';
 import {
   applyStackProcesses,
   beginStackLoad,
   commandWithEnv,
+  configureStackPersistence,
   failStackLoad,
   folderName,
   forgetStackRun,
@@ -46,6 +50,11 @@ import {
   type StackDefinition,
   type StackProcess
 } from './stackStore.svelte.ts';
+
+configureStackPersistence({
+  read: readAssemblySettingFromTauri,
+  write: writeAssemblySettingFromTauri
+});
 
 /** Shown when the process list only exists inside the desktop app. */
 const DESKTOP_ONLY = 'Running processes can only be read in the desktop app.';
@@ -115,14 +124,23 @@ function describeError(error: unknown): string {
  * storage, not the backend, and it is what makes the list appear at all.
  */
 export function activateStacks(input: { activeRoot: string | null; projectName?: string }): void {
-  hydrateStacks();
-  const firstTime = !stacks.activated;
   const key = (input.activeRoot ?? '').trim();
   setStackInput(input);
+  const firstTime = !stacks.activated;
   markStacksActivated();
-  if (!firstTime && key === loadedRootKey) return;
-  loadedRootKey = key;
-  void refreshStacks();
+  void activateStacksForKey(key, firstTime);
+}
+
+async function activateStacksForKey(key: string, firstTime: boolean): Promise<void> {
+  try {
+    await hydrateStacks();
+    if ((stacks.activeRoot ?? '').trim() !== key) return;
+    if (!firstTime && key === loadedRootKey) return;
+    loadedRootKey = key;
+    await refreshStacks();
+  } catch (error) {
+    stacks.error = `Could not load run configurations: ${describeError(error)}`;
+  }
 }
 
 /** Forget which project was last read — used when the shell tears the panel down. */
@@ -201,7 +219,7 @@ export async function startStack(stackId: string): Promise<void> {
       stacks.error = `Could not start "${definition.name}": no terminal opened.`;
       return;
     }
-    recordStackStart(definition.id, ownedId);
+    await recordStackStart(definition.id, ownedId);
     await refreshStacks();
   } catch (error) {
     stacks.error = `Could not start "${definition.name}": ${describeError(error)}`;
@@ -231,7 +249,7 @@ export async function stopStack(stackId: string): Promise<void> {
     // The page's close writes the session's own state; the run record is marked
     // ended here so the row stops claiming a terminal that is gone. A close is
     // the user's doing, so it counts as a clean end, not a failure.
-    recordStackExit(ownedId, { exitCode: 0, signal: null });
+    await recordStackExit(ownedId, { exitCode: 0, signal: null });
     await refreshStacks();
   } catch (error) {
     stacks.error = `Could not stop "${definition?.name ?? 'this run configuration'}": ${describeError(error)}`;
@@ -251,14 +269,33 @@ export function noteTerminalExit(
   ownedId: string,
   outcome: { exitCode: number | null; signal: string | null }
 ): void {
-  if (!recordStackExit(ownedId, outcome)) return;
-  void refreshStacks();
+  void recordTerminalExit(ownedId, outcome);
 }
 
 /** A session was removed from the rail: its stack tag goes with it. */
 export function noteSessionRemoved(ownedId: string): void {
   if (stackIdForOwnedId(ownedId) === null) return;
-  forgetStackRun(ownedId);
+  void forgetRemovedStackSession(ownedId);
+}
+
+async function recordTerminalExit(
+  ownedId: string,
+  outcome: { exitCode: number | null; signal: string | null }
+): Promise<void> {
+  try {
+    const recorded = await recordStackExit(ownedId, outcome);
+    if (recorded) await refreshStacks();
+  } catch (error) {
+    stacks.error = `Could not save the run result: ${describeError(error)}`;
+  }
+}
+
+async function forgetRemovedStackSession(ownedId: string): Promise<void> {
+  try {
+    await forgetStackRun(ownedId);
+  } catch (error) {
+    stacks.error = `Could not forget the run session: ${describeError(error)}`;
+  }
 }
 
 /** Put a stack's session on screen — the row's click-through. */

@@ -248,7 +248,7 @@
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.045);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 720;
   }
@@ -303,7 +303,7 @@
   .browser-runtime-list span,
   .browser-runtime-list small {
     color: #72e2cf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 820;
   }

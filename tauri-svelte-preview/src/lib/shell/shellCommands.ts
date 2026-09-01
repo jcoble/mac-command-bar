@@ -12,15 +12,15 @@
  */
 import { settings } from '../settingsStore.svelte.ts';
 import { browser, reloadBrowserFrame } from './browser/browserStore.svelte.ts';
-import { refreshAll as refreshContextCards } from './context/contextService.ts';
-import { closeEditorFile, editorState } from './editor/editorStore.svelte.ts';
+import { editorState } from './editor/editorStore.svelte.ts';
 import { explorer } from './explorer/explorerStore.svelte.ts';
 import { refresh as refreshFileList, stopScan } from './explorer/explorerService.ts';
 import { gitPanel } from './git/gitPanelStore.svelte.ts';
 import { gitService } from './git/gitService.ts';
 import type { SidebarViewId } from './layout/sidebarViews.ts';
 import { registerCommands } from './palette/commandRegistry.ts';
-import { refresh as refreshPlaywright } from './processes/playwrightService.ts';
+import { activate as activatePlaywright } from './processes/playwrightService.ts';
+import { setResourceManagerOpen } from './resources/resourceSampleStore.svelte.ts';
 import { refreshProblemsForSelection } from './shellPanels.ts';
 import { refreshStacks } from './stacks/stackService.ts';
 
@@ -33,12 +33,14 @@ export interface ShellCommandHooks {
    * lets that view read anything, so this is the entry point for somebody who
    * has not got the column open at all. */
   showView(id: SidebarViewId): void;
-  /** Open the new-session dialog. */
+  /** Open the new-session thread pane. */
   openNewSession(): void;
   /** Put the Problems list back in the strip along the bottom. Hiding the list
    * removes the buttons that would put it back, so this is a way in from the
    * keyboard that cannot be taken away. */
   showProblemsAtBottom(): void;
+  /** Ask the editor to close its active tab, including its dirty-tab dialog. */
+  closeActiveEditor(): void;
 }
 
 /** Register the panel actions. Calling it again replaces them, never doubles. */
@@ -75,6 +77,18 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       label: 'Show the changes to a file',
       detail: 'Bring the diff panel to the front',
       perform: () => hooks.showPanel('diff')
+    },
+    {
+      id: 'show-session-library',
+      label: 'Show the Session Library',
+      detail: 'Open the complete session and history library in the center',
+      perform: () => hooks.showPanel('session-library')
+    },
+    {
+      id: 'show-agents',
+      label: 'Show the Agents panel',
+      detail: 'Bring the workflow and agent control center to the front',
+      perform: () => hooks.showPanel('agents')
     },
     {
       id: 'new-session',
@@ -125,20 +139,12 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       perform: () => stopScan()
     },
     {
-      id: 'context-refresh',
-      label: 'Refresh the context cards',
-      detail: 'Read runs, processes, agent sessions, worktrees and repositories again',
-      // `refreshContextCards` reads the Playwright list itself now, so asking
-      // for it again here would only read it twice.
-      perform: () => void refreshContextCards()
-    },
-    {
       id: 'playwright-show',
-      label: 'Show leftover Playwright processes',
-      detail: 'Open the Context view and look again for browsers Playwright left running',
+      label: 'Show leftover browser processes',
+      detail: 'Open Resources and look for browsers a test run left running',
       perform: () => {
-        hooks.showView('context');
-        void refreshPlaywright();
+        setResourceManagerOpen(true);
+        activatePlaywright();
       }
     },
     {
@@ -190,9 +196,7 @@ export function registerShellCommands(hooks: ShellCommandHooks): () => void {
       label: 'Close the file in the editor',
       detail: 'Stop showing the file you are reading',
       disabled: () => editorState.activePath === null,
-      perform: () => {
-        if (editorState.activePath) closeEditorFile(editorState.activePath);
-      }
+      perform: () => hooks.closeActiveEditor()
     }
   ]);
 }

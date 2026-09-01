@@ -1,107 +1,124 @@
 /**
- * browserStore.svelte.ts — Svelte 5 runes state for the /next browser panel.
+ * Browser store compatibility facade.
  *
- * Holds the panel's STATE only: the URL the frame is showing, the text in the
- * URL box, the counter that forces a frame reload, and the last message shown
- * to the user. The panel component reads these fields directly and calls the
- * mutators below; it keeps no `$state` of its own.
- *
- * THREE RULES this module exists to enforce:
- *
- * 1. **No backend, ever.** The only IO here is localStorage. There is no Tauri
- *    call in the browser panel at all, so `countInvoke` never applies to it.
- * 2. **No `$effect`.** `$effect` is illegal in a `.svelte.ts` module and against
- *    the shell rules, so saving is an explicit `persist()` call at the end of
- *    every mutator that changes the URL.
- * 3. **Nothing loads at launch.** The shell mounts every panel up front (they
- *    sit parked off-screen), so the frame must NOT start fetching a page just
- *    because the shell started. `activateBrowser()` is the gate: until it is
- *    called the panel shows an inert empty state and no frame exists. The shell
- *    calls it the first time the user opens the Browser tab. Any user action
- *    inside the panel also opens the gate, so a missed wiring cannot leave the
- *    panel permanently dead.
- *
- * A storage that is full or unavailable never breaks the panel: the URL still
- * works for this run, it just will not come back after a reload.
+ * The old /next callers still receive `browser`, `activateBrowser`,
+ * `setBrowserUrl`, `reloadBrowserFrame`, `captureBrowserState` and
+ * `restoreBrowserState`.  New surfaces use the same reactive workspace and
+ * the pure browser model underneath. Durable restoration belongs to the active
+ * session's SQLite workspace snapshot, not browser storage.
  */
-import { normalizeBrowserUrl } from './normalizeBrowserUrl.ts';
 import type { SessionBrowserWorkspace } from '../sessionWorkspaces.ts';
+import {
+  saveConversationClipboardImage
+} from '../conversation/conversationService.ts';
+import {
+  getConversationSession,
+  setConversationAttachments,
+  setConversationDraft
+} from '../conversation/conversationStore.svelte.ts';
+import {
+  activateBrowserWorkspace,
+  BrowserModelError,
+  captureBrowserMarkup,
+  captureBrowserWorkspace,
+  closeBrowserTab,
+  createBrowserTab,
+  deactivateBrowserWorkspace as deactivateBrowserWorkspaceModel,
+  navigateActiveBrowserTab,
+  selectBrowserTab,
+  setBrowserPresentationMode,
+  setBrowserViewport,
+  stageBrowserFeedbackPreview,
+  type BrowserCaptureOptions,
+  type BrowserFeedbackStageOptions
+} from './browserModel.ts';
+import {
+  createBrowserBackend,
+  type BrowserBackend
+} from './browserBackend.ts';
+import {
+  createBrowserWorkspace,
+  type BrowserConversationAttachment,
+  type BrowserConversationBridge,
+  type BrowserFeedbackPreview,
+  type BrowserMarkupCapture,
+  type BrowserModelContext,
+  type BrowserPresentationMode,
+  type BrowserTabNavigationEvent,
+  type BrowserViewportPreset,
+  type BrowserWorkspaceState
+} from './browserTypes.ts';
+import { normalizeBrowserUrl } from './normalizeBrowserUrl.ts';
 
-/** localStorage key holding the last URL the browser panel showed. */
-export const BROWSER_URL_STORAGE_KEY = 'mac-command-bar.next.browser.url';
-
-/** What the user is told when the URL box holds something unusable. */
 export const INVALID_URL_MESSAGE = 'Enter an address that starts with http or https';
 
-/** What the user is told when the address could not be saved for next time. */
-export const STORAGE_WRITE_FAILED_MESSAGE =
-  'This address will not come back after a reload — browser storage is full';
-
-// ── Reactive state ────────────────────────────────────────────────────────────
-
-/**
- * The single reactive browser-panel state object. Read fields directly in the
- * component (`browser.url`, `browser.error`, …); mutate through the exported
- * functions so saving stays in lockstep.
- */
-export const browser = $state<{
-  /** The address the frame is showing. Empty means "no page yet". */
+export interface BrowserCompatibilityState {
   url: string;
-  /** The editable text in the URL box. Bound by the component. */
   inputUrl: string;
-  /** Bumped to force the frame to reload the same address. */
   frameKey: number;
-  /** Message shown above the frame; empty hides the strip. */
   error: string;
-  /** True once the user has opened the panel: only then does a frame exist. */
   activated: boolean;
-}>({
+  workspace: BrowserWorkspaceState;
+  backend: BrowserBackend;
+}
+
+const workspace = createBrowserWorkspace({ workspaceId: 'next-browser' });
+const backend = createBrowserBackend();
+
+const conversationBridge = {
+  read(ownedId: string) {
+    const current = getConversationSession(ownedId);
+    if (!current) return null;
+    return {
+      ownedId,
+      generation: current.generation,
+      draft: current.draft,
+      attachments: current.attachments.map((attachment) => ({ ...attachment }))
+    };
+  },
+  setDraft(ownedId: string, draft: string): void {
+    setConversationDraft(ownedId, draft);
+  },
+  setAttachments(ownedId: string, attachments: BrowserConversationAttachment[]): void {
+    setConversationAttachments(ownedId, attachments);
+  },
+  async saveAttachment(input: { ownedId: string; name: string; mimeType: string; bytes: readonly number[] }) {
+    const file = new File([Uint8Array.from(input.bytes)], input.name, { type: input.mimeType });
+    return saveConversationClipboardImage(input.ownedId, file);
+  }
+};
+
+export const browser = $state<BrowserCompatibilityState>({
   url: '',
   inputUrl: '',
   frameKey: 0,
   error: '',
-  activated: false
+  activated: false,
+  workspace,
+  backend
 });
 
-// ── Saving ────────────────────────────────────────────────────────────────────
+/** New browser surfaces can consume the model state directly. */
+export const browserWorkspace = browser.workspace;
+export const browserBackend = browser.backend;
 
-/**
- * Save (or clear) the current address. Returns true when it landed.
- *
- * Quota and unavailable-storage errors are swallowed — losing the saved address
- * is harmless — but they are NOT silent: the user is told the address will not
- * survive a reload.
- */
-function persist(url: string): boolean {
-  if (typeof localStorage === 'undefined') return false;
-  try {
-    if (url) {
-      localStorage.setItem(BROWSER_URL_STORAGE_KEY, url);
-    } else {
-      localStorage.removeItem(BROWSER_URL_STORAGE_KEY);
-    }
-    return true;
-  } catch {
-    browser.error = STORAGE_WRITE_FAILED_MESSAGE;
-    return false;
-  }
+function modelContext(): BrowserModelContext {
+  return { workspace: browser.workspace, backend: browser.backend };
 }
 
-/**
- * Read the saved address back. Tolerant: an unavailable store or a saved value
- * that is no longer a usable address comes back as an empty string. Does NOT
- * touch `browser` — `activateBrowser()` is what applies it.
- */
-export function loadStoredBrowserUrl(): string {
-  if (typeof localStorage === 'undefined') return '';
-  try {
-    return normalizeBrowserUrl(localStorage.getItem(BROWSER_URL_STORAGE_KEY) ?? '');
-  } catch {
-    return '';
-  }
+function syncLegacy(nextUrl?: string, bumpFrame = false): void {
+  const active = browser.workspace.activeTabId
+    ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null
+    : null;
+  const url = nextUrl ?? active?.url ?? '';
+  if (bumpFrame && browser.url === url && url) browser.frameKey += 1;
+  else if (bumpFrame && browser.url !== url) browser.frameKey += 1;
+  browser.url = url;
+  browser.inputUrl = active?.inputUrl ?? url;
+  browser.activated = browser.workspace.activated;
+  browser.error = browser.workspace.error ?? '';
 }
 
-/** Capture the state that belongs to the currently selected owned session. */
 export function captureBrowserState(): SessionBrowserWorkspace {
   return {
     url: browser.url,
@@ -110,83 +127,203 @@ export function captureBrowserState(): SessionBrowserWorkspace {
   };
 }
 
-/**
- * Put one owned session's Browser back on screen without touching the global
- * legacy URL key. Session switching is bookkeeping, not a new navigation.
- */
 export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | undefined): void {
   const nextUrl = normalizeBrowserUrl(snapshot?.url ?? '');
-  const changed = browser.url !== nextUrl;
-  browser.url = nextUrl;
-  browser.inputUrl = snapshot?.inputUrl ?? nextUrl;
-  browser.activated = snapshot?.activated === true && nextUrl.length > 0;
-  browser.error = '';
-  if (changed) browser.frameKey += 1;
+  browser.workspace.activated = snapshot?.activated === true && nextUrl.length > 0;
+  browser.workspace.error = null;
+  const current = browser.workspace.activeTabId
+    ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null
+    : null;
+  try {
+    if (nextUrl && !current) {
+      // Creating a native tab here would surface its webview over the shell
+      // before the browser panel is open; persist the url instead and let
+      // activateBrowser() create the tab when the panel is actually shown.
+      browser.workspace.activated = false;
+    } else if (nextUrl && current && current.url !== nextUrl) {
+      navigateActiveBrowserTab(modelContext(), nextUrl);
+    }
+    if (!nextUrl && current) {
+      closeBrowserTab(modelContext(), current.id);
+    }
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+  }
+  if (snapshot?.inputUrl && browser.workspace.activeTabId) {
+    const active = browser.workspace.tabs[browser.workspace.activeTabId];
+    if (active) active.inputUrl = snapshot.inputUrl;
+  }
+  if (snapshot?.activated !== true) browser.workspace.activated = false;
+  syncLegacy(nextUrl);
 }
 
-// ── Mutations ─────────────────────────────────────────────────────────────────
-
-/**
- * Open the gate: the first call restores the saved address (if any) so the
- * frame can render. Idempotent — later calls do nothing, so the shell may call
- * it on every activation of the Browser tab without reloading the page inside.
- */
 export function activateBrowser(): void {
-  if (browser.activated) return;
-  browser.activated = true;
-  const savedUrl = loadStoredBrowserUrl();
-  if (!savedUrl) return;
-  browser.url = savedUrl;
-  browser.inputUrl = savedUrl;
+  if (browser.workspace.activated) return;
+  const savedUrl = normalizeBrowserUrl(browser.url);
+  try {
+    activateBrowserWorkspace(modelContext());
+    if (savedUrl && !browser.workspace.activeTabId) {
+      createBrowserTab(modelContext(), { url: savedUrl });
+    }
+    syncLegacy();
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+    syncLegacy();
+  }
 }
 
-/**
- * Point the frame at `value` (any shorthand `normalizeBrowserUrl` accepts).
- * Returns false and sets a message when the text is not a usable address.
- *
- * Bumps `frameKey` so submitting the SAME address reloads it — which is what a
- * user pressing Enter twice expects.
- */
+export function deactivateBrowserWorkspace(): void {
+  try {
+    deactivateBrowserWorkspaceModel(modelContext());
+    syncLegacy();
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+    syncLegacy();
+  }
+}
+
+/** Release native browser views while keeping only the compact address metadata. */
+export function releaseBrowserWorkspace(): void {
+  const url = browser.url;
+  const inputUrl = browser.inputUrl;
+  for (const tabId of Object.keys(browser.workspace.tabs)) {
+    closeBrowserTab(modelContext(), tabId);
+  }
+  browser.workspace.tabs = {};
+  browser.workspace.tabOrder = [];
+  browser.workspace.activeTabId = null;
+  browser.workspace.activeGeneration = 0;
+  browser.workspace.activated = false;
+  browser.workspace.interaction = 'browse';
+  browser.workspace.pendingSelection = null;
+  browser.workspace.pendingSelectionKind = null;
+  browser.workspace.pendingMarkup = null;
+  browser.workspace.queue = [];
+  browser.workspace.markupCaptures = {};
+  browser.workspace.error = null;
+  browser.url = url;
+  browser.inputUrl = inputUrl;
+  browser.activated = false;
+  browser.error = '';
+}
+
 export function setBrowserUrl(value: string): boolean {
-  const normalizedUrl = normalizeBrowserUrl(value);
-  if (!normalizedUrl) {
-    browser.error = INVALID_URL_MESSAGE;
+  try {
+    activateBrowser();
+    const active = browser.workspace.activeTabId
+      ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null
+      : null;
+    if (!active) createBrowserTab(modelContext(), { url: value });
+    else navigateActiveBrowserTab(modelContext(), value);
+    browser.workspace.error = null;
+    syncLegacy(undefined, true);
+    return true;
+  } catch (error) {
+    browser.error = error instanceof BrowserModelError ? error.message : INVALID_URL_MESSAGE;
+    browser.workspace.error = browser.error;
     return false;
   }
-
-  browser.activated = true;
-  browser.url = normalizedUrl;
-  browser.inputUrl = normalizedUrl;
-  browser.error = '';
-  browser.frameKey += 1;
-  persist(normalizedUrl);
-  return true;
 }
 
-/**
- * Show `url` in the panel — the entry point for other parts of the shell (a
- * running dev server card, a palette command). Same rules as `setBrowserUrl`;
- * the caller is expected to also bring the Browser tab to the front.
- */
 export function openBrowserUrl(url: string): boolean {
   return setBrowserUrl(url);
 }
 
-/** Reload the page currently in the frame. No-op when there is no page. */
 export function reloadBrowserFrame(): void {
-  if (!browser.url) return;
-  browser.frameKey += 1;
+  const active = browser.workspace.activeTabId
+    ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null
+    : null;
+  if (!active) return;
+  try {
+    browser.backend.reload_browser_tab({
+      workspaceId: active.workspaceId,
+      tabId: active.id,
+      generation: active.generation
+    });
+    browser.frameKey += 1;
+    browser.workspace.error = null;
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+  }
+  syncLegacy();
 }
 
-/** Forget the current page and the saved address. */
 export function clearBrowserUrl(): void {
+  const active = browser.workspace.activeTabId
+    ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null
+    : null;
+  if (active) closeBrowserTab(modelContext(), active.id);
+  browser.workspace.error = null;
   browser.url = '';
   browser.inputUrl = '';
-  browser.error = '';
-  persist('');
+  browser.activated = browser.workspace.activated;
 }
 
-/** Clear the message strip (the component calls this as the user retypes). */
 export function clearBrowserError(): void {
   browser.error = '';
+  browser.workspace.error = null;
+}
+
+// Small explicit adapters used by the new browser components.  They keep the
+// compatibility store as the one reactive source without adding a second model.
+export function setBrowserPresentation(mode: BrowserPresentationMode): void {
+  try {
+    setBrowserPresentationMode(modelContext(), mode);
+    syncLegacy();
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+    syncLegacy();
+  }
+}
+
+export function setBrowserViewportPreset(value: BrowserViewportPreset): void {
+  try {
+    setBrowserViewport(modelContext(), value);
+    syncLegacy();
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+  }
+}
+
+export function captureBrowserView(): ReturnType<typeof captureBrowserWorkspace> {
+  return captureBrowserWorkspace(modelContext());
+}
+
+export async function captureBrowserMarkupView(
+  options?: Omit<BrowserCaptureOptions, 'forMarkup'>
+): Promise<BrowserMarkupCapture> {
+  return await captureBrowserMarkup(modelContext(), options);
+}
+
+export function stageBrowserFeedback(options?: BrowserFeedbackStageOptions): BrowserFeedbackPreview {
+  return stageBrowserFeedbackPreview(browserModelContext(options?.bridge), options);
+}
+
+export function browserModelContext(conversation?: BrowserConversationBridge): BrowserModelContext {
+  return { ...modelContext(), conversation: conversation ?? conversationBridge };
+}
+
+export function syncBrowserTab(tabId: string): void {
+  try {
+    selectBrowserTab(modelContext(), tabId);
+    syncLegacy();
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+  }
+}
+
+export function syncBrowserNavigation(event: BrowserTabNavigationEvent): void {
+  const tab = browser.workspace.tabs[event.tabId];
+  if (
+    !tab
+    || event.workspaceId !== browser.workspace.workspaceId
+    || event.generation !== tab.generation
+  ) return;
+  tab.url = event.url;
+  tab.inputUrl = event.url;
+  tab.title = event.title;
+  tab.canGoBack = event.canGoBack;
+  tab.canGoForward = event.canGoForward;
+  tab.loadState = 'loaded';
+  syncLegacy();
 }

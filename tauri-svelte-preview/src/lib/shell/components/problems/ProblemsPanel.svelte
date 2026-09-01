@@ -121,7 +121,7 @@
   {#if value > 0}
     {@const Icon = SEVERITY_ICONS[severity]}
     <Badge
-      variant="outline"
+      variant="secondary"
       title="{value} {severityWord(severity, value)}"
       class="h-5 gap-1 px-1.5 text-[12px] font-normal {SEVERITY_TONE[severity]}"
     >
@@ -132,7 +132,7 @@
 {/snippet}
 
 <div
-  class="flex h-full min-h-0 flex-col bg-[var(--color-bg)] text-[var(--color-text)]"
+  class="flex h-full min-h-0 flex-col text-[var(--color-text)]"
   data-testid="problems-panel"
 >
   <div
@@ -162,15 +162,15 @@
         aria-label="Filter problems"
         value={problemsState.filter}
         oninput={(event) => setProblemsFilter(event.currentTarget.value)}
-        class="h-7 rounded-md bg-[var(--color-surface)] pl-7 text-[13px] md:text-[13px]"
+        class="h-7 rounded-md bg-[var(--color-elevated)] pl-7 text-[13px] md:text-[13px]"
       />
     </div>
 
     <button
       type="button"
-      class="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-border)]
+      class="flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-[var(--color-elevated)]
              px-2 text-[12px] text-[var(--color-text-2)] transition-colors
-             hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]
+             hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]
              focus-visible:ring-3 focus-visible:ring-ring/50 outline-none
              disabled:opacity-60"
       disabled={problemsState.loading}
@@ -244,8 +244,8 @@
                 {@const Icon = SEVERITY_ICONS[row.severity]}
                 <button
                   type="button"
-                  class="flex w-full min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-2 pl-6
-                         text-left transition-colors hover:bg-[var(--color-elevated)]
+                  class="problem-row flex w-full min-w-0 items-center gap-1.5 rounded-md py-0.5 pr-2
+                         pl-6 text-left transition-colors hover:bg-[var(--color-elevated)]
                          focus-visible:ring-3 focus-visible:ring-ring/50 outline-none"
                   title="{severityWord(row.severity, 1)} · {row.message}"
                   onclick={() => openProblem(row)}
@@ -272,3 +272,19 @@
     {/if}
   </div>
 </div>
+
+<style>
+  /* A project with thousands of diagnostics puts thousands of rows in here.
+     Skipping layout and paint for what is off screen keeps the panel cheap to
+     scroll. `auto` means the browser uses the real height it last measured, so
+     a row that has been on screen once reserves the space it really takes.
+
+     24px is one problem row: 13px text at the app's 1.5 line-height (19.5px)
+     inside py-0.5 (4px). Only rows carry this: a file group starts open and
+     holds however many rows it has, so a single guessed height for a whole
+     group would shift the scroll range as the reader moves through the list. */
+  .problem-row {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 24px;
+  }
+</style>

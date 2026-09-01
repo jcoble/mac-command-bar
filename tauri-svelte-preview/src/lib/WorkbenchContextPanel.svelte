@@ -465,7 +465,7 @@
   }
 
   .wcp-mono {
-    font-family: var(--font-mono, ui-monospace, monospace);
+    font-family: var(--font-mono, var(--font-mono));
   }
 
   /* Path-like tokens truncate from the front (see tailPath) and ellipsize. */

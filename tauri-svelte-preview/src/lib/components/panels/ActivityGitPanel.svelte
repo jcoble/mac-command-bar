@@ -371,6 +371,7 @@
     {#each git.repositoryRows as row (`activity:${row.id}`)}
       <div
         class="activity-repo-row"
+        class:menu-open={actions.repoRowActionMenuOpen(row.id, 'repository')}
         class:dirty={row.dirty.isDirty || row.error}
         title={format.repoTitle(row)}
         oncontextmenu={(event) => {
@@ -396,7 +397,11 @@
           <span class="repo-branch-badge">{format.repoTaskLabel(row)}</span>
         {/if}
         <small>{format.repoDirtyLabel(row)} · {format.repoRemoteLabel(row)}</small>
-        <div class="activity-row-actions repository-activity-actions row-action-menu-anchor" aria-label="Repository actions">
+        <div
+          class="activity-row-actions repository-activity-actions row-action-menu-anchor"
+          class:menu-open={actions.repoRowActionMenuOpen(row.id, 'repository')}
+          aria-label="Repository actions"
+        >
           <button
             type="button"
             aria-label="Repository actions"
@@ -480,6 +485,7 @@
       {@const ledgerAction = ledgerWorktree ? format.worktreePrimaryAction(ledgerWorktree) : null}
       <div
         class={`activity-task-ledger-row ${row.tone}`}
+        class:menu-open={actions.repoRowActionMenuOpen(row.taskID, 'task-ledger')}
         data-task-ledger-id={row.taskID}
         tabindex="-1"
         title={format.taskLedgerTitle(row)}
@@ -530,7 +536,11 @@
             <span class="task-ledger-chip">commits {row.commitCount}</span>
           {/if}
         </div>
-        <div class="activity-row-actions task-ledger-actions row-action-menu-anchor" aria-label="Task ledger actions">
+        <div
+          class="activity-row-actions task-ledger-actions row-action-menu-anchor"
+          class:menu-open={actions.repoRowActionMenuOpen(row.taskID, 'task-ledger')}
+          aria-label="Task ledger actions"
+        >
           <button
             type="button"
             aria-label={`Task ledger actions for ${row.taskID}`}
@@ -635,6 +645,7 @@
       {@const entry = format.commitEntryForRow(row)}
       <div
         class="activity-commit-row"
+        class:menu-open={actions.commitRowActionMenuOpen('commit', row.sha)}
         title={row.detailLabel}
         oncontextmenu={(event) => {
           event.preventDefault();
@@ -650,7 +661,10 @@
           <strong>{row.subject}</strong>
           <small>{row.shortSha} · {format.commitTime(row.committedAt)}</small>
         </div>
-        <div class="activity-commit-meta">
+        <div
+          class="activity-commit-meta"
+          class:menu-open={actions.commitRowActionMenuOpen('commit', row.sha)}
+        >
           {#if row.taskID && format.taskUrl(row.taskID)}
             <a
               class="git-task-link"
@@ -662,7 +676,11 @@
               {row.taskID}
             </a>
           {/if}
-          <div class="activity-row-actions commit-activity-actions row-action-menu-anchor" aria-label="Commit actions">
+          <div
+            class="activity-row-actions commit-activity-actions row-action-menu-anchor"
+            class:menu-open={actions.commitRowActionMenuOpen('commit', row.sha)}
+            aria-label="Commit actions"
+          >
             <button
               type="button"
               aria-label="Commit actions"
@@ -762,7 +780,7 @@
    * is restated here (a scoped copy can't reach the page's runs rows and vice
    * versa).
    *
-   * The `.activity-panel-list .X:has(.row-action-menu)` open-menu reflow combos
+   * The `.activity-panel-list .X.menu-open` open-menu reflow combos
    * keep `.activity-panel-list` as the ancestor — this component's root IS
    * `.activity-panel-list`, so the scoped selectors match the rows it renders.
    * In the page these arms were grouped with the other panels' arms; only the
@@ -919,7 +937,7 @@
 
   .activity-git-secondary-section summary small {
     color: #7ff0df;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 9px;
     font-weight: 820;
   }
@@ -1321,7 +1339,7 @@
 
   .git-status-row strong {
     color: #6fdfcf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
     font-weight: 860;
   }
@@ -1393,7 +1411,7 @@
     min-width: 0;
     overflow: hidden;
     color: #6fdfcf;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 820;
     text-overflow: ellipsis;
@@ -1723,39 +1741,39 @@
   /*
    * Open-menu reflow combos — the component root IS `.activity-panel-list`, so
    * these scoped selectors reach the rows this component renders. Restated from
-   * the page's shared multi-panel `:has(.row-action-menu)` groups, narrowed to
+   * the page's shared multi-panel `.menu-open` groups, narrowed to
    * the git arms only.
    */
-  .activity-panel-list .activity-repo-row:has(.row-action-menu),
-  .activity-panel-list .activity-task-ledger-row:has(.row-action-menu),
-  .activity-panel-list .activity-commit-row:has(.row-action-menu) {
+  .activity-panel-list .activity-repo-row.menu-open,
+  .activity-panel-list .activity-task-ledger-row.menu-open,
+  .activity-panel-list .activity-commit-row.menu-open {
     align-items: start;
   }
 
-  .activity-panel-list .repository-activity-actions:has(.row-action-menu),
-  .activity-panel-list .task-ledger-actions:has(.row-action-menu),
-  .activity-panel-list .activity-commit-meta:has(.row-action-menu),
-  .activity-panel-list .commit-activity-actions:has(.row-action-menu) {
+  .activity-panel-list .repository-activity-actions.menu-open,
+  .activity-panel-list .task-ledger-actions.menu-open,
+  .activity-panel-list .activity-commit-meta.menu-open,
+  .activity-panel-list .commit-activity-actions.menu-open {
     display: contents;
   }
 
-  .activity-panel-list .repository-activity-actions:has(.row-action-menu) > button,
-  .activity-panel-list .task-ledger-actions:has(.row-action-menu) > button,
-  .activity-panel-list .commit-activity-actions:has(.row-action-menu) > button {
+  .activity-panel-list .repository-activity-actions.menu-open > button,
+  .activity-panel-list .task-ledger-actions.menu-open > button,
+  .activity-panel-list .commit-activity-actions.menu-open > button {
     justify-self: end;
   }
 
-  .activity-panel-list .commit-activity-actions:has(.row-action-menu) > button {
+  .activity-panel-list .commit-activity-actions.menu-open > button {
     grid-column: 3;
     grid-row: 1;
   }
 
-  .activity-panel-list .task-ledger-actions:has(.row-action-menu) > button {
+  .activity-panel-list .task-ledger-actions.menu-open > button {
     grid-column: 3;
     grid-row: 1;
   }
 
-  .activity-panel-list .repository-activity-actions:has(.row-action-menu) > button {
+  .activity-panel-list .repository-activity-actions.menu-open > button {
     grid-column: 4;
     grid-row: 1;
   }

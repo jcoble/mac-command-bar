@@ -13,6 +13,8 @@
  * Everything it prints is in the reader's own time zone.
  */
 
+import { formatFullDateTime, formatMonthDayTime, formatMonthDayYear } from './dateFormat.ts';
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -53,7 +55,7 @@ export function formatLastActivity(lastActivity: string | null | undefined, now:
  */
 export function exactLocalTime(lastActivity: string | null | undefined): string {
   const when = parseStamp(lastActivity);
-  return when ? when.toLocaleString() : '';
+  return when ? formatFullDateTime(when) : '';
 }
 
 /** Anything unparseable is nothing at all — the rail then prints no stamp,
@@ -77,19 +79,10 @@ function isYesterday(when: Date, now: Date): boolean {
 
 /** `Jul 27, 9:16 PM` — the year is this one, so saying it adds nothing. */
 function sameYearStamp(when: Date): string {
-  return when.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit'
-  });
+  return formatMonthDayTime(when);
 }
 
 /** `Jul 27, 2025` — past the turn of the year the hour stops mattering. */
 function olderYearStamp(when: Date): string {
-  return when.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  });
+  return formatMonthDayYear(when);
 }

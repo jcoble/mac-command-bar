@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 
 import {
+  CLAUDE_SESSION_EFFORTS,
   LAUNCH_CATALOG,
   agentKindFor,
   buildCommandPreview,
@@ -23,6 +24,7 @@ import {
   quoteForShell,
   resolveSessionTitle,
   serializeCustomRoots,
+  sessionEffortsFor,
   suggestSessionTitle,
   suggestedWorktreePath,
   validateNewSession,
@@ -36,7 +38,7 @@ import {
 {
   assert.deepEqual(
     LAUNCH_CATALOG.map((option) => option.agent),
-    ['claude', 'codex', 'shell']
+    ['codex', 'claude', 'shell']
   );
 
   for (const option of LAUNCH_CATALOG) {
@@ -45,6 +47,23 @@ import {
     assert.equal(typeof option.command, 'string');
     assert.ok(!option.command.includes('\n'), `${option.agent} launches with one line`);
   }
+}
+
+// Claude's thinking budget is chosen before its adapter starts. Other launch
+// cards do not offer or carry this provider-specific setting.
+{
+  assert.deepEqual(
+    CLAUDE_SESSION_EFFORTS.map((effort) => [effort.id, effort.label]),
+    [
+      ['low', 'Low'],
+      ['medium', 'Medium'],
+      ['high', 'High'],
+      ['max', 'Max']
+    ]
+  );
+  assert.deepEqual(sessionEffortsFor('claude'), CLAUDE_SESSION_EFFORTS);
+  assert.deepEqual(sessionEffortsFor('codex'), []);
+  assert.deepEqual(sessionEffortsFor('shell'), []);
 }
 
 // The commands are the bare interactive launches, confirmed against the two
@@ -385,14 +404,33 @@ import {
       cwd: '  /Users/me/dev/work/thing/  ',
       command: '  claude  ',
       agent: 'claude',
-      title: '  '
+      title: '  ',
+      reasoningEffort: 'medium'
     }),
     {
       cwd: '/Users/me/dev/work/thing',
       title: 'Claude in thing',
       agent: 'claude',
-      command: 'claude'
+      command: 'claude',
+      reasoningEffort: 'medium'
     }
+  );
+
+  assert.deepEqual(
+    buildNewSessionRequest({
+      cwd: '/Users/me/dev/work/thing',
+      command: 'codex',
+      agent: 'codex',
+      title: '',
+      reasoningEffort: 'max'
+    }),
+    {
+      cwd: '/Users/me/dev/work/thing',
+      title: 'Codex in thing',
+      agent: 'codex',
+      command: 'codex'
+    },
+    'Claude effort never leaks into another provider request'
   );
 
   // A plain terminal has no command to type. `null` is the word the session

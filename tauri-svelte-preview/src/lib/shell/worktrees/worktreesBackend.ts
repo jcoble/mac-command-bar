@@ -54,23 +54,23 @@ export const WORKTREE_FORCE_REMOVE_CAPABILITY = 'worktreeForceRemove';
 export const WORKTREE_PRUNE_SINGLE_CAPABILITY = 'worktreePruneSingle';
 
 /** List the worktrees of the repository `root` belongs to. */
-export function listWorktrees(root: string): Promise<ProjectWorktree[] | null> {
-  return listProjectWorktreesFromTauri(root);
+export async function listWorktrees(root: string): Promise<ProjectWorktree[] | null> {
+  return await listProjectWorktreesFromTauri(root);
 }
 
 /** Read each project's repository summary — the only source of ahead/behind. */
-export function listRepositorySummaries(
+export async function listRepositorySummaries(
   projects: RuntimeContextProject[]
 ): Promise<GitRepositorySummary[] | null> {
-  return listGitRepositorySummariesFromTauri(projects);
+  return await listGitRepositorySummariesFromTauri(projects);
 }
 
 /** Take a full, recoverable backup of a worktree before anything is removed. */
-export function archiveWorktree(
+export async function archiveWorktree(
   root: string,
   path: string
 ): Promise<ProjectWorktreeArchiveResult | null> {
-  return archiveProjectWorktreeFromTauri(root, path);
+  return await archiveProjectWorktreeFromTauri(root, path);
 }
 
 /**

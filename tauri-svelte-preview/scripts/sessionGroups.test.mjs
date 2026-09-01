@@ -5,15 +5,13 @@ import {
   groupToggleKey,
   isGroupExpanded,
   projectLabel,
-  RAIL_GROUPS_STORAGE_KEY,
-  readGroupExpansion,
   rememberGroupToggle,
   RESUME_GROUP_ROW_CAP,
   sessionGroupPath,
   visibleGroupItems,
-  worktreeParentProject,
-  writeGroupExpansion
+  worktreeParentProject
 } from '../src/lib/shell/sessionGroups.ts';
+import { buildSessionLibrary } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
 
 /** An owned-session record with only the fields the grouping reads. */
 function owned(title, { projectPath = null, cwd = '' } = {}) {
@@ -51,6 +49,31 @@ function shapeOf(groups) {
     ['/Users/me/dev/mac-command-bar', '/Users/me/other/mac-command-bar'],
     'the full path is the key, so same-named folders do not merge'
   );
+}
+
+// Session Library identity keeps same-title rows apart when their worktrees
+// differ; title is never a dedupe key.
+{
+  const rows = buildSessionLibrary(
+    [
+      {
+        ownedId: 'one', title: 'Same', agent: 'codex', viaCmux: false, source: 'fresh',
+        projectPath: '/repo/one', cwd: '/repo/one', resumeCommand: null, nativeSessionId: 'native',
+        ptySessionId: null, state: 'background', completedAt: null, settledAt: null,
+        branch: null, taskId: null, pullRequest: null, messageCount: null,
+        latestTurnPreview: null, lastActivity: null
+      },
+      {
+        ownedId: 'two', title: 'Same', agent: 'codex', viaCmux: false, source: 'fresh',
+        projectPath: '/repo/two', cwd: '/repo/two', resumeCommand: null, nativeSessionId: 'native',
+        ptySessionId: null, state: 'background', completedAt: null, settledAt: null,
+        branch: null, taskId: null, pullRequest: null, messageCount: null,
+        latestTurnPreview: null, lastActivity: null
+      }
+    ],
+    []
+  );
+  assert.equal(rows.length, 2);
 }
 
 // An owned session with no project path falls back to the folder it is
@@ -367,42 +390,6 @@ function shapeOf(groups) {
   assert.deepEqual(visibleGroupItems([], 3, false), { shown: [], hiddenCount: 0 });
   assert.deepEqual(visibleGroupItems(rows, 0, false), { shown: rows, hiddenCount: 0 });
   assert.equal(RESUME_GROUP_ROW_CAP, 8);
-}
-
-// Storage round-trips, and anything unreadable comes back as no choices made
-// rather than as a throw into the rail.
-{
-  const store = new Map();
-  const storage = {
-    getItem: (key) => store.get(key) ?? null,
-    setItem: (key, value) => store.set(key, value),
-    removeItem: (key) => store.delete(key)
-  };
-
-  assert.deepEqual(readGroupExpansion(storage), {});
-  assert.equal(writeGroupExpansion(storage, { 'resume:/repo/one': true }), true);
-  assert.equal(store.get(RAIL_GROUPS_STORAGE_KEY), '{"resume:/repo/one":true}');
-  assert.deepEqual(readGroupExpansion(storage), { 'resume:/repo/one': true });
-
-  store.set(RAIL_GROUPS_STORAGE_KEY, 'not json at all');
-  assert.deepEqual(readGroupExpansion(storage), {});
-
-  store.set(RAIL_GROUPS_STORAGE_KEY, '["resume:/repo/one"]');
-  assert.deepEqual(readGroupExpansion(storage), {});
-
-  // Entries that are not booleans are dropped; the rest still load.
-  store.set(RAIL_GROUPS_STORAGE_KEY, '{"a":true,"b":"yes","c":false}');
-  assert.deepEqual(readGroupExpansion(storage), { a: true, c: false });
-
-  // A full storage refuses the write and says so, instead of throwing.
-  const fullStorage = {
-    getItem: () => null,
-    setItem: () => {
-      throw new Error('QuotaExceededError');
-    },
-    removeItem: () => {}
-  };
-  assert.equal(writeGroupExpansion(fullStorage, { a: true }), false);
 }
 
 console.log('sessionGroups: all tests passed');

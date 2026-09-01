@@ -2,15 +2,14 @@
  * shellPanels.ts — binds the /next panels' loaders to the session rail.
  *
  * The decision of *when* a panel may load lives in `panelActivation.ts` (pure,
- * tested), including the two panels that load only while the user can see them:
- * source control and the context cards. This file is the small amount of glue
+ * tested), including the panels that load only while the user can see them,
+ * starting with files and source control. This file is the small amount of glue
  * that names the real loaders and reads the current project out of the rail. No
  * backend call is made here: every function below hands off to a lane's own
  * service, which is where the calls are counted.
  *
  * Nothing runs at import — the rail is only read when a loader is about to run.
  */
-import { activate as activateContextCards } from "./context/contextService.ts";
 import { activate as activateEditor } from "./editor/sourceIntelligence.ts";
 import { activate as activateExplorer } from "./explorer/explorerService.ts";
 import { gitService } from "./git/gitService.ts";
@@ -19,7 +18,6 @@ import {
   type PanelProject,
   type ProjectSelection,
 } from "./panelActivation.ts";
-import { activate as activatePlaywright } from "./processes/playwrightService.ts";
 import {
   activate as activateProblems,
   refresh as refreshProblems,
@@ -29,21 +27,8 @@ import { rail } from "./stores/sessionRailStore.svelte.ts";
 import { activate as activateWorktrees } from "./worktrees/worktreeManagerService.ts";
 import type { WorktreeSessionInput } from "./worktrees/worktreeManagerRows.ts";
 import { activateBrowser } from "./browser/browserStore.svelte.ts";
-import { isNativeTauriRuntime } from "$lib/tauriSource.ts";
 
-function warmNativeCsharpOnWorkspaceSelection(root: string | null): void {
-  const selectedRoot = root?.trim();
-  if (!selectedRoot || !isNativeTauriRuntime()) return;
-  void import("./editor/csharpLanguageClient.ts")
-    .then(({ ensureNativeCsharpLanguageClient }) =>
-      ensureNativeCsharpLanguageClient(selectedRoot)
-    )
-    .catch(() => {
-      // Observational warming: editor status reports any actionable failure.
-    });
-}
-
-/** Last folder of a path, for naming a project in the context cards. */
+/** Last folder of a path, for naming a project. */
 function folderName(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : path;
@@ -61,8 +46,8 @@ function folderFor(session: {
 
 /**
  * What the shell is pointed at: the active session's folder, plus one entry per
- * distinct folder across every owned session (the context cards ask the backend
- * about a list of projects, not just the current one).
+ * distinct folder across every owned session, for the panels that ask the
+ * backend about a list of projects rather than just the current one.
  */
 export function readSelection(): ProjectSelection {
   const active =
@@ -106,22 +91,10 @@ export function refreshProblemsForSelection(): void {
 
 export const shellPanels = createPanelActivation(
   {
-    editor: (root) => {
-      activateEditor(root);
-      warmNativeCsharpOnWorkspaceSelection(root);
-    },
+    editor: (root) => activateEditor(root),
     git: (root) => gitService.activate(root),
     browser: () => activateBrowser(),
-    explorer: (root) => activateExplorer(root),
-    context: (selection) => {
-      activateContextCards({
-        projects: selection.projects,
-        activeRoot: selection.root.trim() || null,
-      });
-      // The Playwright card sits with the context cards and is read at the same
-      // moment. It takes no project — leftover browsers are machine-wide.
-      activatePlaywright();
-    },
+    explorer: (root, checkoutDeleted) => activateExplorer(root, checkoutDeleted),
     worktrees: (selection) =>
       activateWorktrees({
         root: selection.root.trim() || null,

@@ -1,11 +1,11 @@
 /**
- * newSessionBackend.ts — the ONLY place the new-session dialog talks to the
+ * newSessionBackend.ts — the ONLY place the new-session thread pane talks to the
  * outside world.
  *
  * Three questions, three functions: which folder did the user choose in the
  * system dialog, is a typed-in folder really a project, and which checkouts
  * does this project have. Nothing here runs at import, nothing polls, nothing
- * runs from an `$effect`; the dialog calls them when the user does something.
+ * runs from an `$effect`; the thread pane calls them when the user does something.
  *
  * Every call is counted with `countInvoke('<command name>')` so the development
  * call counter stays honest.
@@ -13,7 +13,7 @@
  * Each function answers with a small result rather than throwing, because all
  * three have a perfectly ordinary "not available here" answer: the web build
  * has no system folder dialog and no git commands behind it, and saying so is
- * the dialog's job. A `null` from a `…FromTauri` wrapper means nothing was
+ * the pane's job. A `null` from a `…FromTauri` wrapper means nothing was
  * invoked at all — see `tauriSource.ts`.
  */
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
@@ -25,6 +25,14 @@ import {
   type ProjectWorktree
 } from '../../tauriSource.ts';
 
+export type ProjectGitRef = {
+  name: string;
+  isDefault: boolean;
+  isCurrent: boolean;
+  checkoutPath: string | null;
+  lastCommitMs: number | null;
+};
+
 /**
  * What came back: an answer, "this only works in the desktop app", or a failure
  * with something readable to show.
@@ -34,7 +42,7 @@ export type BackendAnswer<T> =
   | { status: 'unavailable'; message: string }
   | { status: 'failed'; message: string };
 
-/** Shown wherever a step of this dialog needs the desktop app to work. */
+/** Shown wherever a step of this pane needs the desktop app to work. */
 export const DESKTOP_ONLY_MESSAGE = 'This works in the desktop app only.';
 
 function describeError(error: unknown): string {
@@ -57,7 +65,7 @@ export async function pickProjectFolder(): Promise<BackendAnswer<string | null>>
   if (!canPickFolder()) {
     return {
       status: 'unavailable',
-      message: 'Choosing a folder works in the desktop app only — type the full path instead.'
+      message: 'The folder picker works in the desktop app only. Enter the full path instead.'
     };
   }
   try {
@@ -66,7 +74,7 @@ export async function pickProjectFolder(): Promise<BackendAnswer<string | null>>
     const chosen = await open({
       directory: true,
       multiple: false,
-      title: 'Choose a project folder'
+      title: 'Choose where the agent should work'
     });
     const folder = Array.isArray(chosen) ? chosen[0] : chosen;
     if (typeof folder !== 'string' || folder.trim().length === 0) {
@@ -85,7 +93,8 @@ export async function pickProjectFolder(): Promise<BackendAnswer<string | null>>
  * somewhere unexpected.
  */
 export async function validateProjectRoot(
-  path: string
+  path: string,
+  signal?: AbortSignal
 ): Promise<BackendAnswer<ProjectRootValidationResult>> {
   const trimmed = path.trim();
   if (!trimmed) {
@@ -93,7 +102,7 @@ export async function validateProjectRoot(
   }
   try {
     countInvoke('validate_project_root');
-    const result = await validateProjectRootFromTauri(trimmed);
+    const result = await validateProjectRootFromTauri(trimmed, signal);
     if (!result) {
       return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
     }
@@ -108,13 +117,13 @@ export async function validateProjectRoot(
  * worktrees of it.
  *
  * Only ever READS. There is no command here that makes a worktree, and this
- * lane never adds one: the dialog offers what already exists and hands over the
+ * lane never adds one: the pane offers what already exists and hands over the
  * `git worktree add` line for anything else.
  */
 export async function listWorktrees(root: string): Promise<BackendAnswer<ProjectWorktree[]>> {
   const trimmed = root.trim();
   if (!trimmed) {
-    return { status: 'failed', message: 'Pick a project first.' };
+    return { status: 'failed', message: 'Choose a project folder first.' };
   }
   try {
     countInvoke('list_project_worktrees');
@@ -126,7 +135,54 @@ export async function listWorktrees(root: string): Promise<BackendAnswer<Project
   } catch (error) {
     return {
       status: 'failed',
-      message: `The checkouts for this project could not be listed: ${describeError(error)}`
+      message: `The working copies for this project could not be listed: ${describeError(error)}`
+    };
+  }
+}
+
+/** Every local branch, newest commit first, with checkout locations attached. */
+export async function listGitRefs(root: string): Promise<BackendAnswer<ProjectGitRef[]>> {
+  const trimmed = root.trim();
+  if (!trimmed) {
+    return { status: 'failed', message: 'Choose a project folder first.' };
+  }
+  if (!isNativeTauriRuntime()) {
+    return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
+  }
+  try {
+    countInvoke('list_project_git_refs');
+    const { invoke } = await import('@tauri-apps/api/core');
+    const refs = await invoke<ProjectGitRef[] | null>('list_project_git_refs', { root: trimmed });
+    // A folder with no git repository behind it answers with nothing rather
+    // than an empty list. That is "no branches", not a list, and handing the
+    // non-list straight to the branch picker throws while the picker is opening
+    // — which leaves the picker stuck open with no content to dismiss.
+    return { status: 'ok', value: Array.isArray(refs) ? refs : [] };
+  } catch (error) {
+    return {
+      status: 'failed',
+      message: `The branches for this project could not be listed: ${describeError(error)}`
+    };
+  }
+}
+
+export async function initProjectRepository(root: string): Promise<BackendAnswer<null>> {
+  const trimmed = root.trim();
+  if (!trimmed) {
+    return { status: 'failed', message: 'Choose a project folder first.' };
+  }
+  if (!isNativeTauriRuntime()) {
+    return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
+  }
+  try {
+    countInvoke('init_project_repository');
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('init_project_repository', { root: trimmed });
+    return { status: 'ok', value: null };
+  } catch (error) {
+    return {
+      status: 'failed',
+      message: `The repository could not be created: ${describeError(error)}`
     };
   }
 }

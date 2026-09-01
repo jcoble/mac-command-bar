@@ -1,31 +1,43 @@
 <!--
   SettingsDialog.svelte — the /next shell's settings screen.
 
-  Same screen as before, same wording, same switches, same store: Appearance /
-  Editor / Terminal / General, bound to `settingsStore`, with "Reset section"
-  and "Done" at the bottom. What changed is what it is BUILT from — the shadcn
-  components in `$lib/components/ui`, coloured entirely from the /next tokens,
-  instead of the older shared widgets in `$lib/components`.
+  Same settings as before, same wording, same store. What changed is the shape:
+  it was a 560px dialog with four tabs, and it is now a full-window screen —
+  a way back to the app in the top-left, a search field that filters the rows
+  as you type, a grouped list of sections down the left, and cards of rows on
+  the right. That is the layout every desktop app of this kind uses, and it is
+  the only one that stays readable as the list of settings grows.
 
-  Why a second file rather than an edit to `$lib/SettingsPanel.svelte`: that
-  panel is also the old shell's settings screen, and the old shell must keep
-  rendering exactly as it does today. So /next gets its own, and the old page
-  keeps the one it has.
+  Everything is built from the components in `$lib/components/ui`, coloured
+  from the /next tokens. No native `<select>` anywhere; no setting was added,
+  renamed or dropped in the move.
 
-  Nothing here touches the backend.
+  Why the file is still called `SettingsDialog` and still takes `open`: the
+  host that mounts it (`SettingsHost.svelte`) and the shell above it both
+  address it that way, and neither is this lane's to change.
+
+  Nothing here touches the backend except the C# language-server switch, which
+  has always asked the app to start or stop the server.
 
   Usage:
     <SettingsDialog bind:open />
 -->
 <script lang="ts">
-  import { Palette, RotateCcw, SlidersHorizontal, SquareTerminal, Type } from '@lucide/svelte';
+  import type { Snippet } from 'svelte';
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import Palette from '@lucide/svelte/icons/palette';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import Search from '@lucide/svelte/icons/search';
+  import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import SquareTerminal from '@lucide/svelte/icons/square-terminal';
+  import Type from '@lucide/svelte/icons/type';
 
   import { Button } from '$lib/components/ui/button/index.js';
-  import * as Dialog from '$lib/components/ui/dialog/index.js';
-  import * as Select from '$lib/components/ui/select/index.js';
+  import { Input } from '$lib/components/ui/input/index.js';
+  import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
-  import * as Tabs from '$lib/components/ui/tabs/index.js';
   import {
     PROBLEMS_LOCATIONS,
     PROBLEMS_LOCATION_LABELS,
@@ -34,12 +46,26 @@
     type ProblemsLocation,
     type SettingsSection
   } from '$lib/settingsStore.svelte';
-  import { setCsharpLanguageServerEnabled } from '$lib/shell/editor/sourceIntelligence';
+  import {
+    setLanguageServerEnabled,
+    setLanguageServersEnabled,
+    type LanguageServerId
+  } from '$lib/shell/editor/sourceIntelligence';
+  import {
+    readHelperSettingsFromTauri,
+    setHelperKeyFromTauri,
+    testHelperFromTauri,
+    writeHelperSettingsFromTauri,
+    type HelperSettingsView,
+    type HelperVendor
+  } from '$lib/tauriSource';
   import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
+  import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
+  import { getMonoFont, UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
 
   interface Props {
-    /** Whether the settings dialog is open. */
+    /** Whether the settings screen is showing. */
     open?: boolean;
     /**
      * The user moved the Problems list. The setting is already written by the
@@ -54,6 +80,10 @@
   // ── Option lists ────────────────────────────────────────────────────────
   /** The themes the app actually ships, straight from the registry. */
   const themeItems = themeChoices();
+  /** The faces the app ships, from the same kind of registry. */
+  const uiFontItems = UI_FONTS.map((font) => ({ value: font.id, label: font.label }));
+  const monoFontItems = MONO_FONTS.map((font) => ({ value: font.id, label: font.label }));
+  const editorFontFamilyItems = MONO_FONTS.map((font) => ({ value: font.id, label: font.label }));
 
   const fontFamilyItems = [
     { value: 'Google Sans Mono', label: 'Google Sans Mono' },
@@ -88,14 +118,273 @@
     label: PROBLEMS_LOCATION_LABELS[value]
   }));
 
-  const tabs = [
-    { value: 'appearance', label: 'Appearance', icon: Palette },
-    { value: 'editor', label: 'Editor', icon: Type },
-    { value: 'terminal', label: 'Terminal', icon: SquareTerminal },
-    { value: 'general', label: 'General', icon: SlidersHorizontal }
+  // ── The screen's own map ────────────────────────────────────────────────
+  /**
+   * Sections in the order the left-hand list shows them, under the group each
+   * one belongs to. The groups are labels only — nothing collapses.
+   */
+  const sections = [
+    { id: 'appearance', group: 'Interface', label: 'Appearance', icon: Palette },
+    { id: 'editor', group: 'Workspace', label: 'Editor', icon: Type },
+    { id: 'terminal', group: 'Workspace', label: 'Terminal', icon: SquareTerminal },
+    { id: 'general', group: 'Application', label: 'General', icon: SlidersHorizontal },
+    { id: 'helper', group: 'Application', label: 'Helper model', icon: Sparkles }
   ];
 
-  let activeTab = $state('appearance');
+  /**
+   * Every row on the screen, once, so that search has something to read and
+   * the markup below has one source for its wording. `card` groups rows into
+   * the boxes within a section; `keywords` catches the words someone is likely
+   * to type that the row does not itself say.
+   */
+  const rows = [
+    {
+      id: 'theme',
+      section: 'appearance',
+      card: 'Colors',
+      title: 'Theme',
+      description: 'Overall color scheme for the app.',
+      keywords: 'dark light palette houston'
+    },
+    {
+      id: 'ui-font',
+      section: 'appearance',
+      card: 'Text',
+      title: 'Interface font',
+      description: 'The face for labels, menus and messages.',
+      keywords: 'typeface family inter manrope figtree sans'
+    },
+    {
+      id: 'mono-font',
+      section: 'appearance',
+      card: 'Text',
+      title: 'Code font',
+      description: 'The face for paths, commands and code outside the editor.',
+      keywords: 'typeface family monospace jetbrains fira geist'
+    },
+    {
+      id: 'app-font-size',
+      section: 'appearance',
+      card: 'Text',
+      title: 'Interface font size',
+      description: 'Base size for chrome, labels and menus.',
+      keywords: 'type scale bigger smaller'
+    },
+    {
+      id: 'editor-font-family',
+      section: 'editor',
+      card: 'Text',
+      title: 'Font family',
+      description: 'Typeface used in the code editor.',
+      keywords: 'monospace typeface'
+    },
+    {
+      id: 'editor-font-size',
+      section: 'editor',
+      card: 'Text',
+      title: 'Font size',
+      description: 'Editor text size in pixels.',
+      keywords: 'type scale'
+    },
+    {
+      id: 'editor-line-height',
+      section: 'editor',
+      card: 'Text',
+      title: 'Line height',
+      description: 'Absolute line height in pixels.',
+      keywords: 'spacing leading'
+    },
+    {
+      id: 'editor-ligatures',
+      section: 'editor',
+      card: 'Text',
+      title: 'Font ligatures',
+      description: 'Render combined glyphs like => and !==.',
+      keywords: 'glyphs arrows'
+    },
+    {
+      id: 'terminal-font-family',
+      section: 'terminal',
+      card: 'Text',
+      title: 'Font family',
+      description: 'Typeface used in the embedded terminal.',
+      keywords: 'monospace typeface'
+    },
+    {
+      id: 'terminal-font-size',
+      section: 'terminal',
+      card: 'Text',
+      title: 'Font size',
+      description: 'Terminal text size in pixels.',
+      keywords: 'type scale'
+    },
+    {
+      id: 'terminal-line-height',
+      section: 'terminal',
+      card: 'Text',
+      title: 'Line height',
+      description: 'Line spacing multiplier (relative to font size).',
+      keywords: 'spacing leading'
+    },
+    {
+      id: 'terminal-theme',
+      section: 'terminal',
+      card: 'Colors',
+      title: 'Color theme',
+      description: 'Palette applied to terminal output.',
+      keywords: 'dracula solarized one dark'
+    },
+    {
+      id: 'terminal-cursor-blink',
+      section: 'terminal',
+      card: 'Behaviour',
+      title: 'Cursor blink',
+      description: 'Pulse the terminal cursor when idle.',
+      keywords: 'caret flash'
+    },
+    {
+      id: 'terminal-app',
+      section: 'general',
+      card: 'Outside the app',
+      title: 'External terminal app',
+      description: 'Used when opening a folder in a terminal.',
+      keywords: 'warp iterm ghostty wezterm alacritty'
+    },
+    {
+      id: 'problems-location',
+      section: 'general',
+      card: 'Panels',
+      title: 'Where the problems list sits',
+      description: 'The list of mistakes the language server has found in this project.',
+      keywords: 'errors warnings bottom right hidden panel'
+    },
+    {
+      id: 'language-servers',
+      section: 'general',
+      card: 'Supercharged',
+      title: 'Supercharged',
+      description:
+        'One switch over every language server. Off stops the ones running and leaves files in Editor-only mode.',
+      keywords: 'lsp intelligence typescript rust svelte roslyn memory off'
+    },
+    {
+      id: 'csharp-language-server',
+      section: 'general',
+      card: 'Supercharged',
+      title: 'C#',
+      description:
+        'Off saves about 800MB of memory. Reference counts and project-wide search keep working. What you lose is the squiggles under mistakes, and the precision of go-to-definition when a name is used in more than one place.',
+      keywords: 'roslyn omnisharp intellisense memory'
+    },
+    {
+      id: 'typescript-language-server',
+      section: 'general',
+      card: 'Supercharged',
+      title: 'TypeScript / JavaScript',
+      description: 'Allow the TypeScript language server while Supercharged is on.',
+      keywords: 'typescript javascript ts js lsp'
+    },
+    {
+      id: 'rust-language-server',
+      section: 'general',
+      card: 'Supercharged',
+      title: 'Rust',
+      description: 'Allow rust-analyzer while Supercharged is on.',
+      keywords: 'rust rust-analyzer lsp'
+    },
+    {
+      id: 'helper-vendor',
+      section: 'helper',
+      card: 'Which model',
+      title: 'Service',
+      description:
+        'Who the small helper model is asked. The app pays nothing for this; the key is yours and the calls are billed to you.',
+      keywords: 'openai anthropic provider vendor byok'
+    },
+    {
+      id: 'helper-model',
+      section: 'helper',
+      card: 'Which model',
+      title: 'Model',
+      description:
+        'Cheapest first. The work is a few hundred tokens at a time, so the cheapest model is usually the right one.',
+      keywords: 'gpt claude haiku cheap small'
+    },
+    {
+      id: 'helper-key',
+      section: 'helper',
+      card: 'Key',
+      title: 'API key',
+      description:
+        'Stored in your login Keychain, never in a settings file, and never shown again after it is saved. Saving an empty field removes the key and turns the helper off.',
+      keywords: 'secret token keychain password credentials'
+    },
+    {
+      id: 'helper-test',
+      section: 'helper',
+      card: 'Key',
+      title: 'Test',
+      description: 'Makes one tiny call and says what came back.',
+      keywords: 'check verify connection try'
+    }
+  ];
+
+  let activeSection = $state('appearance');
+  let query = $state('');
+  let searchField = $state<HTMLElement | null>(null);
+
+  /** Rows the current search leaves visible. An empty search leaves them all. */
+  const matches = $derived.by(() => {
+    const needle = query.trim().toLowerCase();
+    const visible = new Set<string>();
+    for (const row of rows) {
+      if (!needle) {
+        visible.add(row.id);
+        continue;
+      }
+      const sectionLabel = sections.find((section) => section.id === row.section)?.label ?? '';
+      const haystack =
+        `${row.title} ${row.description} ${row.keywords} ${row.card} ${sectionLabel}`.toLowerCase();
+      if (haystack.includes(needle)) visible.add(row.id);
+    }
+    return visible;
+  });
+
+  const searching = $derived(query.trim().length > 0);
+
+  /** Sections with at least one row left after the search. */
+  const shownSections = $derived(
+    sections.filter((section) =>
+      rows.some((row) => row.section === section.id && matches.has(row.id))
+    )
+  );
+
+  /**
+   * Which section the content pane shows. A search that empties the chosen
+   * section moves to the first one that still has something in it, so the pane
+   * is never blank while results exist elsewhere.
+   */
+  const shownSection = $derived(
+    shownSections.find((section) => section.id === activeSection) ?? shownSections[0] ?? null
+  );
+
+  /** The cards of the shown section, in the order their rows first appear. */
+  const shownCards = $derived.by(() => {
+    if (!shownSection) return [] as { name: string; rowIds: string[] }[];
+    const cards: { name: string; rowIds: string[] }[] = [];
+    for (const row of rows) {
+      if (row.section !== shownSection.id || !matches.has(row.id)) continue;
+      const existing = cards.find((card) => card.name === row.card);
+      if (existing) existing.rowIds.push(row.id);
+      else cards.push({ name: row.card, rowIds: [row.id] });
+    }
+    return cards;
+  });
+
+  function rowMeta(id: string) {
+    // Every id passed below is one of the entries above, so this cannot miss.
+    return rows.find((row) => row.id === id)!;
+  }
 
   // Local UI-only toggles (no store field yet) — kept here so the switches are
   // functional in isolation. Application is a later step.
@@ -107,27 +396,149 @@
    * as-is under the switch: the backend answers in whole sentences, including
    * the one that says this build of the app cannot do it at all.
    */
-  let csharpLanguageServerNote = $state<string | null>(null);
-  /** False once the app has said it cannot switch the server. The control is
-   * then switched off rather than left looking live and doing nothing. */
-  let csharpLanguageServerSupported = $state(true);
+  let languageServersNote = $state<string | null>(null);
+  let languageServersSupported = $state(true);
+  let languageServerNote = $state<string | null>(null);
 
   function moveProblems(location: ProblemsLocation): void {
     settings.panels.problemsLocation = location;
     onProblemsLocationChange?.(location);
   }
 
-  async function switchCsharpLanguageServer(enabled: boolean): Promise<void> {
-    const before = settings.intelligence.csharpLanguageServer;
-    settings.intelligence.csharpLanguageServer = enabled;
-    const result = await setCsharpLanguageServerEnabled(enabled);
-    csharpLanguageServerSupported = result.supported;
-    csharpLanguageServerNote = result.message;
-    // An app that cannot do this leaves the server exactly as it was, so the
-    // setting has to go back to saying so. Otherwise the switch reads "off"
-    // over a server that is still running — and since the control is disabled
-    // from here on, there would be no way to put it right.
-    if (!result.supported) settings.intelligence.csharpLanguageServer = before;
+  function paintEditorFont(stack: string): void {
+    if (typeof document === 'undefined') return;
+    for (const scroller of document.querySelectorAll<HTMLElement>('.cm-scroller')) {
+      scroller.style.fontFamily = stack;
+    }
+  }
+
+  function setEditorFontFamily(id: string): void {
+    const font = getMonoFont(id);
+    settings.editor.fontFamily = font.id;
+    paintEditorFont(font.stack);
+  }
+
+  async function switchLanguageServers(enabled: boolean): Promise<void> {
+    const before = settings.intelligence.languageServers;
+    settings.intelligence.languageServers = enabled;
+    const result = await setLanguageServersEnabled(enabled);
+    languageServersSupported = result.supported;
+    languageServersNote = result.message;
+    if (!result.supported) settings.intelligence.languageServers = before;
+  }
+
+  async function switchLanguageServer(id: LanguageServerId, enabled: boolean): Promise<void> {
+    const before = settings.intelligence.languageServerEnabled[id];
+    settings.intelligence.languageServerEnabled[id] = enabled;
+    const result = await setLanguageServerEnabled(id, enabled);
+    languageServerNote = result.message;
+    if (!result.supported) settings.intelligence.languageServerEnabled[id] = before;
+  }
+
+  /**
+   * The helper model's settings, as the app holds them. Not part of the store
+   * above: the app runs helper jobs itself, so vendor and model live in a file
+   * it can read with no window open, and the key lives in the Keychain. This
+   * screen is a view onto those, not a second copy of them.
+   */
+  let helper = $state<HelperSettingsView | null>(null);
+  /** What has been typed into the key field but not saved yet. */
+  let helperKey = $state('');
+  /** The last thing the Test button, or saving a key, had to say. */
+  let helperNote = $state<string | null>(null);
+  let helperTesting = $state(false);
+
+  const helperVendorItems = [
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'anthropic', label: 'Anthropic' }
+  ];
+
+  /** The models the chosen service offers, cheapest first. */
+  const helperModelItems = $derived(
+    (helper === null
+      ? []
+      : helper.vendor === 'anthropic'
+        ? helper.anthropicModels
+        : helper.openaiModels
+    ).map((id) => ({ value: id, label: id }))
+  );
+
+  // Every one of these talks to the app, and the app answers a refusal as a
+  // whole sentence. Letting one reject would leave the status line blank over
+  // a screen that has already moved on, so each says what happened, and the
+  // ones that changed the screen first put it back.
+  async function loadHelper(): Promise<void> {
+    try {
+      helper = await readHelperSettingsFromTauri();
+    } catch (error) {
+      helperNote = String(error);
+    }
+  }
+
+  /**
+   * Changing service changes which key is wanted, so the model goes back to
+   * that service's cheapest and the screen re-reads whether a key is stored.
+   */
+  async function chooseHelperVendor(value: string): Promise<void> {
+    if (!helper) return;
+    const before = helper;
+    const vendor = value as HelperVendor;
+    const models = vendor === 'anthropic' ? helper.anthropicModels : helper.openaiModels;
+    const model = models[0] ?? helper.model;
+    helper = { ...helper, vendor, model };
+    helperNote = null;
+    helperKey = '';
+    try {
+      await writeHelperSettingsFromTauri({ vendor, model });
+    } catch (error) {
+      helper = before;
+      helperNote = String(error);
+      return;
+    }
+    await loadHelper();
+  }
+
+  async function chooseHelperModel(model: string): Promise<void> {
+    if (!helper) return;
+    const before = helper;
+    helper = { ...helper, model };
+    try {
+      await writeHelperSettingsFromTauri({ vendor: helper.vendor, model });
+    } catch (error) {
+      helper = before;
+      helperNote = String(error);
+    }
+  }
+
+  /** Saving hands the key to the Keychain and forgets it here. */
+  async function saveHelperKey(): Promise<void> {
+    if (!helper) return;
+    const removing = helperKey.trim().length === 0;
+    try {
+      await setHelperKeyFromTauri(helper.vendor, helperKey);
+    } catch (error) {
+      // What was typed stays in the field. Whatever went wrong, retyping a key
+      // is the last thing anyone wants to be asked to do.
+      helperNote = String(error);
+      return;
+    }
+    helperKey = '';
+    helperNote = removing ? 'Key removed.' : 'Key saved to your Keychain.';
+    await loadHelper();
+  }
+
+  async function testHelper(): Promise<void> {
+    helperTesting = true;
+    helperNote = 'Asking…';
+    try {
+      const result = await testHelperFromTauri();
+      helperNote = result?.message ?? 'The helper model only works in the desktop app.';
+    } catch (error) {
+      helperNote = String(error);
+    } finally {
+      // In a `finally` so a refused test does not leave the button dead.
+      helperTesting = false;
+    }
   }
 
   /** The label to show on a closed dropdown, given what is selected. */
@@ -148,330 +559,473 @@
       : DEFAULT_THEME_ID
   );
 
-  function resetActiveSection() {
-    resetSettings(activeTab as SettingsSection);
+  function resetShownSection(): void {
+    if (!shownSection) return;
+    resetSettings(shownSection.id as SettingsSection);
     // Putting the settings back has to put the SCREEN back too, or the app says
     // one thing and shows another. A reset stores `dark`, which resolves to the
     // theme the app ships with.
     applyTheme(settings.appearance.themeId);
   }
+
+  function backToApp(): void {
+    open = false;
+  }
+
+  /**
+   * Escape leaves the screen — unless something inside it has already used the
+   * key, which is what closing an open dropdown looks like from here.
+   */
+  function onWindowKeyDown(event: KeyboardEvent): void {
+    if (!open || event.key !== 'Escape' || event.defaultPrevented) return;
+    event.preventDefault();
+    backToApp();
+  }
+
+  // Opening the screen puts the caret in the search field: it is the fastest
+  // way to reach a setting, and it costs a person nothing to ignore.
+  $effect(() => {
+    if (open) searchField?.focus();
+  });
+
+  // Read the helper's settings each time the screen opens, so a key stored or
+  // removed elsewhere is not shown stale.
+  $effect(() => {
+    if (open) void loadHelper();
+  });
+
+  $effect(() => {
+    paintEditorFont(getMonoFont(settings.editor.fontFamily).stack);
+  });
 </script>
 
-<Dialog.Root bind:open>
-  <!-- Sized and coloured to match the dialog this screen has always had:
-       560px wide, the shell backdrop, a hairline edge and a deep shadow. -->
-  <Dialog.Content
-    class="w-[min(560px,calc(100vw-3rem))] sm:max-w-none max-h-[calc(100vh-3rem)] gap-0 overflow-y-auto rounded-lg bg-background p-0 text-foreground ring-border shadow-[var(--shadow-lg)]"
+<svelte:window onkeydown={onWindowKeyDown} />
+
+<!--
+  One row of the screen: what the setting is, on the left; the control, on the
+  right. Rows that the search has filtered out are simply not rendered.
+-->
+{#snippet settingRow(id: string, control: Snippet, wide = false)}
+  {@const meta = rowMeta(id)}
+  <div
+    class="border-border/60 flex gap-6 border-b px-4 py-3 last:border-b-0 {wide
+      ? 'flex-col items-stretch'
+      : 'items-center justify-between'}"
+    data-setting={id}
   >
-    <Dialog.Header class="gap-1 border-b px-5 pt-5 pb-4">
-      <Dialog.Title class="text-[14px] leading-[1.4] font-semibold">Settings</Dialog.Title>
-      <Dialog.Description class="text-[12px] leading-[1.5] text-muted-foreground">
-        Tune appearance and tooling preferences.
-      </Dialog.Description>
-    </Dialog.Header>
+    <div class="flex min-w-0 flex-col gap-1">
+      <span class="text-[13px] leading-[1.3] font-medium">{meta.title}</span>
+      <span class="text-[12px] leading-[1.45] text-[var(--color-text-3)]">{meta.description}</span>
+    </div>
+    <div class={wide ? 'w-full' : 'flex w-[220px] shrink-0 justify-end'}>
+      {@render control()}
+    </div>
+  </div>
+{/snippet}
 
-    <!-- A steady minimum height so switching tabs does not make the dialog jump. -->
-    <div class="min-h-[320px] px-5 py-4">
-      <Tabs.Root bind:value={activeTab} class="gap-4">
-        <Tabs.List class="w-full">
-          {#each tabs as tab (tab.value)}
-            {@const Icon = tab.icon}
-            <Tabs.Trigger value={tab.value} class="text-[13px]">
-              <Icon aria-hidden="true" />
-              {tab.label}
-            </Tabs.Trigger>
-          {/each}
-        </Tabs.List>
+<!-- A slider with the number it is currently on, so the value is not a guess. -->
+{#snippet sliderReading(value: number, unit: string)}
+  <span class="text-muted-foreground w-12 shrink-0 text-right text-[12px] tabular-nums">
+    {value}{unit}
+  </span>
+{/snippet}
 
-        <Tabs.Content value="appearance">
-          <div class="flex flex-col gap-5 pt-1">
-            <div class="flex items-center justify-between gap-5">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Theme</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Overall color scheme for the app.
-                </span>
-              </div>
-              <div class="w-[200px] shrink-0">
-                <!-- Not `bind:value`: applying a theme writes the setting itself, and a
-                     binding would fight it. -->
-                <Select.Root type="single" value={shownThemeId} onValueChange={(value) => applyTheme(value)}>
-                  <Select.Trigger class="w-full">
-                    {labelFor(themeItems, shownThemeId)}
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each themeItems as item (item.value)}
-                      <Select.Item value={item.value} label={item.label} />
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-              </div>
+{#if open}
+  <div class="settings-screen" role="dialog" aria-modal="true" aria-label="Settings">
+    <header class="border-border/70 flex items-center gap-3 border-b px-4 py-2.5">
+      <Button variant="ghost" size="sm" onclick={backToApp} class="gap-1.5 px-2">
+        <ArrowLeft aria-hidden="true" />
+        Back to app
+      </Button>
+      <span class="text-[13px] font-semibold">Settings</span>
+      <div class="relative ml-auto w-[280px]">
+        <Search
+          aria-hidden="true"
+          class="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2"
+        />
+        <Input
+          bind:ref={searchField}
+          bind:value={query}
+          type="search"
+          placeholder="Search settings"
+          aria-label="Search settings"
+          class="h-7 pl-7"
+        />
+      </div>
+    </header>
+
+    <div class="flex min-h-0 flex-1">
+      <nav class="border-border/70 w-[208px] shrink-0 overflow-y-auto border-r px-2 py-3">
+        {#each shownSections as section, index (section.id)}
+          {@const newGroup = index === 0 || shownSections[index - 1].group !== section.group}
+          {#if newGroup}
+            <div
+              class="text-muted-foreground px-2 pb-1 text-[11px] font-medium tracking-wide uppercase {index >
+              0
+                ? 'pt-4'
+                : ''}"
+            >
+              {section.group}
             </div>
+          {/if}
+          {@const Icon = section.icon}
+          <button
+            type="button"
+            class="focus-visible:ring-ring/50 mb-0.5 flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors outline-none focus-visible:ring-3 {shownSection?.id ===
+            section.id
+              ? 'bg-secondary text-foreground'
+              : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'}"
+            aria-current={shownSection?.id === section.id ? 'page' : undefined}
+            onclick={() => (activeSection = section.id)}
+          >
+            <Icon aria-hidden="true" class="size-4" />
+            {section.label}
+          </button>
+        {/each}
+      </nav>
 
-            <div class="flex flex-col gap-3">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Interface font size</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Base size for chrome, labels and menus.
-                </span>
+      <main class="min-w-0 flex-1 overflow-y-auto px-6 py-5">
+        {#if !shownSection}
+          <p class="text-muted-foreground text-[13px]">
+            Nothing matches “{query.trim()}”.
+          </p>
+        {:else}
+          <div class="mx-auto flex w-full max-w-[720px] flex-col gap-5">
+            <div class="flex items-center justify-between gap-4">
+              <div class="flex flex-col gap-1">
+                <h2 class="text-[15px] leading-[1.3] font-semibold">{shownSection.label}</h2>
+                {#if searching}
+                  <p class="text-muted-foreground text-[12px]">
+                    Showing the rows that match “{query.trim()}”.
+                  </p>
+                {/if}
               </div>
-              <Slider
-                type="single"
-                bind:value={settings.appearance.appFontSize}
-                min={11}
-                max={18}
-                step={1}
-              />
-            </div>
-          </div>
-        </Tabs.Content>
-
-        <Tabs.Content value="editor">
-          <div class="flex flex-col gap-5 pt-1">
-            <div class="flex items-center justify-between gap-5">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Font family</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Typeface used in the code editor.
-                </span>
-              </div>
-              <div class="w-[200px] shrink-0">
-                <Select.Root type="single" bind:value={settings.editor.fontFamily}>
-                  <Select.Trigger class="w-full">
-                    {labelFor(fontFamilyItems, settings.editor.fontFamily)}
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each fontFamilyItems as item (item.value)}
-                      <Select.Item value={item.value} label={item.label} />
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-              </div>
-            </div>
-
-            <div class="flex flex-col gap-3">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Font size</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Editor text size in pixels.
-                </span>
-              </div>
-              <Slider
-                type="single"
-                bind:value={settings.editor.fontSize}
-                min={10}
-                max={24}
-                step={1}
-              />
-            </div>
-
-            <div class="flex flex-col gap-3">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Line height</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Absolute line height in pixels.
-                </span>
-              </div>
-              <Slider
-                type="single"
-                bind:value={settings.editor.lineHeight}
-                min={14}
-                max={36}
-                step={1}
-              />
-            </div>
-
-            <div class="flex items-center justify-between gap-5">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Font ligatures</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Render combined glyphs like {'=>'} and {'!=='}.
-                </span>
-              </div>
-              <div class="flex shrink-0 justify-end">
-                <Switch bind:checked={editorLigatures} aria-label="Font ligatures" />
-              </div>
-            </div>
-          </div>
-        </Tabs.Content>
-
-        <Tabs.Content value="terminal">
-          <div class="flex flex-col gap-5 pt-1">
-            <div class="flex items-center justify-between gap-5">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Font family</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Typeface used in the embedded terminal.
-                </span>
-              </div>
-              <div class="w-[200px] shrink-0">
-                <Select.Root type="single" bind:value={settings.terminal.fontFamily}>
-                  <Select.Trigger class="w-full">
-                    {labelFor(fontFamilyItems, settings.terminal.fontFamily)}
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each fontFamilyItems as item (item.value)}
-                      <Select.Item value={item.value} label={item.label} />
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-              </div>
-            </div>
-
-            <div class="flex flex-col gap-3">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Font size</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Terminal text size in pixels.
-                </span>
-              </div>
-              <Slider
-                type="single"
-                bind:value={settings.terminal.fontSize}
-                min={10}
-                max={24}
-                step={1}
-              />
-            </div>
-
-            <div class="flex flex-col gap-3">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Line height</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Line spacing multiplier (relative to font size).
-                </span>
-              </div>
-              <Slider
-                type="single"
-                bind:value={settings.terminal.lineHeight}
-                min={1}
-                max={2}
-                step={0.1}
-              />
-            </div>
-
-            <div class="flex items-center justify-between gap-5">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Color theme</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Palette applied to terminal output.
-                </span>
-              </div>
-              <div class="w-[200px] shrink-0">
-                <Select.Root type="single" bind:value={settings.terminal.theme}>
-                  <Select.Trigger class="w-full">
-                    {labelFor(terminalThemeItems, settings.terminal.theme)}
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each terminalThemeItems as item (item.value)}
-                      <Select.Item value={item.value} label={item.label} />
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-              </div>
-            </div>
-
-            <div class="flex items-center justify-between gap-5">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Cursor blink</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Pulse the terminal cursor when idle.
-                </span>
-              </div>
-              <div class="flex shrink-0 justify-end">
-                <Switch bind:checked={terminalCursorBlink} aria-label="Cursor blink" />
-              </div>
-            </div>
-          </div>
-        </Tabs.Content>
-
-        <Tabs.Content value="general">
-          <div class="flex flex-col gap-5 pt-1">
-            <div class="flex items-center justify-between gap-5">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">External terminal app</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  Used when opening a folder in a terminal.
-                </span>
-              </div>
-              <div class="w-[200px] shrink-0">
-                <Select.Root type="single" bind:value={settings.general.terminalApp}>
-                  <Select.Trigger class="w-full">
-                    {labelFor(terminalAppItems, settings.general.terminalApp)}
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each terminalAppItems as item (item.value)}
-                      <Select.Item value={item.value} label={item.label} />
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-              </div>
-            </div>
-
-            <div class="flex items-center justify-between gap-5">
-              <div class="flex min-w-0 flex-col gap-1">
-                <span class="text-[14px] leading-[1.3] font-medium">Where the problems list sits</span>
-                <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                  The list of mistakes the language server has found in this project.
-                </span>
-              </div>
-              <div class="w-[200px] shrink-0">
-                <!-- Not `bind:value`: the shell has to be told as well as the
-                     store, so that the strip along the bottom opens or closes
-                     now rather than at the next launch. -->
-                <Select.Root
-                  type="single"
-                  value={settings.panels.problemsLocation}
-                  onValueChange={(value) => moveProblems(value as ProblemsLocation)}
-                >
-                  <Select.Trigger class="w-full">
-                    {labelFor(problemsLocationItems, settings.panels.problemsLocation)}
-                  </Select.Trigger>
-                  <Select.Content>
-                    {#each problemsLocationItems as item (item.value)}
-                      <Select.Item value={item.value} label={item.label} />
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-              </div>
-            </div>
-
-            <div class="flex flex-col gap-2">
-              <div class="flex items-center justify-between gap-5">
-                <div class="flex min-w-0 flex-col gap-1">
-                  <span class="text-[14px] leading-[1.3] font-medium">C# language server</span>
-                  <span class="text-[12px] leading-[1.4] text-[var(--color-text-3)]">
-                    Off saves about 800MB of memory. Reference counts and project-wide search keep
-                    working. What you lose is the squiggles under mistakes, and the precision of
-                    go-to-definition when a name is used in more than one place.
-                  </span>
-                </div>
-                <div class="flex shrink-0 justify-end">
-                  <Switch
-                    checked={settings.intelligence.csharpLanguageServer}
-                    disabled={!csharpLanguageServerSupported}
-                    onCheckedChange={(checked) => void switchCsharpLanguageServer(checked)}
-                    aria-label="C# language server"
-                  />
-                </div>
-              </div>
-              {#if csharpLanguageServerNote}
-                <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">
-                  {csharpLanguageServerNote}
-                </p>
+              <!-- The Helper section has nothing in the settings store to put
+                   back, so it is not offered a reset it could not carry out. -->
+              {#if shownSection.id !== 'helper'}
+                <Button variant="ghost" size="sm" onclick={resetShownSection} class="gap-1.5">
+                  <RotateCcw aria-hidden="true" />
+                  Reset section
+                </Button>
               {/if}
             </div>
-          </div>
-        </Tabs.Content>
-      </Tabs.Root>
-    </div>
 
-    <Dialog.Footer class="mx-0 mb-0 rounded-b-lg border-t bg-transparent px-5 py-3">
-      <Button variant="ghost" size="sm" onclick={resetActiveSection}>
-        <RotateCcw aria-hidden="true" />
-        Reset section
-      </Button>
-      <Button size="sm" onclick={() => (open = false)}>Done</Button>
-    </Dialog.Footer>
-  </Dialog.Content>
-</Dialog.Root>
+            {#each shownCards as card (card.name)}
+              <section class="flex flex-col gap-2">
+                <h3 class="text-muted-foreground px-1 text-[12px] font-medium">{card.name}</h3>
+                <div class="border-border/70 bg-card rounded-xl border">
+                  {#each card.rowIds as id (id)}
+                    {#if id === 'theme'}
+                      {@render settingRow(id, themeControl)}
+                    {:else if id === 'ui-font'}
+                      {@render settingRow(id, uiFontControl)}
+                    {:else if id === 'mono-font'}
+                      {@render settingRow(id, monoFontControl)}
+                    {:else if id === 'app-font-size'}
+                      {@render settingRow(id, appFontSizeControl, true)}
+                    {:else if id === 'editor-font-family'}
+                      {@render settingRow(id, editorFontFamilyControl)}
+                    {:else if id === 'editor-font-size'}
+                      {@render settingRow(id, editorFontSizeControl, true)}
+                    {:else if id === 'editor-line-height'}
+                      {@render settingRow(id, editorLineHeightControl, true)}
+                    {:else if id === 'editor-ligatures'}
+                      {@render settingRow(id, editorLigaturesControl)}
+                    {:else if id === 'terminal-font-family'}
+                      {@render settingRow(id, terminalFontFamilyControl)}
+                    {:else if id === 'terminal-font-size'}
+                      {@render settingRow(id, terminalFontSizeControl, true)}
+                    {:else if id === 'terminal-line-height'}
+                      {@render settingRow(id, terminalLineHeightControl, true)}
+                    {:else if id === 'terminal-theme'}
+                      {@render settingRow(id, terminalThemeControl)}
+                    {:else if id === 'terminal-cursor-blink'}
+                      {@render settingRow(id, terminalCursorBlinkControl)}
+                    {:else if id === 'terminal-app'}
+                      {@render settingRow(id, terminalAppControl)}
+                    {:else if id === 'problems-location'}
+                      {@render settingRow(id, problemsLocationControl)}
+                    {:else if id === 'language-servers'}
+                      {@render settingRow(id, languageServersControl)}
+                    {:else if id === 'csharp-language-server'}
+                      {@render settingRow(id, csharpLanguageServerControl)}
+                    {:else if id === 'typescript-language-server'}
+                      {@render settingRow(id, typescriptLanguageServerControl)}
+                    {:else if id === 'rust-language-server'}
+                      {@render settingRow(id, rustLanguageServerControl)}
+                    {:else if id === 'helper-vendor'}
+                      {@render settingRow(id, helperVendorControl)}
+                    {:else if id === 'helper-model'}
+                      {@render settingRow(id, helperModelControl)}
+                    {:else if id === 'helper-key'}
+                      {@render settingRow(id, helperKeyControl, true)}
+                    {:else if id === 'helper-test'}
+                      {@render settingRow(id, helperTestControl)}
+                    {/if}
+                  {/each}
+                </div>
+              </section>
+            {/each}
+          </div>
+        {/if}
+      </main>
+    </div>
+  </div>
+{/if}
+
+<!-- ── The controls themselves ──────────────────────────────────────────── -->
+
+{#snippet themeControl()}
+  <!-- Not `bind:value`: applying a theme writes the setting itself, and a
+       binding would fight it. -->
+  <SettingsSelect
+    items={themeItems}
+    value={shownThemeId}
+    ariaLabel="Theme"
+    onChange={(value) => applyTheme(value)}
+  />
+{/snippet}
+
+{#snippet uiFontControl()}
+  <!-- Not `bind:value`, for the same reason as the theme: applying writes the
+       setting itself. -->
+  <SettingsSelect
+    items={uiFontItems}
+    value={settings.appearance.uiFontId}
+    ariaLabel="Interface font"
+    onChange={(value) => applyUiFont(value)}
+  />
+{/snippet}
+
+{#snippet monoFontControl()}
+  <SettingsSelect
+    items={monoFontItems}
+    value={settings.appearance.monoFontId}
+    ariaLabel="Code font"
+    onChange={(value) => applyMonoFont(value)}
+  />
+{/snippet}
+
+{#snippet appFontSizeControl()}
+  <div class="flex items-center gap-3">
+    <Slider
+      type="single"
+      bind:value={settings.appearance.appFontSize}
+      min={11}
+      max={18}
+      step={1}
+      aria-label="Interface font size"
+    />
+    {@render sliderReading(settings.appearance.appFontSize, 'px')}
+  </div>
+{/snippet}
+
+{#snippet editorFontFamilyControl()}
+  <SettingsSelect
+    items={editorFontFamilyItems}
+    value={getMonoFont(settings.editor.fontFamily).id}
+    ariaLabel="Editor font family"
+    onChange={setEditorFontFamily}
+  />
+{/snippet}
+
+{#snippet editorFontSizeControl()}
+  <div class="flex items-center gap-3">
+    <Slider
+      type="single"
+      bind:value={settings.editor.fontSize}
+      min={10}
+      max={24}
+      step={1}
+      aria-label="Editor font size"
+    />
+    {@render sliderReading(settings.editor.fontSize, 'px')}
+  </div>
+{/snippet}
+
+{#snippet editorLineHeightControl()}
+  <div class="flex items-center gap-3">
+    <Slider
+      type="single"
+      bind:value={settings.editor.lineHeight}
+      min={14}
+      max={36}
+      step={1}
+      aria-label="Editor line height"
+    />
+    {@render sliderReading(settings.editor.lineHeight, 'px')}
+  </div>
+{/snippet}
+
+{#snippet editorLigaturesControl()}
+  <Switch bind:checked={editorLigatures} aria-label="Font ligatures" />
+{/snippet}
+
+{#snippet terminalFontFamilyControl()}
+  <SettingsSelect
+    items={fontFamilyItems}
+    value={settings.terminal.fontFamily}
+    ariaLabel="Terminal font family"
+    onChange={(value) => (settings.terminal.fontFamily = value)}
+  />
+{/snippet}
+
+{#snippet terminalFontSizeControl()}
+  <div class="flex items-center gap-3">
+    <Slider
+      type="single"
+      bind:value={settings.terminal.fontSize}
+      min={10}
+      max={24}
+      step={1}
+      aria-label="Terminal font size"
+    />
+    {@render sliderReading(settings.terminal.fontSize, 'px')}
+  </div>
+{/snippet}
+
+{#snippet terminalLineHeightControl()}
+  <div class="flex items-center gap-3">
+    <Slider
+      type="single"
+      bind:value={settings.terminal.lineHeight}
+      min={1}
+      max={2}
+      step={0.1}
+      aria-label="Terminal line height"
+    />
+    {@render sliderReading(Math.round(settings.terminal.lineHeight * 10) / 10, '×')}
+  </div>
+{/snippet}
+
+{#snippet terminalThemeControl()}
+  <SettingsSelect
+    items={terminalThemeItems}
+    value={settings.terminal.theme}
+    ariaLabel="Terminal color theme"
+    onChange={(value) => (settings.terminal.theme = value)}
+  />
+{/snippet}
+
+{#snippet terminalCursorBlinkControl()}
+  <Switch bind:checked={terminalCursorBlink} aria-label="Cursor blink" />
+{/snippet}
+
+{#snippet terminalAppControl()}
+  <SettingsSelect
+    items={terminalAppItems}
+    value={settings.general.terminalApp}
+    ariaLabel="External terminal app"
+    onChange={(value) => (settings.general.terminalApp = value)}
+  />
+{/snippet}
+
+{#snippet problemsLocationControl()}
+  <!-- Three choices, which would suit a segmented control if the labels were
+       short; they are whole phrases ("In the strip along the bottom"), so this
+       stays a dropdown. Not `bind:value`: the shell has to be told as well as
+       the store, so the strip along the bottom opens or closes now rather than
+       at the next launch. -->
+  <SettingsSelect
+    items={problemsLocationItems}
+    value={settings.panels.problemsLocation}
+    ariaLabel="Where the problems list sits"
+    onChange={(value) => moveProblems(value as ProblemsLocation)}
+  />
+{/snippet}
+
+{#snippet languageServersControl()}
+  <div class="flex flex-col items-end gap-1.5">
+    <Switch
+      checked={settings.intelligence.languageServers}
+      disabled={!languageServersSupported}
+      onCheckedChange={(checked) => void switchLanguageServers(checked)}
+      aria-label="Language servers"
+    />
+    {#if languageServersNote}
+      <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">{languageServersNote}</p>
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet languageServerControl(id: LanguageServerId)}
+  <div class="flex flex-col items-end gap-1.5">
+    <Switch
+      checked={settings.intelligence.languageServerEnabled[id]}
+      onCheckedChange={(checked) => void switchLanguageServer(id, checked)}
+      aria-label={`${id} language server`}
+    />
+    {#if languageServerNote}
+      <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">{languageServerNote}</p>
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet csharpLanguageServerControl()}{@render languageServerControl('csharp')}{/snippet}
+{#snippet typescriptLanguageServerControl()}{@render languageServerControl('typescript')}{/snippet}
+{#snippet rustLanguageServerControl()}{@render languageServerControl('rust')}{/snippet}
+
+{#snippet helperVendorControl()}
+  <SettingsSelect
+    items={helperVendorItems}
+    value={helper?.vendor ?? 'openai'}
+    ariaLabel="Helper service"
+    onChange={(value) => void chooseHelperVendor(value)}
+  />
+{/snippet}
+
+{#snippet helperModelControl()}
+  <SettingsSelect
+    items={helperModelItems}
+    value={helper?.model ?? ''}
+    ariaLabel="Helper model"
+    onChange={(value) => void chooseHelperModel(value)}
+  />
+{/snippet}
+
+{#snippet helperKeyControl()}
+  <div class="flex flex-col gap-1.5">
+    <div class="flex items-center gap-2">
+      <Input
+        bind:value={helperKey}
+        type="password"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder={helper?.hasKey ? 'Replace the stored key' : 'Paste your key'}
+        aria-label="Helper API key"
+        class="h-7 flex-1"
+      />
+      <Button variant="secondary" size="sm" onclick={() => void saveHelperKey()}>Save</Button>
+    </div>
+    <p class="text-[12px] leading-[1.4] text-[var(--color-text-2)]">
+      {helper?.hasKey ? 'Key saved' : 'No key'}
+    </p>
+  </div>
+{/snippet}
+
+{#snippet helperTestControl()}
+  <div class="flex flex-col items-end gap-1.5">
+    <Button variant="secondary" size="sm" disabled={helperTesting} onclick={() => void testHelper()}>
+      Test
+    </Button>
+    {#if helperNote}
+      <p class="text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]">{helperNote}</p>
+    {/if}
+  </div>
+{/snippet}
+
+<style>
+  /* A screen, not a sheet: it covers the window and the app waits behind it. */
+  .settings-screen {
+    position: fixed;
+    inset: 0;
+    /* Above every strip and rail of the shell: this screen replaces the app
+       while it is up, and a status bar showing through the bottom of it reads
+       as a rendering fault. */
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-bg);
+    color: var(--color-text);
+  }
+</style>

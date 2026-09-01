@@ -41,8 +41,8 @@ assert.throws(
   /needs a project folder/
 );
 
-const monacoSource = await readFile(
-  new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url),
+const codeMirrorLensSource = await readFile(
+  new URL('../src/lib/shell/editor/codeMirrorCodeLens.ts', import.meta.url),
   'utf8'
 );
 const editorPanelSource = await readFile(
@@ -55,9 +55,9 @@ const shellSource = await readFile(
 );
 
 assert.match(
-  monacoSource,
-  /model\.getLanguageId\(\) !== "csharp"[\s\S]*?dotnetWorkspaceCommandIds\[action\]/,
-  'Build and Test lenses must appear only on C# models'
+  codeMirrorLensSource,
+  /preview\.language\.toLowerCase\(\) === 'csharp'[\s\S]*?dotnetWorkspaceLensTitles\.build/,
+  'Build and Test lenses must appear only on C# documents'
 );
 assert.match(
   editorPanelSource,

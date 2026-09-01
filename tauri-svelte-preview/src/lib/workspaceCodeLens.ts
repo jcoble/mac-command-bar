@@ -1,5 +1,5 @@
 /**
- * The fixed .NET actions Monaco exposes above a C# file.
+ * The fixed .NET actions CodeMirror exposes above a C# file.
  *
  * This is intentionally a tiny, pure module. The editor decides which lens was
  * clicked; the shell turns the returned request into an ordinary owned terminal

@@ -1,7 +1,7 @@
 [package]
 name = "mac-command-bar-webview-preview"
 version = "0.1.0"
-description = "Tauri shell for the MacCommandBar Svelte source preview experiment"
+description = "Tauri shell for Assembly"
 authors = ["blackcolours"]
 edition = "2021"
 
@@ -9,17 +9,53 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+agent-client-protocol = "=2.0.0"
 axum = { version = "0.8", features = ["ws"] }
+chrono = "0.4"
+comrak = "0.35"
 futures-util = "0.3"
+httpdate = "1"
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 libc = "0.2"
 mcb-core = { path = "../../core" }
 portable-pty = "0.9.0"
+# `blocking` is here for the helper module: its transport is one synchronous
+# call made on a blocking task, which keeps the trait behind it plain enough
+# for a test to replace with a fake.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+security-framework = "3.5.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["test"] }
+sha2 = "0.10"
+similar = "2"
+sysinfo = { version = "=0.38.4", default-features = false, features = ["system"] }
+# `devtools` is what carries the web inspector into a release build. Without it
+# the inspector — and `open_devtools()` with it — exists only under
+# `debug_assertions`, so the shortcut below would work while developing and
+# quietly do nothing in the app people actually install.
+tauri = { version = "2", features = ["devtools", "protocol-asset", "test", "unstable"] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-devtools = "2.1.0"
 tauri-plugin-dialog = "2"
-tokio = { version = "1", features = ["io-util", "net", "process", "sync"] }
+tauri-plugin-fs = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
+tokio = { version = "1", features = ["io-util", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = "0.29"
+# The file-system plugin's `remove` deletes for good. Deleting from the Files
+# panel has to be recoverable, so `move_to_trash` hands the path to the Finder's
+# Trash through this crate instead.
+trash = "5"
 uuid = { version = "1", features = ["v4"] }
+
+# Already in the tree through tauri/wry; declared here so the browser view can
+# ask the NSWindow for its content inset, which Tauri's window APIs do not
+# report.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
 
 [features]
 default = []

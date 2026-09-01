@@ -1,8 +1,10 @@
+import { Channel } from '@tauri-apps/api/core';
 import type {
   ProjectRoot,
   SourceCodeAction,
   SourceDiagnostic,
   SourceCompletionItem,
+  SourceDirectoryEntry,
   SourceDefinitionTarget,
   SourceDocumentHighlight,
   SourceInlayHint,
@@ -22,9 +24,28 @@ import type {
   SourceSemanticToken,
   SourceSignatureHelp,
   SourceSymbol,
+  SourceTreeSearchPage,
   SourceTextEdit,
   SourceWorkspaceSymbol
 } from './sourceData';
+import type {
+  ImplementationReceipt,
+  PlanReceipt,
+  ReviewReceipt,
+  SpecComplianceReceipt,
+  VerificationReceipt,
+  WorkflowDefinitionV1,
+  WorkflowRunRecord
+} from './shell/workflows/workflowTypes';
+import {
+  normalizeWorkspaceSnapshot,
+  type SessionWorkspaceSnapshot
+} from './shell/sessionWorkspaces.ts';
+import {
+  trackTauriListener,
+  trackTauriSubscriber,
+  trackTauriChannel
+} from './shell/resourceDiagnostics.svelte.ts';
 
 export const defaultSourceScanLimit = 10_000;
 export const expandedSourceScanLimit = 25_000;
@@ -36,6 +57,8 @@ export type NativeSourceScanProgress = {
   visitedEntries: number;
   matchedFiles: number;
 };
+
+export type SourceScanProgressSubscriber = (progress: NativeSourceScanProgress) => void;
 
 export type TerminalStartRequest = {
   cwd: string;
@@ -68,7 +91,35 @@ export type TerminalSessionInfo = {
   exited: boolean;
   exitCode: number | null;
   signal: string | null;
+  kind?: 'user-pty' | 'agent-tool' | 'run-configuration' | 'browser-automation';
+  ownedId?: string | null;
+  toolTerminalIdentity?: {
+    ownedId: string;
+    turnId: string;
+    toolCallId: string;
+    terminalId: string;
+  } | null;
 };
+
+export type ResourceSnapshot = import('./shell/resources/resourceTypes.ts').ResourceSnapshot;
+export type ResourceDiskRoot = import('./shell/resources/resourceTypes.ts').ResourceDiskRoot;
+export type ResourceStopRequest = import('./shell/resources/resourceTypes.ts').ResourceStopRequest;
+export type ResourceCommandReceipt = import('./shell/resources/resourceTypes.ts').ResourceCommandReceipt;
+export type ResourceUnavailable = import('./shell/resources/resourceTypes.ts').ResourceUnavailable;
+export type ResourceCleanupRequest = import('./shell/resources/resourceTypes.ts').ResourceCleanupRequest;
+export type ResourceCleanupReceipt = import('./shell/resources/resourceTypes.ts').ResourceCleanupReceipt;
+export type DiskScanReport = import('./shell/resources/resourceTypes.ts').DiskScanReport;
+export type ProviderUsageSnapshot = import('./shell/usage/usageTypes.ts').ProviderUsageSnapshot;
+export type UsageHistoryQuery = import('./shell/usage/usageTypes.ts').UsageHistoryQuery;
+export type UsageSummary = import('./shell/usage/usageTypes.ts').UsageSummary;
+export type UsageBreakdownRow = import('./shell/usage/usageTypes.ts').UsageBreakdownRow;
+export type UsageProviderSummaryRow = import('./shell/usage/usageTypes.ts').UsageProviderSummaryRow;
+export type UsageDailyRow = import('./shell/usage/usageTypes.ts').UsageDailyRow;
+export type UsageDailyTotalsRow = import('./shell/usage/usageTypes.ts').UsageDailyTotalsRow;
+export type AgentConversationCapabilities = import('./shell/conversation/conversationTypes.ts').AgentCapabilities;
+export type AgentConversationEvent = import('./shell/conversation/conversationTypes.ts').AgentConversationEvent;
+export type AgentConversationSnapshot = import('./shell/conversation/conversationTypes.ts').AgentConversationSnapshot;
+export type AgentConversationEventPage = import('./shell/conversation/conversationTypes.ts').AgentConversationEventPage;
 
 export type TerminalOutputPayload = {
   sessionId: string;
@@ -76,6 +127,33 @@ export type TerminalOutputPayload = {
   terminated: boolean;
   exitCode: number | null;
   signal: string | null;
+};
+
+type ProjectionStreamWireEnvelope<T> = {
+  session: string;
+  generation: number;
+  sequence: number;
+  bytes: number;
+  kind: 'agent-conversation-event' | typeof terminalOutputEvent;
+  resync: boolean;
+  chunk: T | null;
+};
+
+export type StreamEnvelope<T> = {
+  sessionId: string;
+  generation: number;
+  sequence: number;
+  byteLength: number;
+  kind: 'agent-conversation-event' | typeof terminalOutputEvent;
+  chunk: T;
+};
+
+export type ProjectionStreamRegistration = {
+  unregister(): Promise<void>;
+};
+
+export type SessionSubscription = {
+  unsubscribe(): void;
 };
 
 export type ProjectGitFileStatus = {
@@ -97,6 +175,66 @@ export type ProjectGitStatus = {
 export type GitActionResult = {
   message: string;
   status: ProjectGitStatus;
+};
+
+export type AgentGenerationRequest = {
+  root: string;
+  ownedId: string;
+  generation: number;
+};
+
+export type PullRequestContext = {
+  branch: string;
+  base: string;
+  commits: string;
+  diff: string;
+};
+
+export type PullRequestDetails = {
+  title: string;
+  description: string;
+};
+
+export type PullRequestCreated = {
+  number: number;
+  url: string;
+};
+
+export type PullRequestStatus = {
+  number: number;
+  url: string;
+  state: string;
+  checks: 'none' | 'pending' | 'passing' | 'failing' | string;
+  checkSummary: string;
+};
+
+export type PullRequestSummary = {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  headBranch: string;
+  isDraft: boolean;
+  checks: 'none' | 'pending' | 'passing' | 'failing' | string;
+  checkSummary: string;
+};
+
+export type GitBranchSummary = {
+  name: string;
+  isCurrent: boolean;
+  upstream: string;
+  subject: string;
+};
+
+export type GitBranchList = {
+  current: string;
+  branches: GitBranchSummary[];
+};
+
+export type GitStashEntry = {
+  index: number;
+  label: string;
+  description: string;
 };
 
 export type SourceGitDiff = {
@@ -172,6 +310,14 @@ export type GitCommitHistoryEntry = {
   taskSource: string | null;
 };
 
+export type GitHistoryPage = {
+  root: string;
+  relativePath: string | null;
+  commits: GitCommitHistoryEntry[];
+  nextCursor: string | null;
+  complete: boolean;
+};
+
 export type AgentSession = {
   provider: string;
   id: string;
@@ -181,6 +327,12 @@ export type AgentSession = {
   projectPath: string | null;
   lastActivity: string | null;
   resumeCommands: string[];
+  /**
+   * The transcript file the scanner read this session out of, so the app can
+   * open it, show it in the file manager, or copy its path. Left out when no
+   * single file describes the session, in which case those actions stay off.
+   */
+  logPath?: string | null;
   /**
    * What the scanner worked out about the session from its title, folder and
    * resume command. All optional: the scanner leaves a field out entirely when
@@ -202,6 +354,79 @@ export type AgentSession = {
    */
   messageCount?: number | null;
   latestTurnPreview?: string | null;
+  /**
+   * The last thing each side said, oldest first — at most the user's most
+   * recent turn and the agent's most recent one.
+   *
+   * This is what an expanded card shows, and it is longer than the preview
+   * above on purpose: the preview has one line of a row to live in, while the
+   * card scrolls. Left out entirely when the scanner read no conversation.
+   */
+  latestTurns?: AgentSessionTurn[];
+  /**
+   * The repository this session's folder belongs to, as git reported it during
+   * the scan. The History panel groups on this, so a repository's main checkout
+   * and its worktrees sit together under the project folder's name. Left out
+   * when the folder is gone from disk or was never in a repository.
+   */
+  projectRoot?: string | null;
+};
+
+/** One remembered turn of a scanned session: who spoke, and what they said. */
+export type AgentSessionTurn = {
+  speaker: 'user' | 'agent';
+  text: string;
+};
+
+export type AgentConversationSessionMeta = {
+  worktree: string | null;
+  branch: string | null;
+  title: string | null;
+  project: string | null;
+  ptySessionId: string | null;
+  origin: 'app' | 'external' | null;
+  source: 'scanned' | 'fresh' | null;
+  viaCmux: boolean;
+  resumeCommand: string | null;
+  completedAt: string | null;
+  settledAt: string | null;
+  taskId: string | null;
+  pullRequest: string | null;
+  messageCount: number | null;
+  latestTurnPreview: string | null;
+  scannedLastActivity: string | null;
+};
+
+export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
+  ownedId: string;
+  executionEnvironment: ExecutionEnvironment;
+  provider: import('./shell/conversation/conversationTypes.ts').AgentConversationProvider;
+  model: string | null;
+  effort: string | null;
+  cwd: string;
+  state: import('./shell/ownedSessions.ts').AgentRuntimeState;
+  suspended: boolean;
+  createdAtMs: number;
+  lastActivityAtMs: number;
+  activeTurnId: string | null;
+  pendingPermission: boolean;
+  pendingInput: boolean;
+  nativeSessionId: string | null;
+};
+
+export type ExecutionEnvironment = 'local' | 'remote';
+
+export type RemoteAssemblyEnvironment = {
+  configured: boolean;
+  sshTarget: string | null;
+  sourceRoot: string | null;
+  defaultCwd: string | null;
+};
+
+export type RemoteAssemblyProfile = {
+  sshTarget: string;
+  sourceRoot: string;
+  defaultCwd: string;
 };
 
 export type RuntimeContextProject = Pick<ProjectRoot, 'id' | 'name' | 'path'>;
@@ -364,19 +589,53 @@ export function isNativeTauriRuntime(): boolean {
   return isTauriRuntime();
 }
 
+let projectRootValidationRequestId = 0;
+
 export async function validateProjectRootFromTauri(
-  path: string
+  path: string,
+  signal?: AbortSignal
 ): Promise<ProjectRootValidationResult | null> {
   if (!path.trim()) {
     return null;
   }
+  if (signal?.aborted) {
+    return null;
+  }
 
   if (!isTauriRuntime()) {
-    return postLocalSourceBridge<ProjectRootValidationResult>('validate', { path });
+    const result = await postLocalSourceBridge<ProjectRootValidationResult>('validate', { path });
+    return signal?.aborted ? null : result;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<ProjectRootValidationResult>('validate_project_root', { path });
+  const generation = ++projectRootValidationRequestId;
+  const cancel = (): void => {
+    void cancelProjectRootValidation(generation);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelProjectRootValidation(generation);
+      return null;
+    }
+    const result = await invoke<ProjectRootValidationResult | null>('validate_project_root', {
+      path,
+      generation
+    });
+    return signal?.aborted ? null : result;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+async function cancelProjectRootValidation(generation: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('cancel_project_root_validation', { generation });
+  } catch {
+    // The frontend owner has already abandoned this validation.
+  }
 }
 
 export async function listSourceFilesFromTauri(
@@ -403,6 +662,72 @@ export async function listSourceFilesFromTauri(
   });
 }
 
+export async function listSourceDirectoryFromTauri(
+  root: string,
+  directory: string,
+  includeExcluded = false,
+  scanId: string | null = null,
+  signal?: AbortSignal
+): Promise<SourceDirectoryEntry[] | null> {
+  if (signal?.aborted) return null;
+  if (!isTauriRuntime()) {
+    const entries = await postLocalSourceBridge<SourceDirectoryEntry[]>('list-directory', {
+      root,
+      directory,
+      includeExcluded
+    });
+    return signal?.aborted ? null : entries;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  if (signal?.aborted) return null;
+  const cancel = (): void => {
+    if (scanId) void cancelSourceScanFromTauri(scanId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const entries = await invoke<SourceDirectoryEntry[]>('list_source_directory', {
+      root,
+      directory,
+      includeExcluded,
+      scanId
+    });
+    return signal?.aborted ? null : entries;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+export async function searchSourceTreeFromTauri(
+  root: string,
+  query: string,
+  pageSize = 50,
+  cursor: number | null = null,
+  includeExcluded = false,
+  scanId: string | null = null,
+  signal?: AbortSignal
+): Promise<SourceTreeSearchPage | null> {
+  if (signal?.aborted) return null;
+  const request = { root, query: query.trim(), pageSize, cursor, includeExcluded, scanId };
+  if (!isTauriRuntime()) {
+    const page = await postLocalSourceBridge<SourceTreeSearchPage>('search-tree', request);
+    return signal?.aborted ? null : page;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  if (signal?.aborted) return null;
+  const cancel = (): void => {
+    if (scanId) void cancelSourceScanFromTauri(scanId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const page = await invoke<SourceTreeSearchPage>('search_source_tree', request);
+    return signal?.aborted ? null : page;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
 export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean> {
   if (!isTauriRuntime() || !scanId.trim()) {
     return false;
@@ -412,17 +737,57 @@ export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean
   return invoke<boolean>('cancel_source_scan', { scanId });
 }
 
-export async function listenToSourceScanProgress(
-  handler: (progress: NativeSourceScanProgress) => void
-): Promise<(() => void) | null> {
-  if (!isTauriRuntime()) {
-    return null;
-  }
+const sourceScanProgressSubscribers = new Set<SourceScanProgressSubscriber>();
+let sourceScanProgressUnlisten: (() => void) | null = null;
+let sourceScanProgressSetup: Promise<void> | null = null;
+let sourceScanProgressGeneration = 0;
 
-  const { listen } = await import('@tauri-apps/api/event');
-  return listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
-    handler(event.payload);
+export function subscribeToSourceScanProgress(
+  subscriber: SourceScanProgressSubscriber
+): () => void {
+  sourceScanProgressSubscribers.add(subscriber);
+  ensureSourceScanProgressListener();
+  return trackTauriSubscriber(() => {
+    sourceScanProgressSubscribers.delete(subscriber);
+    if (sourceScanProgressSubscribers.size === 0) stopSourceScanProgressListener();
   });
+}
+
+function ensureSourceScanProgressListener(): void {
+  if (!isTauriRuntime() || sourceScanProgressUnlisten || sourceScanProgressSetup) return;
+  const generation = sourceScanProgressGeneration;
+  const setup = setupSourceScanProgressListener(generation);
+  sourceScanProgressSetup = setup;
+  void clearSourceScanProgressSetup(setup);
+}
+
+async function setupSourceScanProgressListener(generation: number): Promise<void> {
+  try {
+    const { listen } = await import('@tauri-apps/api/event');
+    const stopNative = await listen<NativeSourceScanProgress>(nativeSourceScanProgressEvent, (event) => {
+      for (const current of sourceScanProgressSubscribers) current(event.payload);
+    });
+    const stop = trackTauriListener(stopNative);
+    if (generation !== sourceScanProgressGeneration || sourceScanProgressSubscribers.size === 0) {
+      stop();
+      return;
+    }
+    sourceScanProgressUnlisten = stop;
+  } catch {
+    // Older controllers have no progress event; source reads remain authoritative.
+  }
+}
+
+async function clearSourceScanProgressSetup(setup: Promise<void>): Promise<void> {
+  await setup;
+  if (sourceScanProgressSetup === setup) sourceScanProgressSetup = null;
+}
+
+function stopSourceScanProgressListener(): void {
+  sourceScanProgressGeneration += 1;
+  sourceScanProgressUnlisten?.();
+  sourceScanProgressUnlisten = null;
+  sourceScanProgressSetup = null;
 }
 
 export async function startTerminalSessionFromTauri(
@@ -445,15 +810,187 @@ export async function listTerminalSessionsFromTauri(): Promise<TerminalSessionIn
   return invoke<TerminalSessionInfo[]>('list_terminal_sessions');
 }
 
+export async function readResourceSnapshotFromTauri(): Promise<ResourceSnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceSnapshot>('read_resource_snapshot');
+}
+
+export async function readResourceDiskScanFromTauri(
+  roots: ResourceDiskRoot[],
+  maxDepth = 3,
+  maxEntries = 2000
+): Promise<DiskScanReport | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<DiskScanReport>('read_resource_disk_scan', { roots, maxDepth, maxEntries });
+}
+
+export async function stopOwnedResourceFromTauri(
+  request: ResourceStopRequest
+): Promise<ResourceCommandReceipt | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceCommandReceipt>('stop_owned_resource', { request });
+}
+
+export async function restartLanguageServerRootFromTauri(
+  root: string
+): Promise<ResourceUnavailable | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceUnavailable>('restart_language_server_root', { request: { root } });
+}
+
+export async function applyResourceMemoryPressureFromTauri(
+  level: string
+): Promise<ResourceUnavailable | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceUnavailable>('apply_resource_memory_pressure', { level });
+}
+
+export async function readLanguageServerLogFromTauri(
+  root: string
+): Promise<ResourceUnavailable | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceUnavailable>('read_language_server_log', { request: { root } });
+}
+
+export async function cleanupWorkspaceDiskEntryFromTauri(
+  request: ResourceCleanupRequest
+): Promise<ResourceCleanupReceipt | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ResourceCleanupReceipt>('cleanup_workspace_disk_entry', { request });
+}
+
+export async function setActiveSourceRootFromTauri(root: string): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('set_active_source_root', { request: { root } });
+}
+
+export async function readCurrentProviderUsageFromTauri(
+  provider: string | null,
+  instanceId: string | null
+): Promise<ProviderUsageSnapshot | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ProviderUsageSnapshot>('read_current_provider_usage', { provider, instanceId });
+}
+
+export async function readUsageSummaryFromTauri(query: UsageHistoryQuery = {}): Promise<UsageSummary | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageSummary>('read_usage_summary', { query });
+}
+
+export async function readUsageBreakdownFromTauri(query: UsageHistoryQuery = {}): Promise<UsageBreakdownRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageBreakdownRow[]>('read_usage_breakdown', { query });
+}
+
+export async function readUsageProviderSummaryFromTauri(query: UsageHistoryQuery = {}): Promise<UsageProviderSummaryRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageProviderSummaryRow[]>('read_usage_provider_summary', { query });
+}
+
+export async function readUsageDailyFromTauri(query: UsageHistoryQuery = {}): Promise<UsageDailyRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageDailyRow[]>('read_usage_daily', { query });
+}
+
+export async function readUsageDailyTotalsFromTauri(query: UsageHistoryQuery = {}): Promise<UsageDailyTotalsRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<UsageDailyTotalsRow[]>('read_usage_daily_totals', { query });
+}
+
+export async function refreshUsageHistoryFromTauri(): Promise<number | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<number>('refresh_usage_history');
+}
+
+/** Which service the helper model calls, and therefore which key it needs. */
+export type HelperVendor = 'openai' | 'anthropic';
+
+/** What Settings needs to draw the Helper section. The model lists come from
+ *  the backend so that the ids live in one place. */
+export type HelperSettingsView = {
+  vendor: HelperVendor;
+  model: string;
+  hasKey: boolean;
+  openaiModels: string[];
+  anthropicModels: string[];
+};
+
+/** The answer to the Test button: a sentence either way. */
+export type HelperTestResult = {
+  ok: boolean;
+  message: string;
+};
+
+export async function readHelperSettingsFromTauri(): Promise<HelperSettingsView | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<HelperSettingsView>('read_helper_settings');
+}
+
+export async function writeHelperSettingsFromTauri(
+  settings: { vendor: HelperVendor; model: string }
+): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('write_helper_settings', { settings });
+}
+
+/** Stores the key in the Keychain. An empty key removes the one that is there. */
+export async function setHelperKeyFromTauri(vendor: HelperVendor, key: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('set_helper_key', { vendor, key });
+}
+
+export async function testHelperFromTauri(): Promise<HelperTestResult | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<HelperTestResult>('test_helper');
+}
+
+/**
+ * Ask the helper model to do one small job and give back its answer.
+ *
+ * Unlike its neighbours this cannot answer with `null`: an empty answer and a
+ * helper that is switched off would look the same to the caller. Away from the
+ * desktop app there is no helper at all, so this rejects with the sentence to
+ * show instead. The backend rejects the same way — one plain-English sentence,
+ * "No key — helper off" among them.
+ */
+export async function runHelperJobFromTauri(
+  job: 'title' | 'inspect',
+  input: string
+): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('The helper only runs in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('run_helper_job', { job, input });
+}
+
 export async function readTerminalSessionScrollbackFromTauri(
-  sessionId: string
+  sessionId: string,
+  maxBytes?: number
 ): Promise<string | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<string | null>('read_terminal_session_scrollback', { sessionId });
+  return invoke<string | null>('read_terminal_session_scrollback', { sessionId, maxBytes });
 }
 
 export async function writeTerminalSessionFromTauri(
@@ -490,17 +1027,112 @@ export async function closeTerminalSessionFromTauri(sessionId: string): Promise<
   return invoke<boolean>('close_terminal_session', { sessionId });
 }
 
+async function registerProjectionStream<T>(input: {
+  registerCommand: string;
+  acknowledgeCommand: string;
+  unregisterCommand: string;
+  onEnvelope: (envelope: StreamEnvelope<T>) => void;
+  onResync?: () => void;
+}): Promise<ProjectionStreamRegistration | null> {
+  if (!isTauriRuntime()) return null;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  const registrationId = globalThis.crypto.randomUUID();
+  let active = true;
+  const owner: ProjectionAckOwner = {
+    isActive: () => active,
+    acknowledge: (frames, bytes) => invoke(input.acknowledgeCommand, {
+      registrationId,
+      frames,
+      bytes
+    })
+  };
+  const channel = new Channel<ProjectionStreamWireEnvelope<T>>((envelope) => {
+    if (!active) return;
+    try {
+      if (envelope.resync || envelope.chunk === null) {
+        input.onResync?.();
+      } else {
+        input.onEnvelope({
+          sessionId: envelope.session,
+          generation: envelope.generation,
+          sequence: envelope.sequence,
+          byteLength: envelope.bytes,
+          kind: envelope.kind,
+          chunk: envelope.chunk
+        });
+      }
+    } finally {
+      void acknowledgeProjectionEnvelope(owner, envelope.bytes);
+    }
+  });
+  await invoke(input.registerCommand, { registrationId, channel });
+  const stopTracking = trackTauriChannel();
+  return {
+    async unregister(): Promise<void> {
+      if (!active) return;
+      active = false;
+      try {
+        await invoke(input.unregisterCommand, { registrationId });
+      } catch {
+        // The webview may already be closing. Rust still bounds the abandoned
+        // in-flight window, and a later registration atomically replaces it.
+      } finally {
+        stopTracking();
+      }
+    }
+  };
+}
+
+type ProjectionAckOwner = {
+  isActive(): boolean;
+  acknowledge(frames: number, bytes: number): Promise<void>;
+};
+
+async function acknowledgeProjectionEnvelope(owner: ProjectionAckOwner, bytes: number): Promise<void> {
+  try {
+    if (!owner.isActive()) return;
+    await owner.acknowledge(1, bytes);
+  } catch {
+    // A closed stream is already bounded by Rust's registration window.
+  }
+}
+
+export async function registerAgentConversationStream(
+  onEnvelope: (envelope: StreamEnvelope<AgentConversationEvent>) => void,
+  onResync?: () => void
+): Promise<ProjectionStreamRegistration | null> {
+  const registration = await registerProjectionStream({
+    registerCommand: 'register_agent_conversation_stream',
+    acknowledgeCommand: 'acknowledge_agent_conversation_stream',
+    unregisterCommand: 'unregister_agent_conversation_stream',
+    onEnvelope,
+    onResync
+  });
+  return registration;
+}
+
+export async function registerTerminalOutputStream(
+  onEnvelope: (envelope: StreamEnvelope<TerminalOutputPayload>) => void
+): Promise<ProjectionStreamRegistration | null> {
+  const registration = await registerProjectionStream({
+    registerCommand: 'register_terminal_output_stream',
+    acknowledgeCommand: 'acknowledge_terminal_output_stream',
+    unregisterCommand: 'unregister_terminal_output_stream',
+    onEnvelope
+  });
+  return registration;
+}
+
 export async function listenToTerminalOutput(
   handler: (payload: TerminalOutputPayload) => void
-): Promise<(() => void) | null> {
-  if (!isTauriRuntime()) {
-    return null;
-  }
-
-  const { listen } = await import('@tauri-apps/api/event');
-  return listen<TerminalOutputPayload>(terminalOutputEvent, (event) => {
-    handler(event.payload);
+): Promise<SessionSubscription | null> {
+  const registration = await registerTerminalOutputStream((envelope) => {
+    handler(envelope.chunk);
   });
+  return registration
+    ? { unsubscribe: () => void registration.unregister() }
+    : null;
 }
 
 export async function readSourceFromTauri(record: SourceRecord): Promise<SourcePreview | null> {
@@ -516,14 +1148,29 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
       : null;
   }
 
+  const generation = sourceFileReadGeneration;
   const { invoke } = await import('@tauri-apps/api/core');
-  const preview = await invoke<SourcePreview>('read_source_file', { path: record.path });
+  const preview = await invoke<SourcePreview | null>('read_source_file', {
+    path: record.path,
+    generation
+  });
+  if (!preview) return null;
   return {
     ...preview,
     relativePath: record.relativePath,
     language: record.language,
     byteCount: record.byteCount
   };
+}
+
+let sourceFileReadGeneration = 1;
+
+export async function cancelSourceFileReadsFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  sourceFileReadGeneration += 1;
+  const generation = sourceFileReadGeneration;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_source_file_reads', { generation });
 }
 
 export async function readNativeCsharpFileFromTauri(
@@ -541,6 +1188,51 @@ export async function ensureNativeCsharpLanguageClientFromTauri(
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<{ wsUrl: string; root: string }>('ensure_native_csharp_language_client', { root });
+}
+
+/** What the desktop app says about one project's editor mode. */
+export interface WorkspaceLanguageIntelligence {
+  root: string;
+  enabled: boolean;
+  /** Language-server processes running for this project right now. */
+  runningServers: number;
+  /** Their process ids — the same numbers the resource view shows. */
+  serverPids: number[];
+  /** How many were stopped by this call. */
+  stoppedServers: number;
+  message: string;
+}
+
+/**
+ * Read whether full mode is on for a project. Costs nothing and starts nothing.
+ * `null` outside the desktop app: a browser tab has no language servers at all.
+ */
+export async function readWorkspaceLanguageIntelligenceFromTauri(
+  root: string
+): Promise<WorkspaceLanguageIntelligence | null> {
+  if (!isTauriRuntime() || !root.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkspaceLanguageIntelligence>('read_workspace_language_intelligence', { root });
+}
+
+/**
+ * Turn full mode on or off for a project. Pass the language of the file on
+ * screen and turning it on starts that language's server now; leave it out and
+ * the choice is only recorded, with the next file opened starting the server.
+ * Off stops that project's language server now.
+ */
+export async function setWorkspaceLanguageIntelligenceFromTauri(
+  root: string,
+  enabled: boolean,
+  language?: string | null
+): Promise<WorkspaceLanguageIntelligence | null> {
+  if (!isTauriRuntime() || !root.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkspaceLanguageIntelligence>('set_workspace_language_intelligence', {
+    root,
+    enabled,
+    language: language ?? null
+  });
 }
 
 export async function markNativeCsharpLanguageClientReadyFromTauri(root: string): Promise<void> {
@@ -595,6 +1287,21 @@ export async function revealPathFromTauri(path: string): Promise<boolean> {
   return runPathCommand('reveal_path', path);
 }
 
+/**
+ * Move one path to the Finder's Trash. The file-system plugin's `remove`
+ * deletes for good, so anything a person can undo goes through here instead.
+ * Rejects when the path is outside the folders the window may change.
+ */
+export async function moveToTrashFromTauri(path: string): Promise<boolean> {
+  if (!isTauriRuntime() || !path.trim()) {
+    return false;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('move_to_trash', { path });
+  return true;
+}
+
 export async function openTerminalPathFromTauri(
   path: string,
   terminal = 'Warp'
@@ -627,6 +1334,23 @@ export async function openTerminalCommandFromTauri(
     terminal: terminal.trim() || null
   });
   return true;
+}
+
+/**
+ * Invoke one of the native browser commands when the shell is running inside
+ * Tauri. The browser model keeps the command names and payload shapes in its
+ * typed backend; this bridge owns the runtime check and IPC import.
+ */
+export async function invokeBrowserCommandFromTauri<T>(
+  command: string,
+  input: unknown
+): Promise<T> {
+  if (!isTauriRuntime()) {
+    throw new Error('Native browser commands require the Tauri runtime');
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<T>(command, input as Record<string, unknown>);
 }
 
 export async function readProjectGitStatusFromTauri(
@@ -721,16 +1445,177 @@ export async function pushGitRepositoryFromTauri(
   return invoke<GitActionResult>('push_git_repository', { root });
 }
 
-export async function readGitCommitHistoryFromTauri(
+export async function discardGitPathsFromTauri(
   root: string,
-  limit = 24
-): Promise<GitCommitHistoryEntry[] | null> {
+  paths: string[]
+): Promise<GitActionResult | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<GitCommitHistoryEntry[]>('read_git_commit_history', { root, limit });
+  return invoke<GitActionResult>('discard_git_paths', { root, paths });
+}
+
+export async function discardAllGitChangesFromTauri(
+  root: string,
+  includeUntracked: boolean
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('discard_all_git_changes', { root, includeUntracked });
+}
+
+export async function listGitBranchesFromTauri(root: string): Promise<GitBranchList | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitBranchList>('list_git_branches', { root });
+}
+
+export async function createGitBranchFromTauri(
+  root: string,
+  name: string,
+  checkout: boolean
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('create_git_branch', { root, name, checkout });
+}
+
+export async function switchGitBranchFromTauri(
+  root: string,
+  name: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('switch_git_branch', { root, name });
+}
+
+export async function stashGitChangesFromTauri(
+  root: string,
+  includeUntracked: boolean,
+  message: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('stash_git_changes', { root, includeUntracked, message });
+}
+
+export async function popGitStashFromTauri(
+  root: string,
+  index: number | null
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('pop_git_stash', { root, index });
+}
+
+export async function listGitStashesFromTauri(root: string): Promise<GitStashEntry[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitStashEntry[]>('list_git_stashes', { root });
+}
+
+export async function amendGitCommitFromTauri(
+  root: string,
+  message: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitActionResult>('amend_git_commit', { root, message });
+}
+
+export async function listOpenPullRequestsFromTauri(
+  root: string
+): Promise<PullRequestSummary[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestSummary[]>('list_open_pull_requests', { root });
+}
+
+export async function generateCommitMessageFromTauri(
+  request: AgentGenerationRequest
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('generate_commit_message', { request });
+}
+
+export async function readPullRequestContextFromTauri(
+  root: string
+): Promise<PullRequestContext | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestContext>('read_pull_request_context', { root });
+}
+
+export async function generatePullRequestDetailsFromTauri(
+  request: AgentGenerationRequest
+): Promise<PullRequestDetails | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestDetails>('generate_pull_request_details', { request });
+}
+
+export async function createPullRequestFromTauri(input: {
+  root: string;
+  title: string;
+  description: string;
+  base: string;
+  draft: boolean;
+}): Promise<PullRequestCreated | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestCreated>('create_pull_request', input);
+}
+
+export async function readPullRequestStatusFromTauri(
+  root: string,
+  branch: string
+): Promise<PullRequestStatus | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<PullRequestStatus>('read_pull_request_status', { root, branch });
+}
+
+export async function readGitCommitHistoryFromTauri(
+  root: string,
+  cursor: string | null = null,
+  relativePath: string | null = null
+): Promise<GitHistoryPage | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<GitHistoryPage>('read_git_commit_history', { root, cursor, relativePath });
 }
 
 export async function listProjectWorktreesFromTauri(
@@ -788,6 +1673,485 @@ export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | nul
   return invoke<AgentSession[]>('list_agent_sessions');
 }
 
+export async function listAgentSessionsForProjectFromTauri(
+  path: string
+): Promise<AgentSession[] | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentSession[]>('list_agent_sessions_for_project', { projectPath: path });
+}
+
+/** One checkout of a repository: its own folder, or one of its worktrees. */
+export type RepositoryCheckout = {
+  path: string;
+  branch: string;
+  /** True for the repository's own folder rather than one of its worktrees. */
+  isMain: boolean;
+};
+
+/**
+ * The checkouts of each repository that are still on disk, keyed by the
+ * repository root that was asked about.
+ *
+ * History draws its tree from this rather than from wherever sessions happen to
+ * have been run, so a worktree that only ever hosted dispatched lanes still
+ * appears. Deleted checkouts are left out by the backend.
+ */
+export async function listRepositoryCheckoutsFromTauri(
+  roots: string[]
+): Promise<Record<string, RepositoryCheckout[]> | null> {
+  if (!isTauriRuntime() || roots.length === 0) {
+    return null;
+  }
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<Record<string, RepositoryCheckout[]>>('list_repository_checkouts', { roots });
+}
+
+export async function readAgentConversationCapabilitiesFromTauri(
+  ownedId: string,
+  signal?: AbortSignal
+): Promise<AgentConversationCapabilities | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('@tauri-apps/api/core');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    const capabilities = await invoke<AgentConversationCapabilities>('read_agent_conversation_capabilities', {
+      ownedId,
+      requestId
+    });
+    return signal?.aborted ? null : capabilities;
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+// Millisecond epoch plus room for rapid calls stays within JavaScript's exact
+// integer range and remains newer after a frontend hot reload.
+let latestAgentConversationRequest = Math.trunc(Date.now() * 1_000);
+
+export function createAgentConversationRequestId(): number {
+  latestAgentConversationRequest += 1;
+  return latestAgentConversationRequest;
+}
+
+export async function cancelAgentConversationRequestFromTauri(requestId: number): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_agent_conversation_request', { requestId });
+}
+
+export async function readAgentConversationSnapshotFromTauri(
+  ownedId: string,
+  signal?: AbortSignal
+): Promise<AgentConversationSnapshot | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  if (signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('@tauri-apps/api/core');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    try {
+      const snapshot = await invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', {
+        ownedId,
+        requestId
+      });
+      return signal?.aborted ? null : snapshot;
+    } catch (error) {
+      if (signal?.aborted) return null;
+      throw error;
+    }
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+export async function cancelAgentConversationSnapshotFromTauri(requestId?: number): Promise<void> {
+  const cancelRequestId = requestId ?? createAgentConversationRequestId();
+  await cancelAgentConversationRequestFromTauri(cancelRequestId);
+}
+
+export async function listAgentConversationSessionsFromTauri(): Promise<AgentConversationSessionRecord[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
+}
+
+export async function listRemoteAgentConversationSessionsFromTauri(
+  signal?: AbortSignal
+): Promise<AgentConversationSessionRecord[] | null> {
+  if (!isTauriRuntime() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('@tauri-apps/api/core');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    return await invoke<AgentConversationSessionRecord[]>('list_remote_agent_conversation_sessions', {
+      requestId
+    });
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+export async function readRemoteAssemblyEnvironmentFromTauri(): Promise<RemoteAssemblyEnvironment> {
+  if (!isTauriRuntime()) {
+    return { configured: false, sshTarget: null, sourceRoot: null, defaultCwd: null };
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<RemoteAssemblyEnvironment>('read_remote_assembly_environment');
+}
+
+export async function deployRemoteAssemblyFromTauri(
+  profile: RemoteAssemblyProfile
+): Promise<RemoteAssemblyEnvironment> {
+  if (!isTauriRuntime()) throw new Error('Remote setup is available in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<RemoteAssemblyEnvironment>('deploy_remote_assembly', { profile });
+}
+
+export async function changeAgentConversationCheckoutFromTauri(input: {
+  ownedId: string;
+  generation: number;
+  cwd: string;
+}): Promise<AgentConversationSessionRecord | null> {
+  if (!isTauriRuntime() || !input.ownedId.trim() || !input.cwd.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationSessionRecord>('change_agent_conversation_checkout', {
+    request: input
+  });
+}
+
+export async function listAgentConversationEventsFromTauri(
+  ownedId: string,
+  fromSequence = 0
+): Promise<AgentConversationEvent[] | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationEvent[]>('list_agent_conversation_events', { ownedId, fromSequence });
+}
+
+/** The page of stored events just older than `beforeSequence`, for scrolling up. */
+export async function listAgentConversationEventsBeforeFromTauri(
+  ownedId: string,
+  beforeSequence: number,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<AgentConversationEventPage | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('@tauri-apps/api/core');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
+      ownedId,
+      beforeSequence,
+      maxBytes,
+      requestId
+    });
+    return signal?.aborted ? null : page;
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+/** The page of stored events just newer than `afterSequence`, for scrolling down. */
+export async function listAgentConversationEventsAfterFromTauri(
+  ownedId: string,
+  afterSequence: number,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<AgentConversationEventPage | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('@tauri-apps/api/core');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return null;
+    }
+    const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
+      ownedId,
+      afterSequence,
+      maxBytes,
+      requestId
+    });
+    return signal?.aborted ? null : page;
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+export async function updateAgentConversationSessionMetaFromTauri(input: {
+  ownedId: string;
+  model: string | null;
+  effort: string | null;
+  meta: AgentConversationSessionMeta;
+}): Promise<AgentConversationSessionRecord | null> {
+  if (!isTauriRuntime() || !input.ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<AgentConversationSessionRecord>('update_agent_conversation_session_meta', {
+    request: input
+  });
+}
+
+/** Takes a conversation out of the store for good; the agent's own transcript
+ * on disk stays. Answers whether there was anything to delete. */
+export async function deleteAgentConversationSessionFromTauri(ownedId: string): Promise<boolean> {
+  if (!isTauriRuntime() || !ownedId.trim()) return false;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<boolean>('delete_agent_conversation_session', { ownedId });
+}
+
+export async function writeAgentConversationWorkspaceFromTauri(
+  ownedId: string,
+  snapshot: SessionWorkspaceSnapshot
+): Promise<boolean> {
+  if (!isTauriRuntime()) return true;
+  if (!ownedId.trim()) return false;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('write_agent_conversation_workspace', {
+    ownedId,
+    snapshotJson: JSON.stringify(snapshot)
+  });
+  return true;
+}
+
+export async function readAgentConversationWorkspaceFromTauri(
+  ownedId: string
+): Promise<SessionWorkspaceSnapshot | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  const snapshot = await invoke<string | null>('read_agent_conversation_workspace', { ownedId });
+  if (snapshot === null) return null;
+  const parsed: unknown = JSON.parse(snapshot);
+  return normalizeWorkspaceSnapshot(parsed);
+}
+
+export async function readAgentConversationWorkspaceExpandedPathsFromTauri(
+  ownedId: string,
+  root: string,
+  signal?: AbortSignal
+): Promise<string[]> {
+  if (!isTauriRuntime() || !ownedId.trim() || !root.trim() || signal?.aborted) return [];
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('@tauri-apps/api/core');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) {
+      await cancelAgentConversationRequestFromTauri(requestId);
+      return [];
+    }
+    const paths = await invoke<string[]>('read_agent_conversation_workspace_expanded_paths', {
+      ownedId,
+      root,
+      requestId
+    });
+    return signal?.aborted ? [] : paths;
+  } catch (error) {
+    if (signal?.aborted) return [];
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+export async function writeAgentConversationWorkspaceExpandedPathsFromTauri(
+  ownedId: string,
+  root: string,
+  paths: readonly string[]
+): Promise<void> {
+  if (!isTauriRuntime() || !ownedId.trim() || !root.trim()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('write_agent_conversation_workspace_expanded_paths', {
+    ownedId,
+    root,
+    paths: [...paths]
+  });
+}
+
+export async function deleteAgentConversationWorkspaceFromTauri(ownedId: string): Promise<void> {
+  if (!isTauriRuntime() || !ownedId.trim()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('delete_agent_conversation_workspace', { ownedId });
+}
+
+export async function clearAgentConversationWorkspaceEditorsFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('clear_agent_conversation_workspace_editors');
+}
+
+export async function clearAgentConversationWorkspaceTabsFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke<void>('clear_agent_conversation_workspace_tabs');
+}
+
+async function completedAssemblySettingWrite(): Promise<void> {}
+
+const completedAssemblySettingWritePromise = completedAssemblySettingWrite();
+const assemblySettingWriteQueues = new Map<string, Promise<void>>();
+
+export async function writeAssemblySettingFromTauri(
+  settingKey: string,
+  value: unknown
+): Promise<void> {
+  if (!isTauriRuntime() || !settingKey.trim()) return;
+  const previous = assemblySettingWriteQueues.get(settingKey) ?? completedAssemblySettingWritePromise;
+  let write!: Promise<void>;
+  write = writeAssemblySettingInOrder(settingKey, value, previous, () => assemblySettingWriteQueues.get(settingKey) === write);
+  assemblySettingWriteQueues.set(settingKey, write);
+  await write;
+}
+
+async function writeAssemblySettingInOrder(
+  settingKey: string,
+  value: unknown,
+  previous: Promise<void>,
+  ownsQueueSlot: () => boolean
+): Promise<void> {
+  try {
+    await previous;
+  } catch {
+    // A failed older write must not block the latest value.
+  }
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke<void>('write_assembly_setting', {
+      settingKey,
+      valueJson: JSON.stringify(value)
+    });
+  } finally {
+    if (ownsQueueSlot()) {
+      assemblySettingWriteQueues.delete(settingKey);
+    }
+  }
+}
+
+export async function readAssemblySettingFromTauri(settingKey: string): Promise<unknown> {
+  if (!isTauriRuntime() || !settingKey.trim()) return null;
+  try {
+    await assemblySettingWriteQueues.get(settingKey);
+  } catch {
+    // Reads should still proceed after a failed pending write.
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  const valueJson = await invoke<string | null>('read_assembly_setting', { settingKey });
+  return valueJson === null ? null : JSON.parse(valueJson) as unknown;
+}
+
+/** Everything the backend needs to read a past session's transcript file in. */
+export interface AgentConversationTranscriptImport {
+  provider: import('./shell/conversation/conversationTypes.ts').AgentConversationProvider;
+  nativeSessionId: string;
+  transcriptPath: string;
+  cwd: string;
+  /** What the past session was already called. Stored with the row, so the rail
+   * still knows the name after it next reloads from the database. */
+  title?: string | null;
+}
+
+/**
+ * Name a provider's past transcript as an app-owned conversation and hand back
+ * its id, without reading any of it. This is the fast half of resuming: the
+ * session exists, with its name and its agent, and can be shown at once.
+ *
+ * Reading the transcript is `finishAgentConversationImportFromTauri`, which the
+ * caller runs next — alongside starting the agent, not before it.
+ */
+export async function beginAgentConversationImportFromTauri(
+  request: AgentConversationTranscriptImport
+): Promise<string | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<string>('begin_agent_conversation_import', { ...request });
+}
+
+/**
+ * Read the end of a named import's transcript file into it, and report how many
+ * events that added. The backend reads a bounded window of the file, so a long
+ * session arrives with its most recent part first.
+ */
+export async function finishAgentConversationImportFromTauri(
+  ownedId: string
+): Promise<number | null> {
+  if (!isTauriRuntime() || !ownedId.trim()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<number>('finish_agent_conversation_import', { ownedId });
+}
+
+/** What one reach further back into a transcript found. */
+export interface ExtendedImport {
+  added: number;
+  reachedStart: boolean;
+}
+
+/** Read further back into an imported transcript, past what it already holds.
+ * Reports what that added and whether the beginning has now been reached. A
+ * stretch of transcript holding nothing a reader wants is not the beginning,
+ * so the two are answered separately. */
+export async function extendAgentConversationImportFromTauri(
+  ownedId: string,
+  signal?: AbortSignal
+): Promise<ExtendedImport | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  if (signal?.aborted) return null;
+  const result = await invoke<ExtendedImport>('extend_agent_conversation_import', { ownedId });
+  return signal?.aborted ? null : result;
+}
+
 export async function listAgentSessionsFromLocalBridge(): Promise<AgentSession[] | null> {
   return postLocalSourceBridge<AgentSession[]>('agent-sessions', {});
 }
@@ -841,6 +2205,80 @@ export async function recordOrchestrationEventToTauri(
 
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<OrchestrationRun>('record_orchestration_event', { event });
+}
+
+export async function listWorkflowRunsFromTauri(): Promise<WorkflowRunRecord[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord[]>('list_workflow_runs');
+}
+
+export async function createWorkflowRunFromTauri(
+  definition: WorkflowDefinitionV1,
+  input: Record<string, unknown>,
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('create_workflow_run', { definition, input, idempotencyKey });
+}
+
+export async function startWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('start_workflow_run', { runId, idempotencyKey });
+}
+
+export async function pauseWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('pause_workflow_run', { runId, idempotencyKey });
+}
+
+export async function resumeWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('resume_workflow_run', { runId, idempotencyKey });
+}
+
+export async function cancelWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('cancel_workflow_run', { runId, idempotencyKey });
+}
+
+export async function retryWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('retry_workflow_node', { runId, nodeId, idempotencyKey });
+}
+
+export async function skipWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('skip_workflow_node', { runId, nodeId, idempotencyKey });
+}
+
+export async function approveWorkflowGateFromTauri(
+  runId: string,
+  nodeId: string,
+  approval: { approved: boolean; [key: string]: unknown },
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('approve_workflow_gate', { runId, nodeId, approval, idempotencyKey });
+}
+
+export async function submitWorkflowResultFromTauri(
+  runId: string,
+  nodeId: string,
+  result: ImplementationReceipt | ReviewReceipt | SpecComplianceReceipt | VerificationReceipt | PlanReceipt,
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('submit_workflow_result', { runId, nodeId, result, idempotencyKey });
 }
 
 export async function searchSourceFilesFromTauri(
@@ -918,6 +2356,17 @@ export async function readSourceLspReadinessFromTauri(
  * and a no-op in the backend when no server is running for that root's languages. Returns
  * the count of running servers that were re-pointed.
  */
+/**
+ * Open the web inspector on the shell's own window.
+ *
+ * A no-op in a browser tab, which has the browser's own inspector already.
+ */
+export async function openMainDevtoolsFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('open_main_devtools');
+}
+
 export async function warmSourceLspForRootFromTauri(root: string): Promise<number | null> {
   if (!isTauriRuntime() || !root.trim()) {
     return null;
@@ -1228,7 +2677,7 @@ async function runPathCommand(command: string, path: string): Promise<boolean> {
   return true;
 }
 
-function isTauriRuntime(): boolean {
+export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 

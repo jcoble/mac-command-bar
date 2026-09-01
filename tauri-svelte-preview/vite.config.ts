@@ -1,5 +1,6 @@
 import { sveltekit } from "@sveltejs/kit/vite";
 import tailwindcss from "@tailwindcss/vite";
+import { realpathSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { defineConfig, type Plugin } from "vite";
 
@@ -8,9 +9,11 @@ import {
   countLocalSourceReferences,
   findLocalSourceDefinitions,
   findLocalSourceReferences,
+  listLocalSourceDirectory,
   readLocalSourceFile,
   scanLocalAgentSessions,
   scanLocalSourceFiles,
+  searchLocalSourceTree,
   searchLocalSourceFiles,
   validateLocalProjectRoot,
   writeLocalSourceFile,
@@ -25,6 +28,96 @@ function localSourceBridgePlugin(): Plugin {
     },
     configurePreviewServer(server) {
       server.middlewares.use(createLocalSourceBridgeMiddleware());
+    },
+  };
+}
+
+function freshDevModulesPlugin(): Plugin {
+  return {
+    name: "mac-command-bar-fresh-dev-modules",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.headers["sec-fetch-dest"] === "script") {
+          delete request.headers["if-modified-since"];
+          delete request.headers["if-none-match"];
+          response.setHeader("cache-control", "no-store");
+        }
+        next();
+      });
+    },
+  };
+}
+
+/**
+ * Upstream UI CSS ships three relational-selector patterns. Registering even
+ * one makes WebKit invalidate it after every transcript DOM insertion, so the
+ * dependency state is mirrored onto the element that owns it and the CSS can
+ * use ordinary compound selectors. Exact source markers make dependency drift
+ * fail visibly instead of silently putting the global mutation tax back.
+ */
+function relationalSelectorPurgePlugin(): Plugin {
+  const replaceRequired = (code: string, before: string, after: string, id: string): string => {
+    if (!code.includes(before)) {
+      throw new Error(`relational selector purge marker missing in ${id}: ${before}`);
+    }
+    return code.replaceAll(before, after);
+  };
+
+  return {
+    name: "mac-command-bar-relational-selector-purge",
+    enforce: "pre",
+    transform(code, id) {
+      if (id.includes("/dockview-core/dist/styles/dockview.css")) {
+        let next = code
+          .replaceAll(
+            ".dv-resize-container:has(> .dv-groupview)",
+            ".dv-resize-container.dv-resize-container-with-groupview"
+          )
+          .replaceAll(
+            ".dv-tab-group-chip:has(.dv-tab-group-chip-label--empty)",
+            ".dv-tab-group-chip.dv-tab-group-chip--empty"
+          );
+        if (next.includes(":has(")) {
+          throw new Error(`unhandled relational selector in ${id}`);
+        }
+        return next;
+      }
+
+      if (id.includes("/dockview-core/dist/esm/overlay/overlay.js")) {
+        return replaceRequired(
+          code,
+          "this._element.className = 'dv-resize-container';",
+          "this._element.className = 'dv-resize-container';\n        this._element.classList.toggle('dv-resize-container-with-groupview', this.options.content.classList.contains('dv-groupview'));",
+          id
+        );
+      }
+
+      if (id.includes("/dockview-core/dist/esm/dockview/components/titlebar/tabGroupChip.js")) {
+        return replaceRequired(
+          code,
+          "toggleClass(this._label, 'dv-tab-group-chip-label--empty', !label);",
+          "toggleClass(this._label, 'dv-tab-group-chip-label--empty', !label);\n        toggleClass(this._element, 'dv-tab-group-chip--empty', !label);",
+          id
+        );
+      }
+
+      if (id.includes("/markdownRenderer/browser/renderedMarkdown.css")) {
+        return replaceRequired(
+          code,
+          ".rendered-markdown li:has(input[type=checkbox])",
+          ".rendered-markdown li.rendered-markdown-checkbox-item",
+          id
+        );
+      }
+
+      if (id.includes("/vs/base/browser/markdownRenderer.js")) {
+        return replaceRequired(
+          code,
+          "input.setAttribute('disabled', '');",
+          "input.setAttribute('disabled', '');\n            input.closest('li')?.classList.add('rendered-markdown-checkbox-item');",
+          id
+        );
+      }
     },
   };
 }
@@ -67,6 +160,17 @@ function createLocalSourceBridgeMiddleware() {
             })
           );
           break;
+        case "/__mcb/source/list-directory":
+          sendJSON(
+            response,
+            200,
+            await listLocalSourceDirectory(
+              String(body.root ?? ""),
+              String(body.directory ?? ""),
+              Boolean(body.includeExcluded)
+            )
+          );
+          break;
         case "/__mcb/source/read":
           sendJSON(
             response,
@@ -96,6 +200,19 @@ function createLocalSourceBridgeMiddleware() {
               String(body.query ?? ""),
               numberOrUndefined(body.limit)
             )
+          );
+          break;
+        case "/__mcb/source/search-tree":
+          sendJSON(
+            response,
+            200,
+            await searchLocalSourceTree({
+              root: String(body.root ?? ""),
+              query: stringOrNull(body.query),
+              pageSize: numberOrNull(body.pageSize),
+              cursor: numberOrNull(body.cursor),
+              includeExcluded: Boolean(body.includeExcluded),
+            })
           );
           break;
         case "/__mcb/source/definitions":
@@ -200,11 +317,19 @@ export default defineConfig({
   // browser tab, so the panes and the commit graph can be looked at without the
   // desktop app. It cannot change a repository — see `src/lib/server/gitBridge.ts`.
   plugins: [
+    freshDevModulesPlugin(),
+    relationalSelectorPurgePlugin(),
     gitBridgePlugin(),
     localSourceBridgePlugin(),
     tailwindcss(),
     sveltekit(),
   ],
+  // Source maps in the preview build so Web Inspector steps through the real
+  // .svelte and .ts files instead of the minified chunks. The .map files are
+  // fetched only when the inspector is open, so a normal run is unaffected.
+  build: {
+    sourcemap: true,
+  },
   worker: {
     format: "es",
   },
@@ -212,8 +337,11 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5177,
     strictPort: true,
+    fs: {
+      allow: [process.cwd(), realpathSync("node_modules")],
+    },
     watch: {
-      ignored: ["**/.svelte-kit/generated/**"],
+      ignored: ["**/.svelte-kit/generated/**", "**/src-tauri/**"],
     },
   },
   clearScreen: false,

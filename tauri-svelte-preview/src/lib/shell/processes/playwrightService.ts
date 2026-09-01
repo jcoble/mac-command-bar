@@ -1,10 +1,10 @@
 /**
  * playwrightService.ts — the ONLY place the Playwright card talks to the backend.
  *
- * Imperative, like `contextService.ts`: nothing here runs from an `$effect`,
- * nothing runs at import, and nothing polls. Reads happen exactly twice:
+ * Imperative: nothing here runs from an `$effect`, nothing runs at import, and
+ * nothing polls. Reads happen exactly twice:
  *
- *  - the shell calls `activate()` when the context region is first shown;
+ *  - the shell calls `activate()` when the Resources panel is opened;
  *  - the user presses refresh on the card, or stops something (a stop always
  *    re-reads, because the stop result lists what was ASKED to stop, not what
  *    survived).
@@ -36,7 +36,8 @@ import {
   markPerSessionStopUnsupported,
   markPlaywrightActivated,
   markPlaywrightUnavailable,
-  playwrightState
+  playwrightState,
+  resetPlaywright
 } from './playwrightStore.svelte.ts';
 
 /** Shown when the data only exists inside the desktop app. */
@@ -55,7 +56,7 @@ function describeError(error: unknown): string {
 
 /**
  * Show the card and read the process list — once. Calling it again does no
- * work, so the shell may call it every time the context region becomes visible.
+ * work, so the shell may call it every time the Resources panel is opened.
  */
 export function activate(): void {
   markPlaywrightActivated();
@@ -81,9 +82,18 @@ export async function refresh(): Promise<void> {
   }
 }
 
-/** Forget that a read has happened — used when the shell tears the panel down. */
+/**
+ * Let go of the card's state — used when the shell tears the panel down.
+ *
+ * Forgetting the read is not enough on its own: the process groups from the
+ * last read stay in the store, holding a row per process for a card that is no
+ * longer on screen. Dropping the store back to launch state releases them, and
+ * clearing `loadedOnce` means the next mount reads the processes again instead
+ * of showing the list as it was when the panel closed.
+ */
 export function resetPlaywrightActivation(): void {
   loadedOnce = false;
+  resetPlaywright();
 }
 
 /**

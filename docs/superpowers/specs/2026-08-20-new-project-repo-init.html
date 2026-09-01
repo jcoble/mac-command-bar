@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>New project repository init — spec</title>
+<style>body{margin:0 auto;max-width:860px;padding:40px 24px;background:#0f1115;color:#e6e9ef;font:15px/1.6 -apple-system,system-ui,sans-serif}h1{font-size:26px}h2{font-size:19px;border-top:1px solid #262b36;padding-top:18px;margin-top:36px}code{font-family:ui-monospace,Menlo,monospace;font-size:13px;background:#1e232d;border:1px solid #262b36;border-radius:4px;padding:1px 5px}pre{background:#171a21;border:1px solid #262b36;border-left:3px solid #7aa2f7;border-radius:6px;padding:12px 14px;overflow-x:auto;font-size:13px}.file{color:#7aa2f7;font-family:ui-monospace,Menlo,monospace;font-size:13px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:7px 9px;border-bottom:1px solid #262b36}.box{background:#171a21;border:1px solid #262b36;border-left:3px solid #e3b341;border-radius:8px;padding:14px 16px;margin:14px 0}</style>
+</head><body>
+
+<h1>Starting a session in a folder with no repository creates one</h1>
+<p>2026-08-20. Owner's requirement, from the Codex app's behaviour: pick a plain folder, start a session, and the app makes it a git repository on <code>main</code> automatically. Today the draft lets a branchless folder through validation (fixed earlier) but nothing ever creates the repository, so the session starts in a folder git knows nothing about.</p>
+
+<h2>1. The Rust command</h2>
+<p><b>Create</b> <code>init_project_repository</code> in <span class="file">tauri-svelte-preview/src-tauri/src/main.rs</span>, next to <code>list_project_git_refs</code> at <span class="file">main.rs:1701</span>, following its exact shape: an async command that <code>spawn_blocking</code>s a sync worker.</p>
+<pre>#[tauri::command]
+async fn init_project_repository(root: String) -> Result&lt;(), String&gt;</pre>
+<p>The sync worker, placed near <code>list_project_git_refs_sync</code> (<span class="file">main.rs:3574</span>):</p>
+<ul>
+<li>Refuse a blank root. Refuse a root that does not exist or is not a directory, with a plain-words message.</li>
+<li>If <code>root/.git</code> already exists, return Ok and do nothing — the button was stale, not wrong.</li>
+<li>Run <code>git init -b main</code> in the root, then <code>git commit --allow-empty -m "Initial commit"</code>. Use <code>std::process::Command::new("git")</code> the way the existing call sites do (see <span class="file">resources.rs:955</span> for the idiom).</li>
+<li>A non-zero exit from either command returns its stderr verbatim in the error string. The commit step failing because git has no user identity configured must come back as that exact message — do not swallow or rephrase it.</li>
+</ul>
+<p>Register the command in the app's <code>invoke_handler</code> list beside <code>list_project_git_refs</code>.</p>
+<p><b>Rust test</b>, in the same test module style as the file's existing tests: <code>a_plain_folder_becomes_a_repository_on_main</code> — temp dir, call the sync worker, assert <code>.git</code> exists and <code>git rev-parse --abbrev-ref HEAD</code> prints <code>main</code> and <code>git rev-list --count HEAD</code> prints <code>1</code>. Set <code>git config user.name/user.email</code> locally in the temp repo before the commit so the test does not depend on machine config — the worker itself must NOT set identity. A second test <code>an_existing_repository_is_left_alone</code>: run the worker twice, second call is Ok and the commit count is still 1.</p>
+
+<h2>2. The frontend wrapper</h2>
+<p><b>Modify</b> <span class="file">tauri-svelte-preview/src/lib/shell/newSession/newSessionBackend.ts</span>: add <code>initProjectRepository(root: string): Promise&lt;BackendAnswer&lt;null&gt;&gt;</code> directly below <code>listGitRefs</code> (<span class="file">:143</span>), following its exact shape — trim/blank guard, <code>isNativeTauriRuntime()</code> guard with <code>DESKTOP_ONLY_MESSAGE</code>, <code>countInvoke('init_project_repository')</code>, invoke, and the same failed-message pattern: <code>`The repository could not be created: ${describeError(error)}`</code>.</p>
+
+<h2>3. The draft surface</h2>
+<p><b>Modify</b> <span class="file">tauri-svelte-preview/src/lib/shell/newSession/DraftSessionSurface.svelte</span>, in <code>send()</code> at <span class="file">:196-212</span>. After <code>buildThreadStartRequest</code> succeeds and inside the <code>submitting</code> guard, before <code>await onSend(request)</code>:</p>
+<pre>if (!draft.branchesAvailable) {
+  const made = await initProjectRepository(draft.projectPath);
+  if (made.status !== 'ok') { submitError = made.message; return; }  // inside try/finally as today
+  await loadRefs(draft.projectPath);   // main now exists; the draft picks it up
+}</pre>
+<p>After <code>loadRefs</code>, <code>draft.branch</code> is <code>main</code> and <code>branchesAvailable</code> is true; rebuild the request with <code>buildThreadStartRequest(draft)</code> so the session starts on the branch that now exists (guard: if the rebuild returns null, set <code>submitError</code> from <code>problems</code> and return).</p>
+<p>The refs notice for a branchless folder (the dismissible warning added earlier) gains one sentence so the behaviour is not a surprise: <i>"Starting here will create a git repository on main."</i> Keep it dismissible.</p>
+
+<h2>4. Verification</h2>
+<pre>cd tauri-svelte-preview/src-tauri && cargo test --bin mac-command-bar-webview-preview a_plain_folder an_existing_repository
+cd tauri-svelte-preview && npx tsc --noEmit && pnpm run check:svelte
+node --experimental-strip-types scripts/threadStartFlow.test.ts</pre>
+<p>Passing: both Rust tests pass; tsc silent; gate ends <code>Files the /next shell owns: 0 error(s)</code>; the flow test still passes.</p>
+
+<h2>5. Done means · size · rules</h2>
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><span class="file">main.rs</span></td><td>command + sync worker + registration + 2 tests, ~90 lines</td></tr>
+<tr><td><span class="file">newSessionBackend.ts</span></td><td>~25 lines</td></tr>
+<tr><td><span class="file">DraftSessionSurface.svelte</span></td><td>~15 lines</td></tr>
+</table>
+<div class="box">KISS/YAGNI bind: no new abstraction, no config option, no template/README scaffolding in the new repo, no remote setup, no .gitignore generation — <code>git init -b main</code> plus one empty commit is the whole feature. Roughly double the size above means stop and propose instead. One problem per lane; no drive-by refactors; TypeScript only; no CSS <code>:has()</code>; no UI regression tests; plain-English comments; never mention Claude or Codex in code.</div>
+
+</body></html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TSK-808 · Notion Tasks panel</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Avenir Next", system-ui, sans-serif; background: #080d10; color: #edf4f3; }
+    * { box-sizing: border-box; }
+    body { margin: 0; display: grid; min-height: 100vh; place-items: center; padding: 32px; }
+    main { width: 360px; height: 760px; overflow: hidden; border: 1px solid #29383f; border-radius: 14px; background: #11191d; box-shadow: 0 24px 70px rgb(0 0 0 / 35%); }
+    header { display: flex; align-items: center; gap: 10px; padding: 16px; }
+    h1 { flex: 1; margin: 0; font-size: 16px; }
+    .count, .tag { border-radius: 999px; background: #223038; color: #aebdbc; font: 11px/1.5 ui-monospace, monospace; padding: 2px 7px; }
+    button, input, select { border: 1px solid #304249; border-radius: 7px; background: #0d1417; color: inherit; font: inherit; }
+    button { padding: 7px 10px; cursor: pointer; }
+    .refresh { color: #70c8d2; }
+    .controls { display: grid; gap: 8px; padding: 0 14px 14px; }
+    input, select { width: 100%; height: 34px; padding: 0 9px; }
+    .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .snapshot { margin: 0 14px 12px; color: #91a3a4; font-size: 11px; }
+    .tasks { padding: 0 8px 12px; }
+    article { padding: 11px 8px; border-top: 1px solid #223138; }
+    article:first-child { border-top: 0; }
+    article div { display: flex; align-items: start; gap: 8px; }
+    h2 { flex: 1; margin: 0; font-size: 13px; line-height: 1.35; }
+    p { margin: 5px 0 0; color: #91a3a4; font-size: 11px; }
+    .open { padding: 3px 6px; border: 0; background: transparent; color: #70c8d2; }
+    .note { max-width: 360px; margin-top: 18px; color: #91a3a4; font-size: 12px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div>
+    <main aria-label="Tasks panel implementation reference">
+      <header><h1>Tasks</h1><span class="count">4</span><button class="refresh">Refresh</button></header>
+      <p class="snapshot">Latest successful Notion snapshot</p>
+      <div class="controls">
+        <input value="workbench" aria-label="Search tasks">
+        <div class="filters"><select><option>MacCommandBar</option></select><select><option>All statuses</option></select></div>
+      </div>
+      <section class="tasks">
+        <article><div><h2>[TSK-808] Finish the resource-aware Assembly workbench plan</h2><button class="open">Open</button></div><p>MacCommandBar · Doing</p><p>High · Codex · 2026-08-25</p></article>
+        <article><div><h2>[TSK-938] Complete Agent Session History</h2><button class="open">Open</button></div><p>MacCommandBar · To Do</p><p>Medium · Owner</p></article>
+        <article><div><h2>[TSK-928] Restore conversation presentation</h2><button class="open">Open</button></div><p>MacCommandBar · Done</p><p>High · Codex</p></article>
+        <article><div><h2>[TSK-904] Eliminate Source Control freeze</h2><button class="open">Open</button></div><p>MacCommandBar · Done</p><p>High · Codex</p></article>
+      </section>
+    </main>
+    <p class="note">Implementation reference: the panel follows the existing right-panel header, inputs, row density, and browser navigation. Setup appears inline only when requested or unconfigured. Native WebKit integration and resource acceptance remain pending.</p>
+  </div>
+</body>
+</html>

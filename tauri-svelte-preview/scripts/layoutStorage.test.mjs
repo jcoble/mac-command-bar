@@ -4,10 +4,17 @@ import {
   saveLayout,
   clearLayout,
   gridPanelIds,
+  dockGroupCount,
   dockPanelIds,
   paneviewPanelIds,
-  panelSetMatches
+  panelSetMatches,
+  CENTER_LAYOUT_KEY,
+  GRID_LAYOUT_KEY
 } from '../src/lib/shell/layout/layoutStorage.ts';
+import {
+  SIDE_PANE_LAYOUT_KEY,
+  SIDE_PANE_LAYOUT_VERSION
+} from '../src/lib/shell/layout/paneStack.ts';
 
 function memoryStorage(initial = {}) {
   const map = new Map(Object.entries(initial));
@@ -88,6 +95,29 @@ function memoryStorage(initial = {}) {
   const dock = { panels: { session: {}, editor: {}, browser: {} }, grid: {} };
   assert.deepEqual([...dockPanelIds(dock)].sort(), ['browser', 'editor', 'session']);
   assert.deepEqual([...dockPanelIds({ grid: {} })], [], 'missing panels -> empty');
+}
+
+// dockGroupCount counts the leaves of a SerializedDockview's grid tree, which
+// is what tells one stacked group of tabs from two panes side by side.
+{
+  const stacked = {
+    grid: { root: { type: 'branch', data: [{ type: 'leaf', data: { views: ['session', 'editor', 'diff'] } }] } }
+  };
+  const sideBySide = {
+    grid: {
+      root: {
+        type: 'branch',
+        data: [
+          { type: 'leaf', data: { views: ['session'] } },
+          { type: 'leaf', data: { views: ['editor', 'diff'] } }
+        ]
+      }
+    }
+  };
+  assert.equal(dockGroupCount(stacked), 1, 'three surfaces in one group is one group');
+  assert.equal(dockGroupCount(sideBySide), 2, 'the old split geometry counts two');
+  assert.equal(dockGroupCount({}), 0, 'malformed -> zero, no throw');
+  assert.equal(dockGroupCount(null), 0);
 }
 
 // paneviewPanelIds reads SerializedPaneview.views[].data.id.
@@ -174,6 +204,51 @@ function memoryStorage(initial = {}) {
   assert.equal(panelSetMatches(['a'], ['a', 'b']), false);
   assert.equal(panelSetMatches(['a', 'b', 'c'], ['a', 'b']), false);
   assert.equal(panelSetMatches([], []), true);
+}
+
+// PaneStack uses the existing LayoutStorage authority through one versioned key.
+{
+  assert.equal(SIDE_PANE_LAYOUT_KEY, 'mac-command-bar.next.side-panes-v1');
+  assert.equal(SIDE_PANE_LAYOUT_VERSION, 1);
+  const storage = memoryStorage();
+  const payload = { version: SIDE_PANE_LAYOUT_VERSION, layouts: { 'left-rail': { views: [] } } };
+  assert.equal(saveLayout(storage, SIDE_PANE_LAYOUT_KEY, payload), true);
+  assert.deepEqual([...storage._map.keys()], [SIDE_PANE_LAYOUT_KEY], 'one side-pane storage key');
+  assert.deepEqual(loadLayout(storage, SIDE_PANE_LAYOUT_KEY), payload);
+}
+
+// Both roster bumps are exact-set based: a stored layout is restored only when
+// its panel set is exactly the current one, and anything else — including every
+// older roster — falls back to the defaults rather than being translated.
+{
+  assert.equal(GRID_LAYOUT_KEY, 'mac-command-bar.next.grid-layout-v3');
+  assert.equal(CENTER_LAYOUT_KEY, 'mac-command-bar.next.center-layout-v6');
+  assert.equal(
+    panelSetMatches(['session', 'editor', 'diff'], ['diff', 'editor', 'session']),
+    true,
+    'the current center roster is an exact set, regardless of stored order'
+  );
+  assert.equal(
+    panelSetMatches(
+      ['session', 'editor', 'browser', 'diff', 'session-library', 'agents'],
+      ['session', 'editor', 'diff']
+    ),
+    false,
+    'the retired six-panel roster is not restored into the three-panel center'
+  );
+  assert.equal(
+    panelSetMatches(['session', 'editor'], ['session', 'editor', 'diff']),
+    false,
+    'a partial center roster must fall back safely'
+  );
+  assert.equal(
+    panelSetMatches(
+      ['sessions', 'center', 'tools', 'activity', 'dock'],
+      ['sessions', 'center', 'tools', 'dock']
+    ),
+    false,
+    'a grid layout still naming the deleted far-right rail must fall back safely'
+  );
 }
 
 console.log('layoutStorage: all tests passed');

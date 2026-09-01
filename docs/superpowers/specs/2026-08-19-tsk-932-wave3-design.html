@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TSK-932 wave 3 design — Editor/Supercharged, tree-sitter, helper model, plan chip, context meter, styling, agy</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --ink:#e8eaf0; --muted:#9aa3b2; --line:#262b36; --accent:#7fd1b9; --warn:#e5b567; --bad:#ef7a7a; --code:#1d2230; }
+  @media (prefers-color-scheme: light) { :root { --bg:#fbfbfd; --panel:#ffffff; --ink:#1b1f27; --muted:#5d6675; --line:#e3e6ec; --accent:#1e8f6f; --warn:#9a6b00; --bad:#b93a3a; --code:#f1f3f7; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 -apple-system, "Inter", system-ui, sans-serif; }
+  main { max-width:1040px; margin:0 auto; padding:40px 28px 120px; }
+  h1 { font-size:30px; margin:0 0 6px; letter-spacing:-.01em; }
+  h2 { font-size:21px; margin:44px 0 10px; padding-top:18px; border-top:1px solid var(--line); }
+  h3 { font-size:16px; margin:24px 0 6px; }
+  p, li { max-width:78ch; }
+  .lede { color:var(--muted); font-size:16px; margin:0 0 18px; }
+  .meta { color:var(--muted); font-size:13px; }
+  code, pre { font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  code { background:var(--code); padding:1px 5px; border-radius:5px; }
+  pre { background:var(--code); padding:12px 14px; border-radius:10px; overflow-x:auto; max-width:100%; }
+  pre code { background:none; padding:0; }
+  table { border-collapse:collapse; width:100%; margin:10px 0 16px; font-size:14px; }
+  th, td { text-align:left; vertical-align:top; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:12px; letter-spacing:.06em; text-transform:uppercase; }
+  .tag { display:inline-block; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:2px 8px; border-radius:999px; background:var(--code); color:var(--muted); margin-left:6px; vertical-align:middle; }
+  .tag.decided { color:var(--accent); }
+  .tag.later { color:var(--warn); }
+  .tag.gate { color:var(--bad); }
+  .callout { background:var(--panel); border-left:3px solid var(--accent); padding:12px 16px; border-radius:0 10px 10px 0; margin:14px 0; }
+  .callout.gate { border-left-color:var(--bad); }
+  .callout.later { border-left-color:var(--warn); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); gap:14px; margin:12px 0 18px; }
+  .card { background:var(--panel); border-radius:14px; padding:14px 16px; }
+  .card h4 { margin:0 0 6px; font-size:14px; }
+  .card p { margin:0; font-size:14px; color:var(--muted); }
+  nav a { color:var(--accent); text-decoration:none; margin-right:14px; font-size:14px; }
+  a { color:var(--accent); }
+  .toc { margin:18px 0 0; }
+  ol.steps li { margin-bottom:6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TSK-932 wave 3 — design</h1>
+  <p class="lede">Editor/Supercharged switch with tree-sitter highlighting, the in-app helper model, the plan chip, the context meter, the styling pass, agy as a provider, and the bug lanes that need no design.</p>
+  <p class="meta">Worktree <code>tsk-808-assembly-wave</code> · Notion <a href="https://app.notion.com/p/3c1394b0689d81f58b2bfb000d25554b">[TSK-932]</a> · decided with the owner on 2026-08-19 · screenshots #443–#474 in <code>~/dev/work/reports/tsk-ui-base/screenshots/2026-08-19-wave3/</code> · the app's architecture source of truth is <code>main-architecture-explained.html</code>; any lane that changes what it describes updates it in the same commit.</p>
+
+  <nav class="toc">
+    <a href="#order">Order &amp; gates</a><a href="#a">A · Editor/Supercharged + tree-sitter</a><a href="#b">B · Helper model</a><a href="#c1">C1 · Plan chip</a><a href="#c2">C2 · Context meter</a><a href="#c3">C3 · Styling</a><a href="#d">D · Bug lanes</a><a href="#agy">Agy</a><a href="#plugins">Tauri plugins</a><a href="#nongoals">Non-goals</a><a href="#verify">Verification</a>
+  </nav>
+
+  <h2 id="order">0 · Order and gates</h2>
+  <div class="callout gate"><strong>Gate:</strong> the memory measurement spike (A3) runs first and alone. No A lane (switch, tree-sitter, grammar removal) starts before its numbers are in. Everything in B, C, D and agy is independent of A and may run in parallel with the spike.</div>
+  <ol class="steps">
+    <li><strong>A3 spike</strong> — release vs debug memory; Web-content heap with and without the <code>monaco-vscode-api</code> layer; idle cost of an extension host if one were enabled. Output: a numbers table and a one-paragraph recommendation (keep Monaco / plain Monaco / CodeMirror 6). Owner decides.</li>
+    <li><strong>D bug lanes</strong> (3, 4a, 9, 10, 11, editor race) and <strong>C2 context meter</strong> — small, independent, start immediately.</li>
+    <li><strong>C3 styling</strong> and <strong>C1 plan chip</strong> — Opus 5 lanes, screenshot-verified, start immediately.</li>
+    <li><strong>B helper</strong> — Rust module + Settings first, then the title job, then Inspect.</li>
+    <li><strong>Agy</strong> — recon first (what the adapter artifact can do today), then the provider lane.</li>
+    <li><strong>A1/A2</strong> — after the spike's decision: switch + Settings section, then tree-sitter + grammar-package removal, then the per-file toggle removal.</li>
+  </ol>
+  <p>Routing per the global rules: anything the owner sees → Opus 5 (or Fable); high-judgment implementation and every review → SOL medium; recon, audits and tightly specified implementation → Luna Max. Plans for Luna Max name exact files, line anchors, contracts, tests and commands; no design decisions left to the lane.</p>
+
+  <h2 id="a">A · Editor / Supercharged switch and tree-sitter highlighting <span class="tag decided">decided</span></h2>
+  <h3>A0 · What exists today (why it is unreliable)</h3>
+  <p>The editor is Monaco through <code>@codingame/monaco-vscode-api</code> 25.1.2 (<code>package.json:116</code>) with 28 <code>monaco-vscode-*-default-extension</code> packages and the <code>textmate</code>, <code>files</code> and <code>keybindings</code> service overrides. Highlighting is VS Code's TextMate grammars registered asynchronously by those extension packages on the main thread; the C# language client (<code>src/lib/shell/editor/csharpLanguageClient.ts</code>) rides on the same layer. The "half the time" highlighting and the #464 start error ("MarkdownRendererService.setDefaultCodeBlockRenderer is not supported … without registering the corresponding service override") are both start-order races inside that layer. Language servers exist for C# (Roslyn, native client), TypeScript/JavaScript (<code>typescript-language-server</code>) and Rust (<code>rust-analyzer</code>) — <code>src-tauri/src/lsp.rs:60-64, 4578-4592</code>; nothing for HTML, CSS, JSON, Markdown, shell, Svelte. The editor toolbar shows a per-file LSP toggle on every file regardless (<code>#443</code>, <code>#464</code> "C#").</p>
+
+  <h3>A1 · The switch</h3>
+  <div class="grid">
+    <div class="card"><h4>Where</h4><p>Title bar, global, persisted: a two-segment control <code>Editor | Supercharged</code> (the word "Supercharged" is a placeholder the owner may rename; keep it in one constant). Visible from every panel.</p></div>
+    <div class="card"><h4>On</h4><p>Language servers start <em>lazily</em> for the language of each file you open, limited to servers enabled in Settings → Supercharged. CodeLens, references, rename, diagnostics come from them. Status line on a file with no server: "Editor only — no language server for HTML".</p></div>
+    <div class="card"><h4>Off</h4><p>Running servers stop immediately (RAM back). Editor only: tree-sitter highlighting, outline, folding, go-to-symbol in file. Nothing else starts.</p></div>
+    <div class="card"><h4>Settings → Supercharged</h4><p>One row per server (C#, TypeScript/JavaScript, Rust, later Svelte…): "on when Supercharged" / "always off". This section is where future Supercharged things plug in (indexers, formatters). Default: all on when Supercharged.</p></div>
+  </div>
+  <p><strong>Removed (one way only):</strong> the per-file toolbar toggle (<code>EditorPanel.svelte</code> "C#"/"SH" control) and the separate C# on/off in Settings → General → Language support (<code>SettingsDialog.svelte</code>, <code>lsp.rs:83-112</code> <code>csharp_language_server_enabled</code>), replaced by the per-server allow map. Backend contract: <code>language_server_allowed(language_id)</code> becomes <code>supercharged_enabled() &amp;&amp; server_enabled(server_name)</code>; one Tauri command to read/write the switch and the map; turning the switch off calls the existing stop path for every running server.</p>
+
+  <h3>A2 · Highlighting: tree-sitter only</h3>
+  <ul>
+    <li><strong>Engine:</strong> <code>web-tree-sitter</code> (WASM) running in a Web Worker; one grammar <code>.wasm</code> per language, fetched on first open of that language and cached; incremental reparse on edit (only the changed span).</li>
+    <li><strong>Output:</strong> highlight captures from each grammar's <code>highlights.scm</code> mapped to ~12 app token kinds (keyword, string, number, comment, type, function, variable, property, operator, punctuation, tag/attribute, constant). The same tree yields outline (symbols), folding ranges and go-to-symbol in file.</li>
+    <li><strong>Into Monaco:</strong> the semantic-tokens overlay, with TextMate/Monarch switched off so there is exactly one colourer. The 28 <code>monaco-vscode-*-default-extension</code> packages and the <code>textmate</code> service override are removed (one way only). <code>monaco-vscode-api</code> itself stays only as long as the C# language client needs it; the spike says whether that is the right long-term base.</li>
+    <li><strong>Theme:</strong> the 12 token colours live as CSS custom properties in <code>src/lib/shell/styles/nextTokens.css</code> next to the other theme tokens and are pushed into a Monaco theme whenever the app theme changes. Roslyn's semantic highlighting is disabled in the C# client options.</li>
+    <li><strong>First grammars:</strong> C#, TypeScript, TSX, JavaScript, Svelte, HTML, CSS, JSON, Rust, Markdown, Bash, YAML, TOML, Python, Swift, SQL. Adding one later is a grammar file plus a capture map, nothing else.</li>
+    <li><strong>What tree-sitter is not:</strong> no cross-file references, definitions, rename, types or diagnostics — those remain Supercharged. CodeLens keeps working under Supercharged unchanged.</li>
+  </ul>
+
+  <h3>A3 · Memory measurement spike <span class="tag gate">gate</span></h3>
+  <table>
+    <tr><th>Measure</th><th>How</th><th>Why</th></tr>
+    <tr><td>Debug vs release build, idle, one session open</td><td>Resources panel + <code>footprint</code>/Activity Monitor Memory for Main and Web content</td><td>Item 2 asks whether 1.3–1.6 GB Web content is the debug build</td></tr>
+    <tr><td>Web-content heap with / without the monaco-vscode-api layer loaded</td><td>Open the app, do not open the editor → measure; open one C# file → measure; open one HTML file → measure; Safari Web Inspector heap snapshot of the WebContent process</td><td>Is the editor layer the hog, and is it load-once or per-file</td></tr>
+    <tr><td>Growth over 10 minutes idle with a long transcript open</td><td>Sample every 60 s</td><td>Leak vs baseline</td></tr>
+    <tr><td>Idle cost of a VS Code web extension host</td><td>Throwaway branch: register the extensions service override with no extensions; measure</td><td>Settles the "enable extensions?" question with a number</td></tr>
+  </table>
+  <p>Output: a numbers table in <code>docs/superpowers/evidence/docs/superpowers/evidence/2026-08-XX-editor-memory.mdlt;datedocs/superpowers/evidence/2026-08-XX-editor-memory.mdgt;-editor-memory.md (dated the day it runs)</code> and a recommendation. Decision space: keep Monaco on monaco-vscode-api · Monaco without the vscode-api layer (C# client would need another route) · CodeMirror 6. The owner decides; A1/A2 are written to survive any of the three (the switch and the worker are editor-agnostic; only the "into Monaco" adapter changes).</p>
+
+  <h3>A4 · Extensions stance <span class="tag decided">decided</span></h3>
+  <p>No VS Code extension host in this app. Web extensions would run in a Worker host; Node extensions (Svelte LS, SQLTools, most language tooling) need a VS Code server process. What those would give us we do cheaper and measurably our own way: Svelte LS as one more LSP binary in the same registry under Supercharged (later); a DB panel over <code>tauri-plugin-sql</code> or a Rust command (later); git graph as our own component over <code>git log --graph</code> data (later). The spike's extension-host number is kept so this stays a measured decision.</p>
+
+  <h2 id="b">B · The in-app helper model <span class="tag decided">decided</span></h2>
+  <p>A small, fast model that lives in the app and does jobs for the user — not a chat. Bring-your-own-key.</p>
+  <div class="grid">
+    <div class="card"><h4>B1 · Settings → Helper</h4><p>Vendor (OpenAI, Anthropic), model id from a short per-vendor list (ids confirmed from vendor docs when the plan is written, never from memory), key field, "Test" button making one tiny call. Key → macOS Keychain under our own service name via <code>/usr/bin/security add-generic-password</code>/<code>find-generic-password -w</code> (silent for an unsigned dev build, as proven in <code>claude_quota.rs</code>); settings file holds vendor + model only. No key → helper off.</p></div>
+    <div class="card"><h4>B2 · Rust <code>helper</code> module</h4><p>One interface, two implementations: <code>complete(job, system, input, max_output) → text</code>. 20 s timeout, one retry on a network error, no streaming, no memory between calls. One Tauri command <code>run_helper_job(job, input)</code>. Every call logged to the usage-history store (job, vendor, model, in/out tokens) so it shows in the Usage popover.</p></div>
+    <div class="card"><h4>B3 · Jobs, in order</h4><p>(1) <strong>Title</strong>: fires once per session, after the first assistant reply; input = the user prompt + that reply (trimmed to a budget); output ≤ 6 words; written to the session row; the rail updates in place; a title the user typed is never overwritten (flag on the row). (2) <strong>Inspect</strong>: the worktree card button gathers facts deterministically (status, ahead/behind, last activity, sessions that touched it) and asks for a 3–5 sentence summary + recommended action, shown inline in the card; no session is started; the current "start a session with a skill" path is removed. (3) <span class="tag later">later</span> command check, commit-message check, PR-text check, save check — same command, new job names.</p></div>
+    <div class="card"><h4>B4 · Failure</h4><p>No key, offline, timeout or unusable answer → keep the fallback silently (first-words title; Inspect shows "Helper unavailable — add a key in Settings → Helper"). Never blocks, never holds a process. <span class="tag later">later</span> fallback chain: key → Claude Code sign-in on this Mac → other providers present → Settings choice.</p></div>
+  </div>
+
+  <h2 id="c1">C1 · Plan chip above the composer <span class="tag decided">decided</span></h2>
+  <p>Reference: Codex desktop (#466, #467). The plan leaves the transcript. A pill chip sits centred above the composer: <code>● Step 2 / 5 · 1 file changed +12 −3</code> (file-change summary only when the turn has one). Click expands upward into a panel listing the steps with their state (pending / active / done); collapses on click, Escape, or when the turn ends. It shows the session's <em>latest</em> plan (fixes the doubled PLAN card in #446). In the transcript a plan update becomes one quiet line "Plan updated · 5 steps" that opens the same panel, so history still shows when the plan changed. <code>PlanItem.svelte</code> card is removed (one way only). Files: <code>ConversationComposer.svelte</code> (chip host), <code>ConversationSurface.svelte</code>, <code>TimelineItem.svelte:38</code>, <code>conversationTimeline.ts</code> plan items.</p>
+
+  <h2 id="c2">C2 · Context meter and Context panel <span class="tag decided">decided</span></h2>
+  <ul>
+    <li>One source: <code>contextMeterState(used, window)</code> (<code>composerSlashCommands.ts:71</code>) feeds both the composer ring and its text, and they say the same thing: ring <em>empties</em> as context is used, text "82% left", warm colour at ≤ 25% left. "used" appears nowhere in the composer. (#459 showed "82% left" beside a ring drawn as 20% — the same number read two ways.)</li>
+    <li>Codex: <code>tools/codex-acp-bridge/bridge.mjs</code> emits <code>usage_update</code> from whatever the app-server 0.147.0 reports per turn. The lane captures a live turn and uses the real field names; no guessing. Until then Codex sessions show no ring (as now), not a wrong one.</li>
+    <li>Context panel (<code>panels/context/SessionContextPanel.svelte</code>): Effort from the session's config options; In/Out from usage events when the provider sends them; Files touched from the file-change and tool items already in the timeline; Attachments from the session's attachment rows. A card the provider cannot feed says "not reported by Codex" (named), not "not reported".</li>
+  </ul>
+
+  <h2 id="c3">C3 · Styling pass <span class="tag decided">decided</span></h2>
+  <p>Spotify for the look, Material 3 for component behaviour and motion (<a href="https://m3.material.io/styles/shape/overview-principles">m3.material.io — shape, motion, easing</a>). The agent decides; the owner reverts what they dislike. Rules, applied everywhere in this batch:</p>
+  <table>
+    <tr><th>Rule</th><th>Detail</th></tr>
+    <tr><td>Surfaces</td><td>Layered dark tones (bg → card → elevated). <strong>Cards have no ring and no border</strong> — tone only (the current <code>ring-foreground/10</code> hairline goes). Menus/popovers are elevated surfaces with shadow.</td></tr>
+    <tr><td>Spacing</td><td>More than today where it helps reading (card padding ~16 px, row gaps 8–12 px, section gaps 16–24 px); the agent's judgment where a dense list cannot afford it. 8 px grid.</td></tr>
+    <tr><td>Type</td><td>Bold 14/16 headings, 13–14 body, quiet secondary text; Worktrees panel moves up a size.</td></tr>
+    <tr><td>Shape</td><td>Radii 12/16; pills 999.</td></tr>
+    <tr><td>Inputs</td><td><strong>No focus rings.</strong> Focus = border colour change only (#450, #452).</td></tr>
+    <tr><td>Tabs</td><td>M3 connected segmented pills: one pill container, the selected segment is a filled pill in the M3 site's muted lavender-grey on dark (#468–#470, #473–#474), and it <em>slides</em> to the new segment (transform/opacity, ~200–250 ms, M3 standard easing) — never a hard swap. EdiPlatform's tabs (#471–#472) are the same idea with a weaker transition and colour; do better than those. Applies to the right-panel tab strip (#454), the Sessions header controls (#455), and the title-bar Editor/Supercharged switch.</td></tr>
+    <tr><td>Motion</td><td>Animations and transitions are wanted — done well they are most of what reads as polish (hover fades, menu pops, tab slides, card reveals, 150–250 ms, M3 easing). The repo rule shapes them rather than forbids them: every one ends; transform/opacity only; a loop runs only while tied to real activity and pauses when hidden or offscreen.</td></tr>
+    <tr><td>Working indicator</td><td>The blinking dot shown while an agent works is replaced by a <strong>set of about ten small spinners</strong>, one picked at random per turn (a few simple CSS-3D ones — a tumbling cube, a flipping disc, an orbit — and several flat ones). Each is ~16 px, CSS transform/opacity only, no JS per frame, stops the instant the turn ends, pauses when its session is not on screen. One Svelte component, one registry of variants, random pick seeded per turn so it does not change mid-turn.</td></tr>
+  </table>
+  <p><strong>Branching:</strong> all styling lanes land on a branch <code>tsk-932-styling</code> off <code>tsk-808-assembly-wave</code> (its own worktree under <code>~/dev/work/worktrees/mac-command-bar/tsk-932-styling</code>), one commit per target, merged by PR when the owner approves the screenshots — so any single target, or the whole pass, reverts cleanly. Functional lanes stay on <code>tsk-808-assembly-wave</code>.</p>
+  <p><strong>Targets in this wave:</strong> working indicator set, Worktrees panel (#449: type, hierarchy, path truncation, chips, action row), composer at rest (#451), right-panel tab strip (#454), Sessions header (#455), Sessions filter popover (#458: elevated, readable), Context cards (#456: keep the reading, drop the ring), source-control rows (#457: drop redundant status words). Each lane ships before/after screenshots at 1710x990.</p>
+
+  <h2 id="d">D · Bug lanes (no design needed)</h2>
+  <table>
+    <tr><th>#</th><th>What</th><th>Known facts / files</th></tr>
+    <tr><td>3</td><td>"Attachment unavailable — outside the active workspace" cannot be dismissed and follows into other sessions; a file link outside the workspace should still open read-only.</td><td><code>ConversationSurface.svelte:355-360</code> sets <code>attachmentError</code>; <code>ConversationComposer.svelte:161</code> renders. Clear on session switch, add dismiss, open outside-workspace paths read-only.</td></tr>
+    <tr><td>4a</td><td>"Worked for 14 m" collapsibles gone; worked yesterday.</td><td><code>ConversationTimeline.svelte:568</code>, <code>conversationTimeline.ts:130-210</code> (<code>turnGroup</code>/<code>conversationTurnGroups</code>). Find the commit that changed grouping; regression test on the reducer/timeline.</td></tr>
+    <tr><td>5</td><td>Files panel basics: new file/folder, rename, delete to Trash, reveal in Finder, copy path, open on click, watched list.</td><td><code>src/lib/shell/panels/files/*</code>; use Tauri plugins (<a href="#plugins">below</a>).</td></tr>
+    <tr><td>9</td><td>Stray "Codex conversation · 7 processes" (codex ×2, node ×3, node_repl, bash) idle.</td><td><code>manager.rs</code> <code>send_message:1122</code>, <code>suspend_if_quiescent:1929</code>; <code>providers/process.rs</code> group stop; <code>bridge.mjs</code> child handling. Reproduce each flow (new session first send, cancel, close, switch) with Resources open.</td></tr>
+    <tr><td>10</td><td>Slash-command menu highlight runs off the bottom.</td><td><code>AgentCommandMenu.svelte</code>/<code>CommandItem.svelte</code>: <code>scrollIntoView({block:'nearest'})</code> on the highlighted row.</td></tr>
+    <tr><td>11</td><td>Haiku High picked → session ran as Fable; effort not changeable live; approval pick did not stick first time; tool titles like <code>Tool ```console</code>.</td><td>Set model via <code>session/set_config_option</code> after <code>session/new</code> and show the adapter's reported model; use the live <code>effort</code> option (0.70.0) instead of spawn-time <code>MAX_THINKING_TOKENS</code> (<code>manager.rs</code> <code>claude_session_config</code>, <code>acp_client.rs:748-815</code>); approval persistence; tool title = tool name + first input line, fences stripped (<code>ToolItem.svelte</code>, <code>conversationTimeline.ts</code>).</td></tr>
+    <tr><td>#464</td><td>Editor start race: "service used before its override is registered".</td><td>Register needed overrides once before any editor; await the vscode-api init before <code>monaco.editor.create</code> and the C# client start (<code>MonacoSourceEditor.svelte</code>, <code>csharpLanguageClient.ts</code>). Moot if A3 moves the editor; fix anyway, it is cheap.</td></tr>
+  </table>
+
+  <h2 id="agy">Agy (Antigravity / Gemini) as a first-class provider <span class="tag decided">decided</span></h2>
+  <p>Owner: a major item; Gemini is wanted mainly as sub-agents. Today the adapter is a recon artifact (<code>artifacts/recon/probe-agy/agy-acp/</code>, README lines 1–21, 60–61, 109–111), registered by <code>scripts/dev-next.sh:95-113</code> only when both <code>agy</code> and a built adapter binary exist, passing skip-permission mode because it has no interactive permission answers. Bring it in properly: recon lane first (what the artifact supports today — sessions, prompt, tools, images, usage, cancel — against the current <code>agy</code> CLI), then a provider lane: adapter built from a tracked location and trusted like the others (<code>capabilities.rs</code> manifest + hash), <code>dev-next.sh</code> wiring, new-session picker offers it with its models, a session runs end to end, permissions either answered or the absence documented in the UI, usage if it reports it, and the architecture guide's provider section updated in the same commit.</p>
+
+  <h2 id="plugins">Tauri plugins <span class="tag decided">decided</span></h2>
+  <p>In use: <code>tauri-plugin-dialog</code>, <code>tauri-plugin-notification</code>. Add for this wave, with permissions declared per command under <code>src-tauri/capabilities/</code>: <code>fs</code> (Files panel operations with scoped paths), <code>opener</code> (reveal in Finder / open with), <code>clipboard-manager</code> (copy path). Consider later: <code>sql</code> (DB panel), <code>store</code>/<code>window-state</code> (persisted UI state instead of localStorage). A plugin replacing a hand-written command deletes that command in the same lane (one way only).</p>
+
+  <h2 id="nongoals">Non-goals for this wave</h2>
+  <ul>
+    <li>No VS Code extension host. No marketplace extensions.</li>
+    <li>No editor migration decision before the A3 numbers.</li>
+    <li>No local (on-device) helper model.</li>
+    <li>No Assembly-owned context compaction (still proposed only, see the architecture guide §16).</li>
+    <li>No UI regression tests (repo rule) — logic and data tests only; visuals verified by screenshot.</li>
+  </ul>
+
+  <h2 id="verify">Verification and receipts</h2>
+  <ul>
+    <li>Rust: tests for the per-server gate and switch persistence; helper request building per vendor (no network) + one ignored live test per vendor; title fallback rules.</li>
+    <li>TS: capture→token mapping and the Worker protocol; <code>contextMeterState</code> ring/text agreement; plan "latest wins"; slash-menu scroll; turn grouping regression.</li>
+    <li>Screenshots at 1710x990 (headless, viewport verified by <code>eval</code>): each styling target before/after; a C#, a Svelte and an HTML file with the switch in both states; the plan chip collapsed/expanded; the context ring at 82% and at 20%.</li>
+    <li>Resources receipts: idle CPU near 0 for Main and Web content with the feature on screen; memory before/after for A; no stray process trees after new-session / cancel / close / switch.</li>
+    <li>Every lane that changes a command, event, payload, adapter, lifecycle rule or file responsibility updates <code>main-architecture-explained.html</code> (change-log row + sections) in the same commit; the commit hook enforces it.</li>
+  </ul>
+</main>
+</body>
+</html>

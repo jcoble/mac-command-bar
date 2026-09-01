@@ -19,6 +19,7 @@ const NOW = new Date('2026-07-30T12:00:00.000Z');
 function session(overrides: Partial<OwnedSession> = {}): OwnedSession {
   return {
     ownedId: 'owned-1',
+    executionEnvironment: 'local',
     agent: 'claude',
     viaCmux: false,
     source: 'scanned',
@@ -30,6 +31,7 @@ function session(overrides: Partial<OwnedSession> = {}): OwnedSession {
     ptySessionId: null,
     state: 'live',
     completedAt: null,
+    settledAt: null,
     branch: null,
     taskId: null,
     pullRequest: null,

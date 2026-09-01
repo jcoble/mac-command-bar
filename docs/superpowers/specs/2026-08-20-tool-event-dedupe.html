@@ -1,0 +1,333 @@
+<title>Tool Event Dedupe</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --paper: #fbfaf8;
+    --sheet: #ffffff;
+    --ink: #191b1f;
+    --muted: #5d6470;
+    --line: #dcdfe5;
+    --accent: #b0472a;
+    --good: #2f7a4a;
+    --bad: #a8323a;
+    --code-bg: #f2f1ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #101216;
+      --sheet: #171a1f;
+      --ink: #e7e9ee;
+      --muted: #99a0ac;
+      --line: #2c313a;
+      --accent: #e58363;
+      --good: #6fcf8f;
+      --bad: #e8757f;
+      --code-bg: #1e222a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #101216;
+    --sheet: #171a1f;
+    --ink: #e7e9ee;
+    --muted: #99a0ac;
+    --line: #2c313a;
+    --accent: #e58363;
+    --good: #6fcf8f;
+    --bad: #e8757f;
+    --code-bg: #1e222a;
+  }
+
+  body {
+    margin: 0;
+    padding: 40px 20px 96px;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+
+  h1 { margin: 0 0 4px; font-size: 30px; line-height: 1.2; letter-spacing: -0.02em; }
+  .sub { margin: 0 0 36px; color: var(--muted); font-size: 15px; }
+  h2 {
+    margin: 44px 0 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  h3 { margin: 26px 0 8px; font-size: 17px; }
+  p, li { color: var(--ink); }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--code-bg);
+    font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  pre {
+    overflow-x: auto;
+    margin: 14px 0;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--code-bg);
+  }
+  pre code { padding: 0; background: none; }
+
+  .card {
+    margin: 18px 0;
+    padding: 18px 20px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--sheet);
+  }
+  .card h3 { margin-top: 0; }
+
+  .numbers { display: flex; flex-wrap: wrap; gap: 12px; margin: 20px 0; }
+  .stat {
+    flex: 1 1 8.5rem;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--sheet);
+  }
+  .stat b { display: block; font-size: 26px; line-height: 1.15; letter-spacing: -0.02em; }
+  .stat span { color: var(--muted); font-size: 13px; }
+  .stat.win b { color: var(--good); }
+  .stat.loss b { color: var(--bad); }
+
+  .table-wrap { overflow-x: auto; margin: 16px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td code { font-size: 13px; }
+
+  .rule {
+    margin: 18px 0;
+    padding: 14px 18px;
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    background: var(--sheet);
+  }
+  .rule strong { color: var(--accent); }
+
+  .check { list-style: none; padding-left: 0; }
+  .check li { padding-left: 26px; text-indent: -26px; }
+  .check li::before { content: "☐"; margin-right: 10px; color: var(--muted); }
+</style>
+
+<main>
+  <h1>Store each tool call once, not three times</h1>
+  <p class="sub">Spec · 2026-08-20 · <code>core/src/session_store.rs</code> · one lane</p>
+
+  <h2>The problem</h2>
+  <p>
+    A tool call is written to the database again on every status change, and each
+    copy carries the entire output. One session in the live database holds 669 tool
+    rows for 223 actual tool calls. The largest single call is stored four times at
+    91,759 bytes each.
+  </p>
+
+  <div class="numbers">
+    <div class="stat loss"><b>10.3 MB</b><span>tool rows on disk</span></div>
+    <div class="stat win"><b>3.2 MB</b><span>newest copy per call</span></div>
+    <div class="stat loss"><b>669</b><span>rows written</span></div>
+    <div class="stat"><b>223</b><span>real tool calls</span></div>
+  </div>
+
+  <p>
+    Dropping the superseded copies is a <strong>69% reduction with nothing lost</strong>.
+    The conversation folds these events into one value per <code>itemId</code> and the
+    newest one wins, so the older rows are already dead weight by the time they are read
+    back.
+  </p>
+
+  <p>
+    This is the same session that made the app feel slow to open and that started the
+    whole investigation. Measured with:
+  </p>
+  <pre><code>WITH t AS (
+  SELECT json_extract(payload,'$.payload.itemId') AS item_id, LENGTH(payload) AS bytes
+  FROM events WHERE json_extract(payload,'$.payload.kind') = 'tool'
+)
+SELECT COUNT(*), COUNT(DISTINCT item_id), SUM(bytes)/1024,
+       (SELECT SUM(mx)/1024 FROM (SELECT MAX(bytes) mx FROM t GROUP BY item_id))
+FROM t;</code></pre>
+
+  <h2>Why the existing mechanism does not cover it</h2>
+  <p>
+    Superseding already exists. <code>SUPERSEDED_BY_NEWER</code>
+    (<code>core/src/session_store.rs:22</code>) names two kinds whose older rows are
+    deleted on write (<code>:485-495</code>) and on upgrade (<code>:288</code>,
+    <code>:308</code>, and <code>clear_superseded_events</code> at <code>:881</code>).
+  </p>
+  <div class="rule">
+    <p>
+      <strong>Tool rows cannot be added to that list.</strong> The existing rule
+      supersedes <em>by kind</em>, and every tool update shares the kind
+      <code>item.updated</code> with every other item in the session. Adding it would
+      delete all but the newest item in the entire transcript.
+    </p>
+  </div>
+  <p>
+    Tool rows have to be superseded by <code>(owned_id, kind, itemId)</code>, and
+    <code>itemId</code> today exists only inside the JSON payload.
+  </p>
+
+  <h2>The design</h2>
+  <p>
+    Add a generated column so <code>itemId</code> becomes a real, indexable column
+    without changing <code>EventRow</code> (<code>:124-131</code>) or any caller of the
+    write path.
+  </p>
+  <pre><code>ALTER TABLE events ADD COLUMN item_id TEXT
+  GENERATED ALWAYS AS (json_extract(payload, '$.payload.itemId')) VIRTUAL;
+
+CREATE INDEX IF NOT EXISTS events_item_idx ON events(owned_id, kind, item_id, seq);</code></pre>
+  <p>
+    A virtual generated column stores nothing and is computed on read, so the table does
+    not grow. The index is what makes the delete cheap.
+  </p>
+
+  <h3>What gets superseded</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Event</th><th>Rule</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>item.updated</code> with <code>payload.kind = 'tool'</code></td>
+          <td><strong>Superseded</strong> by newer row with the same <code>item_id</code></td>
+          <td>The reducer keeps one value per <code>itemId</code>; older copies are never read.</td>
+        </tr>
+        <tr>
+          <td><code>content.delta</code></td>
+          <td><strong>Never touched</strong></td>
+          <td>On a live session the assistant's words exist only as deltas. Deleting them deletes the conversation. Already documented at <code>:18-21</code>.</td>
+        </tr>
+        <tr>
+          <td><code>item.completed</code></td>
+          <td><strong>Never touched</strong></td>
+          <td>Terminal event. It is not an update and may carry a final state the last update did not.</td>
+        </tr>
+        <tr>
+          <td>Everything else</td>
+          <td>Unchanged</td>
+          <td>Out of scope.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Files to touch</h3>
+  <ul>
+    <li><code>core/src/session_store.rs:7</code> — <code>SCHEMA_VERSION</code> 5 → 6.</li>
+    <li><code>core/src/session_store.rs:22</code> — leave <code>SUPERSEDED_BY_NEWER</code> alone; add the per-item rule beside it, with a comment saying why it could not join that list.</li>
+    <li><code>core/src/session_store.rs:465-511</code> — in <code>append_event</code>, after the existing kind-based delete, add the per-item delete inside the same transaction.</li>
+    <li><code>core/src/session_store.rs:881-898</code> — extend <code>clear_superseded_events</code>, or add a sibling, to sweep existing rows.</li>
+    <li>New upgrade arm <code>5 =&gt; { … }</code> next to the arm at <code>:341</code>, and the column plus index added to every earlier arm that jumps straight to current (they all do — see <code>1 =&gt;</code> at <code>:271</code>).</li>
+  </ul>
+
+  <div class="rule">
+    <p>
+      <strong>Every existing upgrade arm sets <code>user_version</code> to
+      <code>SCHEMA_VERSION</code> directly</strong>, so bumping the constant means each arm
+      must also do the new work. Miss one and a version-3 database claims to be version 6
+      without the column. Check all of them: <code>0</code>, <code>1</code>,
+      <code>2</code>, <code>3</code>, <code>4</code>.
+    </p>
+  </div>
+
+  <h2>Tests, written first</h2>
+  <p>
+    In <code>core/src/session_store.rs</code>'s test module. Each names what it proves.
+  </p>
+  <ol>
+    <li>
+      <code>a_tool_update_replaces_the_one_before_it</code> — append three
+      <code>item.updated</code> tool rows with the same <code>itemId</code>, then one with a
+      different <code>itemId</code>. Reading back returns two rows, and the surviving row
+      for the repeated id is the newest payload.
+    </li>
+    <li>
+      <code>a_tool_update_leaves_other_items_alone</code> — interleave two
+      <code>itemId</code>s. Both survive, each with its own newest payload.
+    </li>
+    <li>
+      <code>streamed_words_are_never_superseded</code> — append twenty
+      <code>content.delta</code> rows. All twenty survive.
+    </li>
+    <li>
+      <code>a_finished_tool_keeps_its_completion</code> — <code>item.updated</code> then
+      <code>item.completed</code> for the same id. Both survive.
+    </li>
+    <li>
+      <code>an_upgraded_database_loses_only_the_duplicates</code> — build a
+      <code>user_version = 5</code> database by hand with three copies of one tool call and
+      one message, open it through the normal path, and assert the duplicates are gone,
+      the message is untouched, and <code>user_version</code> is 6.
+    </li>
+  </ol>
+
+  <h2>Verification</h2>
+  <p>Run verbatim, from <code>tauri-svelte-preview/src-tauri</code>:</p>
+  <pre><code>cargo test -p mcb-core session_store
+cargo test --bin mac-command-bar-webview-preview</code></pre>
+  <p>Passing looks like: every test above green, and no existing test newly failing.</p>
+
+  <p>Then, against a <em>copy</em> of the live database — never the original:</p>
+  <pre><code>cp ~/Library/Application\ Support/dev.blackcolours.MacCommandBarWebviewPreview/sessions.db /tmp/before.db
+# open the app once against a copy, then:
+sqlite3 /tmp/before.db "SELECT COUNT(*) FROM events WHERE json_extract(payload,'$.payload.kind')='tool';"</code></pre>
+  <p>
+    Expect roughly 669 → 223 for the affected session, and every conversation still reading
+    back the same on screen.
+  </p>
+
+  <h2>Done means</h2>
+  <ul class="check">
+    <li>Five tests written first, failing for the right reason, then passing.</li>
+    <li><code>SCHEMA_VERSION</code> is 6 and all five upgrade arms add the column and index.</li>
+    <li>A repeat tool update deletes its predecessor in the same transaction as the insert.</li>
+    <li><code>content.delta</code> and <code>item.completed</code> are provably untouched.</li>
+    <li>Both verification commands pass.</li>
+    <li>The architecture page is updated in the same commit, or the message carries <code>Architecture: unchanged</code>.</li>
+    <li>Worktree removed and reported.</li>
+  </ul>
+
+  <h2>Size and scope</h2>
+  <p>
+    Expect <strong>roughly 120–180 lines</strong> across one file plus its tests. Needing
+    twice that, or a second file, means stop and send back a paragraph instead of building it.
+  </p>
+
+  <div class="card">
+    <h3>Scope discipline</h3>
+    <ul>
+      <li><strong>KISS:</strong> the smallest diff that makes the named tests pass. Two designs that both work — ship the one with fewer moving parts.</li>
+      <li><strong>YAGNI:</strong> no code for hypothetical futures. "This makes it easier to add X later" is a reason to reject a change unless X is in this spec.</li>
+      <li>Adding any of these is a defect unless named above: a new interface or abstraction, a config option or flag, a compatibility shim, a factory around one call site, a drive-by refactor, or a retry/caching layer.</li>
+      <li>One problem per lane. "While I was here" changes are rejected in review.</li>
+      <li>Do not merge <code>content.delta</code> rows. The header at <code>:18-21</code> calls that a rewrite; it is not this task.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Hard rules</h3>
+    <ul>
+      <li>No <code>Co-Authored-By</code> or any co-author trailer. End the commit body with <code>Committed-by: &lt;name&gt;</code>.</li>
+      <li>No mention of Claude or Codex in code, comments, or commit messages.</li>
+      <li>Plain English in comments and messages. No invented jargon.</li>
+      <li>Test first. One build at a time. <code>MSBUILDDISABLENODEREUSE=1</code>.</li>
+      <li>Never run <code>git reset --hard</code>. Run <code>git status --short</code> before anything that can discard uncommitted work.</li>
+      <li>All SQL runs server-side — the limiting, grouping and ordering stay inside SQLite, which the existing queries already do.</li>
+      <li>Never touch the owner's live <code>sessions.db</code>. Work on copies.</li>
+      <li>Remove the worktree when done and say which one.</li>
+      <li>A required command that fails means stop and report the error verbatim. Never invent output.</li>
+    </ul>
+  </div>
+</main>

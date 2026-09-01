@@ -14,14 +14,14 @@
  * Two rules this module exists to enforce (same shape as `contextStore`):
  *
  * 1. **No backend, ever.** Nothing here calls Tauri, fetches, or touches
- *    localStorage. Every backend call lives in `playwrightService.ts` and lands
+ *    browser storage. Every backend call lives in `playwrightService.ts` and lands
  *    here as a plain mutation.
  * 2. **No `$effect`.** `$effect` is illegal in a `.svelte.ts` module. Loading is
  *    driven imperatively by the service.
  *
  * Loads carry a monotonic ticket, so a slow first read can never overwrite a
  * fast second one. The import is type-only on purpose: the module stays runnable
- * on its own, which is what `scripts/playwrightStore.test.mjs` compiles.
+ * on its own, which is what `scripts/playwrightStore.test.ts` compiles.
  */
 import type {
   PlaywrightCleanupResult,
@@ -422,14 +422,23 @@ export function markPerSessionStopSupported(): void {
   playwrightState.perSessionStopSupported = 'yes';
 }
 
-/** Drop everything back to launch state. Used by tests and by a full reset. */
+/**
+ * Drop everything back to launch state. Used by tests and by a full reset.
+ *
+ * `requestId` is the one field that does NOT go back to its launch value. It is
+ * the stale-read guard, and a read issued before the reset is still in flight
+ * after it: rewinding to 0 would hand the next read the same ticket number, so
+ * the pre-reset read would compare equal and overwrite the newer rows. Bumping
+ * it instead invalidates everything still in flight, which is what a reset
+ * means.
+ */
 export function resetPlaywright(): void {
   playwrightState.activated = false;
   playwrightState.groups = [];
   playwrightState.loading = false;
   playwrightState.error = null;
   playwrightState.unavailableReason = null;
-  playwrightState.requestId = 0;
+  playwrightState.requestId += 1;
   playwrightState.loadedAt = null;
   playwrightState.stoppingPgid = null;
   playwrightState.stoppingAll = false;

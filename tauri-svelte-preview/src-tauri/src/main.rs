@@ -1,7 +1,10 @@
-use std::collections::{HashMap, HashSet};
+//! Heavy Tauri commands are async because synchronous command bodies run on the UI thread.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,20 +16,43 @@ use mcb_core::reference_counts::{
     normalized_reference_count_symbols, ReferenceCountFile, ReferenceCountPlan,
     MAX_REFERENCE_SCAN_BYTES,
 };
-use mcb_core::scanners::sessions::{scan_sessions, AgentSessionRecord};
-use orchestration::{
-    list_orchestration_runs_sync, record_orchestration_event_sync, OrchestrationEvent,
-    OrchestrationRun,
+use mcb_core::scanners::sessions::{
+    scan_sessions, scan_sessions_for_project, AgentSessionRecord,
 };
-use tauri::Emitter;
+use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
+use orchestration::{
+    import_legacy_orchestration_events, list_orchestration_runs_sync,
+    record_orchestration_event_sync, OrchestrationEvent, OrchestrationRun,
+};
+use tauri::{Emitter, Manager};
+use tauri_plugin_fs::FsExt;
+use workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
 
 mod agent_conversation;
+mod browser;
+mod claude_quota;
+mod debug_log;
 mod git_diff_models;
+mod git_pr;
+mod git_workspace;
+mod helper;
 mod lsp;
+mod notion_tasks;
 mod orchestration;
+mod product_identity;
+mod projection_streams;
+mod resources;
+mod resources_disk;
 mod terminal;
+mod usage_current;
+mod usage_db;
+mod usage_history;
+mod usage_indexer;
+mod usage_remote;
+mod usage_sources;
+mod workflow;
 
-const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
+const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 10_000;
 const MAX_SOURCE_LIST_LIMIT: usize = 25_000;
 const DEFAULT_SOURCE_SEARCH_LIMIT: usize = 50;
@@ -44,12 +70,6 @@ const DEFAULT_REFERENCE_COUNT_DEADLINE_MS: u64 = 1_500;
 const MAX_REFERENCE_COUNT_DEADLINE_MS: u64 = 10_000;
 const MAX_SOURCE_SCAN_SKIPPED_DIRECTORY_SAMPLES: usize = 16;
 const DEFAULT_GIT_HISTORY_LIMIT: usize = 24;
-/// Most commits one history request will read. The commits list pages: it opens
-/// with a couple of dozen and asks for another hundred each time the reader
-/// wants more, so this is the ceiling on the accumulated ask rather than a page
-/// size. Five hundred entries of subject-and-author is a small read for git and
-/// still a list a person can scroll.
-const MAX_GIT_HISTORY_LIMIT: usize = 500;
 const SOURCE_SCAN_PROGRESS_EVENT: &str = "source_scan_progress";
 const SOURCE_SCAN_PROGRESS_INTERVAL: usize = 64;
 
@@ -61,6 +81,15 @@ struct SourceRecord {
     file_name: String,
     language: String,
     byte_count: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceDirectoryEntry {
+    path: String,
+    name: String,
+    is_directory: bool,
+    excluded: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -152,6 +181,24 @@ struct SourceSearchMatch {
     line: usize,
     column: usize,
     excerpt: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceTreeSearchMatch {
+    path: String,
+    relative_path: String,
+    name: String,
+    is_directory: bool,
+    excluded: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceTreeSearchPage {
+    matches: Vec<SourceTreeSearchMatch>,
+    next_cursor: Option<usize>,
+    complete: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -249,9 +296,19 @@ struct ProjectWorktree {
     delete_eligibility: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ProjectGitRef {
+    name: String,
+    is_default: bool,
+    is_current: bool,
+    checkout_path: Option<String>,
+    last_commit_ms: Option<i64>,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectWorktreeActionResult {
+pub(crate) struct ProjectWorktreeActionResult {
     message: String,
     worktrees: Vec<ProjectWorktree>,
 }
@@ -344,6 +401,39 @@ struct CsharpLanguageServerToggleResult {
     message: String,
 }
 
+/// What happened when every language server was switched off or on.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LanguageServersToggleResult {
+    enabled: bool,
+    stopped_servers: usize,
+    message: String,
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LanguageServerToggleResult {
+    language: String,
+    enabled: bool,
+    stopped_servers: usize,
+    message: String,
+}
+
+/// Whether one workspace is in full mode, and what the editor should say.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceLanguageIntelligence {
+    root: String,
+    enabled: bool,
+    /// Language-server processes running for this workspace right now.
+    running_servers: usize,
+    /// Their process ids, so a reader can find the same numbers in the
+    /// resource view.
+    server_pids: Vec<u32>,
+    stopped_servers: usize,
+    message: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct GitRepositorySummary {
@@ -389,6 +479,16 @@ struct GitCommitHistoryEntry {
     task_source: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitHistoryPage {
+    root: String,
+    relative_path: Option<String>,
+    commits: Vec<GitCommitHistoryEntry>,
+    next_cursor: Option<String>,
+    complete: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProcessListener {
     pid: u32,
@@ -428,26 +528,28 @@ struct SourceScanRegistry {
 
 impl SourceScanRegistry {
     fn register(&self, scan_id: &str) -> Arc<AtomicBool> {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        self.scans
+        let mut scans = self
+            .scans
             .lock()
-            .expect("source scan registry lock poisoned")
-            .insert(scan_id.to_string(), Arc::clone(&cancelled));
-        cancelled
+            .expect("source scan registry lock poisoned");
+        Arc::clone(
+            scans
+                .entry(scan_id.to_string())
+                .or_insert_with(|| Arc::new(AtomicBool::new(false))),
+        )
     }
 
     fn cancel(&self, scan_id: &str) -> bool {
-        let Some(cancelled) = self
+        let mut scans = self
             .scans
             .lock()
-            .expect("source scan registry lock poisoned")
-            .get(scan_id)
-            .cloned()
-        else {
-            return false;
-        };
+            .expect("source scan registry lock poisoned");
+        let was_registered = scans.contains_key(scan_id);
+        let cancelled = scans
+            .entry(scan_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)));
         cancelled.store(true, Ordering::Relaxed);
-        true
+        was_registered
     }
 
     fn unregister(&self, scan_id: &str) {
@@ -455,6 +557,45 @@ impl SourceScanRegistry {
             .lock()
             .expect("source scan registry lock poisoned")
             .remove(scan_id);
+    }
+}
+
+#[derive(Default)]
+struct SourceFileReadOwner {
+    generation: Arc<AtomicU64>,
+}
+
+impl SourceFileReadOwner {
+    fn advance(&self, generation: u64) -> bool {
+        generation >= self.generation.fetch_max(generation, Ordering::AcqRel)
+    }
+
+    fn generation(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.generation)
+    }
+}
+
+#[derive(Default)]
+struct ProjectRootValidationOwner {
+    generation: Arc<AtomicU64>,
+}
+
+impl ProjectRootValidationOwner {
+    fn advance(&self, generation: u64) -> bool {
+        generation >= self.generation.fetch_max(generation, Ordering::AcqRel)
+    }
+
+    fn cancel(&self, generation: u64) {
+        let _ = self.generation.compare_exchange(
+            generation,
+            generation.saturating_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn generation(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.generation)
     }
 }
 
@@ -567,6 +708,25 @@ impl SourceScanWalkProgress {
     }
 }
 
+/// Let the file-system plugin reach everything under a workspace root.
+///
+/// Which folders those are is decided at run time — a session's checkout, a
+/// worktree, a repository someone just opened — so the capability file cannot
+/// name them. Listing a folder is the one moment the app is told which folder
+/// it is looking at, and the Files panel only ever creates, renames or deletes
+/// inside a folder it has listed, so the grant belongs here.
+fn allow_workspace_root_in_fs_scope(app: &tauri::AppHandle, root: &str) {
+    let Ok(canonical) = std::fs::canonicalize(root) else {
+        return;
+    };
+    if let Err(error) = app.fs_scope().allow_directory(&canonical, true) {
+        crate::debug_log::stderr_log!(
+            "fs scope: could not allow {}: {error}",
+            canonical.display()
+        );
+    }
+}
+
 #[tauri::command]
 async fn list_source_files(
     app: tauri::AppHandle,
@@ -576,6 +736,7 @@ async fn list_source_files(
     query: Option<String>,
     scan_id: Option<String>,
 ) -> Result<SourceScanResult, String> {
+    allow_workspace_root_in_fs_scope(&app, &root);
     let cancellation =
         source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
     let scan_id_for_cleanup = scan_id.clone();
@@ -598,6 +759,38 @@ async fn list_source_files(
 }
 
 #[tauri::command]
+async fn list_source_directory(
+    app: tauri::AppHandle,
+    scan_registry: tauri::State<'_, SourceScanRegistry>,
+    root: String,
+    directory: String,
+    include_excluded: Option<bool>,
+    scan_id: Option<String>,
+) -> Result<Vec<SourceDirectoryEntry>, String> {
+    let _read = resources::begin_source_directory_read();
+    allow_workspace_root_in_fs_scope(&app, &root);
+    let cancellation =
+        source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
+    let scan_id_for_cleanup = scan_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        list_source_directory_sync_with_cancellation(
+            PathBuf::from(root),
+            PathBuf::from(directory),
+            include_excluded.unwrap_or(false),
+            cancellation,
+        )
+    })
+    .await
+    .map_err(|error| format!("Source directory task failed: {error}"))?;
+
+    if let Some(scan_id) = &scan_id_for_cleanup {
+        scan_registry.unregister(scan_id);
+    }
+
+    result
+}
+
+#[tauri::command]
 async fn cancel_source_scan(
     scan_registry: tauri::State<'_, SourceScanRegistry>,
     scan_id: String,
@@ -606,10 +799,30 @@ async fn cancel_source_scan(
 }
 
 #[tauri::command]
-async fn validate_project_root(path: String) -> Result<ProjectRootValidationResult, String> {
-    tauri::async_runtime::spawn_blocking(move || validate_project_root_sync(PathBuf::from(path)))
-        .await
-        .map_err(|error| format!("Project root validation task failed: {error}"))
+async fn validate_project_root(
+    owner: tauri::State<'_, ProjectRootValidationOwner>,
+    path: String,
+    generation: u64,
+) -> Result<Option<ProjectRootValidationResult>, String> {
+    if !owner.advance(generation) {
+        return Ok(None);
+    }
+    let current_generation = owner.generation();
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_project_root_sync_while(PathBuf::from(path), || {
+            current_generation.load(Ordering::Acquire) == generation
+        })
+    })
+    .await
+    .map_err(|error| format!("Project root validation task failed: {error}"))
+}
+
+#[tauri::command]
+fn cancel_project_root_validation(
+    owner: tauri::State<'_, ProjectRootValidationOwner>,
+    generation: u64,
+) {
+    owner.cancel(generation);
 }
 
 fn source_scan_cancellation_for_command(
@@ -639,10 +852,27 @@ fn source_scan_cancellation_for_command(
 }
 
 #[tauri::command]
-async fn read_source_file(path: String) -> Result<SourcePreview, String> {
-    tauri::async_runtime::spawn_blocking(move || read_source_file_sync(PathBuf::from(path)))
-        .await
-        .map_err(|error| format!("Source preview task failed: {error}"))?
+async fn read_source_file(
+    owner: tauri::State<'_, SourceFileReadOwner>,
+    path: String,
+    generation: u64,
+) -> Result<Option<SourcePreview>, String> {
+    if !owner.advance(generation) {
+        return Ok(None);
+    }
+    let current_generation = owner.generation();
+    tauri::async_runtime::spawn_blocking(move || {
+        read_source_file_sync_while(PathBuf::from(path), || {
+            current_generation.load(Ordering::Acquire) == generation
+        })
+    })
+    .await
+    .map_err(|error| format!("Source preview task failed: {error}"))?
+}
+
+#[tauri::command]
+fn cancel_source_file_reads(owner: tauri::State<'_, SourceFileReadOwner>, generation: u64) {
+    owner.advance(generation);
 }
 
 /// Read one UTF-8 source file for native C# Peek, confined to the canonical
@@ -708,6 +938,34 @@ async fn reveal_path(path: String) -> Result<(), String> {
     .map_err(|error| format!("Path reveal task failed: {error}"))?
 }
 
+/// Move one path to the Finder's Trash.
+///
+/// The file-system plugin's `remove` deletes for good, and deleting a file from
+/// a tree is the kind of press people take back a second later, so the Files
+/// panel goes through here instead. The path must sit inside a folder the
+/// plugin's scope already covers — the same folders `list_source_files` grants
+/// — so this command can never be pointed at somewhere the window has no
+/// business changing.
+#[tauri::command]
+async fn move_to_trash(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let target = std::fs::canonicalize(&path)
+        .map_err(|error| format!("Could not find {path}: {error}"))?;
+    if !app.fs_scope().is_allowed(&target) {
+        return Err(format!(
+            "{} is outside the folders this window is allowed to change.",
+            target.display()
+        ));
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        trash::delete(&target).map_err(|error| {
+            format!("Could not move {} to the Trash: {error}", target.display())
+        })
+    })
+    .await
+    .map_err(|error| format!("Trash task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn open_terminal_path(path: String, terminal: Option<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -739,6 +997,41 @@ async fn search_source_files(
     tauri::async_runtime::spawn_blocking(move || search_source_files_sync(records, query, limit))
         .await
         .map_err(|error| format!("Source search task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn search_source_tree(
+    app: tauri::AppHandle,
+    scan_registry: tauri::State<'_, SourceScanRegistry>,
+    root: String,
+    query: String,
+    page_size: Option<usize>,
+    cursor: Option<usize>,
+    include_excluded: Option<bool>,
+    scan_id: Option<String>,
+) -> Result<SourceTreeSearchPage, String> {
+    allow_workspace_root_in_fs_scope(&app, &root);
+    let cancellation =
+        source_scan_cancellation_for_command(&app, &scan_registry, scan_id.as_deref());
+    let scan_id_for_cleanup = scan_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        search_source_tree_sync(
+            PathBuf::from(root),
+            query,
+            page_size,
+            cursor,
+            include_excluded.unwrap_or(false),
+            cancellation,
+        )
+    })
+    .await
+    .map_err(|error| format!("Source tree search task failed: {error}"))?;
+
+    if let Some(scan_id) = &scan_id_for_cleanup {
+        scan_registry.unregister(scan_id);
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -788,6 +1081,18 @@ async fn count_source_references(
     .map_err(|error| format!("Source reference count task failed: {error}"))?
 }
 
+/// Open the web inspector on the shell's own window.
+///
+/// The embedded browser's tabs have had this for a while; the window the app
+/// itself is drawn in did not, so looking at the shell meant reaching for the
+/// context menu. WebKit offers its own shortcut, but only where the inspector is
+/// compiled in, which before the `devtools` feature meant debug builds alone.
+#[tauri::command]
+fn open_main_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.open_devtools();
+    Ok(())
+}
+
 #[tauri::command]
 async fn read_source_lsp_status(
     root: String,
@@ -835,6 +1140,12 @@ async fn ensure_native_csharp_language_client(
     if !lsp::workspace_has_csharp_project_marker(&root) {
         return Ok(None);
     }
+    // Read mode: no endpoint, and so no Roslyn. "Nothing here" rather than an
+    // error, because a workspace the reader has not switched on is the ordinary
+    // case, not a failure worth showing them.
+    if !lsp::language_intelligence_on(&root) {
+        return Ok(None);
+    }
     registry.ensure_native_csharp_endpoint(&root).map(Some)
 }
 
@@ -846,6 +1157,17 @@ async fn mark_native_csharp_language_client_ready(
     registry.mark_native_csharp_client_ready(&root)
 }
 
+const LANGUAGE_SERVER_SETTINGS_KEY: &str = "workbench.languageServers";
+
+fn persist_language_server_settings(
+    manager: &agent_conversation::manager::AgentRuntimeManager,
+) -> Result<(), String> {
+    manager.write_app_setting(
+        LANGUAGE_SERVER_SETTINGS_KEY,
+        &lsp::language_server_settings_snapshot().to_string(),
+    )
+}
+
 /// Turn the C# language server off or on, and stop it now if it is running.
 ///
 /// The reader's setting drives this. Call it with what the setting says when
@@ -855,11 +1177,18 @@ async fn mark_native_csharp_language_client_ready(
 #[tauri::command]
 async fn set_csharp_language_server_enabled(
     registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
     enabled: bool,
 ) -> Result<CsharpLanguageServerToggleResult, String> {
     let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let previous = lsp::language_server_settings_snapshot().to_string();
         let changed = lsp::set_csharp_language_server_enabled(enabled);
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
         let stopped_servers = if enabled {
             0
         } else {
@@ -874,6 +1203,273 @@ async fn set_csharp_language_server_enabled(
     })
     .await
     .map_err(|error| format!("C# language server switch task failed: {error}"))?
+}
+
+/// Switch every language server off or on. Off stops each one that is running,
+/// every language and every workspace, and nothing starts until it is on
+/// again. Like the C# switch, the desktop app forgets this between launches,
+/// so the shell pushes the saved setting on start.
+#[tauri::command]
+async fn set_language_servers_enabled(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
+    enabled: bool,
+) -> Result<LanguageServersToggleResult, String> {
+    let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let previous = lsp::language_server_settings_snapshot().to_string();
+        let changed = lsp::set_language_servers_enabled(enabled);
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
+        let stopped_servers = if enabled {
+            0
+        } else {
+            registry.stop_all_servers()?
+        };
+        Ok(LanguageServersToggleResult {
+            enabled,
+            stopped_servers,
+            message: describe_language_servers_toggle(enabled, changed, stopped_servers),
+        })
+    })
+    .await
+    .map_err(|error| format!("Language servers switch task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_language_server_enabled(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
+    language: String,
+    enabled: bool,
+) -> Result<LanguageServerToggleResult, String> {
+    let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let language = language.trim().to_ascii_lowercase();
+        let previous = lsp::language_server_settings_snapshot().to_string();
+        let changed = lsp::set_language_server_enabled(&language, enabled)?;
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
+        let stop_languages: &[&str] = match language.as_str() {
+            "typescript" | "tsx" | "javascript" | "jsx" =>
+                &["typescript", "tsx", "javascript", "jsx"],
+            "csharp" | "c#" => &["csharp"],
+            "rust" => &["rust"],
+            _ => &[],
+        };
+        let mut stopped_servers = 0;
+        if !enabled {
+            for language in stop_languages {
+                stopped_servers += registry.stop_servers_for_language(language)?;
+            }
+        }
+        Ok(LanguageServerToggleResult {
+            language: language.clone(),
+            enabled,
+            stopped_servers,
+            message: if !enabled && stopped_servers > 0 {
+                format!("The {language} language server is off and has been stopped.")
+            } else if changed {
+                format!("The {language} language server is {}.", if enabled { "on" } else { "off" })
+            } else {
+                format!("The {language} language server was already {}.", if enabled { "on" } else { "off" })
+            },
+        })
+    })
+    .await
+    .map_err(|error| format!("Language server switch task failed: {error}"))?
+}
+
+/// What full mode is doing for one workspace right now.
+///
+/// Reading costs nothing and starts nothing: the editor asks this when it
+/// points at a workspace so the switch shows the right position.
+#[tauri::command]
+async fn read_workspace_language_intelligence(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<WorkspaceLanguageIntelligence, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = lsp::language_intelligence_key(&root);
+        let enabled = lsp::language_intelligence_on(&key);
+        let server_pids = workspace_language_server_pids(&registry, &key);
+        Ok(WorkspaceLanguageIntelligence {
+            enabled,
+            running_servers: server_pids.len(),
+            message: describe_workspace_language_intelligence(enabled, server_pids.len(), 0),
+            server_pids,
+            stopped_servers: 0,
+            root: key,
+        })
+    })
+    .await
+    .map_err(|error| format!("Language intelligence read task failed: {error}"))?
+}
+
+/// Turn language intelligence on or off for one workspace.
+///
+/// Give it the language the reader is looking at and turning it on starts that
+/// language's server there and then, through the same slot the first hover
+/// would have used. Leave the language out and it only records the choice,
+/// which is what lets a saved choice be restored on a file open without waking
+/// a server for a project nobody is looking at. Off stops the workspace's
+/// servers now and gives their memory back.
+#[tauri::command]
+async fn set_workspace_language_intelligence(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+    enabled: bool,
+    language: Option<String>,
+) -> Result<WorkspaceLanguageIntelligence, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = lsp::language_intelligence_key(&root);
+        let change = lsp::set_language_intelligence(&key, enabled);
+        let enabled = change.may_start_servers();
+        let stopped_servers = if enabled {
+            registry.set_active_root(&key, true)?
+        } else {
+            registry.set_active_root(&key, false)?
+        };
+        // What the switch now says is what the state machine decided, not what
+        // the caller asked for — the two only differ if something else changed
+        // this workspace in between, and the reader should see the truth.
+        // A start that fails is not a failed switch: the choice is recorded
+        // either way, so the reason comes back in the message rather than as an
+        // error that would make the switch look like it never moved.
+        let start = language
+            .as_deref()
+            .map(str::trim)
+            .filter(|language| enabled && !language.is_empty())
+            .map(|language| registry.start_server_for_language(&key, language));
+        let server_pids = workspace_language_server_pids(&registry, &key);
+        Ok(WorkspaceLanguageIntelligence {
+            enabled,
+            running_servers: server_pids.len(),
+            message: match &start {
+                Some(start) => describe_language_server_start(start),
+                None => describe_workspace_language_intelligence(
+                    enabled,
+                    server_pids.len(),
+                    stopped_servers,
+                ),
+            },
+            server_pids,
+            stopped_servers,
+            root: key,
+        })
+    })
+    .await
+    .map_err(|error| format!("Language intelligence switch task failed: {error}"))?
+}
+
+/// The process ids of the language servers serving one workspace.
+fn workspace_language_server_pids(registry: &lsp::SourceLspRegistry, root: &str) -> Vec<u32> {
+    registry
+        .running_language_server_processes()
+        .into_iter()
+        .filter(|process| process.root == root)
+        .map(|process| process.pid)
+        .collect()
+}
+
+fn describe_workspace_language_intelligence(
+    enabled: bool,
+    running_servers: usize,
+    stopped_servers: usize,
+) -> String {
+    if enabled {
+        return if running_servers > 0 {
+            "Language intelligence is on for this project, and its language server is running."
+                .to_string()
+        } else {
+            "Language intelligence is on for this project. Its language server starts with the next file you open, and takes a moment to read the project."
+                .to_string()
+        };
+    }
+    if stopped_servers > 0 {
+        return "Language intelligence is off for this project and its language server has been stopped, freeing that memory. Files still open with colouring."
+            .to_string();
+    }
+    "Language intelligence is off for this project. Files open with colouring only, and nothing is started in the background."
+        .to_string()
+}
+
+/// What the switch says after it has asked for a language server.
+///
+/// Every branch here is a sentence a reader can act on. The ones where nothing
+/// started matter most: those used to be silence, and silence next to a switch
+/// that is on reads as broken.
+fn describe_language_server_start(start: &Result<lsp::LanguageServerStart, String>) -> String {
+    match start {
+        Ok(lsp::LanguageServerStart::Running { server_name }) => {
+            format!("Language intelligence is on for this project, and {server_name} is running. It takes a moment to read the project.")
+        }
+        Ok(lsp::LanguageServerStart::NoServerForLanguage) => {
+            "Language intelligence is on for this project, but this app has no language server for the file you have open. It keeps colouring and the built-in index."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::NotInstalled {
+            server_name,
+            command,
+        }) => {
+            format!("Language intelligence is on for this project, but {server_name} is not installed. Install `{command}` and switch this on again.")
+        }
+        Ok(lsp::LanguageServerStart::NativeCsharpClient) => {
+            "Language intelligence is on for this project. The C# language server starts with the C# file you have open, and takes a minute to read the solution."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::SwitchedOff) => {
+            "Language servers are switched off in Settings, so nothing was started. Files open with colouring and the built-in index."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::ServerSwitchedOff) => {
+            "This language server is switched off in Settings, so the file stays in Editor-only mode."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::CsharpSwitchedOff) => {
+            "Language intelligence is on for this project, but the C# language server is switched off in Settings."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::NoCsharpProject) => {
+            "Language intelligence is on for this project, but there is no C# project or solution under it to read."
+                .to_string()
+        }
+        Ok(lsp::LanguageServerStart::ReadMode) => {
+            "Language intelligence is off for this project, so no language server was started."
+                .to_string()
+        }
+        Err(error) => {
+            format!("Language intelligence is on for this project, but its language server could not be started: {error}")
+        }
+    }
+}
+
+fn describe_language_servers_toggle(enabled: bool, changed: bool, stopped_servers: usize) -> String {
+    if enabled {
+        return if changed {
+            "Language servers are back on. One starts the next time you open a file in a project that has language intelligence on."
+                .to_string()
+        } else {
+            "Language servers were already on.".to_string()
+        };
+    }
+    match stopped_servers {
+        0 => "Language servers are off. None was running, so nothing had to be stopped. Files still open with colouring and the built-in index."
+            .to_string(),
+        1 => "Language servers are off and the running one has been stopped. Files still open with colouring and the built-in index."
+            .to_string(),
+        count => format!(
+            "Language servers are off and the {count} running ones have been stopped. Files still open with colouring and the built-in index."
+        ),
+    }
 }
 
 fn describe_csharp_language_server_toggle(
@@ -1210,10 +1806,11 @@ async fn push_git_repository(root: String) -> Result<GitActionResult, String> {
 #[tauri::command]
 async fn read_git_commit_history(
     root: String,
-    limit: Option<usize>,
-) -> Result<Vec<GitCommitHistoryEntry>, String> {
+    cursor: Option<String>,
+    relative_path: Option<String>,
+) -> Result<GitHistoryPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        read_git_commit_history_sync(PathBuf::from(root), limit)
+        read_git_commit_history_page_sync(PathBuf::from(root), cursor, relative_path)
     })
     .await
     .map_err(|error| format!("Git history task failed: {error}"))?
@@ -1229,7 +1826,7 @@ async fn read_git_commit_history(
 ///
 /// Anything added here is a promise: check the name before offering the feature, and treat
 /// this command being missing as "none of these are available".
-const BACKEND_CAPABILITIES: [&str; 11] = [
+const BACKEND_CAPABILITIES: [&str; 29] = [
     // `remove_project_worktree` accepts `force`.
     "worktreeForceRemove",
     // `kill_playwright_session` stops one process group.
@@ -1247,6 +1844,12 @@ const BACKEND_CAPABILITIES: [&str; 11] = [
     "worktreePruneSingle",
     // `set_csharp_language_server_enabled` turns the C# language server off and on.
     "csharpLanguageServerToggle",
+    // `set_language_servers_enabled` turns every language server off and on.
+    "languageServersToggle",
+    // `read_workspace_language_intelligence` and
+    // `set_workspace_language_intelligence` read and set one project's editor
+    // mode: read mode (colouring only, nothing started) or full mode.
+    "workspaceLanguageIntelligence",
     // `find_source_lsp_document_symbols` lists a file's symbols using the language
     // server, which is what gives Rust and Svelte margin counts.
     "lspDocumentSymbols",
@@ -1256,10 +1859,40 @@ const BACKEND_CAPABILITIES: [&str; 11] = [
     // `read_source_lsp_log` hands back what a running language server printed to its
     // own error output.
     "lspLog",
+    // A10 resource and space inventory/action commands.
+    "resourceSample",
+    "resourceSnapshot",
+    "resourceDiskScan",
+    "resourceDiskCleanup",
+    "resourceStopOwned",
+    // Provider-authored quota and SQLite usage history queries.
+    "providerUsageQuota",
+    "usageHistory",
+    "usageHistoryIncremental",
+    "usageProviderSummary",
+    "usageDailyTotals",
+    // Source-control agent actions and the GitHub CLI PR lifecycle.
+    "generate_commit_message",
+    "read_pull_request_context",
+    "generate_pull_request_details",
+    "create_pull_request",
+    "read_pull_request_status",
+    // The conversation manager pushes ACP turn and item events while a turn is live.
+    "acpLiveConversationEvents",
 ];
 
 /// The event the app sends whenever a language server changes what it is doing.
 const SOURCE_LSP_STATUS_CHANGED_EVENT: &str = "source-lsp-status-changed";
+const SESSION_TITLE_CHANGED_EVENT: &str = "session-title-changed";
+
+/// A session that has just been given a better name than the one taken from
+/// its first prompt, so the rail can show it without asking.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionTitleChanged {
+    owned_id: String,
+    title: String,
+}
 
 fn backend_capabilities() -> Vec<String> {
     BACKEND_CAPABILITIES
@@ -1305,6 +1938,46 @@ async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, St
         .map_err(|error| format!("Worktree scan task failed: {error}"))?
 }
 
+/// The checkouts of several repositories at once, for the History panel's tree.
+///
+/// The panel sends the repository roots it already learned from the session
+/// scan and gets back, for each, the folders that still exist: the repository
+/// itself and its live worktrees. That is what makes a worktree appear even when
+/// the only thing ever run inside it was a dispatched lane.
+///
+/// One command rather than one per repository — there are dozens of them, and a
+/// round trip each would draw the panel in stages.
+#[tauri::command]
+async fn list_repository_checkouts(
+    roots: Vec<String>,
+) -> Result<BTreeMap<String, Vec<RepositoryCheckout>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        roots
+            .into_iter()
+            .map(|root| {
+                let checkouts = repository_checkouts(&root);
+                (root, checkouts)
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| format!("Checkout scan task failed: {error}"))
+}
+
+#[tauri::command]
+async fn list_project_git_refs(root: String) -> Result<Vec<ProjectGitRef>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_project_git_refs_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Git ref scan task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn init_project_repository(root: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || init_project_repository_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Repository creation task failed: {error}"))?
+}
+
 #[tauri::command]
 async fn remove_project_worktree(
     root: String,
@@ -1344,6 +2017,15 @@ async fn list_git_repository_summaries(
 #[tauri::command]
 async fn list_agent_sessions() -> Result<Vec<AgentSessionRecord>, String> {
     tauri::async_runtime::spawn_blocking(scan_sessions)
+        .await
+        .map_err(|error| format!("Agent session scan task failed: {error}"))
+}
+
+#[tauri::command]
+async fn list_agent_sessions_for_project(
+    project_path: String,
+) -> Result<Vec<AgentSessionRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_sessions_for_project(&project_path))
         .await
         .map_err(|error| format!("Agent session scan task failed: {error}"))
 }
@@ -1398,27 +2080,185 @@ async fn kill_process(
 
 #[tauri::command]
 async fn list_orchestration_runs(
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<OrchestrationRun>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_orchestration_runs_sync(projects))
+    let store = manager.store_handle();
+    tauri::async_runtime::spawn_blocking(move || list_orchestration_runs_sync(&store, projects))
         .await
         .map_err(|error| format!("Orchestration run task failed: {error}"))?
 }
 
 #[tauri::command]
-async fn record_orchestration_event(event: OrchestrationEvent) -> Result<OrchestrationRun, String> {
-    tauri::async_runtime::spawn_blocking(move || record_orchestration_event_sync(event))
+async fn record_orchestration_event(
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
+    event: OrchestrationEvent,
+) -> Result<OrchestrationRun, String> {
+    let store = manager.store_handle();
+    tauri::async_runtime::spawn_blocking(move || record_orchestration_event_sync(&store, event))
         .await
         .map_err(|error| format!("Orchestration event task failed: {error}"))?
 }
 
 #[tauri::command]
-async fn start_terminal_session(
+async fn list_workflow_runs(
+    engine: tauri::State<'_, WorkflowEngine>,
+) -> Result<Vec<WorkflowRunRecord>, String> {
+    engine.list_runs().map_err(|error| error.to_string())
+}
+
+fn emit_workflow_run_updated(app: &tauri::AppHandle, run: &WorkflowRunRecord) {
+    let _ = app.emit("workflow-run-updated", run);
+}
+
+#[tauri::command]
+async fn create_workflow_run(
     app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    definition: WorkflowDefinitionV1,
+    input: serde_json::Value,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .create_run(definition, input, idempotency_key)
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn start_workflow_run(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .start(&run_id, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn pause_workflow_run(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .pause(&run_id, &idempotency_key)
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn resume_workflow_run(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .resume(&run_id, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn cancel_workflow_run(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .cancel(&run_id, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn retry_workflow_node(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .retry_node(&run_id, &node_id, &idempotency_key)
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn skip_workflow_node(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .skip_node(&run_id, &node_id, &idempotency_key)
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn approve_workflow_gate(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    approval: serde_json::Value,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .approve_gate(&run_id, &node_id, approval, &idempotency_key)
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn submit_workflow_result(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    result: serde_json::Value,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .submit_result(&run_id, &node_id, result, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn start_terminal_session(
     terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
+    projection_streams: tauri::State<'_, projection_streams::ProjectionStreams>,
     request: terminal::TerminalStartRequest,
 ) -> Result<terminal::TerminalSessionInfo, String> {
-    terminal::start_terminal_session(app, &terminal_registry, request)
+    terminal::start_terminal_session(
+        &terminal_registry,
+        projection_streams.inner().clone(),
+        request,
+    )
 }
 
 #[tauri::command]
@@ -1432,8 +2272,9 @@ async fn list_terminal_sessions(
 async fn read_terminal_session_scrollback(
     terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
     session_id: String,
+    max_bytes: Option<usize>,
 ) -> Result<Option<String>, String> {
-    terminal::read_terminal_session_scrollback(&terminal_registry, &session_id)
+    terminal::read_terminal_session_scrollback(&terminal_registry, &session_id, max_bytes)
 }
 
 #[tauri::command]
@@ -1517,7 +2358,7 @@ fn list_source_files_sync_with_cancellation(
     stats.collection_limit = collect_limit;
     stats.collection_limit_reached = collected_file_count >= collect_limit;
     #[cfg(debug_assertions)]
-    eprintln!(
+    crate::debug_log::stderr_log!(
         "mcb tauri source.list root={} count={} truncated={}",
         root.display(),
         records.len(),
@@ -1531,22 +2372,95 @@ fn list_source_files_sync_with_cancellation(
     })
 }
 
+fn list_source_directory_sync_with_cancellation(
+    root: PathBuf,
+    directory: PathBuf,
+    include_excluded: bool,
+    cancellation: SourceScanCancellation,
+) -> Result<Vec<SourceDirectoryEntry>, String> {
+    cancellation.ensure_active()?;
+    let canonical_root = std::fs::canonicalize(&root)
+        .map_err(|error| format!("Could not read source root metadata: {error}"))?;
+    cancellation.ensure_active()?;
+    let canonical_directory = std::fs::canonicalize(&directory)
+        .map_err(|error| format!("Could not read source directory metadata: {error}"))?;
+    if !canonical_directory.starts_with(&canonical_root) {
+        return Err("Source directory is outside the project root".to_string());
+    }
+    if !canonical_directory.is_dir() {
+        return Err("Source path is not a directory".to_string());
+    }
+
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&directory)
+        .map_err(|error| format!("Could not read source directory: {error}"))?
+    {
+        cancellation.ensure_active()?;
+        if let Ok(entry) = entry {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_directory = file_type.is_dir();
+            let excluded = is_directory && skip_dir_reason(&name).is_some();
+            if (excluded && !include_excluded) || (!is_directory && !file_type.is_file()) {
+                continue;
+            }
+            entries.push(SourceDirectoryEntry {
+                path: entry.path().display().to_string(),
+                name,
+                is_directory,
+                excluded,
+            });
+        }
+    }
+    cancellation.ensure_active()?;
+    entries.sort_by(|left, right| {
+        right
+            .is_directory
+            .cmp(&left.is_directory)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    Ok(entries)
+}
+
+#[cfg(test)]
 fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
+    validate_project_root_sync_while(path, || true).unwrap_or_else(|| ProjectRootValidationResult {
+        path: String::new(),
+        exists: false,
+        is_directory: false,
+        is_git_repository: false,
+        git_root: None,
+        message: "Project validation was cancelled".to_string(),
+    })
+}
+
+fn validate_project_root_sync_while(
+    path: PathBuf,
+    is_current: impl Fn() -> bool,
+) -> Option<ProjectRootValidationResult> {
     let path_label = path.display().to_string();
+    if !is_current() {
+        return None;
+    }
     let metadata = std::fs::metadata(&path);
     let Ok(metadata) = metadata else {
-        return ProjectRootValidationResult {
+        return Some(ProjectRootValidationResult {
             path: path_label,
             exists: false,
             is_directory: false,
             is_git_repository: false,
             git_root: None,
             message: "Project path not found".to_string(),
-        };
+        });
     };
 
     if !metadata.is_dir() {
-        return ProjectRootValidationResult {
+        return Some(ProjectRootValidationResult {
             path: path_label,
             exists: true,
             is_directory: false,
@@ -1554,17 +2468,20 @@ fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
             git_root: None,
             message: "Project path points to a file. Choose the repository folder instead."
                 .to_string(),
-        };
+        });
     }
 
-    let git_root_path = git_repository_root(&path);
+    if !is_current() {
+        return None;
+    }
+    let git_root_path = git_repository_root_while(&path, is_current)?;
     let is_git_repository = git_root_path
         .as_ref()
         .is_some_and(|git_root| paths_refer_to_same_location(git_root, &path));
     let git_root = git_root_path
         .as_ref()
         .map(|root| normalized_path_string(root));
-    ProjectRootValidationResult {
+    Some(ProjectRootValidationResult {
         path: path_label,
         exists: true,
         is_directory: true,
@@ -1578,19 +2495,28 @@ fn validate_project_root_sync(path: PathBuf) -> ProjectRootValidationResult {
             "Folder is not a Git repository. Source browsing will work, but Git/worktree panels may be unavailable."
                 .to_string()
         },
-    }
+    })
 }
 
-fn git_repository_root(path: &Path) -> Option<PathBuf> {
+fn git_repository_root_while(
+    path: &Path,
+    is_current: impl Fn() -> bool,
+) -> Option<Option<PathBuf>> {
     let mut current = Some(path);
     while let Some(candidate) = current {
+        if !is_current() {
+            return None;
+        }
         if candidate.join(".git").exists() {
-            return Some(candidate.to_path_buf());
+            return Some(Some(candidate.to_path_buf()));
         }
         current = candidate.parent();
     }
 
-    let output = Command::new("git")
+    if !is_current() {
+        return None;
+    }
+    let output = match Command::new("git")
         .args([
             "-C",
             path.to_str().unwrap_or_default(),
@@ -1598,17 +2524,23 @@ fn git_repository_root(path: &Path) -> Option<PathBuf> {
             "--show-toplevel",
         ])
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(_) => return Some(None),
+    };
 
-    if !output.status.success() {
+    if !is_current() {
         return None;
     }
-
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() {
+        return Some(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let root = stdout.trim().to_string();
     if root.is_empty() {
-        None
+        Some(None)
     } else {
-        Some(PathBuf::from(root))
+        Some(Some(PathBuf::from(root)))
     }
 }
 
@@ -1695,9 +2627,17 @@ fn collect_source_files(
 }
 
 fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
+    read_source_file_sync_while(path, || true)?
+        .ok_or_else(|| "Source read was cancelled".to_string())
+}
+
+fn read_source_file_sync_while(
+    path: PathBuf,
+    keep_reading: impl Fn() -> bool,
+) -> Result<Option<SourcePreview>, String> {
     let path_ref = path.as_path();
     let metadata = std::fs::metadata(path_ref)
-        .map_err(|error| format!("Could not read source metadata: {error}"))?;
+        .map_err(|error| format!("Could not read {}: {error}", path_ref.display()))?;
     if !metadata.is_file() {
         return Err("Source path is not a file".to_string());
     }
@@ -1708,7 +2648,32 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
         ));
     }
 
-    let content = std::fs::read_to_string(path_ref)
+    if !keep_reading() {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path_ref)
+        .map_err(|error| format!("Could not read source file as UTF-8: {error}"))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        if !keep_reading() {
+            return Ok(None);
+        }
+        let read = file
+            .read(&mut chunk)
+            .map_err(|error| format!("Could not read source file as UTF-8: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+            return Err(format!("Source file is too large: {} bytes", bytes.len()));
+        }
+    }
+    if !keep_reading() {
+        return Ok(None);
+    }
+    let content = String::from_utf8(bytes)
         .map_err(|error| format!("Could not read source file as UTF-8: {error}"))?;
     let file_name = path_ref
         .file_name()
@@ -1726,17 +2691,19 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
         content,
     };
     #[cfg(debug_assertions)]
-    eprintln!(
+    crate::debug_log::stderr_log!(
         "mcb tauri source.preview path={} language={} lines={}",
-        preview.path, preview.language, preview.line_count
+        preview.path,
+        preview.language,
+        preview.line_count
     );
-    Ok(preview)
+    Ok(Some(preview))
 }
 
 fn write_source_file_sync(path: PathBuf, content: String) -> Result<SourcePreview, String> {
     let path_ref = path.as_path();
     let metadata = std::fs::metadata(path_ref)
-        .map_err(|error| format!("Could not read source metadata: {error}"))?;
+        .map_err(|error| format!("Could not read {}: {error}", path_ref.display()))?;
     if !metadata.is_file() {
         return Err("Source path is not a file".to_string());
     }
@@ -1820,6 +2787,133 @@ fn search_source_files_sync(
     }
 
     Ok(matches)
+}
+
+fn search_source_tree_sync(
+    root: PathBuf,
+    query: String,
+    page_size: Option<usize>,
+    cursor: Option<usize>,
+    include_excluded: bool,
+    cancellation: SourceScanCancellation,
+) -> Result<SourceTreeSearchPage, String> {
+    cancellation.ensure_active()?;
+    let metadata = std::fs::metadata(&root)
+        .map_err(|error| format!("Could not read source root metadata: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("Source root is not a directory".to_string());
+    }
+
+    let normalized_query = query.trim().to_lowercase();
+    let page_size = clamp_source_search_page_size(page_size);
+    let offset = cursor.unwrap_or(0);
+    if normalized_query.is_empty() {
+        return Ok(SourceTreeSearchPage {
+            matches: Vec::new(),
+            next_cursor: None,
+            complete: true,
+        });
+    }
+
+    let mut matches = Vec::with_capacity(page_size.saturating_add(1));
+    let mut matched_count = 0;
+    collect_source_tree_search_matches(
+        &root,
+        &root,
+        &normalized_query,
+        page_size,
+        offset,
+        include_excluded,
+        &mut matched_count,
+        &mut matches,
+        &cancellation,
+    )?;
+
+    cancellation.ensure_active()?;
+    let complete = matches.len() <= page_size;
+    let next_cursor = if complete {
+        None
+    } else {
+        matches.truncate(page_size);
+        Some(offset.saturating_add(page_size))
+    };
+    Ok(SourceTreeSearchPage {
+        matches,
+        next_cursor,
+        complete,
+    })
+}
+
+fn collect_source_tree_search_matches(
+    root: &Path,
+    current: &Path,
+    query: &str,
+    page_size: usize,
+    offset: usize,
+    include_excluded: bool,
+    matched_count: &mut usize,
+    matches: &mut Vec<SourceTreeSearchMatch>,
+    cancellation: &SourceScanCancellation,
+) -> Result<bool, String> {
+    cancellation.ensure_active()?;
+    let mut entries = std::fs::read_dir(current)
+        .map_err(|error| format!("Could not read source directory: {error}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| compare_source_walk_entries(root, left, right));
+
+    for entry in entries {
+        cancellation.ensure_active()?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("Could not read source entry metadata: {error}"))?;
+        if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) {
+            continue;
+        }
+
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_directory = file_type.is_dir();
+        let excluded = is_directory && skip_dir_reason(&name).is_some();
+        if is_directory && excluded && !include_excluded {
+            continue;
+        }
+
+        let relative_path = normalized_relative_source_path(root, &path);
+        if relative_path.to_lowercase().contains(query) {
+            if *matched_count >= offset {
+                matches.push(SourceTreeSearchMatch {
+                    path: path.display().to_string(),
+                    relative_path,
+                    name,
+                    is_directory,
+                    excluded,
+                });
+            }
+            *matched_count = (*matched_count).saturating_add(1);
+            if matches.len() > page_size {
+                return Ok(true);
+            }
+        }
+
+        if is_directory
+            && collect_source_tree_search_matches(
+                root,
+                &path,
+                query,
+                page_size,
+                offset,
+                include_excluded,
+                matched_count,
+                matches,
+                cancellation,
+            )?
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn append_source_search_matches(
@@ -2135,7 +3229,7 @@ fn log_reference_count_timing(
     } else {
         "every file on the list was read, so the totals are exact"
     };
-    eprintln!(
+    crate::debug_log::stderr_log!(
         "Timing: counting {symbol_count} names across {} files took {} ms; {outcome}.",
         pass.scanned_files,
         elapsed_millis(started)
@@ -2338,7 +3432,7 @@ fn source_file_action_command(
     action: SourceFileAction,
 ) -> Result<SourceFileActionCommand, String> {
     let metadata = std::fs::metadata(path)
-        .map_err(|error| format!("Could not read source metadata: {error}"))?;
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
     if !metadata.is_file() {
         return Err("Source path is not a file".to_string());
     }
@@ -2603,30 +3697,75 @@ fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
     })
 }
 
-fn read_git_commit_history_sync(
+fn git_history_cursor_offset(cursor: Option<String>) -> Result<usize, String> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let trimmed = cursor.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    trimmed
+        .parse::<usize>()
+        .map_err(|_| "Git history cursor was not recognized".to_string())
+}
+
+fn read_git_commit_history_page_sync(
     root: PathBuf,
-    limit: Option<usize>,
-) -> Result<Vec<GitCommitHistoryEntry>, String> {
+    cursor: Option<String>,
+    relative_path: Option<String>,
+) -> Result<GitHistoryPage, String> {
     validate_git_root(&root)?;
 
-    let limit = limit
-        .unwrap_or(DEFAULT_GIT_HISTORY_LIMIT)
-        .clamp(1, MAX_GIT_HISTORY_LIMIT);
-    let limit_arg = format!("-n{limit}");
-    let history_output = run_git_text(
-        &root,
-        &[
-            "log",
-            "--decorate=short",
-            "--date=iso-strict",
-            "--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D%x1f%P",
-            limit_arg.as_str(),
-        ],
-    );
+    let page_root = root.to_string_lossy().into_owned();
+    let page_relative_path = relative_path.clone();
+    let offset = git_history_cursor_offset(cursor)?;
+    let page_size = DEFAULT_GIT_HISTORY_LIMIT;
+    let limit_arg = format!("-n{}", page_size + 1);
+    let skip_arg = format!("--skip={offset}");
+    let base_args = [
+        "log",
+        "--decorate=short",
+        "--date=iso-strict",
+        "--format=%h%x1f%H%x1f%s%x1f%an%x1f%cI%x1f%D%x1f%P",
+        skip_arg.as_str(),
+        limit_arg.as_str(),
+    ];
+    let history_output = if let Some(relative_path) = relative_path {
+        let paths = validate_git_relative_paths(&[relative_path])?;
+        let mut file_args = base_args.to_vec();
+        file_args.push("--follow");
+        run_git_with_paths(&root, &file_args, &paths)
+    } else {
+        run_git_text(&root, &base_args)
+    };
 
     match history_output {
-        Ok(output) => parse_git_commit_history(&output),
-        Err(error) if error.contains("does not have any commits") => Ok(Vec::new()),
+        Ok(output) => {
+            let mut commits = parse_git_commit_history(&output)?;
+            let complete = commits.len() <= page_size;
+            if !complete {
+                commits.truncate(page_size);
+            }
+            Ok(GitHistoryPage {
+                root: page_root,
+                relative_path: page_relative_path,
+                commits,
+                next_cursor: if complete {
+                    None
+                } else {
+                    Some((offset + page_size).to_string())
+                },
+                complete,
+            })
+        }
+        Err(error) if error.contains("does not have any commits") => Ok(GitHistoryPage {
+            root: page_root,
+            relative_path: page_relative_path,
+            commits: Vec::new(),
+            next_cursor: None,
+            complete: true,
+        }),
         Err(error) => Err(error),
     }
 }
@@ -3000,12 +4139,103 @@ fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, St
     )
 }
 
+fn classify_project_git_refs(
+    refs: Vec<(String, Option<i64>)>,
+    current: &str,
+    checkouts: &[(String, String)],
+) -> Vec<ProjectGitRef> {
+    let has_main = refs.iter().any(|(name, _)| name == "main");
+    let default = if has_main { "main" } else { "master" };
+    refs.into_iter()
+        .take(500)
+        .map(|(name, last_commit_ms)| ProjectGitRef {
+            is_default: name == default,
+            is_current: name == current,
+            checkout_path: checkouts
+                .iter()
+                .find(|(branch, _)| branch == &name)
+                .map(|(_, path)| path.clone()),
+            name,
+            last_commit_ms,
+        })
+        .collect()
+}
+
+fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGitRef>, String> {
+    let refs = run_git_text(
+        &root,
+        &[
+            "for-each-ref",
+            "refs/heads",
+            "--sort=-committerdate",
+            "--format=%(refname:short)%09%(committerdate:unix)",
+        ],
+    )?
+    .lines()
+    .filter_map(|line| {
+        let (name, timestamp) = line.split_once('\t').unwrap_or((line, ""));
+        let name = name.trim();
+        (!name.is_empty()).then(|| {
+            (
+                name.to_string(),
+                timestamp
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+                    .and_then(|seconds| seconds.checked_mul(1_000)),
+            )
+        })
+    })
+    .collect();
+    let current = run_git_text(&root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let checkouts = list_project_worktrees_sync(root)?
+        .into_iter()
+        .map(|worktree| (worktree.branch, worktree.path))
+        .collect::<Vec<_>>();
+    Ok(classify_project_git_refs(refs, current.trim(), &checkouts))
+}
+
+fn init_project_repository_sync(root: PathBuf) -> Result<(), String> {
+    if root.to_string_lossy().trim().is_empty() {
+        return Err("Choose a project folder first.".to_string());
+    }
+    if !root.exists() {
+        return Err("That project folder does not exist.".to_string());
+    }
+    if !root.is_dir() {
+        return Err("That project path is not a folder.".to_string());
+    }
+    if root.join(".git").exists() {
+        return Ok(());
+    }
+
+    let init = Command::new("git")
+        .current_dir(&root)
+        .args(["init", "-b", "main"])
+        .output()
+        .map_err(|error| format!("Git could not be started: {error}"))?;
+    if !init.status.success() {
+        return Err(String::from_utf8_lossy(&init.stderr).into_owned());
+    }
+
+    let commit = Command::new("git")
+        .current_dir(&root)
+        .args(["commit", "--allow-empty", "-m", "Initial commit"])
+        .output()
+        .map_err(|error| format!("Git could not be started: {error}"))?;
+    if !commit.status.success() {
+        return Err(String::from_utf8_lossy(&commit.stderr).into_owned());
+    }
+
+    Ok(())
+}
+
 /// `force = false` is the everyday remove: it refuses anything that would lose work.
 /// `force = true` is the "I know, delete it anyway" remove: it unlocks the worktree if
 /// it is locked, deletes it even when files are uncommitted or commits are unmerged, and
 /// reports in the returned message exactly what went away. Neither mode will ever touch
 /// the primary checkout.
-fn remove_project_worktree_sync(
+pub(crate) fn remove_project_worktree_sync(
     root: PathBuf,
     path: PathBuf,
     force: bool,
@@ -4043,31 +5273,68 @@ fn list_playwright_sessions_sync() -> Result<Vec<PlaywrightSessionInfo>, String>
     )))
 }
 
+/// How long a Playwright process is given to leave on its own before it is
+/// forced. Waited out on a thread of its own, not inside the command: the
+/// answer to "stop" used to be held for the whole grace period plus a second
+/// process scan, so the button sat busy and the app sat still for the best part
+/// of a second every time. Now TERM is sent, the receipt goes straight back,
+/// and the forcing happens behind it — the same shape `resources.rs` uses.
+const PLAYWRIGHT_STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(800);
+
 fn kill_playwright_sessions_sync() -> Result<PlaywrightCleanupResult, String> {
     let sessions = list_playwright_sessions_sync()?;
-    kill_playwright_sessions_with(
-        sessions,
-        signal_process,
-        || std::thread::sleep(std::time::Duration::from_millis(800)),
-        list_playwright_sessions_sync,
-    )
+    let (result, survivors) = term_playwright_sessions(sessions, signal_process);
+    force_playwright_survivors_after_grace(survivors);
+    Ok(result)
 }
 
 fn kill_playwright_session_sync(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
     let sessions = list_playwright_sessions_sync()?;
-    kill_playwright_session_with(
-        sessions,
-        pgid,
-        signal_process,
-        || std::thread::sleep(std::time::Duration::from_millis(800)),
-        list_playwright_sessions_sync,
-    )
+    let session = select_playwright_session(sessions, pgid)?;
+    let (result, survivors) = term_playwright_sessions(vec![session], signal_process);
+    force_playwright_survivors_after_grace(survivors);
+    Ok(result)
+}
+
+/// The sessions just told to stop, ready for the forcing pass.
+struct PlaywrightTermSweep {
+    sessions: Vec<PlaywrightSessionInfo>,
+    terminated_pids: HashSet<u32>,
+}
+
+/// After the grace period, force whatever the TERM sweep left running. Off the
+/// command's thread, so nothing waits on it; the outcome is logged, not
+/// returned, the way a forced stop is elsewhere in the app.
+fn force_playwright_survivors_after_grace(sweep: PlaywrightTermSweep) {
+    if sweep.terminated_pids.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(PLAYWRIGHT_STOP_GRACE);
+        let failures = kill_playwright_survivors(
+            &sweep.sessions,
+            &sweep.terminated_pids,
+            signal_process,
+            list_playwright_sessions_sync,
+        );
+        for failure in failures {
+            crate::debug_log::stderr_log!(
+                "playwright: could not force process group {} after the stop grace period: {}",
+                failure.pgid,
+                failure.message
+            );
+        }
+    });
 }
 
 /// Stops ONE Playwright process group, the same polite-then-forceful way the
 /// stop-everything command does. The group has to be one this app just listed as a
 /// Playwright session; anything else is refused, so this can never be used to stop an
 /// arbitrary process by number.
+///
+/// The two phases run apart in the app (see `kill_playwright_session_sync`);
+/// this composes them in one so the tests can watch the whole sequence.
+#[cfg(test)]
 fn kill_playwright_session_with<SignalProcess, SleepAfterTerm, ListSessions>(
     sessions: Vec<PlaywrightSessionInfo>,
     pgid: i32,
@@ -4104,16 +5371,37 @@ fn select_playwright_session(
     })
 }
 
+#[cfg(test)]
 fn kill_playwright_sessions_with<SignalProcess, SleepAfterTerm, ListSessions>(
     sessions: Vec<PlaywrightSessionInfo>,
     mut signal_process: SignalProcess,
     sleep_after_term: SleepAfterTerm,
-    mut list_sessions: ListSessions,
+    list_sessions: ListSessions,
 ) -> Result<PlaywrightCleanupResult, String>
 where
     SignalProcess: FnMut(u32, &str) -> Result<(), String>,
     SleepAfterTerm: FnOnce(),
     ListSessions: FnMut() -> Result<Vec<PlaywrightSessionInfo>, String>,
+{
+    let (mut result, sweep) = term_playwright_sessions(sessions, &mut signal_process);
+    sleep_after_term();
+    result.failed_pgids.extend(kill_playwright_survivors(
+        &sweep.sessions,
+        &sweep.terminated_pids,
+        signal_process,
+        list_sessions,
+    ));
+    Ok(result)
+}
+
+/// Ask every process in every session to leave. What could not even be asked is
+/// reported straight away; what was asked is handed on for the forcing pass.
+fn term_playwright_sessions<SignalProcess>(
+    sessions: Vec<PlaywrightSessionInfo>,
+    mut signal_process: SignalProcess,
+) -> (PlaywrightCleanupResult, PlaywrightTermSweep)
+where
+    SignalProcess: FnMut(u32, &str) -> Result<(), String>,
 {
     let mut terminated_pgids = Vec::new();
     let mut terminated_pids = Vec::new();
@@ -4138,36 +5426,59 @@ where
         }
     }
 
-    sleep_after_term();
+    let sweep = PlaywrightTermSweep {
+        sessions: sessions.clone(),
+        terminated_pids: terminated_pids.iter().copied().collect(),
+    };
+    (
+        PlaywrightCleanupResult {
+            sessions,
+            terminated_pgids,
+            terminated_pids,
+            failed_pgids,
+        },
+        sweep,
+    )
+}
 
+/// Force whatever the TERM sweep asked to leave and is still here. Only a
+/// process this app itself signalled is forced: a number that has since been
+/// handed to something else is left alone.
+fn kill_playwright_survivors<SignalProcess, ListSessions>(
+    sessions: &[PlaywrightSessionInfo],
+    terminated_pids: &HashSet<u32>,
+    mut signal_process: SignalProcess,
+    mut list_sessions: ListSessions,
+) -> Vec<PlaywrightCleanupFailure>
+where
+    SignalProcess: FnMut(u32, &str) -> Result<(), String>,
+    ListSessions: FnMut() -> Result<Vec<PlaywrightSessionInfo>, String>,
+{
+    let mut failed_pgids = Vec::new();
     let remaining_pids = match list_sessions() {
         Ok(remaining_sessions) => remaining_sessions
             .into_iter()
             .flat_map(|session| session.pids)
             .collect::<HashSet<_>>(),
         Err(error) => {
-            for pgid in &terminated_pgids {
-                failed_pgids.push(PlaywrightCleanupFailure {
-                    pgid: *pgid,
-                    pid: None,
-                    message: format!("Could not verify Playwright cleanup after TERM: {error}"),
-                });
+            for session in sessions {
+                if session.pids.iter().any(|pid| terminated_pids.contains(pid)) {
+                    failed_pgids.push(PlaywrightCleanupFailure {
+                        pgid: session.pgid,
+                        pid: None,
+                        message: format!("Could not verify Playwright cleanup after TERM: {error}"),
+                    });
+                }
             }
-            return Ok(PlaywrightCleanupResult {
-                sessions,
-                terminated_pgids,
-                terminated_pids,
-                failed_pgids,
-            });
+            return failed_pgids;
         }
     };
-    let terminated_pid_set = terminated_pids.iter().copied().collect::<HashSet<_>>();
-    for session in &sessions {
+    for session in sessions {
         for pid in session
             .pids
             .iter()
             .copied()
-            .filter(|pid| terminated_pid_set.contains(pid) && remaining_pids.contains(pid))
+            .filter(|pid| terminated_pids.contains(pid) && remaining_pids.contains(pid))
         {
             if let Err(message) = signal_process(pid, "KILL") {
                 failed_pgids.push(PlaywrightCleanupFailure {
@@ -4178,13 +5489,7 @@ where
             }
         }
     }
-
-    Ok(PlaywrightCleanupResult {
-        sessions,
-        terminated_pgids,
-        terminated_pids,
-        failed_pgids,
-    })
+    failed_pgids
 }
 
 fn kill_process_sync(pid: u32, expected_command: Option<String>) -> ProcessKillResult {
@@ -4874,6 +6179,10 @@ fn source_collection_limit(limit: usize) -> usize {
         .saturating_add(1)
 }
 
+fn clamp_source_search_page_size(page_size: Option<usize>) -> usize {
+    page_size.unwrap_or(DEFAULT_SOURCE_SEARCH_LIMIT).clamp(1, MAX_SOURCE_SEARCH_LIMIT)
+}
+
 fn compare_source_walk_entries(
     root: &Path,
     left: &std::fs::DirEntry,
@@ -5170,14 +6479,178 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
     relative_path.to_lowercase().contains(query) || file_name.to_lowercase().contains(query)
 }
 
+#[tauri::command]
+async fn read_usage_token_breakdown(
+    app: tauri::AppHandle,
+    query: usage_history::UsageHistoryQuery,
+) -> Result<usage_db::UsageTokenBreakdown, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
+            .read_usage_token_breakdown(&query.into())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_usage_provider_daily_totals(
+    app: tauri::AppHandle,
+    query: usage_history::UsageHistoryQuery,
+) -> Result<Vec<usage_db::UsageProviderDailyTotalsRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
+            .read_usage_provider_daily_totals(&query.into())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn read_usage_cost_inputs(
+    app: tauri::AppHandle,
+    query: usage_history::UsageHistoryQuery,
+) -> Result<Vec<usage_db::UsageCostInputRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
+            .read_usage_cost_inputs(&query.into())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
+}
+
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let message = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| {
+                panic_info
+                    .payload()
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+            })
+            .unwrap_or("non-string panic payload");
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let backtrace = std::backtrace::Backtrace::force_capture();
+
+        crate::debug_log::stderr_log!(
+            "panic in thread '{thread_name}': {message}\nForced backtrace:\n{backtrace}"
+        );
+        default_hook(panic_info);
+    }));
+}
+
 fn main() {
-    tauri::Builder::default()
+    install_panic_hook();
+    if std::env::args().any(|argument| argument == "--assembly-server") {
+        if let Err(error) = agent_conversation::remote::run_server_from_environment() {
+            crate::debug_log::stderr_log!("Assembly remote server failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let builder = tauri::Builder::default()
         .manage(SourceScanRegistry::default())
-        .manage(agent_conversation::AgentConversationRegistry::default())
+        .manage(SourceFileReadOwner::default())
+        .manage(ProjectRootValidationOwner::default())
+        .manage(agent_conversation::terminal_projection::TerminalProjectionRegistry::default())
         .manage(lsp::SourceLspRegistry::default())
+        .manage(projection_streams::ProjectionStreams::default())
         .manage(terminal::TerminalRegistry::default())
+        .manage(browser::BrowserRegistry::default())
+        .manage(resources::ResourceRegistry::default())
+        .manage(usage_history::UsageHistoryState::default())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(debug_assertions)]
+    let builder = builder.plugin(tauri_plugin_devtools::init());
+
+    let app = builder
         .setup(|app| {
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| format!("Application data directory is unavailable: {error}"))?;
+            std::fs::create_dir_all(&app_data_dir).map_err(|error| {
+                format!(
+                    "Could not create application data directory {}: {error}",
+                    app_data_dir.display()
+                )
+            })?;
+            debug_log::install_file_mirror(app_data_dir.join("logs/backend.log"));
+            let session_db_path = app_data_dir.join("sessions.db");
+            let agent_runtime = agent_conversation::manager::AgentRuntimeManager::open(
+                agent_conversation::providers::ProviderRegistry::bundled_from_environment()
+                    .map_err(|error| {
+                        format!("Packaged ACP adapter configuration is invalid: {error}")
+                    })?,
+                &session_db_path,
+            )?;
+            if let Some(settings) = agent_runtime.read_app_setting(LANGUAGE_SERVER_SETTINGS_KEY)? {
+                lsp::restore_language_server_settings(&settings)?;
+            }
+            import_legacy_orchestration_events(agent_runtime.store())?;
+            // Validate the store-backed list and its runtime overlay before any
+            // frontend activation can observe the manager.
+            agent_runtime.list_sessions()?;
+            let workflow_store = agent_runtime.store_handle();
+            let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
+            let live_session_ids = agent_runtime
+                .resource_roots()
+                .into_iter()
+                .map(|root| root.owned_id)
+                .collect();
+            agent_conversation::reaper::start_startup_reaper(&app_data_dir, live_session_ids)?;
+            let projection_streams = app
+                .state::<projection_streams::ProjectionStreams>()
+                .inner()
+                .clone();
+            let remote_projection_streams = projection_streams.clone();
+            let remote_connection =
+                agent_conversation::remote::RemoteConnectionManager::from_environment(Arc::new(
+                    move |event| remote_projection_streams.publish_agent_event(event),
+                ))?;
+            if !remote_connection.is_configured() {
+                if let Some(profile) = agent_runtime.read_app_setting(
+                    agent_conversation::remote::REMOTE_ASSEMBLY_PROFILE_SETTING_KEY,
+                )? {
+                    remote_connection.restore_profile(&profile)?;
+                }
+            }
+            agent_runtime.set_emitter(Arc::new(move |event| {
+                projection_streams.publish_agent_event(event);
+            }));
+            let handle = app.handle().clone();
+            agent_runtime.set_broker_emitter(Arc::new(move |event| {
+                let _ = handle.emit("workflow-broker-event", event);
+            }));
+            // Names a session from its first exchange. The manager decides
+            // when a name is wanted and saves the answer; this is the call
+            // itself, and the listener below puts the saved name on the rail.
+            let handle = app.handle().clone();
+            agent_runtime.set_session_namer(Arc::new(move |input: &str| {
+                helper::name_session(&handle, input)
+            }));
+            let handle = app.handle().clone();
+            agent_runtime.set_session_renamed_listener(Arc::new(move |owned_id, title| {
+                let _ = handle.emit(
+                    SESSION_TITLE_CHANGED_EVENT,
+                    SessionTitleChanged {
+                        owned_id: owned_id.to_string(),
+                        title: title.to_string(),
+                    },
+                );
+            }));
+            app.manage(workflow_engine);
+            app.manage(remote_connection);
+            app.manage(agent_runtime);
             // Every time a language server starts, finishes reading a project, or stops,
             // tell the editor straight away. Without this the editor would have to ask
             // over and over to notice, which is what it used to do.
@@ -5190,27 +6663,37 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             read_backend_capabilities,
             list_source_files,
+            list_source_directory,
             cancel_source_scan,
             validate_project_root,
+            cancel_project_root_validation,
             read_source_file,
+            cancel_source_file_reads,
             read_native_csharp_file,
             write_source_file,
             open_source_file,
             reveal_source_file,
             open_path,
             reveal_path,
+            move_to_trash,
             open_terminal_path,
             open_terminal_command,
             search_source_files,
+            search_source_tree,
             find_source_definitions,
             find_source_references,
             count_source_references,
+            open_main_devtools,
             read_source_lsp_status,
             list_source_lsp_statuses,
             warm_source_lsp_for_root,
             ensure_native_csharp_language_client,
             mark_native_csharp_language_client_ready,
             set_csharp_language_server_enabled,
+            set_language_servers_enabled,
+            set_language_server_enabled,
+            read_workspace_language_intelligence,
+            set_workspace_language_intelligence,
             find_source_lsp_definitions,
             find_source_lsp_completions,
             find_source_lsp_implementations,
@@ -5241,41 +6724,265 @@ fn main() {
             read_git_commit_history,
             read_git_commit_files,
             read_git_commit_file_diff,
+            git_pr::generate_commit_message,
+            git_pr::read_pull_request_context,
+            git_pr::generate_pull_request_details,
+            git_pr::create_pull_request,
+            git_pr::read_pull_request_status,
+            git_workspace::discard_git_paths,
+            git_workspace::discard_all_git_changes,
+            git_workspace::list_git_branches,
+            git_workspace::create_git_branch,
+            git_workspace::switch_git_branch,
+            git_workspace::stash_git_changes,
+            git_workspace::pop_git_stash,
+            git_workspace::list_git_stashes,
+            git_workspace::amend_git_commit,
+            git_workspace::list_open_pull_requests,
             list_project_worktrees,
+            list_repository_checkouts,
+            list_project_git_refs,
+            init_project_repository,
             remove_project_worktree,
             archive_project_worktree,
             list_git_repository_summaries,
             list_agent_sessions,
+            list_agent_sessions_for_project,
             list_runtime_contexts,
             list_playwright_sessions,
             kill_playwright_session,
             kill_playwright_sessions,
             kill_process,
+            resources::read_resource_sample,
+            resources::read_resource_totals,
+            resources::read_resource_snapshot,
+            resources::read_resource_disk_scan,
+            resources::cleanup_workspace_disk_entry,
+            resources::stop_owned_resource,
+            resources::stop_resource_process_tree,
+            resources_disk::read_resource_disk_usage,
+            resources_disk::reclaim_resource_disk_entry,
+            resources::restart_language_server_root,
+            resources::set_active_source_root,
+            resources::apply_resource_memory_pressure,
+            resources::read_language_server_log,
+            usage_current::read_current_provider_usage,
+            usage_history::read_usage_summary,
+            usage_history::read_usage_breakdown,
+            usage_history::read_usage_provider_summary,
+            usage_history::read_usage_daily,
+            usage_history::read_usage_daily_totals,
+            read_usage_token_breakdown,
+            read_usage_provider_daily_totals,
+            read_usage_cost_inputs,
+            usage_history::refresh_usage_history,
             list_orchestration_runs,
             record_orchestration_event,
+            list_workflow_runs,
+            create_workflow_run,
+            start_workflow_run,
+            pause_workflow_run,
+            resume_workflow_run,
+            cancel_workflow_run,
+            retry_workflow_node,
+            skip_workflow_node,
+            approve_workflow_gate,
+            submit_workflow_result,
             agent_conversation::ensure_agent_conversation,
+            agent_conversation::remote::read_remote_assembly_environment,
+            agent_conversation::remote::deploy_remote_assembly,
             agent_conversation::send_agent_conversation_message,
+            agent_conversation::agent_conversation_set_session_draft,
+            agent_conversation::agent_conversation_get_session_draft,
+            agent_conversation::agent_conversation_clear_session_draft,
+            agent_conversation::write_agent_conversation_workspace,
+            agent_conversation::read_agent_conversation_workspace,
+            agent_conversation::read_agent_conversation_workspace_expanded_paths,
+            agent_conversation::write_agent_conversation_workspace_expanded_paths,
+            agent_conversation::delete_agent_conversation_workspace,
+            agent_conversation::clear_agent_conversation_workspace_editors,
+            agent_conversation::clear_agent_conversation_workspace_tabs,
+            agent_conversation::write_assembly_setting,
+            agent_conversation::read_assembly_setting,
             agent_conversation::respond_agent_conversation_approval,
+            agent_conversation::respond_agent_conversation_permission,
+            agent_conversation::respond_agent_conversation_input,
             agent_conversation::stop_agent_conversation_turn,
+            agent_conversation::change_agent_conversation_checkout,
+            agent_conversation::set_agent_conversation_config,
+            agent_conversation::set_agent_conversation_config_option,
+            agent_conversation::read_agent_conversation_config,
+            agent_conversation::warm_agent_conversation_config,
+            agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
+            agent_conversation::delete_agent_conversation_session,
             agent_conversation::read_agent_conversation_snapshot,
+            agent_conversation::cancel_agent_conversation_request,
+            agent_conversation::cancel_agent_conversation_snapshot,
+            agent_conversation::list_agent_conversation_sessions,
+            agent_conversation::list_remote_agent_conversation_sessions,
+            agent_conversation::list_agent_conversation_events,
+            agent_conversation::list_agent_conversation_events_before,
+            agent_conversation::list_agent_conversation_events_after,
+            agent_conversation::update_agent_conversation_session_meta,
             agent_conversation::read_agent_conversation_transcript,
+            agent_conversation::begin_agent_conversation_import,
+            agent_conversation::finish_agent_conversation_import,
+            agent_conversation::extend_agent_conversation_import,
+            agent_conversation::start_agent_conversation_terminal_projection,
+            agent_conversation::stop_agent_conversation_terminal_projection,
+            projection_streams::register_agent_conversation_stream,
+            projection_streams::acknowledge_agent_conversation_stream,
+            projection_streams::unregister_agent_conversation_stream,
+            projection_streams::register_terminal_output_stream,
+            projection_streams::acknowledge_terminal_output_stream,
+            projection_streams::unregister_terminal_output_stream,
             agent_conversation::save_agent_conversation_attachment,
+            agent_conversation::read_agent_conversation_attachments,
+            agent_conversation::delete_agent_conversation_attachment,
+            agent_conversation::agent_conversation_add_session_annotation,
+            agent_conversation::agent_conversation_list_session_annotations,
+            agent_conversation::agent_conversation_delete_session_annotation,
+            agent_conversation::handoff::handoff_agent_conversation,
             start_terminal_session,
             list_terminal_sessions,
             read_terminal_session_scrollback,
             write_terminal_session,
             resize_terminal_session,
-            close_terminal_session
+            close_terminal_session,
+            browser::create_browser_tab,
+            browser::set_browser_tab_bounds,
+            browser::set_browser_tab_viewport,
+            browser::show_browser_tab,
+            browser::hide_browser_workspace,
+            browser::navigate_browser_tab,
+            browser::reload_browser_tab,
+            browser::go_back_browser_tab,
+            browser::go_forward_browser_tab,
+            browser::close_browser_tab,
+            browser::clear_browser_workspace_data,
+            browser::arm_browser_element_picker,
+            browser::cancel_browser_element_picker,
+            browser::inspect_browser_rect,
+            browser::capture_browser_viewport,
+            browser::open_browser_tab_devtools,
+            browser::open_browser_tab_external,
+            notion_tasks::read_notion_task_settings,
+            notion_tasks::save_notion_task_settings,
+            notion_tasks::clear_notion_task_settings,
+            notion_tasks::list_notion_tasks,
+            notion_tasks::refresh_notion_tasks,
+            helper::run_helper_job,
+            helper::set_helper_key,
+            helper::read_helper_settings,
+            helper::write_helper_settings,
+            helper::test_helper
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run MacCommandBar webview preview");
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.state::<browser::BrowserRegistry>().shutdown();
+                window
+                    .state::<agent_conversation::remote::RemoteConnectionManager>()
+                    .shutdown();
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect(product_identity::STARTUP_FAILURE_CONTEXT);
+
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            app_handle.state::<browser::BrowserRegistry>().shutdown();
+            app_handle
+                .state::<agent_conversation::remote::RemoteConnectionManager>()
+                .shutdown();
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn project_git_refs_classify_default_current_and_checkouts() {
+        let refs = vec![
+            ("feature/new-pane".to_string(), Some(3_000)),
+            ("main".to_string(), Some(2_000)),
+            ("older".to_string(), None),
+        ];
+        let checkouts = vec![
+            ("main".to_string(), "/repo".to_string()),
+            (
+                "feature/new-pane".to_string(),
+                "/worktrees/new-pane".to_string(),
+            ),
+        ];
+
+        let classified = classify_project_git_refs(refs, "main", &checkouts);
+
+        assert_eq!(classified.len(), 3);
+        assert_eq!(classified[0].name, "feature/new-pane");
+        assert_eq!(
+            classified[0].checkout_path.as_deref(),
+            Some("/worktrees/new-pane")
+        );
+        assert!(!classified[0].is_current);
+        assert!(!classified[0].is_default);
+        assert_eq!(classified[1].name, "main");
+        assert!(classified[1].is_current);
+        assert!(classified[1].is_default);
+        assert_eq!(classified[1].checkout_path.as_deref(), Some("/repo"));
+        assert_eq!(classified[2].checkout_path, None);
+    }
+
+    #[test]
+    fn project_git_refs_use_master_only_when_main_is_absent_and_cap_results() {
+        let mut refs = vec![("master".to_string(), Some(1_000))];
+        refs.extend((0..505).map(|index| (format!("branch-{index}"), None)));
+
+        let classified = classify_project_git_refs(refs, "master", &[]);
+
+        assert_eq!(classified.len(), 500);
+        assert!(classified[0].is_default);
+        assert!(classified[0].is_current);
+    }
+
+    #[test]
+    fn a_plain_folder_becomes_a_repository_on_main() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
+
+        assert!(root.join(".git").exists());
+        assert_eq!(
+            git_text_for_test(&root, &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "main"
+        );
+        assert_eq!(
+            git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
+            "1"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_existing_repository_is_left_alone() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+
+        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
+        init_project_repository_sync(root.clone()).unwrap();
+
+        assert_eq!(
+            git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
+            "1"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn playwright_process_parser_groups_only_owned_markers() {
@@ -6656,7 +8363,9 @@ mod tests {
         std::fs::write(root.join("README.md"), "history\n").unwrap();
         run_git_for_test(&root, &["commit", "-am", "history panel"]);
 
-        let history = read_git_commit_history_sync(root.clone(), Some(4)).unwrap();
+        let history = read_git_commit_history_page_sync(root.clone(), None, None)
+            .unwrap()
+            .commits;
 
         assert_eq!(history.len(), 4);
         assert_eq!(history[0].subject, "history panel");
@@ -7110,6 +8819,44 @@ mod tests {
         let back_on = describe_csharp_language_server_toggle(true, true, 0);
         assert!(back_on.contains("back on"));
         assert!(describe_csharp_language_server_toggle(true, false, 0).contains("already on"));
+    }
+
+    /// Every way the switch can fail to start a server has to say something. A
+    /// switch that is on next to silence is what made this look broken.
+    #[test]
+    fn turning_the_switch_on_says_what_happened_to_the_language_server() {
+        let running = describe_language_server_start(&Ok(lsp::LanguageServerStart::Running {
+            server_name: "typescript-language-server",
+        }));
+        assert!(running.contains("typescript-language-server is running"));
+
+        let unsupported =
+            describe_language_server_start(&Ok(lsp::LanguageServerStart::NoServerForLanguage));
+        assert!(unsupported.contains("no language server for the file you have open"));
+
+        let missing = describe_language_server_start(&Ok(lsp::LanguageServerStart::NotInstalled {
+            server_name: "rust-analyzer",
+            command: "rust-analyzer",
+        }));
+        assert!(missing.contains("rust-analyzer is not installed"));
+
+        let native =
+            describe_language_server_start(&Ok(lsp::LanguageServerStart::NativeCsharpClient));
+        assert!(native.contains("C# language server starts"));
+
+        let switched_off =
+            describe_language_server_start(&Ok(lsp::LanguageServerStart::CsharpSwitchedOff));
+        assert!(switched_off.contains("switched off in Settings"));
+
+        let no_project =
+            describe_language_server_start(&Ok(lsp::LanguageServerStart::NoCsharpProject));
+        assert!(no_project.contains("no C# project or solution"));
+
+        let read_mode = describe_language_server_start(&Ok(lsp::LanguageServerStart::ReadMode));
+        assert!(read_mode.contains("no language server was started"));
+
+        let failed = describe_language_server_start(&Err("stdin unavailable".to_string()));
+        assert!(failed.contains("could not be started: stdin unavailable"));
     }
 
     #[test]
@@ -7985,7 +9732,7 @@ mod tests {
                 .unwrap_or_else(|_| "/Users/blackcolours/dev/work/EdiPlatform".to_string()),
         );
         if !root.is_dir() {
-            eprintln!("skipping: {} is not a directory", root.display());
+            crate::debug_log::stderr_log!("skipping: {} is not a directory", root.display());
             return;
         }
 
@@ -8005,7 +9752,7 @@ mod tests {
                 &SourceScanCancellation::none(),
                 &mut SourceScanWalkProgress::default(),
             );
-            eprintln!(
+            crate::debug_log::stderr_log!(
                 "walk only: {} files in {} ms",
                 records.len(),
                 started.elapsed().as_millis()
@@ -8021,7 +9768,7 @@ mod tests {
                     bytes_read += bytes.len();
                 }
             }
-            eprintln!(
+            crate::debug_log::stderr_log!(
                 "read only: {} MB in {} ms",
                 bytes_read / 1_000_000,
                 started.elapsed().as_millis()
@@ -8034,7 +9781,7 @@ mod tests {
             let result =
                 count_source_references_sync(root.clone(), symbol_names.clone(), Some(600_000))
                     .unwrap();
-            eprintln!(
+            crate::debug_log::stderr_log!(
                 "pass {attempt}: {} files in {} ms (approximate: {})",
                 result.scanned_files,
                 started.elapsed().as_millis(),
@@ -8059,11 +9806,129 @@ mod tests {
                 "processKill".to_string(),
                 "worktreePruneSingle".to_string(),
                 "csharpLanguageServerToggle".to_string(),
+                "languageServersToggle".to_string(),
+                "workspaceLanguageIntelligence".to_string(),
                 "lspDocumentSymbols".to_string(),
                 "lspStatusEvents".to_string(),
                 "lspLog".to_string(),
+                "resourceSample".to_string(),
+                "resourceSnapshot".to_string(),
+                "resourceDiskScan".to_string(),
+                "resourceDiskCleanup".to_string(),
+                "resourceStopOwned".to_string(),
+                "providerUsageQuota".to_string(),
+                "usageHistory".to_string(),
+                "usageHistoryIncremental".to_string(),
+                "usageProviderSummary".to_string(),
+                "usageDailyTotals".to_string(),
+                "generate_commit_message".to_string(),
+                "read_pull_request_context".to_string(),
+                "generate_pull_request_details".to_string(),
+                "create_pull_request".to_string(),
+                "read_pull_request_status".to_string(),
+                "acpLiveConversationEvents".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn agent_conversation_commands_match_frontend_invokes_and_registration() {
+        let conversation_frontend = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/shell/conversation/conversationService.ts"
+        ));
+        let source_frontend = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/tauriSource.ts"
+        ));
+        let native = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
+        let handler = native
+            .split_once(".invoke_handler(tauri::generate_handler![")
+            .expect("main must register a Tauri invoke handler")
+            .1
+            .split_once("])")
+            .expect("Tauri invoke handler must have a closing delimiter")
+            .0;
+        let mut commands = Vec::new();
+        let mut remaining = conversation_frontend;
+        while let Some(index) = remaining.find("invoke") {
+            remaining = &remaining[index + "invoke".len()..];
+            let arguments = if let Some(arguments) = remaining.strip_prefix('(') {
+                arguments
+            } else if let Some(generic) = remaining.strip_prefix('<') {
+                let mut depth = 1;
+                let mut generic_end = None;
+                for (index, ch) in generic.char_indices() {
+                    match ch {
+                        '<' => depth += 1,
+                        '>' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                generic_end = Some(index + ch.len_utf8());
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(generic_end) = generic_end else {
+                    continue;
+                };
+                let Some(arguments) = generic[generic_end..].trim_start().strip_prefix('(') else {
+                    continue;
+                };
+                arguments
+            } else {
+                continue;
+            };
+            let arguments = arguments.trim_start();
+            let Some(quote) = arguments
+                .chars()
+                .next()
+                .filter(|ch| matches!(ch, '\'' | '"'))
+            else {
+                continue;
+            };
+            let command = arguments[quote.len_utf8()..]
+                .split_once(quote)
+                .map(|(command, _)| command)
+                .expect("literal invoke command must have a closing quote");
+            commands.push(command);
+        }
+        commands.sort_unstable();
+        commands.dedup();
+        assert!(
+            !commands.is_empty(),
+            "frontend must invoke conversation commands"
+        );
+        for command in commands {
+            assert!(
+                handler.contains(&format!("::{command},")),
+                "generate_handler must register {command}"
+            );
+        }
+        for command in [
+            "list_agent_conversation_sessions",
+            "list_agent_conversation_events",
+            "update_agent_conversation_session_meta",
+        ] {
+            assert!(
+                source_frontend.contains(&format!("invoke<{command}"))
+                    || source_frontend
+                        .contains(&format!("invoke<AgentConversationEvent[]>(\'{command}\'"))
+                    || source_frontend.contains(&format!(
+                        "invoke<AgentConversationSessionRecord[]>(\'{command}\'"
+                    ))
+                    || source_frontend.contains(&format!(
+                        "invoke<AgentConversationSessionRecord>(\'{command}\'"
+                    )),
+                "frontend invoke must pin {command}"
+            );
+            assert!(
+                native.contains(&format!("agent_conversation::{command}")),
+                "generate_handler must register {command}"
+            );
+        }
     }
 
     #[test]
@@ -8131,7 +9996,9 @@ mod tests {
         run_git_for_test(&root, &["add", "-A"]);
         run_git_for_test(&root, &["commit", "-m", "second"]);
 
-        let history = read_git_commit_history_sync(root.clone(), Some(1)).unwrap();
+        let history = read_git_commit_history_page_sync(root.clone(), None, None)
+            .unwrap()
+            .commits;
         let sha = history[0].sha.clone();
 
         let mut files = read_git_commit_files_sync(root.clone(), sha.clone()).unwrap();
@@ -8190,5 +10057,50 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn git_text_for_test(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("could not run git {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn with_test_git_identity<T>(action: impl FnOnce() -> T) -> T {
+        static GIT_TEMPLATE_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = GIT_TEMPLATE_LOCK.lock().unwrap();
+        let template = unique_temp_root();
+        std::fs::create_dir_all(&template).unwrap();
+        for (key, value) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.invalid"),
+        ] {
+            let output = Command::new("git")
+                .args(["config", "--file"])
+                .arg(template.join("config"))
+                .args([key, value])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        }
+
+        let previous = std::env::var_os("GIT_TEMPLATE_DIR");
+        std::env::set_var("GIT_TEMPLATE_DIR", &template);
+        let result = action();
+        if let Some(previous) = previous {
+            std::env::set_var("GIT_TEMPLATE_DIR", previous);
+        } else {
+            std::env::remove_var("GIT_TEMPLATE_DIR");
+        }
+        std::fs::remove_dir_all(template).unwrap();
+        result
     }
 }

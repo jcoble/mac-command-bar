@@ -42,10 +42,13 @@ get along, so we shut typescript up by casting `value` to `never`.
 			/>
 		</span>
 		{#each thumbItems as thumb (thumb.index)}
+			<!-- The registry paints the thumb a literal white; inside /next it takes
+			     the foreground token so a theme change carries it, and it is 14px
+			     with a 28px invisible grab area around it. -->
 			<SliderPrimitive.Thumb
 				data-slot="slider-thumb"
 				index={thumb.index}
-				class="border-ring ring-ring/50 relative size-3 rounded-full border bg-white transition-[color,box-shadow] after:absolute after:-inset-2 hover:ring-3 focus-visible:ring-3 focus-visible:outline-hidden active:ring-3 block shrink-0 select-none disabled:pointer-events-none disabled:opacity-50"
+				class="border-ring ring-ring/50 bg-foreground relative size-3.5 rounded-full border shadow-[var(--shadow-thumb-sm)] transition-[color,box-shadow] after:absolute after:-inset-[7px] hover:ring-3 focus-visible:ring-3 focus-visible:outline-hidden active:ring-3 block shrink-0 select-none disabled:pointer-events-none disabled:opacity-50"
 			/>
 		{/each}
 	{/snippet}

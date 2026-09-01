@@ -8,13 +8,31 @@
    * `gitService`, which the panel and the integrator drive. Nothing is loaded or
    * measured while hidden, so it is safe inside a parked (display:none) host.
    *
-   * Text files use Monaco's real diff editor with full bounded models supplied
-   * by Rust. The unified-text renderer stays only as a fallback for an older
-   * backend or a file whose full models are intentionally unavailable.
+   * Text files use CodeMirror's merge view with full bounded models supplied
+   * by Rust when side-by-side mode is selected. Unified text is the default and
+   * remains the fallback when full models are unavailable or the tab is hidden.
    */
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { parseUnifiedDiff, summarizeParsedDiff } from '$lib/shell/git/parseUnifiedDiff';
-  import NativeGitDiffEditor from '$lib/shell/components/git/NativeGitDiffEditor.svelte';
+  import type { DiffMode } from '$lib/shell/sessionWorkspaces';
+  import type CodeMirrorGitDiffEditor from '$lib/shell/components/git/CodeMirrorGitDiffEditor.svelte';
+  import { requestOpenFile } from '$lib/shell/openFileBus';
+
+  interface Props {
+    /** Whether the Diff tab is the center tab in front. A session that
+     * remembered a diff has it put back at launch, and CodeMirror must not start
+     * for a comparison nobody is looking at. */
+    showing?: boolean;
+    rootAvailable?: boolean;
+    mode?: DiffMode;
+    onModeChange?: (mode: DiffMode) => void;
+  }
+  let { showing = false, rootAvailable = true, mode = 'unified', onModeChange }: Props = $props();
+
+  type DiffEditorComponent = typeof CodeMirrorGitDiffEditor;
+  let DiffEditor = $state<DiffEditorComponent | null>(null);
+  let diffEditorLoadError = $state<string | null>(null);
+  let loadingDiffEditor = false;
 
   /** Long diffs are trimmed so one huge file cannot stall the panel. */
   const MAX_RENDERED_LINES = 2000;
@@ -34,6 +52,23 @@
   );
   const trimmed = $derived(renderedLineCount > MAX_RENDERED_LINES);
 
+  async function ensureDiffEditor(): Promise<void> {
+    if (DiffEditor || loadingDiffEditor) return;
+    loadingDiffEditor = true;
+    diffEditorLoadError = null;
+    try {
+      DiffEditor = (await import('$lib/shell/components/git/CodeMirrorGitDiffEditor.svelte')).default;
+    } catch (error) {
+      diffEditorLoadError = error instanceof Error ? error.message : String(error);
+    } finally {
+      loadingDiffEditor = false;
+    }
+  }
+
+  $effect(() => {
+    if (showing && mode === 'side-by-side' && hasNativeModels) void ensureDiffEditor();
+  });
+
   /** Hunks cut down to the render cap, in order. */
   const sections = $derived.by(() => {
     if (!parsed) return [];
@@ -52,6 +87,31 @@
     return value === null ? '' : String(value);
   }
 
+  /**
+   * Open the changed file itself, at the line that was clicked.
+   *
+   * The diff shows what changed; the editor is where it is read properly and,
+   * if the project has language intelligence on, where its meaning is. Which
+   * mode the file opens in is the project's own setting — nothing here starts
+   * a language server.
+   */
+  function openAtLine(line: number | null): void {
+    const root = gitPanel.root;
+    const relativePath = diff?.relativePath ?? gitPanel.selectedPath;
+    if (!rootAvailable || !root || !relativePath) return;
+    const path = `${root.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}`;
+    requestOpenFile({
+      path,
+      projectRoot: root,
+      line: line && line > 0 ? line : undefined
+    });
+  }
+
+  /** The line a diff row points at in the file as it is now. */
+  function currentLineOf(line: { afterLine: number | null; beforeLine: number | null }): number | null {
+    return line.afterLine ?? line.beforeLine;
+  }
+
   function marker(kind: string): string {
     if (kind === 'added') return '+';
     if (kind === 'removed') return '-';
@@ -61,7 +121,9 @@
 </script>
 
 <div class="diff-view">
-  {#if gitPanel.selectedPath === ''}
+  {#if !rootAvailable}
+    <p class="notice">Checkout/Worktree deleted.</p>
+  {:else if gitPanel.selectedPath === ''}
     <p class="notice">Pick a changed file to see what changed in it.</p>
   {:else}
     <header class="head">
@@ -81,29 +143,62 @@
       <p class="notice">This is a binary file, so there is no line-by-line comparison.</p>
     {:else if parsed.isEmpty}
       <p class="notice">This file has no line changes compared with the last commit.</p>
-    {:else if hasNativeModels && diff && gitPanel.root}
-      <div class="native-body">
-        <NativeGitDiffEditor
-          root={gitPanel.root}
-          relativePath={diff.relativePath}
-          originalContent={diff.originalContent ?? ''}
-          modifiedContent={diff.modifiedContent ?? ''}
-        />
-      </div>
     {:else}
-      <div class="body">
+      {#if hasNativeModels}
+        <div class="mode-row" role="group" aria-label="Diff view mode">
+          <button
+            type="button"
+            class:active={mode === 'unified'}
+            aria-pressed={mode === 'unified'}
+            onclick={() => onModeChange?.('unified')}
+          >Unified</button>
+          <button
+            type="button"
+            class:active={mode === 'side-by-side'}
+            aria-pressed={mode === 'side-by-side'}
+            onclick={() => onModeChange?.('side-by-side')}
+          >Side by side</button>
+        </div>
+      {/if}
+      {#if showing && mode === 'side-by-side' && hasNativeModels && diff && gitPanel.root}
+        <div class="native-body">
+        {#if DiffEditor}
+          <DiffEditor
+            root={gitPanel.root}
+            relativePath={diff.relativePath}
+            originalContent={diff.originalContent ?? ''}
+            modifiedContent={diff.modifiedContent ?? ''}
+            onOpenLine={openAtLine}
+          />
+        {:else if diffEditorLoadError}
+          <p class="notice error">Could not start the diff editor: {diffEditorLoadError}</p>
+        {:else}
+          <p class="notice">Starting the diff editor…</p>
+        {/if}
+        </div>
+      {:else}
+        <div class="body">
         {#each sections as section, sectionIndex (sectionIndex)}
           {#if section.label}
             <p class="section-label">{section.label}</p>
           {/if}
           {#each section.hunks as hunk, hunkIndex (hunkIndex)}
-            <p class="hunk-head" title={hunk.header}>
+            <button
+              type="button"
+              class="hunk-head"
+              title={`${hunk.header} — open this file in the editor at line ${hunk.afterStart}`}
+              onclick={() => openAtLine(hunk.afterStart)}
+            >
               Lines {hunk.beforeStart}–{hunk.beforeStart + Math.max(hunk.beforeCount - 1, 0)}
               {#if hunk.heading}<span class="hunk-heading">{hunk.heading}</span>{/if}
-            </p>
+            </button>
             <div class="hunk">
               {#each hunk.lines as line, index (index)}
-                <div class="line {line.kind}">
+                <div
+                  class="line {line.kind}"
+                  role="presentation"
+                  ondblclick={() => openAtLine(currentLineOf(line))}
+                >
                   <span class="gutter">{lineNumber(line.beforeLine)}</span>
                   <span class="gutter">{lineNumber(line.afterLine)}</span>
                   <span class="marker">{marker(line.kind)}</span>
@@ -118,7 +213,8 @@
             Showing the first {MAX_RENDERED_LINES} lines of this diff, out of {renderedLineCount}.
           </p>
         {/if}
-      </div>
+        </div>
+      {/if}
     {/if}
   {/if}
 </div>
@@ -149,7 +245,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     color: #e6e6ee;
   }
@@ -159,6 +255,28 @@
     color: #6d6d7d;
     font-size: 12px;
     white-space: nowrap;
+  }
+
+  .mode-row {
+    display: flex;
+    gap: 4px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #22222c;
+  }
+
+  .mode-row button {
+    padding: 3px 8px;
+    border: 1px solid #30303c;
+    border-radius: 4px;
+    background: transparent;
+    color: #8d8d9c;
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .mode-row button.active {
+    border-color: #6666a0;
+    color: #e6e6ee;
   }
 
   .notice {
@@ -199,25 +317,45 @@
     text-transform: uppercase;
   }
 
+  /* A hunk heading is the way into the file: clicking it opens the editor at
+   * that hunk's first line. It stays a quiet line of text until it is pointed
+   * at, so the diff still reads as a diff. */
   .hunk-head {
     display: flex;
     gap: 8px;
     margin: 0;
     padding: 6px 10px 4px;
+    width: 100%;
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
     color: #4c4c5a;
+    cursor: pointer;
+    font: inherit;
     font-size: 12px;
+    text-align: left;
+  }
+
+  .hunk-head:hover {
+    background: #17171d;
+    color: #9a9aad;
+  }
+
+  .hunk-head:focus-visible {
+    outline: 2px solid #5d5d6b;
+    outline-offset: -2px;
   }
 
   .hunk-heading {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     color: #5d5d6b;
   }
 
   .hunk {
-    font-family: ui-monospace, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1.5;
   }

@@ -52,6 +52,8 @@ export interface GitCommitFilesEntry {
 }
 
 export interface GitCommitFilesState {
+  /** Increments whenever loaded commit detail is released. */
+  revision: number;
   /** The folder the panel was pointed at, which may be inside the repository. */
   root: string | null;
   /** The top of that repository, once it has been worked out. */
@@ -72,6 +74,7 @@ export function createGitCommitFilesEntry(): GitCommitFilesEntry {
 
 export function createGitCommitFilesState(): GitCommitFilesState {
   return {
+    revision: 0,
     root: null,
     repositoryTop: null,
     expanded: {},
@@ -86,6 +89,7 @@ export function resetGitCommitFilesState(
   state: GitCommitFilesState,
   root: string | null
 ): void {
+  state.revision = (state.revision ?? 0) + 1;
   state.root = root;
   state.repositoryTop = null;
   state.expanded = {};

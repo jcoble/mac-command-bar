@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SQLite Session Store — Spec</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#111417; --panel:#1a1f24; --text:#e6e9ec; --dim:#9aa4ad; --line:#2a3138;
+          --good:#4cc38a; --warn:#e0b34c; --accent:#5aa7e8; --del:#e5734f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.55 -apple-system,"SF Pro Text",Helvetica,Arial,sans-serif; padding:32px 40px 80px; max-width:1100px; margin-inline:auto; }
+  h1 { font-size:22px; font-weight:600; margin:0 0 4px; }
+  .sub { color:var(--dim); margin:0 0 24px; }
+  h2 { font-size:16px; font-weight:600; margin:32px 0 10px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 20px; margin-bottom:14px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; }
+  code { background:#22282e; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .flow { display:flex; gap:10px; align-items:stretch; flex-wrap:wrap; margin:10px 0; }
+  .box { flex:1 1 180px; border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:13px; background:#161b20; }
+  .box b { display:block; margin-bottom:4px; }
+  .arrow { align-self:center; color:var(--dim); font-size:18px; }
+  .kill { color:var(--del); } .keep { color:var(--good); } .new { color:var(--accent); }
+  .note { color:var(--dim); font-size:12.5px; }
+  ul { margin:6px 0; padding-left:20px; } li { margin:3px 0; }
+</style>
+</head>
+<body>
+<h1>SQLite Session Store</h1>
+<p class="sub">Spec · 2026-08-12 · one night, one cutover, no old paths left behind (per AGENTS.md one-way-only)</p>
+
+<h2>What changes, in one picture</h2>
+<div class="panel">
+<div class="flow">
+  <div class="box"><b class="new">sessions.db (NEW)</b>WAL-mode SQLite in the existing Application&nbsp;Support dir. Single source of truth for session identity, state, events, drafts, annotations.</div>
+  <div class="arrow">←</div>
+  <div class="box"><b class="keep">Rust manager (KEEP)</b>Sole writer. Same snapshots and events to the frontend — the UI wiring does not change.</div>
+  <div class="arrow">←</div>
+  <div class="box"><b class="keep">Frontend (KEEP, minus one store)</b>Reads session list from the backend. Its own persistence for owned sessions is deleted.</div>
+</div>
+<div class="flow">
+  <div class="box"><b class="kill">journal.rs ring buffer (DELETE)</b>Replaced by the <code>events</code> table.</div>
+  <div class="box"><b class="kill">localStorage owned-sessions (DELETE)</b>The reconciliation that caused the stale-"Stopped" bug goes away entirely.</div>
+  <div class="box"><b class="keep">Adapter transcript reader (KEEP)</b><code>transcript/mod.rs</code> reads files the CLIs write for import/history. Their files, not our store — not a second way.</div>
+</div>
+</div>
+
+<h2>Schema — four tables, nothing speculative</h2>
+<div class="panel">
+<table>
+<tr><th>Table</th><th>Columns</th><th>Notes</th></tr>
+<tr><td><code>sessions</code></td><td>owned_id PK · native_session_id · provider · model · effort · cwd · worktree · branch · title · project · state · suspended · created_at · last_activity_at · extra JSON</td><td>Query-relevant fields are real columns; anything else rides in <code>extra</code>. Rail and library render from this table alone.</td></tr>
+<tr><td><code>events</code></td><td>id PK · owned_id FK · seq · turn_id · kind · payload JSON · created_at</td><td>Append-only. Index <code>(owned_id, seq)</code>. Retention: keep the newest 10,000 per session, one DELETE policy.</td></tr>
+<tr><td><code>drafts</code></td><td>owned_id PK · text · updated_at</td><td>Composer drafts survive restarts.</td></tr>
+<tr><td><code>annotations</code></td><td>id PK · owned_id · url · rect JSON · note · created_at</td><td>Browser overlay notes, currently frontend-only state.</td></tr>
+</table>
+<p class="note">rusqlite, bundled SQLite, WAL, <code>synchronous=NORMAL</code>. No ORM, no migrations framework — a single <code>schema_version</code> pragma and hand-written upgrade steps.</p>
+</div>
+
+<h2>Cutover plan — importer, then delete</h2>
+<div class="panel">
+<ul>
+<li><b>1.</b> Manager writes and reads only SQLite. All session lifecycle paths (create, activate, suspend, resume, close, reap) update rows in the same transaction as their state change.</li>
+<li><b>2.</b> One-time importer at first launch: existing journal entries and known owned-session records → rows. It runs once, stamps <code>schema_version</code>, and is ~100 lines we can delete next month. A converter, not a bridge.</li>
+<li><b>3.</b> Same wave: delete journal.rs persistence, delete the frontend owned-sessions localStorage store + reconciliation, frontend session list comes from a backend query. <span class="kill">If any of these can't be deleted tonight, the wave doesn't merge.</span></li>
+<li><b>4.</b> Verification: restart the app mid-conversation → rail, transcript tail, drafts, and suspended states all restore from the DB; kill -9 the app → same result (WAL survives).</li>
+</ul>
+</div>
+
+<h2>What this buys immediately</h2>
+<div class="panel">
+<ul>
+<li>Session library search and history become SQL (<code>LIKE</code>/FTS later if ever needed — YAGNI now).</li>
+<li>Cross-restart and cross-crash resume for free (native id + provider + cwd in the row; pairs with suspend commit <code>6c310ca</code>).</li>
+<li>The supervisor digest feed and handoff context packages (agents phase) read from <code>events</code> with one query.</li>
+<li>Deletes the whole localStorage-reconciliation bug class.</li>
+</ul>
+</div>
+
+<h2>Open question (spike running)</h2>
+<div class="panel">
+<p><b>muxspike19</b> is live-testing whether one adapter process can host multiple sessions. Outcome only changes one thing here: whether <code>sessions</code> rows map to a per-session process or to a shared per-provider process pool. The schema stays identical — runtime attachment is manager state, not database state.</p>
+</div>
+
+<h2>Out of scope tonight (YAGNI)</h2>
+<div class="panel">
+<ul>
+<li>Full-text search indexes, sync, encryption-at-rest, multi-machine anything.</li>
+<li>Storing raw provider wire payloads beyond what <code>events</code> already captures.</li>
+<li>Settings/preferences migration — different concern, different day.</li>
+</ul>
+</div>
+</body>
+</html>

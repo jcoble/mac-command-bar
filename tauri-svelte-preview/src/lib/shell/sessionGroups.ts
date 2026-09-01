@@ -1,21 +1,10 @@
 /**
- * sessionGroups.ts — how the /next session rail is grouped and filtered.
+ * Legacy pure helpers for grouping owned and scanned sessions by project.
  *
- * PURE: no store, no DOM, no backend call. It takes the rail's two lists and a
- * search box's text and returns the same sessions arranged under one heading
- * per project folder, so a rail holding twenty sessions across four projects
- * reads as four short lists instead of one long one.
- *
- * Nothing here decides what a session IS — the records arrive already ordered
- * by the stores, and that order is preserved inside every group.
- *
- * It also decides which headings open, and how many rows a heading shows before
- * it stops. A machine that has been running agents for months can offer several
- * hundred sessions to resume; drawn all at once they are not a list anybody can
- * read. Both decisions are here rather than in the component so they can be
- * tested without a browser.
+ * The current My Work rail uses `buildMyWorkGroups`; this module retains the
+ * older grouping model and the worktree-parent label used by `SessionCard`.
+ * It has no store, DOM, backend call, or persistence owner.
  */
-import { loadLayout, saveLayout, type LayoutStorage } from './layout/layoutStorage.ts';
 import type { OwnedSession } from './ownedSessions';
 import type { AgentSession } from '$lib/tauriSource';
 
@@ -143,8 +132,6 @@ export type SessionList = 'owned' | 'resume';
  */
 export const RESUME_GROUP_ROW_CAP = 8;
 
-export const RAIL_GROUPS_STORAGE_KEY = 'mac-command-bar.next.rail-groups';
-
 /** Headings the user has opened or closed by hand, by `groupToggleKey`. */
 export type GroupExpansion = Record<string, boolean>;
 
@@ -210,22 +197,4 @@ export function visibleGroupItems<T>(
 ): { shown: T[]; hiddenCount: number } {
   if (showAll || cap <= 0 || items.length <= cap) return { shown: items, hiddenCount: 0 };
   return { shown: items.slice(0, cap), hiddenCount: items.length - cap };
-}
-
-/** Anything unreadable or not a map of booleans comes back as no choices made. */
-export function readGroupExpansion(storage: LayoutStorage): GroupExpansion {
-  const stored = loadLayout<unknown>(storage, RAIL_GROUPS_STORAGE_KEY);
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
-
-  const expansion: GroupExpansion = {};
-  for (const [key, value] of Object.entries(stored)) {
-    if (typeof value === 'boolean') expansion[key] = value;
-  }
-  return expansion;
-}
-
-/** False means the write was refused (a full storage). The rail carries on: the
- * cost is only that the next launch opens the headings it would have anyway. */
-export function writeGroupExpansion(storage: LayoutStorage, expansion: GroupExpansion): boolean {
-  return saveLayout(storage, RAIL_GROUPS_STORAGE_KEY, expansion);
 }

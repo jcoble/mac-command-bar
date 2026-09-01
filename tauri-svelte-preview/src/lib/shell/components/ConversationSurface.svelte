@@ -1,195 +1,721 @@
 <script lang="ts">
-  import { tick } from 'svelte';
-  import type { OwnedSession } from '$lib/shell/ownedSessions';
-  import TerminalSurface from './TerminalSurface.svelte';
-  import ConversationMessage from './conversation/ConversationMessage.svelte';
+  import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
+  import type {
+    AgentConfigValue,
+    AgentConversationProvider,
+    ConversationAttachment
+  } from '$lib/shell/conversation/conversationTypes.ts';
+  import ConversationTimeline from './conversation/ConversationTimeline.svelte';
+  import ConversationComposer from './conversation/ConversationComposer.svelte';
+  import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
   import {
+    beginConversationAgentConfigChange,
+    confirmConversationAgentConfigChange,
     conversationSessions,
+    failConversationAgentConfigChange,
+    setConversationAgentConfigError,
+    setConversationAgentConfigState,
+    setConversationAttachmentError,
     setConversationAttachments,
     setConversationDraft,
+    setConversationSendError,
     setConversationMode,
+    setConversationProviderNotice,
     setConversationScrollTop,
     setConversationSelectedChild
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
+    cancelChildConversationTranscriptRead,
+    cleanupConversationAttachment,
+    clearConversationSessionDraft,
+    flushConversationSessionDraft,
+    loadConversationCapabilities,
+    loadConversationForRead,
+    loadOlderConversationEvents,
+    loadNewerConversationEvents,
+    persistConversationSessionDraft,
     readChildConversationTranscript,
-    respondToStructuredApproval,
+    removeConversationAttachment,
+    sendPermissionResponse,
+    respondToStructuredInput,
+    restoreConversationAttachments,
     saveConversationClipboardImage,
     sendStructuredMessage,
-    startConversationTranscriptMirror
+    stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
+  import {
+    readAgentConversationConfig,
+    setAgentConversationConfig,
+    type AgentConversationConfigField,
+    type AgentConversationConfigRequest
+  } from '$lib/shell/conversation/conversationConfig.ts';
+  import {
+    mergeConversationCommandCatalog,
+    type ConversationCommand
+  } from '$lib/shell/conversation/conversationCommandCatalog.ts';
+  import {
+    latestPlan,
+    turnFileChanges,
+    typedConversationTimeline,
+    type ConversationDisplayItem,
+    type ConversationFileLinkProvenance
+  } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
+  import {
+    requestOpenFile,
+    resolveConversationFilePath
+  } from '$lib/shell/openFileBus.ts';
+  import {
+    normalizeConversationFileHref,
+    splitConversationFileReference
+  } from '$lib/shell/conversation/conversationMessageSafety.ts';
+  import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
+  import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
 
   interface Props {
     owned: OwnedSession[];
     activeOwnedId: string | null;
-    registerHost(ownedId: string, host: HTMLElement): void;
-    onHostLayout?(ownedId: string): void;
+    activeOrigin?: OwnedSession['origin'];
+    rootAvailable?: boolean;
+    onOpenNativeCli?(ownedId: string): void | Promise<void>;
+    onForkNativeCli?(ownedId: string): void | Promise<void>;
+    onReturnToStructured?(ownedId: string): void | Promise<void>;
   }
-  let { owned, activeOwnedId, registerHost, onHostLayout }: Props = $props();
+  let {
+    owned,
+    activeOwnedId,
+    activeOrigin,
+    rootAvailable = true,
+    onOpenNativeCli,
+    onForkNativeCli,
+    onReturnToStructured
+  }: Props = $props();
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
-  const structured = $derived(!!active && (active.agent === 'codex' || active.agent === 'claude') && conversation?.mode !== 'raw');
-  const visibleTimeline = $derived(conversation?.selectedChildId ? conversation.childTimeline : conversation?.timeline ?? []);
-  const selectedChild = $derived(conversation?.children.find((child) => child.childId === conversation.selectedChildId) ?? null);
-  const commands = $derived(active?.agent === 'claude'
-    ? ['/help', '/model', '/permissions', '/compact']
-    : ['/help', '/model', '/permissions', '/review', '/compact', '/copy', '/status', '/skills', '/agent', '/apps', '/plugins']);
-  const commandQuery = $derived(conversation?.draft.startsWith('/') ? conversation.draft.toLowerCase() : '');
-  const matchingCommands = $derived(commandQuery ? commands.filter((command) => command.startsWith(commandQuery)) : []);
-  const remainingContext = $derived.by(() => {
-    const used = conversation?.metadata.usedTokens;
-    const window = conversation?.metadata.contextWindow;
-    if (used == null || window == null || window <= 0) return null;
-    return Math.max(0, Math.round(((window - used) / window) * 100));
+  const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
+  const appOwned = $derived(origin === 'app');
+  function isStructuredAgent(agent: string | undefined): boolean {
+    if (!agent) return false;
+    const a = agent.toLowerCase();
+    return a === 'codex' || a === 'claude' || a === 'antigravity' || a === 'anthropic' || a === 'openai' || a === 'gemini' || a === 'agy';
+  }
+  const structured = $derived(!!active && isStructuredAgent(active.agent) && (appOwned || conversation?.mode !== 'raw'));
+  const selectedChild = $derived(conversation && conversation.selectedChildId
+    ? conversation.children.find((child) => child.childId === conversation.selectedChildId) ?? null
+    : null);
+  const legacyTimeline = $derived(conversation?.selectedChildId ? conversation.childTimeline : conversation?.timeline ?? []);
+  let previousTimelineKey = '';
+  let previousVisibleTimeline: ConversationDisplayItem[] = [];
+  const visibleTimeline = $derived.by((): ConversationDisplayItem[] => {
+    if (!conversation) return [];
+    const timelineKey = `${conversation.ownedId}:${conversation.selectedChildId ?? 'root'}`;
+    if (timelineKey !== previousTimelineKey) {
+      previousTimelineKey = timelineKey;
+      previousVisibleTimeline = [];
+    }
+    if (conversation.selectedChildId) {
+      previousVisibleTimeline = typedConversationTimeline([], legacyTimeline, {}, previousVisibleTimeline);
+      return previousVisibleTimeline;
+    }
+    const items = typedConversationTimeline(
+      conversation.agentItems,
+      legacyTimeline,
+      {},
+      previousVisibleTimeline,
+      conversation.sentAttachments
+    );
+    const now = items.reduce((latest, item) => Math.max(latest, item.timestampMs), 0) + 1;
+    const typedKinds = new Set(items.map((item) => item.kind));
+    if (conversation.planSteps.length && !typedKinds.has('plan')) {
+      items.push({ kind: 'plan', itemId: 'plan:current', turnId: conversation.activeTurnId ?? null, title: 'Plan', steps: conversation.planSteps, timestampMs: now });
+    }
+    if (conversation.tasks.length && !typedKinds.has('tasks')) {
+      items.push({ kind: 'tasks', itemId: 'tasks:current', turnId: conversation.activeTurnId ?? null, title: 'Tasks', tasks: conversation.tasks, timestampMs: now });
+    }
+    // Live requests render inline above the composer, keeping their response
+    // controls attached to the prompt. Resolved requests remain in the
+    // normalized transcript returned above.
+    previousVisibleTimeline = items.sort((left, right) => left.timestampMs - right.timestampMs);
+    return previousVisibleTimeline;
   });
-  let messagesHost = $state<HTMLDivElement | null>(null);
-  let lastScrolledTurn = '';
-  let attachmentError = $state('');
+  const activePlan = $derived(latestPlan(visibleTimeline));
+  /* What the turn on screen has changed on disk, for the footer chip. A turn
+     is what has happened since the last thing the reader asked
+     for, so the count starts at the last user message. The line counts are
+     read off the diffs the rows already carry; a row with no diff still
+     counts as a file changed. */
+  const planFileChanges = $derived.by(() => {
+    return turnFileChanges(visibleTimeline);
+  });
+  const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
+  const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
+  const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
+  /* The same numbers the Context panel shows. This read only `metadata`, and a
+     provider that reports its usage as it goes puts those numbers on `usage` —
+     so the panel had a figure and the composer had nothing, from one session. */
+  const contextUsage = $derived(
+    sessionContextUsage(conversation?.metadata ?? null, conversation?.usage)
+  );
+  const contextMeter = $derived(
+    contextMeterState(contextUsage.usedTokens, contextUsage.contextWindow, {
+      inputTokens: contextUsage.inputTokens,
+      outputTokens: contextUsage.outputTokens
+    })
+  );
+
+  // Read from the session rather than held here: this surface is mounted once
+  // for the whole shell, so a failure kept in component state was shown under
+  // every conversation and survived the send that fixed it.
+  const attachmentError = $derived(conversation?.attachmentError ?? '');
+  const sendError = $derived(conversation?.sendError ?? '');
+  const providerNotice = $derived(conversation?.providerNotice ?? '');
+  let capabilityRequest = $state('');
+  let configRequest = $state('');
+  /** A request key whose failure has already bought its one retry. The guard
+   * above is claimed before the call, so without this a read that lost a
+   * start-up race left the composer empty for good: the key still matched, so
+   * the effect never asked again. Clearing the guard lets it ask once more —
+   * and this remembers that it did, because the effect reads the guard and
+   * would otherwise retry forever against a failure that is not going away. */
+  let configRetried = $state('');
+  let sendAnchorRequest = $state<ConversationSendAnchorRequest | null>(null);
+  let surfaceController = new AbortController();
 
   $effect(() => {
-    const latest = visibleTimeline[visibleTimeline.length - 1];
-    const turnKey = latest ? `${conversation?.selectedChildId ?? 'parent'}:${visibleTimeline.length}:${latest.itemId}` : '';
-    if (!messagesHost || !turnKey || turnKey === lastScrolledTurn) return;
-    lastScrolledTurn = turnKey;
-    void tick().then(() => { if (messagesHost) messagesHost.scrollTop = messagesHost.scrollHeight; });
+    activeOwnedId;
+    surfaceController.abort();
+    const controller = new AbortController();
+    surfaceController = controller;
+    return () => controller.abort();
   });
+  let sendAnchorRequestId = 0;
+  let localTurnActive = $state(false);
+  let localTurnStarted = $state(false);
+  let composerHeight = $state(0);
+  let composer = $state<{ focus(): void; expandPlan(): void } | null>(null);
+
+  /** Put the caret in the prompt box. The page calls this when a panel hands
+   * the composer something — an attachment, a line of text — so the reader ends
+   * up typing beside it rather than hunting for the box. */
+  export function focusComposer(): void {
+    composer?.focus();
+  }
 
   $effect(() => {
-    if (messagesHost && conversation && visibleTimeline.length && messagesHost.scrollTop === 0 && conversation.scrollTop > 0) {
-      messagesHost.scrollTop = conversation.scrollTop;
+    if (!localTurnActive) {
+      localTurnStarted = false;
+      return;
+    }
+    if (conversation?.sending) {
+      localTurnStarted = true;
+      return;
+    }
+    if (localTurnStarted) {
+      localTurnActive = false;
+      localTurnStarted = false;
+      sendAnchorRequest = null;
     }
   });
 
   $effect(() => {
-    if (structured && (active?.agent === 'claude' || active?.agent === 'codex') && active.nativeSessionId && active.ptySessionId) {
-      startConversationTranscriptMirror({ ownedId: active.ownedId, provider: active.agent, nativeSessionId: active.nativeSessionId });
+    const ownedId = activeOwnedId;
+    setViewedSession(ownedId);
+    if (!ownedId) return;
+    return () => clearViewedSession(ownedId);
+  });
+
+  $effect(() => {
+    if (appOwned && activeOwnedId && conversation?.mode === 'raw') {
+      setConversationMode(activeOwnedId, 'structured');
     }
   });
 
-  async function send(): Promise<void> {
-    if (!activeOwnedId || !conversation?.draft.trim() || conversation.sending || conversation.selectedChildId) return;
-    const text = conversation.draft;
-    setConversationDraft(activeOwnedId, '');
+  $effect(() => {
+    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
+    const ownedId = active.ownedId;
+    const generation = conversation.generation;
+    const key = `${ownedId}:${generation}:${conversation.connectionState}`;
+    if (configRequest === key) return;
+    configRequest = key;
+    const controller = new AbortController();
+    void readAgentConfigForSurface(controller.signal, ownedId, generation, key);
+    return () => {
+      controller.abort();
+    };
+  });
+
+  $effect(() => {
+    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
+    const ownedId = active.ownedId;
+    const provider = conversation.provider;
+    const generation = conversation.generation;
+    const key = `${ownedId}:${generation}:${provider}:${conversation.connectionState}`;
+    if (capabilityRequest === key) return;
+    // A connection re-reads the snapshot: the stored one can predate a provider
+    // upgrade, and activation refreshes it from the live handshake.
+    if (conversation.capabilities && conversation.connectionState !== 'connected') return;
+    capabilityRequest = key;
+    const controller = new AbortController();
+    void loadCapabilitiesForSurface(controller.signal, ownedId, provider, generation);
+    return () => {
+      controller.abort();
+    };
+  });
+
+  $effect(() => {
+    if (!active || !conversation || !structured) return;
+    const ownedId = active.ownedId;
+    const generation = conversation.generation;
+    if (!conversation.attachments.length && conversation.attachmentIds.length) {
+      const controller = new AbortController();
+      void restoreAttachmentsForSurface(controller.signal, ownedId, generation);
+      return () => {
+        controller.abort();
+      };
+    }
+  });
+
+  function ownsConversationGeneration(signal: AbortSignal, ownedId: string, generation: number): boolean {
+    return !signal.aborted && conversationSessions[ownedId]?.generation === generation;
+  }
+
+  async function readAgentConfigForSurface(
+    signal: AbortSignal,
+    ownedId: string,
+    generation: number,
+    key: string
+  ): Promise<void> {
     try {
-      await sendStructuredMessage(activeOwnedId, text, active?.ptySessionId);
-      if (active && (active.agent === 'codex' || active.agent === 'claude') && opensProviderPicker(active.agent, text)) {
-        setConversationMode(active.ownedId, 'raw');
+      const state = await readAgentConversationConfig(ownedId, signal);
+      if (state && ownsConversationGeneration(signal, ownedId, generation)) {
+        setConversationAgentConfigState(ownedId, state);
+      }
+    } catch (error) {
+      if (ownsConversationGeneration(signal, ownedId, generation)) {
+        setConversationAgentConfigError(ownedId, error instanceof Error ? error.message : String(error));
+      }
+      // The usual failure here is a race, not a refusal: the session is stored
+      // but not yet in the manager's map. Asking a second time is what fills the
+      // composer in; asking forever would be a retry storm.
+      if (!signal.aborted && configRequest === key && configRetried !== key) {
+        configRetried = key;
+        configRequest = '';
       }
     }
-    catch { setConversationDraft(activeOwnedId, text); }
   }
 
-  function opensProviderPicker(provider: 'codex' | 'claude', text: string): boolean {
-    const command = text.trim().split(/\s+/, 1)[0];
-    if (provider === 'claude') return command === '/model' || command === '/permissions';
-    return ['/model', '/permissions', '/skills', '/agent', '/subagents', '/apps', '/plugins'].includes(command);
+  async function loadCapabilitiesForSurface(
+    signal: AbortSignal,
+    ownedId: string,
+    provider: AgentConversationProvider,
+    generation: number
+  ): Promise<void> {
+    try {
+      if (ownsConversationGeneration(signal, ownedId, generation)) {
+        await loadConversationCapabilities(ownedId, provider, signal);
+      }
+    } catch (_error) {
+      // The store owns capability errors; this effect only prevents unhandled
+      // promise noise if the owning surface changes while the request is out.
+    }
   }
 
-  async function openProviderPicker(command: '/model' | '/permissions'): Promise<void> {
-    if (!active || !conversation || !active.ptySessionId || conversation.sending) return;
-    setConversationDraft(active.ownedId, '');
-    await sendStructuredMessage(active.ownedId, command, active.ptySessionId);
-    setConversationMode(active.ownedId, 'raw');
+  async function restoreAttachmentsForSurface(
+    signal: AbortSignal,
+    ownedId: string,
+    generation: number
+  ): Promise<void> {
+    try {
+      if (ownsConversationGeneration(signal, ownedId, generation)) {
+        await restoreConversationAttachments(ownedId, [], signal);
+      }
+    } catch (_error) {
+      // Attachment restore is best effort; saved ids remain in the session.
+    }
+  }
+
+  async function ignoreDraftFlushFailure(ownedId: string): Promise<void> {
+    try {
+      await flushConversationSessionDraft(ownedId);
+    } catch (_error) {
+      // Losing this best-effort flush must not hide the send failure.
+    }
+  }
+
+  async function readSelectedChildTranscript(
+    ownedId: string,
+    provider: AgentConversationProvider,
+    nativeSessionId: string,
+    childSessionId: string,
+    generation: number,
+    signal: AbortSignal
+  ): Promise<void> {
+    try {
+      await readChildConversationTranscript({
+        ownedId,
+        provider,
+        nativeSessionId,
+        childSessionId,
+        signal
+      });
+    } catch (_error) {
+      // The transcript read is opportunistic; the selector remains usable.
+    }
+    if (signal.aborted || conversationSessions[ownedId]?.generation !== generation) return;
+  }
+
+  async function cleanupSavedAttachments(
+    ownedId: string,
+    attachments: ConversationAttachment[]
+  ): Promise<void> {
+    await Promise.all(attachments.map(async (attachment) => {
+      try {
+        await cleanupConversationAttachment(ownedId, attachment);
+      } catch (_error) {
+        // A failed cleanup is already best-effort; previews are revoked by the service.
+      }
+    }));
+  }
+
+  async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {
+    try {
+      await sendPermissionResponse(ownedId, requestId, optionId);
+    } catch (error) {
+      if (conversationSessions[ownedId]?.generation === generation) {
+        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+
+  async function submitStructuredInput(
+    ownedId: string,
+    requestId: string,
+    values: Record<string, AgentConfigValue>,
+    cancelled: boolean,
+    generation: number
+  ): Promise<void> {
+    try {
+      await respondToStructuredInput(ownedId, { requestId, values, cancelled });
+    } catch (error) {
+      if (conversationSessions[ownedId]?.generation === generation) {
+        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+
+  async function stopActiveStructuredTurn(ownedId: string, generation: number): Promise<void> {
+    if (conversationSessions[ownedId]?.generation !== generation) return;
+    try {
+      await stopStructuredTurn(ownedId);
+    } catch (_error) {
+      // Stop remains best-effort; the stream/projection owns terminal state.
+    }
+  }
+
+  async function send(): Promise<void> {
+    const ownedId = activeOwnedId;
+    if (!ownedId || !conversation || conversation.sending || conversation.selectedChildId) return;
+    if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
+    const text = conversation.draft;
+    const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
+    sendAnchorRequest = {
+      requestId: ++sendAnchorRequestId,
+      conversationId: ownedId,
+      previousUserItemId
+    };
+    localTurnActive = true;
+    localTurnStarted = false;
+    setConversationDraft(ownedId, '');
+    setConversationSendError(ownedId, '');
+    try {
+      await clearConversationSessionDraft(ownedId);
+      await sendStructuredMessage(ownedId, text);
+    } catch (error) {
+      // Restore the draft. The service intentionally leaves attachments in the
+      // store on every failure, so the user can retry without data loss. The
+      // reason has to be said out loud: a swallowed failure here reads as a
+      // composer that silently refuses every Enter.
+      setConversationSendError(ownedId, error instanceof Error ? error.message : String(error));
+      setConversationDraft(ownedId, text);
+      persistConversationSessionDraft(ownedId, text);
+      await ignoreDraftFlushFailure(ownedId);
+      localTurnActive = false;
+      localTurnStarted = false;
+      sendAnchorRequest = null;
+    }
   }
 
   async function selectChild(childId: string | null): Promise<void> {
-    if (!active || !conversation || !active.nativeSessionId) return;
+    if (!active || !conversation) return;
+    cancelChildConversationTranscriptRead(active.ownedId);
     setConversationSelectedChild(active.ownedId, childId);
-    if (!childId) return;
-    await readChildConversationTranscript({
-      ownedId: active.ownedId,
-      provider: conversation.provider,
-      nativeSessionId: active.nativeSessionId,
-      childSessionId: childId
-    }).catch(() => undefined);
+    if (!childId || !active.nativeSessionId) return;
+    const child = conversation.children.find((candidate) => candidate.childId === childId);
+    if (!child?.transcriptAvailable) return;
+    await readSelectedChildTranscript(
+      active.ownedId,
+      conversation.provider,
+      active.nativeSessionId,
+      childId,
+      conversation.generation,
+      surfaceController.signal
+    );
   }
 
+  $effect(() => {
+    const ownedId = active?.ownedId;
+    return () => {
+      if (ownedId) {
+        cancelChildConversationTranscriptRead(ownedId);
+        setConversationSelectedChild(ownedId, null);
+      }
+    };
+  });
+
+  /** Cmd+V checks files first; text paste is untouched when there are no files. */
   async function paste(event: ClipboardEvent): Promise<void> {
     if (!active || !conversation || conversation.selectedChildId) return;
-    const files = [...(event.clipboardData?.files ?? [])].filter((file) => file.type.startsWith('image/'));
-    if (!files.length) return;
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (files.length === 0) return;
     event.preventDefault();
-    attachmentError = '';
+    await attachImages(files, 'The clipboard file is not a supported image.');
+  }
+
+  /** Files dragged onto the composer take the same path as a paste. */
+  async function dropFiles(files: File[]): Promise<void> {
+    await attachImages(files, 'That file is not a supported image.');
+  }
+
+  async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
+    if (!active || !conversation || conversation.selectedChildId) return;
+    const images = files.filter((file) => file.type.startsWith('image/'));
+    setConversationAttachmentError(active.ownedId, '');
+    if (images.length === 0) {
+      setConversationAttachmentError(active.ownedId, rejectedMessage);
+      return;
+    }
+    const saved: ConversationAttachment[] = [];
     try {
-      const saved = await Promise.all(files.map((file) => saveConversationClipboardImage(active.ownedId, file)));
+      for (const file of images) saved.push(await saveConversationClipboardImage(active.ownedId, file));
       setConversationAttachments(active.ownedId, [...conversation.attachments, ...saved]);
     } catch (error) {
-      attachmentError = error instanceof Error ? error.message : String(error);
+      await cleanupSavedAttachments(active.ownedId, saved);
+      setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
+      // Draft and existing attachments remain untouched after a failed paste.
     }
   }
 
-  function removeAttachment(id: string): void {
+  async function removeAttachment(id: string): Promise<void> {
     if (!active || !conversation) return;
     const found = conversation.attachments.find((item) => item.id === id);
-    if (found) URL.revokeObjectURL(found.previewUrl);
-    setConversationAttachments(active.ownedId, conversation.attachments.filter((item) => item.id !== id));
+    if (!found) return;
+    try {
+      await removeConversationAttachment(active.ownedId, found);
+      setConversationAttachmentError(active.ownedId, '');
+    } catch (error) {
+      setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
+    }
   }
 
-  function chooseCommand(command: string): void {
-    if (active) setConversationDraft(active.ownedId, command);
+  function selectCommand(command: ConversationCommand): void {
+    if (!active) return;
+    if (appOwned && command.name === 'terminal') return;
+    if (command.action === 'insert') {
+      setConversationDraft(active.ownedId, `/${command.name} `);
+      return;
+    }
+    if (command.name === 'terminal') setConversationMode(active.ownedId, 'raw');
+    else if (command.name === 'conversation') setConversationMode(active.ownedId, 'structured');
+    else setConversationDraft(active.ownedId, `/${command.name} `);
+  }
+
+  function onApprovalDecision(requestId: string, optionId: string): void {
+    if (!active || !optionId) return;
+    const ownedId = active.ownedId;
+    const generation = conversationSessions[ownedId]?.generation ?? 0;
+    void chooseApprovalOption(ownedId, requestId, optionId, generation);
+  }
+
+  function onInputSubmit(requestId: string, values: Record<string, AgentConfigValue>, cancelled = false): void {
+    if (!active) return;
+    const ownedId = active.ownedId;
+    const generation = conversationSessions[ownedId]?.generation ?? 0;
+    void submitStructuredInput(ownedId, requestId, values, cancelled, generation);
+  }
+
+  function openConversationFile(
+    reference: string,
+    provenance?: ConversationFileLinkProvenance
+  ): void {
+    if (!active) return;
+    const sessionRoot = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
+    const { path, line } = splitConversationFileReference(reference);
+    const candidate = normalizeConversationFileHref(path);
+    const recordedPath = provenance?.path ? normalizeConversationFileHref(provenance.path) : '';
+    const linkIsRecordedFile = Boolean(recordedPath && (
+      recordedPath === candidate
+      || recordedPath.endsWith(`/${candidate.replace(/^\.\//, '')}`)
+    ));
+    const recordedRoot = provenance?.root
+      ? normalizeConversationFileHref(provenance.root)
+      : !linkIsRecordedFile && recordedPath.includes('/')
+        ? recordedPath.slice(0, recordedPath.lastIndexOf('/'))
+        : '';
+    const recordedRootPath = recordedRoot
+      ? resolveConversationFilePath(recordedRoot, sessionRoot).replace(/\/+$/, '')
+      : '';
+    const root = recordedRootPath || sessionRoot;
+    if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
+      // Nothing here resolves to a file, so there is nothing to open.
+      setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
+      return;
+    }
+    const absolute = linkIsRecordedFile && (recordedPath.startsWith('/') || recordedPath.startsWith('~'))
+      ? recordedPath
+      : resolveConversationFilePath(candidate, root);
+    // A link that lands outside the workspace still opens, read-only: reading a
+    // file this session does not own is safe, and refusing it left the reader
+    // with a notice and no way to see what the link pointed at.
+    const outside = absolute !== root && !absolute.startsWith(`${root}/`);
+    const readOnly = outside || Boolean(recordedRootPath && recordedRootPath !== sessionRoot);
+    requestOpenFile({
+      path: absolute,
+      projectRoot: readOnly ? sessionRoot : root,
+      readOnly,
+      line
+    });
+  }
+
+  async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {
+    if (!active || !conversation) return;
+    const generation = conversation.generation;
+    const previous = beginConversationAgentConfigChange(active.ownedId, field, value);
+    if (!previous) return;
+    const request: AgentConversationConfigRequest = {
+      ownedId: active.ownedId,
+      generation,
+      [field]: value
+    };
+    try {
+      const state = await setAgentConversationConfig(request);
+      if (conversationSessions[active.ownedId]?.generation !== generation) throw new Error('Configuration response belongs to a stale conversation generation');
+      confirmConversationAgentConfigChange(active.ownedId, field, state);
+      // The next new session of this agent opens on what was just chosen.
+      rememberAgentConfigChoice(conversation.provider, { [field]: state[field] });
+    } catch (error) {
+      if (conversationSessions[active.ownedId]?.generation === generation) {
+        failConversationAgentConfigChange(
+          active.ownedId,
+          field,
+          previous,
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    }
   }
 </script>
 
-<div class="conversation-shell">
-  <div class:covered={structured} class="terminal-layer"><TerminalSurface {owned} {activeOwnedId} {registerHost} {onHostLayout} /></div>
+<div class="conversation-shell" data-testid="conversation-shell">
   {#if structured && active && conversation}
-    <section class="structured" aria-label={`${active.agent} conversation`}>
-      <header>
-        <div class="identity"><strong>{selectedChild?.label ?? active.title}</strong><span>{selectedChild ? `${active.agent} sub-agent transcript` : `${active.agent} session`}</span></div>
-        <div class="header-actions"><button onclick={() => setConversationMode(active.ownedId, 'raw')}>Open raw terminal</button></div>
-      </header>
-
-      {#if conversation.children.length}
-        <nav class="agent-tree" aria-label="Session agents">
-          <button class:active={!conversation.selectedChildId} onclick={() => void selectChild(null)}><span class="agent-dot parent"></span>Parent</button>
-          {#each conversation.children as child (child.childId)}
-            <button class:active={conversation.selectedChildId === child.childId} onclick={() => void selectChild(child.childId)} title={child.childId}>
-              <span class="tree-line">└</span><span class:working={child.state === 'active'} class:failed={child.state === 'failed'} class="agent-dot"></span>{child.label}<small>{child.state}</small>
+    <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
+      {#if !appOwned}
+        <div class="handoff-actions" aria-label="Conversation handoff actions">
+          <button type="button" data-testid="open-native-cli" disabled={!rootAvailable} onclick={() => void onOpenNativeCli?.(active.ownedId)}>
+            Open in native CLI
+          </button>
+          {#if conversation.capabilities?.session.fork}
+            <button type="button" data-testid="fork-native-cli" disabled={!rootAvailable} onclick={() => void onForkNativeCli?.(active.ownedId)}>
+              Fork to native CLI
             </button>
-          {/each}
-        </nav>
-      {/if}
-
-      <div class="messages" bind:this={messagesHost} onscroll={() => active && messagesHost && setConversationScrollTop(active.ownedId, messagesHost.scrollTop)}>
-        {#if visibleTimeline.length === 0}<p class="empty">{conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}</p>{/if}
-        {#each visibleTimeline as item (item.itemId)}
-          {#if item.kind === 'user' || item.kind === 'assistant'}
-            <ConversationMessage text={item.text} role={item.kind} label={item.kind === 'user' ? 'You' : selectedChild?.label ?? active.agent} />
-          {:else if item.kind === 'approval'}
-            <aside class="event approval"><span>{item.summary}</span>{#if item.state === 'requested'}<button onclick={() => respondToStructuredApproval(active.ownedId,item.requestId,'accept')}>Approve</button><button onclick={() => respondToStructuredApproval(active.ownedId,item.requestId,'decline')}>Decline</button>{/if}</aside>
-          {:else if item.kind === 'tool'}<aside class="event">{item.name} · {item.state}{#if item.summary} · {item.summary}{/if}</aside>
-          {:else if item.kind === 'error'}<aside class="event error">{item.message}</aside>{/if}
-        {/each}
-      </div>
-
-      {#if !conversation.selectedChildId}
-        <div class="composer-area">
-          {#if conversation.attachments.length}
-            <div class="attachments">{#each conversation.attachments as attachment (attachment.id)}<figure><img src={attachment.previewUrl} alt={attachment.name} /><button aria-label={`Remove ${attachment.name}`} onclick={() => removeAttachment(attachment.id)}>×</button></figure>{/each}</div>
           {/if}
-          {#if attachmentError}<div class="attachment-error">{attachmentError}</div>{/if}
-          {#if matchingCommands.length}
-            <div class="command-menu" role="listbox">{#each matchingCommands as command}<button onclick={() => chooseCommand(command)}>{command}<small>{command === '/skills' ? 'Browse available skills in the real session' : 'Send through the existing session'}</small></button>{/each}</div>
-          {/if}
-          <div class="composer-row">
-            <textarea aria-label="Message" placeholder={`Message ${active.agent}`} value={conversation.draft} onpaste={paste} oninput={(e) => setConversationDraft(active.ownedId,e.currentTarget.value)} onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}></textarea>
-            <button class="send" disabled={!conversation.draft.trim() || conversation.sending} onclick={() => void send()}>{conversation.sending ? 'Working…' : 'Send'}</button>
-          </div>
-          <div class="session-status" aria-label="Session settings">
-            <button title="Open the running provider's model picker" onclick={() => void openProviderPicker('/model')}>{conversation.metadata.model ?? 'Model unknown'}</button>
-            <button title={active.agent === 'codex' ? "Open Codex's model and reasoning picker" : 'Reasoning effort reported by the running session'} disabled={active.agent !== 'codex' || !conversation.metadata.effort} onclick={() => void openProviderPicker('/model')}>{conversation.metadata.effort ? `${conversation.metadata.effort} effort` : 'Effort unknown'}</button>
-            <button title="Open the running provider's approval picker" onclick={() => void openProviderPicker('/permissions')}>{conversation.metadata.approvalPolicy ?? 'Approval unknown'}</button>
-            <span>{remainingContext == null ? 'Context unknown' : `${remainingContext}% context left`}</span>
-            <span class="paste-hint">Paste screenshots with ⌘V</span>
-          </div>
+          <button type="button" data-testid="conversation-open-raw" disabled={!rootAvailable} onclick={() => setConversationMode(active.ownedId, 'raw')}>
+            Open raw terminal
+          </button>
         </div>
-      {:else}<div class="read-only-note">Read-only sub-agent transcript</div>{/if}
+      {/if}
+      <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
+      <ConversationTimeline
+        items={visibleTimeline}
+        conversationId={active.ownedId}
+        renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}
+        timelineRevision={conversation.timelineRevision}
+        anchorRequest={sendAnchorRequest}
+        activeTurnId={conversation.activeTurnId ?? null}
+        {localTurnActive}
+        {composerHeight}
+        assistantLabel={selectedChild?.title ?? active.agent}
+        savedScrollTop={conversation.selectedChildId ? conversation.childScrollTopById[conversation.selectedChildId] ?? 0 : conversation.scrollTop}
+        emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}
+        hasOlder={!conversation.selectedChildId && !conversation.reachedTranscriptStart}
+        loadingOlder={!conversation.selectedChildId && conversation.loadingOlder}
+        onLoadOlder={() => void loadOlderConversationEvents(active.ownedId, surfaceController.signal)}
+        hasNewer={!conversation.selectedChildId && !conversation.reachedTranscriptEnd}
+        loadingNewer={!conversation.selectedChildId && conversation.loadingNewer}
+        onLoadNewer={() => void loadNewerConversationEvents(active.ownedId, surfaceController.signal)}
+        onJumpToLatest={() => loadConversationForRead(active.ownedId, true, surfaceController.signal)}
+        onScroll={(scrollTop) => {
+          if (conversation.selectedChildId) conversation.childScrollTopById[conversation.selectedChildId] = scrollTop;
+          else setConversationScrollTop(active.ownedId, scrollTop);
+        }}
+        onApprovalDecision={onApprovalDecision}
+        onInputSubmit={onInputSubmit}
+        onFileLink={openConversationFile}
+        onPlanOpen={() => composer?.expandPlan()}
+      />
+      {#if !conversation.selectedChildId}
+        <ConversationComposer
+          bind:this={composer}
+          provider={active.agent}
+          draft={conversation.draft}
+          attachments={conversation.attachments}
+          sending={conversation.sending}
+          configState={conversation.agentConfig}
+          pendingConfig={conversation.pendingAgentConfig}
+          configError={conversation.agentConfigError}
+          commands={commandCatalog}
+          contextMeter={contextMeter}
+          plan={activePlan}
+          planFileChanges={planFileChanges}
+          pendingApproval={pendingApprovals[0] ?? null}
+          pendingApprovalCount={pendingApprovals.length}
+          pendingInputs={pendingInputs}
+          {attachmentError}
+          {sendError}
+          {providerNotice}
+          onDismissAttachmentError={() => setConversationAttachmentError(active.ownedId, '')}
+          onDismissSendError={() => setConversationSendError(active.ownedId, '')}
+          onDismissProviderNotice={() => setConversationProviderNotice(active.ownedId, '')}
+          onDraftChange={(value) => {
+            setConversationDraft(active.ownedId, value);
+            persistConversationSessionDraft(active.ownedId, value);
+          }}
+          onDraftBlur={() => flushConversationSessionDraft(active.ownedId)}
+          onSend={send}
+          onStop={() => {
+            if (activeOwnedId && conversation) {
+              void stopActiveStructuredTurn(activeOwnedId, conversation.generation);
+            }
+          }}
+          onPaste={paste}
+          onDropFiles={dropFiles}
+          onRemoveAttachment={removeAttachment}
+          onCommandSelected={selectCommand}
+          onApprovalDecision={onApprovalDecision}
+          onInputSubmit={onInputSubmit}
+          onConfigChange={(optionId, value) => void changeConfig(optionId, value)}
+          onHeightChange={(height) => (composerHeight = height)}
+        />
+      {/if}
     </section>
-  {:else if active && (active.agent === 'codex' || active.agent === 'claude') && conversation?.mode === 'raw'}
-    <button class="structured-toggle" onclick={() => setConversationMode(active.ownedId,'structured')}>Conversation</button>
+  {:else if active && isStructuredAgent(active.agent) && conversation?.mode === 'raw'}
+    <div class="raw-actions" aria-label="Conversation handoff actions">
+      <button class="structured-toggle" data-testid="conversation-structured-toggle" type="button" onclick={() => void onReturnToStructured?.(active.ownedId)}>
+        Return to structured
+      </button>
+    </div>
   {/if}
 </div>
 
-<style>
-  .conversation-shell,.terminal-layer,.structured{position:relative;width:100%;height:100%;min-height:0}.terminal-layer.covered{visibility:hidden}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font:13px ui-sans-serif,system-ui}.structured header{display:flex;justify-content:space-between;align-items:center;min-height:46px;padding:8px 18px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 75%,transparent)}.identity{display:flex;align-items:baseline;gap:10px}.identity strong{font-size:13px}.identity span{color:var(--color-text-2);font-size:12px}button{border:1px solid color-mix(in srgb,var(--color-border) 82%,transparent);border-radius:7px;background:color-mix(in srgb,var(--color-surface) 80%,transparent);color:inherit;padding:6px 9px}button:hover:not(:disabled){background:color-mix(in srgb,var(--color-surface) 65%,var(--color-accent) 12%)}button:disabled{opacity:.55}.agent-tree{display:flex;gap:5px;overflow:auto;padding:7px 18px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 55%,transparent)}.agent-tree button{display:flex;align-items:center;gap:6px;padding:5px 8px;border-color:transparent;background:transparent;white-space:nowrap;color:var(--color-text-2)}.agent-tree button.active{border-color:color-mix(in srgb,var(--color-accent) 35%,transparent);background:color-mix(in srgb,var(--color-accent) 11%,transparent);color:var(--color-text)}.agent-tree small{font-size:12px;opacity:.65}.tree-line{opacity:.35}.agent-dot{width:7px;height:7px;border-radius:50%;background:#7f8794}.agent-dot.parent{background:var(--color-accent)}.agent-dot.working{background:#52c7a8;box-shadow:0 0 0 3px color-mix(in srgb,#52c7a8 16%,transparent)}.agent-dot.failed{background:#e16f7a}.messages{flex:1;overflow:auto;padding:34px max(28px,calc((100% - 820px)/2)) 220px;display:flex;flex-direction:column;gap:30px;scrollbar-gutter:stable}.event{border-left:2px solid color-mix(in srgb,var(--color-accent) 45%,var(--color-border));padding:8px 12px;color:var(--color-text-2);user-select:text}.event button{margin-left:8px}.approval{background:color-mix(in srgb,var(--color-accent) 6%,transparent)}.error,.attachment-error{color:#ef8b92}.empty{margin:auto;color:var(--color-text-2)}.composer-area{position:absolute;left:50%;bottom:0;transform:translateX(-50%);width:min(820px,calc(100% - 44px));padding:12px 0 17px;background:linear-gradient(transparent,var(--color-bg) 20%,var(--color-bg))}.composer-row{display:flex;align-items:flex-end;gap:12px;min-height:76px;padding:12px 12px 10px 16px;border:1px solid color-mix(in srgb,var(--color-border) 78%,transparent);border-radius:15px;background:color-mix(in srgb,var(--color-surface) 82%,var(--color-bg));box-shadow:0 8px 28px rgba(0,0,0,.18);transition:border-color 120ms ease,box-shadow 120ms ease}.composer-row:focus-within{border-color:color-mix(in srgb,var(--color-text) 28%,var(--color-border));box-shadow:0 8px 30px rgba(0,0,0,.22),0 0 0 1px color-mix(in srgb,var(--color-text) 5%,transparent)}.composer-row textarea{flex:1;min-height:52px;max-height:190px;padding:2px 0;resize:none;border:0!important;outline:0!important;box-shadow:none!important;background:transparent;color:inherit;font:14px/1.5 inherit;caret-color:var(--color-accent)}.send{align-self:flex-end;margin-bottom:2px}.session-status{display:flex;align-items:center;gap:5px;min-height:28px;color:var(--color-text-2);font-size:12px}.session-status button{border:0;background:transparent;padding:4px 6px;font-size:12px}.session-status span{padding:0 5px}.paste-hint{margin-left:auto}.attachments{display:flex;gap:8px}.attachments figure{position:relative;width:68px;height:52px;margin:0}.attachments img{width:100%;height:100%;object-fit:cover;border-radius:8px;border:1px solid var(--color-border)}.attachments button{position:absolute;right:-5px;top:-6px;width:20px;height:20px;padding:0;border-radius:50%}.command-menu{position:absolute;left:0;right:0;bottom:112px;display:flex;flex-direction:column;padding:6px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);box-shadow:0 12px 40px rgba(0,0,0,.28)}.command-menu button{display:flex;justify-content:space-between;border:0;background:transparent;text-align:left}.command-menu small{color:var(--color-text-2)}.read-only-note{padding:10px;text-align:center;border-top:1px solid var(--color-border);color:var(--color-text-2);font-size:12px}.structured-toggle{position:absolute;right:12px;top:12px;z-index:2}
-</style>
+<style>.conversation-shell,.structured{position:relative;width:100%;height:100%;min-height:0}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:transparent;color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions{position:absolute;right:12px;top:12px;z-index:2}</style>

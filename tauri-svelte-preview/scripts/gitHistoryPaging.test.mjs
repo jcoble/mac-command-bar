@@ -2,15 +2,8 @@
  * gitHistoryPaging.test.mjs — reading more of the commit history, and saying
  * honestly how much of it is on screen.
  *
- * THE BUG THIS EXISTS TO PREVENT. The panel asks the app for a number of
- * commits and the app answers with fewer. Two completely different things look
- * identical from here: the repository has no more commits, or this build of the
- * app will not read that far back. Today's desktop build stops at 80 and the
- * dev server's read-only bridge stops at 200, so on any real repository the
- * short answer is the app's limit, not the end of the history. A list that says
- * "all 80 commits" about a repository with four thousand of them is a lie the
- * user has no way to catch — so the wording below never claims to know which of
- * the two happened, and these tests hold it to that.
+ * The backend returns one bounded cursor page. Load More appends only that next
+ * page; refresh and root changes return to the first page.
  *
  * `gitPanelStore.svelte.ts` calls `$state(...)` at module scope, which the
  * Svelte compiler normally rewrites; Node runs it as plain JavaScript, so the
@@ -28,17 +21,10 @@ const {
   createGitPanelState,
   describeGitBranchTitle,
   describeGitHistoryCount,
-  describeGitHistoryFooter,
-  isGitHistoryComplete
+  describeGitHistoryFooter
 } = store;
 
-const {
-  COMMIT_HISTORY_CEILING,
-  COMMIT_HISTORY_LIMIT,
-  COMMIT_HISTORY_PAGE,
-  createGitService,
-  nextCommitHistoryLimit
-} = service;
+const { COMMIT_HISTORY_LIMIT, createGitService } = service;
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -65,10 +51,9 @@ const emptyStatus = {
 };
 
 /**
- * A backend holding `total` commits, which never answers with more than `cap` of
- * them however many are asked for. `cap` is how a real app build behaves.
+ * A backend holding `total` commits and returning one fixed cursor page.
  */
-function makeBackend({ total = 1000, cap = Infinity } = {}) {
+function makeBackend({ total = 1000 } = {}) {
   const calls = [];
   const all = Array.from({ length: total }, (_, index) => commit(total - index));
   const refuse = async () => {
@@ -83,9 +68,18 @@ function makeBackend({ total = 1000, cap = Infinity } = {}) {
     async readDiff() {
       return null;
     },
-    async readHistory(root, limit) {
-      calls.push(['readHistory', root, limit]);
-      return all.slice(0, Math.min(limit, cap));
+    async readHistory(root, cursor, relativePath) {
+      calls.push(['readHistory', root, cursor, relativePath]);
+      const offset = Number.parseInt(cursor ?? '0', 10);
+      const commits = all.slice(offset, offset + COMMIT_HISTORY_LIMIT);
+      const complete = offset + commits.length >= all.length;
+      return {
+        root,
+        relativePath: relativePath ?? null,
+        commits,
+        nextCursor: complete ? null : String(offset + commits.length),
+        complete
+      };
     },
     stage: refuse,
     unstage: refuse,
@@ -94,29 +88,6 @@ function makeBackend({ total = 1000, cap = Infinity } = {}) {
     pull: refuse,
     push: refuse
   };
-}
-
-// ── the one rule the whole feature rests on ─────────────────────────────────
-{
-  assert.equal(isGitHistoryComplete(24, 24), false, 'a full answer may have more behind it');
-  assert.equal(isGitHistoryComplete(124, 80), true, 'a short answer has nothing more to give');
-  assert.equal(isGitHistoryComplete(24, 0), true, 'an empty repository is complete');
-}
-
-// ── each click asks for one page more, and stops at the ceiling ─────────────
-{
-  assert.equal(nextCommitHistoryLimit(0), COMMIT_HISTORY_LIMIT + COMMIT_HISTORY_PAGE);
-  assert.equal(
-    nextCommitHistoryLimit(COMMIT_HISTORY_LIMIT),
-    COMMIT_HISTORY_LIMIT + COMMIT_HISTORY_PAGE
-  );
-  assert.equal(nextCommitHistoryLimit(124), 224);
-  assert.equal(nextCommitHistoryLimit(COMMIT_HISTORY_CEILING), COMMIT_HISTORY_CEILING);
-  assert.equal(
-    nextCommitHistoryLimit(COMMIT_HISTORY_CEILING - 1),
-    COMMIT_HISTORY_CEILING,
-    'the last step lands exactly on the ceiling rather than past it'
-  );
 }
 
 // ── a repository with plenty of history: load more grows the list ───────────
@@ -139,42 +110,17 @@ function makeBackend({ total = 1000, cap = Infinity } = {}) {
   await settle();
   assert.deepEqual(
     backend.calls,
-    [['readHistory', '/repo', 124]],
-    'one read, for the whole list at the bigger size'
+    [['readHistory', '/repo', '24', null]],
+    'one read using the continuation cursor'
   );
-  assert.equal(state.history.length, 124, 'the list is replaced, not appended to');
+  assert.equal(state.history.length, 48, 'the next page is appended');
   assert.equal(state.historyPaged, true);
   assert.equal(state.historyComplete, false);
-  assert.equal(describeGitHistoryFooter(state), 'Showing 124 so far.');
+  assert.equal(describeGitHistoryFooter(state), 'Showing 48 so far.');
 
   // The newest commit is still first: a page read from the top keeps the order
   // the graph's columns were worked out from.
   assert.equal(state.history[0].subject, 'commit 1000');
-}
-
-// ── an app build that reads fewer commits than we ask for ───────────────────
-{
-  const backend = makeBackend({ total: 4000, cap: 80 });
-  const state = createGitPanelState();
-  const git = createGitService({ backend, state });
-
-  git.activate('/repo');
-  await settle();
-  await git.loadMoreHistory();
-  await settle();
-
-  assert.equal(state.history.length, 80, 'the app answered with its own limit');
-  assert.equal(state.historyComplete, true, 'asking again the same way would give the same 80');
-  assert.equal(canLoadMoreGitHistory(state), false, 'so the button goes away');
-  assert.equal(describeGitHistoryCount(state), '80');
-
-  const footer = describeGitHistoryFooter(state);
-  assert.equal(
-    footer,
-    'Showing 80 commits. We asked for 124 and this is all that came back, so it is ' +
-      'everything this app will show for this repository.'
-  );
-  assert.equal(/all 80 commits/.test(footer), false, 'it never calls 80 of 4000 "all of them"');
 }
 
 // ── a small repository: the first read already has everything ───────────────
@@ -197,7 +143,7 @@ function makeBackend({ total = 1000, cap = Infinity } = {}) {
   );
 }
 
-// ── refreshing keeps the size the list has grown to ─────────────────────────
+// ── refreshing releases older pages and reads the first page again ──────────
 {
   const backend = makeBackend({ total: 1000 });
   const state = createGitPanelState();
@@ -213,10 +159,10 @@ function makeBackend({ total = 1000, cap = Infinity } = {}) {
   await settle();
   assert.deepEqual(
     backend.calls,
-    [['readHistory', '/repo', 124]],
-    'a refresh after loading more does not drop back to the first 24'
+    [['readHistory', '/repo', null, null]],
+    'refresh starts a new first-page projection'
   );
-  assert.equal(state.history.length, 124);
+  assert.equal(state.history.length, COMMIT_HISTORY_LIMIT);
 }
 
 // ── pointing the panel at another repository starts over ────────────────────
@@ -237,32 +183,29 @@ function makeBackend({ total = 1000, cap = Infinity } = {}) {
   assert.equal(state.history.length, COMMIT_HISTORY_LIMIT);
 }
 
-// ── the ceiling: this panel stops asking somewhere ──────────────────────────
+// ── cursor completion stops further reads ───────────────────────────────────
 {
-  const backend = makeBackend({ total: 10000 });
+  const backend = makeBackend({ total: 50 });
   const state = createGitPanelState();
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
   await settle();
-  for (let click = 0; click < 20; click += 1) {
+  for (let click = 0; click < 4; click += 1) {
     await git.loadMoreHistory();
     await settle();
   }
 
-  assert.equal(state.historyRequested, COMMIT_HISTORY_CEILING);
-  assert.equal(state.history.length, COMMIT_HISTORY_CEILING);
-  assert.equal(state.historyCeiling, true);
+  assert.equal(state.historyRequested, 50);
+  assert.equal(state.history.length, 50);
+  assert.equal(state.historyComplete, true);
   assert.equal(canLoadMoreGitHistory(state), false);
+  assert.equal(describeGitHistoryFooter(state), 'Showing all 50 commits loaded across pages.');
   assert.equal(
-    describeGitHistoryFooter(state),
-    'Showing 500 commits — the most this app reads at one time. Older commits are not in this list.'
+    backend.calls.filter((call) => call[0] === 'readHistory').length,
+    3,
+    'completion prevents repeated reads'
   );
-
-  const readsAtCeiling = backend.calls.filter(
-    (call) => call[0] === 'readHistory' && call[2] === COMMIT_HISTORY_CEILING
-  );
-  assert.equal(readsAtCeiling.length, 1, 'the ceiling is asked for once, not on every click');
 }
 
 // ── a failed "load more" keeps what is already on screen ────────────────────

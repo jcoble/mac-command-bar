@@ -1,77 +1,63 @@
-import 'vscode/localExtensionHost';
-import * as vscode from 'vscode';
-
 import type { ProjectGitFileStatus, ProjectGitStatus } from '$lib/tauriSource';
 
 export type RustGitScmSnapshot = {
   root: string | null;
   status: ProjectGitStatus | null;
+  generation?: number;
+};
+
+export type RustGitScmOwnerToken = {
+  readonly ownedId: string;
+  readonly generation: number;
+  readonly scmGeneration: number;
+  readonly root: string;
+};
+
+export type RustGitScmOwnerContext = {
+  readonly ownedId: string;
+  readonly generation: number;
+  readonly root: string;
+};
+
+export type RustGitScmGroupSnapshot = {
+  readonly id: 'staged' | 'workingTree' | 'untracked';
+  readonly label: string;
+  readonly files: readonly ProjectGitFileStatus[];
 };
 
 let apiReady = false;
 let pending: RustGitScmSnapshot = { root: null, status: null };
-let sourceControl: vscode.SourceControl | null = null;
-let staged: vscode.SourceControlResourceGroup | null = null;
-let changes: vscode.SourceControlResourceGroup | null = null;
-let untracked: vscode.SourceControlResourceGroup | null = null;
 let activeRoot: string | null = null;
+let activeStatus: ProjectGitStatus | null = null;
+let activeScmGeneration = 0;
+const activeProbeOwners = new Map<string, RustGitScmOwnerToken>();
 
-function absolutePath(root: string, relativePath: string): string {
-  return `${root.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}`;
+function canonicalRoot(root: string | null | undefined): string | null {
+  const trimmed = root?.trim() ?? '';
+  return trimmed === '' ? null : trimmed.replace(/\/+$/, '');
 }
 
-function resourceState(
-  root: string,
-  file: ProjectGitFileStatus,
-  contextValue: string
-): vscode.SourceControlResourceState {
-  return {
-    resourceUri: vscode.Uri.file(absolutePath(root, file.relativePath)),
-    contextValue,
-    decorations: {
-      tooltip: `${file.status}: ${file.relativePath}`,
-      strikeThrough: file.status === 'deleted'
-    }
-  };
-}
-
-function disposeSourceControl(): void {
-  sourceControl?.dispose();
-  sourceControl = null;
-  staged = null;
-  changes = null;
-  untracked = null;
+function clearActiveSnapshot(): void {
   activeRoot = null;
+  activeStatus = null;
+  activeProbeOwners.clear();
 }
 
 function applySnapshot(snapshot: RustGitScmSnapshot): void {
   if (!apiReady) return;
-  const root = snapshot.root?.trim() || null;
+  if (snapshot.generation !== undefined && snapshot.generation !== activeScmGeneration) return;
+  const root = canonicalRoot(snapshot.root);
   if (!root) {
-    disposeSourceControl();
+    clearActiveSnapshot();
     return;
   }
 
-  if (!sourceControl || activeRoot !== root) {
-    disposeSourceControl();
-    sourceControl = vscode.scm.createSourceControl('mcb-rust-git', 'Mac Command Bar Git', vscode.Uri.file(root));
-    staged = sourceControl.createResourceGroup('index', 'Staged Changes');
-    changes = sourceControl.createResourceGroup('workingTree', 'Changes');
-    untracked = sourceControl.createResourceGroup('untracked', 'Untracked Files');
+  if (activeRoot !== root) {
+    clearActiveSnapshot();
     activeRoot = root;
   }
 
-  const files = snapshot.status?.files ?? [];
-  staged!.resourceStates = files
-    .filter((file) => file.indexStatus.trim() !== '' && file.indexStatus !== '?')
-    .map((file) => resourceState(root, file, 'mcbGitStaged'));
-  changes!.resourceStates = files
-    .filter((file) => file.worktreeStatus.trim() !== '' && file.worktreeStatus !== '?')
-    .map((file) => resourceState(root, file, 'mcbGitChange'));
-  untracked!.resourceStates = files
-    .filter((file) => file.indexStatus === '?' || file.worktreeStatus === '?')
-    .map((file) => resourceState(root, file, 'mcbGitUntracked'));
-  sourceControl!.count = files.length;
+  activeStatus = snapshot.status;
 }
 
 /** Called once, after the singleton Monaco/VS Code wrapper has started. */
@@ -82,25 +68,108 @@ export function markRustGitScmApiReady(): void {
 }
 
 /**
- * Project the app's already-loaded Git status into VS Code's SCM API.
+ * Retain the app's already-loaded Git status for bounded extension adapters.
  * No Git command is issued here; gitService and Rust remain the authority.
  */
 export function syncRustGitSourceControl(snapshot: RustGitScmSnapshot): void {
-  pending = snapshot;
-  applySnapshot(snapshot);
+  const root = canonicalRoot(snapshot.root);
+  if (snapshot.generation !== undefined) {
+    if (snapshot.generation !== activeScmGeneration || root !== activeRoot) return;
+    pending = { ...snapshot, root };
+    applySnapshot(pending);
+    return;
+  }
+
+  const sameActiveRoot = root === activeRoot && activeScmGeneration > 0;
+  const generation = sameActiveRoot ? activeScmGeneration : activeScmGeneration + 1;
+  if (!sameActiveRoot) {
+    activeScmGeneration = generation;
+    activeProbeOwners.clear();
+  }
+  pending = { ...snapshot, root, generation };
+  applySnapshot(pending);
 }
 
 export function rustGitScmStatus(): {
   apiReady: boolean;
   root: string | null;
+  generation: number;
+  scmGeneration: number;
+  probeOwnerCount: number;
   resourceCount: number;
 } {
   return {
     apiReady,
     root: activeRoot,
-    resourceCount:
-      (staged?.resourceStates.length ?? 0) +
-      (changes?.resourceStates.length ?? 0) +
-      (untracked?.resourceStates.length ?? 0)
+    generation: activeScmGeneration,
+    scmGeneration: activeScmGeneration,
+    probeOwnerCount: activeProbeOwners.size,
+    resourceCount: activeStatus?.files.length ?? 0
   };
+}
+
+export function acquireRustGitScmProbeOwner(context: RustGitScmOwnerContext): RustGitScmOwnerToken | null {
+  const wanted = canonicalRoot(context.root);
+  const ownedId = context.ownedId.trim();
+  if (!wanted || !ownedId || wanted !== activeRoot || !activeStatus) return null;
+  const token = {
+    ownedId,
+    generation: context.generation,
+    scmGeneration: activeScmGeneration,
+    root: wanted
+  };
+  activeProbeOwners.clear();
+  activeProbeOwners.set(token.ownedId, token);
+  return token;
+}
+
+export function isRustGitScmProbeOwnerCurrent(owner: RustGitScmOwnerToken): boolean {
+  const active = activeProbeOwners.get(owner.ownedId);
+  return Boolean(
+    active &&
+      active.root === owner.root &&
+      active.generation === owner.generation &&
+      active.scmGeneration === owner.scmGeneration &&
+      activeRoot === owner.root &&
+      activeScmGeneration === owner.scmGeneration
+  );
+}
+
+export function releaseRustGitScmProbeOwner(owner: RustGitScmOwnerToken): void {
+  const active = activeProbeOwners.get(owner.ownedId);
+  if (
+    active?.generation === owner.generation &&
+    active.scmGeneration === owner.scmGeneration &&
+    active.root === owner.root
+  ) {
+    activeProbeOwners.delete(owner.ownedId);
+  }
+}
+
+export function rustGitScmProbeStatus(owner: RustGitScmOwnerToken): ProjectGitStatus | null {
+  if (!isRustGitScmProbeOwnerCurrent(owner)) return null;
+  return activeStatus;
+}
+
+export function rustGitScmProbeGroups(owner: RustGitScmOwnerToken): RustGitScmGroupSnapshot[] {
+  const files = rustGitScmProbeStatus(owner)?.files ?? [];
+  if (!isRustGitScmProbeOwnerCurrent(owner)) return [];
+  const groups: RustGitScmGroupSnapshot[] = [
+    {
+      id: 'staged',
+      label: 'Staged Changes',
+      files: files.filter((file) => file.indexStatus.trim() !== '' && file.indexStatus !== '?')
+    },
+    {
+      id: 'workingTree',
+      label: 'Changes',
+      files: files.filter((file) => file.worktreeStatus.trim() !== '' && file.worktreeStatus !== '?')
+    },
+    {
+      id: 'untracked',
+      label: 'Untracked Files',
+      files: files.filter((file) => file.indexStatus === '?' || file.worktreeStatus === '?')
+    }
+  ];
+  return groups.filter((group) => group.files.length > 0);
 }

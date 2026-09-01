@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 export const orchestrationSchemaVersion = 1;
-export const orchestrationEventStoreEnv = 'MAC_COMMAND_BAR_ORCHESTRATION_EVENTS';
+export const orchestrationEventStoreEnv = 'MAC_COMMAND_BAR_ORCHESTRATION_DB';
+
+const execFileAsync = promisify(execFile);
 
 const explicitKeyMap = new Map([
   ['run-id', 'runId'],
@@ -20,7 +24,7 @@ export function defaultOrchestrationEventStorePath(homeDirectory = os.homedir())
     'Library',
     'Application Support',
     'MacCommandBar',
-    'orchestration-events.jsonl'
+    'sessions.db'
   );
 }
 
@@ -607,11 +611,68 @@ export function applyOrchestrationEventPreset(input) {
   };
 }
 
+export async function writeOrchestrationEventsToSqlite(storePath, events) {
+  const rows = events.map((event) => orchestrationEventSqlValues(event));
+  const inserts = rows
+    .map(
+      (row) =>
+        `INSERT INTO orchestration_events (id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key, payload_json) VALUES (${row.join(', ')});`
+    )
+    .join('\n');
+  const sql = `BEGIN IMMEDIATE;
+${orchestrationEventTableSql()}
+${inserts}
+COMMIT;`;
+  try {
+    await execFileAsync('sqlite3', [storePath, sql]);
+  } catch (error) {
+    throw new Error(`Could not write orchestration events to ${storePath}: ${error.message}`);
+  }
+}
+
+function orchestrationEventTableSql() {
+  return `CREATE TABLE IF NOT EXISTS orchestration_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    sequence INTEGER,
+    workflow_id TEXT,
+    idempotency_key TEXT,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json))
+);
+CREATE INDEX IF NOT EXISTS orchestration_events_run_idx ON orchestration_events(run_id);
+CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idx ON orchestration_events(workflow_id, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS orchestration_events_idempotency_idx
+    ON orchestration_events(run_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;`;
+}
+
+function orchestrationEventSqlValues(event) {
+  return [
+    sqlString(event.id),
+    sqlString(event.runId),
+    sqlString(event.kind),
+    sqlString(event.timestamp),
+    event.sequence === undefined || event.sequence === null ? 'NULL' : String(Number(event.sequence)),
+    sqlString(event.workflowId),
+    sqlString(event.idempotencyKey),
+    sqlString(JSON.stringify(event))
+  ];
+}
+
+function sqlString(value) {
+  if (value === undefined || value === null) {
+    return 'NULL';
+  }
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
 export async function appendOrchestrationEvent(input, options = {}) {
   const event = normalizeOrchestrationEvent(input);
   const storePath = options.storePath ?? orchestrationEventStorePath(options.env);
   await fs.mkdir(path.dirname(storePath), { recursive: true });
-  await fs.appendFile(storePath, `${JSON.stringify(event)}\n`, 'utf8');
+  await writeOrchestrationEventsToSqlite(storePath, [event]);
   return { event, storePath };
 }
 
@@ -880,9 +941,7 @@ export async function appendOrchestrationEventPayload(payload, options = {}) {
   const events = orchestrationEventInputsFromPayload(payload);
   const storePath = options.storePath ?? orchestrationEventStorePath(options.env);
   await fs.mkdir(path.dirname(storePath), { recursive: true });
-  if (events.length > 0) {
-    await fs.appendFile(storePath, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`, 'utf8');
-  }
+  await writeOrchestrationEventsToSqlite(storePath, events);
   return { events, storePath };
 }
 
@@ -1020,7 +1079,7 @@ export async function appendOrchestrationSample(sampleName, input, options = {})
   const events = orchestrationSampleEvents(sampleName, input);
   const storePath = options.storePath ?? orchestrationEventStorePath(options.env);
   await fs.mkdir(path.dirname(storePath), { recursive: true });
-  await fs.appendFile(storePath, events.map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+  await writeOrchestrationEventsToSqlite(storePath, events);
   return { events, storePath };
 }
 
@@ -1339,7 +1398,7 @@ function printHelp() {
   node scripts/orchestrationEvent.mjs --json '{"runId":"run-tsk-127","kind":"run.created"}'
   node scripts/orchestrationEvent.mjs --json-file /tmp/orchestration-events.jsonl
 
-Writes JSONL event records to:
+Writes event records to the orchestration_events table in:
   $${orchestrationEventStoreEnv}, or
   ${defaultOrchestrationEventStorePath()}`);
 }

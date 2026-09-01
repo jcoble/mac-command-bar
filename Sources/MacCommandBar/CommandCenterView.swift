@@ -96,7 +96,7 @@ private struct HeaderView: View {
                 .foregroundStyle(.blue)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("MacCommandBar")
+                Text("Assembly")
                     .font(.system(size: 15, weight: .semibold))
                 Text(state.statusMessage)
                     .font(.system(size: 11))

@@ -1,5 +1,25 @@
 import assert from 'node:assert/strict';
-import { onOpenFile, requestOpenFile } from '../src/lib/shell/openFileBus.ts';
+import {
+  onOpenFile,
+  requestOpenFile,
+  resolveConversationFilePath
+} from '../src/lib/shell/openFileBus.ts';
+
+assert.equal(
+  resolveConversationFilePath('src/App.svelte', '/work/session'),
+  '/work/session/src/App.svelte',
+  'relative conversation links resolve against the session cwd'
+);
+assert.equal(
+  resolveConversationFilePath('/outside/App.svelte', '/work/session'),
+  '/outside/App.svelte',
+  'absolute conversation links pass through'
+);
+assert.equal(
+  resolveConversationFilePath('~/notes/todo.md', '/work/session'),
+  '~/notes/todo.md',
+  'tilde-prefixed conversation links pass through'
+);
 
 // request before any subscriber is parked and delivered to the first subscriber
 {

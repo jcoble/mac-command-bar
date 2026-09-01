@@ -26,9 +26,19 @@
 
 import { bridgeGitBackend, canChangeRepository, hasGitBridge } from './gitBackendExtra.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
+import { setGitSurfaceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 import {
+  amendGitCommitFromTauri,
   commitGitRepositoryFromTauri,
+  createGitBranchFromTauri,
+  discardAllGitChangesFromTauri,
+  discardGitPathsFromTauri,
   fetchGitRepositoryFromTauri,
+  listGitBranchesFromTauri,
+  listGitStashesFromTauri,
+  popGitStashFromTauri,
+  stashGitChangesFromTauri,
+  switchGitBranchFromTauri,
   pullGitRepositoryFromTauri,
   pushGitRepositoryFromTauri,
   readGitCommitHistoryFromTauri,
@@ -37,7 +47,9 @@ import {
   stageGitPathsFromTauri,
   unstageGitPathsFromTauri,
   type GitActionResult,
-  type GitCommitHistoryEntry,
+  type GitBranchList,
+  type GitHistoryPage,
+  type GitStashEntry,
   type ProjectGitFileStatus,
   type ProjectGitStatus,
   type SourceGitDiff
@@ -46,48 +58,43 @@ import {
   clearSelectedGitFile,
   gitPanel,
   isGitFileDeleted,
-  isGitHistoryComplete,
   resetGitPanelState,
   type GitActionKind,
   type GitPanelState
 } from './gitPanelStore.svelte.ts';
+import { gitCommitFiles, resetGitCommitFilesState } from './gitCommitFilesStore.svelte.ts';
 
-/** How many commits the history list asks for first. The backend caps the limit. */
+/** Fixed commit count for the first and every later cursor page. */
 export const COMMIT_HISTORY_LIMIT = 24;
-
-/** How many more commits each "Load more" asks for on top of what is on screen. */
-export const COMMIT_HISTORY_PAGE = 100;
-
-/**
- * The most this panel will ever ask for in one read. The desktop app clamps the
- * limit its own way, so asking past its clamp only wastes a call — and a list of
- * 500 commits is already more than the graph can usefully draw.
- */
-export const COMMIT_HISTORY_CEILING = 500;
-
-/**
- * The next limit to ask for, given the one already asked for. Never past the
- * ceiling, so a repository with more history than that stops asking rather than
- * spinning on a request that answers the same thing every time.
- */
-export function nextCommitHistoryLimit(requested: number): number {
-  const current = requested > 0 ? requested : COMMIT_HISTORY_LIMIT;
-  return Math.min(current + COMMIT_HISTORY_PAGE, COMMIT_HISTORY_CEILING);
-}
 
 /** Shown whenever a wrapper returns `null` — i.e. we are not in the desktop app. */
 export const DESKTOP_ONLY_MESSAGE =
   'Source control runs in the desktop app only. Nothing is loaded here.';
 
 /**
- * The nine git commands this panel can issue. Named as an interface so the node
+ * Every git command this panel can issue. Named as an interface so the node
  * test can drive the service with a stub and prove the superseded-request
  * handling, exactly as `terminalService.ts` does with its terminal backend.
  */
 export interface GitBackend {
   readStatus(root: string): Promise<ProjectGitStatus | null>;
+  /** Throw away the named files' changes. Deletes untracked files. */
+  discard(root: string, paths: string[]): Promise<GitActionResult | null>;
+  /** Throw away the whole working copy. */
+  discardAll(root: string, includeUntracked: boolean): Promise<GitActionResult | null>;
+  listBranches(root: string): Promise<GitBranchList | null>;
+  createBranch(root: string, name: string, checkout: boolean): Promise<GitActionResult | null>;
+  switchBranch(root: string, name: string): Promise<GitActionResult | null>;
+  stash(root: string, includeUntracked: boolean, message: string): Promise<GitActionResult | null>;
+  popStash(root: string, index: number | null): Promise<GitActionResult | null>;
+  listStashes(root: string): Promise<GitStashEntry[] | null>;
+  amend(root: string, message: string): Promise<GitActionResult | null>;
   readDiff(root: string, absolutePath: string): Promise<SourceGitDiff | null>;
-  readHistory(root: string, limit: number): Promise<GitCommitHistoryEntry[] | null>;
+  readHistory(
+    root: string,
+    cursor?: string | null,
+    relativePath?: string | null
+  ): Promise<GitHistoryPage | null>;
   stage(root: string, paths: string[]): Promise<GitActionResult | null>;
   unstage(root: string, paths: string[]): Promise<GitActionResult | null>;
   commit(root: string, message: string): Promise<GitActionResult | null>;
@@ -106,13 +113,49 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
       count('project_git_status');
       return readProjectGitStatusFromTauri(root);
     },
+    discard(root, paths) {
+      count('discard_git_paths');
+      return discardGitPathsFromTauri(root, paths);
+    },
+    discardAll(root, includeUntracked) {
+      count('discard_all_git_changes');
+      return discardAllGitChangesFromTauri(root, includeUntracked);
+    },
+    listBranches(root) {
+      count('list_git_branches');
+      return listGitBranchesFromTauri(root);
+    },
+    createBranch(root, name, checkout) {
+      count('create_git_branch');
+      return createGitBranchFromTauri(root, name, checkout);
+    },
+    switchBranch(root, name) {
+      count('switch_git_branch');
+      return switchGitBranchFromTauri(root, name);
+    },
+    stash(root, includeUntracked, message) {
+      count('stash_git_changes');
+      return stashGitChangesFromTauri(root, includeUntracked, message);
+    },
+    popStash(root, index) {
+      count('pop_git_stash');
+      return popGitStashFromTauri(root, index);
+    },
+    listStashes(root) {
+      count('list_git_stashes');
+      return listGitStashesFromTauri(root);
+    },
+    amend(root, message) {
+      count('amend_git_commit');
+      return amendGitCommitFromTauri(root, message);
+    },
     readDiff(root, absolutePath) {
       count('read_source_git_diff');
       return readSourceGitDiffFromTauri(root, absolutePath);
     },
-    readHistory(root, limit) {
+    readHistory(root, cursor, relativePath) {
       count('read_git_commit_history');
-      return readGitCommitHistoryFromTauri(root, limit);
+      return readGitCommitHistoryFromTauri(root, cursor, relativePath);
     },
     stage(root, paths) {
       count('stage_git_paths');
@@ -181,18 +224,27 @@ export interface GitService {
   /** The state this service writes. The panel reads the same object. */
   readonly state: GitPanelState;
   /**
-   * Point the panel at a repository and do its first read. Idempotent: calling
-   * it again with the same root does nothing, so the integrator can call it on
-   * every activation. A different root wipes the panel and reloads.
+   * Point the panel at a repository. Status is loaded by the visible Source
+   * Control surface; history is loaded by a visible graph surface. Idempotent:
+   * calling it again with the same root does nothing, so the integrator can call
+   * it on every activation. A different root wipes the panel state.
    */
   activate(root: string | null): void;
-  /** Re-read status and commit history for the current repository. */
+  /** Re-read status and, when its surface is visible, commit history. */
   refresh(): Promise<void>;
   refreshStatus(): Promise<void>;
   /** Re-read the history at the size it has already grown to. */
   refreshHistory(): Promise<void>;
   /** Ask for another page of older commits. Does nothing once the list is whole. */
   loadMoreHistory(): Promise<void>;
+  /** Read the first history page if a visible graph has no rows yet. */
+  ensureHistorySurface(): void;
+  /** Release commit rows when no graph surface owns them. */
+  releaseHistorySurface(): void;
+  /** Show only commits which touched one repository-relative file. */
+  showFileHistory(root: string, relativePath: string): Promise<void>;
+  /** Return the history surface to the repository's complete history. */
+  clearHistoryPath(): Promise<void>;
   /** Show this file's diff. */
   selectFile(file: ProjectGitFileStatus): Promise<void>;
   /**
@@ -208,6 +260,27 @@ export interface GitService {
   unstagePaths(paths: string[]): Promise<void>;
   /** Commit the staged changes using `state.commitMessage` unless one is given. */
   commit(message?: string): Promise<void>;
+  /**
+   * Rewrite the last commit with the staged changes. The panel asks first —
+   * amending a commit that is already pushed rewrites shared history.
+   */
+  amendCommit(message?: string): Promise<void>;
+  /**
+   * Throw away the named files' changes. THE CALLER MUST HAVE ASKED FIRST:
+   * nothing in this service confirms anything, and git keeps no copy.
+   */
+  discardPaths(paths: string[]): Promise<void>;
+  /** Throw away every change in the working copy. Same rule as above. */
+  discardAll(includeUntracked: boolean): Promise<void>;
+  /** The local branches, newest commit first. `null` outside the desktop app. */
+  listBranches(): Promise<GitBranchList | null>;
+  createBranch(name: string, checkout: boolean): Promise<void>;
+  switchBranch(name: string): Promise<void>;
+  /** Put the working copy aside. */
+  stashChanges(includeUntracked: boolean, message: string): Promise<void>;
+  /** Bring a stash back. `null` index means the most recent one. */
+  popStash(index: number | null): Promise<void>;
+  listStashes(): Promise<GitStashEntry[] | null>;
   runRemoteAction(action: 'fetch' | 'pull' | 'push'): Promise<void>;
 }
 
@@ -222,13 +295,20 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   const statusGuard = createRequestGuard();
   const historyGuard = createRequestGuard();
   const diffGuard = createRequestGuard();
+  let historySurfaceVisible = false;
+  let sourceControlSyncGeneration = 0;
 
-  function publishSourceControl(): void {
+  function publishGitDiagnostics(): void {
+    setGitSurfaceDiagnostics(state.history.length, state.selectedDiff ? 1 : 0);
+  }
+
+  async function publishSourceControl(): Promise<void> {
     if (typeof window === 'undefined') return;
+    const generation = ++sourceControlSyncGeneration;
     const snapshot = { root: state.root, status: state.status };
-    void import('../extensions/rustGitScmProvider.ts').then(({ syncRustGitSourceControl }) => {
-      syncRustGitSourceControl(snapshot);
-    });
+    const { syncRustGitSourceControl } = await import('../extensions/rustGitScmProvider.ts');
+    if (generation !== sourceControlSyncGeneration) return;
+    syncRustGitSourceControl(snapshot);
   }
 
   /** The repository is unchanged AND this request is still the newest one. */
@@ -242,10 +322,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.status = null;
     state.history = [];
     state.historyRequested = 0;
+    state.historyNextCursor = null;
     state.historyComplete = false;
     state.historyPaged = false;
-    state.historyCeiling = false;
-    publishSourceControl();
+    publishGitDiagnostics();
+    void publishSourceControl();
   }
 
   async function refreshStatus(): Promise<void> {
@@ -264,31 +345,22 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       }
       state.desktopOnly = false;
       state.status = status;
-      publishSourceControl();
+      void publishSourceControl();
     } catch (error) {
       if (!stillCurrent(statusGuard, id, root)) return;
       state.status = null;
       state.statusError = describeError(error, 'Could not read the repository status.');
-      publishSourceControl();
+      void publishSourceControl();
     } finally {
       if (stillCurrent(statusGuard, id, root)) state.statusLoading = false;
     }
   }
 
   /**
-   * Read the history at `limit` commits.
-   *
-   * The backend answers with the whole list from the newest commit down, not
-   * with the slice past what we already have, so a bigger limit REPLACES the
-   * list rather than adding to it. That is what keeps the graph honest: the
-   * columns are worked out from every commit's parents at once, so feeding the
-   * lane assignment a stitched-together list would draw lines to commits it had
-   * never seen.
-   *
-   * `loadingMore` decides which flag the wait shows on. A "Load more" leaves the
-   * list on screen and lights the button; a plain refresh replaces it.
+   * Read one cursor page. A plain load replaces the graph; "Load more" appends
+   * exactly the next page the backend returned a cursor for.
    */
-  async function loadHistory(limit: number, loadingMore: boolean): Promise<void> {
+  async function loadHistory(cursor: string | null, loadingMore: boolean): Promise<void> {
     const root = state.root;
     if (!root) return;
     const id = historyGuard.next();
@@ -297,17 +369,17 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyError = '';
 
     try {
-      const history = await backend.readHistory(root, limit);
+      const page = await backend.readHistory(root, cursor, state.historyPath || null);
       if (!stillCurrent(historyGuard, id, root)) return;
-      if (!history) {
+      if (!page) {
         markDesktopOnly();
         return;
       }
       state.desktopOnly = false;
-      state.history = history;
-      state.historyRequested = limit;
-      state.historyComplete = isGitHistoryComplete(limit, history.length);
-      state.historyCeiling = !state.historyComplete && limit >= COMMIT_HISTORY_CEILING;
+      state.history = loadingMore ? [...state.history, ...page.commits] : page.commits;
+      state.historyRequested = state.history.length;
+      state.historyNextCursor = page.nextCursor;
+      state.historyComplete = page.complete;
     } catch (error) {
       if (!stillCurrent(historyGuard, id, root)) return;
       // A failed "Load more" keeps what is already on screen; only a failed
@@ -318,33 +390,97 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       if (stillCurrent(historyGuard, id, root)) {
         if (loadingMore) state.historyLoadingMore = false;
         else state.historyLoading = false;
+        publishGitDiagnostics();
       }
     }
   }
 
   /**
-   * Re-read the history at the size it has grown to, so refreshing after two
-   * pages of "Load more" does not silently drop back to the first 24.
+   * Re-read the first page. Refresh is a new visible graph projection, not a
+   * reread of every older page the user had loaded before.
    */
   async function refreshHistory(): Promise<void> {
-    const limit = state.historyRequested > 0 ? state.historyRequested : COMMIT_HISTORY_LIMIT;
-    await loadHistory(limit, false);
+    if (!historySurfaceVisible) return;
+    state.history = [];
+    state.historyRequested = 0;
+    state.historyNextCursor = null;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    await loadHistory(null, false);
   }
 
   async function loadMoreHistory(): Promise<void> {
+    if (!historySurfaceVisible) return;
     if (!state.root || state.historyLoading || state.historyLoadingMore) return;
-    if (state.historyComplete || state.historyCeiling) return;
-    const limit = nextCommitHistoryLimit(state.historyRequested);
-    if (limit <= state.historyRequested) {
-      state.historyCeiling = true;
-      return;
-    }
+    if (state.historyComplete || state.historyNextCursor === null) return;
     state.historyPaged = true;
-    await loadHistory(limit, true);
+    await loadHistory(state.historyNextCursor, true);
+  }
+
+  function ensureHistorySurface(): void {
+    historySurfaceVisible = true;
+    if (!state.root || state.historyLoading || state.historyLoadingMore) return;
+    if (state.history.length > 0 || state.historyComplete) return;
+    void loadHistory(null, false);
+  }
+
+  function releaseHistorySurface(): void {
+    historySurfaceVisible = false;
+    statusGuard.invalidate();
+    historyGuard.invalidate();
+    state.status = null;
+    state.statusLoading = false;
+    state.statusError = '';
+    state.history = [];
+    state.historyPath = '';
+    state.historyLoading = false;
+    state.historyError = '';
+    state.historyRequested = 0;
+    state.historyNextCursor = null;
+    state.historyLoadingMore = false;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    publishGitDiagnostics();
+    void publishSourceControl();
   }
 
   async function refresh(): Promise<void> {
     await Promise.all([refreshStatus(), refreshHistory()]);
+  }
+
+  async function showFileHistory(root: string, relativePath: string): Promise<void> {
+    const targetRoot = root.trim();
+    const targetPath = relativePath.trim();
+    if (!targetRoot || !targetPath) return;
+    const pathChanged = state.root !== targetRoot || state.historyPath !== targetPath;
+    if (state.root !== targetRoot) resetGitPanelState(state, targetRoot);
+    state.activated = true;
+    state.historyPath = targetPath;
+    state.history = [];
+    state.historyRequested = 0;
+    state.historyNextCursor = null;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    if (pathChanged) {
+      resetGitCommitFilesState(gitCommitFiles, targetRoot);
+      clearSelection();
+    }
+    if (!historySurfaceVisible) return;
+    await loadHistory(null, false);
+  }
+
+  async function clearHistoryPath(): Promise<void> {
+    if (!state.historyPath) return;
+    state.historyPath = '';
+    state.history = [];
+    state.historyRequested = 0;
+    state.historyNextCursor = null;
+    state.historyComplete = false;
+    state.historyPaged = false;
+    resetGitCommitFilesState(gitCommitFiles, state.root);
+    clearSelection();
+    if (!historySurfaceVisible) return;
+    await loadHistory(null, false);
   }
 
   async function selectFile(file: ProjectGitFileStatus): Promise<void> {
@@ -354,6 +490,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.selectedPath = file.relativePath;
     state.selectedDiff = null;
     state.diffError = '';
+    publishGitDiagnostics();
 
     if (isGitFileDeleted(file)) {
       // The diff command reads the file off disk first, so a deleted file always
@@ -376,6 +513,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
         return;
       }
       state.selectedDiff = diff;
+      publishGitDiagnostics();
     } catch (error) {
       if (!stillCurrent(diffGuard, id, root)) return;
       state.diffError = describeError(error, 'Could not read the changes for this file.');
@@ -387,18 +525,23 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   function clearSelection(): void {
     diffGuard.invalidate();
     clearSelectedGitFile(state);
+    publishGitDiagnostics();
   }
 
   function activate(root: string | null): void {
+    // Status is intentionally absent in history-only mode. Repository identity,
+    // not the presence of one optional projection, makes activation idempotent.
     if (root === state.root && state.activated) return;
     statusGuard.invalidate();
     historyGuard.invalidate();
     diffGuard.invalidate();
     resetGitPanelState(state, root);
-    publishSourceControl();
+    publishGitDiagnostics();
+    void publishSourceControl();
     if (!root) return;
     state.activated = true;
-    void refresh();
+    // Status and history are visible-surface projections. Their owners request
+    // them after activation so a history-only surface does not read status.
   }
 
   async function showStoredDiff(root: string, relativePath: string): Promise<void> {
@@ -407,34 +550,15 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     if (!folder || !path) return;
 
     activate(folder);
-    // When the panel is already on this repository the file list is likely
-    // loaded; going through selectFile keeps the deleted-file wording. On a
-    // fresh activation the status read is still in flight, so the diff is read
-    // directly rather than after it lands.
+    const id = diffGuard.next();
+    // A remembered diff can outlive the file or the change it described. Get
+    // current status before touching the path so a stale session snapshot is
+    // cleared instead of surfacing the backend's missing-file error.
+    if (!state.status) await refreshStatus();
+    if (!stillCurrent(diffGuard, id, folder)) return;
     const known = (state.status?.files ?? []).find((file) => file.relativePath === path);
     if (known) return selectFile(known);
-
-    state.selectedPath = path;
-    state.selectedDiff = null;
-    state.diffError = '';
-
-    const id = diffGuard.next();
-    state.diffLoading = true;
-    try {
-      const diff = await backend.readDiff(folder, absolutePathWithin(folder, path));
-      if (!stillCurrent(diffGuard, id, folder)) return;
-      if (!diff) {
-        state.desktopOnly = true;
-        state.diffError = DESKTOP_ONLY_MESSAGE;
-        return;
-      }
-      state.selectedDiff = diff;
-    } catch (error) {
-      if (!stillCurrent(diffGuard, id, folder)) return;
-      state.diffError = describeError(error, 'Could not read the changes for this file.');
-    } finally {
-      if (stillCurrent(diffGuard, id, folder)) state.diffLoading = false;
-    }
+    clearSelection();
   }
 
   /** Re-read the diff on screen after an action changed the working tree. */
@@ -482,7 +606,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       state.desktopOnly = false;
       state.status = result.status;
       state.actionStatus = result.message;
-      publishSourceControl();
+      void publishSourceControl();
       refreshSelectedDiff();
       if (options.reloadHistory) void refreshHistory();
     } catch (error) {
@@ -506,6 +630,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     refreshStatus,
     refreshHistory,
     loadMoreHistory,
+    ensureHistorySurface,
+    releaseHistorySurface,
+    showFileHistory,
+    clearHistoryPath,
     selectFile,
     showStoredDiff,
     clearSelection,
@@ -532,6 +660,68 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       await runAction('commit', (root) => backend.commit(root, text), { reloadHistory: true });
       // Only clear the box on a commit that actually happened.
       if (state.actionError === '' && state.status !== before) state.commitMessage = '';
+    },
+
+    async amendCommit(message?: string): Promise<void> {
+      const text = (message ?? state.commitMessage).trim();
+      const before = state.status;
+      await runAction('amend', (root) => backend.amend(root, text), { reloadHistory: true });
+      if (state.actionError === '' && state.status !== before) state.commitMessage = '';
+    },
+
+    async discardPaths(paths: string[]): Promise<void> {
+      const wanted = cleanPaths(paths);
+      if (wanted.length === 0) return;
+      await runAction('discard', (root) => backend.discard(root, wanted), {
+        reloadHistory: false
+      });
+    },
+
+    async discardAll(includeUntracked: boolean): Promise<void> {
+      await runAction('discard', (root) => backend.discardAll(root, includeUntracked), {
+        reloadHistory: false
+      });
+    },
+
+    async listBranches(): Promise<GitBranchList | null> {
+      const root = state.root;
+      if (!root) return null;
+      return backend.listBranches(root);
+    },
+
+    async createBranch(name: string, checkout: boolean): Promise<void> {
+      const wanted = name.trim();
+      if (wanted === '') {
+        state.actionError = 'Type a branch name first.';
+        return;
+      }
+      await runAction('branch', (root) => backend.createBranch(root, wanted, checkout), {
+        reloadHistory: checkout
+      });
+    },
+
+    async switchBranch(name: string): Promise<void> {
+      const wanted = name.trim();
+      if (wanted === '') return;
+      await runAction('branch', (root) => backend.switchBranch(root, wanted), {
+        reloadHistory: true
+      });
+    },
+
+    async stashChanges(includeUntracked: boolean, message: string): Promise<void> {
+      await runAction('stash', (root) => backend.stash(root, includeUntracked, message.trim()), {
+        reloadHistory: false
+      });
+    },
+
+    async popStash(index: number | null): Promise<void> {
+      await runAction('stash', (root) => backend.popStash(root, index), { reloadHistory: false });
+    },
+
+    async listStashes(): Promise<GitStashEntry[] | null> {
+      const root = state.root;
+      if (!root) return null;
+      return backend.listStashes(root);
     },
 
     async runRemoteAction(action: 'fetch' | 'pull' | 'push'): Promise<void> {

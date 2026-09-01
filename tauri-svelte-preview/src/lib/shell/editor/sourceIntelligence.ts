@@ -1,9 +1,9 @@
 /**
- * sourceIntelligence.ts — everything Monaco asks the machine for.
+ * sourceIntelligence.ts — everything the source editor asks the machine for.
  *
- * `MonacoSourceEditor.svelte` knows how to draw code and how to run a peek
- * window, but it knows nothing about this project: every lookup arrives as a
- * callback prop. This module is the other half — it owns the small amount of
+ * The editor knows how to draw code, but it knows nothing about this project:
+ * every lookup arrives as a callback prop. This module is the other half — it
+ * owns the small amount of
  * context a lookup needs (project root, the file on screen, that file's
  * current text, the scanned file list) and answers each callback.
  *
@@ -25,12 +25,12 @@
  * ruling of 2026-07-28 that this comment used to carry).
  *
  * In the desktop app it comes from the language server, progressively and a
- * few symbols at a time. The targets returned while counting are retained, so
- * clicking a finished number does not ask the same language-server question a
- * second time and the number agrees with the list it opens.
+ * few symbols at a time. The targets returned while counting are retained for
+ * the current file view, so clicking a finished number does not ask the same
+ * language-server question a second time and the number agrees with its list.
  *
- * In the browser preview it comes from one plain-text project scan for every
- * name in the file. A browser has no language server, so this is the fast
+ * In the browser preview it comes from a plain-text project scan for the
+ * current name. A browser has no language server, so this is the fast
  * name-match approximation the old page used before extraction. It is never
  * allowed to populate a native semantic count.
  *
@@ -57,7 +57,6 @@ import {
 } from '../../sourceData.ts';
 import {
   countSourceReferencesFromTauri,
-  findSourceDefinitionsFromTauri,
   findSourceLspCompletionsFromTauri,
   findSourceLspDefinitionsFromTauri,
   findSourceLspDocumentHighlightsFromTauri,
@@ -66,7 +65,6 @@ import {
   findSourceLspReferencesFromTauri,
   findSourceLspSemanticTokensFromTauri,
   findSourceLspSignatureHelpFromTauri,
-  findSourceReferencesFromTauri,
   isNativeTauriRuntime,
   readSourceFromTauri,
   readSourceLspDiagnosticsFromTauri,
@@ -74,7 +72,6 @@ import {
 } from '../../tauriSource.ts';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
-import { projectSourceRecords } from '../projectSourceIndex.ts';
 import { activateEditor } from './editorStore.svelte.ts';
 import {
   createReferenceCountBatcher,
@@ -84,13 +81,20 @@ import {
   type ReferenceCountStore
 } from './referenceCountBatcher.ts';
 import {
-  loadPersistedReferenceCounts,
-  replacePersistedReferenceCounts
-} from './referenceCountPersistence.ts';
-import { statusMessageIsAboutThisFile } from '../components/editor/languageServerStatus.ts';
+  statusMessageIsAboutThisFile,
+  type LanguageServerStatusMessage
+} from '../components/editor/languageServerStatus.ts';
+import {
+  setSourceIntelligenceDiagnostics,
+  trackTauriListener,
+  trackTauriSubscriber
+} from '../resourceDiagnostics.svelte.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────
+
+const sourceIntelligenceDev =
+  (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
 
 /** Most definitions one lookup will return. */
 export const maxSourceDefinitionResults = 20;
@@ -121,22 +125,12 @@ export const semanticReferenceCountMaxInFlight = 4;
 /** Most completion items one lookup will return. */
 export const maxSourceCompletionResults = 50;
 /**
- * Monaco resolves margin counts one symbol at a time, as each one scrolls into
- * view. Instead of asking the backend per symbol, the first request opens a
- * window this long and every count asked for during it travels in one request.
- */
-export const codeLensReferenceCountBatchWindowMs = 50;
-/**
  * The most time that one request may spend reading the project before it
  * answers with whatever it counted so far. A ceiling, not a wait — a project
  * of about four thousand files is counted in roughly 400ms and answers then.
  * Nothing on screen is blocked while it runs.
  */
 export const codeLensReferenceCountDeadlineMs = 1_500;
-/** How many times a failed language-server count may be asked again. */
-export const semanticCountRetryLimit = 3;
-/** How long to wait before each language-server count retry, in milliseconds. */
-export const semanticCountRetryDelaysMs = [2_000, 6_000, 12_000];
 /**
  * How long a counted number stays good for. Project-wide counts move when
  * files elsewhere change, which is not something typing in the open file does
@@ -144,15 +138,6 @@ export const semanticCountRetryDelaysMs = [2_000, 6_000, 12_000];
  * leave the margin blank while a big project was being typed in.
  */
 export const codeLensReferenceCountCacheMs = 24 * 60 * 60 * 1_000;
-/**
- * Native reference counts belong to the live Roslyn workspace and cannot be
- * validated across app/page lifetimes. Keep them warm in memory, but never
- * restore an older solution's answer from IndexedDB. Browser preview counts
- * are plain-text project scans and may use the durable cache.
- */
-export function referenceCountPersistenceEnabled(nativeRuntime: boolean): boolean {
-  return !nativeRuntime;
-}
 /**
  * Where the plain-text counts are filed. They are counted by NAME across the
  * whole project, so the same name has the same number in every file and they
@@ -165,17 +150,6 @@ export const wholeProjectCountsDrawer = 'the whole project';
  * applies to the lens rows it draws.
  */
 export const maxCodeLensSymbols = 120;
-/**
- * How long the language server gets to answer a browser-preview reference or
- * a go-to-definition click before the plain-text search answers instead.
- *
- * The language server's answer is the better one — it knows which `Send` you
- * clicked — so it is used whenever it arrives in time. But a cold C# server
- * loading a large solution does not answer for tens of seconds. Native
- * references deliberately do not use this fallback deadline: Peek waits for
- * the same Roslyn answer that supplies its CodeLens total.
- */
-export const languageServerLookupDeadlineMs = 1_000;
 
 /** Whether a reference-count question should run, wait, or use plain text. */
 export type CountingReadiness = 'ask-it' | 'wait-for-it' | 'no-server';
@@ -198,9 +172,9 @@ export function countingReadinessForStatus(
   return 'no-server';
 }
 
-// ── The shapes Monaco hands us ────────────────────────────────────────────────
+// ── The shapes the editor hands us ───────────────────────────────────────────
 
-/** What Monaco knows about the spot the user is asking about. */
+/** What the editor knows about the spot the user is asking about. */
 export interface SourceLookupRequest {
   symbolName: string;
   /** 1-based. */
@@ -216,7 +190,7 @@ export interface SourceLookupRequest {
   filePath?: string;
 }
 
-/** The visible range Monaco wants inline hints for. */
+/** The visible range the editor wants inline hints for. */
 export interface SourceInlayHintRequest {
   startLine: number;
   startColumn: number;
@@ -224,7 +198,7 @@ export interface SourceInlayHintRequest {
   endColumn: number;
 }
 
-/** The callback set handed straight to `MonacoSourceEditor` as props. */
+/** The callback set handed straight to the source editor as props. */
 export interface SourceIntelligenceCallbacks {
   onDefinitionLookup(request: SourceLookupRequest): Promise<SourceDefinitionTarget[]>;
   onReferenceLookup(request: SourceLookupRequest): Promise<SourceReferenceTarget[]>;
@@ -254,6 +228,14 @@ export interface SourceIntelligenceCallbacks {
 
 /** The service the editor panel drives. */
 export interface SourceIntelligence {
+  /** Stop event subscriptions owned by this service. */
+  dispose(): void;
+  /** Subscribe to pushed language-server status updates. */
+  subscribeToLanguageServerStatus(
+    listener: (status: LanguageServerStatusMessage) => void
+  ): () => void;
+  /** Subscribe to semantic reference counts that land after their first paint. */
+  subscribeToReferenceCountUpdates(listener: (filePath: string) => void): () => void;
   /** Project the open files belong to; language-server lookups need it. */
   setProjectRoot(projectRoot: string | null): void;
   /** The file on screen (its contents are what lookups are resolved against). */
@@ -277,33 +259,8 @@ export interface SourceIntelligence {
   loadActiveFileDiagnostics(): Promise<SourceDiagnostic[]>;
   /** Read-only view of the current context, for status lines and tests. */
   readonly projectRoot: string | null;
-  /** The callbacks to spread onto `MonacoSourceEditor`. */
+  /** The callbacks to spread onto `CodeMirrorSourceEditor`. */
   readonly callbacks: SourceIntelligenceCallbacks;
-}
-
-/**
- * Wait for a lookup, but only for so long: answers `null` once `deadlineMs` has
- * passed, so the caller can fall back to something faster.
- *
- * Nothing here can stop the lookup it gave up on — it keeps running in the
- * backend and its answer is simply dropped. Both of its endings are handled, so
- * a slow lookup that fails long after everyone stopped caring cannot surface as
- * an unhandled rejection.
- */
-function answerOrGiveUp<T>(lookup: Promise<T | null>, deadlineMs: number): Promise<T | null> {
-  return new Promise<T | null>((resolve) => {
-    const giveUp = setTimeout(() => resolve(null), deadlineMs);
-    lookup.then(
-      (answer) => {
-        clearTimeout(giveUp);
-        resolve(answer);
-      },
-      () => {
-        clearTimeout(giveUp);
-        resolve(null);
-      }
-    );
-  });
 }
 
 /**
@@ -332,6 +289,8 @@ async function backendCanCountReferences(): Promise<boolean> {
  */
 export function createSourceIntelligence(): SourceIntelligence {
   let projectRoot: string | null = null;
+  let projectRootGeneration = 0;
+  let externalPreviewGeneration = 0;
   let activePreview: SourcePreview | null = null;
   let draftContent = '';
   /**
@@ -339,8 +298,28 @@ export function createSourceIntelligence(): SourceIntelligence {
    * per group; without this the lazy preview resolver re-reads it every time.
    * Dropped for a file when that file is written, and wholesale on a project
    * change — a stale preview after an edit would be a correctness bug.
+   *
+   * Each entry holds a whole file's text, and files pulled in by a peek window
+   * or a reference search never become tabs, so nothing else releases them:
+   * only the most recently used ones are kept.
    */
   const externalPreviewCache = new Map<string, SourcePreview>();
+  const externalPreviewCacheLimit = 32;
+
+  /**
+   * Remember `preview` as the most recently used and drop the oldest beyond the
+   * cap. `Map.set` on a key that is already there does not move it, so the
+   * delete comes first — on a cache hit as well as on a fresh read.
+   */
+  function rememberExternalPreview(path: string, preview: SourcePreview): void {
+    externalPreviewCache.delete(path);
+    externalPreviewCache.set(path, preview);
+    while (externalPreviewCache.size > externalPreviewCacheLimit) {
+      const oldest = externalPreviewCache.keys().next().value;
+      if (oldest === undefined) break;
+      externalPreviewCache.delete(oldest);
+    }
+  }
 
   /** Does the file on screen have a language server behind it? */
   function languageIntelligenceAvailable(): boolean {
@@ -364,12 +343,16 @@ export function createSourceIntelligence(): SourceIntelligence {
     const preview = previewWithDraft();
     if (!preview || !languageIntelligenceAvailable()) return null;
     countInvoke('find_source_lsp_definitions');
-    return findSourceLspDefinitionsFromTauri(preview, {
-      root: lookupRoot(),
-      line: request.line,
-      column: request.column,
-      limit: maxSourceDefinitionResults
-    }).catch(() => null);
+    try {
+      return await findSourceLspDefinitionsFromTauri(preview, {
+        root: lookupRoot(),
+        line: request.line,
+        column: request.column,
+        limit: maxSourceDefinitionResults
+      });
+    } catch {
+      return null;
+    }
   }
 
   /** See `SourceIntelligence.loadActiveFileDiagnostics`. */
@@ -392,43 +375,14 @@ export function createSourceIntelligence(): SourceIntelligence {
 
   // ── The callbacks ──────────────────────────────────────────────────────────
 
-  async function indexedDefinitions(
-    symbolName: string
-  ): Promise<SourceDefinitionTarget[] | null> {
-    const records = projectSourceRecords(projectRoot);
-    if (records.length === 0) return null;
-    countInvoke('find_source_definitions');
-    return findSourceDefinitionsFromTauri(
-      [...records],
-      symbolName,
-      maxSourceDefinitionResults
-    ).catch(() => null);
-  }
-
-  async function indexedReferences(
-    symbolName: string
-  ): Promise<SourceReferenceTarget[] | null> {
-    const records = projectSourceRecords(projectRoot);
-    if (records.length === 0) return null;
-    countInvoke('find_source_references');
-    return findSourceReferencesFromTauri(
-      [...records],
-      symbolName,
-      maxSourceReferenceResults
-    ).catch(() => null);
-  }
-
   async function findDefinitions(
     request: SourceLookupRequest
   ): Promise<SourceDefinitionTarget[]> {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return [];
     try {
-      const lspTargets = await answerOrGiveUp(
-        lspDefinitions(request),
-        languageServerLookupDeadlineMs
-      );
-      return lspTargets ?? (await indexedDefinitions(symbolName)) ?? [];
+      const lspTargets = await lspDefinitions(request);
+      return lspTargets ?? [];
     } catch {
       return [];
     }
@@ -453,16 +407,12 @@ export function createSourceIntelligence(): SourceIntelligence {
         // Share the one references response instead of asking Roslyn once
         // for the number and again for the Peek rows.
         const semanticRequest = resolveSemanticReferences(preview, request, root);
-        const semantic = isNativeTauriRuntime()
-          ? await semanticRequest
-          : await answerOrGiveUp(semanticRequest, languageServerLookupDeadlineMs);
+        const semantic = await semanticRequest;
         if (semantic) return semantic.targets;
       }
 
-      // Keep the legacy text finder for the browser preview, but never let it
-      // compete with Roslyn in the native editor.
       if (isNativeTauriRuntime()) return [];
-      return (await indexedReferences(symbolName)) ?? [];
+      return [];
     } catch {
       return [];
     }
@@ -472,56 +422,22 @@ export function createSourceIntelligence(): SourceIntelligence {
   //
   // Two machines can answer "how many references?", and which one does depends
   // entirely on whether there is a language server behind this page. See the
-  // note at the top of the file for the ruling. Both file their answers in the
-  // one store below.
+  // note at the top of the file for the ruling. Both keep their live answer in
+  // the one in-memory store below while this file owns the editor view.
 
   /**
-   * The one place a counted number is remembered, for either machine.
-   *
-   * Filed under the project it was counted in, so opening another workspace
-   * puts its numbers in a drawer of their own rather than emptying this one —
-   * coming back finds the first workspace's numbers where they were left.
+   * The one place a counted number is remembered, for either machine. The
+   * store is cleared when the active file or project changes, so no answer
+   * outlives the view that owns it.
    */
-  let countStore: ReferenceCountStore;
-  let persistCountsTimer: number | null = null;
-  let persistenceWrite = Promise.resolve();
-  const persistReferenceCounts = referenceCountPersistenceEnabled(isNativeTauriRuntime());
-  const scheduleCountPersistence = () => {
-    if (!persistReferenceCounts || typeof window === 'undefined' || persistCountsTimer !== null) {
-      return;
-    }
-    persistCountsTimer = window.setTimeout(() => {
-      persistCountsTimer = null;
-      const entries = countStore.entries();
-      persistenceWrite = persistenceWrite.then(() =>
-        replacePersistedReferenceCounts(entries)
-      );
-    }, 100);
-  };
-  countStore = createReferenceCountStore({
-    cacheMs: codeLensReferenceCountCacheMs,
-    onChange: scheduleCountPersistence
-  });
-  let persistedCountsLoaded = !persistReferenceCounts;
-  const persistedCountsHydration = persistReferenceCounts
-    ? loadPersistedReferenceCounts()
-        .then((entries) => countStore.restore(entries))
-        .catch(() => {
-          // Durable caching is an optimization; storage failure never blocks counts.
-        })
-    : Promise.resolve();
-  const persistedCountsReady = Promise.race([
-    persistedCountsHydration,
-    new Promise<void>((resolve) => setTimeout(resolve, 100))
-  ]).then(() => {
-    persistedCountsLoaded = true;
+  const countStore: ReferenceCountStore = createReferenceCountStore({
+    cacheMs: codeLensReferenceCountCacheMs
   });
 
-  /** The plain-text search over the project: one pass answers many names. */
+  /** The plain-text search over the project: one immediate pass per name. */
   const referenceCountBatcher = isNativeTauriRuntime()
     ? null
     : createReferenceCountBatcher({
-        windowMs: codeLensReferenceCountBatchWindowMs,
         memory: countStore.drawer(() => projectRoot, wholeProjectCountsDrawer),
         // Uncapped: the count is an exact number the backend worked out in one
         // pass, so there is no reason to round it off to "50+". The old ceiling
@@ -555,14 +471,11 @@ export function createSourceIntelligence(): SourceIntelligence {
     preview: SourcePreview;
     /** The project it belonged to, even if the reader switches before it lands. */
     projectRoot: string | null;
-    /** Everyone who wants to hear the answer. */
-    waiters: ((count: CodeLensCount | null) => void)[];
     askedAt: number;
-    /** How many failed answers have already caused this question to be asked again. */
-    tries: number;
   }
 
   const waitingSpots = new Map<string, WaitingSpot>();
+  const referenceCountSubscribers = new Set<(filePath: string) => void>();
   /** Exact semantic targets retained by the count that produced the number. */
   const rememberedSemanticTargets = new Map<string, SourceReferenceTarget[]>();
   /** One in-flight semantic answer shared by the margin and a Peek click. */
@@ -570,13 +483,31 @@ export function createSourceIntelligence(): SourceIntelligence {
     string,
     Promise<{ count: CodeLensCount; targets: SourceReferenceTarget[] } | null>
   >();
+  /** Bumps when the active file/view changes so late answers cannot repopulate it. */
+  let referenceAnswerGeneration = 0;
 
   /**
    * Symbols whose questions are held back because the language server is still
    * starting up or still reading the project. They go out the moment it says it
-   * is ready; until then the margin keeps saying it is still counting.
+   * is ready; a finished count then asks the active editor to repaint from the
+   * remembered answer.
    */
   let heldUntilServerIsReady: string[] = [];
+
+  function publishResourceDiagnostics(): void {
+    if (!sourceIntelligenceDev) return;
+    setSourceIntelligenceDiagnostics({
+      semanticWaitingSpots: waitingSpots.size,
+      semanticSchedulerWaiting: semanticScheduler.waiting,
+      semanticSchedulerInFlight: semanticScheduler.inFlight,
+      semanticReferenceRequests: semanticReferenceRequests.size,
+      semanticRetryTimers: 0,
+      semanticHeldUntilReady: heldUntilServerIsReady.length,
+      semanticRememberedTargets: rememberedSemanticTargets.size,
+      sourcePreviewCacheEntries: externalPreviewCache.size,
+      rememberedReferenceCountEntries: countStore.entries().length
+    });
+  }
 
   const semanticScheduler = createSemanticReferenceCountScheduler({
     maxInFlight: semanticReferenceCountMaxInFlight,
@@ -588,37 +519,20 @@ export function createSourceIntelligence(): SourceIntelligence {
     onCounted(key: string, count: CodeLensCount | null) {
       const spot = waitingSpots.get(key);
       if (!spot) return;
-      if (count === null && spot.tries < semanticCountRetryLimit) {
-        spot.tries += 1;
-        const retryDelayMs = semanticCountRetryDelaysMs[spot.tries - 1];
-        reportLensTiming(
-          `${spot.request.symbolName}: no answer after ${
-            Date.now() - spot.askedAt
-          }ms — asking again in ${retryDelayMs / 1_000}s (try ${spot.tries + 1} of ${
-            semanticCountRetryLimit + 1
-          })`
-        );
-        const askAgain = () => {
-          if (waitingSpots.get(key) !== spot) return;
-          semanticScheduler.request([key]);
-        };
-        if (typeof window === 'undefined') {
-          setTimeout(askAgain, retryDelayMs);
-        } else {
-          window.setTimeout(askAgain, retryDelayMs);
-        }
-        return;
-      }
-
       waitingSpots.delete(key);
+      publishResourceDiagnostics();
       reportLensTiming(
         `${spot.request.symbolName}: ${
           count ? `${count.count} reference(s)` : 'no answer'
         } after ${Date.now() - spot.askedAt}ms`
       );
-      for (const waiter of spot.waiters) waiter(count);
+      if (count) publishReferenceCountUpdate(spot.preview.path);
     }
   });
+
+  function publishReferenceCountUpdate(filePath: string): void {
+    for (const listener of referenceCountSubscribers) listener(filePath);
+  }
 
   /**
    * Which line, which name. The file is not in here because the store already
@@ -642,40 +556,29 @@ export function createSourceIntelligence(): SourceIntelligence {
     return rememberedSemanticTargets.get(semanticTargetKey(request)) ?? null;
   }
 
-  /**
-   * Resolve one symbol through the language server exactly once.
-   *
-   * `textDocument/references` is a superset of a resolved CodeLens answer: the
-   * returned locations give us both the number to paint and the rows to open.
-   * A resolved server CodeLens only gives us the title; asking
-   * `textDocument/references` once gives both the exact count and the Peek rows.
-   */
-  function resolveSemanticReferences(
+  async function readSemanticReferencesAnswer(
+    generation: number,
     preview: SourcePreview,
     request: SourceLookupRequest,
-    root: string | null
+    root: string | null,
+    filePath: string,
+    resultKey: string
   ): Promise<{ count: CodeLensCount; targets: SourceReferenceTarget[] } | null> {
-    const filePath = normalizeProjectPath(preview.path);
-    const requestWithFile = { ...request, filePath: preview.path };
-    const resultKey = semanticTargetKey(requestWithFile, root);
-    const rememberedTargets = rememberedSemanticTargets.get(resultKey);
-    const rememberedCount = countStore.get(root, filePath, countKeyFor(request));
-    if (rememberedTargets && rememberedCount) {
-      return Promise.resolve({ count: rememberedCount, targets: rememberedTargets });
-    }
-
-    const pending = semanticReferenceRequests.get(resultKey);
-    if (pending) return pending;
-
-    const answer = (async () => {
+    try {
       countInvoke('find_source_lsp_references');
-      const targets = await findSourceLspReferencesFromTauri(preview, {
-        root: root ?? '',
-        line: request.line,
-        column: request.column,
-        limit: maxSourceReferenceCountResults
-      }).catch(() => null);
+      let targets: SourceReferenceTarget[] | null;
+      try {
+        targets = await findSourceLspReferencesFromTauri(preview, {
+          root: root ?? '',
+          line: request.line,
+          column: request.column,
+          limit: maxSourceReferenceCountResults
+        });
+      } catch {
+        targets = null;
+      }
       if (!targets) return null;
+      if (generation !== referenceAnswerGeneration) return null;
 
       const uniqueUses = new Map<string, SourceReferenceTarget>();
       for (const target of targets) {
@@ -697,12 +600,52 @@ export function createSourceIntelligence(): SourceIntelligence {
       rememberedSemanticTargets.set(resultKey, peekTargets);
       countStore.remember(root, filePath, countKeyFor(request), count);
       return { count, targets: peekTargets };
-    })().finally(() => {
-      semanticReferenceRequests.delete(resultKey);
-    });
+    } finally {
+      if (generation === referenceAnswerGeneration) {
+        semanticReferenceRequests.delete(resultKey);
+        publishResourceDiagnostics();
+      }
+    }
+  }
+
+  /**
+   * Resolve one symbol through the language server exactly once.
+   *
+   * `textDocument/references` is a superset of a resolved CodeLens answer: the
+   * returned locations give us both the number to paint and the rows to open.
+   * A resolved server CodeLens only gives us the title; asking
+   * `textDocument/references` once gives both the exact count and the Peek rows.
+   */
+  async function resolveSemanticReferences(
+    preview: SourcePreview,
+    request: SourceLookupRequest,
+    root: string | null
+  ): Promise<{ count: CodeLensCount; targets: SourceReferenceTarget[] } | null> {
+    const generation = referenceAnswerGeneration;
+    const filePath = normalizeProjectPath(preview.path);
+    const requestWithFile = { ...request, filePath: preview.path };
+    const resultKey = semanticTargetKey(requestWithFile, root);
+    const rememberedTargets = rememberedSemanticTargets.get(resultKey);
+    const rememberedCount = countStore.get(root, filePath, countKeyFor(request));
+    if (rememberedTargets && rememberedCount) {
+      return { count: rememberedCount, targets: rememberedTargets };
+    }
+
+    const pending = semanticReferenceRequests.get(resultKey);
+    if (pending) return await pending;
+
+    const answer = readSemanticReferencesAnswer(
+      generation,
+      preview,
+      request,
+      root,
+      filePath,
+      resultKey
+    );
 
     semanticReferenceRequests.set(resultKey, answer);
-    return answer;
+    publishResourceDiagnostics();
+    return await answer;
   }
 
   /**
@@ -759,7 +702,10 @@ export function createSourceIntelligence(): SourceIntelligence {
 
     const memoKey = `${projectRoot}|${preview.language}`;
     const remembered = rememberedReadiness.get(memoKey);
-    if (remembered && Date.now() - remembered.at < readinessMemoryMs) return remembered.answer;
+    if (remembered) {
+      if (Date.now() - remembered.at < readinessMemoryMs) return remembered.answer;
+      rememberedReadiness.delete(memoKey);
+    }
 
     const answer = readLanguageServerCountingReadiness(projectRoot, preview.language);
     rememberedReadiness.set(memoKey, { at: Date.now(), answer });
@@ -771,7 +717,12 @@ export function createSourceIntelligence(): SourceIntelligence {
     language: SourcePreview['language']
   ): Promise<CountingReadiness> {
     countInvoke('read_source_lsp_status');
-    const status = await readSourceLspStatusFromTauri(root, language).catch(() => null);
+    let status: SourceLspStatus | null;
+    try {
+      status = await readSourceLspStatusFromTauri(root, language);
+    } catch {
+      status = null;
+    }
     const reported = status as
       | (SourceLspStatus & { state?: unknown; available?: unknown })
       | null;
@@ -795,35 +746,48 @@ export function createSourceIntelligence(): SourceIntelligence {
 
   /** Set up once we first need it; answers whether the app can tell us. */
   let statusWatch: Promise<boolean> | null = null;
+  let stopStatusWatch: (() => void) | null = null;
+  let statusWatchGeneration = 0;
+  const statusSubscribers = new Set<(status: LanguageServerStatusMessage) => void>();
 
-  function watchLanguageServerStatus(): Promise<boolean> {
-    statusWatch ??= (async () => {
-      if (!(await hasBackendCapability('lspStatusEvents'))) return false;
-      try {
-        const { listen } = await import('@tauri-apps/api/event');
-        await listen<{ state?: string; root: string; language: string }>(
-          'source-lsp-status-changed',
-          (event) => {
-            // Whatever we last worked out about the server is now out of date.
-            rememberedReadiness.clear();
-            if (
-              event.payload?.state === 'ready' &&
-              statusMessageIsAboutThisFile(
-                event.payload,
-                projectRoot,
-                activePreview?.language ?? null
-              )
-            ) {
-              releaseHeldQuestions();
-            }
+  async function startLanguageServerStatusWatch(generation: number): Promise<boolean> {
+    if (!(await hasBackendCapability('lspStatusEvents'))) return false;
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      const stopStatusEvents = await listen<LanguageServerStatusMessage>(
+        'source-lsp-status-changed',
+        (event) => {
+          // Whatever we last worked out about the server is now out of date.
+          rememberedReadiness.clear();
+          if (
+            event.payload?.state === 'ready' &&
+            statusMessageIsAboutThisFile(
+              event.payload,
+              projectRoot,
+              activePreview?.language ?? null
+            )
+          ) {
+            releaseHeldQuestions();
           }
-        );
-        return true;
-      } catch {
+          for (const subscriber of statusSubscribers) subscriber(event.payload);
+        }
+      );
+      const stop = trackTauriListener(stopStatusEvents);
+      if (generation !== statusWatchGeneration) {
+        stop();
         return false;
       }
-    })();
-    return statusWatch;
+      stopStatusWatch = stop;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function watchLanguageServerStatus(): Promise<boolean> {
+    const generation = statusWatchGeneration;
+    statusWatch ??= startLanguageServerStatusWatch(generation);
+    return await statusWatch;
   }
 
   function releaseHeldQuestions(): void {
@@ -837,13 +801,12 @@ export function createSourceIntelligence(): SourceIntelligence {
   /**
    * The "N references" number drawn above a symbol.
    *
-   * `null` means we cannot count this one at all, and the editor draws no
-   * number rather than a wrong one. A promise that has not settled yet means
-   * the counting is still going on, and the margin keeps saying so.
+   * `null` means we cannot count this one right now. Semantic counts publish a
+   * repaint when their remembered answer lands.
    */
-  function countReferencesForCodeLens(
+  async function countReferencesForCodeLens(
     request: SourceLookupRequest
-  ): CodeLensCount | null | Promise<CodeLensCount | null> {
+  ): Promise<CodeLensCount | null> {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return null;
 
@@ -867,17 +830,13 @@ export function createSourceIntelligence(): SourceIntelligence {
       if (remembered) return remembered;
     }
 
-    if (!persistedCountsLoaded) {
-      return persistedCountsReady.then(() => countReferencesForCodeLens(spotRequest));
-    }
-
     if (preview) {
-      return countUnrememberedSemanticReferences(key, spotRequest, preview);
+      return await countUnrememberedSemanticReferences(key, spotRequest, preview);
     }
 
     // Browser preview: one project scan answers every name in the file. The
     // batcher is deliberately absent from native editor instances.
-    return referenceCountBatcher?.count(symbolName) ?? null;
+    return referenceCountBatcher ? await referenceCountBatcher.count(symbolName) : null;
   }
 
   async function countUnrememberedSemanticReferences(
@@ -895,59 +854,58 @@ export function createSourceIntelligence(): SourceIntelligence {
     }
 
     // Browser preview: one project scan answers every name in the file.
-    return referenceCountBatcher?.count(spotRequest.symbolName) ?? null;
+    return referenceCountBatcher ? await referenceCountBatcher.count(spotRequest.symbolName) : null;
   }
 
-  /** Put this symbol in the language server's queue and wait for its turn. */
+  /** Put this symbol in the language server's queue; repaint follows by subscription. */
   function countBySemantics(
     key: string,
     request: SourceLookupRequest,
     preview: SourcePreview,
     holdBack: boolean
-  ): Promise<CodeLensCount | null> {
-    return new Promise((resolve) => {
-      const existing = waitingSpots.get(key);
-      if (existing) {
-        existing.waiters.push(resolve);
-        return;
-      }
+  ): CodeLensCount | null {
+    if (waitingSpots.has(key)) return null;
 
-      waitingSpots.set(key, {
-        request,
-        preview,
-        projectRoot,
-        waiters: [resolve],
-        askedAt: Date.now(),
-        tries: 0
-      });
-
-      if (holdBack) {
-        heldUntilServerIsReady.push(key);
-      } else {
-        semanticScheduler.request([key]);
-      }
+    waitingSpots.set(key, {
+      request,
+      preview,
+      projectRoot,
+      askedAt: Date.now()
     });
+
+    if (holdBack) {
+      heldUntilServerIsReady.push(key);
+    } else {
+      semanticScheduler.request([key]);
+    }
+    publishResourceDiagnostics();
+    return null;
   }
 
   /**
    * Stop counting for the file that was on screen. Everything still queued is
-   * dropped; anyone still waiting is told we have no number, which takes the
-   * zero placeholder off a margin nobody is looking at any more.
+   * dropped; live answers and targets are cleared so none can outlive the view.
    */
   function stopCountingForTheOldFile(): void {
+    referenceAnswerGeneration += 1;
     semanticScheduler.clear();
+    referenceCountBatcher?.forget();
     heldUntilServerIsReady = [];
-    const abandoned = [...waitingSpots.values()];
     waitingSpots.clear();
-    for (const spot of abandoned) {
-      for (const waiter of spot.waiters) waiter(null);
-    }
+    semanticReferenceRequests.clear();
+    rememberedSemanticTargets.clear();
+    countStore.forgetEverything();
+    publishResourceDiagnostics();
   }
 
-  /** Every remembered number in every project, let go. */
+  /** Let go of every live answer when the source projection resets. */
   function forgetReferenceCounts(): void {
+    referenceAnswerGeneration += 1;
+    referenceCountBatcher?.forget();
+    semanticReferenceRequests.clear();
     countStore.forgetEverything();
     rememberedSemanticTargets.clear();
+    publishResourceDiagnostics();
   }
 
   /**
@@ -963,11 +921,16 @@ export function createSourceIntelligence(): SourceIntelligence {
   function forgetFileReferenceCounts(filePath: string): void {
     if (!filePath) return;
     const normalizedPath = normalizeProjectPath(filePath);
+    if (normalizeProjectPath(activePreview?.path ?? '') === normalizedPath) {
+      referenceAnswerGeneration += 1;
+      semanticReferenceRequests.clear();
+    }
     countStore.forgetFile(projectRoot, normalizedPath);
     const prefix = `${projectRoot ?? ''}|${normalizedPath}|`;
     for (const key of rememberedSemanticTargets.keys()) {
       if (key.startsWith(prefix)) rememberedSemanticTargets.delete(key);
     }
+    publishResourceDiagnostics();
   }
 
   /**
@@ -1039,11 +1002,10 @@ export function createSourceIntelligence(): SourceIntelligence {
    * from memory when it can, and reads from disk at most once per file.
    */
   async function loadExternalPreview(record: SourceRecord): Promise<SourcePreview | null> {
-    const sourceRecord = sourceRecordFromPath(
-      projectRoot,
-      record.path,
-      projectSourceRecords(projectRoot)
-    );
+    const requestRoot = projectRoot;
+    const generation = projectRootGeneration;
+    const previewGeneration = externalPreviewGeneration;
+    const sourceRecord = sourceRecordFromPath(requestRoot, record.path);
 
     if (activePreview?.path === sourceRecord.path) {
       return previewFromContent(
@@ -1053,11 +1015,24 @@ export function createSourceIntelligence(): SourceIntelligence {
     }
 
     const cached = externalPreviewCache.get(sourceRecord.path);
-    if (cached) return cached;
+    if (cached) {
+      rememberExternalPreview(sourceRecord.path, cached);
+      return cached;
+    }
 
     countInvoke('read_source_file');
-    const preview = await readSourceFromTauri(sourceRecord).catch(() => null);
-    if (preview) externalPreviewCache.set(sourceRecord.path, preview);
+    let preview: SourcePreview | null;
+    try {
+      preview = await readSourceFromTauri(sourceRecord);
+    } catch {
+      preview = null;
+    }
+    if (
+      generation !== projectRootGeneration
+      || previewGeneration !== externalPreviewGeneration
+      || projectRoot !== requestRoot
+    ) return null;
+    if (preview) rememberExternalPreview(sourceRecord.path, preview);
     return preview;
   }
 
@@ -1185,14 +1160,39 @@ export function createSourceIntelligence(): SourceIntelligence {
   };
 
   return {
+    dispose(): void {
+      statusWatchGeneration += 1;
+      stopStatusWatch?.();
+      stopStatusWatch = null;
+      statusWatch = null;
+      statusSubscribers.clear();
+      referenceCountSubscribers.clear();
+      projectRootGeneration += 1;
+      externalPreviewGeneration += 1;
+      rememberedReadiness.clear();
+      externalPreviewCache.clear();
+      stopCountingForTheOldFile();
+    },
+    subscribeToLanguageServerStatus(
+      listener: (status: LanguageServerStatusMessage) => void
+    ): () => void {
+      statusSubscribers.add(listener);
+      if (isNativeTauriRuntime()) void watchLanguageServerStatus();
+      return trackTauriSubscriber(() => statusSubscribers.delete(listener));
+    },
+    subscribeToReferenceCountUpdates(listener: (filePath: string) => void): () => void {
+      referenceCountSubscribers.add(listener);
+      return trackTauriSubscriber(() => referenceCountSubscribers.delete(listener));
+    },
     setProjectRoot(nextProjectRoot: string | null): void {
       const normalized =
         nextProjectRoot && nextProjectRoot.trim().length > 0 ? nextProjectRoot : null;
       if (normalized === projectRoot) return;
+      projectRootGeneration += 1;
       projectRoot = normalized;
-      // The numbers counted for the old project are NOT thrown away — they are
-      // filed under it, and coming back finds them. What must stop is the
-      // counting that was still going on for the file that was on screen.
+      rememberedReadiness.clear();
+      // The old project's live answers belong to the view that just left it.
+      // Stop that work and release those answers before pointing at the new root.
       externalPreviewCache.clear();
       stopCountingForTheOldFile();
     },
@@ -1205,13 +1205,16 @@ export function createSourceIntelligence(): SourceIntelligence {
       draftContent = content;
     },
     invalidatePreview(path: string): void {
+      externalPreviewGeneration += 1;
       externalPreviewCache.delete(path);
       forgetFileReferenceCounts(path);
     },
     releasePreview(path: string): void {
+      externalPreviewGeneration += 1;
       externalPreviewCache.delete(path);
     },
     invalidateAllPreviews(): void {
+      externalPreviewGeneration += 1;
       externalPreviewCache.clear();
       forgetReferenceCounts();
     },
@@ -1259,6 +1262,68 @@ export interface CsharpLanguageServerToggleResult {
   supported: boolean;
 }
 
+export type LanguageServerId = 'csharp' | 'typescript' | 'rust';
+
+export async function setLanguageServerEnabled(
+  language: LanguageServerId,
+  enabled: boolean
+): Promise<CsharpLanguageServerToggleResult> {
+  const unsupported: CsharpLanguageServerToggleResult = {
+    enabled: !enabled,
+    stoppedServers: 0,
+    supported: false,
+    message: 'This build of the app cannot configure individual language servers yet.'
+  };
+  if (!isNativeTauriRuntime()) return unsupported;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    countInvoke('set_language_server_enabled');
+    const result = await invoke<Omit<CsharpLanguageServerToggleResult, 'supported'>>(
+      'set_language_server_enabled',
+      { language, enabled }
+    );
+    return { ...result, supported: true };
+  } catch {
+    return unsupported;
+  }
+}
+
+/**
+ * Turn every language server off or on. Off stops each one that is running,
+ * every language and every workspace. Call it on start-up with the saved
+ * setting as well as when the switch is flipped: the desktop app forgets
+ * between launches and starts with servers allowed.
+ */
+export async function setLanguageServersEnabled(
+  enabled: boolean
+): Promise<CsharpLanguageServerToggleResult> {
+  const unsupported: CsharpLanguageServerToggleResult = {
+    enabled: true,
+    stoppedServers: 0,
+    supported: false,
+    message:
+      'This build of the app cannot do this yet — restart the desktop app after updating.'
+  };
+  if (!isNativeTauriRuntime()) return unsupported;
+  if (!(await hasBackendCapability('languageServersToggle'))) return unsupported;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    countInvoke('set_language_servers_enabled');
+    const result = await invoke<Omit<CsharpLanguageServerToggleResult, 'supported'>>(
+      'set_language_servers_enabled',
+      { enabled }
+    );
+    return { ...result, supported: true };
+  } catch {
+    return {
+      enabled: !enabled,
+      stoppedServers: 0,
+      supported: false,
+      message: 'The language servers setting could not be changed just now. Please try again.'
+    };
+  }
+}
+
 /**
  * Turn the C# language server off or on.
  *
@@ -1273,34 +1338,3 @@ export interface CsharpLanguageServerToggleResult {
  * switch is flipped: the desktop app forgets between launches and starts the
  * server allowed.
  */
-export async function setCsharpLanguageServerEnabled(
-  enabled: boolean
-): Promise<CsharpLanguageServerToggleResult> {
-  const unsupported: CsharpLanguageServerToggleResult = {
-    enabled: true,
-    stoppedServers: 0,
-    supported: false,
-    message:
-      'This build of the app cannot do this yet — restart the desktop app after updating.'
-  };
-
-  if (!isNativeTauriRuntime()) return unsupported;
-  if (!(await hasBackendCapability('csharpLanguageServerToggle'))) return unsupported;
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    countInvoke('set_csharp_language_server_enabled');
-    const result = await invoke<Omit<CsharpLanguageServerToggleResult, 'supported'>>(
-      'set_csharp_language_server_enabled',
-      { enabled }
-    );
-    return { ...result, supported: true };
-  } catch {
-    return {
-      enabled: !enabled,
-      stoppedServers: 0,
-      supported: true,
-      message: 'The C# language server setting could not be changed just now. Please try again.'
-    };
-  }
-}

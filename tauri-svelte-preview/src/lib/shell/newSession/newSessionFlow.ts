@@ -24,6 +24,26 @@ import type { ProjectWorktree } from '../../tauriSource.ts';
 /** The three ways to start a session. `shell` is a terminal and nothing else. */
 export type LaunchAgent = 'claude' | 'codex' | 'shell';
 
+export const CLAUDE_SESSION_EFFORTS = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'max', label: 'Max' }
+] as const;
+
+export type ClaudeSessionEffort = (typeof CLAUDE_SESSION_EFFORTS)[number]['id'];
+
+export function isClaudeSessionEffort(value: string | undefined): value is ClaudeSessionEffort {
+  return CLAUDE_SESSION_EFFORTS.some((effort) => effort.id === value);
+}
+
+/** Spawn-time effort choices are available only for new Claude conversations. */
+export function sessionEffortsFor(
+  agent: LaunchAgent
+): readonly (typeof CLAUDE_SESSION_EFFORTS)[number][] {
+  return agent === 'claude' ? CLAUDE_SESSION_EFFORTS : [];
+}
+
 export type LaunchOption = {
   /** Which of the three this is. */
   agent: LaunchAgent;
@@ -43,30 +63,41 @@ export type LaunchOption = {
   hint: string;
 };
 
+/** The one value shared by the selected card, command field, and request. */
+export type LaunchSelection = Pick<LaunchOption, 'agent' | 'command'>;
+
 export const LAUNCH_CATALOG: LaunchOption[] = [
-  {
-    agent: 'claude',
-    command: 'claude',
-    label: 'Claude Code',
-    hint: 'Opens a terminal in the folder and starts a new Claude Code conversation.'
-  },
   {
     agent: 'codex',
     command: 'codex',
     label: 'Codex',
-    hint: 'Opens a terminal in the folder and starts a new Codex conversation.'
+    hint: 'Start a conversation with Codex.'
+  },
+  {
+    agent: 'claude',
+    command: 'claude',
+    label: 'Claude',
+    hint: 'Start a conversation with Claude.'
   },
   {
     agent: 'shell',
     command: '',
-    label: 'Just a terminal',
-    hint: 'Opens a terminal in the folder and runs nothing.'
+    label: 'Terminal only',
+    hint: 'Open a terminal without starting an agent.'
   }
 ];
 
 /** The catalog entry for `agent`, or `null` when that is not one of the three. */
 export function launchOptionFor(agent: string): LaunchOption | null {
   return LAUNCH_CATALOG.find((option) => option.agent === agent) ?? null;
+}
+
+/** Select an agent and its matching default command as one indivisible value. */
+export function selectLaunchAgent(agent: LaunchAgent): LaunchSelection {
+  return {
+    agent,
+    command: launchOptionFor(agent)?.command ?? ''
+  };
 }
 
 /**
@@ -119,6 +150,7 @@ export type NewSessionDraft = {
   command: string;
   agent: LaunchAgent;
   title: string;
+  reasoningEffort?: ClaudeSessionEffort;
 };
 
 /** Something standing between the draft and the Start button. */
@@ -141,7 +173,7 @@ export function validateNewSession(draft: NewSessionDraft): NewSessionProblem[] 
   const cwd = normalizeRootPath(draft.cwd);
 
   if (!cwd) {
-    problems.push({ field: 'cwd', message: 'Pick the folder the session should run in.' });
+    problems.push({ field: 'cwd', message: 'Choose where the session should work.' });
   } else if (!cwd.startsWith('/')) {
     problems.push({
       field: 'cwd',
@@ -179,7 +211,15 @@ export type NewSessionRequest = {
   title: string;
   agent: AgentKind;
   command: string | null;
+  reasoningEffort?: ClaudeSessionEffort;
 };
+
+/** Whether this request belongs to the structured conversation runtime. */
+export function startsStructuredSession(
+  request: Pick<NewSessionRequest, 'agent'> | null
+): request is Pick<NewSessionRequest, 'agent'> & { agent: 'codex' | 'claude' } {
+  return request?.agent === 'codex' || request?.agent === 'claude';
+}
 
 /**
  * The draft turned into the request, or `null` when the draft is not startable.
@@ -192,11 +232,13 @@ export type NewSessionRequest = {
 export function buildNewSessionRequest(draft: NewSessionDraft): NewSessionRequest | null {
   if (validateNewSession(draft).length > 0) return null;
   const command = draft.command.trim();
+  const reasoningEffort = draft.agent === 'claude' ? draft.reasoningEffort : undefined;
   return {
     cwd: normalizeRootPath(draft.cwd),
     title: resolveSessionTitle({ cwd: draft.cwd, agent: draft.agent, title: draft.title }),
     agent: agentKindFor(draft.agent),
-    command: command || null
+    command: command || null,
+    ...(reasoningEffort ? { reasoningEffort } : {})
   };
 }
 
@@ -396,7 +438,7 @@ export function worktreeChoicesFor(input: {
   const choices: WorktreeChoice[] = [
     {
       path: root,
-      label: `${lastSegmentOf(root)} — main checkout`,
+      label: `${lastSegmentOf(root)} — main folder`,
       branch: primaryEntry?.branch ?? null,
       isPrimary: true,
       note: primaryEntry ? noteFor(primaryEntry) : null

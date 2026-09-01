@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fast-switch memory plan</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --mut:#666; --line:#ddd; --hi:#fff7d6; --ok:#e8f5e9; --bad:#fdecea; --mono:ui-monospace,Menlo,monospace; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121212; --fg:#eee; --mut:#aaa; --line:#333; --hi:#3a3212; --ok:#173a1c; --bad:#3d1a17; } }
+  body { background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif; max-width:960px; margin:2rem auto; padding:0 1rem; }
+  h1 { font-size:1.6rem; margin:0 0 .25rem; } h2 { font-size:1.15rem; margin:2rem 0 .5rem; border-bottom:1px solid var(--line); padding-bottom:.25rem; }
+  .lead { background:var(--hi); padding:.75rem 1rem; border-radius:6px; }
+  table { border-collapse:collapse; width:100%; margin:.5rem 0; font-size:14px; } th,td { border:1px solid var(--line); padding:.4rem .6rem; text-align:left; vertical-align:top; }
+  code { font-family:var(--mono); font-size:13px; } pre { background:var(--line); padding:.6rem; border-radius:4px; overflow-x:auto; font-size:13px; }
+  .mut { color:var(--mut); } .ok { background:var(--ok);} .bad { background:var(--bad);}
+  ol li, ul li { margin:.25rem 0; }
+  .flow { display:grid; grid-template-columns:repeat(4,1fr); gap:.5rem; margin:.75rem 0; } .step { border:1px solid var(--line); border-radius:6px; padding:.5rem .7rem; font-size:13.5px; } .step b { display:block; }
+</style>
+</head>
+<body>
+<h1>Fast-switch memory plan</h1>
+<p class="mut">Worktree <code>tsk-808-memprofile</code> · 2026-08-25 · controller plan, not yet executed</p>
+
+<div class="lead"><b>The defect:</b> memory grows with each session switch only when switches come fast, and it never returns after the user stops. Slow switching plateaus. Every prior harness run switched slowly (wait-for-settle between clicks), so it could not see this by construction.</div>
+
+<h2>1. What the code says about "fast"</h2>
+<table>
+<tr><th>Fact</th><th>Receipt</th><th>Consequence for the experiment</th></tr>
+<tr><td>Clicks are debounced: a switch only runs after 500 ms without another click.</td><td><code>src/routes/next/+page.svelte:1179-1204</code> (<code>sessionSelectionQuietMs</code> at 1189)</td><td>Clicks &lt;500 ms apart collapse into one switch. The dangerous band is <b>500 ms – ~2 s</b>: a new switch starts while the previous one's async work is still landing.</td></tr>
+<tr><td>Structured hydration is fire-and-forget; if the switch is superseded, the promise keeps running detached.</td><td><code>+page.svelte:1315-1324</code>, awaited only at 1381-1384; guards in <code>conversationService.ts:584-588</code></td><td>Candidate for resurrecting an already-evicted <code>conversationSessions[id]</code> entry. Must be counted, not guessed.</td></tr>
+<tr><td>Eviction of the departing session runs unconditionally, but only when <code>selectOwnedCurrent</code> reaches that line for that id as "previous".</td><td><code>+page.svelte:1290</code> → <code>conversationStore.svelte.ts:1787-1795</code></td><td>If a switch bails early via <code>selectionIsCurrent()</code>, the id it would have evicted may never be evicted.</td></tr>
+<tr><td>Terminal <code>adoptExisting</code> can build a view for a stale id mid-await; swept on the next <code>releaseView</code>.</td><td><code>terminalService.ts:734-788</code>, sweep at 803-813</td><td>Transient, self-healing. Low rank.</td></tr>
+<tr><td>Rust side is bounded and released per switch (adapter pools, projection streams, terminal watchers).</td><td><code>manager.rs:540-580</code>, <code>projection_streams.rs:100-137</code>, <code>terminal_projection.rs:208-270</code></td><td>Backend is not the first suspect. Two small maps grow per session forever (<code>activation_locks</code> manager.rs:311, <code>broker_statuses</code> :308) but not per switch.</td></tr>
+</table>
+
+<h2>2. Hypotheses, ranked</h2>
+<ol>
+<li><b>Resurrected store entries.</b> A detached hydration or editor-content fetch for session A lands after A was evicted and writes A back into a Map (<code>conversationSessions</code>, <code>sessionEditorStates</code>, attachment blob URLs) with no owner left to evict it. Predicts: Map key count grows with fast switches, stays flat with slow.</li>
+<li><b>Skipped eviction.</b> A superseded switch exits before line 1290, so its "previous" id is never released. Same signature as (1), different cause; the counter in E2 tells them apart.</li>
+<li><b>Svelte subtree retained by a pending closure.</b> Transcript/editor components torn down by <code>{#key}</code> while an async callback still references them → detached DOM kept alive. Predicts: heap snapshot shows growing <code>Detached HTMLElement</code> / <code>Detached DOM tree</code> counts.</li>
+<li><b>WebKit-only retention</b> (native, not JS). Rapid DOM churn leaves compositor/backing-store memory that the JS heap never sees. Predicts: JS heap flat in Chrome fixture, but physical footprint of WebContent grows natively.</li>
+<li><b>Backend maps</b> (<code>activation_locks</code>, <code>broker_statuses</code>). Small, grows per distinct session, not per switch. Fix later; not this defect.</li>
+</ol>
+
+<h2>3. Experiments</h2>
+<div class="flow">
+<div class="step"><b>E0 Reproduce</b>Gap sweep in the Chrome fixture. Decides: is it visible in the JS heap at all, and which gap band triggers it.</div>
+<div class="step"><b>E1 Name it</b>Heap snapshot diff, fast burst vs slow burst. Names the retained constructors and their retainer path.</div>
+<div class="step"><b>E2 Count it</b>Dev-only lifecycle counters on <code>window</code>: creates vs evicts per Map, in-flight hydrations. Tells H1 from H2.</div>
+<div class="step"><b>E3 Confirm native</b>Same sweep in the Tauri app, physical footprint after 60 s quiet. Decides H4.</div>
+</div>
+
+<h3>E0 — gap sweep (Chrome fixture, headless, 1710×990)</h3>
+<p>Script under <code>tauri-svelte-preview/scripts/</code> (TypeScript) driving <code>/dev-fixtures</code> through Playwright + CDP. Same 6 fixture sessions, 40 switches per run, one run per gap.</p>
+<table>
+<tr><th>Gap between clicks</th><th>What it exercises</th></tr>
+<tr><td>3000 ms</td><td>Control: every switch settles. Must plateau (matches prior harness).</td></tr>
+<tr><td>1500 / 1000 / 700 ms</td><td>The overlap band: switch N+1 starts while N's hydration/restore is in flight.</td></tr>
+<tr><td>200 ms</td><td>Under the debounce: collapses to few switches. If this still grows, the leak is in the click path, not the switch.</td></tr>
+</table>
+<p>After each run: 60 s idle, 3× <code>HeapProfiler.collectGarbage</code>, then record: <code>usedJSHeapSize</code>, DOM node count, listener count, <code>Object.keys(conversationSessions).length</code>, <code>sessionEditorStates.size</code>, terminal <code>liveKeys().length</code>, object-URL count. Output one table, gap × metric. <b>Pass/fail:</b> a metric that rises with shorter gap and does not recover after GC is the signature.</p>
+
+<h3>E1 — heap snapshot diff</h3>
+<p>Same script, two runs: 3000 ms gap and the worst gap from E0. Snapshot via CDP <code>HeapProfiler.takeHeapSnapshot</code> after the 60 s quiet + GC. Parse both snapshots (node-side, existing <code>.heapsnapshot</code> format) and report the top 15 constructors by retained-size delta, plus the shortest retainer path to a GC root for the top 5. This is the step that names the leak.</p>
+
+<h3>E2 — lifecycle counters (small diff, dev-only)</h3>
+<p>Add a <code>window.__memprobe</code> object, populated only under <code>import.meta.env.DEV</code>, with monotonic counters: <code>ensureConversationSession</code> creates, <code>evictConversationSession</code> deletes, hydrations started / landed-after-supersede, <code>selectOwnedCurrent</code> entries / early-exits by bail-point line, editor <code>releaseSessionResources</code> calls, blob URLs created / revoked. E0's table reads them. <b>creates − deletes ≠ 1</b> after quiet = H1 or H2; the bail-point histogram says which.</p>
+
+<h3>E3 — native confirmation</h3>
+<p>Run the app from <code>tauri.dev.next.conf.json</code>, click the same 6 sessions at the worst E0 gap (owner by hand, or a small Playwright-over-WebKit driver if the dev config exposes the inspector), wait 60 s, read <code>read_resource_sample</code> physical footprint for WebContent before/after. Compare to the fixture heap delta: footprint grows while heap is flat → H4; both grow → the fixture reproduces it and E1's answer is the answer.</p>
+
+<h2>4. Order, lanes, time</h2>
+<ol>
+<li><b>E2 first</b> (Luna Max, tight spec, ~25-line diff across <code>conversationStore.svelte.ts</code>, <code>conversationService.ts</code>, <code>+page.svelte</code>) — ~20 min. Counters cost nothing to add and E0 needs them.</li>
+<li><b>E0 + E1 script</b> (SOL medium, one script file, no app changes) — ~45 min to write, ~10 min per sweep run.</li>
+<li><b>Controller reads the table and snapshot diff</b>, picks the hypothesis. ~15 min.</li>
+<li><b>E3</b> only if the fixture shows nothing, or to confirm before a fix. ~30 min.</li>
+<li>Fix lane (single hypothesis, failing test first) — sized after step 3.</li>
+</ol>
+
+<h2>5. What is deliberately not in scope</h2>
+<ul>
+<li>No fixes before E1 names the object.</li>
+<li>No new abstractions; counters are plain numbers on one window object and are DEV-gated.</li>
+<li>The two unbounded backend maps get a separate one-line task later.</li>
+</ul>
+</body>
+</html>

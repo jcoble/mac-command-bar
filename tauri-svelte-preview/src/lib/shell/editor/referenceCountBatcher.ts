@@ -8,18 +8,9 @@
  *
  * **The plain-text search over the project.** This is what the browser preview
  * has, and it is all it has: there is no language server behind a page served
- * by the dev server. One pass over the project can count any number of names at
- * once, so asking about each symbol separately would mean reading the whole
- * project once per symbol — which on a large project is what used to lock the
- * app up, and why the counts were simply switched off there. Two rules fix
- * that, and `createReferenceCountBatcher` holds them:
- *
- *  - **One question for all of them.** The first symbol asked about opens a
- *    short window; every symbol asked about while it is open travels in the
- *    same request, and they all get their answer from its result.
- *  - **An answer keeps for a while.** A project-wide count changes when files
- *    elsewhere change, not when the reader types, so answers are kept for a
- *    stretch instead of being thrown away on every keystroke.
+ * by the dev server. A project-wide count changes when files elsewhere change,
+ * not when the reader types, so answers are kept for a stretch instead of being
+ * thrown away on every keystroke.
  *
  * **The language server.** This is what the desktop app has, and its answer is
  * the better one: it counts the uses of the symbol the reader is looking at
@@ -32,9 +23,8 @@
  * reader will read them in), and closing the file drops the rest.
  *
  * `createReferenceCountStore` is the one place a counted number is remembered,
- * for either machine. It is filed under the project it was counted in, so
- * moving to another project and back finds the first project's numbers still
- * there instead of counting everything a second time.
+ * for either machine. The source-intelligence owner clears it when the active
+ * file or project changes, so no answer survives the view that owns it.
  */
 import type { SourceReferenceCountResult } from '../../sourceData.ts';
 
@@ -111,8 +101,6 @@ export interface ReferenceCountBatcherOptions {
    * `createReferenceCountStore`, which hands out a drawer of itself for this.
    */
   memory: CountMemory;
-  /** How long the window stays open for more symbols, in milliseconds. */
-  windowMs: number;
   /** Counts at or above this are reported as this, matching the margin's "50+". */
   maxCount: number;
 }
@@ -128,40 +116,49 @@ export function createReferenceCountBatcher(
   options: ReferenceCountBatcherOptions
 ): ReferenceCountBatcher {
   const memory = options.memory;
-  let waiting = new Map<string, ((count: CodeLensCount | null) => void)[]>();
-  let windowTimer: ReturnType<typeof setTimeout> | null = null;
+  const pending = new Map<string, Promise<CodeLensCount | null>>();
+  let generation = 0;
 
-  async function askForWaitingSymbols(): Promise<void> {
-    windowTimer = null;
-    const batch = waiting;
-    waiting = new Map();
+  async function askForSymbol(symbolName: string): Promise<CodeLensCount | null> {
+    const startedIn = generation;
 
-    const result = await options.countReferences([...batch.keys()]).catch(() => null);
+    let result: SourceReferenceCountResult | null;
+    try {
+      result = await options.countReferences([symbolName]);
+    } catch {
+      result = null;
+    }
 
-    for (const [symbolName, callers] of batch) {
-      const count = countFromResult(result, symbolName, options.maxCount);
-      if (count !== null) memory.remember(symbolName, count);
-      for (const caller of callers) caller(count);
+    if (startedIn !== generation) {
+      return null;
+    }
+    const count = countFromResult(result, symbolName, options.maxCount);
+    if (count !== null) memory.remember(symbolName, count);
+    return count;
+  }
+
+  async function trackPendingSymbolRequest(symbolName: string): Promise<CodeLensCount | null> {
+    try {
+      return await askForSymbol(symbolName);
+    } finally {
+      pending.delete(symbolName);
     }
   }
 
   return {
-    count(symbolName: string): Promise<CodeLensCount | null> {
+    async count(symbolName: string): Promise<CodeLensCount | null> {
       const remembered = memory.get(symbolName);
-      if (remembered !== undefined) return Promise.resolve(remembered);
+      if (remembered !== undefined) return remembered;
 
-      return new Promise((resolve) => {
-        const callers = waiting.get(symbolName);
-        if (callers) {
-          callers.push(resolve);
-          return;
-        }
-
-        waiting.set(symbolName, [resolve]);
-        windowTimer ??= setTimeout(askForWaitingSymbols, options.windowMs);
-      });
+      const existing = pending.get(symbolName);
+      if (existing) return await existing;
+      const request = trackPendingSymbolRequest(symbolName);
+      pending.set(symbolName, request);
+      return await request;
     },
     forget(): void {
+      generation += 1;
+      pending.clear();
       memory.forget();
     }
   };
@@ -239,6 +236,24 @@ export function createSemanticReferenceCountScheduler(
   let asked = new Set<string>();
   let running = 0;
 
+  async function runSemanticCount(key: string, startedIn: number): Promise<void> {
+    let count: CodeLensCount | null;
+    try {
+      count = await options.countFor(key);
+    } catch {
+      count = null;
+    }
+    try {
+      running -= 1;
+      if (startedIn === generation) {
+        asked.delete(key);
+        options.onCounted(key, count);
+      }
+    } finally {
+      startWhatWeCan();
+    }
+  }
+
   function startWhatWeCan(): void {
     while (running < options.maxInFlight && queue.length > 0) {
       const key = queue.shift();
@@ -246,20 +261,7 @@ export function createSemanticReferenceCountScheduler(
       const startedIn = generation;
       running += 1;
 
-      options
-        .countFor(key)
-        .catch(() => null)
-        .then((count) => {
-          running -= 1;
-          try {
-            if (startedIn === generation) {
-              asked.delete(key);
-              options.onCounted(key, count);
-            }
-          } finally {
-            startWhatWeCan();
-          }
-        });
+      void runSemanticCount(key, startedIn);
     }
   }
 
@@ -293,10 +295,6 @@ export interface ReferenceCountStoreOptions {
   cacheMs: number;
   /** The clock, so tests can move time without waiting. */
   now?: () => number;
-  /** Counts restored from the previous page instance. */
-  initial?: readonly StoredReferenceCount[];
-  /** Called after a remembered value is added or removed. */
-  onChange?: () => void;
 }
 
 export interface StoredReferenceCount {
@@ -316,10 +314,8 @@ export interface ReferenceCountStore {
   /** Every file in this project moved underneath us. */
   forgetProject(project: string | null): void;
   forgetEverything(): void;
-  /** Serializable view used to survive a webview/page refresh. */
+  /** Live entries used by development resource diagnostics. */
   entries(): StoredReferenceCount[];
-  /** Add counts loaded asynchronously from the durable page cache. */
-  restore(entries: readonly StoredReferenceCount[]): void;
   /**
    * One drawer of this store, seen through the flat interface the plain-text
    * batcher wants. `whichProject` is asked each time rather than fixed, so the
@@ -344,26 +340,11 @@ export function createReferenceCountStore(
 ): ReferenceCountStore {
   const now = options.now ?? Date.now;
   /** No project open is a drawer of its own, not a missing one. */
-  const noProject = ' no project';
+  const noProject = 'no project';
   const projects = new Map<string, Map<string, Map<string, RememberedCount>>>();
 
   const drawerFor = (project: string | null) => project ?? noProject;
   const projectFor = (drawer: string) => (drawer === noProject ? null : drawer);
-
-  for (const entry of options.initial ?? []) {
-    const drawer = drawerFor(entry.project);
-    let files = projects.get(drawer);
-    if (!files) {
-      files = new Map();
-      projects.set(drawer, files);
-    }
-    let symbols = files.get(entry.file);
-    if (!symbols) {
-      symbols = new Map();
-      files.set(entry.file, symbols);
-    }
-    symbols.set(entry.key, { value: entry.value, countedAt: entry.countedAt });
-  }
 
   const store: ReferenceCountStore = {
     get(project: string | null, file: string, key: string): CodeLensCount | undefined {
@@ -373,7 +354,6 @@ export function createReferenceCountStore(
       if (!entry) return undefined;
       if (now() - entry.countedAt >= options.cacheMs) {
         symbols?.delete(key);
-        options.onChange?.();
         return undefined;
       }
       return entry.value;
@@ -391,18 +371,15 @@ export function createReferenceCountStore(
         files.set(file, symbols);
       }
       symbols.set(key, { value, countedAt: now() });
-      options.onChange?.();
     },
     forgetFile(project: string | null, file: string): void {
-      if (projects.get(drawerFor(project))?.delete(file)) options.onChange?.();
+      projects.get(drawerFor(project))?.delete(file);
     },
     forgetProject(project: string | null): void {
-      if (projects.delete(drawerFor(project))) options.onChange?.();
+      projects.delete(drawerFor(project));
     },
     forgetEverything(): void {
-      if (projects.size === 0) return;
       projects.clear();
-      options.onChange?.();
     },
     entries(): StoredReferenceCount[] {
       const entries: StoredReferenceCount[] = [];
@@ -426,26 +403,6 @@ export function createReferenceCountStore(
       }
       for (const entry of expired) entry.symbols.delete(entry.key);
       return entries;
-    },
-    restore(entries: readonly StoredReferenceCount[]): void {
-      for (const entry of entries) {
-        const drawer = drawerFor(entry.project);
-        let files = projects.get(drawer);
-        if (!files) {
-          files = new Map();
-          projects.set(drawer, files);
-        }
-        let symbols = files.get(entry.file);
-        if (!symbols) {
-          symbols = new Map();
-          files.set(entry.file, symbols);
-        }
-        // A count produced in this page wins over an older durable value.
-        const current = symbols.get(entry.key);
-        if (!current || current.countedAt < entry.countedAt) {
-          symbols.set(entry.key, { value: entry.value, countedAt: entry.countedAt });
-        }
-      }
     },
     drawer(whichProject: () => string | null, file: string): CountMemory {
       return {

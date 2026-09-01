@@ -31,6 +31,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import { onMount } from 'svelte';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
@@ -58,7 +59,7 @@
     describeGitHistoryFooter,
     type GitPanelState
   } from '$lib/shell/git/gitPanelStore.svelte';
-  import { COMMIT_HISTORY_PAGE, type GitService } from '$lib/shell/git/gitService';
+  import { COMMIT_HISTORY_LIMIT, type GitService } from '$lib/shell/git/gitService';
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { cn } from '$lib/utils';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
@@ -75,6 +76,18 @@
   let { panel, service, commitFiles, files, onShowDiff }: Props = $props();
 
   let open = $state(true);
+  let requestedRoot = '';
+
+  onMount(() => {
+    service.ensureHistorySurface();
+  });
+
+  $effect(() => {
+    const targetRoot = panel.root?.trim() ?? '';
+    if (!targetRoot || targetRoot === requestedRoot) return;
+    requestedRoot = targetRoot;
+    service.ensureHistorySurface();
+  });
 
   /** One row of the graph is exactly this tall, so the SVG can be drawn to size. */
   const ROW_HEIGHT = 40;
@@ -395,16 +408,16 @@
             <button
               type="button"
               class={cn(
-                buttonVariants({ variant: 'outline', size: 'xs' }),
+                buttonVariants({ variant: 'secondary', size: 'xs' }),
                 'w-full text-[12px] font-normal'
               )}
               disabled={!canLoadMore}
-              title="Read another {COMMIT_HISTORY_PAGE} commits further back in this branch's history"
+              title="Read another {COMMIT_HISTORY_LIMIT} commits further back in this branch's history"
               onclick={() => void service.loadMoreHistory()}
             >
               {panel.historyLoadingMore
                 ? 'Reading older commits…'
-                : `Load ${COMMIT_HISTORY_PAGE} more`}
+                : `Load ${COMMIT_HISTORY_LIMIT} more`}
             </button>
           {/if}
         </div>

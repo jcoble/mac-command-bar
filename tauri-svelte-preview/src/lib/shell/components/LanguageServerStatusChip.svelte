@@ -51,9 +51,10 @@
     align-items: center;
     gap: 5px;
     flex: 0 0 auto;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: 5px;
     color: var(--color-text-2);
+    background: var(--color-elevated);
     font-size: 12px;
     line-height: 1;
     padding: 3px 7px;

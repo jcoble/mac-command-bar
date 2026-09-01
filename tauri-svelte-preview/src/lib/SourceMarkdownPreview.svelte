@@ -1,8 +1,7 @@
 <script lang="ts">
-  import {
-    renderSourceMarkdownPreview,
-    sourceMarkdownPreviewTextSummary
-  } from './sourceMarkdownPreview';
+  import { parseSafeMarkdown, type SafeInlinePart, type SafeListItem, type SafeMarkdownBlock } from './shell/conversation/conversationMessageSafety';
+  import { fenceLanguage, highlightCode, plainHighlightedLines } from './shell/components/conversation/codeHighlight';
+  import { sourceMarkdownPreviewTextSummary } from './sourceMarkdownPreview';
 
   type Props = {
     content: string;
@@ -12,8 +11,9 @@
   };
 
   let { content, fileName, relativePath, dirty = false }: Props = $props();
-  let renderedContent = $derived(renderSourceMarkdownPreview(content));
+  let blocks = $derived(parseSafeMarkdown(content));
   let summary = $derived(sourceMarkdownPreviewTextSummary(content) || 'Empty Markdown file');
+  const highlightReady = true;
 </script>
 
 <section
@@ -26,9 +26,47 @@
     <span>{summary}</span>
   </div>
   <article class="source-markdown-preview-document">
-    {@html renderedContent}
+    {#each blocks as block}{@render node(block)}{/each}
   </article>
 </section>
+
+{#snippet node(block: SafeMarkdownBlock)}
+  {#if block.kind === 'code'}
+    {@render codeBlock(block)}
+  {:else if block.kind === 'heading'}
+    <svelte:element this={`h${Math.min(block.level, 6)}`} class={`heading level-${Math.min(block.level, 4)}`}>{#each block.parts as part}{@render inline(part)}{/each}</svelte:element>
+  {:else if block.kind === 'quote'}
+    <blockquote>{#each block.blocks as inner}{@render node(inner)}{/each}</blockquote>
+  {:else if block.kind === 'rule'}
+    <hr />
+  {:else if block.kind === 'list'}
+    {#if block.ordered}<ol>{#each block.items as entry}{@render row(entry)}{/each}</ol>
+    {:else}<ul>{#each block.items as entry}{@render row(entry)}{/each}</ul>{/if}
+  {:else if block.kind === 'table'}
+    <div class="table-scroll"><table><thead><tr>{#each block.headers as cell}<th>{#each cell as part}{@render inline(part)}{/each}</th>{/each}</tr></thead><tbody>{#each block.rows as tableRow}<tr>{#each tableRow as cell}<td>{#each cell as part}{@render inline(part)}{/each}</td>{/each}</tr>{/each}</tbody></table></div>
+  {:else}
+    <p>{#each block.parts as part}{@render inline(part)}{/each}</p>
+  {/if}
+{/snippet}
+
+{#snippet codeBlock(block: Extract<SafeMarkdownBlock, { kind: 'code' }>)}
+  {@const lines = highlightReady ? highlightCode(block.value, fenceLanguage(block.language)) : plainHighlightedLines(block.value)}
+  <pre data-testid="source-markdown-code-block"><code>{#each lines as line, lineIndex}{#if lineIndex > 0}{'\n'}{/if}{#each line as span}<span class={span.className}>{span.value}</span>{/each}{/each}</code></pre>
+{/snippet}
+
+{#snippet row(entry: SafeListItem)}
+  <li class:task-row={entry.task}>{#if entry.task}<input type="checkbox" checked={entry.checked} disabled />{/if}{#each entry.parts as part}{@render inline(part)}{/each}{#each entry.blocks as inner}{@render node(inner)}{/each}</li>
+{/snippet}
+
+{#snippet inline(part: SafeInlinePart)}
+  {#if part.kind === 'strong'}<strong>{#each part.parts as inner}{@render inline(inner)}{/each}</strong>
+  {:else if part.kind === 'emphasis'}<em>{#each part.parts as inner}{@render inline(inner)}{/each}</em>
+  {:else if part.kind === 'strike'}<del>{#each part.parts as inner}{@render inline(inner)}{/each}</del>
+  {:else if part.kind === 'code'}<code>{part.value}</code>
+  {:else if part.kind === 'link'}<a href={part.href} target="_blank" rel="noreferrer">{#each part.parts as inner}{@render inline(inner)}{/each}</a>
+  {:else if part.kind === 'file-link'}<span class="file-link" title={part.path}>{#each part.parts as inner}{@render inline(inner)}{/each}</span>
+  {:else}{part.value}{/if}
+{/snippet}
 
 <style>
   .source-markdown-preview {
@@ -145,7 +183,7 @@
     border-radius: 4px;
     color: #aeeede;
     background: rgba(92, 226, 207, 0.09);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-family: var(--font-mono);
     font-size: 0.92em;
   }
 
@@ -164,6 +202,12 @@
     background: transparent;
     white-space: pre;
   }
+
+  .source-markdown-preview-document :global(.keyword) { color: #82e6d5; }
+  .source-markdown-preview-document :global(.string) { color: #a8e6a2; }
+  .source-markdown-preview-document :global(.comment) { color: #8f9996; font-style: italic; }
+  .source-markdown-preview-document :global(.number) { color: #f4c77a; }
+  .source-markdown-preview-document :global(.type) { color: #9fd4ff; }
 
   .source-markdown-preview-document :global(blockquote) {
     padding: 8px 12px;

@@ -13,14 +13,14 @@
  *   terminal  xterm's theme object. Same story — its own palette, set on the
  *             terminal instance.
  *
- * Two themes ship. `houston` is what the app looks like TODAY, copied value for
- * value out of the three files that hold those values now, so picking it can
- * never change a pixel. `dracula` is the proof that switching works: it repaints
- * the chrome, the editor and the dock.
+ * Houston is what the app looks like TODAY, copied value for value out of the
+ * three files that hold those values now, so picking it can never change a
+ * pixel. The additional CodeMirror catalog entries keep that shell palette and
+ * swap only the visible editor's syntax extension.
  *
  * The copying is the risk. `scripts/themeRegistry.test.mjs` reads the original
- * files and fails if Houston stops agreeing with them, so the two cannot drift
- * apart quietly.
+ * files and fails if Houston stops agreeing with them, so the shipped palette
+ * cannot drift apart quietly.
  *
  * This module is deliberately plain data with no imports: no DOM, no store, no
  * Svelte runes. Applying a theme is `themeService.ts`'s job.
@@ -107,14 +107,20 @@ export const PALETTE_TOKEN_NAMES = [
   '--color-text',
   '--color-text-2',
   '--color-text-3',
+  '--color-disabled-text',
   '--color-accent',
   '--color-border',
   '--color-focus',
+  '--color-focus-solid',
+  '--color-selected',
+  '--color-selected-border',
+  '--color-hover',
   '--color-live',
   '--color-good',
   '--color-bad',
   '--color-attention',
   '--color-idle',
+  '--color-status-idle',
   '--color-on-accent',
   '--color-live-bg',
   '--color-good-bg',
@@ -187,32 +193,38 @@ const HOUSTON: ShellTheme = {
   tokens: {
     // Copied from src/lib/shell/styles/nextTokens.css. Do not edit one without
     // the other; the test reads that file and compares.
-    '--color-bg': '#101014',
-    '--color-surface': '#17171d',
-    '--color-elevated': '#1f1f27',
-    '--color-text': '#d8d8e0',
-    '--color-text-2': '#6d6d7d',
-    '--color-text-3': '#4c4c5a',
-    '--color-accent': '#4bf3c8',
-    '--color-border': '#22222c',
-    '--color-focus': 'rgba(75, 243, 200, 0.45)',
-    '--color-live': '#4bf3c8',
-    '--color-good': '#8bdc9b',
-    '--color-bad': '#ff6d91',
-    '--color-attention': '#ffd493',
-    '--color-idle': 'rgba(255, 255, 255, 0.16)',
-    '--color-on-accent': '#0e1013',
-    '--color-live-bg': 'rgba(75, 243, 200, 0.12)',
-    '--color-good-bg': 'rgba(139, 220, 155, 0.12)',
-    '--color-bad-bg': 'rgba(255, 109, 145, 0.12)',
-    '--color-bad-bg-strong': 'rgba(255, 109, 145, 0.20)',
-    '--color-attention-bg': 'rgba(255, 212, 147, 0.12)',
-    '--color-scrim': 'rgba(0, 0, 0, 0.62)',
+    '--color-bg': '#000000',
+    '--color-surface': '#121212',
+    '--color-elevated': '#1c1c1c',
+    '--color-text': '#f1f3f5',
+    '--color-text-2': '#b3b7bf',
+    '--color-text-3': '#8b919b',
+    '--color-disabled-text': '#7f858e',
+    '--color-accent': '#6ed8be',
+    '--color-border': 'rgba(241, 243, 245, 0.07)',
+    '--color-focus': 'rgba(110, 216, 190, 0.42)',
+    '--color-focus-solid': '#6ed8be',
+    '--color-selected': '#263734',
+    '--color-selected-border': '#5cb29b',
+    '--color-hover': '#232323',
+    '--color-live': '#74b6d8',
+    '--color-good': '#85c79a',
+    '--color-bad': '#e28a98',
+    '--color-attention': '#d7b77e',
+    '--color-idle': '#969ca6',
+    '--color-status-idle': '#969ca6',
+    '--color-on-accent': '#10201b',
+    '--color-live-bg': 'rgba(116, 182, 216, 0.12)',
+    '--color-good-bg': 'rgba(133, 199, 154, 0.12)',
+    '--color-bad-bg': 'rgba(226, 138, 152, 0.12)',
+    '--color-bad-bg-strong': 'rgba(226, 138, 152, 0.2)',
+    '--color-attention-bg': 'rgba(215, 183, 126, 0.12)',
+    '--color-scrim': 'rgba(8, 10, 12, 0.58)',
     // Copied from src/lib/shell/styles/themeChrome.css.
-    '--color-section-header-text': '#7b7b8c',
-    '--color-section-focus-ring': '#bd93f9',
-    '--color-tab-unfocused-surface': '#14141a',
-    '--color-tab-unfocused-text': '#9a9aa8'
+    '--color-section-header-text': '#8b919b',
+    '--color-section-focus-ring': '#6ed8be',
+    '--color-tab-unfocused-surface': '#191b1e',
+    '--color-tab-unfocused-text': '#b3b7bf'
   },
   monaco: {
     // Copied from src/lib/sourcePreviewAppearance.ts.
@@ -345,27 +357,33 @@ const DRACULA: ShellTheme = {
     '--color-surface': '#282a36',
     '--color-elevated': '#343746',
     '--color-text': '#f8f8f2',
-    '--color-text-2': '#6272a4',
-    '--color-text-3': '#454c73',
+    '--color-text-2': '#b8b8c4',
+    '--color-text-3': '#9298b5',
+    '--color-disabled-text': '#8f95b3',
     '--color-accent': '#bd93f9',
-    '--color-border': '#44475a',
+    '--color-border': 'rgba(248, 248, 242, 0.12)',
     '--color-focus': 'rgba(189, 147, 249, 0.45)',
-    '--color-live': '#50fa7b',
+    '--color-focus-solid': '#bd93f9',
+    '--color-selected': '#44475a',
+    '--color-selected-border': '#b58bfa',
+    '--color-hover': '#343746',
+    '--color-live': '#8be9fd',
     '--color-good': '#50fa7b',
-    '--color-bad': '#ff5555',
+    '--color-bad': '#ff6b6b',
     '--color-attention': '#f1fa8c',
-    '--color-idle': 'rgba(248, 248, 242, 0.18)',
+    '--color-idle': '#a4a6b8',
+    '--color-status-idle': '#a4a6b8',
     '--color-on-accent': '#21222c',
-    '--color-live-bg': 'rgba(80, 250, 123, 0.12)',
+    '--color-live-bg': 'rgba(139, 233, 253, 0.12)',
     '--color-good-bg': 'rgba(80, 250, 123, 0.12)',
     '--color-bad-bg': 'rgba(255, 85, 85, 0.12)',
     '--color-bad-bg-strong': 'rgba(255, 85, 85, 0.20)',
     '--color-attention-bg': 'rgba(241, 250, 140, 0.12)',
     '--color-scrim': 'rgba(0, 0, 0, 0.62)',
-    '--color-section-header-text': '#7b83b0',
+    '--color-section-header-text': '#9298b5',
     '--color-section-focus-ring': '#bd93f9',
     '--color-tab-unfocused-surface': '#242631',
-    '--color-tab-unfocused-text': '#9aa0c8'
+    '--color-tab-unfocused-text': '#b8b8c4'
   },
   monaco: {
     id: 'dracula',
@@ -491,8 +509,23 @@ const DRACULA: ShellTheme = {
 /** The theme the app opens with, and the one every unknown name falls back to. */
 export const DEFAULT_THEME_ID = 'houston';
 
+/** ThemeMirror entries keep the Houston shell until CodeMirror adds its palette. */
+const THEMEMIRROR_THEMES: ShellTheme[] = [
+  ['amy', 'Amy'],
+  ['ayu-light', 'Ayu Light'],
+  ['cobalt', 'Cobalt'],
+  ['rose-pine-dawn', 'Rose Pine Dawn'],
+  ['tomorrow', 'Tomorrow']
+].map(([id, label]) => ({
+  ...HOUSTON,
+  id,
+  label,
+  description: `${label} CodeMirror syntax theme.`,
+  monaco: { ...HOUSTON.monaco, id }
+}));
+
 /** Every theme, in the order the chooser should list them. */
-export const THEMES: ShellTheme[] = [HOUSTON, DRACULA];
+export const THEMES: ShellTheme[] = [HOUSTON, ...THEMEMIRROR_THEMES, DRACULA];
 
 const BY_ID = new Map<string, ShellTheme>(THEMES.map((theme) => [theme.id, theme]));
 

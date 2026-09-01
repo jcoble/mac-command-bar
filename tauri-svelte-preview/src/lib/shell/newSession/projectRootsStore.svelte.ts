@@ -1,45 +1,49 @@
 /**
- * projectRootsStore.svelte.ts — the project folders the new-session dialog offers.
+ * projectRootsStore.svelte.ts — the project folders the new-session thread pane offers.
  *
  * STATE ONLY, in the pattern `sessionRailStore.svelte.ts` set:
  *
- *  1. **No backend, ever.** The only IO here is `localStorage`. Listing
- *     worktrees, picking a folder with the system dialog and asking whether a
- *     folder is really a git repository all live in `newSessionBackend.ts`, and
- *     land here as plain mutations.
- *  2. **No `$effect`.** Persistence is an explicit `persist()` call at the end
- *     of every mutator that changes something worth keeping.
+ *  1. **SQLite owns durable state.** This store reads and writes only the two
+ *     global Assembly settings it owns. Listing worktrees, picking a folder
+ *     with the system dialog and asking whether a folder is really a git
+ *     repository all live in `newSessionBackend.ts`, and land here as plain
+ *     mutations.
+ *  2. **No `$effect`.** Persistence is an explicit write at the end of every
+ *     mutator that changes something worth keeping.
  *
  * Where the list comes from — three places, merged by `mergeKnownRoots`:
  *  - the folders built into this app (`defaultProjectRoots` in `sourceData.ts`,
  *    two hard-coded paths — see the note on `builtInRoots` below);
  *  - the folders the user added, kept here under this store's own key;
  *  - the folders the sessions on the rail are already running in, handed in by
- *    whoever opens the dialog via `setSessionRoots`.
+ *    whoever opens the pane via `setSessionRoots`.
  *
  * A storage failure never breaks the picker: the in-memory list keeps working
  * and the failure is reported on `projectRoots.error` rather than swallowed.
  */
 import { defaultProjectRoots } from '../../sourceData.ts';
 import {
+  readAssemblySettingFromTauri,
+  writeAssemblySettingFromTauri
+} from '../../tauriSource.ts';
+import {
   createCustomRoot,
   mergeKnownRoots,
   normalizeRootPath,
   parseStoredCustomRoots,
-  serializeCustomRoots,
   type CustomRoot,
   type KnownRoot
 } from './newSessionFlow.ts';
 
-/** Where the folders the user added are kept. This lane's own key. */
-export const CUSTOM_PROJECT_ROOTS_STORAGE_KEY = 'mac-command-bar.next.new-session-custom-roots';
+/** The global SQLite setting that owns folders added through New Session. */
+export const CUSTOM_PROJECT_ROOTS_SETTING_KEY = 'new-session.custom-project-roots';
 
-/** Where the folder the dialog last started in is kept, so it opens there again. */
-export const LAST_PROJECT_ROOT_STORAGE_KEY = 'mac-command-bar.next.new-session-last-root';
+/** The global SQLite setting that owns the folder New Session last used. */
+export const LAST_PROJECT_ROOT_SETTING_KEY = 'new-session.last-project-root';
 
 /** What the user is told when the added folders could not be written down. */
-export const STORAGE_WRITE_FAILED_MESSAGE =
-  'That folder could not be saved — browser storage is full, so it will be gone after a reload';
+export const PERSISTENCE_WRITE_FAILED_MESSAGE =
+  'That folder could not be saved, so it will be gone after a reload';
 
 // ── Reactive state ────────────────────────────────────────────────────────────
 
@@ -48,7 +52,7 @@ export const projectRoots = $state<{
   custom: CustomRoot[];
   /** Folders the sessions on the rail run in. Never persisted — they are derived. */
   sessionPaths: string[];
-  /** The folder the dialog should open on, when it is still one of the known ones. */
+  /** The folder the pane should open on, when it is still one of the known ones. */
   lastUsedPath: string | null;
   /** Whether the stored folders have been read yet, so hydrate runs once. */
   hydrated: boolean;
@@ -88,7 +92,7 @@ export function knownRoots(): KnownRoot[] {
 }
 
 /**
- * The folder the dialog should open on: the one last started in when it is
+ * The folder the pane should open on: the one last started in when it is
  * still on the list, otherwise the first folder there, otherwise nothing.
  */
 export function initialRootPath(): string | null {
@@ -101,54 +105,80 @@ export function initialRootPath(): string | null {
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
-/** Write the added folders down; `true` when it landed. */
-function persist(): boolean {
-  if (typeof localStorage === 'undefined') return false;
-  try {
-    localStorage.setItem(
-      CUSTOM_PROJECT_ROOTS_STORAGE_KEY,
-      serializeCustomRoots($state.snapshot(projectRoots.custom) as CustomRoot[])
-    );
-    return true;
-  } catch {
-    projectRoots.error = STORAGE_WRITE_FAILED_MESSAGE;
-    return false;
-  }
+let customVersion = 0;
+let lastUsedVersion = 0;
+let hydrationPromise: Promise<void> | null = null;
+
+/** Write the added folders to their SQLite setting. */
+function persistCustom(): void {
+  const snapshot = $state.snapshot(projectRoots.custom) as CustomRoot[];
+  void persistCustomRoots(snapshot);
 }
 
 /** Remember where the last session was started. Failing this is not worth a word. */
 function persistLastUsed(): void {
-  if (typeof localStorage === 'undefined') return;
+  void persistLastUsedRoot(projectRoots.lastUsedPath);
+}
+
+async function persistCustomRoots(snapshot: CustomRoot[]): Promise<void> {
   try {
-    if (projectRoots.lastUsedPath) {
-      localStorage.setItem(LAST_PROJECT_ROOT_STORAGE_KEY, projectRoots.lastUsedPath);
-    } else {
-      localStorage.removeItem(LAST_PROJECT_ROOT_STORAGE_KEY);
-    }
+    await writeAssemblySettingFromTauri(CUSTOM_PROJECT_ROOTS_SETTING_KEY, snapshot);
   } catch {
-    // Which folder the dialog opens on is a convenience. Losing it is not an
-    // error anyone needs to read about.
+    projectRoots.error = PERSISTENCE_WRITE_FAILED_MESSAGE;
+  }
+}
+
+async function persistLastUsedRoot(path: string | null): Promise<void> {
+  try {
+    await writeAssemblySettingFromTauri(LAST_PROJECT_ROOT_SETTING_KEY, path);
+  } catch {
+    // Best effort preference.
   }
 }
 
 /**
  * Read the added folders and the last-used one back. Safe to call repeatedly —
- * it does its work once. Tolerant: unreadable storage means an empty list, not
- * a broken dialog.
+ * it does its work once. Tolerant: an unreadable setting means an empty value,
+ * not a broken dialog. A user mutation made while the read is in flight wins.
  */
-export function hydrate(): void {
+export async function hydrate(): Promise<void> {
   if (projectRoots.hydrated) return;
-  projectRoots.hydrated = true;
-  if (typeof localStorage === 'undefined') return;
+  if (hydrationPromise) {
+    await hydrationPromise;
+    return;
+  }
+  const customVersionAtStart = customVersion;
+  const lastUsedVersionAtStart = lastUsedVersion;
+
+  hydrationPromise = hydrateProjectRoots(customVersionAtStart, lastUsedVersionAtStart);
+
+  await hydrationPromise;
+}
+
+async function hydrateProjectRoots(
+  customVersionAtStart: number,
+  lastUsedVersionAtStart: number
+): Promise<void> {
   try {
-    projectRoots.custom = parseStoredCustomRoots(
-      localStorage.getItem(CUSTOM_PROJECT_ROOTS_STORAGE_KEY)
-    );
-    const last = normalizeRootPath(localStorage.getItem(LAST_PROJECT_ROOT_STORAGE_KEY) ?? '');
-    projectRoots.lastUsedPath = last || null;
+    const [storedCustom, storedLastUsed] = await Promise.all([
+      readAssemblySettingFromTauri(CUSTOM_PROJECT_ROOTS_SETTING_KEY),
+      readAssemblySettingFromTauri(LAST_PROJECT_ROOT_SETTING_KEY)
+    ]);
+      if (customVersion === customVersionAtStart) {
+        projectRoots.custom = parseStoredCustomRoots(
+          storedCustom === null ? null : JSON.stringify(storedCustom)
+        );
+      }
+      if (lastUsedVersion === lastUsedVersionAtStart) {
+        const last = normalizeRootPath(typeof storedLastUsed === 'string' ? storedLastUsed : '');
+        projectRoots.lastUsedPath = last || null;
+      }
   } catch {
-    projectRoots.custom = [];
-    projectRoots.lastUsedPath = null;
+    if (customVersion === customVersionAtStart) projectRoots.custom = [];
+    if (lastUsedVersion === lastUsedVersionAtStart) projectRoots.lastUsedPath = null;
+  } finally {
+    projectRoots.hydrated = true;
+    hydrationPromise = null;
   }
 }
 
@@ -165,8 +195,9 @@ export function addCustomRoot(path: string, name?: string): CustomRoot | null {
   const root = createCustomRoot(path, name);
   if (!root) return null;
   if (projectRoots.custom.some((existing) => existing.id === root.id)) return root;
+  customVersion += 1;
   projectRoots.custom = [...projectRoots.custom, root];
-  persist();
+  persistCustom();
   return root;
 }
 
@@ -178,13 +209,14 @@ export function addCustomRoot(path: string, name?: string): CustomRoot | null {
 export function removeCustomRoot(id: string): void {
   const next = projectRoots.custom.filter((root) => root.id !== id);
   if (next.length === projectRoots.custom.length) return;
+  customVersion += 1;
   projectRoots.custom = next;
-  persist();
+  persistCustom();
 }
 
 /**
  * Tell the store which folders the sessions on the rail are running in. Called
- * by whoever opens the dialog; the store never reaches into the rail itself.
+ * by whoever opens the pane; the store never reaches into the rail itself.
  */
 export function setSessionRoots(paths: string[]): void {
   projectRoots.sessionPaths = paths
@@ -195,6 +227,7 @@ export function setSessionRoots(paths: string[]): void {
 /** Remember the folder a session was just started in. */
 export function rememberLastUsed(path: string): void {
   const normalized = normalizeRootPath(path);
+  lastUsedVersion += 1;
   projectRoots.lastUsedPath = normalized || null;
   persistLastUsed();
 }

@@ -1,143 +1,217 @@
 /**
- * explorerStore.svelte.ts — Svelte 5 runes state for the /next file explorer.
+ * State for the lazy /next file explorer.
  *
- * STATE ONLY. Two rules, same as the session rail store:
- *
- * 1. **No backend, ever.** Every Tauri call lives in `explorerService.ts` and
- *    lands here as a plain mutation.
- * 2. **No `$effect`** — illegal in a `.svelte.ts` module and against the
- *    constitution. Nothing here is persisted either: this wave deliberately has
- *    no scan cache (the old shell's localStorage cache was uncapped and died
- *    silently on large repositories), so a reload rescans.
- *
- * Two deliberate shapes worth knowing:
- *
- * - `records` is `$state.raw`, reached through `explorerRecords()`. A scan can
- *   return ten thousand file records, and a normal `$state` array would wrap
- *   every one of them in a proxy the first time the tree walked it. The list is
- *   only ever replaced wholesale, never edited in place, so raw is both cheaper
- *   and correct.
- * - `expandedFolderIds` is a plain `Set`. Svelte does not track changes made
- *   inside a `Set`, so every mutator assigns a NEW set — see `toggleFolder` in
- *   `explorerTree.ts`. Mutating it in place would leave the tree frozen.
+ * The root listing contains only top-level entries. Expanding a directory adds
+ * its immediate children; collapsing it removes those descendants again. The
+ * list is raw because it is replaced as a unit and no row needs a Svelte proxy.
  */
-import type { SourceRecord } from '../../sourceData.ts';
-import { expandedForRecord, toggleFolder } from './explorerTree.ts';
+import type { SourceDirectoryEntry } from '../../sourceData.ts';
+import { setLoadedTreeNodes } from '../resourceDiagnostics.svelte.ts';
 
-// ── Reactive state ────────────────────────────────────────────────────────────
+export type ExplorerTreeNode = SourceDirectoryEntry & {
+  parentPath: string;
+  depth: number;
+  childCount: number;
+  ignored: boolean;
+};
 
-/**
- * The explorer's small state. Read fields directly in components
- * (`explorer.scanning`, `explorer.query`); the scanned file list lives apart in
- * `explorerRecords()` for the reason above.
- */
 export const explorer = $state<{
-  /** Absolute path of the project being listed, once `activate` has run. */
   root: string | null;
-  /** True after the first `activate(root)` — before that the panel is inert. */
   activated: boolean;
-  /** Filter box text. */
   query: string;
-  /** Ids of open folders (`folder:src`, `folder:src/lib`, …). */
-  expandedFolderIds: Set<string>;
-  /** Scroll offset of the tree container, in pixels. */
   scrollTop: number;
-  /** Measured height of the tree container; 0 until it has been shown. */
   viewportHeight: number;
-  /** Absolute path of the highlighted file, if any. */
   selectedPath: string | null;
-  /** A scan is running. */
+  includeExcluded: boolean;
   scanning: boolean;
-  /** `scanId` of the running scan, so a superseding scan can cancel it. */
-  activeScanId: string;
-  /** Last failure, in plain words, or null. */
   error: string | null;
-  /** The backend stopped at its file limit — the list is incomplete. */
-  truncated: boolean;
-  /** File limit the last scan ran with. */
-  limit: number;
-  /** `Date.now()` when the last scan finished, for the "listed at" note. */
+  unavailable: 'checkout-deleted' | null;
   lastScanFinishedAt: number | null;
 }>({
   root: null,
   activated: false,
   query: '',
-  expandedFolderIds: new Set(),
   scrollTop: 0,
   viewportHeight: 0,
   selectedPath: null,
+  includeExcluded: false,
   scanning: false,
-  activeScanId: '',
   error: null,
-  truncated: false,
-  limit: 0,
+  unavailable: null,
   lastScanFinishedAt: null
 });
 
-/** The scanned file list. Raw on purpose (see the module note). */
-let scannedRecords = $state.raw<SourceRecord[]>([]);
+let treeNodes = $state.raw<ExplorerTreeNode[]>([]);
+const loadedDirectoryDepths = new Map<string, number>();
+let scanGeneration = 0;
 
-/** Files from the last scan. Call it in templates — the read is tracked. */
-export function explorerRecords(): SourceRecord[] {
-  return scannedRecords;
+export function canonicalPath(path: string): string {
+  const value = path.trim().replaceAll('\\', '/');
+  if (!value) return '';
+
+  const absolute = value.startsWith('/');
+  const parts: string[] = [];
+  for (const part of value.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (parts.length > 0 && parts[parts.length - 1] !== '..') parts.pop();
+      else if (!absolute) parts.push(part);
+      continue;
+    }
+    parts.push(part);
+  }
+  const joined = parts.join('/');
+  if (!joined) return absolute ? '/' : '.';
+  return absolute ? `/${joined}` : joined;
 }
 
-// ── Mutations ─────────────────────────────────────────────────────────────────
+export function explorerScanGeneration(): number {
+  return scanGeneration;
+}
 
-/** Forget everything about the previous project. Called when the explorer is
- * pointed at a different root, so no rows from the old project survive. */
+function publishLoadedNodes(): void {
+  setLoadedTreeNodes(treeNodes.length);
+}
+
+export function explorerNodes(): ExplorerTreeNode[] {
+  return treeNodes;
+}
+
+export function loadedExplorerDirectoryDepth(path: string): number | null {
+  return loadedDirectoryDepths.get(canonicalPath(path)) ?? null;
+}
+
+export function loadedExplorerDirectories(): Array<{ path: string; depth: number }> {
+  return [...loadedDirectoryDepths].map(([path, depth]) => ({ path, depth }));
+}
+
+export function isExplorerPathAtOrBelow(path: string, directory: string): boolean {
+  const target = canonicalPath(directory);
+  const candidate = canonicalPath(path);
+  if (target === '.') return !candidate.startsWith('/');
+  return candidate === target || candidate.startsWith(`${target.replace(/\/+$/, '')}/`);
+}
+
+export function isExplorerDirectoryPresent(path: string): boolean {
+  const target = canonicalPath(path);
+  return target === explorer.root || treeNodes.some((node) => node.path === target && node.isDirectory);
+}
+
 export function resetExplorer(): void {
-  scannedRecords = [];
+  scanGeneration += 1;
+  treeNodes = [];
+  publishLoadedNodes();
+  loadedDirectoryDepths.clear();
+  explorer.root = null;
+  explorer.activated = false;
   explorer.query = '';
-  explorer.expandedFolderIds = new Set();
   explorer.scrollTop = 0;
   explorer.selectedPath = null;
+  explorer.includeExcluded = false;
+  explorer.scanning = false;
   explorer.error = null;
-  explorer.truncated = false;
-  explorer.limit = 0;
+  explorer.unavailable = null;
   explorer.lastScanFinishedAt = null;
 }
 
-/** Mark a scan as started against `root`. */
-export function beginScan(root: string, scanId: string): void {
-  explorer.root = root;
+export function beginScan(root: string): void {
+  scanGeneration += 1;
+  explorer.root = canonicalPath(root);
   explorer.activated = true;
-  explorer.activeScanId = scanId;
   explorer.scanning = true;
   explorer.error = null;
+  explorer.unavailable = null;
 }
 
-/** Store a finished scan's result. */
-export function applyScanResult(records: SourceRecord[], limit: number, truncated: boolean): void {
-  scannedRecords = records;
-  explorer.limit = limit;
-  explorer.truncated = truncated;
+export function applyDirectoryResult(
+  directory: string,
+  depth: number,
+  entries: readonly SourceDirectoryEntry[]
+): void {
+  const target = canonicalPath(directory);
+  const normalizedEntries = entries.map((entry) => ({ ...entry, path: canonicalPath(entry.path) }));
+  const previousChildren = treeNodes.filter((node) => node.parentPath === target);
+  const nextByPath = new Map(normalizedEntries.map((entry) => [entry.path, entry]));
+  const removedPaths = previousChildren
+    .filter((node) => {
+      const next = nextByPath.get(node.path);
+      return !next || next.isDirectory !== node.isDirectory;
+    })
+    .map((node) => node.path);
+
+  const retained = treeNodes.filter(
+    (node) =>
+      node.parentPath !== target &&
+      !removedPaths.some((removedPath) => isExplorerPathAtOrBelow(node.path, removedPath))
+  );
+  const previousByPath = new Map(previousChildren.map((node) => [node.path, node]));
+  const children = normalizedEntries.map<ExplorerTreeNode>((entry) => {
+    const previous = previousByPath.get(entry.path);
+    return {
+      ...entry,
+      parentPath: target,
+      depth,
+      childCount: previous?.isDirectory === entry.isDirectory ? previous.childCount : 0,
+      ignored: entry.excluded
+    };
+  });
+  treeNodes = [...retained, ...children].map((node) =>
+    node.path === target ? { ...node, childCount: normalizedEntries.length } : node
+  );
+  publishLoadedNodes();
+
+  for (const loadedPath of [...loadedDirectoryDepths.keys()]) {
+    if (removedPaths.some((removedPath) => isExplorerPathAtOrBelow(loadedPath, removedPath))) {
+      loadedDirectoryDepths.delete(loadedPath);
+    }
+  }
+  loadedDirectoryDepths.set(target, depth);
   explorer.error = null;
   explorer.lastScanFinishedAt = Date.now();
-  // A path selected under the previous list may no longer exist.
-  if (explorer.selectedPath && !records.some((record) => record.path === explorer.selectedPath)) {
+  if (explorer.selectedPath && !treeNodes.some((node) => node.path === explorer.selectedPath)) {
     explorer.selectedPath = null;
   }
 }
 
-/** Record a scan failure in plain words; the previous list is thrown away so
- * the panel never shows a stale tree next to an error. */
-export function failScan(message: string): void {
-  scannedRecords = [];
-  explorer.truncated = false;
+export function discardDirectory(directory: string): void {
+  const target = canonicalPath(directory);
+  treeNodes = treeNodes.filter(
+    (node) => !isExplorerPathAtOrBelow(node.path, target) || node.path === target
+  );
+  publishLoadedNodes();
+  for (const loadedPath of [...loadedDirectoryDepths.keys()]) {
+    if (isExplorerPathAtOrBelow(loadedPath, target)) loadedDirectoryDepths.delete(loadedPath);
+  }
+  if (explorer.selectedPath && !treeNodes.some((node) => node.path === explorer.selectedPath)) {
+    explorer.selectedPath = null;
+  }
+}
+
+export function failScan(message: string, unavailable: 'checkout-deleted' | null = null): void {
+  treeNodes = [];
+  publishLoadedNodes();
+  loadedDirectoryDepths.clear();
+  explorer.error = message;
+  explorer.unavailable = unavailable;
+}
+
+export function markCheckoutDeleted(): void {
+  resetExplorer();
+  explorer.activated = true;
+  explorer.error = 'This session\u2019s checkout/worktree no longer exists.';
+  explorer.unavailable = 'checkout-deleted';
+}
+
+export function setExplorerError(message: string | null): void {
   explorer.error = message;
 }
 
-/** Clear the "a scan is running" flags. Safe to call twice. */
 export function endScan(): void {
   explorer.scanning = false;
-  explorer.activeScanId = '';
 }
 
 export function setQuery(query: string): void {
   explorer.query = query;
-  // A new filter produces a different row list; keeping the old offset would
-  // land the user in the middle of nowhere.
   explorer.scrollTop = 0;
 }
 
@@ -145,23 +219,14 @@ export function setScrollTop(scrollTop: number): void {
   explorer.scrollTop = Math.max(0, scrollTop);
 }
 
-/** Store a measured container height. Zero is IGNORED: the panel mounts inside
- * a hidden parking area and is also hidden whenever another tab is in front,
- * and a zero height there is not a real measurement. */
 export function setViewportHeight(viewportHeight: number): void {
   if (viewportHeight > 0) explorer.viewportHeight = viewportHeight;
-}
-
-export function toggleFolderExpansion(folderId: string): void {
-  explorer.expandedFolderIds = toggleFolder(explorer.expandedFolderIds, folderId);
 }
 
 export function selectPath(path: string | null): void {
   explorer.selectedPath = path;
 }
 
-/** Open every folder above `record` and highlight it. */
-export function revealRecord(record: SourceRecord): void {
-  explorer.expandedFolderIds = expandedForRecord(explorer.expandedFolderIds, record);
-  explorer.selectedPath = record.path;
+export function setIncludeExcluded(includeExcluded: boolean): void {
+  explorer.includeExcluded = includeExcluded;
 }

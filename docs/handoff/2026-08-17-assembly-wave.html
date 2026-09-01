@@ -1,0 +1,581 @@
+<title>Assembly Wave Handoff</title>
+<style>
+  :root {
+    --ground: #f7f6f3;
+    --surface: #ffffff;
+    --surface-2: #efede8;
+    --line: #d9d5cc;
+    --line-soft: #e7e3db;
+    --ink: #1c1f26;
+    --ink-2: #4a4f5c;
+    --ink-3: #767c8b;
+    --accent: #9a6612;
+    --accent-soft: #f2e6cf;
+    --bad: #a32a1f;
+    --bad-soft: #f6dfdb;
+    --good: #2c6b45;
+    --good-soft: #dcece1;
+    --warn: #8a6410;
+    --warn-soft: #f6e9cd;
+    --shadow: 0 1px 2px rgba(28, 31, 38, .06), 0 8px 24px rgba(28, 31, 38, .05);
+
+    --sans: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    --serif: ui-serif, "New York", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #14161b;
+      --surface: #1b1e25;
+      --surface-2: #22262f;
+      --line: #333844;
+      --line-soft: #282d37;
+      --ink: #e8e9ed;
+      --ink-2: #b0b5c0;
+      --ink-3: #7d8492;
+      --accent: #d99f4a;
+      --accent-soft: #34291a;
+      --bad: #e8877a;
+      --bad-soft: #38211e;
+      --good: #7fc39a;
+      --good-soft: #1c2f25;
+      --warn: #d9b45e;
+      --warn-soft: #332a17;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #14161b;
+    --surface: #1b1e25;
+    --surface-2: #22262f;
+    --line: #333844;
+    --line-soft: #282d37;
+    --ink: #e8e9ed;
+    --ink-2: #b0b5c0;
+    --ink-3: #7d8492;
+    --accent: #d99f4a;
+    --accent-soft: #34291a;
+    --bad: #e8877a;
+    --bad-soft: #38211e;
+    --good: #7fc39a;
+    --good-soft: #1c2f25;
+    --warn: #d9b45e;
+    --warn-soft: #332a17;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 20px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  /* ---------- masthead ---------- */
+
+  .masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 56px 0 24px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .eyebrow {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  h1 {
+    font-family: var(--sans);
+    font-size: clamp(30px, 5vw, 42px);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    line-height: 1.1;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 18px;
+    color: var(--ink-2);
+    margin: 0;
+    max-width: 62ch;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-3);
+    padding-top: 6px;
+  }
+
+  /* ---------- sections ---------- */
+
+  section { padding-top: 48px; }
+
+  h2 {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink);
+    margin: 0 0 4px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .section-note {
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--ink-3);
+    margin: 0 0 20px;
+  }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -.01em;
+    margin: 28px 0 8px;
+    color: var(--ink);
+  }
+
+  p { margin: 0 0 14px; max-width: 66ch; }
+  p:last-child { margin-bottom: 0; }
+
+  ul, ol { margin: 0 0 14px; padding-left: 22px; max-width: 66ch; }
+  li { margin-bottom: 7px; }
+  li:last-child { margin-bottom: 0; }
+
+  code {
+    font-family: var(--mono);
+    font-size: .86em;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--ink);
+    word-break: break-word;
+  }
+
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, .card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* ---------- the alarm block ---------- */
+
+  .alarm {
+    background: var(--bad-soft);
+    border: 1px solid var(--bad);
+    border-radius: 8px;
+    padding: 22px 24px;
+    margin-top: 24px;
+  }
+  .alarm h3 { margin-top: 0; color: var(--bad); }
+  .alarm h3:not(:first-child) { margin-top: 24px; }
+
+  /* ---------- cards ---------- */
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 18px 20px;
+    box-shadow: var(--shadow);
+  }
+  .stack { display: flex; flex-direction: column; gap: 14px; }
+
+  .card-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .card-title {
+    font-family: var(--sans);
+    font-weight: 650;
+    font-size: 15px;
+    margin: 0;
+    color: var(--ink);
+  }
+  .card p { font-size: 15px; margin-bottom: 10px; }
+  .card ul { font-size: 15px; }
+
+  /* ---------- state pills ---------- */
+
+  .pill {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+  }
+  .pill-done { background: var(--good-soft); color: var(--good); border-color: var(--good); }
+  .pill-open { background: var(--bad-soft); color: var(--bad); border-color: var(--bad); }
+  .pill-wait { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .pill-idle { background: var(--surface-2); color: var(--ink-3); border-color: var(--line); }
+
+  /* ---------- tables ---------- */
+
+  .scroll { overflow-x: auto; margin-bottom: 14px; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: var(--sans);
+    font-size: 13.5px;
+    min-width: 520px;
+  }
+  th {
+    text-align: left;
+    font-weight: 650;
+    font-size: 11px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1px solid var(--line);
+    padding: 0 14px 8px 0;
+  }
+  td {
+    border-bottom: 1px solid var(--line-soft);
+    padding: 10px 14px 10px 0;
+    vertical-align: top;
+    color: var(--ink-2);
+  }
+  td:first-child { color: var(--ink); font-weight: 550; }
+  td code { font-size: 12px; }
+  tr:last-child td { border-bottom: none; }
+
+  /* ---------- rules list ---------- */
+
+  .rules { list-style: none; padding: 0; margin: 0; max-width: none; }
+  .rules li {
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line-soft);
+    margin: 0;
+    font-size: 15px;
+  }
+  .rules li:last-child { border-bottom: none; }
+  .rules .mark {
+    font-family: var(--sans);
+    font-weight: 700;
+    color: var(--bad);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  .rules strong { color: var(--ink); }
+
+  /* ---------- trap entries ---------- */
+
+  .trap {
+    border-left: 3px solid var(--line);
+    padding: 2px 0 2px 18px;
+    margin-bottom: 22px;
+  }
+  .trap:last-child { margin-bottom: 0; }
+  .trap-title {
+    font-family: var(--sans);
+    font-weight: 650;
+    font-size: 15px;
+    color: var(--ink);
+    margin: 0 0 6px;
+  }
+  .trap p { font-size: 15px; color: var(--ink-2); }
+
+  .footer {
+    margin-top: 64px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+
+  @media (max-width: 640px) {
+    body { padding: 0 16px 64px; }
+    .masthead { padding-top: 40px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Controller handoff</div>
+    <h1>Assembly Wave Handoff</h1>
+    <p class="standfirst">Everything a fresh controller needs to pick up the mac-command-bar Assembly workbench without asking the owner to re-explain any of it.</p>
+    <div class="meta">
+      <span>2026-08-17</span>
+      <span>branch <code>tsk-808-assembly-wave</code></span>
+      <span>head <code>b5a03c0</code></span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Read this before touching anything</h2>
+    <p class="section-note">Two architecture facts that have been re-derived, wrongly, more than once.</p>
+
+    <div class="alarm">
+      <h3>1. The SQLite database is the source of truth and the event source</h3>
+      <p>Everything bases off it. Sessions, events, attachments, annotations and drafts all live in <code>sessions.db</code> at <code>~/Library/Application Support/dev.blackcolours.MacCommandBarWebviewPreview/</code>. The conversation transcript is not a cache of something else — the event journal in that database <em>is</em> the conversation. If a value is not in the database, it is not real, and a UI that shows something the database does not contain is a bug.</p>
+      <p>Practical consequence: never add a code path that reconstructs session state from anywhere else. When the transcript looks wrong, read the rows first and confirm what the database actually holds before changing rendering code.</p>
+
+      <h3>2. localStorage holds VIEW state, and that is deliberate — do not "fix" it</h3>
+      <p>The <code>/next</code> shell keeps nineteen <code>n.*</code> keys in localStorage. It is tempting to read that as the database being duplicated. It is not. Every one of them stores something the database has no representation of, and each has a reason written into its own module header:</p>
+      <ul>
+        <li><code>n.session-workspaces</code> — what each session had open: editor tabs, file tree, scroll positions. It exists because the editor and file tree are one-of-each for the whole shell, so two sessions in the same repository shared one set of tabs and lost your place both ways. Its second half is explicitly a <strong>performance</strong> decision: the last few sessions' tabs are held in memory so switching back restores the files themselves instead of re-reading every one off disk (<code>sessionWorkspaces.ts</code> header).</li>
+        <li><code>n.rail-groups</code> — which rail headings are open, and the grouping and filtering of the rail. "Nothing here decides what a session IS" (<code>sessionGroups.ts</code> header).</li>
+        <li><code>n.stacks.definitions</code>, <code>n.stacks.runs</code> — saved run configurations such as <code>pnpm dev</code> or <code>docker compose up</code>. A separate feature with its own user data, whose stated rule is "No backend, ever. The only IO here is localStorage." The keys still say "stack" deliberately: renaming them would make users' saved configurations come back empty after an update (<code>stackStore.svelte.ts</code> header).</li>
+        <li><code>n.center-tab-v1</code>, <code>n.right-tab-v1</code> — which tab each session was left on, keyed by session id (<code>workbenchTabs.ts</code> header).</li>
+      </ul>
+      <p>The database stores no notion of "which tab you left this session on", so none of this is a second copy of anything. Disconnecting it would not simplify the app; it would lose the state and the switch-cost work that was done on purpose.</p>
+      <p><strong>The one key that genuinely did duplicate database truth is already gone.</strong> <code>mac-command-bar.next.owned-sessions</code> re-imported sessions on every launch whenever the database was empty, which is what made repeated database wipes appear not to work. The whole adoption block was deleted in <code>65c2353</code>. It is a different key from the nineteen above and it no longer exists.</p>
+      <p>Still worth knowing when resetting state: WebKit writes localStorage lazily, so a <code>removeItem</code> followed by killing the app discards the removal. That cost hours before it was understood.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where the work is</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>What</th><th>Where</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Worktree</td><td><code>/Users/blackcolours/dev/work/worktrees/mac-command-bar/tsk-808-assembly-wave</code></td></tr>
+          <tr><td>Branch</td><td><code>tsk-808-assembly-wave</code>, ~911 commits</td></tr>
+          <tr><td>Run the app</td><td><code>scripts/run-stable-next.sh</code> — debug binary against plain vite on port 5177, no file watcher</td></tr>
+          <tr><td>Database</td><td><code>~/Library/Application Support/dev.blackcolours.MacCommandBarWebviewPreview/sessions.db</code></td></tr>
+          <tr><td>Notion project</td><td>MacCommandBar. Read status with <code>~/.claude/skills/capture-task/list-tasks.sh MacCommandBar</code></td></tr>
+          <tr><td>Design decisions</td><td>Notion <strong>TSK-924</strong>, id <code>3bf394b0-689d-8182-927e-c8fe0a40f95a</code></td></tr>
+          <tr><td>UI screenshots</td><td><code>~/dev/work/reports/tsk-ui-base/screenshots/</code> (268–288)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Verification gates</h3>
+    <ul>
+      <li><code>npx tsc --noEmit</code></li>
+      <li><code>pnpm run check:svelte</code> — must end <code>Files the /next shell owns: 0 error(s), 0 warning(s).</code></li>
+      <li><code>RUSTFLAGS="-D warnings" cargo build</code> and <code>cargo fmt --check</code></li>
+    </ul>
+    <p>One known pre-existing failure, untouched and unrelated: <code>lsp::tests::svelte_language_server_smoke_reads_document_symbols_when_available</code> hardcodes line 506, and the symbol moved in <code>b4bdf21</code>.</p>
+  </section>
+
+  <section>
+    <h2>The board</h2>
+    <p class="section-note">Every lane started in this session and its current state.</p>
+
+    <div class="stack">
+
+      <div class="card">
+        <div class="card-head">
+          <p class="card-title">Codebase map — five parallel recon lanes</p>
+          <span class="pill pill-done">Complete</span>
+        </div>
+        <p>All five finished; no codex processes remain running. Reports total ~302 KB in <code>docs/codebase-map/</code> (currently untracked):</p>
+        <ul>
+          <li><code>1-agent-session-runtime.md</code> — 39 KB</li>
+          <li><code>2-backend-services.md</code> — 54 KB</li>
+          <li><code>3-workbench-shell.md</code> — 48 KB</li>
+          <li><code>4-conversation-surface.md</code> — 62 KB</li>
+          <li><code>5-sessions-and-surfaces.md</code> — 99 KB</li>
+        </ul>
+        <p>Each carries a "Why it is the way it is" section pairing decisions with <code>file:line</code> and the commit that made them — which is the point of the exercise. Example: the adapter process is stopped after a quiescent turn because the process tree retains hundreds of megabytes between turns (<code>manager.rs:3621-3625</code>, commit <code>f12bf30</code>).</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <p class="card-title">Codebase map — synthesis</p>
+          <span class="pill pill-idle">Not started</span>
+        </div>
+        <p>The owner asked for a SOL medium lane to read all five reports and write one overview of what the app is today. Purely descriptive: no opinions, no recommendations. This is the explicit second half of the request and has not been dispatched.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <p class="card-title">Composer restyle — Gemini idiom</p>
+          <span class="pill pill-wait">Awaiting reply</span>
+        </div>
+        <p>Agent <code>@composer-gemini</code>, still addressable via <code>SendMessage</code>. Its first pass missed most of the spec because it was dispatched with a paraphrase instead of the written decisions. Work is <strong>uncommitted</strong> in the worktree: <code>ConversationComposer.svelte</code>, six <code>dropdown-menu</code> components, <code>nextTokens.css</code>.</p>
+        <p>A correction was sent pointing it at TSK-924 and the nine reference screenshots, listing seven concrete deltas, and requiring a requirement-by-requirement checklist before it edits anything. <strong>Next action: read that checklist against TSK-924 before it writes code.</strong></p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <p class="card-title">Message actions — assistant icons, user bubbles</p>
+          <span class="pill pill-idle">Not started</span>
+        </div>
+        <p>Deliberately excluded from the composer lane. Covered by TSK-924 screenshots 283–286: assistant action icons always visible and noticeably bigger, user turns in right-aligned bubbles with hover actions, assistant replies with no bubble at all. Message text size does not change.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <p class="card-title">Attachment storage moved into the database</p>
+          <span class="pill pill-wait">Reviewed, uncommitted</span>
+        </div>
+        <p>Builds and was reviewed clean; the owner has not decided whether to take it. Touches <code>core/src/session_store.rs</code> (schema version 2 plus an attachments table with <code>relative_path</code>, created in both the fresh-install path and a new migration arm), <code>attachments.rs</code> (database rows replace directory listing), <code>mod.rs</code>, <code>Cargo.toml</code>, <code>tauri.conf.json</code>.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <p class="card-title">Transcript virtualization</p>
+          <span class="pill pill-idle">Decided, not built</span>
+        </div>
+        <p>TSK-923 chose <code>@tanstack/svelte-virtual</code>; it is not installed. The hand-rolled <code>conversationRenderWindow</code> is meant to be deleted with it — its "Show earlier" button breaks the invariant that nothing already in the database sits behind a button.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>Unresolved</h2>
+
+    <div class="card" style="border-color: var(--bad);">
+      <div class="card-head">
+        <p class="card-title">A resumed session shows a blank transcript</p>
+        <span class="pill pill-open">Open</span>
+      </div>
+      <p>This is the live bug. The backend is verified working and the data is verified good — the failure is somewhere between stored rows and painted pixels, and it is <strong>still unexplained</strong>.</p>
+      <p><strong>What is proven, not assumed:</strong></p>
+      <ul>
+        <li>A probe fed all 279 stored events through <code>applyConversationEvent</code> and produced <strong>23 timeline entries with real text</strong>, <code>desynchronized: false</code>.</li>
+        <li>Snapshot ordering is correct — <code>list_recent_events</code> reads descending then reverses (<code>session_store.rs:439</code>).</li>
+        <li>Events are contiguous, sequence 0 through 278.</li>
+        <li>The surface binds <code>legacyTimeline = conversation.timeline</code> (<code>ConversationSurface.svelte:84</code>).</li>
+        <li>The database shows <code>generation=1</code> and <code>capabilities.revision=1</code>.</li>
+      </ul>
+      <p><strong>Do not add a third code path.</strong> The reducer already handles this; a previous attempt to explain the blank screen through a raw-versus-unwrapped asymmetry in <code>agentItemFromEvent</code> was wrong — legacy rows alone should render. Find why 23 verified entries do not reach the screen.</p>
+      <p>Related and probably the same area: the owner reports the left rail row reads <strong>Suspended</strong> for a session that should be live, and no agent settings or selected agents appear.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Standing rules</h2>
+    <p class="section-note">Every one of these was set by the owner and holds until they lift it. Paste them into every dispatch.</p>
+
+    <ul class="rules">
+      <li><span class="mark">✕</span><span><strong>No CSS <code>:has()</code>, ever</strong> — including Tailwind <code>has-[...]</code> variants. Profiling found the WebKit main thread spending seconds in <code>:has()</code> invalidation during transcript DOM insertion; once any such rule is registered it is re-checked on every DOM mutation in the document. Purged in <code>ccd3cc1</code>. Use a state class where the state originates.</span></li>
+      <li><span class="mark">✕</span><span><strong>No UI regression tests</strong> until the owner says otherwise. Thirty-eight were deleted on 2026-08-17. Tests for logic and data are still expected.</span></li>
+      <li><span class="mark">✕</span><span><strong>No <code>git reset --hard</code></strong>. It once destroyed ~44 files of unstaged work. Use <code>git reset --soft HEAD~1</code>, <code>git restore -- &lt;path&gt;</code>, <code>git revert</code>, or <code>git stash push -m</code>.</span></li>
+      <li><span class="mark">✕</span><span><strong>No <code>Co-Authored-By</code> trailer</strong> in any commit. Every message ends <code>Committed-by: Claude</code>.</span></li>
+      <li><span class="mark">✕</span><span><strong>Never invoke the <code>claude-api</code> skill</strong> — it inlines ~328K tokens. Read the one relevant doc file instead.</span></li>
+      <li><span class="mark">→</span><span><strong>Tokens only for anything visual.</strong> Every colour, radius, spacing step, border and shadow comes from <code>nextTokens.css</code> and <code>themeRegistry.ts</code>. No raw hex or one-off <code>rgba()</code> in components. Adding a missing token is expected work, not scope creep. Verify in Dracula as well as the default theme.</span></li>
+      <li><span class="mark">→</span><span><strong>Browser testing is headless at 1710×990</strong>, verified with an <code>innerWidth</code> eval before any screenshot. In Playwright configs the viewport goes inside <code>use</code>, <em>after</em> any <code>...devices[...]</code> spread, which otherwise silently drops it to 1280×720.</span></li>
+      <li><span class="mark">→</span><span><strong>Every animation must end.</strong> No idle loops, no perpetual transitions. Animate transform and opacity only. Performance is why this app exists.</span></li>
+      <li><span class="mark">→</span><span><strong>Transcript text stays small and dense.</strong> Action icons get bigger; message text does not.</span></li>
+      <li><span class="mark">→</span><span><strong>Never swarm builds.</strong> Two or three concurrent <code>cargo</code>/<code>dotnet</code> builds maximum, and lanes touching the same project are sequenced regardless of count.</span></li>
+      <li><span class="mark">→</span><span><strong>Delete worktrees immediately</strong> once merged or abandoned. Fifty stale ones once filled the disk.</span></li>
+      <li><span class="mark">→</span><span><strong>All SQL runs server-side.</strong> A correct value computed in memory is still a defect.</span></li>
+    </ul>
+
+    <h3>Model routing</h3>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Work</th><th>Goes to</th></tr></thead>
+        <tbody>
+          <tr><td>Anything the owner sees — layout, styling, visual polish</td><td>Opus 5 sub-agent. Never Codex.</td></tr>
+          <tr><td>High-judgment implementation, QA, all reviews</td><td>SOL medium</td></tr>
+          <tr><td>Recon, discovery, audits, tightly-bound implementation from a full spec</td><td>Luna Max</td></tr>
+          <tr><td>UI plumbing — stores, wiring, data flow, guards</td><td>SOL is fine</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>How to dispatch, so this stops happening</h2>
+    <p class="section-note">Committed as <code>b5a03c0</code> to <code>CLAUDE.md</code> and <code>AGENTS.md</code>.</p>
+
+    <p>A sub-agent starts cold. It cannot see the conversation, the owner's messages, or any image the owner pasted — pasted images live in the controller's context, not on the agent's disk. Whatever the controller retypes from memory is the entire world the agent gets, and a paraphrase silently drops requirements.</p>
+
+    <p>So every dispatch hands over the artifacts that already hold the decisions:</p>
+    <ol>
+      <li><strong>The Notion task id</strong>, with instructions to fetch it and read the relevant sections verbatim. The task is where the owner's decisions accumulate in their own words, including corrections the controller has forgotten.</li>
+      <li><strong>Absolute paths to the reference screenshots</strong>, with instructions to read each one before touching a file. Durable copies live under <code>~/dev/work/reports/</code>; the session image cache at <code>~/.claude/image-cache/&lt;session&gt;/</code> is evicted and cannot be relied on.</li>
+      <li><strong>A required reply before any edit</strong> — a requirement-by-requirement checklist marked done, will fix, or blocked. A misread then surfaces in one message instead of in a diff the owner has to catch by eye.</li>
+    </ol>
+    <p>Corrections go to the <em>same</em> agent via <code>SendMessage</code> when the fix depends on what it already built. A fresh agent re-reads everything and repeats the mistakes it cannot see.</p>
+    <p>The spec itself names exact files with line anchors, the contract, the failing test, the verbatim verification command, a "done means" checklist, and the expected diff size. If the diff size cannot be estimated, the task is not understood yet — do not dispatch.</p>
+  </section>
+
+  <section>
+    <h2>Traps</h2>
+    <p class="section-note">Each of these cost real time. None are obvious from reading the code.</p>
+
+    <div class="trap">
+      <p class="trap-title">The adapter process only runs during a turn</p>
+      <p>By design, and the owner is emphatic about it: the ACP adapter starts for the length of a turn and stops immediately after, because the process tree retains hundreds of megabytes between turns. Capabilities are persisted in <code>extra_json</code> and read back, so no adapter is needed between turns. A session being "not running" is normal, not a fault to fix.</p>
+    </div>
+
+    <div class="trap">
+      <p class="trap-title">WebKit writes localStorage lazily</p>
+      <p>A <code>removeItem</code> followed by killing the app discards the removal entirely. Three separate "sequencing" explanations for this were wrong before the real cause was found. The legacy adoption block that re-imported sessions on every launch was deleted outright in <code>65c2353</code>.</p>
+    </div>
+
+    <div class="trap">
+      <p class="trap-title">The error strip paints behind the panes</p>
+      <p>It was positioned <code>absolute</code> with no z-index, and each pane forms its own stacking context, so errors were invisible. Now <code>fixed</code> with <code>z-[70]</code> in <code>ShellOverlays.svelte:145-153</code>. It only renders while <code>centerTab === 'session'</code>.</p>
+    </div>
+
+    <div class="trap">
+      <p class="trap-title">Transcript import has three separate ways to write a broken row</p>
+      <p>All three were hit in sequence. Import must insert a live overlay or <code>list_sessions</code> fails on the row it just created; <code>extra_json</code> must be complete or start-up panics with <code>missing field 'generation'</code>; and events must be written as a whole <code>AgentConversationEvent</code>, not a bare payload, or decoding fails with <code>invalid number at line 1 column 125</code>.</p>
+    </div>
+
+    <div class="trap">
+      <p class="trap-title">Transcript extension uses negative sequence numbers</p>
+      <p>Older records are stored with negative sequences so existing nonnegative ones stay untouched (<code>30ce778</code>). Code that assumes sequences start at zero will be wrong.</p>
+    </div>
+
+    <div class="trap">
+      <p class="trap-title">The <code>ensure_inner</code> early return is load-bearing</p>
+      <p>Changing it broke two tests covering suspend/resume generation handling. The correct narrow fix was adding <code>current.generation &gt; 0 &&</code> so a never-run imported session falls through and starts once. Do not widen it.</p>
+    </div>
+
+    <div class="trap">
+      <p class="trap-title"><code>command -v codex</code> returns alias text, not a path</p>
+      <p>Five dispatch lanes died instantly because of it. The real binary is <code>/Users/blackcolours/.nvm/versions/node/v24.12.0/bin/codex</code>. Also on macOS: no <code>timeout</code> or <code>gtimeout</code>, and <code>rg --include</code> is not a flag — use <code>-g '*.ext'</code>.</p>
+    </div>
+
+    <div class="trap">
+      <p class="trap-title">The transcript performance win was not the two-pass split</p>
+      <p>It came from building into a plain object, which avoids thousands of reactive-proxy invalidations, plus the id-index merge. Splitting the work into two passes did not itself make anything faster, and describing it that way is wrong.</p>
+    </div>
+
+    <div class="trap">
+      <p class="trap-title"><code>provider.rs</code> is dead code</p>
+      <p>The old direct runner survives as a file but is not declared by <code>mod.rs</code> since the ACP cutover (<code>beb5967</code>). Reading it will mislead you.</p>
+    </div>
+  </section>
+
+  <p class="footer">Written 2026-08-17 from the controller session for the Assembly wave. Every claim above is either a file and line in the worktree, a commit hash, or a decision recorded in Notion — nothing here is recalled from conversation alone.</p>
+
+</div>

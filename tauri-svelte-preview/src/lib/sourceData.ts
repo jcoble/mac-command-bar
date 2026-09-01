@@ -14,6 +14,23 @@ export type SourceRecord = {
   byteCount: number;
 };
 
+export type SourceDirectoryEntry = {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+  excluded: boolean;
+};
+
+export type SourceTreeSearchMatch = SourceDirectoryEntry & {
+  relativePath: string;
+};
+
+export type SourceTreeSearchPage = {
+  matches: SourceTreeSearchMatch[];
+  nextCursor: number | null;
+  complete: boolean;
+};
+
 export type SourcePreview = SourceRecord & {
   content: string;
   lineCount: number;

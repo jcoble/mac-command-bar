@@ -93,6 +93,11 @@ Before dispatching an implementation packet:
 ## Implementation authorization
 
 These plans define product and implementation intent. They do not by themselves authorize broad
-implementation. The current first action for the affected ACP/workflow/browser lanes is Work
-Package A0 in the 2026-08-04 amendment, after explicit authorization and creation of the
-controller-owned integration worktree.
+implementation. Luna Fast is preferred and never blocks a lane when the native spawn API cannot
+set or report a tier. After implementation authorization, the current first action is the master
+plan's Work Package 0 followed by its bounded packet 12A comparison and mandatory R0 SOL-medium
+review. U1 is already resolved: release new Works now/Bounded adapter rows, preserve existing
+declarative assets, skip every other new row, and continue without another user pause. Contrast,
+Assembly identity, and Settings/shell foundation then land before amendment A0. Section 18 of the
+2026-08-04 amendment is the only combined schedule; do not run either document's older schedule
+independently.

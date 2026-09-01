@@ -1,5 +1,5 @@
 /* ============================================================
- * Design tokens — MacCommandBar UI
+ * Design tokens — Assembly UI
  * Seeds current dark-palette values so nothing visually changes.
  * Later tasks will consume these names; aesthetic shifts happen
  * by updating values here, not by hunting across components.
@@ -45,6 +45,19 @@
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
+
+  /* ------------------------------------------------------------------
+   * Typography — faces
+   *
+   * Two families cover the whole interface: one for reading, one for code.
+   * The system face leads the interface stack on purpose — macOS hints its
+   * own UI face for 13-14px on a near-black ground, and a webfont at those
+   * sizes reads soft beside it. Both are overridden per user from Settings
+   * (fontService.ts writes them on the document root and the shell), which
+   * is why nothing below names a family directly.
+   * ------------------------------------------------------------------ */
+  --font-ui: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
   /* ------------------------------------------------------------------
    * Typography — font sizes

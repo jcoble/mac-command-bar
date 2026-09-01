@@ -12,19 +12,26 @@
  * 2. **No `$effect`, no derived reads that do work.** Every decision is a pure
  *    function in `editorStoreOps.ts`; this module assigns its result.
  *
- * Nothing here is persisted this slice: reopening the shell starts with an
- * empty editor, which is also what keeps launch free of file reads.
+ * SQLite persists only lightweight tab metadata, dirty drafts and view state.
+ * Clean file contents are still read from disk only when their tab is shown.
  */
 import type { SourcePreview, SourceRecord, SourceSymbol } from '../../sourceData.ts';
 import {
   activePathAfterClose,
   closeOpenFile,
   findOpenFile,
+  openEditorFileFromRecord,
   patchOpenFile,
   revealLineInOpenFile,
   upsertOpenFile,
-  type OpenEditorFile
+  type OpenEditorFile,
+  type OpenEditorFileOptions
 } from './editorStoreOps.ts';
+import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
+import {
+  setOpenTabDocumentBytes,
+  textBytes
+} from '../resourceDiagnostics.svelte.ts';
 
 export type { OpenEditorFile } from './editorStoreOps.ts';
 
@@ -50,6 +57,15 @@ export const editorState = $state<{
   activePath: null,
   symbols: []
 });
+
+function publishOpenTabDocumentBytes(): void {
+  setOpenTabDocumentBytes(
+    editorState.openFiles.reduce(
+      (total, file) => total + textBytes(file.draftContent ?? file.preview?.content ?? ''),
+      0
+    )
+  );
+}
 
 /**
  * Integration seam: the shell calls this the first time the editor tab is
@@ -81,10 +97,19 @@ export function editorFileFor(path: string): OpenEditorFile | null {
  * Put `record` in the strip (no-op if already there) and show it. Returns the
  * entry so the caller can decide whether it still needs reading.
  */
-export function openEditorFile(record: SourceRecord): OpenEditorFile {
-  editorState.openFiles = upsertOpenFile(editorState.openFiles, record);
+export function openEditorFile(
+  record: SourceRecord,
+  options: OpenEditorFileOptions = {}
+): OpenEditorFile {
+  editorState.openFiles = upsertOpenFile(editorState.openFiles, record, options);
   editorState.activePath = record.path;
+  publishOpenTabDocumentBytes();
   return findOpenFile(editorState.openFiles, record.path)!;
+}
+
+/** Make a preview tab durable in the active-session strip. */
+export function pinEditorFile(path: string): void {
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, { previewTab: false });
 }
 
 /** Show an already-open file. */
@@ -98,6 +123,7 @@ export function closeEditorFile(path: string): void {
   const nextActivePath = activePathAfterClose(editorState.openFiles, path, previousActivePath);
   editorState.openFiles = closeOpenFile(editorState.openFiles, path);
   editorState.activePath = nextActivePath;
+  publishOpenTabDocumentBytes();
   // The symbol list belongs to whatever was on screen; a switch invalidates it.
   if (nextActivePath !== previousActivePath) editorState.symbols = [];
 }
@@ -111,25 +137,60 @@ export function markEditorFileLoading(path: string): void {
 }
 
 /** A read finished: store the contents. */
-export function setEditorFilePreview(path: string, preview: SourcePreview): void {
+export function setEditorFilePreview(
+  path: string,
+  preview: SourcePreview,
+  committedContent: string | null = null,
+  readOnly = false
+): void {
+  const file = editorFileFor(path);
+  const currentDraft = file?.draftContent ?? null;
+  const retainedDraft =
+    readOnly
+      ? null
+      : committedContent !== null && currentDraft === committedContent
+        ? null
+        : currentDraft;
+  const conflict =
+    !readOnly
+      && committedContent === null
+      && file?.dirty
+      && retainedDraft !== null
+      && retainedDraft !== preview.content
+      ? file.conflict
+        ?? 'File changed on disk while this draft has unsaved edits.'
+      : null;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     preview,
-    draftContent: preview.content,
-    dirty: false,
+    draftContent: readOnly ? null : retainedDraft ?? preview.content,
+    dirty: !readOnly && retainedDraft !== null && retainedDraft !== preview.content,
+    conflict,
     saving: false,
     loading: false,
     error: null
   });
+  publishOpenTabDocumentBytes();
 }
 
-/** Keep an unsaved Monaco edit with the session that owns this editor tab. */
+export function clearEditorFileLoading(path: string): void {
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
+    loading: false
+  });
+}
+
+/** Keep an unsaved CodeMirror edit with the session that owns this editor tab. */
 export function setEditorFileDraft(path: string, content: string): void {
   const file = editorFileFor(path);
   if (!file?.preview) return;
+  // An unchanged draft must not touch state: the editor republishes its
+  // content from inside an effect, and a no-op write here loops that effect.
+  if (file.draftContent === content) return;
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
     draftContent: content,
-    dirty: content !== file.preview.content
+    dirty: content !== file.preview.content,
+    conflict: content !== file.preview.content ? file.conflict : null
   });
+  publishOpenTabDocumentBytes();
 }
 
 /** Mark or clear the save spinner without replacing the draft. */
@@ -145,29 +206,34 @@ export function setEditorFileError(path: string, message: string): void {
   });
 }
 
-/** Ask Monaco to scroll `path` to `line` (pass `null` to stop asking). */
+/** Ask CodeMirror to scroll `path` to `line` (pass `null` to stop asking). */
 export function revealEditorLine(path: string, line: number | null): void {
   editorState.openFiles = revealLineInOpenFile(editorState.openFiles, path, line);
 }
 
-/** Symbols Monaco extracted from the file on screen. */
+/** Symbols CodeMirror/LSP extracted from the file on screen. */
 export function setEditorSymbols(symbols: SourceSymbol[]): void {
   editorState.symbols = symbols;
 }
 
 /**
- * Put a session's tabs back exactly as it left them, contents and all.
- *
- * The counterpart of {@link resetEditorState}, and the reason switching to a
- * session you were on a minute ago does not read its files off disk again: the
- * page held those entries while you were away and hands the same ones back. No
- * file is on screen yet — the page asks for that one through the open-file bus,
- * so the same path runs whether the tab was held or has to be read.
+ * Put a session's lightweight tab descriptors back without reading a file.
  */
-export function restoreEditorFiles(files: OpenEditorFile[]): void {
-  editorState.openFiles = files;
-  editorState.activePath = null;
+export function restoreEditorFiles(
+  files: readonly { path: string; draftContent?: string }[],
+  activePath: string | null = null
+): void {
+  editorState.openFiles = files.map((file) => ({
+    ...openEditorFileFromRecord(sourceRecordFromPath(editorState.projectRoot, file.path)),
+    draftContent: file.draftContent ?? null,
+    dirty: file.draftContent !== undefined,
+    conflict: null
+  }));
+  editorState.activePath = editorState.openFiles.some((file) => file.path === activePath)
+    ? activePath
+    : null;
   editorState.symbols = [];
+  publishOpenTabDocumentBytes();
 }
 
 /** Drop everything (used when the shell tears the editor down). */
@@ -175,4 +241,5 @@ export function resetEditorState(): void {
   editorState.openFiles = [];
   editorState.activePath = null;
   editorState.symbols = [];
+  publishOpenTabDocumentBytes();
 }

@@ -75,11 +75,12 @@
   }: Props = $props();
 
   // ── Provider → presentation ──────────────────────────────────────────
-  type ProviderKind = 'codex' | 'claude' | 'cmux';
+  type ProviderKind = 'codex' | 'claude' | 'antigravity' | 'cmux';
 
   function providerKind(provider: string): ProviderKind {
     if (provider === 'codex') return 'codex';
     if (provider === 'claude') return 'claude';
+    if (provider === 'antigravity') return 'antigravity';
     return 'cmux'; // cmux-<agent> and any unknown provider read as muted
   }
 
@@ -89,6 +90,8 @@
         return 'good';
       case 'claude':
         return 'attention';
+      case 'antigravity':
+        return 'good';
       default:
         return 'muted';
     }
@@ -98,6 +101,7 @@
     const kind = providerKind(provider);
     if (kind === 'codex') return 'Codex';
     if (kind === 'claude') return 'Claude';
+    if (kind === 'antigravity') return 'Antigravity';
     // cmux-<agent> → "cmux · <agent>"; a bare "cmux" stays "cmux".
     const agent = provider.startsWith('cmux-') ? provider.slice('cmux-'.length) : '';
     return agent ? `cmux · ${agent}` : provider;
@@ -329,20 +333,12 @@
       box-shadow 130ms ease;
   }
 
-  .row:hover {
-    background-color: var(--color-surface);
-  }
-
   .row:focus-visible {
     box-shadow: var(--focus-ring);
   }
 
   .row--active {
     background-color: var(--color-surface);
-  }
-
-  .row--active:hover {
-    background-color: var(--color-elevated);
   }
 
   /* Left accent bar — only painted on the active row. */
@@ -463,12 +459,11 @@
   /* ── Overflow button ─────────────────────────────────────────────── */
   .row__overflow {
     flex-shrink: 0;
-    /* Reveal on hover / focus / active so resting rows stay clean. */
+    /* Reveal on focus / active so resting rows stay clean. */
     opacity: 0;
     transition: opacity 130ms ease;
   }
 
-  .row:hover .row__overflow,
   .row:focus-within .row__overflow,
   .row--active .row__overflow {
     opacity: 1;

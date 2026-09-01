@@ -1,9 +1,43 @@
 import type {
+  AgentEvent,
   AgentConversationEvent,
   AgentConversationProvider,
   ConversationSessionState,
   ConversationTimelineEntry
 } from './conversationTypes.ts';
+
+/** Below this the window is not full enough for a fall to mean a compaction;
+ * agents report small numbers for other reasons. */
+const COMPACTION_FLOOR_TOKENS = 32_000;
+/** How much of the old total has to survive for the fall to be ordinary. */
+const COMPACTION_DROP_RATIO = 0.6;
+
+/**
+ * Whether a reported occupancy falling from `previous` to `used` can only be a
+ * compaction. Claude says nothing when it throws the older part of a
+ * conversation away — the number dropping off a cliff is the only sign there
+ * is. A modest decline is ordinary, an agent reporting its last request rather
+ * than the whole session, and means nothing.
+ */
+export function usageDropIsCompaction(
+  previous: number | undefined,
+  used: number | undefined
+): boolean {
+  return previous !== undefined
+    && used !== undefined
+    && previous >= COMPACTION_FLOOR_TOKENS
+    && used <= previous * COMPACTION_DROP_RATIO;
+}
+
+export function shouldClearConversationSending(
+  event: AgentConversationEvent | AgentEvent
+): boolean {
+  if ('type' in event) {
+    return ['turn.completed', 'turn.interrupted', 'runtime.error'].includes(event.type);
+  }
+  return event.payload.kind === 'error'
+    || (event.payload.kind === 'turn' && event.payload.state !== 'started');
+}
 
 export function createConversationState(
   ownedId: string,
@@ -16,7 +50,57 @@ export function createConversationState(
     lastSequence: 0,
     desynchronized: false,
     connectionState: 'disconnected',
+    suspended: false,
+    timelineRevision: 0,
     timeline: []
+  };
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * The message a projected record is carrying, or null when it is not carrying
+ * one.
+ *
+ * A projection is the raw shape an adapter reported, kept as it arrived. The
+ * ones worth a row in the transcript hold a completed item: who spoke, and what
+ * they said across one or more content blocks. Everything else a transcript
+ * holds — configuration, token counts, the adapter's own bookkeeping — has no
+ * message in it and returns null rather than an empty row.
+ */
+function projectedTimelineEntry(
+  payload: { itemId: string | null; payload: Record<string, unknown>; timestampMs: number | null },
+  eventTimestampMs: number
+): ConversationTimelineEntry | null {
+  const item = recordOf(payload.payload.item);
+  if (!item) return null;
+  const itemId = typeof item.id === 'string' && item.id ? item.id : payload.itemId;
+  if (!itemId) return null;
+  const kind = item.type === 'user-message'
+    ? 'user'
+    : item.type === 'assistant-message'
+      ? 'assistant'
+      : null;
+  if (!kind) return null;
+  const text = Array.isArray(item.content)
+    ? item.content
+      .map((block) => {
+        const row = recordOf(block);
+        return row && typeof row.text === 'string' ? row.text : '';
+      })
+      .join('')
+    : '';
+  if (!text.trim()) return null;
+  return {
+    kind,
+    itemId,
+    text,
+    completed: true,
+    timestampMs: payload.timestampMs ?? eventTimestampMs
   };
 }
 
@@ -84,7 +168,7 @@ export function applyConversationEvent(
           kind: 'user',
           itemId: payload.itemId,
           text: payload.text,
-          completed: true,
+          completed: payload.completed,
           timestampMs: event.timestampMs
         }))
       };
@@ -116,12 +200,15 @@ export function applyConversationEvent(
     case 'tool':
       return {
         ...next,
-        timeline: replaceOrAppend(next.timeline, payload.itemId, () => ({
+        timeline: replaceOrAppend(next.timeline, payload.itemId, (current) => ({
           kind: 'tool',
           itemId: payload.itemId,
-          name: payload.name,
+          name: payload.name || (current?.kind === 'tool' ? current.name : 'Tool'),
           state: payload.state,
-          summary: payload.summary,
+          summary: payload.summary || (current?.kind === 'tool' ? current.summary : undefined),
+          path: payload.path || (current?.kind === 'tool' ? current.path : undefined),
+          diff: payload.diff || (current?.kind === 'tool' ? current.diff : undefined),
+          output: payload.output || (current?.kind === 'tool' ? current.output : undefined),
           timestampMs: event.timestampMs
         }))
       };
@@ -136,6 +223,23 @@ export function applyConversationEvent(
           requestId: payload.requestId,
           state: payload.state,
           summary: payload.summary,
+          timestampMs: current?.timestampMs ?? event.timestampMs
+        }))
+      };
+    }
+
+    case 'plan': {
+      const itemId = 'plan:' + event.generation;
+      const items = payload.items ?? (payload.entries ?? []).map((entry) => ({
+        text: entry.title ?? entry.text ?? entry.content ?? '',
+        status: entry.status ?? 'pending'
+      }));
+      return {
+        ...next,
+        timeline: replaceOrAppend(next.timeline, itemId, (current) => ({
+          kind: 'plan',
+          itemId,
+          items,
           timestampMs: current?.timestampMs ?? event.timestampMs
         }))
       };
@@ -156,15 +260,82 @@ export function applyConversationEvent(
       };
     }
 
-    case 'usage':
+    case 'contextCompaction': {
+      const itemId = `compaction:${event.sequence}`;
       return {
         ...next,
-        usage: { inputTokens: payload.inputTokens, outputTokens: payload.outputTokens }
+        timeline: replaceOrAppend(next.timeline, itemId, () => ({
+          kind: 'compaction',
+          itemId,
+          trigger: payload.trigger ?? undefined,
+          preTokens: payload.preTokens ?? undefined,
+          postTokens: payload.postTokens ?? undefined,
+          timestampMs: event.timestampMs
+        }))
       };
+    }
+
+    case 'checkoutChanged': {
+      const itemId = `checkout:${event.sequence}`;
+      return {
+        ...next,
+        timeline: replaceOrAppend(next.timeline, itemId, () => ({
+          kind: 'checkoutChanged',
+          itemId,
+          fromCwd: payload.fromCwd,
+          toCwd: payload.toCwd,
+          timestampMs: event.timestampMs
+        }))
+      };
+    }
+
+    case 'usage': {
+      const previous = next.usage?.usedTokens;
+      // A drop already announced by the provider is not announced twice.
+      const marked = usageDropIsCompaction(previous, payload.usedTokens)
+        && next.timeline[next.timeline.length - 1]?.kind !== 'compaction';
+      return {
+        ...next,
+        timeline: marked
+          ? [
+            ...next.timeline,
+            {
+              kind: 'compaction',
+              itemId: `compaction:${event.sequence}`,
+              preTokens: previous,
+              postTokens: payload.usedTokens,
+              timestampMs: event.timestampMs
+            }
+          ]
+          : next.timeline,
+        usage: {
+          inputTokens: payload.inputTokens ?? next.usage?.inputTokens,
+          outputTokens: payload.outputTokens ?? next.usage?.outputTokens,
+          usedTokens: payload.usedTokens ?? next.usage?.usedTokens,
+          contextWindow: payload.contextWindow ?? next.usage?.contextWindow
+        }
+      };
+    }
+
+    case 'terminalProjection': {
+      // History replayed from the database arrives this way, so it cannot be
+      // dropped here. A conversation imported from a past transcript is written
+      // entirely as projections, and this case returning untouched is what left
+      // a resumed session showing an empty transcript: the events were read,
+      // counted, and then thrown away before anything could be drawn from them.
+      const entry = projectedTimelineEntry(payload, event.timestampMs);
+      return entry
+        ? { ...next, timeline: replaceOrAppend(next.timeline, entry.itemId, () => entry) }
+        : next;
+    }
+
+    case 'childUpdate':
+      return next;
 
     case 'error':
       return {
         ...next,
+        activeTurnId: undefined,
         connectionState: payload.recoverable ? next.connectionState : 'failed',
         timeline: [
           ...next.timeline,
@@ -178,5 +349,18 @@ export function applyConversationEvent(
           }
         ]
       };
+
+    // Rich ACP bridge items are projected by conversationTimeline.ts. The
+    // reducer still advances the generation/sequence checkpoint so live and
+    // replayed streams share the same ordering and resync behavior.
+    case 'agentThoughtChunk':
+    case 'toolCall':
+    case 'toolCallUpdate':
+    case 'turnDiff':
+    case 'permissionRequest':
+    case 'availableCommandsUpdate':
+    case 'agentMessageChunk':
+    case 'userMessageChunk':
+      return next;
   }
 }

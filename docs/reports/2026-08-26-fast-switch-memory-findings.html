@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fast-switch memory findings</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --mut:#666; --line:#ddd; --hi:#fff7d6; --ok:#e8f5e9; --bad:#fdecea; --mono:ui-monospace,Menlo,monospace; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121212; --fg:#eee; --mut:#aaa; --line:#333; --hi:#3a3212; --ok:#173a1c; --bad:#3d1a17; } }
+  body { background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif; max-width:960px; margin:2rem auto; padding:0 1rem; }
+  h1 { font-size:1.6rem; margin:0 0 .25rem; } h2 { font-size:1.15rem; margin:2rem 0 .5rem; border-bottom:1px solid var(--line); padding-bottom:.25rem; }
+  .lead { background:var(--hi); padding:.75rem 1rem; border-radius:6px; }
+  table { border-collapse:collapse; width:100%; margin:.5rem 0; font-size:14px; } th,td { border:1px solid var(--line); padding:.4rem .6rem; text-align:left; vertical-align:top; }
+  code { font-family:var(--mono); font-size:13px; }
+  .mut { color:var(--mut); } .ok { background:var(--ok);} .bad { background:var(--bad);}
+  ol li, ul li { margin:.25rem 0; }
+</style>
+</head>
+<body>
+<h1>Fast-switch memory findings</h1>
+<p class="mut">Worktree <code>tsk-808-memprofile</code> · 2026-08-26 · Claude measurement campaign combined with Codex's fixes. Raw table: session scratchpad <code>results-final.md</code>.</p>
+
+<div class="lead"><b>Answer:</b> 40 fast session switches (700 ms apart) retain <b>+70…+100 MB of native WebKit malloc</b> (~300k live allocations) in the WebContent process and none of it drains in 5 minutes idle. The JS heap is not the leak (13–17 MB ceiling, creates = evicts + 1, zero stale hydrations). The only subsystem whose removal moved the number is the <b>Files panel</b>, and Codex independently found why: the tree duplicated every loaded file into an editor-owned module map, rebuilt as a full array on every expand/collapse, owned by nothing, so session eviction never reached it.</div>
+
+<h2>1. Measured (13 valid runs, settled malloc is the ranking metric)</h2>
+<table>
+<tr><th>Arm</th><th>n</th><th>Settled malloc</th><th>Δ malloc / 40 switches</th><th>Verdict</th></tr>
+<tr><td>Baseline 700×40</td><td>4</td><td>180 MB (sd 13)</td><td>+81</td><td>the defect</td></tr>
+<tr class="bad"><td>Baseline 700×<b>80</b></td><td>1</td><td>217 MB</td><td>+108</td><td>not plateaued at 40; sub-linear (+33 for 40 more)</td></tr>
+<tr><td>Files-tree <code>{#key}</code> removed</td><td>5</td><td>189 MB (sd 3)</td><td>+88</td><td>no effect — rebuild frequency is not the cost</td></tr>
+<tr><td>Spinners off</td><td>1</td><td>187 MB</td><td>+100</td><td>no effect; no spinner mounts in these runs anyway</td></tr>
+<tr><td>Source control / git history / terminals off</td><td>1 each</td><td>167–192 MB</td><td>+75…+101</td><td>no effect</td></tr>
+<tr class="ok"><td>Files panel off</td><td>2 (perturbed)</td><td>151–211 MB</td><td>+63, +107</td><td>only arm that dipped; matches Codex's tree-map find, needs a clean re-measure</td></tr>
+<tr><td>Pointer sweep only, no switches</td><td>1</td><td>90 MB</td><td>+0</td><td>negative control: hovering/scrolling costs nothing without a switch</td></tr>
+<tr><td>Pointer sweep then switches</td><td>3</td><td>177 MB</td><td>+77</td><td>synthetic hover does not add to malloc; graphics inflates then plateaus</td></tr>
+</table>
+
+<h2>2. Settled either way</h2>
+<ul>
+<li><b>JS side is clean.</b> Counters (<code>memprobe.ts</code>): 41 creates / 40 evicts, 0 hydrations landed stale, 0 early bails; the select drain is serial, bodies never overlap.</li>
+<li><b>Not animation.</b> Idle CPU after a run: WebContent 0.2–0.3 %, GPU 0.2 % — the measurement floor — with or without spinners. The app holds compositor tiles, it does not redraw them.</li>
+<li><b>Graphics plateaus at rest.</b> 5-minute tails: 163→155→155 MB, or 349→236→228 MB. Earlier "keeps climbing" claim retracted (2-min tail caught the decay). Idle graphics wanders ±14 MB; smaller deltas are noise.</li>
+<li><b>Malloc is flat at rest.</b> 180→187, 188→189 MB over 5 idle minutes: nothing released, nothing taken.</li>
+<li><b>Second WebContent process</b> = the browser-tab child webview (<code>browser.rs:1897-1943</code>) created when a session with the browser panel visible is selected. Expected, not a leak.</li>
+</ul>
+
+<h2>3. Fixed during the campaign</h2>
+<table>
+<tr><th>Commit</th><th>What</th><th>By</th></tr>
+<tr><td><code>d04162b4</code></td><td>Stale "Working" badge: rail hydration reconciles the presence cache against the backend record's <code>activeTurnId</code>; unused <code>SessionPresenceIndicator.svelte</code> deleted.</td><td>Claude</td></tr>
+<tr><td><code>1ff90bab</code></td><td>Bound restored output and projection caches.</td><td>Codex</td></tr>
+<tr><td><code>efc6262e</code></td><td>Reuse the CodeLens style module (was re-created per switch).</td><td>Codex</td></tr>
+<tr><td><code>4d0eac5</code>, <code>69f6111</code></td><td>Files-tree keying and earlier retention fixes.</td><td>Codex</td></tr>
+<tr><td>uncommitted, assembly-wave</td><td>Cancellation on long awaits (SQLite <code>InterruptHandle</code>, <code>cancel_source_file_reads</code>, <code>cancel_agent_conversation_snapshot</code>); strip-down rebuild of the workbench one subsystem at a time; file-tree / editor map duplication removed.</td><td>Codex</td></tr>
+</table>
+
+<h2>4. Open</h2>
+<ol>
+<li><b>Owner-observed real-mouse hover effect</b> (80–150 MB, and blocks release on the next switch). Synthetic pointer events and class-toggled hover CSS do not reproduce it; the remaining candidates are native <code>:hover</code> hit-testing and the <code>title=</code> tooltips on the three row buttons (<code>WorktreeAgentRow.svelte:257-263</code>). Needs a real-cursor A/B on a quiet machine: title on/off, hover rules on/off.</li>
+<li><b>Growth curve past 40 switches.</b> One run at 80 says not yet plateaued; a 120-switch run separates "filling a cache" from "unbounded".</li>
+<li><b>Unbounded backend maps</b> <code>activation_locks</code> / <code>broker_statuses</code> (<code>manager.rs:308-311</code>): grow per distinct session, not per switch. Separate one-line task.</li>
+<li><b>WorkingSpinner</b> is still a 3D infinite animation (<code>WorkingSpinner.svelte:199-213</code>). Not this leak, but against the performance rule; replace with a finite/cheap indicator when a spinner is actually on screen.</li>
+</ol>
+
+<h2>5. Next</h2>
+<ol>
+<li>Codex removes the tree→editor map duplication (contents owned once, evicted with the session; tree keeps paths + expansion only). Do not virtualize or re-key first — neither addresses an unowned map.</li>
+<li>One 700×40 run on that build with the in-page driver (<code>?fastswitch=700,40</code>) and <code>footprint</code>/<code>vmmap</code>: Δ malloc near 0 → done; partial drop → the remainder is the tree's own per-session cost, then measure virtualization.</li>
+<li>Re-measure after each subsystem Codex brings back; the first one that pushes Δ malloc above ~+30 MB is the next retention path.</li>
+</ol>
+
+<h2>6. Harness notes (for the next measurement)</h2>
+<ul>
+<li>Driver and counters are dev-only: <code>window.__memprobe</code>, <code>window.__fastSwitch(gap,count)</code>, <code>?fastswitch=GAP,COUNT</code>, <code>?pointersweep=MS,SEC</code> (fire 20 s after mount).</li>
+<li>Rank on settled WebKit malloc; Δ needs a state-based baseline (first sample with JS ≥ 3 MB), not a fixed offset — a fixed offset raced three times.</li>
+<li>Tear down supervisors (tauri, pnpm, vite) before the binary; refuse to launch beside a survivor. One run's whole stack was killed from outside mid-tail (no crash report) — scope <code>pkill</code> patterns by port.</li>
+<li>Each measurement needs a fresh process because the retained memory never drains.</li>
+</ul>
+</body>
+</html>

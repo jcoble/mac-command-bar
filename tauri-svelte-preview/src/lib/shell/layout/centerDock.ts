@@ -1,6 +1,7 @@
 /**
- * centerDock.ts — the /next center tab area (one Dockview). DOM-only: zero
- * backend IO, zero Svelte imports. Same teleport contract as frame.ts, plus
+ * centerDock.ts — the /next center surface area (one Dockview). It owns only
+ * DOM and Dockview state; persistence is supplied by the shell. Same teleport
+ * contract as frame.ts, plus
  * an explicit "return to parking" on panel close so Svelte-owned content
  * (the terminal surface!) is never destroyed with a dockview renderer.
  */
@@ -8,37 +9,26 @@ import {
   createDockview,
   themeDracula,
   type AddPanelPositionOptions,
+  type DockviewPanelRenderer,
   type DockviewApi,
   type GroupPanelPartInitParameters,
   type IContentRenderer
 } from 'dockview-core';
 
-import {
-  CENTER_LAYOUT_KEY,
-  clearLayout,
-  dockPanelIds,
-  loadLayout,
-  panelSetMatches,
-  saveLayout,
-  type LayoutStorage
-} from './layoutStorage';
+import { dockGroupCount, dockPanelIds, panelSetMatches } from './layoutStorage';
 
 export interface CenterPanelSpec {
   id: string;
   title: string;
   element: HTMLElement;
-  /**
-   * Which side of the default layout this panel opens on: `'conversation'` (the
-   * left group, where the user talks to the session) or `'display'` (the right
-   * group, where results are shown). Only read when the dock is built from
-   * scratch — once the user has dragged tabs around, the stored layout wins.
-   * Defaults to `'conversation'`.
-   */
-  group?: 'conversation' | 'display';
+  /** Override the dock-wide attachment policy for surfaces that cannot remain
+   * in the overlay container while another tab is active. */
+  renderer?: DockviewPanelRenderer;
 }
 
 export interface CenterDockOptions {
-  storage: LayoutStorage;
+  readLayout: () => Promise<unknown>;
+  writeLayout: (layout: unknown) => Promise<void>;
   panels: CenterPanelSpec[];
   onPanelLayout?: (id: string) => void;
   /**
@@ -55,6 +45,8 @@ export interface CenterDockOptions {
 
 export interface CenterDock {
   api: DockviewApi;
+  /** Resolves after the SQLite-backed layout has been read, or ignored. */
+  ready: Promise<void>;
   activatePanel(id: string): void;
   captureLayout(): CenterDockSnapshot | null;
   restoreLayout(snapshot: CenterDockSnapshot | null | undefined): void;
@@ -68,7 +60,12 @@ export interface CenterDockSnapshot {
 }
 
 const COMPONENT = 'center-panel';
-const PERSIST_DEBOUNCE_MS = 250;
+export const CENTER_PANEL_IDS = ['session', 'editor', 'diff', 'git-history'] as const;
+export type CenterPanelId = (typeof CENTER_PANEL_IDS)[number];
+
+export function isCenterPanelId(id: string): id is CenterPanelId {
+  return CENTER_PANEL_IDS.some((candidate) => candidate === id);
+}
 
 export function createCenterDock(container: HTMLElement, options: CenterDockOptions): CenterDock {
   const specs = new Map(options.panels.map((panel) => [panel.id, panel]));
@@ -77,8 +74,8 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     options.panels.map((panel) => [panel.id, panel.element.parentElement as HTMLElement | null])
   );
   let synchronizingDepth = 0;
-  let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+  let layoutVersion = 0;
   /** Roster tabs whose re-add is already queued, so a burst cannot double-add. */
   const readding = new Set<string>();
 
@@ -134,6 +131,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       title: panel.title,
       component: COMPONENT,
       params: { panelId: panel.id },
+      renderer: panel.renderer,
       position
     });
   };
@@ -147,98 +145,76 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
    * `addPanel`'s own duplicate guard, so what we test is what dockview does. */
   const panelById = (id: string) => api.panels.find((panel) => panel.id === id);
 
+  /** Old saved layouts predate per-panel renderers, so enforce the current
+   * roster contract after either restore or build. */
+  const normalizePanelRenderers = (): void => {
+    for (const panel of options.panels) {
+      if (panel.renderer) panelById(panel.id)?.api.setRenderer(panel.renderer);
+    }
+  };
+
   /**
-   * The layout a fresh dock opens with: the conversation panels on the left, the
-   * display panels stacked as tabs in a second group to their right. Both sides
-   * may be empty — a roster that is all conversation just never opens the second
-   * group, and one that is all display opens a single group with no anchor to
-   * sit beside (asking dockview to position against a panel that does not exist
-   * yet throws, so that case adds the first panel with no position at all).
+   * The layout a fresh dock opens with: every surface stacked in ONE group, with
+   * the first of them showing. The middle of the shell holds one thing at a time
+   * — the session, a file, or a diff — and the corner tabs are what choose
+   * between them. Splitting them across two groups is what put two empty states
+   * on screen at once and left the tabs with nothing to switch.
    */
   const buildDefault = (): void => {
-    const conversation = options.panels.filter((panel) => panel.group !== 'display');
-    const display = options.panels.filter((panel) => panel.group === 'display');
-    for (const panel of conversation) addPanelFor(panel);
-
-    const anchor = conversation[0];
-    const [leadDisplay, ...stackedDisplay] = display;
-    if (leadDisplay) {
-      addPanelFor(
-        leadDisplay,
-        anchor ? { referencePanel: anchor.id, direction: 'right' } : undefined
-      );
-      for (const panel of stackedDisplay) {
-        addPanelFor(panel, { referencePanel: leadDisplay.id, direction: 'within' });
-      }
+    const [lead, ...stacked] = options.panels;
+    if (!lead) return;
+    addPanelFor(lead);
+    for (const panel of stacked) {
+      addPanelFor(panel, { referencePanel: lead.id, direction: 'within' });
     }
-
-    // Every add above made its own panel the active one, so the last display tab
-    // is showing — which is now Diff, an empty pane until a file is picked. Put
-    // the display group back on its first tab, then hand focus to the front of
-    // the roster.
-    if (leadDisplay) panelById(leadDisplay.id)?.api.setActive();
-    const opening = anchor ?? leadDisplay;
-    if (opening) panelById(opening.id)?.api.setActive();
+    // Every add made its own panel the active one, so the last tab is showing.
+    // Open on the first instead.
+    panelById(lead.id)?.api.setActive();
   };
 
   /**
    * Run a programmatic layout mutation with persistence and the roster rebuild
    * below both suppressed.
    *
-   * dockview reports layout changes through `queueMicrotask` (its `AsapEvent`),
-   * so the events this block causes are delivered AFTER it returns — a flag
-   * cleared synchronously is already down when they land, which is why the
-   * previous version of this guard never suppressed anything. Releasing it on a
-   * timer instead is what makes it real: the whole microtask queue (including
-   * microtasks queued by other microtasks) drains before any timer callback
-   * runs, so every event delivered that way lands while the guard is still up.
-   *
-   * That covers the microtask channel only, which is the one a programmatic
-   * mutation uses. Resize-driven changes are delivered separately, through a
-   * `requestAnimationFrame` inside dockview's own resize watcher, and those
-   * deliberately fall outside the guard: they report a finished layout the user
-   * asked for, which is exactly what we want written.
+   * The owner forbids production frontend schedulers, so the guard is scoped to
+   * the synchronous mutation only. Any deferred dockview event that follows is
+   * treated as ordinary layout state and may persist.
    */
   const runSynchronized = (fn: () => void): void => {
     synchronizingDepth += 1;
     try {
       fn();
     } finally {
-      setTimeout(() => {
-        if (synchronizingDepth > 0) synchronizingDepth -= 1;
-      }, 0);
+      if (synchronizingDepth > 0) synchronizingDepth -= 1;
     }
   };
 
   /**
-   * The three roster tabs are permanent for now. dockview puts a close button on
-   * every tab, and closing one hands its content back to the parking stage with
-   * no way left in the UI to bring it back — for the Session tab that is a LIVE
-   * terminal. Put the tab straight back instead, so the close button is a no-op.
+   * The three roster surfaces are permanent for now. Dockview still owns their
+   * lifecycle even though its horizontal headers are visually replaced by the
+   * corner tabs in the center pane. If a panel is removed through a restored layout
+   * or API call, put it straight back so the strip never points at an
+   * unavailable surface — especially the live Session terminal.
    *
-   * Deferred by a timer on purpose: dockview fires this event from
-   * `doRemovePanel`, BEFORE it disposes the panel, and that dispose is what
-   * returns the content to parking. Re-adding synchronously would be undone a
-   * moment later, stranding the content for good.
+   * Re-added synchronously because production frontend schedulers are forbidden.
+   * The renderer still returns content to parking during dispose; Reset layout
+   * remains the recovery path if dockview refuses the immediate add.
    */
   const keepRosterPanel = (id: string): void => {
     if (disposed || synchronizingDepth > 0 || readding.has(id)) return;
     if (!specs.has(id)) return;
     readding.add(id);
-    setTimeout(() => {
+    try {
       readding.delete(id);
       const spec = specs.get(id);
       // Duplicate-add guard: tests the exact condition `addPanel` itself
       // throws on (see the `panelById` note above).
       if (disposed || synchronizingDepth > 0 || !spec || panelById(id)) return;
-      try {
-        addPanelFor(spec);
-      } catch {
-        // Nothing here can recover a dock that refuses the panel, and an
-        // uncaught throw in a timer callback goes nowhere useful. The tab stays
-        // shut; "Reset layout" rebuilds the roster.
-      }
-    }, 0);
+      addPanelFor(spec);
+    } catch {
+      // Nothing here can recover a dock that refuses the panel. The tab stays
+      // shut; "Reset layout" rebuilds the roster.
+    }
   };
 
   /**
@@ -257,46 +233,36 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
 
   layoutToContainer();
 
-  runSynchronized(() => {
-    const stored = loadLayout<object>(options.storage, CENTER_LAYOUT_KEY);
-    if (stored && panelSetMatches(dockPanelIds(stored), specs.keys())) {
-      try {
-        api.fromJSON(stored as never);
-        return;
-      } catch {
-        try {
-          api.clear();
-        } catch {
-          // fall through
-        }
-      }
+  runSynchronized(buildDefault);
+  normalizePanelRenderers();
+
+  async function persistLayout(layout: unknown): Promise<void> {
+    try {
+      await options.writeLayout(layout);
+      if (!disposed) options.onLayoutPersisted?.(true);
+    } catch {
+      if (!disposed) options.onLayoutPersisted?.(false);
     }
-    buildDefault();
-  });
+  }
 
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;
-    if (persistTimer !== null) clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      if (disposed) return;
-      // Never store a dock measured at zero: the sizes in it are meaningless and
-      // the next launch would restore from them.
-      if (api.width <= 0 || api.height <= 0) return;
-      let ok = false;
-      try {
-        // `toJSON` runs inside the guard too: a dock in an unexpected state can
-        // throw from it, and an unhandled throw in here kills the timer.
-        ok = saveLayout(options.storage, CENTER_LAYOUT_KEY, api.toJSON());
-      } catch {
-        ok = false;
-      }
-      options.onLayoutPersisted?.(ok);
-    }, PERSIST_DEBOUNCE_MS);
+    // Never store a dock measured at zero: the sizes in it are meaningless and
+    // the next launch would restore from them.
+    if (api.width <= 0 || api.height <= 0) return;
+    try {
+      void persistLayout(api.toJSON());
+    } catch {
+      options.onLayoutPersisted?.(false);
+    }
   };
 
   const listeners = [
-    api.onDidLayoutChange(persistSoon),
+    api.onDidLayoutChange(() => {
+      if (disposed || synchronizingDepth > 0) return;
+      layoutVersion += 1;
+      persistSoon();
+    }),
     api.onDidRemovePanel((panel) => keepRosterPanel(panel.id)),
     api.onDidActivePanelChange((panel) => {
       if (disposed || !panel) return;
@@ -304,8 +270,45 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
     })
   ];
 
+  const restoreVersion = layoutVersion;
+  const ready = restoreSavedLayout(restoreVersion);
+
+  async function restoreSavedLayout(expectedVersion: number): Promise<void> {
+    try {
+      const stored = await options.readLayout();
+      if (disposed || layoutVersion !== expectedVersion) return;
+      // The panel set has to match AND the surfaces have to be in one group. A
+      // layout written by the older side-by-side geometry passes the first test
+      // and fails the second, so it is ignored and the already-built defaults
+      // remain in place.
+      if (
+        !stored ||
+        !panelSetMatches(dockPanelIds(stored), specs.keys()) ||
+        dockGroupCount(stored) !== 1
+      ) return;
+      runSynchronized(() => {
+        if (disposed || layoutVersion !== expectedVersion) return;
+        try {
+          api.fromJSON(stored as never);
+          normalizePanelRenderers();
+        } catch {
+          try {
+            api.clear();
+            buildDefault();
+            normalizePanelRenderers();
+          } catch {
+            // Keep whatever usable portion of the existing arrangement remains.
+          }
+        }
+      });
+    } catch {
+      // Invalid saved layout leaves the default dock in place.
+    }
+  }
+
   return {
     api,
+    ready,
     activatePanel(id: string): void {
       panelById(id)?.api.setActive();
     },
@@ -324,7 +327,7 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       // restore. Leaving the live dock alone keeps every roster tab visible;
       // the next capture gives that session its own starting arrangement.
       if (!snapshot) return;
-      // Keep the one live four-tab roster mounted. Replaying a serialized
+      // Keep the one live three-tab roster mounted. Replaying a serialized
       // Dockview tree during a session switch intermittently retained the
       // panel bodies but dropped their tab renderers. The active tab is the
       // session-specific state the reader needs; editor/browser/diff content is
@@ -332,19 +335,15 @@ export function createCenterDock(container: HTMLElement, options: CenterDockOpti
       if (snapshot.activePanelId) panelById(snapshot.activePanelId)?.api.setActive();
     },
     resetLayout(): void {
-      clearLayout(options.storage, CENTER_LAYOUT_KEY);
+      void persistLayout(null);
       runSynchronized(() => {
         api.clear();
         buildDefault();
       });
-      // The guard above is still up — it releases on a timer — so ask for the
-      // persist on the timer after it. Callbacks with the same delay run in the
-      // order they were scheduled, and the release was scheduled first.
-      setTimeout(persistSoon, 0);
+      persistSoon();
     },
     dispose(): void {
       disposed = true; // renderer dispose() no-ops: page teardown owns the DOM now
-      if (persistTimer !== null) clearTimeout(persistTimer);
       for (const listener of listeners) listener.dispose();
       api.dispose();
     }

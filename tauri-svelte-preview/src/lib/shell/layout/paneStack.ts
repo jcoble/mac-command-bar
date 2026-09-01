@@ -14,13 +14,13 @@ import { createPaneview, type IPanePart, type PaneviewApi } from 'dockview-core'
 // `scripts/paneLayout.test.mjs` loads this module through node's own resolver,
 // which does not fill an extension in the way the bundler does.
 import {
-  clearLayout,
   loadLayout,
   paneviewPanelIds,
   panelSetMatches,
   saveLayout,
   type LayoutStorage
 } from './layoutStorage.ts';
+import { viewPanesKey, type SidebarViewId } from './sidebarViews.ts';
 
 export interface PaneSpec {
   id: string;
@@ -36,12 +36,20 @@ export interface PaneSpec {
   size: number;
   /** Start open? (default true) */
   expanded?: boolean;
+  /** Optional body-size limits supplied by the side-pane registry. */
+  minimumSize?: number;
+  maximumSize?: number | null;
+  /** Body height needed by the current content; used to cap empty slack. */
+  contentSize?: number | (() => number);
+  /** Whether this pane is included in the persisted roster. */
+  persistent?: boolean;
 }
 
 export interface PaneStackOptions {
-  storage: LayoutStorage;
-  /** Caller-owned storage key; this module has no key of its own. */
-  storageKey: string;
+  /** The injected layout authority. It is never created by this module. */
+  layoutStore?: LayoutStorage;
+  /** Stable entry inside the side-pane v1 map. */
+  layoutId?: string;
   panes: PaneSpec[];
   onLayoutPersisted?: (ok: boolean) => void;
 }
@@ -50,11 +58,150 @@ export interface PaneStack {
   api: PaneviewApi;
   resetLayout(): void;
   layout(width: number, height: number): void;
+  fitContent(): void;
   dispose(): void;
 }
 
 const COMPONENT = 'pane';
-const PERSIST_DEBOUNCE_MS = 250;
+
+/** The one registry-generated key family for new side-pane layouts. */
+export const SIDE_PANE_LAYOUT_KEY = 'mac-command-bar.next.side-panes-v1';
+export const SIDE_PANE_LAYOUT_VERSION = 1 as const;
+
+type SidePaneLayoutMap = {
+  version: typeof SIDE_PANE_LAYOUT_VERSION;
+  layouts: Record<string, object>;
+};
+
+const NO_LAYOUT_STORAGE: LayoutStorage = {
+  getItem: () => null,
+  setItem: () => {},
+  removeItem: () => {}
+};
+
+/** Old sidebar view ids whose one-pane layouts can be carried forward. */
+const LEGACY_VIEW_FOR_PANE: Readonly<Record<string, SidebarViewId>> = {
+  files: 'explorer',
+  'source-control': 'source-control',
+  worktrees: 'worktrees',
+  run: 'stacks',
+  'run-configurations': 'stacks',
+  context: 'context',
+  problems: 'problems'
+};
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readSidePaneMap(storage: LayoutStorage): SidePaneLayoutMap {
+  const raw = loadLayout<unknown>(storage, SIDE_PANE_LAYOUT_KEY);
+  const record = objectRecord(raw);
+  if (!record) return { version: SIDE_PANE_LAYOUT_VERSION, layouts: {} };
+
+  const layouts = objectRecord(record.layouts);
+  if (record.version === SIDE_PANE_LAYOUT_VERSION && layouts) {
+    return { version: SIDE_PANE_LAYOUT_VERSION, layouts: { ...layouts } as Record<string, object> };
+  }
+
+  // Be tolerant of an early v1 draft that stored the entry map directly. It is
+  // still the same key family and can be normalized on the next write.
+  const directLayouts = Object.fromEntries(
+    Object.entries(record).filter(([, value]) => objectRecord(value) !== null)
+  ) as Record<string, object>;
+  return { version: SIDE_PANE_LAYOUT_VERSION, layouts: directLayouts };
+}
+
+function writeSidePaneMap(storage: LayoutStorage, map: SidePaneLayoutMap): boolean {
+  return saveLayout(storage, SIDE_PANE_LAYOUT_KEY, map);
+}
+
+function defaultLayoutId(options: PaneStackOptions): string {
+  return (
+    options.layoutId?.trim() ||
+    `panes:${options.panes
+      .map((pane) => pane.id)
+      .slice()
+      .sort()
+      .join(',')}`
+  );
+}
+
+/** Rewrite a valid one-pane legacy payload without changing its size/state. */
+export function migrateLegacyPaneLayout(
+  stored: unknown,
+  sourcePaneId: string,
+  targetPaneId: string
+): object | null {
+  if (!canRestorePaneLayout(stored, [sourcePaneId])) return null;
+  const value = stored as { views: unknown[] };
+  const views = value.views.map((view) => {
+    if (!view || typeof view !== 'object') return view;
+    const next = { ...(view as Record<string, unknown>) };
+    const data = objectRecord(next.data);
+    if (data) {
+      const params = objectRecord(data.params);
+      next.data = {
+        ...data,
+        id: targetPaneId,
+        ...(params ? { params: { ...params, paneId: targetPaneId } } : {})
+      };
+    }
+    return next;
+  });
+  const migrated = { ...(value as Record<string, unknown>), views };
+  return canRestorePaneLayout(migrated, [targetPaneId]) ? migrated : null;
+}
+
+/**
+ * Read a valid legacy `viewPanesKey(id)` payload for a new pane id. Invalid or
+ * incomplete payloads are ignored; callers then build the registered defaults.
+ */
+export function readLegacyViewPaneLayout(
+  storage: LayoutStorage,
+  targetPaneIds: Iterable<string>
+): object | null {
+  const ids = [...new Set(targetPaneIds)];
+  if (ids.length !== 1) return null;
+  const targetId = ids[0];
+  const legacyView = LEGACY_VIEW_FOR_PANE[targetId];
+  if (!legacyView) return null;
+  const stored = loadLayout<unknown>(storage, viewPanesKey(legacyView));
+  return migrateLegacyPaneLayout(stored, targetId === 'run' ? 'run-configurations' : targetId, targetId);
+}
+
+/**
+ * Combine the valid per-view legacy layouts into one exact side-pane payload.
+ * It returns null unless every requested pane has a valid source layout, so a
+ * partial migration can never produce a stack missing a registered pane.
+ */
+export function migrateViewPaneLayouts(
+  storage: LayoutStorage,
+  targetPaneIds: Iterable<string>
+): object | null {
+  const ids = [...new Set(targetPaneIds)];
+  if (ids.length === 0) return null;
+  const views: unknown[] = [];
+  let size = 0;
+  for (const targetId of ids) {
+    const legacyView = LEGACY_VIEW_FOR_PANE[targetId];
+    if (!legacyView) return null;
+    const stored = loadLayout<unknown>(storage, viewPanesKey(legacyView));
+    const sourceId = targetId === 'run' ? 'run-configurations' : targetId;
+    const migrated = migrateLegacyPaneLayout(stored, sourceId, targetId);
+    if (!migrated) return null;
+    const payload = migrated as { size?: unknown; views?: unknown };
+    if (typeof payload.size === 'number' && Number.isFinite(payload.size)) size += payload.size;
+    if (!Array.isArray(payload.views)) return null;
+    views.push(...payload.views);
+  }
+  const combined = { size, views };
+  return canRestorePaneLayout(combined, ids) ? combined : null;
+}
+
+export const migrateViewPanesLayouts = migrateViewPaneLayouts;
 
 /**
  * Is this stored layout safe to restore into a stack of exactly `paneIds`?
@@ -71,14 +218,68 @@ export function canRestorePaneLayout(stored: unknown, paneIds: Iterable<string>)
   return panelSetMatches(paneviewPanelIds(stored), paneIds);
 }
 
+/** Resolve the body maximum that a live content measurement should apply. */
+export function resolvePaneBodyMaximum(
+  minimumBodySize: number,
+  requestedContentSize: number | undefined,
+  currentMaximumBodySize: number
+): number {
+  const requested = Number.isFinite(requestedContentSize)
+    ? requestedContentSize as number
+    : currentMaximumBodySize;
+  return Number.isFinite(requested)
+    ? Math.max(minimumBodySize, requested)
+    : Number.POSITIVE_INFINITY;
+}
+
 export function createPaneStack(container: HTMLElement, options: PaneStackOptions): PaneStack {
   const specs = new Map(options.panes.map((pane) => [pane.id, pane]));
+  if (specs.size !== options.panes.length) {
+    throw new TypeError('PaneStack panes must have unique ids');
+  }
+  const layoutStorage = options.layoutStore ?? NO_LAYOUT_STORAGE;
+  const centralLayoutId = defaultLayoutId(options);
+
+  /** One persistence adapter, backed by the injected store and one v1 map entry. */
+  const loadPersistedLayout = (): object | null => {
+    const map = readSidePaneMap(layoutStorage);
+    const stored = map.layouts[centralLayoutId];
+    if (canRestorePaneLayout(stored, specs.keys())) return stored;
+
+    // A valid one-pane view layout is migrated exactly once into the v1 map.
+    // A mismatch is deliberately not copied: the next launch must rebuild the
+    // exact registered roster rather than resurrecting an obsolete pane set.
+    const migrated = migrateViewPaneLayouts(layoutStorage, specs.keys());
+    if (!migrated) return null;
+    const next = { ...map.layouts, [centralLayoutId]: migrated };
+    writeSidePaneMap(layoutStorage, {
+      version: SIDE_PANE_LAYOUT_VERSION,
+      layouts: next
+    });
+    return migrated;
+  };
+
+  const clearPersistedLayout = (): void => {
+    const map = readSidePaneMap(layoutStorage);
+    if (!(centralLayoutId in map.layouts)) return;
+    const layouts = { ...map.layouts };
+    delete layouts[centralLayoutId];
+    writeSidePaneMap(layoutStorage, { version: SIDE_PANE_LAYOUT_VERSION, layouts });
+  };
+
+  const savePersistedLayout = (layout: object): boolean => {
+    const map = readSidePaneMap(layoutStorage);
+    return writeSidePaneMap(layoutStorage, {
+      version: SIDE_PANE_LAYOUT_VERSION,
+      layouts: { ...map.layouts, [centralLayoutId]: layout }
+    });
+  };
+
   /** Where each body element goes back to when its pane dies. */
   const parking = new Map(
     options.panes.map((pane) => [pane.id, pane.element.parentElement as HTMLElement | null])
   );
   let synchronizingDepth = 0;
-  let persistTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
 
   /**
@@ -117,12 +318,15 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   });
 
   const addPaneFor = (pane: PaneSpec): void => {
+    const contentSize = typeof pane.contentSize === 'function' ? pane.contentSize() : pane.contentSize;
     api.addPanel({
       id: pane.id,
       component: COMPONENT,
       title: pane.title,
       params: { paneId: pane.id },
       size: pane.size,
+      minimumBodySize: pane.minimumSize,
+      maximumBodySize: contentSize ?? pane.maximumSize ?? undefined,
       // The add option is spelled `isExpanded`; the SERIALIZED field is
       // `expanded`. Setting it here is enough — a pane built collapsed reports
       // a maximum size of just its header, so there is no second step and no
@@ -133,6 +337,69 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
 
   const buildDefault = (): void => {
     for (const pane of options.panes) addPaneFor(pane);
+  };
+
+  /**
+   * Keep a small pane from inheriting all of the stack's spare height. A
+   * stored layout can be wildly out of date after grouping or filtering, so
+   * every content-sized pane gets a live maximum and a fair share when the
+   * requested content is taller than the available stack.
+   */
+  const fitContent = (): void => {
+    if (disposed || api.height <= 0) return;
+    const expanded = api.panels.filter((panel) => panel.isExpanded());
+    if (expanded.length === 0) return;
+
+    const collapsedHeight = api.panels
+      .filter((panel) => !panel.isExpanded())
+      .reduce((total, panel) => total + panel.minimumSize, 0);
+    const panes = expanded.map((panel) => {
+      const spec = specs.get(panel.id);
+      const requested = typeof spec?.contentSize === 'function' ? spec.contentSize() : spec?.contentSize;
+      const bodySize = resolvePaneBodyMaximum(panel.minimumBodySize, requested, panel.maximumBodySize);
+      const headerSize = Math.max(0, panel.minimumSize - panel.minimumBodySize);
+      const desiredSize = headerSize + bodySize;
+      // dockview's pane API emits whole-pane constraints but does not wire the
+      // event back to PaneviewPanel.maximumBodySize. Set the supported body
+      // maximum directly, then lay out the stack against the new limits.
+      (panel as unknown as { maximumBodySize: number }).maximumBodySize = bodySize;
+      return {
+        panel,
+        minimumSize: panel.minimumSize,
+        desiredSize
+      };
+    });
+
+    const available = Math.max(0, api.height - collapsedHeight);
+    const minimumTotal = panes.reduce((total, pane) => total + pane.minimumSize, 0);
+    const desiredTotal = panes.reduce((total, pane) => total + pane.desiredSize, 0);
+    const sizes = panes.map((pane) => pane.desiredSize);
+
+    if (desiredTotal > available) {
+      sizes.splice(0, sizes.length, ...panes.map((pane) => pane.minimumSize));
+      let remaining = Math.max(0, available - minimumTotal);
+      const capacity = panes.map((pane) => Math.max(0, pane.desiredSize - pane.minimumSize));
+      while (remaining > 0) {
+        const open = capacity.reduce((count, amount) => count + (amount > 0 ? 1 : 0), 0);
+        if (open === 0) break;
+        const share = remaining / open;
+        let used = 0;
+        for (let index = 0; index < capacity.length; index += 1) {
+          if (capacity[index] <= 0) continue;
+          const amount = Math.min(capacity[index], share);
+          sizes[index] += amount;
+          capacity[index] -= amount;
+          used += amount;
+        }
+        if (used <= 0) break;
+        remaining -= used;
+      }
+    }
+
+    api.layout(api.width, api.height);
+    panes.forEach(({ panel }, index) => {
+      panel.api.setSize({ size: Math.round(sizes[index]) });
+    });
   };
 
   /**
@@ -160,25 +427,16 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   /**
    * Run a programmatic layout mutation with persistence suppressed.
    *
-   * The Paneview's own emitters are synchronous, so most of what this block
-   * causes lands before it returns — but `fromJSON` re-fires its "pane added"
-   * events from a `setTimeout(…, 0)`, and the resize watcher it shares with the
-   * rest of dockview reports through a `requestAnimationFrame`. Releasing the
-   * guard on a timer rather than synchronously covers all three: the release is
-   * scheduled after any timer the mutation itself queued, and a microtask
-   * cannot outlive it either.
-   *
-   * Resize-driven changes deliberately fall outside the guard: they report a
-   * finished layout the user asked for, which is what we want written.
+   * The owner forbids production frontend schedulers, so the guard is scoped to
+   * the synchronous mutation only. Any deferred dockview event that follows is
+   * treated as ordinary layout state and may persist.
    */
   const runSynchronized = (fn: () => void): void => {
     synchronizingDepth += 1;
     try {
       fn();
     } finally {
-      setTimeout(() => {
-        if (synchronizingDepth > 0) synchronizingDepth -= 1;
-      }, 0);
+      if (synchronizingDepth > 0) synchronizingDepth -= 1;
     }
   };
 
@@ -202,7 +460,7 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   layoutToContainer();
 
   runSynchronized(() => {
-    const stored = loadLayout<object>(options.storage, options.storageKey);
+    const stored = loadPersistedLayout();
     if (canRestorePaneLayout(stored, specs.keys())) {
       try {
         api.fromJSON(stored as never);
@@ -210,32 +468,26 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
       } catch {
         // Half-restored: drop the layout that did this so the next launch
         // starts clean, then rebuild what we can here and now.
-        clearLayout(options.storage, options.storageKey);
+        clearPersistedLayout();
         removeAllPanes();
       }
     }
     buildDefault();
   });
+  fitContent();
 
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;
-    if (persistTimer !== null) clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      if (disposed) return;
-      // Never store a stack measured at zero: the pane sizes in it are
-      // meaningless and the next launch would restore from them.
-      if (api.width <= 0 || api.height <= 0) return;
-      let ok = false;
-      try {
-        // `toJSON` runs inside the guard too: a stack in an unexpected state
-        // can throw from it, and an unhandled throw in here kills the timer.
-        ok = saveLayout(options.storage, options.storageKey, api.toJSON());
-      } catch {
-        ok = false;
-      }
-      options.onLayoutPersisted?.(ok);
-    }, PERSIST_DEBOUNCE_MS);
+    // Never store a stack measured at zero: the pane sizes in it are
+    // meaningless and the next launch would restore from them.
+    if (api.width <= 0 || api.height <= 0) return;
+    let ok = false;
+    try {
+      ok = savePersistedLayout(api.toJSON());
+    } catch {
+      ok = false;
+    }
+    options.onLayoutPersisted?.(ok);
   };
 
   /**
@@ -251,22 +503,22 @@ export function createPaneStack(container: HTMLElement, options: PaneStackOption
   return {
     api,
     resetLayout(): void {
-      clearLayout(options.storage, options.storageKey);
+      clearPersistedLayout();
       runSynchronized(() => {
         removeAllPanes();
         buildDefault();
       });
-      // The guard above is still up — it releases on a timer — so ask for the
-      // persist on the timer after it. Callbacks with the same delay run in the
-      // order they were scheduled, and the release was scheduled first.
-      setTimeout(persistSoon, 0);
+      persistSoon();
     },
     layout(width: number, height: number): void {
       api.layout(width, height);
+      fitContent();
+    },
+    fitContent(): void {
+      fitContent();
     },
     dispose(): void {
       disposed = true; // body-part dispose() no-ops: page teardown owns the DOM now
-      if (persistTimer !== null) clearTimeout(persistTimer);
       changeListener.dispose();
       api.dispose();
     }

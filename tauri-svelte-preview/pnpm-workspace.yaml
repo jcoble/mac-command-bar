@@ -1,0 +1,3 @@
+patchedDependencies:
+  '@keenmate/svelte-treeview@4.8.0': patches/@keenmate__svelte-treeview@4.8.0.patch
+  bits-ui@2.18.1: patches/bits-ui@2.18.1.patch

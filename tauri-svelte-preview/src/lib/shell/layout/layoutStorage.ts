@@ -15,27 +15,25 @@ export interface LayoutStorage {
 }
 
 /**
- * Bumped to `-v2` when the shell's regions were rearranged: the sessions list
- * took a column of its own down the left, every tool view moved to a column on
- * the right, and the icon strip moved to the far right edge. A layout saved
- * under the old key describes four regions that no longer exist by those names,
- * with the sizes and the left-to-right order of the old arrangement. There is
- * no honest way to translate one into the other — the old layout says nothing
- * about how wide the user wants two columns that were never there — so it is
- * not migrated. It is left where it is, harmless and unread, and the new
- * arrangement starts from its defaults.
+ * Bumped to `-v3` when the far-right icon rail was deleted and the shell went
+ * down to three columns plus the bottom dock. A layout saved under an older key
+ * describes a region that no longer exists, and restoring it would put the grid
+ * back together around a column nothing draws. There is no honest way to
+ * translate one into the other — the old layout says nothing about how wide the
+ * user wants a column that was never there — so it is not migrated. It is left
+ * where it is, harmless and unread, and the new arrangement starts from its
+ * defaults. The same treatment `-v2` gave the arrangement before it.
  */
-export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout-v2';
+export const GRID_LAYOUT_KEY = 'mac-command-bar.next.grid-layout-v3';
+
 /**
- * Bumped to `-v2` when the center dock stopped being one group of tabs and
- * became a conversation group beside a display group, and to `-v3` when the
- * Diff tab joined the display group. A stored layout is only restored when its
- * tabs are exactly the tabs the shell now builds, so without the bump every
- * existing install would keep its three-tab arrangement and the Diff tab would
- * never appear. Layouts saved under either older key are left where they are,
- * harmless and unread.
+ * Bumped to `-v6` when the center pane went down to Session, Editor and Diff.
+ * The browser, the session history and the agent list are panels of the right
+ * column now, so an older payload names three tabs the center no longer has.
+ * A layout is restored only when its panel set is exact, which those are not,
+ * so they are left where they are and the center opens from its defaults.
  */
-export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v3';
+export const CENTER_LAYOUT_KEY = 'mac-command-bar.next.center-layout-v6';
 
 export function loadLayout<T>(storage: LayoutStorage, key: string): T | null {
   try {
@@ -87,6 +85,30 @@ export function gridPanelIds(serialized: unknown): Set<string> {
   };
   walk(root);
   return ids;
+}
+
+/**
+ * How many groups a `SerializedDockview` holds — one leaf of its grid tree is
+ * one group of tabs. The center dock wants exactly one: three surfaces stacked,
+ * with the corner tabs choosing between them. A layout stored by an older build
+ * that split them across two groups counts two, and the caller rebuilds instead
+ * of restoring it. Malformed input counts zero, which fails the same check.
+ */
+export function dockGroupCount(serialized: unknown): number {
+  const root = (serialized as { grid?: { root?: unknown } } | null)?.grid?.root;
+  let groups = 0;
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    const type = (node as { type?: unknown }).type;
+    if (type === 'leaf') {
+      groups += 1;
+      return;
+    }
+    const data = (node as { data?: unknown }).data;
+    if (Array.isArray(data)) for (const child of data) walk(child);
+  };
+  walk(root);
+  return groups;
 }
 
 /** Panel ids inside a `SerializedDockview` (`{ panels: Record<id, …> }`). */

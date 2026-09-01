@@ -1,4 +1,5 @@
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import type { Dirent, Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -7,6 +8,7 @@ import {
   findSourceReferenceTargets,
   findSourceSearchMatches,
   previewFromContent,
+  type SourceDirectoryEntry,
   type SourceDefinitionTarget,
   type SourcePreview,
   type SourceRecord,
@@ -14,7 +16,9 @@ import {
   type SourceReferenceTarget,
   type SourceScanStats,
   type SourceScanResult,
-  type SourceSearchMatch
+  type SourceSearchMatch,
+  type SourceTreeSearchMatch,
+  type SourceTreeSearchPage
 } from '../sourceData.ts';
 
 const defaultSourceListLimit = 10_000;
@@ -63,6 +67,14 @@ type LocalSourceScanInput = {
   root: string;
   query?: string | null;
   limit?: number | null;
+};
+
+type LocalSourceTreeSearchInput = {
+  root: string;
+  query?: string | null;
+  pageSize?: number | null;
+  cursor?: number | null;
+  includeExcluded?: boolean;
 };
 
 type LocalSourceScanStats = SourceScanStats & {
@@ -180,7 +192,12 @@ function withDerivedAgentSessionMetadata(records: LocalAgentSessionRecord[]) {
 
 export async function validateLocalProjectRoot(root: string): Promise<LocalProjectRootValidationResult> {
   const normalizedRoot = normalizeRootPath(root);
-  const rootStats = await stat(normalizedRoot).catch(() => null);
+  let rootStats: Stats | null = null;
+  try {
+    rootStats = await stat(normalizedRoot);
+  } catch {
+    // A missing or unreadable project path is reported as not found.
+  }
 
   if (!rootStats) {
     return {
@@ -252,7 +269,12 @@ export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<Loca
   }
 
   const codexIndex = path.join(homePath, '.codex', 'session_index.jsonl');
-  const codexIndexContents = await readFile(codexIndex, 'utf8').catch(() => '');
+  let codexIndexContents = '';
+  try {
+    codexIndexContents = await readFile(codexIndex, 'utf8');
+  } catch {
+    // An unavailable index simply contributes no Codex records.
+  }
   const codexRecords = dropCodexSubagentSessions(
     codexIndexContents ? parseCodexIndexJsonl(codexIndexContents) : [],
     codexSubagentIds
@@ -261,18 +283,28 @@ export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<Loca
   const codexFiles = await sortFilesByModifiedDesc(codexRollouts);
   const codexMetadata: LocalAgentSessionRecord[] = [];
   for (const filePath of codexFiles.slice(0, codexSessionFileLimit)) {
-    const contents = await readHeadAndTailUtf8(
-      filePath,
-      codexSessionHeadBytes,
-      codexSessionTailBytes
-    ).catch(() => '');
+    let contents = '';
+    try {
+      contents = await readHeadAndTailUtf8(
+        filePath,
+        codexSessionHeadBytes,
+        codexSessionTailBytes
+      );
+    } catch {
+      // An unreadable rollout contributes no metadata.
+    }
     if (contents) codexMetadata.push(...parseCodexRolloutJsonl(contents));
   }
   records.push(...mergeCodexSessionMetadata(codexRecords, codexMetadata));
 
   const cmuxRoot = path.join(homePath, '.cmuxterm');
   for (const { agent, filePath } of await cmuxHookSessionFiles(cmuxRoot)) {
-    const contents = await readFile(filePath, 'utf8').catch(() => '');
+    let contents = '';
+    try {
+      contents = await readFile(filePath, 'utf8');
+    } catch {
+      // An unreadable hook file contributes no sessions.
+    }
     if (contents) records.push(...parseCmuxHookSessionsJson(agent, contents));
   }
 
@@ -288,7 +320,12 @@ export async function scanLocalAgentSessions(homeRoot = homedir()): Promise<Loca
   const claudeFiles = await sortFilesByModifiedDesc(claudeTranscripts);
   for (const filePath of claudeFiles.slice(0, claudeSessionFileLimit)) {
     const projectPath = decodeClaudeProjectDir(path.basename(path.dirname(filePath))) ?? '';
-    const contents = await readTailUtf8(filePath, claudeSessionTailBytes).catch(() => '');
+    let contents = '';
+    try {
+      contents = await readTailUtf8(filePath, claudeSessionTailBytes);
+    } catch {
+      // An unreadable transcript contributes no sessions.
+    }
     if (contents) records.push(...parseClaudeJsonl(contents, projectPath));
   }
 
@@ -303,7 +340,13 @@ async function findGitRoot(root: string): Promise<string | null> {
   let current = normalizeRootPath(root);
 
   while (true) {
-    if (await stat(path.join(current, '.git')).catch(() => null)) {
+    let gitStats: Stats | null = null;
+    try {
+      gitStats = await stat(path.join(current, '.git'));
+    } catch {
+      // Continue walking upward when this candidate cannot be read.
+    }
+    if (gitStats) {
       return current;
     }
 
@@ -474,7 +517,12 @@ export type CodexThreadMarker = { id: string | null; spawnedByCodex: boolean };
  * read budget on them.
  */
 async function codexRolloutFileThreadMarker(filePath: string): Promise<CodexThreadMarker | null> {
-  const head = await readHeadUtf8(filePath, codexSessionMetaProbeBytes).catch(() => '');
+  let head = '';
+  try {
+    head = await readHeadUtf8(filePath, codexSessionMetaProbeBytes);
+  } catch {
+    // An unreadable rollout has no marker and remains eligible for scanning.
+  }
   return codexRolloutHeadThreadMarker(head);
 }
 
@@ -872,7 +920,12 @@ function isClaudeAgentLaunchedEntry(value: Record<string, unknown>) {
  * full — the same direction to fail as every other check here.
  */
 async function claudeTranscriptFileIsAgentLaunched(filePath: string) {
-  const head = await readHeadUtf8(filePath, claudeSessionLaunchProbeBytes).catch(() => '');
+  let head = '';
+  try {
+    head = await readHeadUtf8(filePath, claudeSessionLaunchProbeBytes);
+  } catch {
+    // An unreadable transcript is kept and settled during the full parse.
+  }
   return claudeTranscriptHeadIsAgentLaunched(head);
 }
 
@@ -1018,7 +1071,12 @@ function mergeAgentSessionRecord(existing: LocalAgentSessionRecord, candidate: L
 }
 
 async function jsonlFiles(root: string): Promise<string[]> {
-  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
   const files: string[] = [];
 
   for (const entry of entries) {
@@ -1034,7 +1092,12 @@ async function jsonlFiles(root: string): Promise<string[]> {
 }
 
 async function cmuxHookSessionFiles(root: string) {
-  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith('-hook-sessions.json'))
     .map((entry) => ({
@@ -1046,19 +1109,27 @@ async function cmuxHookSessionFiles(root: string) {
 
 async function sortFilesByModifiedDesc(files: string[]) {
   const entries = await Promise.all(
-    files.map(async (filePath) => ({
-      filePath,
-      modifiedAt: (await stat(filePath).catch(() => null))?.mtimeMs ?? 0
-    }))
+    files.map(async (filePath) => {
+      let modifiedAt = 0;
+      try {
+        modifiedAt = (await stat(filePath)).mtimeMs ?? 0;
+      } catch {
+        // Missing files sort after readable files.
+      }
+      return { filePath, modifiedAt };
+    })
   );
   return entries.sort((left, right) => right.modifiedAt - left.modifiedAt).map((entry) => entry.filePath);
 }
 
 export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise<SourceScanResult> {
   const root = normalizeRootPath(input.root);
-  const rootStats = await stat(root).catch((error: unknown) => {
+  let rootStats: Stats;
+  try {
+    rootStats = await stat(root);
+  } catch (error: unknown) {
     throw new Error(`Could not read source root metadata: ${errorMessage(error)}`);
-  });
+  }
 
   if (!rootStats.isDirectory()) {
     throw new Error('Source root is not a directory');
@@ -1086,11 +1157,53 @@ export async function scanLocalSourceFiles(input: LocalSourceScanInput): Promise
   };
 }
 
+export async function listLocalSourceDirectory(
+  rootPath: string,
+  directoryPath: string,
+  includeExcluded = false
+): Promise<SourceDirectoryEntry[]> {
+  const root = normalizeRootPath(rootPath);
+  const directory = normalizeRootPath(directoryPath);
+  const relative = path.relative(root, directory);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Source directory is outside the project root');
+  }
+
+  let directoryStats: Stats;
+  try {
+    directoryStats = await stat(directory);
+  } catch (error: unknown) {
+    throw new Error(`Could not read source directory metadata: ${errorMessage(error)}`);
+  }
+  if (!directoryStats.isDirectory()) throw new Error('Source path is not a directory');
+
+  const entries = await readdir(directory, { withFileTypes: true });
+  return entries
+    .filter((entry) => {
+      if (entry.isSymbolicLink()) return false;
+      if (entry.isDirectory()) return includeExcluded || skipDirReason(entry.name) === null;
+      return entry.isFile();
+    })
+    .map((entry) => ({
+      path: path.join(directory, entry.name),
+      name: entry.name,
+      isDirectory: entry.isDirectory(),
+      excluded: entry.isDirectory() && skipDirReason(entry.name) !== null
+    }))
+    .sort((left, right) => {
+      if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+      return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+}
+
 export async function readLocalSourceFile(filePath: string): Promise<SourcePreview> {
   const resolvedPath = normalizeFilePath(filePath);
-  const fileStats = await stat(resolvedPath).catch((error: unknown) => {
+  let fileStats: Stats;
+  try {
+    fileStats = await stat(resolvedPath);
+  } catch (error: unknown) {
     throw new Error(`Could not read source metadata: ${errorMessage(error)}`);
-  });
+  }
 
   if (!fileStats.isFile()) {
     throw new Error('Source path is not a file');
@@ -1104,18 +1217,24 @@ export async function readLocalSourceFile(filePath: string): Promise<SourcePrevi
     throw new Error('Source file is too large to preview');
   }
 
-  const content = await readFile(resolvedPath, 'utf8').catch((error: unknown) => {
+  let content: string;
+  try {
+    content = await readFile(resolvedPath, 'utf8');
+  } catch (error: unknown) {
     throw new Error(`Could not read source file as UTF-8: ${errorMessage(error)}`);
-  });
+  }
 
   return previewFromContent(sourceRecordForPath(resolvedPath, fileStats.size), content);
 }
 
 export async function writeLocalSourceFile(filePath: string, content: string): Promise<SourcePreview> {
   const resolvedPath = normalizeFilePath(filePath);
-  const fileStats = await stat(resolvedPath).catch((error: unknown) => {
+  let fileStats: Stats;
+  try {
+    fileStats = await stat(resolvedPath);
+  } catch (error: unknown) {
     throw new Error(`Could not read source metadata: ${errorMessage(error)}`);
-  });
+  }
 
   if (!fileStats.isFile()) {
     throw new Error('Source path is not a file');
@@ -1132,7 +1251,11 @@ export async function writeLocalSourceFile(filePath: string, content: string): P
     await writeFile(tempPath, content, 'utf8');
     await rename(tempPath, resolvedPath);
   } catch (error) {
-    await rm(tempPath, { force: true }).catch(() => undefined);
+    try {
+      await rm(tempPath, { force: true });
+    } catch {
+      // Preserve the original write error if cleanup also fails.
+    }
     throw new Error(`Could not write source file: ${errorMessage(error)}`);
   }
 
@@ -1146,6 +1269,49 @@ export async function searchLocalSourceFiles(
 ): Promise<SourceSearchMatch[]> {
   const previews = await readLocalSourcePreviews(records);
   return findSourceSearchMatches(previews, query, limit);
+}
+
+export async function searchLocalSourceTree(
+  input: LocalSourceTreeSearchInput
+): Promise<SourceTreeSearchPage> {
+  const root = normalizeRootPath(input.root);
+  let rootStats: Stats;
+  try {
+    rootStats = await stat(root);
+  } catch (error: unknown) {
+    throw new Error(`Could not read source root metadata: ${errorMessage(error)}`);
+  }
+  if (!rootStats.isDirectory()) throw new Error('Source root is not a directory');
+
+  const query = input.query?.trim().toLowerCase() ?? '';
+  const pageSize = clampSourceSearchPageSize(input.pageSize);
+  const offset = clampSourceSearchCursor(input.cursor);
+  if (!query) return { matches: [], nextCursor: null, complete: true };
+
+  const matches: SourceTreeSearchMatch[] = [];
+  const state = { matchedCount: 0 };
+  await collectLocalSourceTreeSearch(
+    root,
+    root,
+    query,
+    pageSize,
+    offset,
+    input.includeExcluded === true,
+    matches,
+    state
+  );
+
+  const complete = matches.length <= pageSize;
+  if (!complete) {
+    matches.length = pageSize;
+    return {
+      matches,
+      nextCursor: offset + pageSize,
+      complete: false
+    };
+  }
+
+  return { matches, nextCursor: null, complete: true };
 }
 
 export async function findLocalSourceDefinitions(
@@ -1200,7 +1366,12 @@ export async function countLocalSourceReferences(
     }
 
     if (record.byteCount > maxPreviewBytes) continue;
-    const content = await readFile(record.path, 'utf8').catch(() => null);
+    let content: string | null = null;
+    try {
+      content = await readFile(record.path, 'utf8');
+    } catch {
+      // An unreadable source file contributes no reference counts.
+    }
     if (content === null) continue;
     scannedFiles += 1;
 
@@ -1263,6 +1434,65 @@ async function readLocalSourcePreviewForRecord(record: SourceRecord): Promise<So
   );
 }
 
+async function collectLocalSourceTreeSearch(
+  root: string,
+  current: string,
+  query: string,
+  pageSize: number,
+  offset: number,
+  includeExcluded: boolean,
+  matches: SourceTreeSearchMatch[],
+  state: { matchedCount: number }
+): Promise<boolean> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(current, { withFileTypes: true });
+  } catch (error: unknown) {
+    throw new Error(`Could not read source directory: ${errorMessage(error)}`);
+  }
+  entries.sort((left, right) => compareSourceWalkEntries(root, current, left, right));
+
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const entryPath = path.join(current, entry.name);
+    const isDirectory = entry.isDirectory();
+    if (!isDirectory && !entry.isFile()) continue;
+
+    const relativePath = normalizeRelativePath(path.relative(root, entryPath));
+    const excluded = isDirectory && skipDirReason(entry.name) !== null;
+    if (isDirectory && excluded && !includeExcluded) continue;
+
+    if (relativePath.toLowerCase().includes(query)) {
+      if (state.matchedCount >= offset) {
+        matches.push({
+          path: entryPath,
+          relativePath,
+          name: entry.name,
+          isDirectory,
+          excluded
+        });
+      }
+      state.matchedCount += 1;
+      if (matches.length > pageSize) return true;
+    }
+
+    if (isDirectory && (await collectLocalSourceTreeSearch(
+      root,
+      entryPath,
+      query,
+      pageSize,
+      offset,
+      includeExcluded,
+      matches,
+      state
+    ))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function collectSourceFiles(
   root: string,
   current: string,
@@ -1273,9 +1503,12 @@ async function collectSourceFiles(
 ) {
   if (records.length >= limit) return;
 
-  const entries = await readdir(current, { withFileTypes: true }).catch((error: unknown) => {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(current, { withFileTypes: true });
+  } catch (error: unknown) {
     throw new Error(`Could not read source directory: ${errorMessage(error)}`);
-  });
+  }
 
   entries.sort((left, right) => compareSourceWalkEntries(root, current, left, right));
 
@@ -1309,7 +1542,12 @@ async function collectSourceFiles(
       continue;
     }
 
-    const fileStats = await stat(entryPath).catch(() => null);
+    let fileStats: Stats | null = null;
+    try {
+      fileStats = await stat(entryPath);
+    } catch {
+      // An unreadable entry is counted below and omitted from the results.
+    }
     if (!fileStats?.isFile()) {
       scanStats.unreadableEntries += 1;
       continue;
@@ -1394,6 +1632,16 @@ function normalizeRelativePath(relativePath: string) {
 function clampSourceLimit(limit: number | null | undefined) {
   if (!Number.isFinite(limit) || !limit) return defaultSourceListLimit;
   return Math.min(maxSourceListLimit, Math.max(0, Math.trunc(limit)));
+}
+
+function clampSourceSearchPageSize(pageSize: number | null | undefined) {
+  if (!Number.isFinite(pageSize) || !pageSize) return 50;
+  return Math.min(200, Math.max(1, Math.trunc(pageSize)));
+}
+
+function clampSourceSearchCursor(cursor: number | null | undefined) {
+  if (!Number.isFinite(cursor)) return 0;
+  return Math.max(0, Math.trunc(cursor as number));
 }
 
 function sourceCollectionLimit(limit: number) {
@@ -2094,6 +2342,8 @@ function agentDisplayLabel(agent: string) {
       return 'Codex';
     case 'claude':
       return 'Claude';
+    case 'antigravity':
+      return 'Antigravity';
     case 'gemini':
       return 'Gemini';
     case 'opencode':

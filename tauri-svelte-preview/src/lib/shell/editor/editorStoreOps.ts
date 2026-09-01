@@ -6,7 +6,7 @@
  * a function), so every decision worth testing — where a newly opened file
  * lands in the strip, which file becomes active when one is closed, how a
  * "reveal this line" request is delivered to Monaco — lives here and is
- * covered by `scripts/editorStore.test.mjs`. The runes module is then a thin
+ * covered by `scripts/editorStore.test.ts`. The runes module is then a thin
  * shell: hold state, call these, assign the result.
  *
  * No IO, no Svelte, no mutation of the arrays passed in: every function
@@ -27,6 +27,10 @@ export interface OpenEditorFile {
   draftContent: string | null;
   /** Whether `draftContent` differs from the last content read or saved. */
   dirty: boolean;
+  /** A single-click file tab that becomes permanent on edit, double-click or pin. */
+  previewTab: boolean;
+  /** A dirty draft and the file on disk both changed since the last clean baseline. */
+  conflict: string | null;
   /** A native write is in flight. */
   saving: boolean;
   /** A read is in flight. */
@@ -47,10 +51,19 @@ export interface OpenEditorFilePatch {
   preview?: SourcePreview | null;
   draftContent?: string | null;
   dirty?: boolean;
+  conflict?: string | null;
   saving?: boolean;
   loading?: boolean;
   error?: string | null;
   targetLine?: number | null;
+  previewTab?: boolean;
+}
+
+export interface OpenEditorFileOptions {
+  /** Reuse the current unpinned preview tab instead of opening a permanent tab. */
+  preview?: boolean;
+  /** Make the tab permanent even when it was opened as a preview before. */
+  pin?: boolean;
 }
 
 /** A fresh, not-yet-read entry for `record`. */
@@ -63,6 +76,8 @@ export function openEditorFileFromRecord(record: SourceRecord): OpenEditorFile {
     preview: null,
     draftContent: null,
     dirty: false,
+    previewTab: false,
+    conflict: null,
     saving: false,
     loading: false,
     error: null,
@@ -91,10 +106,23 @@ export function isFileOpen(files: readonly OpenEditorFile[], path: string): bool
  */
 export function upsertOpenFile(
   files: readonly OpenEditorFile[],
-  record: SourceRecord
+  record: SourceRecord,
+  options: OpenEditorFileOptions = {}
 ): OpenEditorFile[] {
-  if (isFileOpen(files, record.path)) return [...files];
-  return [...files, openEditorFileFromRecord(record)];
+  const existing = findOpenFile(files, record.path);
+  if (existing) {
+    return options.pin || !options.preview
+      ? patchOpenFile(files, record.path, { previewTab: false })
+      : [...files];
+  }
+  const entry = {
+    ...openEditorFileFromRecord(record),
+    previewTab: Boolean(options.preview && !options.pin)
+  };
+  if (!entry.previewTab) return [...files, entry];
+  const previewIndex = files.findIndex((file) => file.previewTab);
+  if (previewIndex < 0) return [...files, entry];
+  return files.map((file, index) => (index === previewIndex ? entry : file));
 }
 
 /** Apply `patch` to the entry for `path`; unknown paths change nothing. */
@@ -103,7 +131,10 @@ export function patchOpenFile(
   path: string,
   patch: OpenEditorFilePatch
 ): OpenEditorFile[] {
-  return files.map((file) => (file.path === path ? { ...file, ...patch } : file));
+  const draftMutation = patch.draftContent !== undefined && patch.preview === undefined;
+  return files.map((file) => file.path === path
+    ? { ...file, ...patch, previewTab: file.previewTab && draftMutation ? false : patch.previewTab ?? file.previewTab }
+    : file);
 }
 
 /**
@@ -129,6 +160,13 @@ export function closeOpenFile(
   path: string
 ): OpenEditorFile[] {
   return files.filter((file) => file.path !== path);
+}
+
+/** A clean closed tab can release its Monaco model; a draft cannot. */
+export function modelPathToDisposeOnClose(
+  file: Pick<OpenEditorFile, 'path' | 'dirty'> | null
+): string | null {
+  return file && !file.dirty ? file.path : null;
 }
 
 /**

@@ -1,7 +1,8 @@
 @import './lib/styles/tokens.css';
+@import './lib/styles/fonts.css';
 
 /* ============================================================
- * Global baseline — MacCommandBar
+ * Global baseline — Assembly
  * Modern, minimal, spacious defaults built on the design tokens.
  * Component-specific styling lives with its component, not here.
  * ============================================================ */
@@ -18,31 +19,27 @@
 :root {
   color-scheme: dark;
 
-  /* Clean, native UI font stack for chrome/interface text. */
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    "Helvetica Neue",
-    Arial,
-    sans-serif;
+  /* Clean, native UI font stack for chrome/interface text.
+     The system face leads deliberately. Interface text here sits at 13-14px on
+     a near-black ground, and macOS hints its own UI face for exactly that; a
+     geometric webfont draws the same sizes with rounder bowls and flatter stems
+     and reads soft next to it. */
+  font-family: var(--font-ui);
   font-size: var(--text-md);
   line-height: 1.5;
 
   background: var(--color-bg);
   color: var(--color-text);
 
-  /* Crisp rendering on retina / hi-dpi displays. */
+  /* Grayscale smoothing was thinning every glyph against the dark background,
+     which is most of why small interface text read badly. The default keeps the
+     stems the weight the typeface actually draws them. */
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 
-  /* Token-driven thin scrollbars (Firefox / standards). */
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
+  /* Hidden scrollbars (Firefox / standards side of the rule above). */
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
 }
 
 /* ------------------------------------------------------------------
@@ -155,7 +152,6 @@ body {
   user-select: none;
 }
 
-.monaco-editor,
 .xterm,
 input,
 textarea,
@@ -171,9 +167,17 @@ textarea,
  * Drop the UA outline only where our ring already shows focus,
  * so keyboard users always keep a clear indicator.
  * ------------------------------------------------------------------ */
-:focus-visible {
+:focus-visible:not([data-testid='conversation-composer-input']) {
   outline: none;
   box-shadow: var(--focus-ring);
+}
+
+/* A field is the exception, and only inside the /next shell: it says it has
+   focus by turning its own border mint (`--focus-border`) rather than by
+   drawing a ring around itself. The ring above still carries buttons, rows
+   and menu items, which have no edge of their own to change. */
+:root.next-shell-document :is(input, textarea):focus-visible {
+  box-shadow: none;
 }
 
 /* Never strip focus styling for users without :focus-visible support. */
@@ -182,12 +186,15 @@ textarea,
 }
 
 /* ------------------------------------------------------------------
- * Scrollbars — thin, subtle, rounded; track stays transparent,
- * thumb fades in on hover. WebKit/Blink (Firefox handled above).
+ * Scrollbars — hidden everywhere. They took up real width down the side
+ * of every list and across the bottom of the center, and read as chrome
+ * bolted onto the panels. Scrolling itself is untouched: wheel, trackpad,
+ * keyboard and programmatic scrolling all behave exactly as before.
+ * WebKit/Blink here; the standards property is set on :root above.
  * ------------------------------------------------------------------ */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 0;
+  height: 0;
 }
 
 ::-webkit-scrollbar-track {
@@ -195,18 +202,36 @@ textarea,
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: var(--color-border);
-  background-clip: padding-box;
-  border: 2px solid transparent;
-  border-radius: var(--radius-pill);
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-text-3);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* Except the middle. That is the one surface long enough that losing the
+   position indicator hurts — a conversation can run for hours and there is no
+   other clue how far up it you are. Thin, and only while the pointer is over
+   it, so it stays out of the way the rest of the time. */
+.shell-region-host-center ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.shell-region-host-center ::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: var(--radius-pill);
+  transition: background-color 160ms ease;
+}
+
+.shell-region-host-center *:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
+.shell-region-host-center *:hover::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.32);
 }
 
 /* ------------------------------------------------------------------
@@ -273,17 +298,17 @@ textarea,
  * They live here as global rules (same pattern as the BrowserPanel dock shells
  * above). Extracted from `+page.svelte` with the ActivityWorktreesPanel markup;
  * the worktree arms were the only ones removed from the page's shared multi-panel
- * `:has(.row-action-menu)` groups — the other panels' arms stay in `+page.svelte`.
+ * `.menu-open` groups — the other panels' arms stay in `+page.svelte`.
  * ------------------------------------------------------------------ */
-.activity-panel-list .activity-worktree-row:has(.row-action-menu) {
+.activity-panel-list .activity-worktree-row.menu-open {
   align-items: start;
 }
 
-.activity-panel-list .worktree-activity-actions:has(.row-action-menu) {
+.activity-panel-list .worktree-activity-actions.menu-open {
   display: contents;
 }
 
-.activity-panel-list .worktree-activity-actions:has(.row-action-menu) > button {
+.activity-panel-list .worktree-activity-actions.menu-open > button {
   grid-column: 3;
   grid-row: 1;
   justify-self: end;
@@ -336,8 +361,8 @@ textarea,
   border-radius: 9px;
   background: rgba(22, 25, 25, 0.98);
   box-shadow: 0 20px 54px rgba(0, 0, 0, 0.36);
-  scrollbar-color: rgba(174, 184, 181, 0.52) rgba(255, 255, 255, 0.04);
-  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: none;
 }
 
 .view-menu-section {
@@ -511,7 +536,7 @@ textarea,
  *
  * Only the bare bases are globalized. Descendant/compound rules that qualify
  * these classes (`.activity-row-main strong`, `.activity-row-actions button`,
- * `.row-action-menu button`, the `.activity-panel-list .X:has(.row-action-menu)`
+ * `.row-action-menu button`, the `.activity-panel-list .X.menu-open`
  * reflow rules, the `.activity-panel-list .row-action-menu { position: static }`
  * override, and the `.git-task-link` ancestor combos) stay scoped where they
  * are — they layer on top of these globals and several are grouped with

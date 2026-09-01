@@ -21,18 +21,20 @@ let pending: Promise<readonly string[]> | null = null;
 
 /** Ask the desktop app what it can do. Safe to call as often as you like. */
 export async function readBackendCapabilities(): Promise<readonly string[]> {
-  pending ??= (async () => {
-    if (!isNativeTauriRuntime()) return [];
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const answer = await invoke<string[]>('read_backend_capabilities');
-      return Array.isArray(answer) ? answer.filter((name) => typeof name === 'string') : [];
-    } catch {
-      // A build that has never heard of the question cannot do the new thing.
-      return [];
-    }
-  })();
+  pending ??= readBackendCapabilitiesOnce();
   return pending;
+}
+
+async function readBackendCapabilitiesOnce(): Promise<readonly string[]> {
+  if (!isNativeTauriRuntime()) return [];
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const answer = await invoke<string[]>('read_backend_capabilities');
+    return Array.isArray(answer) ? answer.filter((name) => typeof name === 'string') : [];
+  } catch {
+    // A build that has never heard of the question cannot do the new thing.
+    return [];
+  }
 }
 
 /** Can this desktop build do the named thing? */
