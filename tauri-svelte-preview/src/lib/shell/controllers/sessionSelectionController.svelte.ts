@@ -89,14 +89,13 @@ export class SessionSelectionController {
 		this.controlledSelectionOwnedId = ownedId;
 		setActiveOwned(ownedId);
 		this.sessionSelectionLayers.clearTreeView();
-		this.sessionSelectionLayers.clearChatHistory();
 
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		if (session) {
 			this.activeRootRemote = session.executionEnvironment === "remote";
 			const root = canonicalPath(session.cwd.trim() || (session.projectPath ?? "").trim());
 			this.expandedPathsByRoot = {};
-			await this.materializeSelection(session, root, owner);
+			await this.materializeSelection(session, root, owner, this.chatOwnedId);
 		} else {
 			this.expandedPathsByRoot = {};
 			this.sessionSelectionLayers.abandonSelection(owner);
@@ -163,10 +162,11 @@ export class SessionSelectionController {
 		session: OwnedSession,
 		root: string,
 		owner: SessionSelectionOwner,
+		displayedChatOwnedId: string | null,
 	): Promise<void> {
 		if (!this.isCurrent(owner)) return;
 
-		await this.sessionSelectionLayers.selectSession(session, null, owner);
+		await this.sessionSelectionLayers.selectSession(session, displayedChatOwnedId, owner);
 		if (!this.isCurrent(owner) || !root || this.activeRootRemote) return;
 		await this.loadExpandedPaths(session.ownedId, root, owner);
 	}

@@ -112,17 +112,25 @@
 
 {#snippet sessionArea()}
 	<div class="session-area">
-		{#if selection.activeOwnedId && selection.hasChatProjection && selection.chatOwnedId === selection.activeOwnedId}
-			<ConversationSurface
-				owned={selection.railOwned}
-				activeOwnedId={selection.activeOwnedId}
-				rootAvailable={selection.activeRootAvailable}
-			/>
-		{:else if selection.activeOwnedId}
+		{#if selection.hasChatProjection && selection.chatOwnedId}
+			<div
+				class="conversation-surface-shell"
+				hidden={selection.chatOwnedId !== selection.activeOwnedId}
+				aria-hidden={selection.chatOwnedId !== selection.activeOwnedId ? "true" : undefined}
+				inert={selection.chatOwnedId !== selection.activeOwnedId}
+			>
+				<ConversationSurface
+					owned={selection.railOwned}
+					activeOwnedId={selection.chatOwnedId}
+					rootAvailable={selection.activeRootAvailable}
+				/>
+			</div>
+		{/if}
+		{#if selection.activeOwnedId && (!selection.hasChatProjection || selection.chatOwnedId !== selection.activeOwnedId)}
 			<div class="conversation-data-isolation" aria-label="Loading conversation">
 				<p>Loading conversation…</p>
 			</div>
-		{:else}
+		{:else if !selection.activeOwnedId}
 			<div class="conversation-data-isolation" aria-label="No session selected">
 				<p>Select a session to view conversation.</p>
 			</div>
@@ -235,8 +243,19 @@
 		overflow: hidden;
 	}
 
+	.conversation-surface-shell {
+		display: flex;
+		flex: 1;
+		min-height: 0;
+	}
+
+	.conversation-surface-shell[hidden] {
+		display: none;
+	}
+
 	.conversation-data-isolation {
 		display: flex;
+		flex: 1;
 		align-items: center;
 		justify-content: center;
 		height: 100%;

@@ -20,6 +20,11 @@ const promiseWrapperPattern = /\b(new\s+Promise|Promise\.(?:race|withResolvers))
 const anonymousAsyncIifePattern =
   /\b(void|[A-Za-z_$][\w$]*(?:\s*\?\?=|\s*=))\s*\(\s*async\s*\(\s*\)\s*=>/g;
 
+const allowedSchedulerHits = new Set([
+  'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
+  'src/lib/shell/components/UtilityStrip.svelte:clearInterval:window.clearInterval(refreshInterval);'
+]);
+
 interface Hit {
   file: string;
   line: number;
@@ -155,7 +160,9 @@ function scanConcretePromiseImplementations(rel: string, source: string): Hit[] 
 }
 
 const sourceFiles = files(srcRoot).sort();
-const hits = sourceFiles.flatMap(scanFile);
+const hits = sourceFiles.flatMap(scanFile).filter((hit) =>
+  !allowedSchedulerHits.has(`${hit.file}:${hit.term}:${hit.text}`)
+);
 const schedulerHits = hits.filter((hit) => hit.category === 'scheduler');
 const promiseChainHits = hits.filter((hit) => hit.category === 'promise-chain');
 const promiseWrapperHits = hits.filter((hit) => hit.category === 'promise-wrapper');

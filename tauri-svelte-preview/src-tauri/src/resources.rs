@@ -422,9 +422,9 @@ pub async fn read_resource_sample(
     .map_err(|error| format!("Resource sampling task failed: {error}"))?
 }
 
-/// Refresh only the process ids already attributed to Assembly. The gutter
-/// calls this frequently; the full machine inventory remains owned by the
-/// Resource Manager refresh above.
+/// Refresh only the process ids already attributed to Assembly. A missing or
+/// stale cache is rediscovered so the gutter is accurate before the Resource
+/// Manager has opened and after an attributed helper restarts.
 #[tauri::command]
 pub async fn read_resource_totals(
     registry: State<'_, ResourceRegistry>,
@@ -439,16 +439,14 @@ pub async fn read_resource_totals(
     let lsp_registry = lsp_registry.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let mut process_ids = sampled_process_ids
+        let owners = resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?;
+        let cached_process_ids = sampled_process_ids
             .lock()
             .map_err(|_| "Resource sampler is unavailable".to_string())?
             .clone();
+        let mut process_ids = cached_process_ids.clone();
         process_ids.push(std::process::id());
-        process_ids.extend(
-            resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?
-                .into_iter()
-                .map(|owner| owner.root_pid),
-        );
+        process_ids.extend(owners.iter().map(|owner| owner.root_pid));
         process_ids.sort_unstable();
         process_ids.dedup();
 
@@ -461,6 +459,38 @@ pub async fn read_resource_totals(
             .map(Pid::from_u32)
             .collect::<Vec<_>>();
         system.refresh_processes(ProcessesToUpdate::Some(&sysinfo_pids), true);
+
+        if cached_process_ids.is_empty()
+            || cached_process_ids
+                .iter()
+                .any(|pid| system.process(Pid::from_u32(*pid)).is_none())
+        {
+            let processes = observe_processes(&mut system, std::process::id());
+            let sample = build_resource_sample(
+                resource_sample_timestamp_millis(),
+                std::process::id(),
+                &processes,
+                &owners,
+            );
+            process_ids = sample
+                .app
+                .parts
+                .iter()
+                .map(|part| part.pid)
+                .chain(sample.groups.iter().flat_map(|group| {
+                    group
+                        .sessions
+                        .iter()
+                        .flat_map(|session| session.processes.iter().map(|process| process.pid))
+                }))
+                .collect();
+            process_ids.sort_unstable();
+            process_ids.dedup();
+            *sampled_process_ids
+                .lock()
+                .map_err(|_| "Resource sampler is unavailable".to_string())? = process_ids;
+            return Ok(sample.totals);
+        }
 
         let mut totals = ResourceSampleTotals {
             cpu_percent: 0.0,
@@ -1892,7 +1922,7 @@ mod tests {
     fn sample_groups_owned_trees_and_keeps_unclaimed_app_parts() {
         let processes = vec![
             observed(1, None, "MacCommandBar", 1.0, 100),
-            observed(2, Some(1), "WebKit Renderer", 2.0, 90),
+            observed(2, Some(1), "com.apple.WebKit.WebContent", 2.0, 90),
             observed(10, Some(1), "zsh", 3.0, 80),
             observed(11, Some(10), "cargo", 4.0, 70),
             observed(20, Some(1), "acp-adapter", 5.0, 60),
@@ -1924,7 +1954,7 @@ mod tests {
         assert_eq!(sample.totals.cpu_percent, 21.0);
         assert_eq!(sample.app.parts.len(), 2);
         assert_eq!(sample.app.parts[0].label, "Main process");
-        assert_eq!(sample.app.parts[1].label, "Webview / renderer");
+        assert_eq!(sample.app.parts[1].label, "Web content");
         assert_eq!(sample.groups.len(), 1);
         assert_eq!(sample.groups[0].sessions.len(), 2);
         assert_eq!(sample.groups[0].sessions[0].processes.len(), 2);

@@ -13,7 +13,8 @@
    * for and hands over the rectangle of the button that was pressed.
    *
    * The one piece of IO here is the lightweight resource totals read: it runs
-   * on mount and whenever the window comes back to the front.
+   * on mount, every five seconds, and whenever the window comes back to the
+   * front.
    */
   import { onMount } from 'svelte';
   import ChartNoAxesCombined from '@lucide/svelte/icons/chart-no-axes-combined';
@@ -72,11 +73,15 @@
 
   onMount(() => {
     void refreshResourceTotals();
+    const refreshInterval = window.setInterval(() => {
+      void refreshResourceTotals();
+    }, 5_000);
     const refreshWhenVisible = (): void => {
       if (document.visibilityState === 'visible') void refreshResourceTotals();
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
+      window.clearInterval(refreshInterval);
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   });

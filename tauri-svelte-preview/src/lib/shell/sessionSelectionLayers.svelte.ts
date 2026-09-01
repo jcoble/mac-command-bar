@@ -37,10 +37,9 @@ export class SessionSelectionLayers {
     owner: SessionSelectionOwner
   ): Promise<void> {
     this.selectionGeneration = owner.generation;
-    this.releaseDepartingChat(session.ownedId, displayedChatOwnedId);
     await this.fillTreeView(session, owner);
     if (!this.isCurrent(owner)) return;
-    await this.fillChatHistory(session, owner);
+    await this.fillChatHistory(session, displayedChatOwnedId, owner);
   }
 
   async fillTreeView(
@@ -82,17 +81,17 @@ export class SessionSelectionLayers {
 
   async fillChatHistory(
     session: OwnedSession,
+    displayedChatOwnedId: string | null,
     owner: SessionSelectionOwner
   ): Promise<void> {
     if (!this.isCurrent(owner)) return;
     if (this.chatOwnedId === session.ownedId && this.hasChatProjection) return;
-    if (this.chatOwnedId) releaseConversationForRead(this.chatOwnedId);
-    this.hasChatProjection = false;
-    this.chatOwnedId = null;
+    const departingOwnedId = this.chatOwnedId ?? displayedChatOwnedId;
 
     const provider = this.providerFor(session);
     if (!provider) {
       if (!this.isCurrent(owner)) return;
+      if (departingOwnedId) releaseConversationForRead(departingOwnedId);
       this.hasChatProjection = false;
       this.chatOwnedId = null;
       evictInactiveConversationSessions(null);
@@ -104,11 +103,13 @@ export class SessionSelectionLayers {
     await loadConversationForRead(session.ownedId, false, owner.signal);
     if (!this.isCurrent(owner)) {
       releaseConversationForRead(session.ownedId);
-      evictInactiveConversationSessions(null);
       return;
     }
     this.hasChatProjection = true;
     this.chatOwnedId = session.ownedId;
+    if (departingOwnedId && departingOwnedId !== session.ownedId) {
+      releaseConversationForRead(departingOwnedId);
+    }
     evictInactiveConversationSessions(session.ownedId);
   }
 
@@ -142,14 +143,4 @@ export class SessionSelectionLayers {
     return !owner.signal.aborted && owner.generation === this.selectionGeneration;
   }
 
-  private releaseDepartingChat(nextOwnedId: string, displayedChatOwnedId: string | null): void {
-    const departingOwnedId = this.chatOwnedId ?? displayedChatOwnedId;
-    if (departingOwnedId && departingOwnedId !== nextOwnedId) {
-      releaseConversationForRead(departingOwnedId);
-    }
-    evictInactiveConversationSessions(nextOwnedId);
-    if (!departingOwnedId || (departingOwnedId === nextOwnedId && this.hasChatProjection)) return;
-    this.hasChatProjection = false;
-    this.chatOwnedId = null;
-  }
 }
