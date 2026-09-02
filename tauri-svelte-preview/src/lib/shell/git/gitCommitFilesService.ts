@@ -229,7 +229,7 @@ export function createGitCommitFilesService(
       topRequest = null;
       fileRequests.clear();
       diffRequest += 1;
-      clearPanelSelection();
+      if (state.selectedCommitSha !== '') clearPanelSelection();
       resetGitCommitFilesState(state, root);
     },
 
@@ -237,7 +237,7 @@ export function createGitCommitFilesService(
       topRequest = null;
       fileRequests.clear();
       diffRequest += 1;
-      clearPanelSelection();
+      if (state.selectedCommitSha !== '') clearPanelSelection();
       resetGitCommitFilesState(state, null);
     },
 

@@ -290,7 +290,9 @@ export interface GitServiceOptions {
 }
 
 export function createGitService(options: GitServiceOptions = {}): GitService {
-  const backend = options.backend ?? tauriGitBackend();
+  const backend =
+    options.backend ??
+    (canChangeRepository() || !hasGitBridge() ? tauriGitBackend() : bridgeGitBackend());
   const state = options.state ?? gitPanel;
   const statusGuard = createRequestGuard();
   const historyGuard = createRequestGuard();
@@ -303,7 +305,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   async function publishSourceControl(): Promise<void> {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || state !== gitPanel) return;
     const generation = ++sourceControlSyncGeneration;
     const snapshot = { root: state.root, status: state.status };
     const { syncRustGitSourceControl } = await import('../extensions/rustGitScmProvider.ts');
@@ -748,6 +750,4 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
  * ever say "desktop app only", and the panes could not be looked at outside the
  * app at all.
  */
-export const gitService = createGitService(
-  canChangeRepository() || !hasGitBridge() ? {} : { backend: bridgeGitBackend() }
-);
+export const gitService = createGitService();

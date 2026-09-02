@@ -12,18 +12,18 @@
    *
    * NOTHING NEW DOES THE WORK. Every piece already existed:
    *
-   *  - `gitService` reads the history and pages it (`loadMoreHistory`), and
-   *    `gitPanelStore` says honestly how much of it is on screen.
+   *  - A view-owned `gitService` reads and pages this history independently
+   *    from the Source Control panel beside it.
    *  - `gitGraphViewModel.ts` turns a commit into its branch and tag names.
    *  - `gitGraphLanes.ts` says which column each commit's dot sits in.
    *  - `gitHistoryFilters.ts` answers the toolbar: which repositories, which
    *    branches, which authors, and what survives the filters.
-   *  - `gitCommitFilesService` reads what a commit changed when its row opens,
-   *    and puts a file's changes on the Diff tab when one is clicked.
+   *  - A view-owned `gitCommitFilesService` reads what a commit changed when
+   *    its row opens, and puts a file's changes on the Diff tab when clicked.
    *
    * READ-ONLY. Nothing here checks anything out, resets anything or moves any
-   * branch. Picking a repository points the shell's source control at it — the
-   * same call the panel itself makes — and picking a row only reads.
+   * branch. Picking a repository changes only this history view, and picking a
+   * row only reads.
    */
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import { onMount } from 'svelte';
@@ -33,6 +33,7 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
+  import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
   import SourceControlContextMenu from '$lib/shell/components/git/SourceControlContextMenu.svelte';
   import {
@@ -59,23 +60,23 @@
   } from '$lib/shell/git/gitHistoryFilters';
   import {
     commitFilesEntry,
+    createGitCommitFilesState,
     describeCommitFiles,
     isCommitExpanded,
     isUnreadableGitPath,
     splitRepositoryPath,
-    summarizeCommitFiles,
-    gitCommitFiles
+    summarizeCommitFiles
   } from '$lib/shell/git/gitCommitFilesStore.svelte';
-  import { gitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
+  import { createGitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
   import {
     canLoadMoreGitHistory,
-    describeGitHistoryFooter,
-    gitPanel
+    createGitPanelState,
+    describeGitHistoryFooter
   } from '$lib/shell/git/gitPanelStore.svelte';
   import {
     absolutePathWithin,
     COMMIT_HISTORY_LIMIT,
-    gitService
+    createGitService
   } from '$lib/shell/git/gitService';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
   import { formatLastActivity } from '$lib/shell/relativeTime';
@@ -90,8 +91,17 @@
   let requestedRoot = '';
   let contextMenu = $state.raw<SourceControlMenuSnapshot | null>(null);
 
+  const historyPanel = $state(createGitPanelState());
+  const historyService = createGitService({ state: historyPanel });
+  const historyCommitFiles = $state(createGitCommitFilesState());
+  const historyCommitFilesService = createGitCommitFilesService({ state: historyCommitFiles });
+
   onMount(() => {
-    gitService.ensureHistorySurface();
+    historyService.ensureHistorySurface();
+    return () => {
+      historyService.releaseHistorySurface();
+      historyCommitFilesService.release();
+    };
   });
 
   $effect(() => {
@@ -99,13 +109,14 @@
     if (targetRoot === requestedRoot) return;
     requestedRoot = targetRoot;
     if (!targetRoot) {
-      gitService.releaseHistorySurface();
-      gitCommitFilesService.release();
+      historyService.releaseHistorySurface();
+      historyCommitFilesService.release();
       return;
     }
-    gitService.activate(targetRoot);
-    gitCommitFilesService.activate(targetRoot);
-    gitService.ensureHistorySurface();
+    historyService.activate(targetRoot);
+    void historyService.refreshStatus();
+    historyCommitFilesService.activate(targetRoot);
+    historyService.ensureHistorySurface();
   });
 
   /** One row of the table is exactly this tall, so its SVG can be drawn to size. */
@@ -114,8 +125,6 @@
   const LANE_OFFSET = 10;
   /** Past this the graph would eat the message column; extra columns fold in. */
   const MAX_DRAWN_LANES = 8;
-  /** How close to the bottom the list gets before the next page is asked for. */
-  const LOAD_MORE_SLACK = 240;
 
   /**
    * What "no filter" is called inside a `Select`. It cannot be the empty string
@@ -137,7 +146,7 @@
 
   let filter = $state({ ...EMPTY_GIT_HISTORY_FILTER });
 
-  const commits = $derived(buildGitCommitGraphRows(gitPanel.history));
+  const commits = $derived(buildGitCommitGraphRows(historyPanel.history));
   const rows = $derived(filterGitHistoryRows(commits, filter));
   // The lanes are worked out for what is ON SCREEN. Filtering removes commits,
   // and a picture drawn for the unfiltered list would run its lines into rows
@@ -148,18 +157,18 @@
   const authors = $derived(gitHistoryAuthors(commits));
   const branches = $derived(gitHistoryBranches(commits));
   const repositories = $derived(
-    gitHistoryRepositoryOptions(gitPanel.root, worktreeManager.worktrees)
+    gitHistoryRepositoryOptions(historyPanel.root, worktreeManager.worktrees)
   );
-  const uncommitted = $derived(gitHistoryUncommittedRow(gitPanel.status, filter));
+  const uncommitted = $derived(gitHistoryUncommittedRow(historyPanel.status, filter));
   /** What the repository picker's trigger reads. Its own value, the way Git
    * Graph's pickers carry theirs, so the toolbar needs no separate caption. */
   const repositoryLabel = $derived.by(() => {
-    const chosen = repositories.find((option) => option.path === gitPanel.root);
+    const chosen = repositories.find((option) => option.path === historyPanel.root);
     if (!chosen) return 'No repository';
     return chosen.branch ? `${chosen.label} (${chosen.branch})` : chosen.label;
   });
-  const footer = $derived(describeGitHistoryFooter(gitPanel));
-  const canLoadMore = $derived(canLoadMoreGitHistory(gitPanel));
+  const footer = $derived(describeGitHistoryFooter(historyPanel));
+  const canLoadMore = $derived(canLoadMoreGitHistory(historyPanel));
   const filtering = $derived(isGitHistoryFilterActive(filter));
   const drawnLanes = $derived(Math.min(layout.laneCount, MAX_DRAWN_LANES));
   const graphWidth = $derived(
@@ -205,23 +214,24 @@
   }
 
   function pickRepository(path: string): void {
-    if (!rootAvailable || !path || path === gitPanel.root) return;
-    // The same call the source-control panel makes. It reads; it changes nothing.
-    gitService.activate(path);
-    gitCommitFilesService.activate(path);
+    if (!rootAvailable || !path || path === historyPanel.root) return;
+    // This view owns the selection. It reads; it changes no working directory.
+    historyService.activate(path);
+    void historyService.refreshStatus();
+    historyCommitFilesService.activate(path);
   }
 
   async function toggleCommit(sha: string, isMerge: boolean): Promise<void> {
     if (!rootAvailable) return;
-    gitCommitFilesService.activate(gitPanel.root);
-    await gitCommitFilesService.toggleCommit(sha, isMerge);
+    historyCommitFilesService.activate(historyPanel.root);
+    await historyCommitFilesService.toggleCommit(sha, isMerge);
   }
 
   async function pickFile(sha: string, file: GitCommitFileChange): Promise<void> {
     if (!rootAvailable) return;
-    gitCommitFilesService.activate(gitPanel.root);
+    historyCommitFilesService.activate(historyPanel.root);
     showCenterTab('diff');
-    await gitCommitFilesService.selectCommitFile(sha, file);
+    await historyCommitFilesService.selectCommitFile(sha, file);
   }
 
   function openCommitMenu(
@@ -266,15 +276,15 @@
     }
 
     if (action === 'open-commit-diff') await pickFile(menu.target.sha, menu.target.file);
-    else if (action === 'open-current-file' && gitPanel.root) {
+    else if (action === 'open-current-file' && historyPanel.root) {
       openFileInEditor({
-        path: absolutePathWithin(gitPanel.root, menu.target.file.relativePath),
-        projectRoot: gitPanel.root
+        path: absolutePathWithin(historyPanel.root, menu.target.file.relativePath),
+        projectRoot: historyPanel.root
       });
     } else if (action === 'copy-commit-path') {
       await copyText(
-        gitPanel.root
-          ? absolutePathWithin(gitPanel.root, menu.target.file.relativePath)
+        historyPanel.root
+          ? absolutePathWithin(historyPanel.root, menu.target.file.relativePath)
           : menu.target.file.relativePath
       );
     }
@@ -294,19 +304,9 @@
     return 'var(--color-attention)';
   }
 
-  /** Near the bottom of unfiltered history, ask for the next page. Filtered
-   * history uses the explicit button so a short result cannot page in a loop. */
-  function onScroll(event: Event): void {
-    if (!rootAvailable) return;
-    const list = event.currentTarget as HTMLElement;
-    if (!canLoadMore || filtering) return;
-    if (list.scrollTop + list.clientHeight < list.scrollHeight - LOAD_MORE_SLACK) return;
-    void gitService.loadMoreHistory();
-  }
-
   async function loadOlderHistory(): Promise<void> {
     if (!rootAvailable || !canLoadMore) return;
-    await gitService.loadMoreHistory();
+    await historyService.loadMoreHistory();
   }
 </script>
 
@@ -322,7 +322,7 @@
          label, the way Git Graph's do, so no separate caption is needed. -->
     <Select.Root
       type="single"
-      value={gitPanel.root ?? ''}
+      value={historyPanel.root ?? ''}
       onValueChange={(value) => pickRepository(value)}
     >
       <Select.Trigger
@@ -343,11 +343,11 @@
       </Select.Content>
     </Select.Root>
 
-    {#if gitPanel.historyPath}
-      <span class="history-path" title={gitPanel.historyPath}>{gitPanel.historyPath}</span>
+    {#if historyPanel.historyPath}
+      <span class="history-path" title={historyPanel.historyPath}>{historyPanel.historyPath}</span>
       <IconButton
         label="Show all repository history"
-        onclick={() => void gitService.clearHistoryPath()}
+        onclick={() => void historyService.clearHistoryPath()}
       >
         <X />
       </IconButton>
@@ -414,17 +414,17 @@
       label="Read the commit history again"
       size="sm"
       side="bottom"
-      disabled={!gitPanel.activated || gitPanel.historyLoading}
-      onclick={() => void gitService.refreshHistory()}
+      disabled={!historyPanel.activated || historyPanel.historyLoading}
+      onclick={() => void historyService.refreshHistory()}
     >
       <RefreshCw
-        class={gitPanel.historyLoading ? 'size-3.5 animate-spin' : 'size-3.5'}
+        class={historyPanel.historyLoading ? 'size-3.5 animate-spin' : 'size-3.5'}
         aria-hidden="true"
       />
     </IconButton>
   </header>
 
-  <div class="table" onscroll={onScroll}>
+  <ScrollArea type="always" class="min-h-0 flex-1 overflow-hidden">
     <div class="row head-row" style="--graph-width: {graphWidth}px">
       <span>Graph</span>
       <span>Message</span>
@@ -433,11 +433,11 @@
       <span>Hash</span>
     </div>
 
-    {#if gitPanel.desktopOnly}
+    {#if historyPanel.desktopOnly}
       <p class="notice">Source control runs in the desktop app only. Nothing is loaded here.</p>
-    {:else if gitPanel.historyError && commits.length === 0}
-      <p class="notice bad">{gitPanel.historyError}</p>
-    {:else if gitPanel.historyLoading && commits.length === 0}
+    {:else if historyPanel.historyError && commits.length === 0}
+      <p class="notice bad">{historyPanel.historyError}</p>
+    {:else if historyPanel.historyLoading && commits.length === 0}
       <p class="notice">Reading the commit history…</p>
     {:else if commits.length === 0}
       <p class="notice">No commits yet. The first commit you make will appear here.</p>
@@ -476,8 +476,8 @@
 
       {#each rows as commit, index (commit.sha)}
         {@const lane = layout.rows[index]}
-        {@const expanded = isCommitExpanded(gitCommitFiles, commit.sha)}
-        {@const entry = commitFilesEntry(gitCommitFiles, commit.sha)}
+        {@const expanded = isCommitExpanded(historyCommitFiles, commit.sha)}
+        {@const entry = commitFilesEntry(historyCommitFiles, commit.sha)}
         {@const sentence = describeCommitFiles(entry, lane?.isMerge ?? false)}
         <button
           type="button"
@@ -548,8 +548,8 @@
                 {@const parts = splitRepositoryPath(file.relativePath)}
                 {@const unreadable = isUnreadableGitPath(file.relativePath)}
                 {@const chosen =
-                  gitCommitFiles.selectedCommitSha === commit.sha &&
-                  gitCommitFiles.selectedRelativePath === file.relativePath}
+                  historyCommitFiles.selectedCommitSha === commit.sha &&
+                  historyCommitFiles.selectedRelativePath === file.relativePath}
                 <button
                   type="button"
                   class="file-row"
@@ -581,7 +581,7 @@
             Showing {rows.length} commits from {filter.branch} among {commits.length} loaded.
           {:else if filtering}
             {rows.length} of {commits.length} loaded commits match the current filters.
-          {:else if gitPanel.historyLoadingMore}
+          {:else if historyPanel.historyLoadingMore}
             Reading older commits…
           {:else}
             {footer}
@@ -593,7 +593,7 @@
           disabled={!canLoadMore}
           onclick={() => void loadOlderHistory()}
         >
-          {gitPanel.historyLoadingMore
+          {historyPanel.historyLoadingMore
             ? 'Reading older commits…'
             : canLoadMore
               ? `Load ${COMMIT_HISTORY_LIMIT} older commits`
@@ -601,7 +601,7 @@
         </Button>
       </div>
     {/if}
-  </div>
+  </ScrollArea>
 
   {#if contextMenu}
     <SourceControlContextMenu
@@ -666,12 +666,6 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .table {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: auto;
   }
 
   /* One grid, one set of column widths, so every row lines up with the head. */

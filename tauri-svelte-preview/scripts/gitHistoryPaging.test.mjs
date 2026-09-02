@@ -97,6 +97,7 @@ function makeBackend({ total = 1000 } = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
   assert.equal(state.history.length, COMMIT_HISTORY_LIMIT);
   assert.equal(state.historyRequested, COMMIT_HISTORY_LIMIT);
@@ -123,6 +124,24 @@ function makeBackend({ total = 1000 } = {}) {
   assert.equal(state.history[0].subject, 'commit 1000');
 }
 
+// ── two visible history surfaces page independently ────────────────────────
+{
+  const leftState = createGitPanelState();
+  const rightState = createGitPanelState();
+  const left = createGitService({ backend: makeBackend({ total: 1000 }), state: leftState });
+  const right = createGitService({ backend: makeBackend({ total: 1000 }), state: rightState });
+
+  left.activate('/repo');
+  left.ensureHistorySurface();
+  right.activate('/repo');
+  right.ensureHistorySurface();
+  await settle();
+
+  await left.loadMoreHistory();
+  assert.equal(leftState.history.length, 48);
+  assert.equal(rightState.history.length, 24);
+}
+
 // ── a small repository: the first read already has everything ───────────────
 {
   const backend = makeBackend({ total: 7 });
@@ -130,6 +149,7 @@ function makeBackend({ total = 1000 } = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
 
   assert.equal(state.history.length, 7);
@@ -150,6 +170,7 @@ function makeBackend({ total = 1000 } = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
   await git.loadMoreHistory();
   await settle();
@@ -172,11 +193,13 @@ function makeBackend({ total = 1000 } = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
   await git.loadMoreHistory();
   await settle();
 
   git.activate('/other');
+  git.ensureHistorySurface();
   await settle();
   assert.equal(state.historyRequested, COMMIT_HISTORY_LIMIT);
   assert.equal(state.historyPaged, false);
@@ -190,6 +213,7 @@ function makeBackend({ total = 1000 } = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
   for (let click = 0; click < 4; click += 1) {
     await git.loadMoreHistory();
@@ -215,6 +239,7 @@ function makeBackend({ total = 1000 } = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
 
   backend.readHistory = async () => {
@@ -235,6 +260,7 @@ function makeBackend({ total = 1000 } = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
 
   backend.readHistory = async () => {

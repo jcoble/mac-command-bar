@@ -142,11 +142,12 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
     ['tauri-svelte-preview/src/app.ts']
   );
 
-  // Closing and opening again does not ask twice: the answer is already here.
+  // Closing releases the file payload; opening again reads it on demand.
   await commitFiles.toggleCommit('abc123', false);
+  assert.equal(commitFilesEntry(state, 'abc123').loaded, false);
   await commitFiles.toggleCommit('abc123', false);
   await settle();
-  assert.equal(asked.length, 1);
+  assert.equal(asked.length, 2);
 }
 
 // ── a merge ends in a sentence, never a spinner ─────────────────────────────
