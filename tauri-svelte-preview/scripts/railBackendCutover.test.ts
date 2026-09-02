@@ -17,6 +17,12 @@ const fileTreeWatch = read('../src/lib/shell/panels/files/fileTreeWatch.ts');
 const composer = read('../src/lib/shell/components/conversation/ConversationComposer.svelte');
 const conversationSurface = read('../src/lib/shell/components/ConversationSurface.svelte');
 const toolRun = read('../src/lib/shell/components/conversation/ToolRunItem.svelte');
+const elapsed = read('../src/lib/shell/components/railElapsedTicker.ts');
+const editorSessions = read('../src/lib/shell/controllers/editorSessionController.svelte.ts');
+const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
+const languageControls = read('../src/lib/shell/components/LanguageIntelligenceControls.svelte');
+const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
+const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
 
 assert.match(shellStartup, /listAgentConversationSessionsFromTauri\(\)/);
 assert.match(shellStartup, /listRemoteAgentConversationSessionsFromTauri\(stopSignal\)/);
@@ -71,5 +77,23 @@ assert.doesNotMatch(
   'the composer can submit steering text during an active turn'
 );
 assert.match(toolRun, /if \(runWasActive\)[\s\S]*?runOpen = false/);
+assert.match(elapsed, /if \(totalHours < 24\)/);
+assert.match(rowVisual, /\.row-visual:hover :global\(\.line-title\)/);
+assert.doesNotMatch(centerTabs, /LanguageIntelligenceControls/);
+assert.match(utilityStrip, /<LanguageIntelligenceControls \/>/);
+assert.match(languageControls, /<Switch[\s\S]*?size="sm"/);
+assert.match(languageControls, /data-tone=\{tone\}/);
+assert.match(languageControls, /serverState === 'ready'[\s\S]*?'running'[\s\S]*?'waiting'/);
+assert.match(page, /onCloseAllEditors=\{\(\) => selection\.editorSessions\.clearActiveEditors\(\)\}/);
+assert.match(editorSessions, /async clearActiveEditors\(\): Promise<boolean>/);
+assert.match(editorSessions, /openPaths: \[\],[\s\S]*?activePath: null/);
+const closeAll = editorPanel.slice(
+  editorPanel.indexOf('async function closeAllOpenEditorsNow'),
+  editorPanel.indexOf('function closeAllOpenEditors()')
+);
+assert.ok(
+  closeAll.indexOf('resetEditorState();') < closeAll.indexOf('await onCloseAllEditors?.();'),
+  'close all releases the visible editor before session persistence can race it'
+);
 
 console.log('rail backend cutover tests passed');

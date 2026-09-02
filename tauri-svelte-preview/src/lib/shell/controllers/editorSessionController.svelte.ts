@@ -76,6 +76,29 @@ export class EditorSessionController {
 		if (stopSignal.aborted) return;
 	}
 
+	/** Persist an empty editor for this session before another selection can restore it. */
+	async clearActiveEditors(): Promise<boolean> {
+		const ownedId = this.activeOwnedId;
+		if (!ownedId) return false;
+		const previous = this.activeSnapshot ?? await readAgentConversationWorkspaceFromTauri(ownedId);
+		const fallback = captureWorkspace({
+			openFiles: [],
+			activePath: null,
+			selectedPath: previous?.selectedPath ?? null,
+			scrollTop: previous?.scrollTop ?? 0,
+			rightTab: previous?.rightTab ?? 'files',
+		});
+		const next: SessionWorkspaceSnapshot = {
+			...(previous ?? fallback),
+			openPaths: [],
+			activePath: null,
+		};
+		delete next.fileStates;
+		await writeAgentConversationWorkspaceFromTauri(ownedId, next);
+		if (this.activeOwnedId === ownedId) this.activeSnapshot = next;
+		return true;
+	}
+
 	private async checkpointActiveWorkspace(stopSignal: AbortSignal): Promise<void> {
 		const ownedId = this.activeOwnedId;
 		if (!ownedId || stopSignal.aborted) return;

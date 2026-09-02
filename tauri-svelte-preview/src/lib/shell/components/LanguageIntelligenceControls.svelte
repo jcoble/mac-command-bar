@@ -1,8 +1,10 @@
 <script lang="ts">
-  /** Global Editor/Supercharged setting shown beside the centre-pane pills. */
+  /** Compact global Editor/Supercharged switch shown in the bottom rail. */
   import { onDestroy } from 'svelte';
+  import { Switch } from '$lib/components/ui/switch/index.js';
   import { settings } from '$lib/settingsStore.svelte';
   import { setLanguageServersEnabled } from '$lib/shell/editor/sourceIntelligence';
+  import { readLanguageServerState } from '$lib/shell/components/editor/languageServerStatus';
   import {
     languageIntelligenceBar
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
@@ -32,77 +34,64 @@
         ? 'Supercharged is on. A language server starts when you open a supported project file.'
         : 'Editor mode is on. Files keep syntax highlighting without starting a language server.'
   );
+
+  const serverState = $derived(readLanguageServerState(languageIntelligenceBar.status));
+  const tone = $derived(
+    !settings.intelligence.languageServers
+      ? 'off'
+      : languageIntelligenceBar.hasProject && serverState === 'ready'
+        ? 'running'
+        : 'waiting'
+  );
 </script>
 
-<!-- This global choice stays available even before a project is open. -->
-<div
-  class="language-switch"
-  title={hoverText}
-  role="group"
-  aria-label="Editor mode"
->
-  <button
-    type="button"
-    class:active={!settings.intelligence.languageServers}
+<div class="language-switch" data-tone={tone} title={hoverText}>
+  <span class="mode-label">Supercharged</span>
+  <Switch
+    size="sm"
+    checked={settings.intelligence.languageServers}
     disabled={busy}
-    aria-pressed={!settings.intelligence.languageServers}
-    onclick={() => void chooseMode(false)}
-  >Editor</button>
-  <button
-    type="button"
-    class:active={settings.intelligence.languageServers}
-    disabled={busy}
-    aria-pressed={settings.intelligence.languageServers}
-    onclick={() => void chooseMode(true)}
-  >Supercharged</button>
+    onCheckedChange={(checked) => void chooseMode(checked)}
+    aria-label="Supercharged editor"
+  />
 </div>
 
 <style>
   .language-switch {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
+    gap: 6px;
     flex: 0 0 auto;
     min-width: max-content;
-    height: 28px;
+    height: 100%;
     padding: 0;
     color: var(--color-text-2);
     user-select: none;
   }
 
-  .language-switch::after {
-    content: '';
-    width: 1px;
-    height: 16px;
-    margin-left: 2px;
-    background: color-mix(in srgb, var(--color-text) 16%, transparent);
-  }
-
-  .language-switch button {
-    height: 24px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: var(--radius-pill);
-    background: transparent;
-    color: var(--color-text-2);
-    font: inherit;
+  .mode-label {
     font-size: 12px;
-    line-height: 1;
-    cursor: pointer;
+    font-weight: 500;
+    color: var(--foreground);
   }
 
-  .language-switch button:hover:not(:disabled) {
-    background: var(--pill-surface-hover);
-    color: var(--color-text);
+  .language-switch :global([data-slot='switch']) {
+    padding: 0;
   }
 
-  .language-switch button.active {
-    background: var(--pill-surface-active);
-    color: var(--pill-text-active);
+  .language-switch[data-tone='off'] :global([data-slot='switch']) {
+    background: var(--switch-track-off);
   }
 
-  .language-switch button:disabled {
-    cursor: wait;
-    opacity: 0.65;
+  .language-switch[data-tone='waiting'] :global([data-slot='switch']) {
+    background: var(--switch-track-waiting);
+  }
+
+  .language-switch[data-tone='running'] :global([data-slot='switch']) {
+    background: var(--switch-track-running);
+  }
+
+  .language-switch :global([data-slot='switch-thumb']) {
+    background: var(--switch-knob);
   }
 </style>

@@ -221,6 +221,7 @@
 		bind:this={editorPanel}
 		showing={workbench.centerTab === "editor"}
 		rootAvailable={selection.controlledEditorRootAvailable}
+		onCloseAllEditors={() => selection.editorSessions.clearActiveEditors()}
 		onFileOpened={() => workbench.selectCenterTab("editor")}
 	/>
 {/snippet}

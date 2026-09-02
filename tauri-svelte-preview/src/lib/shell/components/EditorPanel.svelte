@@ -19,9 +19,8 @@
    *    project, never before.
    *  - **Read mode is the default.** Opening a file colours it and stops
    *    there. A language server starts only for a project whose switch in the
-   *    top strip has been turned on, and turning it off stops that server. The
-   *    choice belongs to the project — one server serves every session and
-   *    every view on it — and is remembered between launches.
+   *    bottom rail has been turned on, and turning it off stops that server. The
+   *    global choice is remembered between launches.
    *  - **No `$effect` reads a file.** Every read is started by a user action: a
    *    file-open request, or a click in the strip. The one effect that starts
    *    anything starts the editor, and only for a file already on screen.
@@ -136,7 +135,7 @@
     showing?: boolean;
     /** False when the selected session's checkout no longer exists. */
     rootAvailable?: boolean;
-    /** Clears every session's saved editor strip after the close outcome succeeds. */
+    /** Clears this session's saved editor strip after the visible models are released. */
     onCloseAllEditors?: () => void | Promise<boolean | void>;
     /** Starts a fixed .NET workspace action in the page-owned terminal rail. */
     onStartWorkspaceCommand?: (request: WorkspaceCommandSessionRequest) => void | Promise<void>;
@@ -1228,18 +1227,19 @@
     closeActionBusy = true;
     try {
       if (stopSignal.aborted) return;
+      const paths = editorState.openFiles.map((file) => file.path);
+      for (const path of paths) sourceIntelligence.releasePreview(path);
+      codeEditor?.disposeAllTabModels();
+      resetEditorState();
+      markdownViewByPath = {};
+      diagnosticsByPath = {};
+      readOnlyByPath = {};
       const cleared = await onCloseAllEditors?.();
       if (stopSignal.aborted || generation !== sessionResourceGeneration) return;
       if (cleared === false) {
         editorLoadError = 'Could not clear saved editor tabs.';
         return;
       }
-      for (const file of editorState.openFiles) sourceIntelligence.releasePreview(file.path);
-      codeEditor?.disposeAllTabModels();
-      resetEditorState();
-      markdownViewByPath = {};
-      diagnosticsByPath = {};
-      readOnlyByPath = {};
     } catch (error) {
       if (!stopSignal.aborted && generation === sessionResourceGeneration) editorLoadError = `Could not clear saved editor tabs: ${describeError(error)}`;
     } finally {
@@ -1595,9 +1595,8 @@
         {/each}
       </div>
 
-      <!-- Only the open file's own controls belong here. The project's
-           language-server chip and switch sit in the strip along the top of the
-           shell, in `LanguageIntelligenceControls.svelte`. -->
+      <!-- Only the open file's own controls belong here. The global
+           language-server switch sits in the bottom utility rail. -->
       <div class="editor-controls">
         <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
           <X class="size-3.5" aria-hidden="true" />

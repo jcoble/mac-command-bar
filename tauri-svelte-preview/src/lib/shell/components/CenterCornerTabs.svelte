@@ -4,8 +4,7 @@
    * that floats over the pane instead of occupying a bar above it.
    *
    * Session is what you talk to, Editor is the code you have open, Diff is the
-   * changes to one file, and the project's language switch leads them while the
-   * Editor is showing. One capsule, not four: each control used to carry its own
+   * changes to one file. Each control used to carry its own
    * fill and its own shadow, and four separate discs at the top of the pane read
    * as things dropped there rather than as the head of a column. Sharing a
    * surface is what makes them one control, and the head one thing.
@@ -23,7 +22,6 @@
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
 
-  import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import type { CenterTabId } from '$lib/shell/workbenchNavigation';
 
@@ -46,15 +44,6 @@
 </script>
 
 <nav class="center-pills" aria-label="Center surfaces">
-  <!-- The project's language server, at the head of the group, and only while
-       the Editor is the surface on screen: it describes the file being edited,
-       so on a transcript it has nothing to say. It leads the group rather than
-       trailing it precisely because it comes and goes — arriving at the left
-       lengthens the group leftwards and the three pills do not move. -->
-  {#if activeId === 'editor'}
-    <LanguageIntelligenceControls />
-  {/if}
-
   {#each TABS as tab (tab.id)}
     {@const Icon = tab.icon}
     <!-- Icon only. The word lives on `label`, which `IconButton` makes both the

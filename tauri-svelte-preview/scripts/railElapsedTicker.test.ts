@@ -13,6 +13,8 @@ assert.equal(formatRailElapsed(701_000), '11m');
 assert.equal(formatRailElapsed(3_599_000), '59m');
 assert.equal(formatRailElapsed(3_600_000), '1h', 'from one hour the minutes are dropped');
 assert.equal(formatRailElapsed(7_800_000), '2h');
-assert.equal(formatRailElapsed(180_000_000), '50h');
+assert.equal(formatRailElapsed(86_399_999), '23h');
+assert.equal(formatRailElapsed(86_400_000), '1d', 'from 24 hours the age is shown in days');
+assert.equal(formatRailElapsed(180_000_000), '2d');
 
 console.log('railElapsedTicker: ok');

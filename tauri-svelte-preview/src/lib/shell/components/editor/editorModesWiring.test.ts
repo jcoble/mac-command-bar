@@ -98,23 +98,23 @@ test('session restore leaves hidden editor files unhydrated', () => {
   );
 });
 
-test('the switch is the kit component, riding with the centre pane pills', () => {
+test('the switch is the kit component in the bottom utility rail', () => {
   assert.match(
     controlsSource,
     /import \{ Switch \} from '\$lib\/components\/ui\/switch\/index\.js'/
   );
   assert.match(controlsSource, /<Switch\b/);
-  assert.match(controlsSource, /aria-label="Language intelligence"/);
+  assert.match(controlsSource, /aria-label="Supercharged editor"/);
+  assert.match(pageSource, /<UtilityStrip/);
   assert.ok(
     !panelSource.includes('<Switch'),
     'the editor panel no longer paints the switch; it only publishes the state behind it'
   );
 });
 
-test('flipping the switch reaches the panel that owns the server', () => {
-  assert.match(controlsSource, /requestLanguageIntelligence\(checked\)/);
-  assert.match(panelSource, /setLanguageIntelligenceSwitch\(/);
-  assert.match(panelSource, /switchLanguageIntelligence\(enabled\)/);
+test('flipping the global switch uses the shared async language-server controller', () => {
+  assert.match(controlsSource, /await setLanguageServersEnabled\(enabled\)/);
+  assert.match(controlsSource, /onCheckedChange=\{\(checked\) => void chooseMode\(checked\)\}/);
 });
 
 test('file tabs scroll while the complete right-side control group stays pinned', () => {

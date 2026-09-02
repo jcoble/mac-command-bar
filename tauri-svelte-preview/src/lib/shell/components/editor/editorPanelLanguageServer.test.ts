@@ -52,31 +52,25 @@ const shellPageSource = readFileSync(
 );
 const pillsSource = readFileSync(path.join(here, '..', 'CenterCornerTabs.svelte'), 'utf8');
 const frameSource = readFileSync(path.join(here, '..', 'ShellFrame.svelte'), 'utf8');
+const utilityStripSource = readFileSync(path.join(here, '..', 'UtilityStrip.svelte'), 'utf8');
 
-test('the global mode control names both choices', () => {
-  assert.match(controlsSource, />Editor<\/button>/);
-  assert.match(controlsSource, />Supercharged<\/button>/);
-  assert.match(controlsSource, /aria-pressed=\{!settings\.intelligence\.languageServers\}/);
-  assert.match(controlsSource, /aria-pressed=\{settings\.intelligence\.languageServers\}/);
-  assert.match(controlsSource, /chooseMode\(false\)/);
-  assert.match(controlsSource, /chooseMode\(true\)/);
+test('the global mode control is a compact switch', () => {
+  assert.match(controlsSource, /import \{ Switch \} from '\$lib\/components\/ui\/switch\/index\.js'/);
+  assert.match(controlsSource, /<span class="mode-label">Supercharged<\/span>/);
+  assert.match(controlsSource, /size="sm"/);
+  assert.match(controlsSource, /checked=\{settings\.intelligence\.languageServers\}/);
+  assert.match(controlsSource, /onCheckedChange=\{\(checked\) => void chooseMode\(checked\)\}/);
   assert.ok(
     !controlsSource.includes('<LanguageServerStatusChip'),
     'the status pipeline remains separate from the global mode choice'
   );
 });
 
-test('the pill group leads with the switch and carries icons after it', () => {
-  assert.match(
-    pillsSource,
-    /import LanguageIntelligenceControls from '\.\/LanguageIntelligenceControls\.svelte'/
-  );
+test('the bottom rail owns the switch and the pill group keeps only surface icons', () => {
+  assert.doesNotMatch(pillsSource, /LanguageIntelligenceControls/);
+  assert.match(utilityStripSource, /<LanguageIntelligenceControls \/>/);
   const group = pillsSource.slice(pillsSource.indexOf('<nav'), pillsSource.indexOf('</nav>'));
   assert.ok(group.length > 0, 'the pill group must still exist');
-  assert.ok(
-    group.indexOf('<LanguageIntelligenceControls />') < group.indexOf('{#each TABS'),
-    'the switch leads the group; the surface icons follow it'
-  );
   // Icons, not words: the label survives as the accessible name and the
   // tooltip, which is the only place the word is now written.
   assert.match(pillsSource, /<IconButton\b[\s\S]*?label=\{tab\.label\}/);
@@ -145,9 +139,11 @@ test('the shell has no strip along its top any more', () => {
   );
 });
 
-test('the segmented control paints its selected mode from settings', () => {
-  assert.match(controlsSource, /class:active=\{!settings\.intelligence\.languageServers\}/);
-  assert.match(controlsSource, /class:active=\{settings\.intelligence\.languageServers\}/);
+test('the switch stays in the waiting colour until the server reports ready', () => {
+  assert.match(controlsSource, /readLanguageServerState\(languageIntelligenceBar\.status\)/);
+  assert.match(controlsSource, /serverState === 'ready'[\s\S]*?'running'[\s\S]*?'waiting'/);
+  assert.match(controlsSource, /data-tone=\{tone\}/);
+  assert.match(controlsSource, /--switch-track-waiting/);
   assert.ok(
     !controlsSource.includes(':has(') && !controlsSource.includes('has-['),
     'no `:has()` selectors'

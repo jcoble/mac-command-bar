@@ -111,7 +111,8 @@
 		pointer-events: auto;
 	}
 
-	:global(.line-title) {
+	.row-visual:hover :global(.line-title),
+	.row-visual:focus-within :global(.line-title) {
 		padding-right: 82px;
 	}
 
