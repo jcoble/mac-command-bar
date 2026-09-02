@@ -30,6 +30,7 @@
   import X from '@lucide/svelte/icons/x';
 
   import { Chip } from '$lib/components/ui/chip/index.js';
+  import { Button } from '$lib/components/ui/button/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
@@ -71,7 +72,11 @@
     describeGitHistoryFooter,
     gitPanel
   } from '$lib/shell/git/gitPanelStore.svelte';
-  import { absolutePathWithin, gitService } from '$lib/shell/git/gitService';
+  import {
+    absolutePathWithin,
+    COMMIT_HISTORY_LIMIT,
+    gitService
+  } from '$lib/shell/git/gitService';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { openFileInEditor, showCenterTab, showRightTab } from '$lib/shell/workbenchNavigation';
@@ -289,14 +294,19 @@
     return 'var(--color-attention)';
   }
 
-  /** Near the bottom, and there is more: ask for it. Scrolling is the only
-   * request — there is no button, the way Git Graph has none. */
+  /** Near the bottom of unfiltered history, ask for the next page. Filtered
+   * history uses the explicit button so a short result cannot page in a loop. */
   function onScroll(event: Event): void {
     if (!rootAvailable) return;
     const list = event.currentTarget as HTMLElement;
     if (!canLoadMore || filtering) return;
     if (list.scrollTop + list.clientHeight < list.scrollHeight - LOAD_MORE_SLACK) return;
     void gitService.loadMoreHistory();
+  }
+
+  async function loadOlderHistory(): Promise<void> {
+    if (!rootAvailable || !canLoadMore) return;
+    await gitService.loadMoreHistory();
   }
 </script>
 
@@ -354,7 +364,7 @@
         aria-label="Show one branch, or every branch"
         title="Filters the history shown here. It does not switch the working directory."
       >
-        History: {filter.branch || 'all branches'}
+        <span class="filter-label">History: {filter.branch || 'all branches'}</span>
       </Select.Trigger>
       <Select.Content>
         <Select.Item value={ALL} label="All branches" />
@@ -563,18 +573,33 @@
         {/if}
       {/each}
 
-      <p class="notice quiet">
-        {#if rows.length === 0}
-          No commit in the history that is loaded matches these filters.
-        {:else if filtering}
-          {rows.length} of {commits.length} loaded commits match. Clear the filters to keep
-          reading older history.
-        {:else if gitPanel.historyLoadingMore}
-          Reading older commits…
-        {:else}
-          {footer}
-        {/if}
-      </p>
+      <div class="history-footer">
+        <p class="notice quiet">
+          {#if rows.length === 0}
+            No commit in the history that is loaded matches the current filters.
+          {:else if filter.branch && !filter.author && !filter.search.trim()}
+            Showing {rows.length} commits from {filter.branch} among {commits.length} loaded.
+          {:else if filtering}
+            {rows.length} of {commits.length} loaded commits match the current filters.
+          {:else if gitPanel.historyLoadingMore}
+            Reading older commits…
+          {:else}
+            {footer}
+          {/if}
+        </p>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!canLoadMore}
+          onclick={() => void loadOlderHistory()}
+        >
+          {gitPanel.historyLoadingMore
+            ? 'Reading older commits…'
+            : canLoadMore
+              ? `Load ${COMMIT_HISTORY_LIMIT} older commits`
+              : 'All commits loaded'}
+        </Button>
+      </div>
     {/if}
   </div>
 
@@ -635,6 +660,12 @@
     font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .filter-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .table {
@@ -815,6 +846,18 @@
     font-size: 12px;
     line-height: 16px;
     font-weight: 500;
+  }
+
+  .history-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px 12px;
+  }
+
+  .history-footer .notice {
+    min-width: 0;
+    padding: 0;
   }
 
   .notice {
