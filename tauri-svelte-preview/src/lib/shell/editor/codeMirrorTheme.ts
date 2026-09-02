@@ -3,7 +3,6 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { EditorView } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 
-import { settings } from '../../settingsStore.svelte';
 import { getMonoFont } from '../themes/fontRegistry';
 
 const syntax = HighlightStyle.define([
@@ -19,21 +18,36 @@ const syntax = HighlightStyle.define([
   { tag: tags.invalid, color: '#ff5370', textDecoration: 'underline' }
 ]);
 
-const editorFontFamily = getMonoFont(settings.editor.fontFamily).stack;
+export interface CodeMirrorAppearance {
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+}
 
-export const codeMirrorTheme = [
+const defaultAppearance: CodeMirrorAppearance = {
+  fontFamily: 'system',
+  fontSize: 13,
+  lineHeight: 21
+};
+
+/** Build the editor chrome from current settings so an open editor repaints live. */
+export function codeMirrorThemeForAppearance(
+  appearance: CodeMirrorAppearance = defaultAppearance
+): Extension {
+  const editorFontFamily = getMonoFont(appearance.fontFamily).stack;
+  return [
   EditorView.theme(
     {
       '&': {
         height: '100%',
         backgroundColor: 'var(--color-surface, #17191e)',
         color: 'var(--color-text, #d8dee9)',
-        fontSize: '12px'
+        fontSize: `${appearance.fontSize}px`
       },
       '.cm-scroller': {
         overflow: 'auto',
         fontFamily: editorFontFamily,
-        lineHeight: '19px'
+        lineHeight: `${appearance.lineHeight}px`
       },
       '.cm-content': { caretColor: 'var(--color-accent, #82aaff)' },
       '.cm-cursor, .cm-dropCursor': {
@@ -69,7 +83,10 @@ export const codeMirrorTheme = [
     { dark: true }
   ),
   syntaxHighlighting(syntax)
-];
+  ];
+}
+
+export const codeMirrorTheme = codeMirrorThemeForAppearance();
 
 type ThemeMirrorModule = typeof import('thememirror');
 type ThemeLoader = (themes: ThemeMirrorModule) => Extension;
@@ -84,10 +101,14 @@ const themeLoaders: Record<string, ThemeLoader> = {
 };
 
 /** Resolve the selected CodeMirror extension, keeping Houston as the fallback. */
-export async function loadCodeMirrorTheme(themeId: unknown): Promise<Extension> {
+export async function loadCodeMirrorTheme(
+  themeId: unknown,
+  appearance: CodeMirrorAppearance = defaultAppearance
+): Promise<Extension> {
+  const base = codeMirrorThemeForAppearance(appearance);
   const loader = themeLoaders[typeof themeId === 'string' ? themeId : ''];
-  if (!loader) return Promise.resolve(codeMirrorTheme);
+  if (!loader) return base;
   // Keep ThemeMirror, including its catalog, out of the startup chunk.
   const themes = await import('thememirror');
-  return [codeMirrorTheme, loader(themes)];
+  return [base, loader(themes)];
 }

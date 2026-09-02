@@ -405,17 +405,9 @@
     onProblemsLocationChange?.(location);
   }
 
-  function paintEditorFont(stack: string): void {
-    if (typeof document === 'undefined') return;
-    for (const scroller of document.querySelectorAll<HTMLElement>('.cm-scroller')) {
-      scroller.style.fontFamily = stack;
-    }
-  }
-
   function setEditorFontFamily(id: string): void {
     const font = getMonoFont(id);
     settings.editor.fontFamily = font.id;
-    paintEditorFont(font.stack);
   }
 
   async function switchLanguageServers(enabled: boolean): Promise<void> {
@@ -594,9 +586,6 @@
     if (open) void loadHelper();
   });
 
-  $effect(() => {
-    paintEditorFont(getMonoFont(settings.editor.fontFamily).stack);
-  });
 </script>
 
 <svelte:window onkeydown={onWindowKeyDown} />

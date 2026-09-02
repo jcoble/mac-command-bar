@@ -49,7 +49,10 @@
   } from '$lib/shell/resourceDiagnostics.svelte';
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
   import { codeMirrorCodeLens } from '$lib/shell/editor/codeMirrorCodeLens';
-  import { codeMirrorTheme, loadCodeMirrorTheme } from '$lib/shell/editor/codeMirrorTheme';
+  import {
+    codeMirrorThemeForAppearance,
+    loadCodeMirrorTheme
+  } from '$lib/shell/editor/codeMirrorTheme';
   import {
     connectCodeMirrorCsharpClient,
     setNativeCsharpActiveRoot
@@ -152,6 +155,19 @@
   let loadedThemeKey = '';
   let codeActionGeneration = 0;
   let codeLensGeneration = 0;
+
+  function currentThemeKey(): string {
+    const editor = settings.editor;
+    return `${settings.appearance.themeId}\0${editor.fontFamily}\0${editor.fontSize}\0${editor.lineHeight}`;
+  }
+
+  function currentEditorTheme(): Extension {
+    return codeMirrorThemeForAppearance({
+      fontFamily: settings.editor.fontFamily,
+      fontSize: settings.editor.fontSize,
+      lineHeight: settings.editor.lineHeight
+    });
+  }
 
   type CodeActionMenu = { path: string; root: string; pos: number; actions: SourceCodeAction[] };
   const setCodeActionMenu = StateEffect.define<CodeActionMenu | null>();
@@ -326,29 +342,34 @@
     themeGeneration += 1;
     requestedThemeKey = '';
     loadedThemeKey = '';
-    if (view) view.dispatch({ effects: themeExtension.reconfigure(codeMirrorTheme) });
+    if (view) view.dispatch({ effects: themeExtension.reconfigure(currentEditorTheme()) });
   }
 
   async function loadVisibleThemeSupport(): Promise<void> {
     if (!view || !visible || !currentPath || currentPath !== preview.path) return;
     const themeId = settings.appearance.themeId;
-    if (themeId === loadedThemeKey || themeId === requestedThemeKey) return;
-    requestedThemeKey = themeId;
+    const themeKey = currentThemeKey();
+    if (themeKey === loadedThemeKey || themeKey === requestedThemeKey) return;
+    requestedThemeKey = themeKey;
     const generation = ++themeGeneration;
     try {
-      const extension = await loadCodeMirrorTheme(themeId);
+      const extension = await loadCodeMirrorTheme(themeId, {
+        fontFamily: settings.editor.fontFamily,
+        fontSize: settings.editor.fontSize,
+        lineHeight: settings.editor.lineHeight
+      });
       if (
         !view ||
         !visible ||
         generation !== themeGeneration ||
-        settings.appearance.themeId !== themeId ||
+        currentThemeKey() !== themeKey ||
         currentPath !== preview.path
       ) return;
       requestedThemeKey = '';
-      loadedThemeKey = themeId;
+      loadedThemeKey = themeKey;
       view.dispatch({ effects: themeExtension.reconfigure(extension) });
     } catch {
-      if (generation === themeGeneration && requestedThemeKey === themeId) requestedThemeKey = '';
+      if (generation === themeGeneration && requestedThemeKey === themeKey) requestedThemeKey = '';
     }
   }
 
@@ -671,7 +692,7 @@
     highlightActiveLine(),
     highlightSelectionMatches(),
     keymap.of(vscodeKeymap),
-    themeExtension.of(codeMirrorTheme),
+    themeExtension.of(currentEditorTheme()),
     lintGutter(),
     intelligence.of(callbackIntelligence),
     language.of([]),
@@ -840,6 +861,9 @@
 
   $effect(() => {
     settings.appearance.themeId;
+    settings.editor.fontFamily;
+    settings.editor.fontSize;
+    settings.editor.lineHeight;
     if (visible) void loadVisibleThemeSupport();
     else clearThemeSupport();
   });

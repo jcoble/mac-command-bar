@@ -10,7 +10,8 @@
     codeMirrorLanguageForPath,
     loadCodeMirrorLanguage
   } from '$lib/shell/editor/codeMirrorLanguage';
-  import { codeMirrorTheme } from '$lib/shell/editor/codeMirrorTheme';
+  import { settings } from '$lib/settingsStore.svelte';
+  import { codeMirrorThemeForAppearance } from '$lib/shell/editor/codeMirrorTheme';
 
   let {
     relativePath,
@@ -33,7 +34,11 @@
   function readOnlyExtensions(language: Extension, openLine = false): Extension[] {
     return [
       basicSetup,
-      codeMirrorTheme,
+      codeMirrorThemeForAppearance({
+        fontFamily: settings.editor.fontFamily,
+        fontSize: settings.editor.fontSize,
+        lineHeight: settings.editor.lineHeight
+      }),
       language,
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
@@ -78,6 +83,9 @@
     relativePath;
     originalContent;
     modifiedContent;
+    settings.editor.fontFamily;
+    settings.editor.fontSize;
+    settings.editor.lineHeight;
     void render();
   });
 

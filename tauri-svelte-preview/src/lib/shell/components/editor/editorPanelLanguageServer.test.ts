@@ -53,16 +53,16 @@ const shellPageSource = readFileSync(
 const pillsSource = readFileSync(path.join(here, '..', 'CenterCornerTabs.svelte'), 'utf8');
 const frameSource = readFileSync(path.join(here, '..', 'ShellFrame.svelte'), 'utf8');
 
-test('the switch says which language it is about', () => {
-  assert.match(controlsSource, /languageShortLabel/);
-  assert.match(
-    controlsSource,
-    /\{shortLanguage\}/,
-    'the badge inside the control is what names the active language'
-  );
+test('the global mode control names both choices', () => {
+  assert.match(controlsSource, />Editor<\/button>/);
+  assert.match(controlsSource, />Supercharged<\/button>/);
+  assert.match(controlsSource, /aria-pressed=\{!settings\.intelligence\.languageServers\}/);
+  assert.match(controlsSource, /aria-pressed=\{settings\.intelligence\.languageServers\}/);
+  assert.match(controlsSource, /chooseMode\(false\)/);
+  assert.match(controlsSource, /chooseMode\(true\)/);
   assert.ok(
     !controlsSource.includes('<LanguageServerStatusChip'),
-    'the chip said the same thing again in words; colour and the badge carry it now'
+    'the status pipeline remains separate from the global mode choice'
   );
 });
 
@@ -145,45 +145,22 @@ test('the shell has no strip along its top any more', () => {
   );
 });
 
-test('the switch is painted from its state, not from a selector nothing writes', () => {
-  assert.match(
-    controlsSource,
-    /data-tone=\{tone\}/,
-    'one attribute carries the three states, the way the rest of the shell does it'
-  );
+test('the segmented control paints its selected mode from settings', () => {
+  assert.match(controlsSource, /class:active=\{!settings\.intelligence\.languageServers\}/);
+  assert.match(controlsSource, /class:active=\{settings\.intelligence\.languageServers\}/);
   assert.ok(
     !controlsSource.includes(':has(') && !controlsSource.includes('has-['),
     'no `:has()` selectors'
   );
 });
 
-test('position and colour are worked out separately', () => {
-  // The knob follows what was ASKED FOR and the track follows what is TRUE, so
-  // a switch turned on while the server is down must not be able to claim green.
-  assert.match(controlsSource, /checked=\{languageIntelligenceBar\.fullMode\}/);
-  // A button carries the browser's own padding, and on a 24px track that padding
-  // parked the knob in the middle at rest — a switch that shows neither position.
+test('the mode choice uses the shared async controller', () => {
+  assert.match(controlsSource, /await setLanguageServersEnabled\(enabled\)/);
   assert.match(
     controlsSource,
-    /\[data-slot='switch'\]\) \{\s*padding:\s*0;/,
-    'the switch must drop the browser button padding or its knob shows no position'
+    /if \(result\.supported\) settings\.intelligence\.languageServers = enabled;/,
+    'unsupported builds must not change the saved mode'
   );
-  assert.match(
-    controlsSource,
-    /readLanguageServerState\(languageIntelligenceBar\.status\) === 'ready'/,
-    'only a server that reports itself ready earns the running colour'
-  );
-  for (const [tone, token] of [
-    ['running', '--switch-track-running'],
-    ['waiting', '--switch-track-waiting'],
-    ['off', '--switch-track-off']
-  ] as const) {
-    assert.match(
-      controlsSource,
-      new RegExp(`data-tone='${tone}'[\\s\\S]{0,200}${token}`),
-      `the ${tone} state must paint the track from ${token}`
-    );
-  }
 });
 
 test('only the open file\'s own controls stay in the file-tab title row', () => {
@@ -219,25 +196,17 @@ test('the status pipeline has one owner', () => {
   }
 });
 
-test('with no project the switch is still there, and inert', () => {
-  // It used to remove itself, which left the pill group three pills wide with a
-  // gap where the switch belongs. It is part of that group now, so it stays and
-  // states the situation: off position, the neutral colour Off already wears,
-  // and no way to flip it.
+test('the global mode stays usable without an open project', () => {
   assert.ok(
     !controlsSource.includes('{#if languageIntelligenceBar.hasProject}'),
-    'the switch must not remove itself from the pill group'
+    'the mode choice must not remove itself from the pill group'
   );
-  assert.match(
+  assert.doesNotMatch(
     controlsSource,
-    /disabled=\{languageIntelligenceBar\.busy \|\| !languageIntelligenceBar\.hasProject\}/,
-    'with nothing to switch on, the switch cannot be flipped'
+    /disabled=\{[^}]*!languageIntelligenceBar\.hasProject/,
+    'a global setting remains selectable before opening a project'
   );
-  assert.match(
-    controlsSource,
-    /: 'No project is open, so there is no language server to switch on\.'/,
-    'a disabled control must carry its reason'
-  );
+  assert.match(controlsSource, /A language server starts when you open a supported project file\./);
 });
 
 test('the chip is only rendered when there is something truthful to say', () => {
