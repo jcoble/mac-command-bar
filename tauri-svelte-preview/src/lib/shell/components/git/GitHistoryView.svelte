@@ -33,6 +33,14 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
+  import SourceControlContextMenu from '$lib/shell/components/git/SourceControlContextMenu.svelte';
+  import {
+    snapshotSourceControlCommitFileMenu,
+    snapshotSourceControlCommitMenu,
+    sourceControlContextMenuAnchor,
+    type SourceControlContextMenuAction,
+    type SourceControlMenuSnapshot
+  } from '$lib/shell/components/git/sourceControlContextMenu';
   import { buildGitCommitGraphRows } from '$lib/gitGraphViewModel';
   import {
     assignGitGraphLanes,
@@ -63,10 +71,10 @@
     describeGitHistoryFooter,
     gitPanel
   } from '$lib/shell/git/gitPanelStore.svelte';
-  import { gitService } from '$lib/shell/git/gitService';
+  import { absolutePathWithin, gitService } from '$lib/shell/git/gitService';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
   import { formatLastActivity } from '$lib/shell/relativeTime';
-  import { showCenterTab, showRightTab } from '$lib/shell/workbenchNavigation';
+  import { openFileInEditor, showCenterTab, showRightTab } from '$lib/shell/workbenchNavigation';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
 
   interface Props {
@@ -75,6 +83,7 @@
   }
   let { root = '', rootAvailable = true }: Props = $props();
   let requestedRoot = '';
+  let contextMenu = $state.raw<SourceControlMenuSnapshot | null>(null);
 
   onMount(() => {
     gitService.ensureHistorySurface();
@@ -197,17 +206,73 @@
     gitCommitFilesService.activate(path);
   }
 
-  function toggleCommit(sha: string, isMerge: boolean): void {
+  async function toggleCommit(sha: string, isMerge: boolean): Promise<void> {
     if (!rootAvailable) return;
     gitCommitFilesService.activate(gitPanel.root);
-    void gitCommitFilesService.toggleCommit(sha, isMerge);
+    await gitCommitFilesService.toggleCommit(sha, isMerge);
   }
 
-  function pickFile(sha: string, file: GitCommitFileChange): void {
+  async function pickFile(sha: string, file: GitCommitFileChange): Promise<void> {
     if (!rootAvailable) return;
     gitCommitFilesService.activate(gitPanel.root);
-    void gitCommitFilesService.selectCommitFile(sha, file);
     showCenterTab('diff');
+    await gitCommitFilesService.selectCommitFile(sha, file);
+  }
+
+  function openCommitMenu(
+    sha: string,
+    isMerge: boolean,
+    expanded: boolean,
+    event: MouseEvent
+  ): void {
+    event.preventDefault();
+    contextMenu = snapshotSourceControlCommitMenu({
+      sha,
+      isMerge,
+      expanded,
+      anchor: sourceControlContextMenuAnchor(event)
+    });
+  }
+
+  function openCommitFileMenu(sha: string, file: GitCommitFileChange, event: MouseEvent): void {
+    event.preventDefault();
+    contextMenu = snapshotSourceControlCommitFileMenu({
+      sha,
+      file,
+      readable: !isUnreadableGitPath(file.relativePath),
+      anchor: sourceControlContextMenuAnchor(event)
+    });
+  }
+
+  async function copyText(value: string): Promise<void> {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(value);
+  }
+
+  async function runContextAction(action: SourceControlContextMenuAction): Promise<void> {
+    const menu = contextMenu;
+    contextMenu = null;
+    if (!menu || menu.kind === 'file') return;
+
+    if (menu.kind === 'commit') {
+      if (action === 'toggle-commit') await toggleCommit(menu.target.sha, menu.target.isMerge);
+      else if (action === 'copy-hash') await copyText(menu.target.sha);
+      return;
+    }
+
+    if (action === 'open-commit-diff') await pickFile(menu.target.sha, menu.target.file);
+    else if (action === 'open-current-file' && gitPanel.root) {
+      openFileInEditor({
+        path: absolutePathWithin(gitPanel.root, menu.target.file.relativePath),
+        projectRoot: gitPanel.root
+      });
+    } else if (action === 'copy-commit-path') {
+      await copyText(
+        gitPanel.root
+          ? absolutePathWithin(gitPanel.root, menu.target.file.relativePath)
+          : menu.target.file.relativePath
+      );
+    }
   }
 
   /** The checked-out branch already appears inside its `HEAD -> …` chip. */
@@ -287,8 +352,9 @@
         size="sm"
         class="min-w-[132px] max-w-[240px]"
         aria-label="Show one branch, or every branch"
+        title="Filters the history shown here. It does not switch the working directory."
       >
-        {filter.branch || 'All branches'}
+        History: {filter.branch || 'all branches'}
       </Select.Trigger>
       <Select.Content>
         <Select.Item value={ALL} label="All branches" />
@@ -410,7 +476,9 @@
           style="--graph-width: {graphWidth}px"
           title={commit.detailLabel}
           aria-expanded={expanded}
-          onclick={() => toggleCommit(commit.sha, lane?.isMerge ?? false)}
+          onclick={() => void toggleCommit(commit.sha, lane?.isMerge ?? false)}
+          oncontextmenu={(event) =>
+            openCommitMenu(commit.sha, lane?.isMerge ?? false, expanded, event)}
         >
           <svg class="graph" width={graphWidth} height={ROW_HEIGHT} aria-hidden="true">
             {#if lane}
@@ -480,7 +548,8 @@
                   title={unreadable
                     ? 'This file has a name git could not print in plain letters.'
                     : `${file.relativePath} — ${file.status}`}
-                  onclick={() => pickFile(commit.sha, file)}
+                  onclick={() => void pickFile(commit.sha, file)}
+                  oncontextmenu={(event) => openCommitFileMenu(commit.sha, file, event)}
                 >
                   <span class="file-name">{parts.name}</span>
                   {#if parts.folder}<span class="file-folder">{parts.folder}</span>{/if}
@@ -508,6 +577,15 @@
       </p>
     {/if}
   </div>
+
+  {#if contextMenu}
+    <SourceControlContextMenu
+      anchor={contextMenu.anchor}
+      items={contextMenu.items}
+      onSelect={(action) => void runContextAction(action)}
+      onClose={() => (contextMenu = null)}
+    />
+  {/if}
   {/if}
 </section>
 
@@ -632,6 +710,7 @@
     align-items: center;
     gap: 5px;
     min-width: 0;
+    overflow: hidden;
   }
 
   .subject {

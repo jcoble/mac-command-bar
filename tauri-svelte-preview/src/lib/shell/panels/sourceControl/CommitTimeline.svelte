@@ -26,6 +26,14 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+  import SourceControlContextMenu from '$lib/shell/components/git/SourceControlContextMenu.svelte';
+  import {
+    snapshotSourceControlCommitFileMenu,
+    snapshotSourceControlCommitMenu,
+    sourceControlContextMenuAnchor,
+    type SourceControlContextMenuAction,
+    type SourceControlMenuSnapshot
+  } from '$lib/shell/components/git/sourceControlContextMenu';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import { gitCommitRefSummary } from '$lib/gitGraphViewModel';
@@ -35,6 +43,7 @@
     commitFilesEntry,
     describeCommitFiles,
     isCommitExpanded,
+    isUnreadableGitPath,
     splitRepositoryPath,
     summarizeCommitFiles,
     type GitCommitFilesState
@@ -45,9 +54,9 @@
     describeGitHistoryFooter,
     type GitPanelState
   } from '$lib/shell/git/gitPanelStore.svelte';
-  import type { GitService } from '$lib/shell/git/gitService';
+  import { absolutePathWithin, type GitService } from '$lib/shell/git/gitService';
   import { formatLastActivity } from '$lib/shell/relativeTime';
-  import { showCenterTab } from '$lib/shell/workbenchNavigation';
+  import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation';
 
   interface Props {
     panel: GitPanelState;
@@ -56,6 +65,7 @@
     commitFilesState: GitCommitFilesState;
   }
   let { panel, service, commitFiles, commitFilesState }: Props = $props();
+  let contextMenu = $state.raw<SourceControlMenuSnapshot | null>(null);
 
   const countLabel = $derived(describeGitHistoryCount(panel));
   const footer = $derived(describeGitHistoryFooter(panel));
@@ -90,15 +100,71 @@
     return pills;
   }
 
-  function toggle(sha: string, parentCount: number): void {
+  async function toggle(sha: string, parentCount: number): Promise<void> {
     commitFiles.activate(panel.root);
-    void commitFiles.toggleCommit(sha, parentCount > 1);
+    await commitFiles.toggleCommit(sha, parentCount > 1);
   }
 
-  function pickFile(sha: string, file: GitCommitFileChange): void {
+  async function pickFile(sha: string, file: GitCommitFileChange): Promise<void> {
     commitFiles.activate(panel.root);
     showCenterTab('diff');
-    void commitFiles.selectCommitFile(sha, file);
+    await commitFiles.selectCommitFile(sha, file);
+  }
+
+  function openCommitMenu(
+    sha: string,
+    parentCount: number,
+    expanded: boolean,
+    event: MouseEvent
+  ): void {
+    event.preventDefault();
+    contextMenu = snapshotSourceControlCommitMenu({
+      sha,
+      isMerge: parentCount > 1,
+      expanded,
+      anchor: sourceControlContextMenuAnchor(event)
+    });
+  }
+
+  function openCommitFileMenu(sha: string, file: GitCommitFileChange, event: MouseEvent): void {
+    event.preventDefault();
+    contextMenu = snapshotSourceControlCommitFileMenu({
+      sha,
+      file,
+      readable: !isUnreadableGitPath(file.relativePath),
+      anchor: sourceControlContextMenuAnchor(event)
+    });
+  }
+
+  async function copyText(value: string): Promise<void> {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(value);
+  }
+
+  async function runContextAction(action: SourceControlContextMenuAction): Promise<void> {
+    const menu = contextMenu;
+    contextMenu = null;
+    if (!menu || menu.kind === 'file') return;
+
+    if (menu.kind === 'commit') {
+      if (action === 'toggle-commit') await toggle(menu.target.sha, menu.target.isMerge ? 2 : 1);
+      else if (action === 'copy-hash') await copyText(menu.target.sha);
+      return;
+    }
+
+    if (action === 'open-commit-diff') await pickFile(menu.target.sha, menu.target.file);
+    else if (action === 'open-current-file' && panel.root) {
+      openFileInEditor({
+        path: absolutePathWithin(panel.root, menu.target.file.relativePath),
+        projectRoot: panel.root
+      });
+    } else if (action === 'copy-commit-path') {
+      await copyText(
+        panel.root
+          ? absolutePathWithin(panel.root, menu.target.file.relativePath)
+          : menu.target.file.relativePath
+      );
+    }
   }
 
   /** Everything the app told us about this commit, one fact per line. */
@@ -157,7 +223,9 @@
               {#snippet child({ props })}
                 <div {...props} class="min-w-0">
                   <ListRow
-                    onclick={() => toggle(commit.sha, commit.parentCount)}
+                    onclick={() => void toggle(commit.sha, commit.parentCount)}
+                    oncontextmenu={(event) =>
+                      openCommitMenu(commit.sha, commit.parentCount, expanded, event)}
                     data-testid={`source-control-commit-${commit.shortSha}`}
                   >
                     <ChevronRight
@@ -201,7 +269,8 @@
                 {#each entry.files as file (file.relativePath)}
                   {@const parts = splitRepositoryPath(file.relativePath)}
                   <ListRow
-                    onclick={() => pickFile(commit.sha, file)}
+                    onclick={() => void pickFile(commit.sha, file)}
+                    oncontextmenu={(event) => openCommitFileMenu(commit.sha, file, event)}
                     selected={commitFilesState.selectedCommitSha === commit.sha &&
                       commitFilesState.selectedRelativePath === file.relativePath}
                     data-testid={`source-control-commit-file-${file.relativePath}`}
@@ -241,6 +310,15 @@
         </Button>
       </div>
     {/if}
+  {/if}
+
+  {#if contextMenu}
+    <SourceControlContextMenu
+      anchor={contextMenu.anchor}
+      items={contextMenu.items}
+      onSelect={(action) => void runContextAction(action)}
+      onClose={() => (contextMenu = null)}
+    />
   {/if}
 </section>
 

@@ -121,11 +121,10 @@ export function openFileInEditor(request: OpenFileRequest): void {
   showCenterTab('editor');
 }
 
-/** Show one file's changes. The Diff tab comes forward first, so its read belongs
- * to a visible surface. */
+/** Show one file's changes after the selected diff belongs to that file. */
 export async function openDiffForFile(request: OpenDiffRequest): Promise<void> {
-  showCenterTab('diff');
   await handlers.openDiff?.(request);
+  showCenterTab('diff');
 }
 
 /** Show the paged history for one repository-relative file. */

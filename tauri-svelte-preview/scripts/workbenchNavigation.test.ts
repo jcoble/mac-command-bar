@@ -144,7 +144,7 @@ assert.equal(
 );
 assert.deepEqual(trace, [], 'after clearing, every caller is a no-op again');
 
-assert.equal(RIGHT_TAB_IDS.length, 8);
+assert.equal(RIGHT_TAB_IDS.length, 9);
 assert.equal(CENTER_TAB_IDS.length, 4);
 
 console.log('workbenchNavigation: no-op safety, partial registration, call order, and clearing passed');

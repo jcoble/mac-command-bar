@@ -31,8 +31,13 @@
 	import type { EditorPanelLifecycle } from "$lib/shell/controllers/editorSessionController.svelte";
 	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
 	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
+	import { gitService } from "$lib/shell/git/gitService";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
+	import {
+		clearWorkbenchNavigation,
+		registerWorkbenchNavigation,
+	} from "$lib/shell/workbenchNavigation";
 
 	const selection = new SessionSelectionController();
 	const workbench = new WorkbenchController();
@@ -47,6 +52,28 @@
 	});
 
 	onMount(() => {
+		registerWorkbenchNavigation({
+			showCenterTab: (id) => workbench.selectCenterTab(id),
+			showRightTab: (id) => workbench.selectRightTab(id),
+			openDiff: async (request) => {
+				if (!selection.activeRootAvailable) return;
+				await gitService.showStoredDiff(request.projectRoot, request.relativePath);
+			},
+			openFileTimeline: async (request) => {
+				const ownedId = selection.activeOwnedId;
+				const sessionRoot = selection.durableSessionRoot;
+				if (!selection.activeRootAvailable || !ownedId || !sessionRoot) return false;
+				workbench.selectCenterTab("git-history");
+				await gitService.showFileHistory(request.projectRoot, request.relativePath);
+				if (
+					!selection.activeRootAvailable ||
+					selection.activeOwnedId !== ownedId ||
+					selection.durableSessionRoot !== sessionRoot
+				)
+					return false;
+				return true;
+			},
+		});
 		void startShell({
 			onSelectInitial: async (ownedId, stopSignal) => {
 				if (stopSignal.aborted) return;
@@ -56,6 +83,7 @@
 		});
 
 		return () => {
+			clearWorkbenchNavigation();
 			void disposeRoute();
 		};
 	});

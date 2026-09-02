@@ -87,6 +87,7 @@
     "test:git-graph-lanes": "node --experimental-strip-types scripts/gitGraphLanes.test.mjs",
     "test:git-bridge": "node --experimental-strip-types scripts/gitBridge.test.mjs",
     "test:git-commit-files": "node --experimental-strip-types scripts/gitCommitFiles.test.mjs",
+    "test:source-control-context-menu": "node --experimental-strip-types scripts/sourceControlContextMenu.test.ts",
     "test:git-history-paging": "node --experimental-strip-types scripts/gitHistoryPaging.test.mjs",
     "test:session-history-load": "node --experimental-strip-types scripts/sessionHistoryLoad.test.ts",
     "test:worktree-manager": "node --experimental-strip-types scripts/worktreeManager.test.mjs",

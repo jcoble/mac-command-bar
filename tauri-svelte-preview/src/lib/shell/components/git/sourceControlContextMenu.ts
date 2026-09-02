@@ -1,6 +1,7 @@
 /** Pure snapshots and placement for Source Control row context menus. */
 
 import type { ProjectGitFileStatus } from '../../../tauriSource.ts';
+import type { GitCommitFileChange } from '../../git/gitBackendExtra.ts';
 
 export type SourceControlFileAction =
   | 'open-diff'
@@ -24,7 +25,15 @@ export interface SourceControlContextMenuItem<Action extends string, Handler ext
   handler: Handler;
 }
 
-export type SourceControlContextMenuAction = SourceControlFileAction | SourceControlCommitAction;
+export type SourceControlCommitFileAction =
+  | 'open-commit-diff'
+  | 'open-current-file'
+  | 'copy-commit-path';
+
+export type SourceControlContextMenuAction =
+  | SourceControlFileAction
+  | SourceControlCommitAction
+  | SourceControlCommitFileAction;
 
 export interface SourceControlContextMenuAnchor {
   left: number;
@@ -56,9 +65,15 @@ export interface SourceControlFileMenuSnapshot extends SourceControlContextMenuS
   };
 }
 
+export interface SourceControlCommitFileMenuSnapshot extends SourceControlContextMenuSnapshot {
+  kind: 'commit-file';
+  target: { sha: string; file: GitCommitFileChange };
+}
+
 export type SourceControlMenuSnapshot =
   | SourceControlCommitMenuSnapshot
-  | SourceControlFileMenuSnapshot;
+  | SourceControlFileMenuSnapshot
+  | SourceControlCommitFileMenuSnapshot;
 
 const MENU_GAP = 4;
 const EDGE_PADDING = 8;
@@ -175,6 +190,31 @@ export function sourceControlCommitContextMenuItems(
   ];
 }
 
+export function sourceControlCommitFileContextMenuItems(
+  readable: boolean
+): SourceControlContextMenuItem<SourceControlCommitFileAction, SourceControlCommitFileAction>[] {
+  return [
+    {
+      id: 'open-commit-diff',
+      label: 'Open diff',
+      enabled: readable,
+      handler: 'open-commit-diff'
+    },
+    {
+      id: 'open-current-file',
+      label: 'Open current file in editor',
+      enabled: readable,
+      handler: 'open-current-file'
+    },
+    {
+      id: 'copy-commit-path',
+      label: 'Copy path',
+      enabled: true,
+      handler: 'copy-commit-path'
+    }
+  ];
+}
+
 export function snapshotSourceControlCommitMenu(input: {
   sha: string;
   isMerge: boolean;
@@ -211,5 +251,20 @@ export function snapshotSourceControlFileMenu(input: {
       deleted: file.badge === 'D' || file.worktreeStatus === 'deleted',
       hasRoot: input.hasRoot
     })
+  };
+}
+
+export function snapshotSourceControlCommitFileMenu(input: {
+  sha: string;
+  file: GitCommitFileChange;
+  readable: boolean;
+  anchor: SourceControlContextMenuAnchor;
+}): SourceControlCommitFileMenuSnapshot {
+  return {
+    kind: 'commit-file',
+    key: `commit-file:${input.sha}:${input.file.relativePath}`,
+    target: { sha: input.sha, file: { ...input.file } },
+    anchor: { ...input.anchor },
+    items: sourceControlCommitFileContextMenuItems(input.readable)
   };
 }

@@ -55,7 +55,9 @@
   }}
 >
   {#each items as item (item.id)}
-    {#if item.id === 'copy-path'}<div class="separator" role="separator"></div>{/if}
+    {#if item.id === 'copy-path' || item.id === 'copy-commit-path'}
+      <div class="separator" role="separator"></div>
+    {/if}
     <button
       type="button"
       role="menuitem"

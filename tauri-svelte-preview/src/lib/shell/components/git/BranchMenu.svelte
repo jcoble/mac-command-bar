@@ -60,6 +60,8 @@
 
   const busy = $derived(panel.actionBusy !== '');
   const current = $derived(describeCurrentBranch(panel.status?.branch));
+  const ahead = $derived(panel.status?.ahead ?? 0);
+  const behind = $derived(panel.status?.behind ?? 0);
   const shown = $derived(filterBranches(branches, query));
   const existingNames = $derived(branches.map((branch) => branch.name));
   const nameProblem = $derived(branchNameProblem(newBranch, existingNames));
@@ -136,11 +138,17 @@
       'min-w-0 max-w-full gap-1 px-1 text-[13px] font-normal text-[var(--color-text-2)]'
     )}
     disabled={!panel.activated}
-    title={`Branch: ${current}\nSwitch, create, stash or pop from here`}
+    title={`Checked-out branch: ${current}\nSwitching here changes this working directory.${behind > 0 ? `\n${behind} commit${behind === 1 ? '' : 's'} behind its remote.` : ''}${ahead > 0 ? `\n${ahead} commit${ahead === 1 ? '' : 's'} ahead of its remote.` : ''}`}
     data-testid="branch-menu-trigger"
   >
     <GitBranch class="size-3 shrink-0" aria-hidden="true" />
     <span class="min-w-0 truncate">{current}</span>
+    {#if behind > 0}
+      <span class="shrink-0 text-[var(--color-attention)]" aria-label={`${behind} commit${behind === 1 ? '' : 's'} behind`}>↓{behind}</span>
+    {/if}
+    {#if ahead > 0}
+      <span class="shrink-0 text-[var(--color-live)]" aria-label={`${ahead} commit${ahead === 1 ? '' : 's'} ahead`}>↑{ahead}</span>
+    {/if}
     <ChevronDown class="size-3 shrink-0" aria-hidden="true" />
   </DropdownMenu.Trigger>
 
