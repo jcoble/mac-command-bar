@@ -6,8 +6,9 @@
 	 * active paint and calls no session, panel, persistence, or native service.
 	 *
 	 * The rail passes one shared timestamp into every row. This row mounts no
-	 * timer, clock subscription, spinner, or visibility observer.
+	 * timer, clock subscription, animated spinner, or visibility observer.
 	 */
+	import LoaderCircle from "@lucide/svelte/icons/loader-circle";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
 	import {
 		deriveSessionPresence,
@@ -156,6 +157,11 @@
 				<span data-testid="worktree-agent-title" class="session-title">{label}</span>
 				<span data-testid="worktree-agent-age" class="age">
 					<span class="age-text">{ageText ?? ""}</span>
+					{#if presence === "working"}
+						<span class="working-mark" role="img" aria-label="Working">
+							<LoaderCircle aria-hidden="true" />
+						</span>
+					{/if}
 				</span>
 			</span>
 
@@ -176,10 +182,6 @@
 					</span>
 				{:else if presence === "failed"}
 					<span data-testid="worktree-agent-status" class="failed">{presentedError?.summary ?? presenceLabel}</span>
-				{:else if suspended}
-					<span data-testid="worktree-agent-status" class="idle-label">
-						{suspended ? "Suspended" : presenceLabel}
-					</span>
 				{/if}
 			</span>
 		</span>
@@ -297,7 +299,6 @@
 		white-space: nowrap;
 	}
 
-	.idle-label,
 	.failed,
 	.needs-you {
 		margin-left: auto;
@@ -318,12 +319,25 @@
 		white-space: nowrap;
 	}
 
-	/* One button wide, always: the spinner beside it must sit the same distance
-     from the row's right edge whether the time reads "now" or "12m", because
-     the cluster's gap for it is measured from that edge. */
+	/* Keep elapsed values aligned while the static working mark occupies its own slot. */
 	.age-text {
 		min-width: 28px;
 		text-align: right;
+	}
+
+	.working-mark {
+		display: inline-grid;
+		width: 14px;
+		height: 14px;
+		flex: 0 0 auto;
+		place-items: center;
+		color: var(--color-accent);
+	}
+
+	.working-mark :global(svg) {
+		width: 14px;
+		height: 14px;
+		animation: none;
 	}
 
 	.row[data-presence="working"] .age {
@@ -359,13 +373,6 @@
 		white-space: nowrap;
 	}
 
-	.idle-label {
-		flex: 0 0 auto;
-		color: var(--color-idle);
-		font-size: 11.5px;
-		white-space: nowrap;
-	}
-
 	.session-title {
 		min-width: 0;
 		flex: 1 1 auto;
@@ -381,7 +388,6 @@
      transition or animation in a session row. */
 	@media (prefers-reduced-motion: no-preference) {
 		.age-text,
-		.idle-label,
 		.thumb {
 			transition: opacity 120ms ease;
 		}

@@ -99,7 +99,7 @@
 	}
 
 	.session-row:hover {
-		background: color-mix(in srgb, var(--color-elevated) 65%, transparent);
+		background: color-mix(in srgb, var(--color-accent) 7%, var(--color-elevated));
 	}
 
 	.session-row.active {
@@ -145,9 +145,10 @@
 		cursor: pointer;
 	}
 
+	.row-actions button:hover,
 	.row-actions button:focus-visible {
-		background: var(--color-hover);
-		color: var(--color-text);
+		background: color-mix(in srgb, var(--color-accent) 16%, var(--color-elevated));
+		color: var(--color-accent);
 		outline: none;
 	}
 
