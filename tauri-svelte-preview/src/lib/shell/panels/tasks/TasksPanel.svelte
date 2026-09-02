@@ -125,6 +125,10 @@
     }
   }
 
+  async function openNotionTokenSetup(): Promise<void> {
+    await openUrlInBrowser('https://developers.notion.com/guides/get-started/personal-access-tokens#create-a-pat');
+  }
+
   async function disconnect(): Promise<void> {
     const owner = generation;
     saving = true;
@@ -182,19 +186,27 @@
 
   {#if showSetup}
     <div class="mx-3 mb-3 grid gap-2 rounded-lg border border-border bg-card p-3">
-      <p class="text-sm font-medium text-foreground">Connect a read-only Notion integration</p>
+      <p class="text-sm font-medium text-foreground">Connect your Notion workspace</p>
       <p class="text-xs leading-snug text-muted-foreground">
-        Share the task data source with the integration, then paste its data source ID and token.
-        The token stays in macOS Keychain.
+        Create a personal token in Notion and paste it once. Assembly finds your Tasks database
+        automatically, and the token stays in macOS Keychain.
       </p>
-      <Input bind:value={dataSourceId} placeholder="Data source ID" aria-label="Notion data source ID" />
-      <Input bind:value={token} type="password" placeholder={settings?.hasToken ? 'Token already stored' : 'Integration token'} aria-label="Notion integration token" />
+      <Button variant="secondary" onclick={() => void openNotionTokenSetup()}>
+        Open Notion token setup <ExternalLink class="size-3.5" />
+      </Button>
+      <Input bind:value={token} type="password" placeholder={settings?.hasToken ? 'Token already stored' : 'Paste personal token'} aria-label="Notion personal access token" />
+      <details class="text-xs text-muted-foreground">
+        <summary class="cursor-pointer select-none py-1">Advanced</summary>
+        <div class="pt-1">
+          <Input bind:value={dataSourceId} placeholder="Optional data source ID" aria-label="Notion data source ID" />
+        </div>
+      </details>
       <div class="flex justify-end gap-2">
         {#if settings?.hasToken}
           <Button variant="ghost" disabled={saving} onclick={() => void disconnect()}>Disconnect</Button>
         {/if}
-        <Button disabled={saving || !dataSourceId.trim()} onclick={() => void saveSetup()}>
-          {saving ? 'Saving…' : 'Save and refresh'}
+        <Button disabled={saving || (!settings?.hasToken && !token.trim())} onclick={() => void saveSetup()}>
+          {saving ? 'Connecting…' : 'Connect Notion'}
         </Button>
       </div>
     </div>

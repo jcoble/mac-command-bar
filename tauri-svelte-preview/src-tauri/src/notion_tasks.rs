@@ -190,24 +190,24 @@ pub async fn save_notion_task_settings(
     data_source_id: String,
     token: String,
 ) -> Result<NotionTaskSettings, String> {
-    let data_source_id = data_source_id.trim().to_string();
-    if data_source_id.is_empty() {
-        return Err("Enter a Notion data source ID".to_string());
-    }
     let token = token.trim().to_string();
+    let active_token = if token.is_empty() {
+        tauri::async_runtime::spawn_blocking(read_keychain_token)
+            .await
+            .map_err(|error| format!("Notion Keychain task failed: {error}"))??
+            .ok_or_else(|| "Enter a Notion personal access token".to_string())?
+    } else {
+        token.clone()
+    };
+    let data_source_id = if data_source_id.trim().is_empty() {
+        discover_task_data_source(&reqwest::Client::new(), &active_token).await?
+    } else {
+        data_source_id.trim().to_string()
+    };
     if !token.is_empty() {
         tauri::async_runtime::spawn_blocking(move || write_keychain_token(&token))
             .await
             .map_err(|error| format!("Notion Keychain task failed: {error}"))??;
-    } else {
-        let has_token = tauri::async_runtime::spawn_blocking(|| {
-            read_keychain_token().map(|value| value.is_some())
-        })
-        .await
-        .map_err(|error| format!("Notion Keychain task failed: {error}"))??;
-        if !has_token {
-            return Err("Enter a Notion integration token".to_string());
-        }
     }
     let stored = StoredSettings {
         data_source_id: data_source_id.clone(),
@@ -220,6 +220,62 @@ pub async fn save_notion_task_settings(
         data_source_id,
         has_token: true,
     })
+}
+
+async fn discover_task_data_source(
+    client: &reqwest::Client,
+    token: &str,
+) -> Result<String, String> {
+    let response = notion_request(client.post("https://api.notion.com/v1/search"), token)
+        .json(&json!({
+            "page_size": NOTION_PAGE_SIZE,
+            "filter": { "property": "object", "value": "data_source" }
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not be reached: {error}"))?;
+    task_data_source_id(&response_payload(response).await?)
+}
+
+fn task_data_source_id(payload: &Value) -> Result<String, String> {
+    let results = payload
+        .get("results")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Notion returned no data sources".to_string())?;
+    let candidates = results
+        .iter()
+        .filter(|source| source.get("object").and_then(Value::as_str) == Some("data_source"))
+        .filter(|source| {
+            let Some(properties) = source.get("properties").and_then(Value::as_object) else {
+                return false;
+            };
+            properties.contains_key("Status")
+                && properties
+                    .values()
+                    .any(|property| property.get("type").and_then(Value::as_str) == Some("title"))
+        })
+        .filter_map(|source| {
+            Some((
+                source.get("id")?.as_str()?.to_string(),
+                rich_text(source.get("title")?).unwrap_or_default(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let named_tasks = candidates
+        .iter()
+        .filter(|(_, title)| title.eq_ignore_ascii_case("tasks"))
+        .collect::<Vec<_>>();
+    if let [candidate] = named_tasks.as_slice() {
+        return Ok(candidate.0.clone());
+    }
+    if let [candidate] = candidates.as_slice() {
+        return Ok(candidate.0.clone());
+    }
+    if candidates.is_empty() {
+        Err("No Notion task database was found. Make sure the token can read a database with a title and Status fields.".to_string())
+    } else {
+        Err("More than one Notion task database was found. Open Advanced and paste the data source ID to choose one.".to_string())
+    }
 }
 
 #[tauri::command]
@@ -517,6 +573,52 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovers_the_named_tasks_data_source() {
+        let payload = json!({
+            "results": [
+                {
+                    "object": "data_source",
+                    "id": "notes-id",
+                    "title": [{ "plain_text": "Notes" }],
+                    "properties": { "Name": { "type": "title" } }
+                },
+                {
+                    "object": "data_source",
+                    "id": "tasks-id",
+                    "title": [{ "plain_text": "Tasks" }],
+                    "properties": {
+                        "Name": { "type": "title" },
+                        "Status": { "type": "status" }
+                    }
+                }
+            ]
+        });
+        assert_eq!(task_data_source_id(&payload).unwrap(), "tasks-id");
+    }
+
+    #[test]
+    fn requires_a_choice_when_multiple_task_sources_match() {
+        let results = ["Alpha", "Beta"]
+            .into_iter()
+            .map(|title| {
+                json!({
+                "object": "data_source",
+                "id": format!("{title}-id"),
+                "title": [{ "plain_text": title }],
+                "properties": {
+                    "Name": { "type": "title" },
+                    "Status": { "type": "status" }
+                }
+                })
+            })
+            .collect::<Vec<_>>();
+        let payload = json!({ "results": results });
+        assert!(task_data_source_id(&payload)
+            .unwrap_err()
+            .contains("More than one"));
+    }
 
     #[test]
     fn task_page_projects_only_the_fields_the_panel_uses() {
