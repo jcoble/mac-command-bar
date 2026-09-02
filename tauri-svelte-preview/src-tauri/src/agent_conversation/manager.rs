@@ -1676,6 +1676,58 @@ impl AgentRuntimeManager {
             let runtime = runtime.lock().await;
             runtime.transport().map_err(|error| error.to_string())?
         };
+        let steer_target = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session(&sessions, owned_id, generation)?;
+            if session.active_turn_id.is_none() {
+                None
+            } else {
+                if !session.capabilities.session.steering {
+                    return Err(
+                        "This provider does not support steering an active turn".to_string()
+                    );
+                }
+                if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
+                    return Err("The structured writer is not the current owner".to_string());
+                }
+                Some(
+                    session
+                        .native_session_id
+                        .clone()
+                        .ok_or_else(|| "Structured provider session has not started".to_string())?,
+                )
+            }
+        };
+        if let Some(native_session_id) = steer_target {
+            let attachment_ids = input.attachment_ids.clone();
+            let text = input.text.clone();
+            let result = transport
+                .request("session/steer", prompt_params(native_session_id, input))
+                .await
+                .map_err(|error| error.to_string())?;
+            if result.get("outcome").and_then(Value::as_str) == Some("failed") {
+                return Err("The provider could not steer the active turn".to_string());
+            }
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            record_payload_for_session_and_dispatch(
+                session,
+                &self.emitter,
+                AgentConversationPayload::UserMessage {
+                    item_id: format!("user-steer-{}", uuid::Uuid::new_v4()),
+                    text,
+                    completed: true,
+                    attachment_ids,
+                },
+            )?;
+            return Ok(());
+        }
         let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
         let (native_session_id, ordered_events) = {
             let mut sessions = self
@@ -7110,6 +7162,45 @@ mod tests {
                 "fallback item identity must use the app-minted turn id"
             );
         }
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_message_during_an_active_turn_uses_session_steering() {
+        let fixture = fixture_manager_with_acp_session("steering").await;
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            session.active_turn_id = Some("turn-running".into());
+            session.state = AgentRuntimeState::Working;
+        }
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("change direction"),
+            )
+            .await
+            .expect("steer active turn");
+
+        let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if text == "change direction"
+        )));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event.payload, AgentConversationPayload::Turn { .. })));
+        let log = fs::read_to_string(fixture.root.join("steering.jsonl")).unwrap();
+        assert!(log.contains("\"method\":\"session/steer\""));
 
         fixture
             .manager

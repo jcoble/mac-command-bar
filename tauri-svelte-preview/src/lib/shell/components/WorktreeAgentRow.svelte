@@ -40,8 +40,8 @@
 		active = false,
 		onSelect,
 		onOpenSession,
-		// onOpenEditor,
-		// onOpenSourceControl,
+		onOpenEditor,
+		onOpenSourceControl,
 		onContextMenu,
 	}: Props = $props();
 
@@ -132,7 +132,8 @@
 		{active}
 		{onSelect}
 		{onOpenSession}
-		// {onOpenEditor} {onOpenSourceControl}
+		{onOpenEditor}
+		{onOpenSourceControl}
 	>
 		<!-- The mark, at the height of the three lines beside it. It carries
                the provider and whether this session is working, and nothing

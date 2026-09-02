@@ -23,8 +23,17 @@
   let { item, onFileLink }: Props = $props();
 
   let runOpen = $state(false);
+  let runWasActive = false;
   $effect(() => {
-    if (!item.completed) runOpen = true;
+    if (!item.completed) {
+      runWasActive = true;
+      runOpen = true;
+      return;
+    }
+    if (runWasActive) {
+      runWasActive = false;
+      runOpen = false;
+    }
   });
   let expandedCommands = $state<Record<string, boolean>>({});
   let expandedDiffs = $state<Record<string, boolean>>({});

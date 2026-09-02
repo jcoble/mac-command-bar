@@ -1143,6 +1143,7 @@ export async function sendStructuredMessage(
   let state = getConversationSession(ownedId);
   if (!state) return;
   if (!text.trim() && state.attachments.length === 0) return;
+  const turnWasAlreadyActive = state.sending;
   setConversationSending(ownedId, true);
   try {
     const owned = rail.owned.find((session) => session.ownedId === ownedId) ?? null;
@@ -1287,7 +1288,7 @@ export async function sendStructuredMessage(
     // A send that never went out leaves its screenshots in the composer, so
     // nothing is left waiting to be hung on a later message.
     recordSentConversationAttachments(ownedId, []);
-    setConversationSending(ownedId, false);
+    if (!turnWasAlreadyActive) setConversationSending(ownedId, false);
     throw error;
   }
 }

@@ -152,8 +152,8 @@
 							active={session.ownedId === visualActiveOwnedId}
 							onSelect={() => void selectRow(session.ownedId)}
 							onOpenSession={() => void jumpTo(session, "session")}
-							// onOpenEditor={() => void jumpTo(session, "editor")}
-							// onOpenSourceControl={() => void jumpTo(session, "source-control")}
+							onOpenEditor={() => void jumpTo(session, "editor")}
+							onOpenSourceControl={() => void jumpTo(session, "source-control")}
 							onContextMenu={(event) => openContextMenu(event, session)}
 						/>
 					{/each}

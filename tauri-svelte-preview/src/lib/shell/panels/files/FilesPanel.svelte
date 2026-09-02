@@ -34,6 +34,7 @@
 			visibleFileTreeNodes,
 			windowFileTreeNodes,
 		} from "./fileTreeModel.ts";
+	import { watchFileTree } from "./fileTreeWatch.ts";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
 	import type { SourceTreeSearchMatch } from "$lib/sourceData";
 	import type { RepositoryCheckout } from "$lib/tauriSource";
@@ -335,6 +336,22 @@
 		if (signal && !signal.aborted) {
 			void restoreExpandedDirectories(activeRoot, savedPaths, generation, signal);
 		}
+	});
+
+	async function ownFileTreeWatch(target: string, signal: AbortSignal): Promise<void> {
+		try {
+			await watchFileTree(target, signal, refresh);
+		} catch (error) {
+			if (dev && !signal.aborted) console.warn("Could not watch the file tree", error);
+		}
+	}
+
+	$effect(() => {
+		const target = canonicalPath(projectRoot);
+		if (!visible || !target || !isNativeTauriRuntime()) return;
+		const controller = new AbortController();
+		void ownFileTreeWatch(target, controller.signal);
+		return () => controller.abort();
 	});
 
 	$effect(() => {

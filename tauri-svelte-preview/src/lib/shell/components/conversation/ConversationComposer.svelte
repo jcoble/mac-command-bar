@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte';
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import ImageUp from '@lucide/svelte/icons/image-up';
+  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
   import Mic from '@lucide/svelte/icons/mic';
   import Plus from '@lucide/svelte/icons/plus';
   import Square from '@lucide/svelte/icons/square';
@@ -30,6 +31,7 @@
     draft: string;
     attachments: readonly ComposerAttachment[];
     sending: boolean;
+    workingPhase?: number;
     configState: AgentConversationConfigState;
     pendingConfig: Partial<Record<AgentConversationConfigField, string>>;
     configError?: string | null;
@@ -79,6 +81,7 @@
     draft,
     attachments,
     sending,
+    workingPhase = 0,
     configState,
     pendingConfig,
     configError = null,
@@ -181,6 +184,8 @@
   );
   const composerLocked = $derived(Boolean(pendingApproval || pendingInputs.length));
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
+  const workingLabels = ['Working', 'Thinking', 'Reading', 'Writing', 'Checking', 'Running', 'Reviewing', 'Finishing'];
+  const workingLabel = $derived(workingLabels[Math.abs(workingPhase) % workingLabels.length]);
   /**
    * Empty, the composer is a single capsule line: add button, placeholder,
    * the settings chips and the mic. Once it is carrying something the box
@@ -501,9 +506,14 @@
                  right the moment there is something to send. -->
             <button class="round-control mic" type="button" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic size={17} /></button>
             {#if sending}
+              <span class="working-state" data-testid="conversation-working" aria-live="polite">
+                <LoaderCircle size={15} aria-hidden="true" />
+                <span>{workingLabel}…</span>
+              </span>
               <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
-            {:else if hasSendableContent}
-              <button class="round-control send" data-testid="conversation-send" type="submit" aria-label="Send message"><ArrowUp size={17} strokeWidth={2.2} /></button>
+            {/if}
+            {#if hasSendableContent}
+              <button class="round-control send" data-testid="conversation-send" type="submit" aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
             {/if}
           </div>
         </div>
@@ -599,6 +609,8 @@
      them from touching. The meter is the one thing there that is read rather
      than pressed, so it keeps its own space ahead of the group. */
   .footer-right { grid-area: trail; justify-self: end; gap: 2px; }
+  .working-state { display: inline-flex; align-items: center; gap: 5px; margin: 0 4px; color: var(--color-text-2); font-size: 12px; white-space: nowrap; }
+  .working-state :global(svg) { animation: none; }
   .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
   .leading-controls { display: flex; width: min(820px, calc(100% - 44px)); min-width: 0; margin: 0 auto var(--composer-row-gap); align-items: center; gap: var(--composer-row-gap); }
   .wide-controls { display: flex; min-width: 0; }

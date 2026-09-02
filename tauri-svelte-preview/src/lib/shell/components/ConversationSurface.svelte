@@ -416,17 +416,20 @@
 
   async function send(): Promise<void> {
     const ownedId = activeOwnedId;
-    if (!ownedId || !conversation || conversation.sending || conversation.selectedChildId) return;
+    if (!ownedId || !conversation || conversation.selectedChildId) return;
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
+    const steering = conversation.sending;
     const text = conversation.draft;
-    const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
-    sendAnchorRequest = {
-      requestId: ++sendAnchorRequestId,
-      conversationId: ownedId,
-      previousUserItemId
-    };
-    localTurnActive = true;
-    localTurnStarted = false;
+    if (!steering) {
+      const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
+      sendAnchorRequest = {
+        requestId: ++sendAnchorRequestId,
+        conversationId: ownedId,
+        previousUserItemId
+      };
+      localTurnActive = true;
+      localTurnStarted = false;
+    }
     setConversationDraft(ownedId, '');
     setConversationSendError(ownedId, '');
     try {
@@ -441,9 +444,11 @@
       setConversationDraft(ownedId, text);
       persistConversationSessionDraft(ownedId, text);
       await ignoreDraftFlushFailure(ownedId);
-      localTurnActive = false;
-      localTurnStarted = false;
-      sendAnchorRequest = null;
+      if (!steering) {
+        localTurnActive = false;
+        localTurnStarted = false;
+        sendAnchorRequest = null;
+      }
     }
   }
 
@@ -671,6 +676,7 @@
           draft={conversation.draft}
           attachments={conversation.attachments}
           sending={conversation.sending}
+          workingPhase={conversation.timelineRevision}
           configState={conversation.agentConfig}
           pendingConfig={conversation.pendingAgentConfig}
           configError={conversation.agentConfigError}

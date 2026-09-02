@@ -8,8 +8,8 @@
 		active?: boolean;
 		onSelect?(): void;
 		onOpenSession?(): void;
-		// onOpenEditor?(): void;
-		// onOpenSourceControl?(): void;
+		onOpenEditor?(): void;
+		onOpenSourceControl?(): void;
 		children: Snippet;
 	}
 
@@ -17,8 +17,8 @@
 		active = false,
 		onSelect,
 		onOpenSession,
-		// onOpenEditor,
-		// onOpenSourceControl,
+		onOpenEditor,
+		onOpenSourceControl,
 		children,
 	}: Props = $props();
 
@@ -47,26 +47,14 @@
 		<button
 			type="button"
 			aria-label="Open editor"
-			onclick={(event) =>
-				runShortcut(
-					event,
-
-					// onOpenEditor
-
-					onSelect,
-				)}
+			onclick={(event) => runShortcut(event, onOpenEditor ?? onSelect)}
 		>
 			<FileCode aria-hidden="true" />
 		</button>
 		<button
 			type="button"
 			aria-label="Open source control"
-			onclick={(event) =>
-				runShortcut(
-					event,
-					//  onOpenSourceControl
-					onSelect,
-				)}
+			onclick={(event) => runShortcut(event, onOpenSourceControl ?? onSelect)}
 		>
 			<GitBranch aria-hidden="true" />
 		</button>

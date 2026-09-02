@@ -29,8 +29,8 @@ export interface SessionRowJumpPlan {
 
 export interface SessionRowJumpTarget {
   selectSession(ownedId: string): Promise<void>;
-  showCenterPanel(ownedId: string, id: string): void;
-  showSidebarView(ownedId: string, id: string): void;
+  showCenterPanel(ownedId: string, id: 'session' | 'editor'): void;
+  showSidebarView(ownedId: string, id: 'source-control'): void;
 }
 
 export function isSessionRowSurface(value: unknown): value is SessionRowSurface {

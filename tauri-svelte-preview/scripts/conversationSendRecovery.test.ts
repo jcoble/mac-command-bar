@@ -122,6 +122,12 @@ const configSource = readFileSync(
   'utf8'
 );
 
+assert.match(
+  serviceSource,
+  /const turnWasAlreadyActive = state\.sending;[\s\S]*?if \(!turnWasAlreadyActive\) setConversationSending\(ownedId, false\);/,
+  'a failed steering request leaves the original active turn marked as running'
+);
+
 // WIP: disabled - source-text assertion on component/service source, drifted behind the code.
 // assert.match(
 //   configSource,

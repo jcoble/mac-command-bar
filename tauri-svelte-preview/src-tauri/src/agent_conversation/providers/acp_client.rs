@@ -1458,6 +1458,8 @@ while IFS= read -r line; do
 	  *'"method":"initialize"'*)
 	    if [ "$fixture" = "multiplex" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true,"close":true,"multiSession":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
+	    elif [ "$fixture" = "steering" ]; then
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"steering":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    elif [ "$fixture" = "agy" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":{{}}}}}},"agentInfo":{{"name":"agy","version":"0.1.0"}},"authMethods":[],"protocolVersion":1}}}}\n' "$id"
 	    elif [ "${{fixture#suspend_}}" != "$fixture" ] && [ "$fixture" != "suspend_no_resume" ]; then
@@ -1609,7 +1611,7 @@ while IFS= read -r line; do
       fi ;;
     *'"method":"session/set_model"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/set_mode"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
-    *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
+    *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"outcome":"injected"}}}}\n' "$id" ;;
     *'"method":"session/close"'*)
       printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
       if [ "$fixture" != "multiplex" ]; then exit 0; fi ;;

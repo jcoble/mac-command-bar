@@ -15,6 +15,7 @@
 	import "$lib/shell/styles/themeChrome.css";
 
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
+	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
 	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
@@ -52,6 +53,11 @@
 	});
 
 	onMount(() => {
+		const releaseSessionRowJump = registerSessionRowJumpTarget({
+			selectSession,
+			showCenterPanel: (_ownedId, id) => workbench.selectCenterTab(id),
+			showSidebarView: (_ownedId, id) => workbench.selectRightTab(id),
+		});
 		registerWorkbenchNavigation({
 			showCenterTab: (id) => workbench.selectCenterTab(id),
 			showRightTab: (id) => workbench.selectRightTab(id),
@@ -83,6 +89,7 @@
 		});
 
 		return () => {
+			releaseSessionRowJump();
 			clearWorkbenchNavigation();
 			void disposeRoute();
 		};
