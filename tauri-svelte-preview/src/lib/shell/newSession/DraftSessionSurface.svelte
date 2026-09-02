@@ -156,6 +156,16 @@
     let answer: BackendAnswer<ProjectGitRef[]>;
     try {
       if (stopSignal.aborted) return;
+      const repository = await initProjectRepository(projectPath);
+      if (stopSignal.aborted) return;
+      if (repository.status === 'failed') {
+        if (sequence === loadSequence) {
+          refsLoading = false;
+          gitRefs = [];
+          refsMessage = repository.message;
+        }
+        return;
+      }
       answer = await listGitRefs(projectPath);
       if (stopSignal.aborted) return;
     } catch (error) {
@@ -539,7 +549,9 @@
 
 <section class="draft-surface" data-testid="draft-session-surface" aria-label="New session">
   <div class="draft-topline">
-    <span data-testid="draft-session-note">Nothing is created until you send.</span>
+    <span data-testid="draft-session-note">
+      New project folders get a local Git repository when selected. No session is created until you send.
+    </span>
     <Button
       data-testid="draft-session-close"
       variant="ghost"
@@ -587,9 +599,7 @@
     {#if refsMessage}
       <p class="draft-warning" data-testid="draft-session-refs-note">
         <span>
-          {refsMessage}{!draft.branchesAvailable
-            ? ' Starting here will create a git repository on main.'
-            : ''}
+          {refsMessage}
         </span>
         <button
           class="draft-warning-dismiss"

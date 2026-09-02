@@ -4206,7 +4206,9 @@ fn init_project_repository_sync(root: PathBuf) -> Result<(), String> {
     if !root.is_dir() {
         return Err("That project path is not a folder.".to_string());
     }
-    if root.join(".git").exists() {
+    if run_git_text(&root, &["rev-parse", "--is-inside-work-tree"])
+        .is_ok_and(|inside| inside.trim() == "true")
+    {
         return Ok(());
     }
 
@@ -6987,6 +6989,20 @@ mod tests {
             git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
             "1"
         );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_project_folder_inside_an_existing_repository_is_left_alone() {
+        let root = unique_temp_root();
+        let nested = root.join("nested-project");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
+        init_project_repository_sync(nested.clone()).unwrap();
+
+        assert!(!nested.join(".git").exists());
 
         std::fs::remove_dir_all(root).unwrap();
     }

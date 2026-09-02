@@ -54,7 +54,9 @@ assert.match(surface, /data-testid="draft-session-ref-search"/);
 assert.match(surface, /Showing \{filteredRefs\.visible\.length\} of \{filteredRefs\.total\} branches/);
 assert.match(surface, /disabled=\{!canSelectThreadStartGitRef\(ref, canCreateWorktree\)\}/);
 assert.match(surface, /groupProviderModels\(providerConfigs\)/);
-assert.match(surface, /Nothing is created until you send\./);
+assert.match(surface, /New project folders get a local Git repository when selected\./);
+assert.match(surface, /No session is created until you send\./);
+assert.match(surface, /const repository = await initProjectRepository\(projectPath\);[\s\S]*?answer = await listGitRefs\(projectPath\)/);
 // A project with no repository behind it answers with nothing, so the reply is
 // read as a list only when it really is one — see newSessionGitRefs.test.ts.
 assert.match(backend, /invoke<ProjectGitRef\[] \| null>\('list_project_git_refs'/);
