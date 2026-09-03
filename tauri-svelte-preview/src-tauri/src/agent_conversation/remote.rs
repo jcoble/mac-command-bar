@@ -969,7 +969,20 @@ EOF
 systemctl --user daemon-reload
 systemctl --user enable --now assembly-remote.service
 systemctl --user restart assembly-remote.service
-systemctl --user is-active --quiet assembly-remote.service
+sleep 1
+if ! systemctl --user is-active --quiet assembly-remote.service; then
+  if systemctl --user is-active --quiet assembly-workbox.service; then
+    echo "Assembly Remote Service could not start because port 7777 is occupied by the legacy assembly-workbox.service. Run 'systemctl --user disable --now assembly-workbox.service' on the remote machine, then deploy again." >&2
+  else
+    listener=$(ss -ltnp 2>/dev/null | awk '$4 ~ /:7777$/ { print; exit }')
+    if [ -n "$listener" ]; then
+      echo "Assembly Remote Service could not start because port 7777 is already in use: $listener" >&2
+    else
+      echo "Assembly Remote Service failed to start. Run 'journalctl --user -u assembly-remote.service -n 50 --no-pager' on the remote machine for details." >&2
+    fi
+  fi
+  exit 1
+fi
 "#;
 
 async fn client_loop(
