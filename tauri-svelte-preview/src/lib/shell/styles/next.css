@@ -1,14 +1,9 @@
 /* ============================================================
- * next.css — Tailwind + the shadcn component variables, for the
- * /next shell ONLY.
+ * next.css — Tailwind + the shadcn component variables for Assembly.
  *
  * WHO LOADS THIS
- * `src/routes/next/+page.svelte` and nobody else. The old shell
- * (`src/routes/+page.svelte`) must keep rendering exactly as it
- * does today, so this file must never be imported from the shared
- * layout, from `app.css`, or from any component the old shell
- * mounts. If you find yourself importing it somewhere else, stop:
- * you are about to restyle the old page by accident.
+ * `src/routes/+page.svelte` and nobody else. Keep this out of the shared
+ * layout so secondary routes do not inherit the workbench chrome.
  *
  * WHY NOT PLAIN `@import "tailwindcss"`
  * The full Tailwind entry point drags in "preflight", a global
@@ -74,7 +69,7 @@
  * ------------------------------------------------------------------ */
 @source '../components';
 @source '../../components/ui';
-@source '../../../routes/next';
+@source '../../../routes/+page.svelte';
 
 /* ------------------------------------------------------------------
  * The `dark:` prefix is always on here.

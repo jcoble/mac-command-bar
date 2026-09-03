@@ -1,5 +1,5 @@
 #!/bin/sh
-# Dev launcher for the /next shell. Registers the real ACP adapters
+# Dev launcher for the primary Assembly shell. Registers the real ACP adapters
 # (the installed codex CLI bridge, claude-agent-acp) with the provider registry via the
 # MCB_*_ACP_PATH/SHA256 env vars that bundled_from_environment() reads.
 # Without these the registry is empty and every structured session fails
@@ -22,17 +22,17 @@ CLAUDE_ACP_BIN="$(resolve claude-agent-acp)"
 AGY_CLI_BIN="$(resolve agy)"
 
 if [ -z "$CLAUDE_ACP_BIN" ]; then
-  echo "dev-next: missing ACP adapter (claude-agent-acp: 'not found')." >&2
-  echo "dev-next: install with: npm i -g @agentclientprotocol/claude-agent-acp" >&2
-  echo "dev-next: continuing WITHOUT structured providers - new app sessions will fail to connect." >&2
-  exec pnpm exec tauri dev --config src-tauri/tauri.dev.next.conf.json "$@"
+  echo "dev-app: missing ACP adapter (claude-agent-acp: 'not found')." >&2
+  echo "dev-app: install with: npm i -g @agentclientprotocol/claude-agent-acp" >&2
+  echo "dev-app: continuing WITHOUT structured providers - new app sessions will fail to connect." >&2
+  exec pnpm exec tauri dev "$@"
 fi
 
 if [ -n "$CODEX_BIN" ]; then
   if [ -z "$NODE_BIN" ]; then
-    echo "dev-next: installed codex CLI found, but node is missing; the ACP bridge cannot start." >&2
-    echo "dev-next: continuing WITHOUT structured providers - new app sessions will fail to connect." >&2
-    exec pnpm exec tauri dev --config src-tauri/tauri.dev.next.conf.json "$@"
+    echo "dev-app: installed codex CLI found, but node is missing; the ACP bridge cannot start." >&2
+    echo "dev-app: continuing WITHOUT structured providers - new app sessions will fail to connect." >&2
+    exec pnpm exec tauri dev "$@"
   fi
 
   mkdir -p "$APP_HOME"
@@ -69,9 +69,9 @@ EOF
   chmod +x "$CODEX_WRAPPER"
   CODEX_ADAPTER_DETAIL="legacy codex-acp fallback"
 else
-  echo "dev-next: missing codex CLI and codex-acp fallback." >&2
-  echo "dev-next: continuing WITHOUT structured providers - new app sessions will fail to connect." >&2
-  exec pnpm exec tauri dev --config src-tauri/tauri.dev.next.conf.json "$@"
+  echo "dev-app: missing codex CLI and codex-acp fallback." >&2
+  echo "dev-app: continuing WITHOUT structured providers - new app sessions will fail to connect." >&2
+  exec pnpm exec tauri dev "$@"
 fi
 
 sha() {
@@ -101,9 +101,9 @@ CARGO_BIN="$(resolve cargo)"
 # change to the adapter would run as whatever was compiled last.
 if [ -n "$AGY_CLI_BIN" ] && [ -n "$CARGO_BIN" ]; then
   if [ ! -x "$AGY_ACP_BIN" ] || [ -n "$(find "$AGY_ACP_DIR/src" -type f -newer "$AGY_ACP_BIN")" ]; then
-    echo "dev-next: building the Antigravity adapter from tools/agy-acp."
+    echo "dev-app: building the Antigravity adapter from tools/agy-acp."
     if ! "$CARGO_BIN" build --release --manifest-path "$AGY_ACP_DIR/Cargo.toml"; then
-      echo "dev-next: the Antigravity adapter did not build; continuing without it." >&2
+      echo "dev-app: the Antigravity adapter did not build; continuing without it." >&2
     fi
   fi
 fi
@@ -121,7 +121,7 @@ EOF
   AGY_ADAPTER_CONFIGURED=1
 else
   unset MCB_AGY_ACP_PATH MCB_AGY_ACP_SHA256
-  echo "dev-next: Antigravity adapter unavailable; skipping (missing agy-acp or agy CLI)."
+  echo "dev-app: Antigravity adapter unavailable; skipping (missing agy-acp or agy CLI)."
 fi
 
 export MCB_CODEX_ACP_PATH MCB_CODEX_ACP_SHA256 MCB_CLAUDE_AGENT_ACP_PATH MCB_CLAUDE_AGENT_ACP_SHA256
@@ -134,10 +134,10 @@ fi
 # it, so the keychain path was dead and the panel fell back to manual entry.
 export MCB_ALLOW_KEYCHAIN_CREDENTIALS=1
 
-echo "dev-next: codex adapter  $MCB_CODEX_ACP_PATH ($CODEX_ADAPTER_DETAIL)"
-echo "dev-next: claude adapter $MCB_CLAUDE_AGENT_ACP_PATH"
+echo "dev-app: codex adapter  $MCB_CODEX_ACP_PATH ($CODEX_ADAPTER_DETAIL)"
+echo "dev-app: claude adapter $MCB_CLAUDE_AGENT_ACP_PATH"
 if [ "$AGY_ADAPTER_CONFIGURED" -eq 1 ]; then
-  echo "dev-next: antigravity adapter $MCB_AGY_ACP_PATH"
+  echo "dev-app: antigravity adapter $MCB_AGY_ACP_PATH"
 fi
 
-exec pnpm exec tauri dev --config src-tauri/tauri.dev.next.conf.json "$@"
+exec pnpm exec tauri dev "$@"

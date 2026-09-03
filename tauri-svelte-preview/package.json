@@ -51,10 +51,9 @@
     "test:tauri-app": "pnpm test:tauri-source && pnpm test:tauri-config && pnpm build && pnpm test:native-lsp && cargo build --manifest-path src-tauri/Cargo.toml",
     "test:native-lsp": "MCB_RUN_CSHARP_LSP_SMOKE=1 cargo test --manifest-path src-tauri/Cargo.toml lsp -- --nocapture",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "sh scripts/dev-app.sh",
+    "tauri:dev:alt": "sh scripts/dev-app.sh --config '{\"build\":{\"beforeDevCommand\":\"pnpm dev --port 5187\",\"devUrl\":\"http://127.0.0.1:5187/\"}}'",
     "tauri:dev:attach": "tauri dev --config src-tauri/tauri.dev.attach.conf.json",
-    "tauri:dev:next": "sh scripts/dev-next.sh",
-    "tauri:dev:next:alt": "sh scripts/dev-next.sh --config '{\"build\":{\"beforeDevCommand\":\"pnpm dev --port 5187\",\"devUrl\":\"http://127.0.0.1:5187/next\"}}'",
     "tauri:build": "tauri build",
     "test:open-file-bus": "node --experimental-strip-types scripts/openFileBus.test.mjs",
     "test:source-record-from-path": "node --experimental-strip-types scripts/sourceRecordFromPath.test.mjs",
@@ -118,6 +117,7 @@
     "test:markdown-preview": "node --experimental-strip-types scripts/markdownPreview.test.mjs"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.73.0",
     "@codemirror/autocomplete": "6.20.3",
     "@codemirror/commands": "6.11.0",
     "@codemirror/lang-cpp": "6.0.3",

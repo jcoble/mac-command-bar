@@ -6,7 +6,7 @@ import {
   validateThreadStart
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
 
-const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
 const controller = readFileSync(
   new URL('../src/lib/shell/controllers/newSessionController.svelte.ts', import.meta.url),
   'utf8'

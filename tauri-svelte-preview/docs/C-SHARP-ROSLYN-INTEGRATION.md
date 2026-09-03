@@ -20,14 +20,14 @@ disabled.
 | Desktop framework | Tauri 2 (`tauri` 2.11.2 in the verified build) |
 | Frontend | Svelte 5.56, SvelteKit 2.64, Vite 8, TypeScript 6 |
 | Editor | Monaco 0.55 with custom providers |
-| Shell layout | Dockview 6.6 plus the `/next` Svelte shell |
+| Shell layout | Dockview 6.6 plus the primary Svelte shell |
 | Styling | Tailwind CSS 4 plus shell-owned CSS |
 | Rust entry point | `src-tauri/src/main.rs` |
 | Language-server host | `src-tauri/src/lsp.rs` |
 | Session scanner | the sibling `core` crate, chiefly `core/src/scanners/sessions.rs` |
 | Terminal host | Rust-owned portable PTYs through the existing terminal registry |
 
-The `/next` page is the coordinator. Svelte rune stores hold UI state, focused
+The root page is the coordinator. Svelte rune stores hold UI state, focused
 services own file/language-server/terminal I/O, and components ask the page for
 cross-panel actions. Build and Test follow that rule: the editor requests a
 fixed workspace action, the page creates a normal owned session, and the
@@ -85,7 +85,7 @@ parser-to-Roslyn handoff or an ordinary tab switch.
 The native editor has one reference authority. Both the margin count and Peek
 use Roslyn; they do not fall back to the older Rust name scan. That legacy
 counter remains implemented and tested for the browser/older preview, but it
-is not constructed by a native `/next` editor service. Monaco also assigns a
+is not constructed by a native editor service. Monaco also assigns a
 monotonic id to each count request, so an older asynchronous no-answer cannot
 repaint over the newer Roslyn total. The pending row still says `0 references`,
 matching VS Code.
@@ -155,7 +155,7 @@ C# models get two fixed rows at the first line:
 - **Test workspace** runs `dotnet test --nologo`.
 
 The active `editorState.projectRoot` is passed only as the PTY working
-directory. It is never interpolated into shell text. The `/next` page reuses
+directory. It is never interpolated into shell text. The root page reuses
 `onStartStack`, so each click creates a fresh owned session, runs the command
 directly through the Rust terminal backend, selects the session, shows its
 terminal, and records the real exit state.
@@ -190,7 +190,7 @@ one place to enforce reuse, eviction, timeouts, versions, routing, and cleanup.
 ## Verification performed
 
 - TypeScript/Svelte static check: passed.
-- `/next` shell Svelte check: 0 errors and 0 warnings.
+- Primary shell Svelte check: 0 errors and 0 warnings.
 - Production Vite build: passed.
 - Rust language-server suite: 53 passed, including workspace-key identity,
   independent per-root readiness state, recent-root reuse, least-recently-used
@@ -200,7 +200,7 @@ one place to enforce reuse, eviction, timeouts, versions, routing, and cleanup.
 - Rust debug build: passed.
 - Tauri release build: passed; executable produced under
   `src-tauri/target/release`.
-- Native `/next` app process: rebuilt and left running for interactive
+- Native app process: rebuilt and left running for interactive
   verification. Each opened C# workspace gets its own warm Roslyn slot, up to
   five recent roots.
 - CodeLens regression checks: passed for workspace commands, stable URI/model
@@ -231,7 +231,7 @@ serial suite both pass.
 | `src/lib/MonacoSourceEditor.svelte` | Added Build/Test rows and command handlers; made language-server anchors authoritative and URI-cached; rejects stale count completions so Peek cannot be followed by a repaint to zero. |
 | `src/lib/sourceCodeLensKeys.ts` | Keeps the VS Code-style zero placeholder and owns the pure settled-count rule used by Monaco. |
 | `src/lib/shell/components/EditorPanel.svelte` | Binds Build/Test to the active `projectRoot` and asks the shell to start an owned command session. |
-| `src/routes/next/+page.svelte` | Reuses the existing direct terminal-session starter for workspace commands. |
+| `src/routes/+page.svelte` | Reuses the existing direct terminal-session starter for workspace commands. |
 | `scripts/workspaceCodeLens.test.mjs` | Covers fixed commands, working-directory isolation, C# gating, and session wiring. |
 | `scripts/sourceCodeLensKeys.test.mjs` | Adds the no-competing-anchor, no-native-text-counter, and stale-result regression assertions. This file already contained in-progress TSK-799 work. |
 | `package.json` | Registers the new workspace CodeLens check. The adjacent project-index script entry belongs to the existing dirty WIP. |
@@ -255,10 +255,8 @@ root-route, and `.vscode` changes visible in `git status` remain user-owned WIP.
    exact compiler-error squiggle category was not stable in Roslyn's standalone
    pull-diagnostic response, so this work does not claim parity with every
    diagnostic category shown by Visual Studio.
-5. The old root shell has an existing Svelte warning/backlog and its
-   `sourceUi` test currently expects a `.source-browser-stack` CSS block absent
-   from the in-progress root-route edit. The `/next` shell and this integration
-   pass their focused checks.
+5. The restored workbench is now the root application shell. The legacy root
+   shell and alternate `/next` launch path are retired.
 6. The work remains in the user's existing dirty `tsk-799-code-intelligence`
    worktree. No commit, push, task closure, or user-owned WIP cleanup was
    performed.
@@ -294,5 +292,5 @@ Run the current desktop shell:
 
 ```bash
 pnpm dev
-pnpm tauri:dev:next
+pnpm tauri:dev
 ```

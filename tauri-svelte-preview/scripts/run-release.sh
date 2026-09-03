@@ -1,8 +1,8 @@
 #!/bin/sh
-# Launches the RELEASE build of the /next shell with the same trusted ACP
+# Launches the RELEASE build of the primary Assembly shell with the same trusted ACP
 # adapters the dev script registers. Without these env vars the provider
 # registry is empty and every send fails with "No trusted adapter is
-# registered for this provider". Reuses the wrapper scripts dev-next.sh
+# registered for this provider". Reuses the wrapper scripts dev-app.sh
 # already wrote under ~/.mac-command-bar.
 set -eu
 
@@ -13,8 +13,8 @@ CLAUDE_WRAPPER="$APP_HOME/claude-acp-wrapper.sh"
 AGY_WRAPPER="$APP_HOME/agy-acp-wrapper.sh"
 
 if [ ! -x "$CODEX_WRAPPER" ] || [ ! -x "$CLAUDE_WRAPPER" ]; then
-  echo "run-release-next: adapter wrappers not found under $APP_HOME." >&2
-  echo "run-release-next: run 'pnpm tauri:dev:next' once first — it writes them." >&2
+  echo "run-release: adapter wrappers not found under $APP_HOME." >&2
+  echo "run-release: run 'pnpm tauri:dev' once first — it writes them." >&2
   exit 1
 fi
 
@@ -40,10 +40,10 @@ EOF
   MCB_AGY_ACP_PATH="$AGY_WRAPPER"
   MCB_AGY_ACP_SHA256="$(sha "$AGY_WRAPPER")"
   export MCB_AGY_ACP_PATH MCB_AGY_ACP_SHA256
-  echo "run-release-next: antigravity adapter $MCB_AGY_ACP_PATH"
+  echo "run-release: antigravity adapter $MCB_AGY_ACP_PATH"
 else
   unset MCB_AGY_ACP_PATH MCB_AGY_ACP_SHA256
-  echo "run-release-next: Antigravity adapter unavailable; skipping (missing agy-acp or agy CLI)."
+  echo "run-release: Antigravity adapter unavailable; skipping (missing agy-acp or agy CLI)."
 fi
 
 # Read the Claude login already on this Mac instead of asking for credentials the

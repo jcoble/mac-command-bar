@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const read = (relativePath: string): string => readFileSync(new URL(relativePath, import.meta.url), 'utf8');
-const page = read('../src/routes/next/+page.svelte');
+const page = read('../src/routes/+page.svelte');
 const shellStartup = read('../src/lib/shell/controllers/shellStartup.ts');
 const selectionController = read('../src/lib/shell/controllers/sessionSelectionController.svelte.ts');
 const selectionLayers = read('../src/lib/shell/sessionSelectionLayers.svelte.ts');

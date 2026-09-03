@@ -5,7 +5,7 @@ import { createPerfHarnessMockPayload, type PerfHarnessMockPayload } from './per
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.MCB_PERF_PORT ?? '5181');
-const APP_URL = `http://${HOST}:${PORT}/next`;
+const APP_URL = `http://${HOST}:${PORT}/`;
 const VIEWPORT = { width: 1710, height: 990 };
 const PLAYWRIGHT_PATH = '/Users/blackcolours/.nvm/versions/node/v24.12.0/lib/node_modules/@playwright/cli/node_modules/playwright/index.mjs';
 const SESSION_TAG = process.env.MCB_PERF_SESSION_TAG ?? 'perfharness20-chrome';

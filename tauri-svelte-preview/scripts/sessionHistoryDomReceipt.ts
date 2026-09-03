@@ -3,7 +3,7 @@ import { once } from 'node:events';
 
 const HOST = '127.0.0.1';
 const PORT = 5182;
-const APP_URL = `http://${HOST}:${PORT}/next`;
+const APP_URL = `http://${HOST}:${PORT}/`;
 const VIEWPORT = { width: 1710, height: 990 };
 const SESSION_TAG = 'historybound21-chrome';
 const PLAYWRIGHT_PATH = '/Users/blackcolours/.nvm/versions/node/v24.12.0/lib/node_modules/@playwright/cli/node_modules/playwright/index.mjs';

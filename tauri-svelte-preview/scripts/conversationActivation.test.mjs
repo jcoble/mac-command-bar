@@ -73,7 +73,7 @@ assert.deepEqual(
   'external history without a native id keeps the terminal fallback'
 );
 
-const page = readFileSync(new URL('../src/routes/next/+page.svelte', import.meta.url), 'utf8');
+const page = readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
 const selectionController = readFileSync(
   new URL('../src/lib/shell/controllers/sessionSelectionController.svelte.ts', import.meta.url),
   'utf8'

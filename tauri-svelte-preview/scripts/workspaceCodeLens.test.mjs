@@ -50,7 +50,7 @@ const editorPanelSource = await readFile(
   'utf8'
 );
 const shellSource = await readFile(
-  new URL('../src/routes/next/+page.svelte', import.meta.url),
+  new URL('../src/routes/+page.svelte', import.meta.url),
   'utf8'
 );
 

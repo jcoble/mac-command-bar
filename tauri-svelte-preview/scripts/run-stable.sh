@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs the /next shell WITHOUT the file watcher.
+# Runs the primary Assembly shell WITHOUT the file watcher.
 #
 # `tauri dev` rebuilds and relaunches the window every time anything under
 # src-tauri changes, which makes the app unusable for testing while other work
@@ -7,7 +7,7 @@
 # vite server, so nothing restarts until you ask it to. Rebuild by hand with
 # `cargo build --manifest-path src-tauri/Cargo.toml` and run this again.
 #
-# Adapter wrappers come from ~/.mac-command-bar, which dev-next.sh writes.
+# Adapter wrappers come from ~/.mac-command-bar, which dev-app.sh writes.
 set -eu
 
 APP_HOME="$HOME/.mac-command-bar"
@@ -21,13 +21,13 @@ CLAUDE_WRAPPER="$APP_HOME/claude-acp-wrapper.sh"
 AGY_WRAPPER="$APP_HOME/agy-acp-wrapper.sh"
 
 if [ ! -x "$BIN" ]; then
-  echo "run-stable-next: no debug binary. Build it first:" >&2
+  echo "run-stable: no debug binary. Build it first:" >&2
   echo "  cargo build --manifest-path src-tauri/Cargo.toml" >&2
   exit 1
 fi
 if [ ! -x "$CODEX_WRAPPER" ] || [ ! -x "$CLAUDE_WRAPPER" ]; then
-  echo "run-stable-next: adapter wrappers not found under $APP_HOME." >&2
-  echo "run-stable-next: run 'pnpm tauri:dev:next' once first - it writes them." >&2
+  echo "run-stable: adapter wrappers not found under $APP_HOME." >&2
+  echo "run-stable: run 'pnpm tauri:dev' once first - it writes them." >&2
   exit 1
 fi
 
@@ -66,10 +66,10 @@ SERVING="$(serving_dir || true)"
 if [ -n "$SERVING" ]; then
   SERVING_REAL="$(CDPATH= cd -- "$SERVING" 2>/dev/null && pwd -P)" || SERVING_REAL="$SERVING"
   if [ "$SERVING_REAL" != "$APP_DIR_REAL" ]; then
-    echo "run-stable-next: port 5177 is already served from a different checkout." >&2
+    echo "run-stable: port 5177 is already served from a different checkout." >&2
     echo "  serving: $SERVING_REAL" >&2
     echo "  wanted:  $APP_DIR_REAL" >&2
-    echo "run-stable-next: stop it first, then run this again:" >&2
+    echo "run-stable: stop it first, then run this again:" >&2
     echo "  kill \$(lsof -ti tcp:5177)" >&2
     exit 1
   fi
@@ -77,10 +77,10 @@ fi
 
 # The debug binary loads its pages from the dev server, so one has to be up.
 # Started here rather than by the binary, and left running afterwards.
-if ! curl -s -o /dev/null --max-time 2 http://127.0.0.1:5177/next; then
+if ! curl -s -o /dev/null --max-time 2 http://127.0.0.1:5177/; then
   ( cd "$APP_DIR" && nohup pnpm exec vite --host 127.0.0.1 --port 5177 > /tmp/mcb-vite-stable.log 2>&1 & )
-  until curl -s -o /dev/null --max-time 2 http://127.0.0.1:5177/next; do sleep 1; done
+  until curl -s -o /dev/null --max-time 2 http://127.0.0.1:5177/; do sleep 1; done
 fi
 
-echo "run-stable-next: no watcher. Rebuild by hand and run this again to pick up changes."
+echo "run-stable: no watcher. Rebuild by hand and run this again to pick up changes."
 exec "$BIN" "$@"

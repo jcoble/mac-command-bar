@@ -272,7 +272,7 @@ function readDeclarations(css) {
 // written down in the integration contract, file and value, so none is
 // forgotten; once the contract file is gone, none may remain at all.
 {
-  const scanRoots = ['src/lib/shell', 'src/routes/next'];
+  const scanRoots = ['src/lib/shell', 'src/routes'];
   const files = [];
   const walk = (directory) => {
     for (const entry of readdirSync(resolve(projectRoot, directory), { withFileTypes: true })) {

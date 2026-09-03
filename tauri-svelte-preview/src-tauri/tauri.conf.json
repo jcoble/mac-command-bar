@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
-    "devUrl": "http://localhost:5177",
+    "devUrl": "http://127.0.0.1:5177/",
     "frontendDist": "../build"
   },
   "app": {
@@ -18,7 +18,7 @@
         "height": 1000,
         "minWidth": 900,
         "minHeight": 600,
-        "url": "/next",
+        "url": "/",
         "dragDropEnabled": false
       }
     ],
