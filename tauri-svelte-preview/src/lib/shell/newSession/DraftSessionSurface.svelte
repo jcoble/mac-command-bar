@@ -526,6 +526,11 @@
           <span>Remote working directory</span>
           <Input bind:value={remoteProfile.defaultCwd} placeholder="/home/user/project" autocomplete="off" />
         </label>
+        {#if remoteDeploying}
+          <p class="remote-deploy-status" role="status" aria-live="polite">
+            Deploying the Assembly backend to the remote machine. Please wait; this may take a minute.
+          </p>
+        {/if}
         <div class="remote-setup-actions">
           <Button variant="ghost" size="sm" onclick={() => (remoteSetupOpen = false)}>Cancel</Button>
           <Button
@@ -639,6 +644,7 @@
 
   .remote-setup-heading span,
   .remote-setup label > span { color: var(--color-text-3); font-size: 12px; }
+  .remote-deploy-status { color: var(--color-text-2); font-size: 12px; }
   .remote-setup-actions { display: flex; justify-content: flex-end; gap: 6px; }
   .draft-warning {
     display: flex;
