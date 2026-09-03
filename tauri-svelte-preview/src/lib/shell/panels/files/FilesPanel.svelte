@@ -12,6 +12,7 @@
 		loadDirectory,
 		refresh,
 		refreshChangedPath,
+		refreshChangedPaths,
 		revealExplorerPath,
 		scanRoot,
 		stopScan,
@@ -181,6 +182,14 @@
 	const rootLabel = $derived(projectRootLabel(projectRoot || sessionRoot));
 	const listedCount = $derived(loadedNodes.length);
 	const listed = $derived(explorer.lastScanFinishedAt !== null);
+	const watchedDirectoryKey = $derived.by(() => {
+		loadedNodes.length;
+		if (!listed) return "";
+		return loadedExplorerDirectories()
+			.map((directory) => canonicalPath(directory.path))
+			.sort()
+			.join("\u0000");
+	});
 	const searching = $derived(searchText.trim().length > 0);
 	const treeVisible = $derived(explorer.activated && explorer.unavailable === null && loadedNodes.length > 0);
 	const searchTreeData = $derived(
@@ -338,9 +347,9 @@
 		}
 	});
 
-	async function ownFileTreeWatch(target: string, signal: AbortSignal): Promise<void> {
+	async function ownFileTreeWatch(directories: readonly string[], signal: AbortSignal): Promise<void> {
 		try {
-			await watchFileTree(target, signal, refresh);
+			await watchFileTree(directories, signal, refreshChangedPaths);
 		} catch (error) {
 			if (dev && !signal.aborted) console.warn("Could not watch the file tree", error);
 		}
@@ -348,9 +357,21 @@
 
 	$effect(() => {
 		const target = canonicalPath(projectRoot);
-		if (!visible || !target || !isNativeTauriRuntime()) return;
+		const directories = watchedDirectoryKey
+			? watchedDirectoryKey
+					.split("\u0000")
+					.filter(
+						(directory) =>
+							directory === target ||
+							!directory
+								.slice(target.length)
+								.split("/")
+								.some((part) => part.startsWith(".")),
+					)
+			: [];
+		if (!visible || !target || directories.length === 0 || !isNativeTauriRuntime()) return;
 		const controller = new AbortController();
-		void ownFileTreeWatch(target, controller.signal);
+		void ownFileTreeWatch(directories, controller.signal);
 		return () => controller.abort();
 	});
 

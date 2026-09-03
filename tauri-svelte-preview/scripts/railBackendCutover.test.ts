@@ -66,9 +66,11 @@ assert.doesNotMatch(
   'the file-tree owner is the checkout root, not each session id'
 );
 assert.match(filesPanel, /if \(nextRoot !== scopedRoot\)/);
-assert.match(filesPanel, /watchFileTree\(target, signal, refresh\)/);
+assert.match(filesPanel, /watchFileTree\(directories, signal, refreshChangedPaths\)/);
 assert.match(fileTreeWatch, /signal\.addEventListener\("abort", stop, \{ once: true \}\)/);
 assert.match(fileTreeWatch, /unwatch\?\.\(\)/);
+assert.match(fileTreeWatch, /\{ recursive: false, delayMs: 350 \}/);
+assert.doesNotMatch(fileTreeWatch, /recursive: true/);
 assert.match(composer, /data-testid="conversation-working"/);
 assert.match(composer, /aria-label=\{sending \? 'Steer current turn' : 'Send message'\}/);
 assert.match(conversationSurface, /const steering = conversation\.sending/);

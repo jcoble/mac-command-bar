@@ -1,15 +1,16 @@
-import { watch, type UnwatchFn } from "@tauri-apps/plugin-fs";
+import { watch, type UnwatchFn, type WatchEvent } from "@tauri-apps/plugin-fs";
 
 /**
- * Own one native watcher for the visible file tree. Aborting the panel owner
- * releases it even when the native registration finishes after teardown.
+ * Own one non-recursive native watcher for the directories currently loaded
+ * by the visible tree. Aborting the panel owner releases it even when native
+ * registration finishes after teardown.
  */
 export async function watchFileTree(
-	root: string,
+	directories: readonly string[],
 	signal: AbortSignal,
-	onChange: () => void,
+	onChange: (paths: readonly string[]) => void,
 ): Promise<void> {
-	if (signal.aborted) return;
+	if (signal.aborted || directories.length === 0) return;
 	let unwatch: UnwatchFn | null = null;
 	let stopped = false;
 	const stop = (): void => {
@@ -22,11 +23,11 @@ export async function watchFileTree(
 	signal.addEventListener("abort", stop, { once: true });
 	try {
 		const registered = await watch(
-			root,
-			() => {
-				if (!signal.aborted) onChange();
+			[...directories],
+			(event: WatchEvent) => {
+				if (!signal.aborted) onChange(event.paths);
 			},
-			{ recursive: true, delayMs: 350 },
+			{ recursive: false, delayMs: 350 },
 		);
 		if (stopped || signal.aborted) {
 			registered();

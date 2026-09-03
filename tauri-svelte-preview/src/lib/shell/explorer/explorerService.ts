@@ -196,14 +196,33 @@ export function refresh(): void {
   for (const directory of directories) void loadDirectory(directory.path, directory.depth, activeExplorerSignal);
 }
 
-export function refreshChangedPath(path: string): void {
+export function refreshChangedPaths(paths: readonly string[]): void {
   const root = canonicalPath(explorer.root ?? '');
   if (!root) return;
-  const target = canonicalPath(path);
-  const cut = target.lastIndexOf('/');
-  const parent = cut <= 0 ? root : target.slice(0, cut);
-  const depth = loadedExplorerDirectoryDepth(parent);
-  if (depth !== null) void loadDirectory(parent, depth);
+  const directories = new Map(
+    loadedExplorerDirectories().map(({ path, depth }) => [canonicalPath(path), depth])
+  );
+  const refreshTargets = new Map<string, number>();
+  for (const path of paths) {
+    let target = canonicalPath(path);
+    while (isExplorerPathAtOrBelow(target, root)) {
+      const depth = directories.get(target);
+      if (depth !== undefined) {
+        refreshTargets.set(target, depth);
+        break;
+      }
+      if (target === root) break;
+      const cut = target.lastIndexOf('/');
+      target = cut <= 0 ? root : target.slice(0, cut);
+    }
+  }
+  for (const [directory, depth] of refreshTargets) {
+    void loadDirectory(directory, depth, activeExplorerSignal);
+  }
+}
+
+export function refreshChangedPath(path: string): void {
+  refreshChangedPaths([path]);
 }
 
 export function stopScan(): void {
