@@ -23,6 +23,7 @@ const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
 const languageControls = read('../src/lib/shell/components/LanguageIntelligenceControls.svelte');
 const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
 const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
+const sourceControlPanel = read('../src/lib/shell/panels/sourceControl/SourceControlPanel.svelte');
 
 assert.match(shellStartup, /listAgentConversationSessionsFromTauri\(\)/);
 assert.match(shellStartup, /listRemoteAgentConversationSessionsFromTauri\(stopSignal\)/);
@@ -87,6 +88,11 @@ assert.match(languageControls, /serverState === 'ready'[\s\S]*?'running'[\s\S]*?
 assert.match(page, /onCloseAllEditors=\{\(\) => selection\.editorSessions\.clearActiveEditors\(\)\}/);
 assert.match(editorSessions, /async clearActiveEditors\(\): Promise<boolean>/);
 assert.match(editorSessions, /openPaths: \[\],[\s\S]*?activePath: null/);
+assert.match(
+  sourceControlPanel,
+  /function releaseHistorySurface\(\): void \{\s*if \(historyRoot === ''\) return;/,
+  'an already released source-control surface cannot retrigger its own reactive cleanup'
+);
 const closeAll = editorPanel.slice(
   editorPanel.indexOf('async function closeAllOpenEditorsNow'),
   editorPanel.indexOf('function closeAllOpenEditors()')

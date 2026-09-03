@@ -264,6 +264,7 @@
   let historyRoot = '';
 
   function releaseHistorySurface(): void {
+    if (historyRoot === '') return;
     historyRoot = '';
     service.releaseHistorySurface();
     commitFiles.release();
