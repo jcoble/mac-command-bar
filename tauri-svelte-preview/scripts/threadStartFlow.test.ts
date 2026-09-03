@@ -288,6 +288,23 @@ assert.equal(
   assert.equal(titleFromPrompt(longPrompt, '/Users/me/app'), sessionTitleFromPrompt(longPrompt));
 }
 
+// A remote draft carries the stable machine profile through the first send.
+{
+  const local = defaultThreadStartState({ projectPath: '/home/user/project' });
+  const remote = {
+    ...local,
+    prompt: 'Run this remotely',
+    executionEnvironment: 'remote' as const,
+    remoteProfileId: null
+  };
+  assert.deepEqual(validateThreadStart(remote), [
+    { field: 'project', message: 'Choose a remote machine first.' }
+  ]);
+  const request = buildThreadStartRequest({ ...remote, remoteProfileId: 'workbox' });
+  assert.equal(request?.executionEnvironment, 'remote');
+  assert.equal(request?.remoteProfileId, 'workbox');
+}
+
 console.log('threadStartFlow.test.ts passed');
 
 // --- A project with no branches is not a dead end ----------------------------

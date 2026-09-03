@@ -523,6 +523,7 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     owned_id: request.owned_id.clone(),
                     execution_environment:
                         crate::agent_conversation::protocol::ExecutionEnvironment::Local,
+                    remote_profile_id: None,
                     provider,
                     cwd: request.cwd.clone(),
                     native_session_id: None,

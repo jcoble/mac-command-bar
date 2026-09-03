@@ -49,6 +49,7 @@ export interface OwnedAgentRuntimeFields {
 export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSessionId'> & {
   ownedId: string;
   executionEnvironment: ExecutionEnvironment;
+  remoteProfileId?: string | null;
   agent: AgentKind;
   /** App-created agent sessions use ACP; adopted sessions stay PTY projections. */
   origin?: 'app' | 'external';
@@ -205,6 +206,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
   return {
     ownedId: mintId(),
     executionEnvironment: 'local',
+    remoteProfileId: null,
     agent,
     origin: 'external',
     viaCmux,
@@ -236,7 +238,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
 }
 
 export function createFreshSession(
-  opts: { cwd: string; title?: string; executionEnvironment?: ExecutionEnvironment },
+  opts: { cwd: string; title?: string; executionEnvironment?: ExecutionEnvironment; remoteProfileId?: string | null },
   mintId: () => string = defaultMintId
 ): OwnedSession {
   const segments = opts.cwd.split('/').filter((segment) => segment.length > 0);
@@ -244,6 +246,7 @@ export function createFreshSession(
   return {
     ownedId: mintId(),
     executionEnvironment: opts.executionEnvironment ?? 'local',
+    remoteProfileId: opts.remoteProfileId ?? null,
     agent: 'other',
     origin: 'external',
     viaCmux: false,
@@ -284,6 +287,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
   return {
     ownedId: record.ownedId,
     executionEnvironment: record.executionEnvironment,
+    remoteProfileId: record.remoteProfileId,
     agent,
     origin: record.origin ?? 'app',
     viaCmux: record.viaCmux || providerViaCmux,
@@ -396,6 +400,7 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       ownedId: candidate.ownedId,
       executionEnvironment:
         candidate.executionEnvironment === 'remote' ? 'remote' : 'local',
+      remoteProfileId: isNonEmptyString(candidate.remoteProfileId) ? candidate.remoteProfileId : null,
       agent,
       origin,
       viaCmux: candidate.viaCmux === true,

@@ -92,6 +92,7 @@ export class NewSessionController {
 				cwd: request.cwd,
 				title: request.title,
 				executionEnvironment: request.executionEnvironment,
+				remoteProfileId: request.remoteProfileId,
 			}),
 			agent: request.provider,
 			projectPath: request.projectPath,

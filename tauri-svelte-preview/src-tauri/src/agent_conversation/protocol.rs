@@ -577,6 +577,8 @@ pub struct EnsureAgentConversationRequest {
     pub owned_id: String,
     #[serde(default)]
     pub execution_environment: ExecutionEnvironment,
+    #[serde(default)]
+    pub remote_profile_id: Option<String>,
     pub provider: AgentConversationProvider,
     pub cwd: String,
     pub native_session_id: Option<String>,
@@ -749,6 +751,8 @@ pub struct UpdateAgentConversationSessionMetaRequest {
 pub struct AgentConversationSessionRecord {
     pub owned_id: String,
     pub execution_environment: ExecutionEnvironment,
+    #[serde(default)]
+    pub remote_profile_id: Option<String>,
     pub provider: AgentConversationProvider,
     pub model: Option<String>,
     pub effort: Option<String>,

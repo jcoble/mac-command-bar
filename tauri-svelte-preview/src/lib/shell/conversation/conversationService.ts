@@ -1033,6 +1033,7 @@ export async function closeStructuredConversation(ownedId: string): Promise<void
 export async function ensureStructuredConversation(input: {
   ownedId: string;
   executionEnvironment?: ExecutionEnvironment;
+  remoteProfileId?: string | null;
   provider: AgentConversationProvider;
   cwd: string;
   nativeSessionId?: string | null;
@@ -1075,6 +1076,7 @@ async function ensureStructuredConversationOnce(
   request: {
     ownedId: string;
     executionEnvironment: ExecutionEnvironment;
+    remoteProfileId?: string | null;
     provider: AgentConversationProvider;
     cwd: string;
     nativeSessionId?: string | null;
@@ -1181,6 +1183,7 @@ export async function sendStructuredMessage(
       const activated = await ensureStructuredConversation({
         ownedId,
         executionEnvironment: owned.executionEnvironment,
+        remoteProfileId: owned.remoteProfileId ?? null,
         provider,
         cwd: owned.cwd,
         nativeSessionId: owned.nativeSessionId,

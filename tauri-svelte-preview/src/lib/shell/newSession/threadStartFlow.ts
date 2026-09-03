@@ -39,6 +39,7 @@ export type ThreadStartModelGroup = {
 export type ThreadStartPickerState = {
   prompt: string;
   executionEnvironment: ExecutionEnvironment;
+  remoteProfileId: string | null;
   provider: ThreadStartProvider;
   model: string;
   effort: string;
@@ -60,6 +61,7 @@ export type ThreadStartProblem = {
 export type ThreadStartRequest = {
   prompt: string;
   executionEnvironment: ExecutionEnvironment;
+  remoteProfileId: string | null;
   provider: ThreadStartProvider;
   model: string | null;
   reasoningEffort: string | null;
@@ -289,6 +291,7 @@ export function defaultThreadStartState(input: {
   return {
     prompt: '',
     executionEnvironment: 'local',
+    remoteProfileId: null,
     provider,
     model: firstConfiguredModel(provider, configs),
     // A remembered value the provider does not know — a spelling an earlier
@@ -360,6 +363,9 @@ export function validateThreadStart(state: ThreadStartPickerState): ThreadStartP
   if (!tidy(state.cwd).startsWith('/')) {
     problems.push({ field: 'branch', message: 'Choose an existing checkout first.' });
   }
+  if (state.executionEnvironment === 'remote' && !tidy(state.remoteProfileId)) {
+    problems.push({ field: 'project', message: 'Choose a remote machine first.' });
+  }
   // Only when there is one to choose. A brand new project is an empty folder:
   // no repository, so no branch, and asking for one is a door with no handle —
   // the reader cannot satisfy it and cannot get past it. The agent makes the
@@ -385,6 +391,7 @@ export function buildThreadStartRequest(
   return {
     prompt: tidy(state.prompt),
     executionEnvironment: state.executionEnvironment,
+    remoteProfileId: state.remoteProfileId,
     provider: state.provider,
     model: tidy(state.model) || null,
     reasoningEffort: tidy(state.effort) || null,

@@ -6621,10 +6621,18 @@ fn main() {
                     move |event| remote_projection_streams.publish_agent_event(event),
                 ))?;
             if !remote_connection.is_configured() {
-                if let Some(profile) = agent_runtime.read_app_setting(
+                if let Some(profiles) = agent_runtime.read_app_setting(
+                    agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,
+                )? {
+                    remote_connection.restore_profiles(&profiles)?;
+                } else if let Some(profile) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILE_SETTING_KEY,
                 )? {
-                    remote_connection.restore_profile(&profile)?;
+                    let migrated = remote_connection.migrate_legacy_profile(&profile)?;
+                    agent_runtime.write_app_setting(
+                        agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,
+                        &serde_json::to_string(&migrated).map_err(|error| error.to_string())?,
+                    )?;
                 }
             }
             agent_runtime.set_emitter(Arc::new(move |event| {
@@ -6800,6 +6808,7 @@ fn main() {
             agent_conversation::ensure_agent_conversation,
             agent_conversation::remote::read_remote_assembly_environment,
             agent_conversation::remote::deploy_remote_assembly,
+            agent_conversation::remote::remove_remote_assembly_profile,
             agent_conversation::send_agent_conversation_message,
             agent_conversation::agent_conversation_set_session_draft,
             agent_conversation::agent_conversation_get_session_draft,

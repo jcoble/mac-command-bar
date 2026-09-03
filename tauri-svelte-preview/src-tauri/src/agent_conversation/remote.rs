@@ -1,6 +1,6 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::net::{TcpListener as StdTcpListener, TcpStream};
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{future::join_all, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
@@ -39,6 +39,7 @@ const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
 pub const REMOTE_ASSEMBLY_PROFILE_SETTING_KEY: &str = "remote-assembly.profile.v1";
+pub const REMOTE_ASSEMBLY_PROFILES_SETTING_KEY: &str = "remote-assembly.profiles.v1";
 const REMOTE_SERVER_PORT: u16 = 7777;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -177,13 +178,17 @@ enum ClientRequest {
 pub struct RemoteConnectionManager {
     client: Arc<Mutex<RemoteClientState>>,
     tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
-    remote_sessions: Arc<Mutex<HashSet<String>>>,
+    remote_sessions: Arc<Mutex<HashMap<String, String>>>,
     next_request_id: Arc<AtomicU64>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
 }
 
 #[derive(Default)]
 struct RemoteClientState {
+    clients: HashMap<String, RemoteClient>,
+}
+
+struct RemoteClient {
     requests: Option<mpsc::Sender<ClientRequest>>,
     profile: Option<RemoteAssemblyProfile>,
 }
@@ -191,18 +196,25 @@ struct RemoteClientState {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAssemblyProfile {
+    pub id: String,
+    pub name: String,
     pub ssh_target: String,
     pub source_root: String,
     pub default_cwd: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyRemoteAssemblyProfile {
+    ssh_target: String,
+    source_root: String,
+    default_cwd: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAssemblyEnvironment {
-    pub configured: bool,
-    pub ssh_target: Option<String>,
-    pub source_root: Option<String>,
-    pub default_cwd: Option<String>,
+    pub profiles: Vec<RemoteAssemblyProfile>,
 }
 
 impl RemoteConnectionManager {
@@ -212,7 +224,7 @@ impl RemoteConnectionManager {
         let manager = Self {
             client: Arc::new(Mutex::new(RemoteClientState::default())),
             tunnel_processes: Arc::new(Mutex::new(HashMap::new())),
-            remote_sessions: Arc::new(Mutex::new(HashSet::new())),
+            remote_sessions: Arc::new(Mutex::new(HashMap::new())),
             next_request_id: Arc::new(AtomicU64::new(1)),
             event_sink,
         };
@@ -223,8 +235,7 @@ impl RemoteConnectionManager {
             "ASSEMBLY_REMOTE_TOKEN is required when a remote URL is configured".to_string()
         })?;
         let default_cwd = std::env::var("ASSEMBLY_REMOTE_DEFAULT_CWD").map_err(|_| {
-            "ASSEMBLY_REMOTE_DEFAULT_CWD is required when a remote URL is configured"
-                .to_string()
+            "ASSEMBLY_REMOTE_DEFAULT_CWD is required when a remote URL is configured".to_string()
         })?;
         if !PathBuf::from(&default_cwd).is_absolute() {
             return Err("ASSEMBLY_REMOTE_DEFAULT_CWD must be an absolute path".to_string());
@@ -234,7 +245,14 @@ impl RemoteConnectionManager {
             .client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .requests = Some(request_tx);
+            .clients
+            .insert(
+                "environment".to_string(),
+                RemoteClient {
+                    requests: Some(request_tx),
+                    profile: None,
+                },
+            );
         let event_sink = manager.event_sink.clone();
         tauri::async_runtime::spawn(client_loop(url, token, request_rx, event_sink));
         Ok(manager)
@@ -244,31 +262,30 @@ impl RemoteConnectionManager {
         self.client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .requests
-            .is_some()
+            .clients
+            .values()
+            .any(|client| client.requests.is_some())
     }
 
     pub fn environment(&self) -> RemoteAssemblyEnvironment {
-        let state = self
+        let mut profiles = self
             .client
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let profile = state.profile.as_ref();
-        RemoteAssemblyEnvironment {
-            configured: state.requests.is_some(),
-            ssh_target: profile.map(|value| value.ssh_target.clone()),
-            source_root: profile.map(|value| value.source_root.clone()),
-            default_cwd: profile
-                .map(|value| value.default_cwd.clone())
-                .or_else(|| std::env::var("ASSEMBLY_REMOTE_DEFAULT_CWD").ok()),
-        }
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clients
+            .values()
+            .filter_map(|client| client.profile.clone())
+            .collect::<Vec<_>>();
+        profiles.sort_by(|left, right| left.name.cmp(&right.name));
+        RemoteAssemblyEnvironment { profiles }
     }
 
     pub fn shutdown(&self) {
         self.client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .requests = None;
+            .clients
+            .clear();
         let mut tunnels = self
             .tunnel_processes
             .lock()
@@ -279,10 +296,30 @@ impl RemoteConnectionManager {
         }
     }
 
-    pub fn restore_profile(&self, profile_json: &str) -> Result<(), String> {
-        let profile: RemoteAssemblyProfile = serde_json::from_str(profile_json)
-            .map_err(|error| format!("Invalid Remote Assembly profile: {error}"))?;
-        self.connect_profile(profile)
+    pub fn restore_profiles(&self, profiles_json: &str) -> Result<(), String> {
+        let profiles: Vec<RemoteAssemblyProfile> = serde_json::from_str(profiles_json)
+            .map_err(|error| format!("Invalid Remote Assembly profiles: {error}"))?;
+        for profile in profiles {
+            self.connect_profile(profile)?;
+        }
+        Ok(())
+    }
+
+    pub fn migrate_legacy_profile(
+        &self,
+        profile_json: &str,
+    ) -> Result<Vec<RemoteAssemblyProfile>, String> {
+        let legacy: LegacyRemoteAssemblyProfile = serde_json::from_str(profile_json)
+            .map_err(|error| format!("Invalid legacy Remote Assembly profile: {error}"))?;
+        let profile = RemoteAssemblyProfile {
+            id: "agent-workbox".to_string(),
+            name: "Agent Workbox".to_string(),
+            ssh_target: legacy.ssh_target,
+            source_root: legacy.source_root,
+            default_cwd: legacy.default_cwd,
+        };
+        self.connect_profile(profile.clone())?;
+        Ok(vec![profile])
     }
 
     pub fn connect_profile(&self, profile: RemoteAssemblyProfile) -> Result<(), String> {
@@ -293,8 +330,13 @@ impl RemoteConnectionManager {
                 .client
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.requests = Some(request_tx);
-            state.profile = Some(profile.clone());
+            state.clients.insert(
+                profile.id.clone(),
+                RemoteClient {
+                    requests: Some(request_tx),
+                    profile: Some(profile.clone()),
+                },
+            );
         }
         let event_sink = self.event_sink.clone();
         let tunnel_processes = self.tunnel_processes.clone();
@@ -316,27 +358,58 @@ impl RemoteConnectionManager {
         self.connect_profile(profile)
     }
 
+    pub fn remove_profile(&self, profile_id: &str) {
+        self.client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clients
+            .remove(profile_id);
+    }
+
     pub fn owns(&self, owned_id: &str) -> bool {
         self.remote_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(owned_id)
+            .contains_key(owned_id)
     }
 
-    fn remember(&self, owned_id: impl Into<String>) {
+    fn remember(&self, owned_id: impl Into<String>, profile_id: impl Into<String>) {
         self.remote_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(owned_id.into());
+            .insert(owned_id.into(), profile_id.into());
     }
 
-    async fn request(&self, command: RemoteCommand) -> Result<RemoteResponse, String> {
+    fn profile_for_owned_id(&self, owned_id: &str) -> Result<String, String> {
+        self.remote_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(owned_id)
+            .cloned()
+            .ok_or_else(|| format!("No remote machine owns session {owned_id}"))
+    }
+
+    async fn request_for_owned(
+        &self,
+        owned_id: &str,
+        command: RemoteCommand,
+    ) -> Result<RemoteResponse, String> {
+        let profile_id = self.profile_for_owned_id(owned_id)?;
+        self.request_for_profile(&profile_id, command).await
+    }
+
+    async fn request_for_profile(
+        &self,
+        profile_id: &str,
+        command: RemoteCommand,
+    ) -> Result<RemoteResponse, String> {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        self.request_with_id(id, command).await
+        self.request_with_id(profile_id, id, command).await
     }
 
     async fn request_with_id(
         &self,
+        profile_id: &str,
         id: u64,
         command: RemoteCommand,
     ) -> Result<RemoteResponse, String> {
@@ -344,11 +417,11 @@ impl RemoteConnectionManager {
             .client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .requests
-            .clone()
-            .ok_or_else(|| {
-                "The Remote Assembly connection is not configured on this Mac".to_string()
-            })?;
+            .clients
+            .get(profile_id)
+            .and_then(|client| client.requests.as_ref())
+            .cloned()
+            .ok_or_else(|| format!("Remote machine {profile_id} is not connected"))?;
         let (reply, answer) = oneshot::channel();
         sender
             .try_send(ClientRequest::Execute { id, command, reply })
@@ -370,16 +443,52 @@ impl RemoteConnectionManager {
         &self,
         request_id: u64,
     ) -> Result<Vec<AgentConversationSessionRecord>, String> {
-        let RemoteResponse::Sessions(sessions) = self
-            .request_with_id(request_id, RemoteCommand::ListSessions)
-            .await?
-        else {
-            return Err("Remote Assembly returned the wrong list response".to_string());
-        };
-        for session in &sessions {
-            self.remember(session.owned_id.clone());
+        let profile_ids = self
+            .client
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clients
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let responses = join_all(profile_ids.into_iter().map(|profile_id| async move {
+            let response = self
+                .request_with_id(&profile_id, request_id, RemoteCommand::ListSessions)
+                .await;
+            (profile_id, response)
+        }))
+        .await;
+        let mut all_sessions = Vec::new();
+        let mut successful_profiles = 0;
+        let mut first_error = None;
+        for (profile_id, response) in responses {
+            let mut sessions = match response {
+                Ok(RemoteResponse::Sessions(sessions)) => {
+                    successful_profiles += 1;
+                    sessions
+                }
+                Ok(_) => {
+                    first_error.get_or_insert_with(|| {
+                        "Remote Assembly returned the wrong list response".to_string()
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+            for session in &mut sessions {
+                session.remote_profile_id = Some(profile_id.clone());
+                self.remember(session.owned_id.clone(), profile_id.clone());
+            }
+            all_sessions.extend(sessions);
         }
-        Ok(sessions)
+        if successful_profiles > 0 || first_error.is_none() {
+            Ok(all_sessions)
+        } else {
+            Err(first_error.unwrap_or_else(|| "No remote machines are connected".to_string()))
+        }
     }
 
     pub async fn ensure(
@@ -387,12 +496,24 @@ impl RemoteConnectionManager {
         request: EnsureAgentConversationRequest,
     ) -> Result<AgentConversationConnection, String> {
         let owned_id = request.owned_id.clone();
-        let RemoteResponse::Connection(connection) =
-            self.request(RemoteCommand::Ensure(request)).await?
+        let profile_id = request
+            .remote_profile_id
+            .clone()
+            .or_else(|| {
+                self.remote_sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&owned_id)
+                    .cloned()
+            })
+            .ok_or_else(|| "Choose a remote machine for this session".to_string())?;
+        let RemoteResponse::Connection(connection) = self
+            .request_for_profile(&profile_id, RemoteCommand::Ensure(request))
+            .await?
         else {
             return Err("Remote Assembly returned the wrong ensure response".to_string());
         };
-        self.remember(owned_id);
+        self.remember(owned_id, profile_id);
         Ok(connection)
     }
 
@@ -403,6 +524,7 @@ impl RemoteConnectionManager {
     ) -> Result<Option<AgentConversationSnapshot>, String> {
         let RemoteResponse::Snapshot(snapshot) = self
             .request_with_id(
+                &self.profile_for_owned_id(&owned_id)?,
                 request_id,
                 RemoteCommand::Snapshot {
                     owned_id,
@@ -417,13 +539,15 @@ impl RemoteConnectionManager {
     }
 
     pub async fn cancel_request(&self, request_id: u64) {
-        let sender = self
+        let senders = self
             .client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .requests
-            .clone();
-        if let Some(sender) = sender {
+            .clients
+            .values()
+            .filter_map(|client| client.requests.clone())
+            .collect::<Vec<_>>();
+        for sender in senders {
             let _ = sender.try_send(ClientRequest::Cancel { id: request_id });
         }
     }
@@ -436,11 +560,15 @@ impl RemoteConnectionManager {
         request_id: u64,
     ) -> Result<AgentConversationEventPage, String> {
         let RemoteResponse::EventPage(page) = self
-            .request_with_id(request_id, RemoteCommand::EventsBefore {
-                owned_id,
-                before_sequence,
-                max_bytes,
-            })
+            .request_with_id(
+                &self.profile_for_owned_id(&owned_id)?,
+                request_id,
+                RemoteCommand::EventsBefore {
+                    owned_id,
+                    before_sequence,
+                    max_bytes,
+                },
+            )
             .await?
         else {
             return Err("Remote Assembly returned the wrong event-page response".to_string());
@@ -456,11 +584,15 @@ impl RemoteConnectionManager {
         request_id: u64,
     ) -> Result<AgentConversationEventPage, String> {
         let RemoteResponse::EventPage(page) = self
-            .request_with_id(request_id, RemoteCommand::EventsAfter {
-                owned_id,
-                after_sequence,
-                max_bytes,
-            })
+            .request_with_id(
+                &self.profile_for_owned_id(&owned_id)?,
+                request_id,
+                RemoteCommand::EventsAfter {
+                    owned_id,
+                    after_sequence,
+                    max_bytes,
+                },
+            )
             .await?
         else {
             return Err("Remote Assembly returned the wrong event-page response".to_string());
@@ -474,7 +606,11 @@ impl RemoteConnectionManager {
         request_id: u64,
     ) -> Result<AgentCapabilities, String> {
         let RemoteResponse::Capabilities(capabilities) = self
-            .request_with_id(request_id, RemoteCommand::Capabilities { owned_id })
+            .request_with_id(
+                &self.profile_for_owned_id(&owned_id)?,
+                request_id,
+                RemoteCommand::Capabilities { owned_id },
+            )
             .await?
         else {
             return Err("Remote Assembly returned the wrong capabilities response".to_string());
@@ -487,8 +623,13 @@ impl RemoteConnectionManager {
         owned_id: String,
         request_id: u64,
     ) -> Result<AgentConversationConfigState, String> {
-        let RemoteResponse::Config(config) =
-            self.request_with_id(request_id, RemoteCommand::Config { owned_id }).await?
+        let RemoteResponse::Config(config) = self
+            .request_with_id(
+                &self.profile_for_owned_id(&owned_id)?,
+                request_id,
+                RemoteCommand::Config { owned_id },
+            )
+            .await?
         else {
             return Err("Remote Assembly returned the wrong config response".to_string());
         };
@@ -500,11 +641,15 @@ impl RemoteConnectionManager {
         owned_id: String,
         generation: u64,
     ) -> Result<AgentConversationConfigState, String> {
+        let route = owned_id.clone();
         let RemoteResponse::Config(config) = self
-            .request(RemoteCommand::WarmConfig {
-                owned_id,
-                generation,
-            })
+            .request_for_owned(
+                &route,
+                RemoteCommand::WarmConfig {
+                    owned_id,
+                    generation,
+                },
+            )
             .await?
         else {
             return Err("Remote Assembly returned the wrong config response".to_string());
@@ -516,8 +661,10 @@ impl RemoteConnectionManager {
         &self,
         request: SetAgentConversationConfigRequest,
     ) -> Result<AgentConversationConfigState, String> {
-        let RemoteResponse::Config(config) =
-            self.request(RemoteCommand::SetConfig(request)).await?
+        let owned_id = request.owned_id.clone();
+        let RemoteResponse::Config(config) = self
+            .request_for_owned(&owned_id, RemoteCommand::SetConfig(request))
+            .await?
         else {
             return Err("Remote Assembly returned the wrong config response".to_string());
         };
@@ -528,8 +675,9 @@ impl RemoteConnectionManager {
         &self,
         request: super::SetAgentConversationConfigOptionRequest,
     ) -> Result<Vec<AgentConfigOption>, String> {
+        let owned_id = request.owned_id.clone();
         let RemoteResponse::ConfigOptions(options) = self
-            .request(RemoteCommand::SetConfigOption(request))
+            .request_for_owned(&owned_id, RemoteCommand::SetConfigOption(request))
             .await?
         else {
             return Err("Remote Assembly returned the wrong config-option response".to_string());
@@ -538,12 +686,16 @@ impl RemoteConnectionManager {
     }
 
     pub async fn set_draft(&self, owned_id: String, text: String) -> Result<(), String> {
-        self.empty(RemoteCommand::SetDraft { owned_id, text }).await
+        let route = owned_id.clone();
+        self.empty_for_owned(&route, RemoteCommand::SetDraft { owned_id, text })
+            .await
     }
 
     pub async fn get_draft(&self, owned_id: String) -> Result<Option<String>, String> {
-        let RemoteResponse::OptionalString(draft) =
-            self.request(RemoteCommand::GetDraft { owned_id }).await?
+        let route = owned_id.clone();
+        let RemoteResponse::OptionalString(draft) = self
+            .request_for_owned(&route, RemoteCommand::GetDraft { owned_id })
+            .await?
         else {
             return Err("Remote Assembly returned the wrong draft response".to_string());
         };
@@ -551,7 +703,9 @@ impl RemoteConnectionManager {
     }
 
     pub async fn clear_draft(&self, owned_id: String) -> Result<(), String> {
-        self.empty(RemoteCommand::ClearDraft { owned_id }).await
+        let route = owned_id.clone();
+        self.empty_for_owned(&route, RemoteCommand::ClearDraft { owned_id })
+            .await
     }
 
     pub async fn write_workspace(
@@ -559,16 +713,21 @@ impl RemoteConnectionManager {
         owned_id: String,
         snapshot_json: String,
     ) -> Result<(), String> {
-        self.empty(RemoteCommand::WriteWorkspace {
-            owned_id,
-            snapshot_json,
-        })
+        let route = owned_id.clone();
+        self.empty_for_owned(
+            &route,
+            RemoteCommand::WriteWorkspace {
+                owned_id,
+                snapshot_json,
+            },
+        )
         .await
     }
 
     pub async fn read_workspace(&self, owned_id: String) -> Result<Option<String>, String> {
+        let route = owned_id.clone();
         let RemoteResponse::OptionalString(snapshot) = self
-            .request(RemoteCommand::ReadWorkspace { owned_id })
+            .request_for_owned(&route, RemoteCommand::ReadWorkspace { owned_id })
             .await?
         else {
             return Err("Remote Assembly returned the wrong workspace response".to_string());
@@ -583,7 +742,11 @@ impl RemoteConnectionManager {
         request_id: u64,
     ) -> Result<Vec<String>, String> {
         let RemoteResponse::Strings(paths) = self
-            .request_with_id(request_id, RemoteCommand::ReadExpandedPaths { owned_id, root })
+            .request_with_id(
+                &self.profile_for_owned_id(&owned_id)?,
+                request_id,
+                RemoteCommand::ReadExpandedPaths { owned_id, root },
+            )
             .await?
         else {
             return Err("Remote Assembly returned the wrong expanded-path response".to_string());
@@ -597,16 +760,21 @@ impl RemoteConnectionManager {
         root: String,
         paths: Vec<String>,
     ) -> Result<(), String> {
-        self.empty(RemoteCommand::WriteExpandedPaths {
-            owned_id,
-            root,
-            paths,
-        })
+        let route = owned_id.clone();
+        self.empty_for_owned(
+            &route,
+            RemoteCommand::WriteExpandedPaths {
+                owned_id,
+                root,
+                paths,
+            },
+        )
         .await
     }
 
     pub async fn delete_workspace(&self, owned_id: String) -> Result<(), String> {
-        self.empty(RemoteCommand::DeleteWorkspace { owned_id })
+        let route = owned_id.clone();
+        self.empty_for_owned(&route, RemoteCommand::DeleteWorkspace { owned_id })
             .await
     }
 
@@ -614,11 +782,15 @@ impl RemoteConnectionManager {
         &self,
         request: ChangeAgentConversationCheckoutRequest,
     ) -> Result<AgentConversationSessionRecord, String> {
-        let RemoteResponse::Session(session) =
-            self.request(RemoteCommand::ChangeCheckout(request)).await?
+        let owned_id = request.owned_id.clone();
+        let profile_id = self.profile_for_owned_id(&owned_id)?;
+        let RemoteResponse::Session(mut session) = self
+            .request_for_owned(&owned_id, RemoteCommand::ChangeCheckout(request))
+            .await?
         else {
             return Err("Remote Assembly returned the wrong session response".to_string());
         };
+        session.remote_profile_id = Some(profile_id);
         Ok(session)
     }
 
@@ -626,20 +798,28 @@ impl RemoteConnectionManager {
         &self,
         request: UpdateAgentConversationSessionMetaRequest,
     ) -> Result<AgentConversationSessionRecord, String> {
-        let RemoteResponse::Session(session) =
-            self.request(RemoteCommand::UpdateMeta(request)).await?
+        let owned_id = request.owned_id.clone();
+        let profile_id = self.profile_for_owned_id(&owned_id)?;
+        let RemoteResponse::Session(mut session) = self
+            .request_for_owned(&owned_id, RemoteCommand::UpdateMeta(request))
+            .await?
         else {
             return Err("Remote Assembly returned the wrong session response".to_string());
         };
+        session.remote_profile_id = Some(profile_id);
         Ok(session)
     }
 
     pub async fn close(&self, owned_id: String, generation: u64) -> Result<bool, String> {
+        let route = owned_id.clone();
         let RemoteResponse::Bool(closed) = self
-            .request(RemoteCommand::Close {
-                owned_id,
-                generation,
-            })
+            .request_for_owned(
+                &route,
+                RemoteCommand::Close {
+                    owned_id,
+                    generation,
+                },
+            )
             .await?
         else {
             return Err("Remote Assembly returned the wrong close response".to_string());
@@ -648,10 +828,14 @@ impl RemoteConnectionManager {
     }
 
     pub async fn delete(&self, owned_id: String) -> Result<bool, String> {
+        let route = owned_id.clone();
         let RemoteResponse::Bool(deleted) = self
-            .request(RemoteCommand::Delete {
-                owned_id: owned_id.clone(),
-            })
+            .request_for_owned(
+                &route,
+                RemoteCommand::Delete {
+                    owned_id: owned_id.clone(),
+                },
+            )
             .await?
         else {
             return Err("Remote Assembly returned the wrong delete response".to_string());
@@ -665,40 +849,50 @@ impl RemoteConnectionManager {
         Ok(deleted)
     }
 
-    async fn empty(&self, command: RemoteCommand) -> Result<(), String> {
-        match self.request(command).await? {
+    async fn empty_for_owned(&self, owned_id: &str, command: RemoteCommand) -> Result<(), String> {
+        match self.request_for_owned(owned_id, command).await? {
             RemoteResponse::Empty => Ok(()),
             _ => Err("Remote Assembly returned the wrong command response".to_string()),
         }
     }
 
     pub async fn send(&self, request: SendAgentConversationMessageRequest) -> Result<(), String> {
-        self.empty(RemoteCommand::Send(request)).await
+        let owned_id = request.owned_id.clone();
+        self.empty_for_owned(&owned_id, RemoteCommand::Send(request))
+            .await
     }
 
     pub async fn respond_approval(
         &self,
         request: RespondAgentConversationApprovalRequest,
     ) -> Result<(), String> {
-        self.empty(RemoteCommand::RespondApproval(request)).await
+        let owned_id = request.owned_id.clone();
+        self.empty_for_owned(&owned_id, RemoteCommand::RespondApproval(request))
+            .await
     }
 
     pub async fn respond_permission(
         &self,
         request: RespondAgentConversationPermissionRequest,
     ) -> Result<(), String> {
-        self.empty(RemoteCommand::RespondPermission(request)).await
+        let owned_id = request.owned_id.clone();
+        self.empty_for_owned(&owned_id, RemoteCommand::RespondPermission(request))
+            .await
     }
 
     pub async fn respond_input(
         &self,
         request: RespondAgentConversationInputRequest,
     ) -> Result<(), String> {
-        self.empty(RemoteCommand::RespondInput(request)).await
+        let owned_id = request.owned_id.clone();
+        self.empty_for_owned(&owned_id, RemoteCommand::RespondInput(request))
+            .await
     }
 
     pub async fn stop(&self, request: StopAgentConversationTurnRequest) -> Result<(), String> {
-        self.empty(RemoteCommand::Stop(request)).await
+        let owned_id = request.owned_id.clone();
+        self.empty_for_owned(&owned_id, RemoteCommand::Stop(request))
+            .await
     }
 }
 
@@ -719,15 +913,44 @@ pub async fn deploy_remote_assembly(
         .deploy_profile(profile.clone())
         .await
         .map_err(super::protocol::CommandError::from)?;
-    let profile_json = serde_json::to_string(&profile)
+    let profiles_json = serde_json::to_string(&remote.environment().profiles)
         .map_err(|error| super::protocol::CommandError::from(error.to_string()))?;
     manager
-        .write_app_setting(REMOTE_ASSEMBLY_PROFILE_SETTING_KEY, &profile_json)
+        .write_app_setting(REMOTE_ASSEMBLY_PROFILES_SETTING_KEY, &profiles_json)
         .map_err(super::protocol::CommandError::from)?;
     Ok(remote.environment())
 }
 
+#[tauri::command]
+pub fn remove_remote_assembly_profile(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile_id: String,
+) -> Result<RemoteAssemblyEnvironment, super::protocol::CommandError> {
+    remote.remove_profile(&profile_id);
+    let environment = remote.environment();
+    let profiles_json = serde_json::to_string(&environment.profiles)
+        .map_err(|error| super::protocol::CommandError::from(error.to_string()))?;
+    manager
+        .write_app_setting(REMOTE_ASSEMBLY_PROFILES_SETTING_KEY, &profiles_json)
+        .map_err(super::protocol::CommandError::from)?;
+    Ok(environment)
+}
+
 fn validate_profile(profile: &RemoteAssemblyProfile) -> Result<(), String> {
+    if profile.id.trim().is_empty()
+        || !profile
+            .id
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || b"_-".contains(&value))
+    {
+        return Err(
+            "Remote machine id may contain only letters, numbers, '_', and '-'".to_string(),
+        );
+    }
+    if profile.name.trim().is_empty() {
+        return Err("Remote machine name is required".to_string());
+    }
     if profile.ssh_target.is_empty()
         || profile.ssh_target.starts_with('-')
         || !profile
@@ -791,10 +1014,9 @@ async fn profile_client_loop(
     tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
 ) {
     let target = profile.ssh_target.clone();
-    let connection = tauri::async_runtime::spawn_blocking(move || {
-        open_remote_tunnel(&target, tunnel_processes)
-    })
-    .await;
+    let connection =
+        tauri::async_runtime::spawn_blocking(move || open_remote_tunnel(&target, tunnel_processes))
+            .await;
     let Ok(Ok(tunnel)) = connection else {
         let message = match connection {
             Ok(Err(error)) => error,

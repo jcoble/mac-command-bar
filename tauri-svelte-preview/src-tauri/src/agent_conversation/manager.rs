@@ -2558,6 +2558,7 @@ impl AgentRuntimeManager {
                 Ok(AgentConversationSessionRecord {
                     owned_id: row.owned_id,
                     execution_environment: ExecutionEnvironment::Local,
+                    remote_profile_id: None,
                     provider,
                     model: row.model,
                     effort: row.effort,
@@ -6251,6 +6252,7 @@ mod tests {
         EnsureAgentConversationRequest {
             owned_id: owned_id.into(),
             execution_environment: ExecutionEnvironment::Local,
+            remote_profile_id: None,
             provider,
             cwd: root.into(),
             native_session_id: None,
