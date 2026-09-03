@@ -11,7 +11,8 @@
  *
  * PURE: no DOM, no Svelte, no backend call. Every caller is a no-op — never a
  * throw — while nothing is registered, so a panel that runs before the page is
- * ready simply does nothing.
+ * ready simply does nothing. Browser URLs are the one queued handoff because
+ * selecting that tab is what mounts the handler that can place its native view.
  */
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
@@ -95,6 +96,7 @@ export interface WorkbenchNavigationHandlers {
 }
 
 let handlers: Partial<WorkbenchNavigationHandlers> = {};
+let pendingOpenUrl: OpenUrlRequest | null = null;
 
 /** The page registers the real handlers once, on mount. Registering again
  * merges: a caller may hand over one field without clearing the rest. */
@@ -104,6 +106,22 @@ export function registerWorkbenchNavigation(next: Partial<WorkbenchNavigationHan
 
 export function clearWorkbenchNavigation(): void {
   handlers = {};
+  pendingOpenUrl = null;
+}
+
+/** BrowserPanel mounts only after its tab is selected. Keep the one URL that
+ * caused that mount until the panel owns the native-view placement needed to
+ * open it. */
+export function registerBrowserUrlNavigation(
+  openUrl: (request: OpenUrlRequest) => void
+): () => void {
+  handlers.openUrl = openUrl;
+  const pending = pendingOpenUrl;
+  pendingOpenUrl = null;
+  if (pending) void openUrl(pending);
+  return () => {
+    if (handlers.openUrl === openUrl) delete handlers.openUrl;
+  };
 }
 
 export function showCenterTab(id: CenterTabId): void {
@@ -138,7 +156,12 @@ export async function openFileTimeline(request: OpenDiffRequest): Promise<void> 
  * browser only loads while it is the tab in front. */
 export async function openUrlInBrowser(request: OpenUrlRequest): Promise<void> {
   showRightTab('browser');
-  await handlers.openUrl?.(request);
+  const openUrl = handlers.openUrl;
+  if (openUrl) {
+    await openUrl(request);
+  } else {
+    pendingOpenUrl = request;
+  }
 }
 
 /** Hand the composer an attachment and some text, then bring the session

@@ -42,12 +42,16 @@
    * staged in a box the reader was not looking at read as a button that did
    * nothing.
    */
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Globe from '@lucide/svelte/icons/globe';
 
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { saveConversationClipboardImage } from '$lib/shell/conversation/conversationService.ts';
-  import { sendToSession } from '$lib/shell/workbenchNavigation.ts';
+  import {
+    registerBrowserUrlNavigation,
+    sendToSession,
+    type OpenUrlRequest
+  } from '$lib/shell/workbenchNavigation.ts';
   import {
     createTrackedObjectUrl,
     revokeTrackedObjectUrl
@@ -329,6 +333,14 @@
     dropStill();
     layoutTick += 1;
   }
+
+  function openRequestedUrl(request: OpenUrlRequest): void {
+    address = request.url;
+    addressEdited = true;
+    navigate();
+  }
+
+  onMount(() => registerBrowserUrlNavigation(openRequestedUrl));
 
   function step(direction: 'back' | 'forward'): void {
     if (!activeTab) return;

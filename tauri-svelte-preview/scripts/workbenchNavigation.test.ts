@@ -9,6 +9,7 @@ import {
   openDiffForFile,
   openFileInEditor,
   openUrlInBrowser,
+  registerBrowserUrlNavigation,
   registerWorkbenchNavigation,
   showCenterTab,
   showRightTab,
@@ -143,6 +144,19 @@ assert.equal(
   null
 );
 assert.deepEqual(trace, [], 'after clearing, every caller is a no-op again');
+
+// The browser panel mounts only after showRightTab selects it, so its first
+// requested URL must wait for that late registration rather than disappear.
+clearWorkbenchNavigation();
+trace = [];
+registerWorkbenchNavigation({ showRightTab: (id) => trace.push(`right:${id}`) });
+await openUrlInBrowser({ url: 'https://notion.test/setup' });
+assert.deepEqual(trace, ['right:browser']);
+const releaseBrowser = registerBrowserUrlNavigation((request) => {
+  trace.push(`url:${request.url}`);
+});
+assert.deepEqual(trace, ['right:browser', 'url:https://notion.test/setup']);
+releaseBrowser();
 
 assert.equal(RIGHT_TAB_IDS.length, 9);
 assert.equal(CENTER_TAB_IDS.length, 4);

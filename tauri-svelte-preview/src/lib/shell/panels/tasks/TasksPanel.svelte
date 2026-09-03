@@ -126,7 +126,9 @@
   }
 
   async function openNotionTokenSetup(): Promise<void> {
-    await openUrlInBrowser('https://developers.notion.com/guides/get-started/personal-access-tokens#create-a-pat');
+    await openUrlInBrowser({
+      url: 'https://developers.notion.com/guides/get-started/personal-access-tokens#create-a-pat'
+    });
   }
 
   async function disconnect(): Promise<void> {
