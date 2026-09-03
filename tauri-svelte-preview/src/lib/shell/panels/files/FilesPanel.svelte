@@ -246,7 +246,8 @@
 		const controller = new AbortController();
 		filesOwnerSignal = controller.signal;
 		untrack(() => {
-			if (nextRoot !== scopedRoot) {
+			const rootChanged = nextRoot !== scopedRoot;
+			if (rootChanged) {
 				scopedRoot = nextRoot;
 				inspectionGeneration += 1;
 				inspectedRoot = "";
@@ -261,15 +262,15 @@
 				fileClipboard = null;
 				contextMenu = null;
 				searchText = "";
-			}
-			if (nextRoot && canonicalPath(explorer.root ?? "") === nextRoot) {
-				for (const directory of loadedExplorerDirectories()) {
-					if (directory.path !== nextRoot) unloadDirectory(directory.path);
+				if (nextRoot && canonicalPath(explorer.root ?? "") === nextRoot) {
+					for (const directory of loadedExplorerDirectories()) {
+						if (directory.path !== nextRoot) unloadDirectory(directory.path);
+					}
 				}
 			}
 			if (shouldActivate && !controller.signal.aborted) {
 				activateExplorer(nextRoot, false, controller.signal);
-			} else {
+			} else if (rootChanged || !nextRoot) {
 				activateExplorer(null);
 			}
 		});

@@ -65,7 +65,12 @@ assert.doesNotMatch(
   /const sessionKey = `\$\{ownedId/,
   'the file-tree owner is the checkout root, not each session id'
 );
-assert.match(filesPanel, /if \(nextRoot !== scopedRoot\)/);
+assert.match(filesPanel, /const rootChanged = nextRoot !== scopedRoot;/);
+assert.match(
+  filesPanel,
+  /else if \(rootChanged \|\| !nextRoot\) \{\s*activateExplorer\(null\);/,
+  'hiding Files parks its bounded tree; only a changed or missing root clears it'
+);
 assert.match(filesPanel, /watchFileTree\(directories, signal, refreshChangedPaths\)/);
 assert.match(fileTreeWatch, /signal\.addEventListener\("abort", stop, \{ once: true \}\)/);
 assert.match(fileTreeWatch, /unwatch\?\.\(\)/);
