@@ -114,6 +114,21 @@ const rows = [
   assert.equal(buildSessionHistoryViewModel(rows, { query: 'atlas' }).totalCount, 3);
 }
 
+// A session recorded against the shared worktree container still belongs to
+// the same repository as sessions from its main checkout.
+{
+  const view = buildSessionHistoryViewModel([
+    record('atlas-main'),
+    record('atlas-container', {
+      canonicalCwd: '/Users/dev/work/worktrees/atlas',
+      projectPath: '/Users/dev/work/worktrees/atlas'
+    })
+  ]);
+  assert.equal(view.projects.length, 1);
+  assert.equal(view.projects[0].name, 'atlas');
+  assert.equal(view.projects[0].count, 2);
+}
+
 // Provider filtering is exact, keeps a stable provider roster, and recomputes
 // every project/worktree badge from only the rows that remain.
 {
@@ -126,21 +141,22 @@ const rows = [
   ]);
 }
 
-// Collapse state is immutable and applies independently at project and
-// worktree level. A collapsed project hides all of its worktrees.
+// Groups start closed. Opening a worktree is independent, while closing its
+// project still hides every row below it.
 {
   const view = buildSessionHistoryViewModel(rows);
   const atlas = view.projects.find((project) => project.name === 'atlas');
   const feature = atlas.worktrees.find((worktree) => worktree.name === 'feature-one');
   const initial = createSessionHistoryCollapseState();
-  const worktreeCollapsed = toggleSessionHistoryGroup(initial, 'worktree', feature.key);
-  assert.equal(isSessionHistoryGroupOpen(initial, 'worktree', feature.key), true);
-  assert.equal(isSessionHistoryGroupOpen(worktreeCollapsed, 'worktree', feature.key), false);
-  assert.equal(visibleSessionHistoryRows(view.projects, worktreeCollapsed).length, 3);
+  const projectOpen = toggleSessionHistoryGroup(initial, 'project', atlas.key);
+  const worktreeOpen = toggleSessionHistoryGroup(projectOpen, 'worktree', feature.key);
+  assert.equal(isSessionHistoryGroupOpen(initial, 'worktree', feature.key), false);
+  assert.equal(isSessionHistoryGroupOpen(worktreeOpen, 'worktree', feature.key), true);
+  assert.equal(visibleSessionHistoryRows(view.projects, worktreeOpen).length, 2);
 
-  const projectCollapsed = toggleSessionHistoryGroup(initial, 'project', atlas.key);
+  const projectCollapsed = toggleSessionHistoryGroup(worktreeOpen, 'project', atlas.key);
   assert.equal(isSessionHistoryGroupOpen(projectCollapsed, 'project', atlas.key), false);
-  assert.equal(visibleSessionHistoryRows(view.projects, projectCollapsed).length, 2);
+  assert.equal(visibleSessionHistoryRows(view.projects, projectCollapsed).length, 0);
   assert.equal(
     isSessionHistoryGroupOpen(toggleSessionHistoryGroup(projectCollapsed, 'project', atlas.key), 'project', atlas.key),
     true

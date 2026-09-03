@@ -1,14 +1,13 @@
 /**
  * normalizeBrowserUrl.ts — turn whatever the user typed into a browsable URL.
  *
- * Pure: no DOM, no storage, no backend. Lifted verbatim (body unchanged) from
- * the old shell's `normalizeBrowserDockUrl` in `src/routes/+page.svelte`
- * (:7136-7155) so the accepted shorthands stay exactly the same.
+ * Pure: no DOM, no storage, no backend.
  *
  * Accepted shorthands:
  *   ":5177"                  → http://localhost:5177/
  *   "localhost:5177/foo"     → http://localhost:5177/foo
  *   "127.0.0.1", "[::1]:80"  → http://…
+ *   "www.example.com"         → https://www.example.com/
  *   "https://example.com"    → unchanged (normalized by the URL parser)
  *
  * Anything that is not http or https — a file path, a mailto:, gibberish —
@@ -24,7 +23,9 @@ export function normalizeBrowserUrl(value: string): string {
       ? `http://localhost${trimmedValue}`
       : /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?(\/.*)?$/i.test(trimmedValue)
         ? `http://${trimmedValue}`
-        : trimmedValue;
+        : /^[\w.-]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(trimmedValue)
+          ? `https://${trimmedValue}`
+          : trimmedValue;
 
   try {
     const parsedUrl = new URL(withProtocol);

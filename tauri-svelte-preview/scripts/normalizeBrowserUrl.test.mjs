@@ -33,6 +33,13 @@ import { normalizeBrowserUrl } from '../src/lib/shell/browser/normalizeBrowserUr
   assert.equal(normalizeBrowserUrl(' http://localhost:5177/next '), 'http://localhost:5177/next');
 }
 
+// ordinary hostnames default to safe https
+{
+  assert.equal(normalizeBrowserUrl('www.google.com'), 'https://www.google.com/');
+  assert.equal(normalizeBrowserUrl('example.com/docs'), 'https://example.com/docs');
+  assert.equal(normalizeBrowserUrl('docs.example.co.uk:8443/start'), 'https://docs.example.co.uk:8443/start');
+}
+
 // anything that is not http or https is rejected
 {
   assert.equal(normalizeBrowserUrl('file:///Users/me/index.html'), '');
@@ -47,7 +54,6 @@ import { normalizeBrowserUrl } from '../src/lib/shell/browser/normalizeBrowserUr
   assert.equal(normalizeBrowserUrl('not a url'), '');
   assert.equal(normalizeBrowserUrl('/Users/me/project'), '');
   assert.equal(normalizeBrowserUrl('::::'), '');
-  assert.equal(normalizeBrowserUrl('example.com'), '', 'a bare non-loopback host is not assumed to be http');
 }
 
 // the result of normalizing is stable: feeding it back changes nothing

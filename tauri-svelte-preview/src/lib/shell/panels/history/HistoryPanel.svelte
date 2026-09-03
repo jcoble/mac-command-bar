@@ -4,8 +4,9 @@
    *
    * Every session this machine has run, grouped by the project it ran in, most
    * recent first. A project with hundreds of sessions in it opens showing the
-   * newest twenty-five per checkout and offers the rest on request, because the
-   * alternative is a panel that takes a second to draw every time it is shown.
+   * newest twenty-five per checkout and reads the rest as the reader scrolls,
+   * because the alternative is a panel that takes a second to draw every time
+   * it is shown.
    *
    * The panel owns running the actions, since it is the only thing here holding
    * the session service and the confirm dialog. Deciding WHICH actions a
@@ -146,7 +147,10 @@
    *  Opening one reads every session record it holds, which on a large project
    *  is seconds of nothing happening otherwise. */
   let loadingProjectKey = $state<string | null>(null);
+  let loadingOlder = $state(false);
+  let historyViewport = $state<HTMLElement | null>(null);
   let loadVersion = 0;
+  let loadStopController = new AbortController();
   type SessionHistoryDetail = Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'>;
   let detailsByKey = $state<Record<string, SessionHistoryDetail>>({});
   let detailLoadingKey = $state<string | null>(null);
@@ -166,7 +170,16 @@
     host.service.release(keys);
   }
 
-  onDestroy(() => releaseDetails());
+  function stopHistoryLoads(): void {
+    loadStopController.abort();
+    loadStopController = new AbortController();
+    loadingOlder = false;
+  }
+
+  onDestroy(() => {
+    stopHistoryLoads();
+    releaseDetails();
+  });
 
   /**
    * The checkouts each repository still has, asked of git once the sessions have
@@ -225,6 +238,7 @@
 
   $effect(() => {
     if (visible) return;
+    stopHistoryLoads();
     releaseDetails();
     loadedRecords = [];
     loadOutcome = null;
@@ -237,6 +251,7 @@
     root;
     ownedId;
     historyFilterKey;
+    stopHistoryLoads();
     releaseDetails();
     loadedRecords = [];
     loadOutcome = null;
@@ -255,6 +270,8 @@
     project: SessionHistoryProjectGroup,
     reload = false
   ): Promise<void> {
+    stopHistoryLoads();
+    const stopSignal = loadStopController.signal;
     releaseDetails();
     const closing = !reload
       && isSessionHistoryGroupOpen(collapseState, 'project', project.key);
@@ -282,7 +299,7 @@
           : host.service.refresh(keys, { projectPath: project.path }),
         listRepositoryCheckoutsFromTauri([project.path])
       ]);
-      if (!visible || version !== loadVersion) {
+      if (stopSignal.aborted || !visible || version !== loadVersion) {
         if (!fullyHeld) host.service.release(keys);
         return;
       }
@@ -298,6 +315,12 @@
       if (refreshed.status === 'rejected') {
         console.error('[history] could not load project', refreshed.reason);
       }
+      if (outcome.state === 'incomplete' && !reload && host.rescan) {
+        await host.rescan();
+        if (!stopSignal.aborted && visible && version === loadVersion) {
+          await toggleProject(project, true);
+        }
+      }
     } finally {
       // Cleared whatever happened, and only for the read still in front: a
       // slow project answering after the reader has opened another one must
@@ -311,8 +334,8 @@
     collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
   }
 
-  async function showOlder(worktreeKey: string): Promise<void> {
-    if (!visible) return;
+  async function showOlder(worktreeKey: string, stopSignal: AbortSignal): Promise<void> {
+    if (stopSignal.aborted || !visible) return;
     const project = summaryViewModel.projects.find((candidate) =>
       candidate.worktrees.some((worktree) => worktree.key === worktreeKey)
     );
@@ -333,7 +356,7 @@
     const version = ++loadVersion;
     try {
       const refreshed = await host.service.refresh(keys, { projectPath: project.path });
-      if (!visible || version !== loadVersion) return;
+      if (stopSignal.aborted || !visible || version !== loadVersion) return;
       loadedRecords = [...new Map(
         [...loadedRecords, ...refreshed].map((record) => [record.key, record])
       ).values()];
@@ -343,6 +366,48 @@
       if (version === loadVersion) host.service.release(keys);
     }
   }
+
+  async function loadOlderVisibleSessions(): Promise<void> {
+    if (loadingOlder || loadStopController.signal.aborted || !visible) return;
+    const project = summaryViewModel.projects.find((candidate) =>
+      isSessionHistoryGroupOpen(collapseState, 'project', candidate.key)
+    );
+    const loadedProject = project ? loadedProjects.get(project.key) : null;
+    if (!loadedProject) return;
+    const pending = loadedProject.worktrees.filter((worktree) =>
+      worktree.olderCount > 0
+      && (loadedProject.singleCheckout
+        || isSessionHistoryGroupOpen(collapseState, 'worktree', worktree.key))
+    );
+    if (pending.length === 0) return;
+
+    loadingOlder = true;
+    const stopSignal = loadStopController.signal;
+    try {
+      for (const worktree of pending) {
+        if (stopSignal.aborted) return;
+        await showOlder(worktree.key, stopSignal);
+      }
+    } finally {
+      if (!stopSignal.aborted) loadingOlder = false;
+    }
+  }
+
+  async function handleHistoryScroll(): Promise<void> {
+    const viewport = historyViewport;
+    if (!viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 120) return;
+    await loadOlderVisibleSessions();
+  }
+
+  $effect(() => {
+    const viewport = historyViewport;
+    if (!visible || !viewport) return;
+    const onScroll = (): void => {
+      void handleHistoryScroll();
+    };
+    viewport.addEventListener('scroll', onScroll, { passive: true });
+    return () => viewport.removeEventListener('scroll', onScroll);
+  });
 
   async function copyText(value: string | null): Promise<void> {
     if (!value || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
@@ -593,11 +658,9 @@
         detailsLoading={detailLoadingKey === row.record.key}
       />
     {/each}
-    {#if worktree.olderCount > 0}
-      <div class="px-3 py-1.5">
-        <Button size="sm" variant="ghost" onclick={() => void showOlder(worktree.key)}>
-          Show {worktree.olderCount} older
-        </Button>
+    {#if worktree.olderCount > 0 && loadingOlder}
+      <div class="flex justify-center px-3 py-1.5" aria-label="Loading older sessions">
+        <WorkingSpinner seed={worktree.key} size={12} />
       </div>
     {/if}
   {/snippet}
@@ -613,7 +676,11 @@
   <!-- The kit's scroll area ships as `type="hover"`, which leaves a reader who
        is not already pointing at the list with no sign that there is more of
        it. This one keeps its bar on screen. -->
-  <ScrollArea type="always" class="min-h-0 flex-1">
+  <ScrollArea
+    type="always"
+    class="min-h-0 flex-1"
+    bind:viewportRef={historyViewport}
+  >
     {#if summaryViewModel.projects.length === 0}
       <EmptyState
         title={query ? 'Nothing matches that search' : 'No past sessions yet'}
@@ -701,7 +768,7 @@
             {/if}
             {#if loadOutcome?.state === 'incomplete'}
               <div class="flex items-center justify-between gap-2 px-3 py-2 text-sm text-muted-foreground">
-                <span>Still finding sessions — {loadOutcome.missingKeys.length} not loaded yet</span>
+                <span>{loadOutcome.missingKeys.length} sessions could not be loaded.</span>
                 <Button
                   size="sm"
                   variant="ghost"
