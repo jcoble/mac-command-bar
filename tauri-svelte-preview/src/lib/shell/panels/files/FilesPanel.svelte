@@ -43,6 +43,7 @@
 		cancelSourceScanFromTauri,
 		createSourceScanId,
 		isNativeTauriRuntime,
+		listRepositoryCheckoutsFromTauri,
 		moveToTrashFromTauri,
 		searchSourceTreeFromTauri,
 		validateProjectRootFromTauri,
@@ -70,6 +71,8 @@
 		onExpandedPathsChange?(root: string, paths: readonly string[]): void;
 		inspectionRoot?: string | null;
 		onInspectionRootChange?(root: string | null): void;
+		checkoutDiscoveryRoots?: readonly string[];
+		onUseSessionCheckout?(root: string): void | Promise<void>;
 	}
 
 	type PendingEntry = {
@@ -109,6 +112,8 @@
 		onExpandedPathsChange,
 		inspectionRoot,
 		onInspectionRootChange,
+		checkoutDiscoveryRoots = [],
+		onUseSessionCheckout,
 	}: Props = $props();
 	let inspectedRoot = $state("");
 	let checkouts = $state<RepositoryCheckout[]>([]);
@@ -140,6 +145,8 @@
 	let expansionRestoreGeneration = 0;
 	let scopedRoot = "";
 	let inspectionGeneration = 0;
+	let checkoutGeneration = 0;
+	let checkoutBusy = $state(false);
 	let filesOwnerSignal: AbortSignal | undefined;
 
 	const READ_ONLY_SCOPE_MESSAGE =
@@ -159,6 +166,9 @@
 
 	const loadedNodes = $derived(explorerNodes());
 	const sessionRoot = $derived(root.trim());
+	const checkoutRoots = $derived([
+		...new Set([sessionRoot, ...checkoutDiscoveryRoots].map(canonicalPath).filter(Boolean)),
+	]);
 	const projectRoot = $derived((inspectedRoot || explorer.root || sessionRoot).trim());
 	const readOnlyInspection = $derived(
 		Boolean(inspectedRoot) && canonicalPath(inspectedRoot) !== canonicalPath(sessionRoot),
@@ -242,6 +252,7 @@
 
 	$effect(() => {
 		const nextRoot = canonicalPath(sessionRoot);
+		const discoveryRoots = checkoutRoots;
 		const shouldActivate = visible && nextRoot !== "";
 		const controller = new AbortController();
 		filesOwnerSignal = controller.signal;
@@ -273,6 +284,9 @@
 			} else if (rootChanged || !nextRoot) {
 				activateExplorer(null);
 			}
+			if (visible && discoveryRoots.length > 0) {
+				void loadCheckouts(discoveryRoots, ++checkoutGeneration, controller.signal);
+			}
 		});
 		return () => {
 			controller.abort();
@@ -280,6 +294,40 @@
 			stopScan();
 		};
 	});
+
+	async function loadCheckouts(
+		roots: readonly string[],
+		generation: number,
+		signal: AbortSignal,
+	): Promise<void> {
+		try {
+			const grouped = await listRepositoryCheckoutsFromTauri(roots);
+			if (signal.aborted || generation !== checkoutGeneration) return;
+			const unique = new Map<string, RepositoryCheckout>();
+			for (const checkout of Object.values(grouped).flat()) {
+				const path = canonicalPath(checkout.path);
+				if (path) unique.set(path, checkout);
+			}
+			checkouts = [...unique.values()];
+		} catch (error) {
+			if (dev && !signal.aborted && generation === checkoutGeneration) {
+				console.warn("Could not list repository checkouts", error);
+			}
+		}
+	}
+
+	async function useSessionCheckout(): Promise<void> {
+		if (!readOnlyInspection || checkoutBusy || !onUseSessionCheckout) return;
+		checkoutBusy = true;
+		actionError = null;
+		try {
+			await onUseSessionCheckout(projectRoot);
+		} catch (error) {
+			actionError = describeError(error);
+		} finally {
+			checkoutBusy = false;
+		}
+	}
 
 	async function validateInspectionRootForEffect(
 		generation: number,
@@ -303,6 +351,7 @@
 	}
 
 	$effect(() => {
+		if (inspectionRoot === undefined) return;
 		const signal = filesOwnerSignal;
 		const requestedRoot = canonicalPath(inspectionRoot ?? "");
 		const sessionRootPath = canonicalPath(sessionRoot);
@@ -964,22 +1013,33 @@
 <div class="files-panel flex h-full min-h-0 w-full flex-col text-foreground">
 	<PanelHeader title="Files" count={explorer.activated ? listedCount : null}>
 		{#snippet actions()}
+			{#if scopeOptions.length > 1}
+				<Select.Root type="single" value={scopeValue} onValueChange={selectInspectionRoot}>
+					<Select.Trigger size="sm" class="w-44 min-w-0" aria-label="Folder this panel reads">
+						<span class="min-w-0 truncate">
+							{scopeOptions.find((option) => canonicalPath(option.path) === canonicalPath(scopeValue))?.label ??
+								"Session folder"}
+						</span>
+					</Select.Trigger>
+					<Select.Content>
+						{#each scopeOptions as option (option.path)}
+							<Select.Item value={option.path} label={option.label} />
+						{/each}
+					</Select.Content>
+				</Select.Root>
+			{/if}
+			{#if readOnlyInspection && onUseSessionCheckout}
+				<Button
+					size="sm"
+					variant="outline"
+					disabled={checkoutBusy}
+					data-testid="files-use-session-checkout"
+					onclick={useSessionCheckout}
+				>
+					{checkoutBusy ? "Changing…" : "Use as session folder"}
+				</Button>
+			{/if}
 			{#if explorer.activated && explorer.unavailable === null}
-				{#if scopeOptions.length > 1}
-					<Select.Root type="single" value={scopeValue} onValueChange={selectInspectionRoot}>
-						<Select.Trigger size="sm" class="w-44 min-w-0" aria-label="Folder this panel reads">
-							<span class="min-w-0 truncate">
-								{scopeOptions.find((option) => canonicalPath(option.path) === canonicalPath(scopeValue))?.label ??
-									"Session folder"}
-							</span>
-						</Select.Trigger>
-						<Select.Content>
-							{#each scopeOptions as option (option.path)}
-								<Select.Item value={option.path} label={option.label} />
-							{/each}
-						</Select.Content>
-					</Select.Root>
-				{/if}
 					<Input
 					type="search"
 					class="h-7 w-32"

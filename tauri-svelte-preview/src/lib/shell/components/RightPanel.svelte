@@ -47,6 +47,7 @@
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(root: string, paths: readonly string[]): void;
     filesInspectionRoot?: string | null;
+    checkoutDiscoveryRoots?: readonly string[];
     sourceControlInspectionRoot?: string | null;
     onFilesInspectionRootChange?(root: string | null): void;
     onSourceControlInspectionRootChange?(root: string | null): void;
@@ -65,6 +66,7 @@
     expandedPathsByRoot,
     onExpandedPathsChange,
     filesInspectionRoot,
+    checkoutDiscoveryRoots,
     sourceControlInspectionRoot,
     onFilesInspectionRootChange,
     onSourceControlInspectionRootChange,
@@ -86,6 +88,8 @@
         {onExpandedPathsChange}
         inspectionRoot={filesInspectionRoot}
         onInspectionRootChange={onFilesInspectionRootChange}
+        {checkoutDiscoveryRoots}
+        {onUseSessionCheckout}
       />
     </div>
     {#if activeId === 'source-control'}

@@ -72,6 +72,17 @@ assert.match(
   'hiding Files parks its bounded tree; only a changed or missing root clears it'
 );
 assert.match(filesPanel, /watchFileTree\(directories, signal, refreshChangedPaths\)/);
+assert.match(filesPanel, /listRepositoryCheckoutsFromTauri\(roots\)/);
+assert.match(filesPanel, /data-testid="files-use-session-checkout"/);
+assert.match(filesPanel, /if \(inspectionRoot === undefined\) return;/);
+assert.match(sourceControlPanel, /if \(inspectionRoot === undefined\) return;/);
+assert.match(page, /onUseSessionCheckout=\{[\s\S]*?selection\.useSessionCheckout\(root\)/);
+assert.match(
+  selectionController,
+  /async useSessionCheckout\(requestedRoot: string\): Promise<boolean>[\s\S]*?validateProjectRootFromTauri\(root, owner\.signal\)[\s\S]*?changeStructuredConversationCheckout\(ownedId, root\)/,
+  'checkout promotion is owned by the cancellable session-selection controller'
+);
+assert.match(editorSessions, /async resetForCheckoutChange\(stopSignal: AbortSignal\)/);
 assert.match(fileTreeWatch, /signal\.addEventListener\("abort", stop, \{ once: true \}\)/);
 assert.match(fileTreeWatch, /unwatch\?\.\(\)/);
 assert.match(fileTreeWatch, /\{ recursive: false, delayMs: 350 \}/);

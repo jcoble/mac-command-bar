@@ -99,6 +99,16 @@ export class EditorSessionController {
 		return true;
 	}
 
+	/** Drops file-backed editor state after the session moves to another checkout. */
+	async resetForCheckoutChange(stopSignal: AbortSignal): Promise<void> {
+		if (stopSignal.aborted) return;
+		await this.clearActiveEditors();
+		if (stopSignal.aborted) return;
+		this.releaseActiveEditorResources();
+		this.activeOwnedId = null;
+		this.activeSnapshot = null;
+	}
+
 	private async checkpointActiveWorkspace(stopSignal: AbortSignal): Promise<void> {
 		const ownedId = this.activeOwnedId;
 		if (!ownedId || stopSignal.aborted) return;

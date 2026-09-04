@@ -170,12 +170,16 @@
 		root={selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
-		filesRoot={selection.activeRootRemote ? "" : selection.filesProjectionRoot}
+		filesRoot={selection.activeRootRemote ? "" : selection.filesProjectionRoot || selection.durableSessionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(root, paths) => selection.rememberExpandedPaths(root, paths)}
-		filesInspectionRoot={null}
-		sourceControlInspectionRoot={null}
+		checkoutDiscoveryRoots={selection.controlledSession?.projectPath ? [selection.controlledSession.projectPath] : []}
+		onUseSessionCheckout={selection.controlledSession?.agent === "codex" && selection.controlledSession.origin === "app"
+			? async (root) => {
+					await selection.useSessionCheckout(root);
+				}
+			: undefined}
 	/>
 {/snippet}
 

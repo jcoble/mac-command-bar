@@ -212,6 +212,7 @@
   });
 
   $effect(() => {
+    if (inspectionRoot === undefined) return;
     const requestedRoot = canonicalPath(inspectionRoot ?? '');
     const sessionRootPath = canonicalPath(sessionRoot);
     const target = requestedRoot && requestedRoot !== sessionRootPath ? requestedRoot : '';

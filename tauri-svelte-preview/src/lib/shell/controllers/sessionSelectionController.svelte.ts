@@ -9,12 +9,17 @@ import {
 	readAgentConversationWorkspaceExpandedPathsFromTauri,
 	writeAgentConversationWorkspaceExpandedPathsFromTauri,
 	deleteAgentConversationSessionFromTauri,
+	validateProjectRootFromTauri,
 } from '../../tauriSource';
 import type { OwnedSession } from '../ownedSessions';
 import { removeOwnedSession } from '../stores/sessionRailStore.svelte';
 import { shellPanels } from '../shellPanels';
 import { NewSessionController } from './newSessionController.svelte';
 import { EditorSessionController, type EditorPanelLifecycle } from './editorSessionController.svelte';
+import {
+	changeStructuredConversationCheckout,
+	flushConversationSessionDraft,
+} from '../conversation/conversationService';
 
 export class SessionSelectionController {
 	controlledSelectionOwnedId = $state<string | null>(null);
@@ -155,6 +160,54 @@ export class SessionSelectionController {
 		const write = this.writeExpandedPathsAfter(previousWrite, ownedId, projectRoot, paths);
 		this.workspaceWriteQueue = write;
 		void this.ignoreWorkspaceWriteFailure(write);
+	}
+
+	/** One removable seam for changing every checkout-backed session surface. */
+	async useSessionCheckout(requestedRoot: string): Promise<boolean> {
+		const ownedId = this.activeOwnedId;
+		const selected = rail.owned.find((session) => session.ownedId === ownedId);
+		if (!ownedId || !selected || selected.agent !== 'codex' || selected.origin !== 'app') {
+			rail.error = 'Only the active Codex Assembly session can change checkout.';
+			return false;
+		}
+
+		const root = canonicalPath(requestedRoot);
+		if (!root) {
+			rail.error = 'A checkout folder is required.';
+			return false;
+		}
+
+		const owner = this.beginSelection();
+		try {
+			countInvoke('validate_project_root');
+			const validation = await validateProjectRootFromTauri(root, owner.signal);
+			if (!this.isCurrent(owner)) return false;
+			if (validation && (!validation.exists || !validation.isDirectory)) {
+				rail.error = 'That checkout folder is not available.';
+				return false;
+			}
+
+			await flushConversationSessionDraft(ownedId);
+			if (!this.isCurrent(owner)) return false;
+			const record = await changeStructuredConversationCheckout(ownedId, root);
+			if (!record) return false;
+			if (!this.isCurrent(owner)) return true;
+
+			await this.editorSessions.resetForCheckoutChange(owner.signal);
+			if (!this.isCurrent(owner)) return true;
+			this.expandedPathsByRoot = {};
+			this.sessionSelectionLayers.clearTreeView();
+			const updated = rail.owned.find((session) => session.ownedId === ownedId);
+			if (!updated) return true;
+			this.activeRootRemote = false;
+			await this.materializeSelection(updated, canonicalPath(record.cwd), owner, this.chatOwnedId, true);
+			return true;
+		} catch (error) {
+			if (this.isCurrent(owner)) {
+				rail.error = `Checkout change failed: ${error instanceof Error ? error.message : String(error)}`;
+			}
+			return false;
+		}
 	}
 
 	async removeSession(ownedId: string): Promise<void> {
