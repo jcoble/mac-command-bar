@@ -1,6 +1,7 @@
 <script lang="ts">
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import FileText from '@lucide/svelte/icons/file-text';
   import ListTodo from '@lucide/svelte/icons/list-todo';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Settings2 from '@lucide/svelte/icons/settings-2';
@@ -27,6 +28,27 @@
   const PAGE_SIZE = 25;
   const TASK_ROW_HEIGHT = 84;
   const TASK_ROW_OVERSCAN = 5;
+
+  function taskStatusIconClass(status: string): string {
+    switch (status.trim().toLowerCase()) {
+      case 'done':
+      case 'complete':
+      case 'completed':
+        return 'text-[var(--color-good)]';
+      case 'doing':
+      case 'in progress':
+      case 'working':
+        return 'text-[var(--color-live)]';
+      case 'blocked':
+        return 'text-[var(--color-bad)]';
+      case 'todo':
+      case 'to do':
+      case 'not started':
+        return 'text-[var(--color-attention)]';
+      default:
+        return 'text-[var(--color-idle)]';
+    }
+  }
 
   let settings = $state<NotionTaskSettings | null>(null);
   let tasks = $state<NotionTaskRow[]>([]);
@@ -357,8 +379,8 @@
             style={`transform: translateY(${(firstTaskIndex + index) * TASK_ROW_HEIGHT}px)`}
             onclick={() => (selectedTask = task)}
           >
-            <div class="grid size-12 place-items-center rounded-(--radius-sm) bg-accent text-muted-foreground transition-colors group-hover:text-foreground">
-              <ListTodo class="size-5" />
+            <div class={`grid size-12 place-items-center ${taskStatusIconClass(task.status)}`}>
+              <FileText class="size-7 stroke-[1.7]" aria-hidden="true" />
             </div>
             <div class="min-w-0">
               <p class="truncate text-(length:--text-heading) leading-snug font-(--text-heading-weight) text-foreground">{task.title}</p>
