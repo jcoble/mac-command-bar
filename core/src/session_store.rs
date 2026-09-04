@@ -1687,6 +1687,7 @@ impl SessionStore {
                         instr(lower(COALESCE(priority, '')), lower(?1)) > 0 OR
                         instr(lower(COALESCE(assignee, '')), lower(?1)) > 0)
                    AND (?2 = '' OR project = ?2)
+                   AND (?3 <> '' OR lower(status) <> 'future')
                    AND (?3 = '' OR status = ?3)
                  ORDER BY project COLLATE NOCASE ASC,
                           status COLLATE NOCASE ASC,
@@ -3498,6 +3499,28 @@ mod tests {
         assert_eq!(page.tasks, tasks[..1]);
         assert_eq!(page.projects, ["Assembly", "Rental Command"]);
         assert_eq!(page.statuses, ["Doing", "Todo"]);
+    }
+
+    #[test]
+    fn notion_task_projection_hides_future_tasks_unless_requested() {
+        let (_directory, _path, store) = open_temp_store();
+        let tasks = [
+            fixture_notion_task("task-active", "Assembly", "To Do", "Active", None),
+            fixture_notion_task("task-future", "Assembly", "Future", "Later", None),
+        ];
+        store
+            .replace_notion_task_projections(&tasks)
+            .expect("write Notion task snapshot");
+
+        let default_page = store
+            .query_notion_task_projections(0, 10, "", "", "")
+            .expect("read default Notion task page");
+        assert_eq!(default_page.tasks, tasks[..1]);
+
+        let future_page = store
+            .query_notion_task_projections(0, 10, "", "", "Future")
+            .expect("read future Notion task page");
+        assert_eq!(future_page.tasks, tasks[1..]);
     }
 
     #[test]
