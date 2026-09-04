@@ -249,56 +249,28 @@ assert.match(
 //   /nativeSessionMode,[\s\S]*?reasoningEffort: startConfig\?\.reasoningEffort \?\? state\.agentConfig\.reasoningEffort/,
 //   'revival must retain the session-start effort when it creates a new adapter process'
 // );
-// // The backend records and dispatches its own user message copy while the send
-// // request is still running, so screenshots recorded after it are never claimed.
-// assert.match(
-//   serviceSource,
-//   /recordSentConversationAttachments\(ownedId, \[\.\.\.state\.attachments\]\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
-//   'sent screenshots are recorded before the send request, not after it'
-// );
-// assert.doesNotMatch(
-//   serviceSource,
-//   /await invoke\('send_agent_conversation_message'[\s\S]*?recordSentConversationAttachments\(ownedId, \[\.\.\.state\.attachments\]\)/,
-//   'no later recording can race the user message the send produces'
-// );
-// assert.match(
-//   serviceSource,
-//   /catch \(error\) \{\s*(\/\/[^\n]*\n\s*)*recordSentConversationAttachments\(ownedId, \[\]\);/,
-//   'a failed send releases the screenshots it was holding'
-// );
+// The backend records and dispatches its own user message copy while the send
+// request is still running, so screenshots recorded after it are never claimed.
+assert.match(
+  serviceSource,
+  /recordSentConversationAttachments\(ownedId, state\.attachments\.map\(attachmentDisplayMetadata\)\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
+  'sent screenshot metadata is recorded before the send request, not after it'
+);
+assert.match(
+  serviceSource,
+  /catch \(error\) \{[\s\S]*?recordSentConversationAttachments\(ownedId, \[\]\);[\s\S]*?setConversationSending\(ownedId, false\);[\s\S]*?throw error;/,
+  'a failed first send releases its screenshot claim and clears the send gate'
+);
 
-// // A send failure is the session's, not the surface's. One surface serves every
-// // conversation, so a failure kept in component state was shown under all of
-// // them and stayed after a later send succeeded.
-// const surfaceSource = readFileSync(
-//   new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
-//   'utf8'
-// );
-// assert.match(
-//   surfaceSource,
-//   /const sendError = \$derived\(conversation\?\.sendError \?\? ''\)/,
-//   'the banner reads the failure from the session being viewed'
-// );
-// assert.doesNotMatch(
-//   surfaceSource,
-//   /let sendError = \$state/,
-//   'no shell-wide failure state can outlive the session it happened in'
-// );
-// assert.match(
-//   surfaceSource,
-//   /setConversationSendError\(ownedId, ''\);[\s\S]*?await sendStructuredMessage/,
-//   'a send clears its own session failure before it goes out'
-// );
-// assert.match(
-//   surfaceSource,
-//   /setConversationSendError\(ownedId, error instanceof Error/,
-//   'a failed send records the reason against the session it happened in'
-// );
-// assert.match(
-//   surfaceSource,
-//   /onDismissSendError=\{\(\) => setConversationSendError\(active\.ownedId, ''\)\}/,
-//   'the banner can be dismissed for the session showing it'
-// );
+// A send failure belongs to one session and must be visible beside its composer.
+const surfaceSource = readFileSync(
+  new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
+  'utf8'
+);
+assert.match(surfaceSource, /const sendError = \$derived\(conversation\?\.sendError \?\? ''\)/);
+assert.doesNotMatch(surfaceSource, /let sendError = \$state/);
+assert.match(surfaceSource, /setConversationSendError\(ownedId, ''\);[\s\S]*?await sendStructuredMessage/);
+assert.match(surfaceSource, /setConversationSendError\(ownedId, error instanceof Error/);
 // const composerSource = readFileSync(
 //   new URL('../src/lib/shell/components/conversation/ConversationComposer.svelte', import.meta.url),
 //   'utf8'
@@ -309,32 +281,16 @@ assert.match(
 //   'the send failure banner offers its dismiss control'
 // );
 
-// const refusesImages = { prompt: { image: false } };
-// const acceptsImages = { prompt: { image: true } };
-// assert.equal(
-//   sendSupportsImages(refusesImages, 'connected'),
-//   false,
-//   'a connected session that reports no image prompts still refuses images'
-// );
-// assert.equal(
-//   sendSupportsImages(acceptsImages, 'connected'),
-//   true,
-//   'a connected session that reports image prompts accepts images'
-// );
-// assert.equal(
-//   sendSupportsImages(refusesImages, 'disconnected'),
-//   true,
-//   'a suspended session sends: its stored snapshot can predate a provider upgrade'
-// );
-// assert.equal(
-//   sendSupportsImages(null, 'connected'),
-//   true,
-//   'an unread snapshot is not a refusal'
-// );
-// assert.match(
-//   serviceSource,
-//   /const supportsImages = sendSupportsImages\(state\.capabilities, state\.connectionState\)/,
-//   'the send path must gate images on the connection state, not on the stored snapshot alone'
-// );
+const refusesImages = { prompt: { image: false } };
+const acceptsImages = { prompt: { image: true } };
+assert.equal(sendSupportsImages(refusesImages, 'connected'), false);
+assert.equal(sendSupportsImages(acceptsImages, 'connected'), true);
+assert.equal(sendSupportsImages(refusesImages, 'disconnected'), true);
+assert.equal(sendSupportsImages(null, 'connected'), true);
+assert.match(
+  serviceSource,
+  /const supportsImages = sendSupportsImages\(state\.capabilities, state\.connectionState\)/,
+  'the send path gates images on the live connection rather than a stale snapshot'
+);
 
-// console.log('conversationSendRecovery.test.ts passed');
+console.log('conversationSendRecovery.test.ts passed');
