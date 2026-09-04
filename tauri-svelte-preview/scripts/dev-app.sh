@@ -140,4 +140,18 @@ if [ "$AGY_ADAPTER_CONFIGURED" -eq 1 ]; then
   echo "dev-app: antigravity adapter $MCB_AGY_ACP_PATH"
 fi
 
+# A previous shell can exit while its Vite server remains alive. In that case,
+# attach the new shell to this checkout's server instead of failing on port 5177.
+if [ "$#" -eq 0 ]; then
+  VITE_PID="$(lsof -tiTCP:5177 -sTCP:LISTEN 2>/dev/null | head -n 1)"
+  if [ -n "$VITE_PID" ]; then
+    VITE_CWD="$(lsof -a -p "$VITE_PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
+    APP_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+    if [ "$VITE_CWD" = "$APP_DIR" ]; then
+      echo "dev-app: attaching to the existing Vite server on 127.0.0.1:5177"
+      set -- --config "$APP_DIR/src-tauri/tauri.dev.attach.conf.json"
+    fi
+  fi
+fi
+
 exec pnpm exec tauri dev "$@"

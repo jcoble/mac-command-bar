@@ -7,6 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
+    "app:dev": "pnpm --dir tauri-svelte-preview tauri:dev",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
