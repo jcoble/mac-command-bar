@@ -1,5 +1,6 @@
 <script lang="ts">
   import ExternalLink from '@lucide/svelte/icons/external-link';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ListTodo from '@lucide/svelte/icons/list-todo';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Settings2 from '@lucide/svelte/icons/settings-2';
@@ -21,6 +22,7 @@
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
+  import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 100;
 
@@ -41,6 +43,7 @@
   let dataSourceId = $state('');
   let token = $state('');
   let oauthController: AbortController | null = null;
+  let selectedTask = $state<NotionTaskRow | null>(null);
   let generation = 0;
   let readGeneration = 0;
 
@@ -203,10 +206,16 @@
     projects = [];
     statuses = [];
     token = '';
+    selectedTask = null;
   });
 </script>
 
-<div class="flex h-full min-h-0 flex-col">
+<div class="relative h-full min-h-0 overflow-hidden">
+<section
+  class="absolute inset-0 flex min-h-0 flex-col transition-transform duration-200 motion-reduce:transition-none {selectedTask ? '-translate-x-full' : 'translate-x-0'}"
+  aria-hidden={selectedTask !== null}
+  inert={selectedTask !== null}
+>
   <PanelHeader title="Tasks" count={tasks.length}>
     {#snippet actions()}
       <IconButton label="Task settings" onclick={() => (showSetup = !showSetup)}><Settings2 /></IconButton>
@@ -298,22 +307,24 @@
     {:else}
       <div class="grid gap-px px-2 pb-3">
         {#each tasks as task (task.sourceTaskId)}
-          <article class="group grid gap-1 rounded-md px-2 py-2 hover:bg-accent/60">
+          <button
+            type="button"
+            class="group grid w-full gap-1 rounded-md px-2 py-2 text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onclick={() => (selectedTask = task)}
+          >
             <div class="flex min-w-0 items-start gap-2">
               <div class="min-w-0 flex-1">
                 <p class="line-clamp-2 text-sm leading-snug font-medium text-foreground">{task.title}</p>
                 <p class="mt-1 truncate text-xs text-muted-foreground">{task.project} · {task.status}</p>
               </div>
-              <IconButton label="Open in Notion" onclick={() => void openNotionUrl(task.sourceUrl)}>
-                <ExternalLink />
-              </IconButton>
+              <ChevronRight class="mt-1 size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
             </div>
             {#if task.priority || task.assignee || task.dueDate}
               <p class="truncate text-[11px] text-muted-foreground">
                 {[task.priority, task.assignee, task.dueDate].filter(Boolean).join(' · ')}
               </p>
             {/if}
-          </article>
+          </button>
         {/each}
         {#if hasMore}
           <Button variant="ghost" disabled={loading} onclick={() => void loadMore()}>{loading ? 'Loading…' : 'Load more'}</Button>
@@ -321,4 +332,20 @@
       </div>
     {/if}
   </ScrollArea>
+</section>
+
+<section
+  class="absolute inset-0 transition-transform duration-200 motion-reduce:transition-none {selectedTask ? 'translate-x-0' : 'translate-x-full'}"
+  aria-hidden={selectedTask === null}
+>
+  {#if selectedTask}
+    {#key selectedTask.sourceTaskId}
+      <NotionTaskViewer
+        task={selectedTask}
+        onBack={() => (selectedTask = null)}
+        onOpenExternal={(url) => void openNotionUrl(url)}
+      />
+    {/key}
+  {/if}
+</section>
 </div>

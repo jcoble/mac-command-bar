@@ -15,6 +15,7 @@ const SECURITY_ITEM_NOT_FOUND: i32 = 44;
 const NOTION_VERSION: &str = "2026-03-11";
 const NOTION_PAGE_SIZE: usize = 100;
 const MAX_NOTION_TASKS: usize = 500;
+const MAX_NOTION_DETAIL_BLOCKS: usize = 200;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +58,20 @@ pub struct NotionTaskPage {
     projects: Vec<String>,
     statuses: Vec<String>,
     has_more: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionTaskDetailBlock {
+    kind: String,
+    text: String,
+    checked: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionTaskDetail {
+    blocks: Vec<NotionTaskDetailBlock>,
 }
 
 struct PendingNotionTask {
@@ -334,6 +349,22 @@ pub async fn list_notion_tasks(
 }
 
 #[tauri::command]
+pub async fn read_notion_task_detail(source_task_id: String) -> Result<NotionTaskDetail, String> {
+    if source_task_id.len() > 64
+        || !source_task_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        return Err("The Notion task ID is invalid".to_string());
+    }
+    let token = tauri::async_runtime::spawn_blocking(read_keychain_token)
+        .await
+        .map_err(|error| format!("Notion Keychain task failed: {error}"))??
+        .ok_or_else(|| "Connect Notion first".to_string())?;
+    read_task_blocks(&reqwest::Client::new(), &token, &source_task_id).await
+}
+
+#[tauri::command]
 pub async fn refresh_notion_tasks(
     manager: tauri::State<'_, AgentRuntimeManager>,
 ) -> Result<NotionTaskRefreshReceipt, String> {
@@ -421,6 +452,77 @@ async fn query_task_pages(
         }
     }
     Ok(tasks)
+}
+
+async fn read_task_blocks(
+    client: &reqwest::Client,
+    token: &str,
+    source_task_id: &str,
+) -> Result<NotionTaskDetail, String> {
+    let mut blocks = Vec::new();
+    let mut cursor: Option<String> = None;
+    while blocks.len() < MAX_NOTION_DETAIL_BLOCKS {
+        let mut request = notion_request(
+            client.get(format!(
+                "https://api.notion.com/v1/blocks/{source_task_id}/children"
+            )),
+            token,
+        )
+        .query(&[("page_size", NOTION_PAGE_SIZE.to_string())]);
+        if let Some(value) = &cursor {
+            request = request.query(&[("start_cursor", value)]);
+        }
+        let payload = response_payload(
+            request
+                .send()
+                .await
+                .map_err(|error| format!("Notion could not read this task: {error}"))?,
+        )
+        .await?;
+        let results = payload
+            .get("results")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "Notion returned no task content".to_string())?;
+        blocks.extend(
+            results
+                .iter()
+                .take(MAX_NOTION_DETAIL_BLOCKS - blocks.len())
+                .filter_map(detail_block),
+        );
+        if payload.get("has_more").and_then(Value::as_bool) != Some(true) {
+            break;
+        }
+        cursor = payload
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(NotionTaskDetail { blocks })
+}
+
+fn detail_block(block: &Value) -> Option<NotionTaskDetailBlock> {
+    let kind = block.get("type")?.as_str()?;
+    if kind == "divider" {
+        return Some(NotionTaskDetailBlock {
+            kind: kind.to_string(),
+            text: String::new(),
+            checked: None,
+        });
+    }
+    let value = block.get(kind)?;
+    let text = rich_text(value.get("rich_text")?).unwrap_or_default();
+    if text.is_empty() && kind != "to_do" {
+        return None;
+    }
+    Some(NotionTaskDetailBlock {
+        kind: kind.to_string(),
+        text,
+        checked: (kind == "to_do")
+            .then(|| value.get("checked").and_then(Value::as_bool).unwrap_or(false)),
+    })
 }
 
 async fn load_project_names(
@@ -666,5 +768,33 @@ mod tests {
         assert_eq!(task.status, "Doing");
         assert_eq!(task.assignee.as_deref(), Some("Codex"));
         assert_eq!(task.fetched_at_ms, 42);
+    }
+
+    #[test]
+    fn task_detail_projects_text_and_checkbox_state() {
+        let paragraph = detail_block(&json!({
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [
+                    { "plain_text": "First " },
+                    { "plain_text": "note" }
+                ]
+            }
+        }))
+        .unwrap();
+        let checkbox = detail_block(&json!({
+            "type": "to_do",
+            "to_do": {
+                "rich_text": [{ "plain_text": "Verify it" }],
+                "checked": true
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(paragraph.kind, "paragraph");
+        assert_eq!(paragraph.text, "First note");
+        assert_eq!(paragraph.checked, None);
+        assert_eq!(checkbox.text, "Verify it");
+        assert_eq!(checkbox.checked, Some(true));
     }
 }
