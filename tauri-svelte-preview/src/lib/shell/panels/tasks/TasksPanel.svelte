@@ -20,7 +20,6 @@
     type NotionTaskRow,
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
-  import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
 
   const PAGE_SIZE = 100;
 
@@ -125,10 +124,14 @@
     }
   }
 
-  async function openNotionTokenSetup(): Promise<void> {
-    await openUrlInBrowser({
-      url: 'https://developers.notion.com/guides/get-started/personal-access-tokens#create-a-pat'
-    });
+  async function openNotionUrl(url: string): Promise<void> {
+    error = '';
+    try {
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(url);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
   }
 
   async function disconnect(): Promise<void> {
@@ -193,7 +196,10 @@
         Create a personal token in Notion and paste it once. Assembly finds your Tasks database
         automatically, and the token stays in macOS Keychain.
       </p>
-      <Button variant="secondary" onclick={() => void openNotionTokenSetup()}>
+      <Button
+        variant="secondary"
+        onclick={() => void openNotionUrl('https://developers.notion.com/guides/get-started/personal-access-tokens#create-a-pat')}
+      >
         Open Notion token setup <ExternalLink class="size-3.5" />
       </Button>
       <Input bind:value={token} type="password" placeholder={settings?.hasToken ? 'Token already stored' : 'Paste personal token'} aria-label="Notion personal access token" />
@@ -264,7 +270,7 @@
                 <p class="line-clamp-2 text-sm leading-snug font-medium text-foreground">{task.title}</p>
                 <p class="mt-1 truncate text-xs text-muted-foreground">{task.project} · {task.status}</p>
               </div>
-              <IconButton label="Open in Notion" onclick={() => void openUrlInBrowser({ url: task.sourceUrl })}>
+              <IconButton label="Open in Notion" onclick={() => void openNotionUrl(task.sourceUrl)}>
                 <ExternalLink />
               </IconButton>
             </div>
