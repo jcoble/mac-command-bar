@@ -21,6 +21,8 @@
   import GitCompareArrows from '@lucide/svelte/icons/git-compare-arrows';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
+  import PanelRightClose from '@lucide/svelte/icons/panel-right-close';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
 
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import type { CenterTabId } from '$lib/shell/workbenchNavigation';
@@ -28,8 +30,10 @@
   interface Props {
     activeId: CenterTabId;
     onSelect(id: CenterTabId): void;
+    rightPanelOpen: boolean;
+    onToggleRightPanel(): void;
   }
-  let { activeId, onSelect }: Props = $props();
+  let { activeId, onSelect, rightPanelOpen, onToggleRightPanel }: Props = $props();
 
   const TABS: ReadonlyArray<{ id: CenterTabId; label: string; icon: typeof FileCode2 }> = [
     { id: 'session', label: 'Session', icon: MessagesSquare },
@@ -65,6 +69,21 @@
       </IconButton>
     </span>
   {/each}
+  <span class="panel-divider" aria-hidden="true"></span>
+  <IconButton
+    label={rightPanelOpen ? 'Close right panel' : 'Open right panel'}
+    size="sm"
+    side="bottom"
+    variant="ghost"
+    data-testid="toggle-right-panel"
+    onclick={onToggleRightPanel}
+  >
+    {#if rightPanelOpen}
+      <PanelRightClose class="size-4" strokeWidth={1.6} aria-hidden="true" />
+    {:else}
+      <PanelRightOpen class="size-4" strokeWidth={1.6} aria-hidden="true" />
+    {/if}
+  </IconButton>
 </nav>
 
 <style>
@@ -102,13 +121,21 @@
     place-items: center;
   }
 
+  .panel-divider {
+    width: 1px;
+    height: 18px;
+    margin: 0 2px;
+    background: var(--color-border);
+  }
+
   /* Marks on the capsule's own surface: no fill and no shadow of their own, so
      the only filled disc in the group is the one that means something. 28px is
      the kit's floor for an icon button — a smaller square is one a pointer
      misses — and the capsule is built around it rather than the other way
      round. Scoped through `.tab` so the language switch, which is a button too,
      is not shaped like a surface tab. */
-  .tab :global(button) {
+  .tab :global(button),
+  .center-pills > :global(button) {
     width: 28px;
     height: 28px;
     border-radius: var(--radius-pill);
@@ -116,7 +143,8 @@
     color: var(--color-text-2);
   }
 
-  .tab :global(button:hover) {
+  .tab :global(button:hover),
+  .center-pills > :global(button:hover) {
     background: var(--pill-surface-hover);
     color: var(--color-text);
     /* The kit draws a soft 4px ring around a hovered icon button. On a button

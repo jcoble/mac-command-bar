@@ -183,6 +183,7 @@
 
 {#snippet toolsArea()}
 	<RightPanel
+		visible={workbench.rightPanelOpen}
 		activeId={workbench.rightTab}
 		onSelect={selectRightTab}
 		root={selection.durableSessionRoot}
@@ -217,6 +218,8 @@
 	<CenterCornerTabs
 		activeId={workbench.centerTab}
 		onSelect={selectCenterTab}
+		rightPanelOpen={workbench.rightPanelOpen}
+		onToggleRightPanel={() => workbench.toggleRightPanel()}
 	/>
 {/snippet}
 

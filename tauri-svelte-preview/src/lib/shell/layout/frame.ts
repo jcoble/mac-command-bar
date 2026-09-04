@@ -135,6 +135,8 @@ export interface ShellFrame {
    * back into the new host.
    */
   setDockPresent(present: boolean): void;
+  /** Put the right tools region in the grid or remove it completely. */
+  setToolsPresent(present: boolean): void;
   /**
    * Say what a region may be dragged to, without touching the width it has.
    *
@@ -176,6 +178,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   let synchronizingDepth = 0;
   let disposed = false;
   let layoutVersion = 0;
+  let rememberedToolsWidth = TOOLS_WIDTH;
 
   const adopt = (id: string, host: HTMLElement): void => {
     const region = options.regions[id as ShellRegionId];
@@ -263,6 +266,17 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     });
   };
 
+  const addTools = (): void => {
+    api.addPanel({
+      id: 'tools',
+      component: COMPONENT,
+      position: { direction: 'right', referencePanel: 'center' },
+      size: rememberedToolsWidth,
+      minimumWidth: TOOLS_MIN_WIDTH,
+      maximumWidth: TOOLS_MAX_WIDTH
+    });
+  };
+
   /** The default arrangement; also the fallback whenever restore is unusable. */
   const buildDefault = (): void => {
     api.addPanel({ id: 'center', component: COMPONENT, minimumWidth: CENTER_MIN_WIDTH });
@@ -278,14 +292,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     // Every panel — files, source control, worktrees, run, context, agents,
     // browser, history — shares one column on the right, and only one of them
     // is open at a time.
-    api.addPanel({
-      id: 'tools',
-      component: COMPONENT,
-      position: { direction: 'right', referencePanel: 'center' },
-      size: TOOLS_WIDTH,
-      minimumWidth: TOOLS_MIN_WIDTH,
-      maximumWidth: TOOLS_MAX_WIDTH
-    });
+    addTools();
     addDock();
     // Say the two side widths again, now that every region exists.
     //
@@ -412,12 +419,33 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     }
   };
 
+  const setToolsPresent = (present: boolean): void => {
+    try {
+      const panel = api.getPanel('tools');
+      if (present === Boolean(panel)) return;
+      const sessions = regionWidth('sessions');
+      if (panel) rememberedToolsWidth = panel.api.width;
+      runSynchronized(() => {
+        if (present) {
+          addTools();
+          setRegionWidth('tools', rememberedToolsWidth);
+        } else if (panel) {
+          api.removePanel(panel);
+        }
+        if (sessions !== null) setRegionWidth('sessions', sessions);
+      });
+    } catch {
+      // nothing to do — the arrangement is still usable
+    }
+  };
+
   return {
     api,
     ready,
     setRegionWidth,
     setRegionHeight,
     setDockPresent,
+    setToolsPresent,
     setRegionLimits,
     regionWidth,
     resetLayout(): void {

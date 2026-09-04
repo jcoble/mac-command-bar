@@ -36,6 +36,7 @@ export interface FrameControls {
 	setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
 	setRegionHeight(id: ShellRegionId, height: number, limits?: RegionHeightLimits): void;
 	setDockPresent(present: boolean): void;
+	setToolsPresent(present: boolean): void;
 	setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
 	regionWidth(id: ShellRegionId): number | null;
 }
@@ -45,6 +46,7 @@ export class WorkbenchController {
 	rightTab = $state<RightTabId>(DEFAULT_RIGHT_TAB);
 	diffMode = $state<DiffMode>(DEFAULT_DIFF_MODE);
 	sessionsCollapsed = $state(false);
+	rightPanelOpen = $state(true);
 
 	private frameControls: FrameControls | null = null;
 	private restoringTabs = false;
@@ -56,6 +58,7 @@ export class WorkbenchController {
 			maximumWidth: TOOLS_MAX_WIDTH,
 		});
 		controls.setRegionLimits('center', { minimumWidth: CENTER_MIN_WIDTH });
+		controls.setToolsPresent(this.rightPanelOpen);
 		if (this.sessionsCollapsed) {
 			this.applySessionsWidth(true);
 		} else {
@@ -84,10 +87,23 @@ export class WorkbenchController {
 
 	selectRightTab(id: RightTabId): void {
 		this.rightTab = id;
-		shellPanels.filesVisible(id === 'files');
-		shellPanels.worktreesVisible(id === 'worktrees');
-		shellPanels.stacksVisible(id === 'run');
-		if (id === 'browser') shellPanels.panelShown('browser');
+		this.setRightPanelOpen(true);
+	}
+
+	toggleRightPanel(): void {
+		this.setRightPanelOpen(!this.rightPanelOpen);
+	}
+
+	private setRightPanelOpen(open: boolean): void {
+		this.rightPanelOpen = open;
+		this.frameControls?.setToolsPresent(open);
+		this.syncRightPanelVisibility();
+		this.syncGitSurfaceVisibility();
+	}
+
+	private adoptRightTab(id: RightTabId): void {
+		this.rightTab = id;
+		this.syncRightPanelVisibility();
 		this.syncGitSurfaceVisibility();
 	}
 
@@ -114,7 +130,7 @@ export class WorkbenchController {
 
 	/** Remove outgoing lazy surfaces while the next session is being restored. */
 	beginSessionSwitch(): void {
-		this.selectRightTab(DEFAULT_RIGHT_TAB);
+		this.adoptRightTab(DEFAULT_RIGHT_TAB);
 		this.selectCenterTab(DEFAULT_CENTER_TAB);
 	}
 
@@ -125,7 +141,7 @@ export class WorkbenchController {
 			if (snapshot?.center) this.frameControls?.restoreCenterLayout(snapshot.center);
 			const center = snapshot?.center?.activePanelId;
 			this.selectCenterTab(this.isCenterTabId(center ?? '') ? center as CenterTabId : DEFAULT_CENTER_TAB);
-			this.selectRightTab(snapshot?.rightTab ?? DEFAULT_RIGHT_TAB);
+			this.adoptRightTab(snapshot?.rightTab ?? DEFAULT_RIGHT_TAB);
 		} finally {
 			this.restoringTabs = false;
 		}
@@ -133,7 +149,10 @@ export class WorkbenchController {
 	}
 
 	resetLayout(): void {
+		this.rightPanelOpen = true;
 		this.frameControls?.resetLayout();
+		this.syncRightPanelVisibility();
+		this.syncGitSurfaceVisibility();
 	}
 
 	collapseSessions(collapsed: boolean): void {
@@ -161,12 +180,20 @@ export class WorkbenchController {
 
 	private syncGitSurfaceVisibility(): void {
 		if (this.restoringTabs) return;
-		const graphVisible = this.centerTab === 'git-history' || this.rightTab === 'source-control';
+		const graphVisible = this.centerTab === 'git-history' || (this.rightPanelOpen && this.rightTab === 'source-control');
 		shellPanels.sourceControlVisible(graphVisible);
 		if (graphVisible) return;
 		gitService.releaseHistorySurface();
 		gitCommitFilesService.release();
 		if (this.centerTab !== 'diff') gitService.clearSelection();
+	}
+
+	private syncRightPanelVisibility(): void {
+		const visible = this.rightPanelOpen;
+		shellPanels.filesVisible(visible && this.rightTab === 'files');
+		shellPanels.worktreesVisible(visible && this.rightTab === 'worktrees');
+		shellPanels.stacksVisible(visible && this.rightTab === 'run');
+		if (visible && this.rightTab === 'browser') shellPanels.panelShown('browser');
 	}
 
 	private isCenterTabId(value: string): value is CenterTabId {

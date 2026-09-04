@@ -63,6 +63,8 @@
        * keeps its divider and the room around it. See `setDockPresent` in
        * `frame.ts`. */
       setDockPresent: (present: boolean) => void;
+      /** Put the right tools region in the grid or remove it completely. */
+      setToolsPresent: (present: boolean) => void;
       /** Say what a region may be dragged to without moving it. See
        * `setRegionLimits` in `frame.ts`. */
       setRegionLimits: (id: ShellRegionId, limits: RegionWidthLimits) => void;
@@ -181,6 +183,7 @@
           setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
           setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
           setDockPresent: (present) => frame?.setDockPresent(present),
+          setToolsPresent: (present) => frame?.setToolsPresent(present),
           setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
           regionWidth: (id) => frame?.regionWidth(id) ?? null
         });

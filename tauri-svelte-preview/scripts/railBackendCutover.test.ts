@@ -22,6 +22,9 @@ const editorSessions = read('../src/lib/shell/controllers/editorSessionControlle
 const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
 const languageControls = read('../src/lib/shell/components/LanguageIntelligenceControls.svelte');
 const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
+const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
+const frame = read('../src/lib/shell/layout/frame.ts');
+const workbenchController = read('../src/lib/shell/controllers/workbenchController.svelte.ts');
 const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
 const sourceControlPanel = read('../src/lib/shell/panels/sourceControl/SourceControlPanel.svelte');
 
@@ -99,6 +102,12 @@ assert.match(toolRun, /if \(runWasActive\)[\s\S]*?runOpen = false/);
 assert.match(elapsed, /if \(totalHours < 24\)/);
 assert.match(rowVisual, /\.row-visual:hover :global\(\.line-title\)/);
 assert.doesNotMatch(centerTabs, /LanguageIntelligenceControls/);
+assert.match(centerTabs, /data-testid="toggle-right-panel"/);
+assert.match(page, /visible=\{workbench\.rightPanelOpen\}/);
+assert.match(frame, /setToolsPresent[\s\S]*?api\.removePanel\(panel\)/);
+assert.match(workbenchController, /toggleRightPanel\(\)[\s\S]*?setToolsPresent\(open\)/);
+assert.match(rightPanel, /visible && activeId === 'browser'/);
+assert.match(rightPanel, /visible=\{visible && activeId === 'files'\}/);
 assert.match(utilityStrip, /<LanguageIntelligenceControls \/>/);
 assert.match(languageControls, /<Switch[\s\S]*?size="sm"/);
 assert.match(languageControls, /data-tone=\{tone\}/);

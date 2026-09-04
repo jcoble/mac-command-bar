@@ -33,6 +33,8 @@
   import RightPanelTabs from './RightPanelTabs.svelte';
 
   interface Props {
+    /** False while the whole right grid region is closed. */
+    visible: boolean;
     /** The tab on screen. */
     activeId: RightTabId;
     onSelect(id: RightTabId): void;
@@ -62,6 +64,7 @@
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
+    visible,
     activeId,
     onSelect,
     root,
@@ -90,9 +93,13 @@
   <RightPanelTabs {activeId} {onSelect} />
 
   <div class="panel-bodies">
-    <div class="panel-body" class:showing={activeId === 'files'} aria-hidden={activeId !== 'files'}>
+    <div
+      class="panel-body"
+      class:showing={visible && activeId === 'files'}
+      aria-hidden={!visible || activeId !== 'files'}
+    >
       <FilesPanel
-        visible={activeId === 'files'}
+        visible={visible && activeId === 'files'}
         root={filesRoot ?? root}
         ownedId={filesOwnedId === undefined ? ownedId : filesOwnedId}
         {onRootUnavailable}
@@ -104,7 +111,7 @@
         {onUseSessionCheckout}
       />
     </div>
-    {#if activeId === 'source-control'}
+    {#if visible && activeId === 'source-control'}
       <div class="panel-body showing">
         <SourceControlPanel
           visible={true}
@@ -119,17 +126,17 @@
           {onUseSessionCheckout}
         />
       </div>
-    {:else if activeId === 'worktrees'}
+    {:else if visible && activeId === 'worktrees'}
       <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
-    {:else if activeId === 'run'}
+    {:else if visible && activeId === 'run'}
       <div class="panel-body showing"><RunPanel visible={true} {root} {ownedId} /></div>
-    {:else if activeId === 'context'}
+    {:else if visible && activeId === 'context'}
       <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
-    {:else if activeId === 'agents'}
+    {:else if visible && activeId === 'agents'}
       <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
-    {:else if activeId === 'browser'}
+    {:else if visible && activeId === 'browser'}
       <div class="panel-body showing"><BrowserPanel visible={true} {root} {ownedId} /></div>
-    {:else if activeId === 'history'}
+    {:else if visible && activeId === 'history'}
       <div class="panel-body showing">
         <HistoryPanel
           visible={true}
@@ -139,7 +146,7 @@
           onWorkspaceStateChange={onHistoryWorkspaceChange}
         />
       </div>
-    {:else if activeId === 'tasks'}
+    {:else if visible && activeId === 'tasks'}
       <div class="panel-body showing"><TasksPanel /></div>
     {/if}
   </div>
