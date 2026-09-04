@@ -1,0 +1,13 @@
+name = "assembly-notion-oauth"
+main = "src/worker.ts"
+compatibility_date = "2026-05-11"
+
+routes = [
+  { pattern = "auth.coblesolutions.com", custom_domain = true }
+]
+
+[[d1_databases]]
+binding = "OAUTH_DB"
+database_name = "assembly-notion-oauth"
+database_id = "56a132da-cd6f-4398-9fd7-06a2fd148601"
+migrations_dir = "migrations"

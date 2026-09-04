@@ -20,6 +20,7 @@
     type NotionTaskRow,
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
+  import { connectNotion } from '$lib/shell/notionOAuth.ts';
 
   const PAGE_SIZE = 100;
 
@@ -39,6 +40,7 @@
   let showSetup = $state(false);
   let dataSourceId = $state('');
   let token = $state('');
+  let oauthController: AbortController | null = null;
   let generation = 0;
   let readGeneration = 0;
 
@@ -124,6 +126,30 @@
     }
   }
 
+  async function connectWorkspace(): Promise<void> {
+    oauthController?.abort();
+    const controller = new AbortController();
+    oauthController = controller;
+    saving = true;
+    error = '';
+    try {
+      settings = await connectNotion(controller.signal);
+      if (controller.signal.aborted || oauthController !== controller) return;
+      dataSourceId = settings.dataSourceId;
+      showSetup = false;
+      await refresh(generation);
+    } catch (cause) {
+      if (!controller.signal.aborted && oauthController === controller) {
+        error = cause instanceof Error ? cause.message : String(cause);
+      }
+    } finally {
+      if (oauthController === controller) {
+        oauthController = null;
+        saving = false;
+      }
+    }
+  }
+
   async function openNotionUrl(url: string): Promise<void> {
     error = '';
     try {
@@ -169,6 +195,8 @@
     void initialize(owner);
   });
   onDestroy(() => {
+    oauthController?.abort();
+    oauthController = null;
     generation += 1;
     readGeneration += 1;
     tasks = [];
@@ -193,9 +221,12 @@
     <div class="mx-3 mb-3 grid gap-2 rounded-lg border border-border bg-card p-3">
       <p class="text-sm font-medium text-foreground">Notion workspace</p>
       <p class="text-xs leading-snug text-muted-foreground">
-        Secure browser sign-in is not configured in this build yet. When it is ready, you will
-        authorize your workspace in Notion and return here automatically.
+        Sign in through your default browser, choose the pages Assembly can read, then return here.
       </p>
+      <Button disabled={saving} onclick={() => void connectWorkspace()}>
+        {saving ? 'Waiting for Notion…' : 'Connect Notion'}
+        {#if !saving}<ExternalLink class="size-3.5" />{/if}
+      </Button>
       <details class="grid gap-2 text-xs text-muted-foreground">
         <summary class="cursor-pointer select-none py-1">Developer token setup</summary>
         <div class="grid gap-2 pt-1">

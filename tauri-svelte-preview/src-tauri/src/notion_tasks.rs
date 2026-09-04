@@ -222,6 +222,28 @@ pub async fn save_notion_task_settings(
     })
 }
 
+pub(crate) async fn save_oauth_connection(
+    manager: &AgentRuntimeManager,
+    token: String,
+) -> Result<NotionTaskSettings, String> {
+    let data_source_id = discover_task_data_source(&reqwest::Client::new(), &token).await?;
+    let token_to_store = token.clone();
+    tauri::async_runtime::spawn_blocking(move || write_keychain_token(&token_to_store))
+        .await
+        .map_err(|error| format!("Notion Keychain task failed: {error}"))??;
+    let stored = StoredSettings {
+        data_source_id: data_source_id.clone(),
+    };
+    manager.write_app_setting(
+        SETTINGS_KEY,
+        &serde_json::to_string(&stored).map_err(|error| error.to_string())?,
+    )?;
+    Ok(NotionTaskSettings {
+        data_source_id,
+        has_token: true,
+    })
+}
+
 async fn discover_task_data_source(
     client: &reqwest::Client,
     token: &str,

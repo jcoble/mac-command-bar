@@ -38,6 +38,7 @@ mod git_pr;
 mod git_workspace;
 mod helper;
 mod lsp;
+mod notion_oauth;
 mod notion_tasks;
 mod orchestration;
 mod product_identity;
@@ -6898,6 +6899,8 @@ fn main() {
             notion_tasks::clear_notion_task_settings,
             notion_tasks::list_notion_tasks,
             notion_tasks::refresh_notion_tasks,
+            notion_oauth::begin_notion_oauth,
+            notion_oauth::claim_notion_oauth,
             helper::run_helper_job,
             helper::set_helper_key,
             helper::read_helper_settings,
