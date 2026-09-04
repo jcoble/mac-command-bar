@@ -191,32 +191,35 @@
 
   {#if showSetup}
     <div class="mx-3 mb-3 grid gap-2 rounded-lg border border-border bg-card p-3">
-      <p class="text-sm font-medium text-foreground">Connect your Notion workspace</p>
+      <p class="text-sm font-medium text-foreground">Notion workspace</p>
       <p class="text-xs leading-snug text-muted-foreground">
-        Create a personal token in Notion and paste it once. Assembly finds your Tasks database
-        automatically, and the token stays in macOS Keychain.
+        Secure browser sign-in is not configured in this build yet. When it is ready, you will
+        authorize your workspace in Notion and return here automatically.
       </p>
-      <Button
-        variant="secondary"
-        onclick={() => void openNotionUrl('https://developers.notion.com/guides/get-started/personal-access-tokens#create-a-pat')}
-      >
-        Open Notion token setup <ExternalLink class="size-3.5" />
-      </Button>
-      <Input bind:value={token} type="password" placeholder={settings?.hasToken ? 'Token already stored' : 'Paste personal token'} aria-label="Notion personal access token" />
-      <details class="text-xs text-muted-foreground">
-        <summary class="cursor-pointer select-none py-1">Advanced</summary>
-        <div class="pt-1">
+      <details class="grid gap-2 text-xs text-muted-foreground">
+        <summary class="cursor-pointer select-none py-1">Developer token setup</summary>
+        <div class="grid gap-2 pt-1">
+          <p class="leading-snug">
+            For local development only. Production users will not need a token or data source ID.
+          </p>
+          <Button
+            variant="secondary"
+            onclick={() => void openNotionUrl('https://developers.notion.com/guides/get-started/personal-access-tokens#create-a-pat')}
+          >
+            Open developer token setup <ExternalLink class="size-3.5" />
+          </Button>
+          <Input bind:value={token} type="password" placeholder={settings?.hasToken ? 'Token already stored' : 'Paste developer token'} aria-label="Notion developer token" />
           <Input bind:value={dataSourceId} placeholder="Optional data source ID" aria-label="Notion data source ID" />
+          <div class="flex justify-end gap-2">
+            {#if settings?.hasToken}
+              <Button variant="ghost" disabled={saving} onclick={() => void disconnect()}>Disconnect</Button>
+            {/if}
+            <Button disabled={saving || (!settings?.hasToken && !token.trim())} onclick={() => void saveSetup()}>
+              {saving ? 'Connecting…' : 'Connect developer token'}
+            </Button>
+          </div>
         </div>
       </details>
-      <div class="flex justify-end gap-2">
-        {#if settings?.hasToken}
-          <Button variant="ghost" disabled={saving} onclick={() => void disconnect()}>Disconnect</Button>
-        {/if}
-        <Button disabled={saving || (!settings?.hasToken && !token.trim())} onclick={() => void saveSetup()}>
-          {saving ? 'Connecting…' : 'Connect Notion'}
-        </Button>
-      </div>
     </div>
   {/if}
 
