@@ -161,7 +161,7 @@
     <input
       class="say"
       aria-label="Describe the change"
-      placeholder="Do anything"
+      placeholder="Describe the change…"
       value={description}
       disabled={busy}
       data-testid="browser-mini-composer-input"

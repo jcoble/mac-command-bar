@@ -43,9 +43,13 @@
    * nothing.
    */
   import { onMount, untrack } from 'svelte';
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import Globe from '@lucide/svelte/icons/globe';
+  import X from '@lucide/svelte/icons/x';
 
+  import { Button } from '$lib/components/ui/button/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { saveConversationClipboardImage } from '$lib/shell/conversation/conversationService.ts';
   import {
     registerBrowserUrlNavigation,
@@ -583,6 +587,16 @@
   // ── Sending it ─────────────────────────────────────────────────────────────
 
   const canSend = $derived(Boolean(ownedId) && Boolean(browser.url) && Boolean(activeTab));
+  const readyToSend = $derived(
+    canSend && (description.trim().length > 0 || annotations.length > 0 || strokes.length > 0)
+  );
+  const annotatingHost = $derived.by(() => {
+    try {
+      return new URL(browser.url).host;
+    } catch {
+      return browser.url;
+    }
+  });
 
   /**
    * One turn: the sentence, the numbered list of what was marked, and the
@@ -752,6 +766,25 @@
       onToolChange={(next) => void chooseTool(next)}
       onToggleExpand={() => (expanded = !expanded)}
     />
+    {#if showsStill}
+      <div class="annotation-header" data-testid="browser-annotation-header">
+        <span>Annotating <span aria-hidden="true">·</span> {annotatingHost}</span>
+        <div class="annotation-header-actions">
+          <IconButton
+            label="Discard annotations"
+            size="xs"
+            variant="ghost"
+            onclick={discard}
+          >
+            <X aria-hidden="true" />
+          </IconButton>
+          <Button size="sm" disabled={!readyToSend || busy} onclick={() => void send()}>
+            <ArrowUp aria-hidden="true" />
+            Send
+          </Button>
+        </div>
+      </div>
+    {/if}
   </div>
 
   <div class="page" bind:this={pageHost} data-testid="browser-page-host">
@@ -833,6 +866,32 @@
     position: fixed;
     inset: 0;
     z-index: 1;
+  }
+
+  .annotation-header {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid var(--color-border);
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .annotation-header > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .annotation-header-actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
   }
 
   .page {
