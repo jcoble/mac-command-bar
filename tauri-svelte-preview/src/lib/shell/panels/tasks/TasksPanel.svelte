@@ -24,7 +24,9 @@
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
-  const PAGE_SIZE = 100;
+  const PAGE_SIZE = 25;
+  const TASK_ROW_HEIGHT = 68;
+  const TASK_ROW_OVERSCAN = 5;
 
   let settings = $state<NotionTaskSettings | null>(null);
   let tasks = $state<NotionTaskRow[]>([]);
@@ -44,8 +46,23 @@
   let token = $state('');
   let oauthController: AbortController | null = null;
   let selectedTask = $state<NotionTaskRow | null>(null);
+  let taskViewport = $state<HTMLElement | null>(null);
+  let taskLoadSentinel = $state<HTMLElement | null>(null);
+  let taskScrollTop = $state(0);
+  let taskViewportHeight = $state(800);
   let generation = 0;
   let readGeneration = 0;
+
+  const firstTaskIndex = $derived(
+    Math.max(0, Math.floor(taskScrollTop / TASK_ROW_HEIGHT) - TASK_ROW_OVERSCAN)
+  );
+  const lastTaskIndex = $derived(
+    Math.min(
+      tasks.length,
+      Math.ceil((taskScrollTop + taskViewportHeight) / TASK_ROW_HEIGHT) + TASK_ROW_OVERSCAN
+    )
+  );
+  const visibleTasks = $derived(tasks.slice(firstTaskIndex, lastTaskIndex));
 
   async function loadCached(owner: number, append = false): Promise<void> {
     const readOwner = append ? readGeneration : ++readGeneration;
@@ -182,6 +199,7 @@
   }
 
   async function loadMore(): Promise<void> {
+    if (loading || !hasMore) return;
     const owner = generation;
     loading = true;
     try {
@@ -197,6 +215,30 @@
     const owner = ++generation;
     void initialize(owner);
   });
+  $effect(() => {
+    const viewport = taskViewport;
+    if (!viewport) return;
+    const onScroll = (): void => {
+      taskScrollTop = viewport.scrollTop;
+      taskViewportHeight = viewport.clientHeight;
+    };
+    onScroll();
+    viewport.addEventListener('scroll', onScroll, { passive: true });
+    return () => viewport.removeEventListener('scroll', onScroll);
+  });
+  $effect(() => {
+    const root = taskViewport;
+    const target = taskLoadSentinel;
+    if (!root || !target || !hasMore) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void loadMore();
+      },
+      { root, rootMargin: `${TASK_ROW_HEIGHT * 3}px 0px` }
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  });
   onDestroy(() => {
     oauthController?.abort();
     oauthController = null;
@@ -207,6 +249,8 @@
     statuses = [];
     token = '';
     selectedTask = null;
+    taskViewport = null;
+    taskLoadSentinel = null;
   });
 </script>
 
@@ -286,7 +330,7 @@
     </form>
   {/if}
 
-  <ScrollArea class="min-h-0 flex-1">
+  <ScrollArea class="min-h-0 flex-1" bind:viewportRef={taskViewport}>
     {#if loading && tasks.length === 0}
       <EmptyState title="Loading tasks…" body="Reading the last successful local snapshot." />
     {:else if tasks.length === 0}
@@ -305,30 +349,25 @@
         {#snippet icon()}<ListTodo />{/snippet}
       </EmptyState>
     {:else}
-      <div class="grid gap-px px-2 pb-3">
-        {#each tasks as task (task.sourceTaskId)}
+      <div class="relative mx-2" style={`height: ${tasks.length * TASK_ROW_HEIGHT}px`}>
+        {#each visibleTasks as task, index (task.sourceTaskId)}
           <button
             type="button"
-            class="group grid w-full gap-1 rounded-md px-2 py-2 text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="group absolute inset-x-0 grid h-16 w-full grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            style={`transform: translateY(${(firstTaskIndex + index) * TASK_ROW_HEIGHT}px)`}
             onclick={() => (selectedTask = task)}
           >
-            <div class="flex min-w-0 items-start gap-2">
-              <div class="min-w-0 flex-1">
-                <p class="line-clamp-2 text-sm leading-snug font-medium text-foreground">{task.title}</p>
-                <p class="mt-1 truncate text-xs text-muted-foreground">{task.project} · {task.status}</p>
-              </div>
-              <ChevronRight class="mt-1 size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+            <div class="grid size-10 place-items-center rounded bg-accent text-muted-foreground">
+              <ListTodo class="size-4" />
             </div>
-            {#if task.priority || task.assignee || task.dueDate}
-              <p class="truncate text-[11px] text-muted-foreground">
-                {[task.priority, task.assignee, task.dueDate].filter(Boolean).join(' · ')}
-              </p>
-            {/if}
+            <div class="min-w-0">
+              <p class="truncate text-sm leading-snug font-medium text-foreground">{task.title}</p>
+              <p class="mt-1 truncate text-xs text-muted-foreground">{[task.project, task.status, task.priority].filter(Boolean).join(' · ')}</p>
+            </div>
+            <ChevronRight class="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
         {/each}
-        {#if hasMore}
-          <Button variant="ghost" disabled={loading} onclick={() => void loadMore()}>{loading ? 'Loading…' : 'Load more'}</Button>
-        {/if}
+        <span bind:this={taskLoadSentinel} class="absolute right-0 bottom-0 size-px" aria-hidden="true"></span>
       </div>
     {/if}
   </ScrollArea>
