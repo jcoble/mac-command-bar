@@ -25,7 +25,7 @@
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 25;
-  const TASK_ROW_HEIGHT = 68;
+  const TASK_ROW_HEIGHT = 84;
   const TASK_ROW_OVERSCAN = 5;
 
   let settings = $state<NotionTaskSettings | null>(null);
@@ -353,18 +353,18 @@
         {#each visibleTasks as task, index (task.sourceTaskId)}
           <button
             type="button"
-            class="group absolute inset-x-0 grid h-16 w-full grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="group absolute inset-x-0 grid h-20 w-full grid-cols-[3rem_minmax(0,1fr)_auto] items-center gap-(--space-3) rounded-(--radius-md) px-(--space-2) text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={`transform: translateY(${(firstTaskIndex + index) * TASK_ROW_HEIGHT}px)`}
             onclick={() => (selectedTask = task)}
           >
-            <div class="grid size-10 place-items-center rounded bg-accent text-muted-foreground">
-              <ListTodo class="size-4" />
+            <div class="grid size-12 place-items-center rounded-(--radius-sm) bg-accent text-muted-foreground transition-colors group-hover:text-foreground">
+              <ListTodo class="size-5" />
             </div>
             <div class="min-w-0">
-              <p class="truncate text-sm leading-snug font-medium text-foreground">{task.title}</p>
-              <p class="mt-1 truncate text-xs text-muted-foreground">{[task.project, task.status, task.priority].filter(Boolean).join(' · ')}</p>
+              <p class="truncate text-(length:--text-heading) leading-snug font-(--text-heading-weight) text-foreground">{task.title}</p>
+              <p class="mt-(--space-1) truncate text-(length:--text-body) text-muted-foreground">{[task.project, task.status, task.priority].filter(Boolean).join(' · ')}</p>
             </div>
-            <ChevronRight class="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+            <ChevronRight class="size-5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>
         {/each}
         <span bind:this={taskLoadSentinel} class="absolute right-0 bottom-0 size-px" aria-hidden="true"></span>

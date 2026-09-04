@@ -43,9 +43,9 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-background">
-  <header class="flex items-center gap-2 border-b border-border px-2 py-2">
+  <header class="flex items-center gap-(--space-2) border-b border-border px-(--space-2) py-(--space-2)">
     <IconButton label="Back to tasks" onclick={onBack}><ArrowLeft /></IconButton>
-    <p class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">Task</p>
+    <p class="min-w-0 flex-1 truncate text-(length:--text-heading) font-(--text-heading-weight) text-foreground">Task</p>
     <IconButton label="Task actions" disabled><Ellipsis /></IconButton>
     <IconButton label="Open in Notion" onclick={() => onOpenExternal(task.sourceUrl)}>
       <ExternalLink />
@@ -53,11 +53,11 @@
   </header>
 
   <ScrollArea class="min-h-0 flex-1">
-    <article class="px-3 pt-4 pb-8">
-      <section class="rounded-xl bg-card px-4 py-4 shadow-sm">
-        <p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">Notion task</p>
-        <h2 class="mt-2 text-xl leading-snug font-semibold text-foreground">{task.title}</h2>
-        <div class="mt-4 flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+    <article class="px-(--space-3) pt-(--space-4) pb-(--space-6)">
+      <section class="rounded-(--radius-md) bg-card px-(--space-4) py-(--space-4) shadow-(--shadow-sm)">
+        <p class="text-(length:--text-quiet) font-medium tracking-wide text-muted-foreground uppercase">Notion task</p>
+        <h2 class="mt-(--space-2) text-2xl leading-snug font-semibold text-foreground">{task.title}</h2>
+        <div class="mt-(--space-4) flex flex-wrap gap-(--space-2) text-(length:--text-quiet) text-muted-foreground">
           <span class="rounded-full bg-primary px-2.5 py-1 font-medium text-primary-foreground">{task.status}</span>
           {#if task.project}<span class="rounded-full border border-border px-2.5 py-1">{task.project}</span>{/if}
           {#if task.priority}<span class="rounded-full border border-border px-2.5 py-1">{task.priority}</span>{/if}
@@ -65,16 +65,16 @@
         </div>
       </section>
 
-      <section class="mt-3 rounded-xl bg-card px-4 py-4 shadow-sm">
-        <h3 class="text-sm font-semibold text-foreground">Details</h3>
+      <section class="mt-(--space-3) rounded-(--radius-md) bg-card px-(--space-4) py-(--space-4) shadow-(--shadow-sm)">
+        <h3 class="text-xl font-semibold text-foreground">Details</h3>
         {#if loading}
-          <p class="mt-5 text-sm text-muted-foreground">Loading task…</p>
+          <p class="mt-(--space-5) text-(length:--text-heading) text-muted-foreground">Loading task…</p>
         {:else if error}
           <p class="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
         {:else if blocks.length === 0}
-          <p class="mt-5 text-sm text-muted-foreground">This task has no additional notes.</p>
+          <p class="mt-(--space-5) text-(length:--text-heading) text-muted-foreground">This task has no additional notes.</p>
         {:else}
-          <div class="mt-5 grid gap-3 text-sm leading-relaxed text-foreground">
+          <div class="mt-(--space-5) grid gap-(--space-4) text-(length:--text-heading) leading-relaxed text-foreground">
             {#each blocks as block, index (`${block.kind}-${index}`)}
               {#if block.kind === 'heading_1'}
                 <h3 class="pt-3 text-lg font-semibold">{block.text}</h3>
