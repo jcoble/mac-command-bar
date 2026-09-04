@@ -193,9 +193,9 @@ function makeBackend(overrides = {}) {
       calls.push(['readDiff', root, path]);
       return { relativePath: path, status: 'modified', diff: '', isBinary: false };
     },
-    async readHistory(root, limit) {
-      calls.push(['readHistory', root, limit]);
-      return [];
+    async readHistory(root, cursor, relativePath) {
+      calls.push(['readHistory', root, cursor, relativePath]);
+      return { commits: [], nextCursor: null, complete: true };
     },
     async stage(root, paths) {
       calls.push(['stage', root, paths]);
@@ -225,7 +225,7 @@ function makeBackend(overrides = {}) {
   return Object.assign(backend, overrides);
 }
 
-// ── nothing runs before activate(), and activate is idempotent ──────────────
+// ── activation points at a root; visible surfaces own their reads ───────────
 {
   const backend = makeBackend();
   const state = createGitPanelState();
@@ -235,14 +235,16 @@ function makeBackend(overrides = {}) {
   assert.equal(state.activated, false);
 
   git.activate('/repo');
+  void git.refreshStatus();
+  git.ensureHistorySurface();
   await settle();
   assert.deepEqual(
     backend.calls,
     [
       ['readStatus', '/repo'],
-      ['readHistory', '/repo', COMMIT_HISTORY_LIMIT]
+      ['readHistory', '/repo', null, null]
     ],
-    'the first activation reads status and history, once each'
+    'the visible status and history surfaces read once each'
   );
   assert.equal(state.activated, true);
   assert.equal(state.desktopOnly, false);
@@ -255,11 +257,13 @@ function makeBackend(overrides = {}) {
   assert.deepEqual(backend.calls, [], 'activating again with the same repository does nothing');
 
   git.activate('/other');
+  void git.refreshStatus();
+  git.ensureHistorySurface();
   await settle();
   assert.equal(state.root, '/other');
   assert.deepEqual(backend.calls, [
     ['readStatus', '/other'],
-    ['readHistory', '/other', COMMIT_HISTORY_LIMIT]
+    ['readHistory', '/other', null, null]
   ]);
 }
 
@@ -278,6 +282,7 @@ function makeBackend(overrides = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  void git.refreshStatus();
   await settle();
   void git.refreshStatus();
   await settle();
@@ -325,8 +330,10 @@ function makeBackend(overrides = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  void git.refreshStatus();
   await settle();
   git.activate('/second');
+  void git.refreshStatus();
   await settle();
   resolveFirst({ branch: 'first', ahead: 0, behind: 0, hasUpstream: true, files: [] });
   await settle();
@@ -341,6 +348,7 @@ function makeBackend(overrides = {}) {
   const state = createGitPanelState();
   const git = createGitService({ backend, state });
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
   backend.calls.length = 0;
 
@@ -365,6 +373,7 @@ function makeBackend(overrides = {}) {
   const state = createGitPanelState();
   const git = createGitService({ backend, state });
   git.activate('/repo');
+  git.ensureHistorySurface();
   await settle();
   backend.calls.length = 0;
 
@@ -377,7 +386,7 @@ function makeBackend(overrides = {}) {
   await settle();
   assert.deepEqual(backend.calls, [
     ['commit', '/repo', 'fix the thing'],
-    ['readHistory', '/repo', COMMIT_HISTORY_LIMIT]
+    ['readHistory', '/repo', null, null]
   ]);
   assert.equal(state.commitMessage, '', 'a successful commit clears the box');
   assert.equal(state.actionStatus, 'Committed staged changes');
@@ -389,6 +398,8 @@ function makeBackend(overrides = {}) {
   const state = createGitPanelState();
   const git = createGitService({ backend, state });
   git.activate('/repo');
+  await git.refreshStatus();
+  git.ensureHistorySurface();
   await settle();
 
   backend.calls.length = 0;
@@ -401,7 +412,7 @@ function makeBackend(overrides = {}) {
   await settle();
   assert.deepEqual(backend.calls, [
     ['pull', '/repo'],
-    ['readHistory', '/repo', COMMIT_HISTORY_LIMIT]
+    ['readHistory', '/repo', null, null]
   ]);
 }
 
@@ -415,6 +426,8 @@ function makeBackend(overrides = {}) {
   const state = createGitPanelState();
   const git = createGitService({ backend, state });
   git.activate('/repo');
+  void git.refreshStatus();
+  git.ensureHistorySurface();
   await settle();
 
   await git.runRemoteAction('push');
@@ -469,6 +482,8 @@ function makeBackend(overrides = {}) {
   const git = createGitService({ backend, state });
 
   git.activate('/repo');
+  void git.refreshStatus();
+  git.ensureHistorySurface();
   await settle();
   assert.equal(state.desktopOnly, true);
   assert.equal(state.status, null, 'no stand-in repository is invented');
@@ -632,11 +647,9 @@ function makeBackend(overrides = {}) {
   );
 
   const detached = panelActions.sourceControlRemoteActions(noUpstream, '/repo', remoteContext());
-  assert.ok(
-    detached.every((action) => !action.enabled),
-    'no upstream means none of the three can run'
-  );
-  for (const action of detached) {
+  assert.equal(detached[0].enabled, true, 'fetch does not require a branch upstream');
+  for (const action of detached.slice(1)) {
+    assert.equal(action.enabled, false, `${action.id} needs an upstream`);
     assert.match(
       action.disabledReason ?? '',
       /upstream/i,
