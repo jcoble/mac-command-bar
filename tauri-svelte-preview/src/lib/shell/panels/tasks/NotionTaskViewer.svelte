@@ -42,7 +42,7 @@
   });
 </script>
 
-<div class="flex h-full min-h-0 flex-col bg-background">
+<div class="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background">
   <header class="flex items-center gap-(--space-2) border-b border-border px-(--space-2) py-(--space-2)">
     <IconButton label="Back to tasks" onclick={onBack}><ArrowLeft /></IconButton>
     <p class="min-w-0 flex-1 truncate text-(length:--text-heading) font-(--text-heading-weight) text-foreground">Task</p>
@@ -53,10 +53,10 @@
   </header>
 
   <ScrollArea class="min-h-0 flex-1">
-    <article class="px-(--space-3) pt-(--space-4) pb-(--space-6)">
-      <section class="rounded-(--radius-md) bg-card px-(--space-4) py-(--space-4) shadow-(--shadow-sm)">
+    <article class="w-full min-w-0 max-w-full px-(--space-3) pt-(--space-4) pb-(--space-6)">
+      <section class="min-w-0 rounded-(--radius-md) bg-card px-(--space-4) py-(--space-4) shadow-(--shadow-sm)">
         <p class="text-(length:--text-quiet) font-medium tracking-wide text-muted-foreground uppercase">Notion task</p>
-        <h2 class="mt-(--space-2) text-2xl leading-snug font-semibold text-foreground">{task.title}</h2>
+        <h2 class="mt-(--space-2) text-2xl leading-snug font-semibold text-foreground [overflow-wrap:anywhere]">{task.title}</h2>
         <div class="mt-(--space-4) flex flex-wrap gap-(--space-2) text-(length:--text-quiet) text-muted-foreground">
           <span class="rounded-full bg-primary px-2.5 py-1 font-medium text-primary-foreground">{task.status}</span>
           {#if task.project}<span class="rounded-full border border-border px-2.5 py-1">{task.project}</span>{/if}
@@ -65,7 +65,7 @@
         </div>
       </section>
 
-      <section class="mt-(--space-3) rounded-(--radius-md) bg-card px-(--space-4) py-(--space-4) shadow-(--shadow-sm)">
+      <section class="mt-(--space-3) min-w-0 rounded-(--radius-md) bg-card px-(--space-4) py-(--space-4) shadow-(--shadow-sm)">
         <h3 class="text-xl font-semibold text-foreground">Details</h3>
         {#if loading}
           <p class="mt-(--space-5) text-(length:--text-heading) text-muted-foreground">Loading task…</p>
@@ -74,7 +74,7 @@
         {:else if blocks.length === 0}
           <p class="mt-(--space-5) text-(length:--text-heading) text-muted-foreground">This task has no additional notes.</p>
         {:else}
-          <div class="mt-(--space-5) grid gap-(--space-4) text-(length:--text-heading) leading-relaxed text-foreground">
+          <div class="mt-(--space-5) grid min-w-0 gap-(--space-4) text-(length:--text-heading) leading-relaxed text-foreground [overflow-wrap:anywhere]">
             {#each blocks as block, index (`${block.kind}-${index}`)}
               {#if block.kind === 'heading_1'}
                 <h3 class="pt-3 text-lg font-semibold">{block.text}</h3>
@@ -83,18 +83,18 @@
               {:else if block.kind === 'heading_3'}
                 <h4 class="pt-2 text-sm font-semibold">{block.text}</h4>
               {:else if block.kind === 'bulleted_list_item'}
-                <p class="grid grid-cols-[0.75rem_1fr] gap-2"><span aria-hidden="true">•</span><span>{block.text}</span></p>
+                <p class="grid min-w-0 grid-cols-[0.75rem_minmax(0,1fr)] gap-2"><span aria-hidden="true">•</span><span>{block.text}</span></p>
               {:else if block.kind === 'numbered_list_item'}
-                <p class="grid grid-cols-[1.25rem_1fr] gap-2"><span aria-hidden="true">{index + 1}.</span><span>{block.text}</span></p>
+                <p class="grid min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] gap-2"><span aria-hidden="true">{index + 1}.</span><span>{block.text}</span></p>
               {:else if block.kind === 'to_do'}
                 <p class="flex items-start gap-2">
                   {#if block.checked}<Check class="mt-0.5 size-4 shrink-0 text-primary" />{:else}<Square class="mt-0.5 size-4 shrink-0 text-muted-foreground" />{/if}
-                  <span class:line-through={block.checked}>{block.text}</span>
+                  <span class="min-w-0" class:line-through={block.checked}>{block.text}</span>
                 </p>
               {:else if block.kind === 'quote'}
                 <blockquote class="border-l-2 border-primary pl-3 text-muted-foreground">{block.text}</blockquote>
               {:else if block.kind === 'code'}
-                <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{block.text}</code></pre>
+                <pre class="min-w-0 max-w-full overflow-x-auto rounded-md bg-muted p-3 text-xs [overflow-wrap:normal]"><code>{block.text}</code></pre>
               {:else if block.kind === 'divider'}
                 <hr class="border-border" />
               {:else}

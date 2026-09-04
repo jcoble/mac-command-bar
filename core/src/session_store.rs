@@ -1673,6 +1673,8 @@ impl SessionStore {
         search: &str,
         project: &str,
         status: &str,
+        sort_by: &str,
+        sort_direction: &str,
     ) -> Result<NotionTaskProjectionPage> {
         let connection = self.lock()?;
         let mut statement = connection
@@ -1689,13 +1691,47 @@ impl SessionStore {
                    AND (?2 = '' OR project = ?2)
                    AND (?3 <> '' OR lower(status) <> 'future')
                    AND (?3 = '' OR status = ?3)
-                 ORDER BY project COLLATE NOCASE ASC,
-                          status COLLATE NOCASE ASC,
-                          due_date IS NULL ASC,
-                          due_date ASC,
+                 ORDER BY CASE WHEN ?4 = 'taskNumber' AND ?5 = 'asc' THEN
+                              CASE
+                                WHEN upper(title) GLOB '[[]TSK-[0-9]*[]]*' THEN
+                                  CAST(substr(title, 6, instr(substr(title, 6), ']') - 1) AS INTEGER)
+                                WHEN ltrim(title) GLOB '[0-9]*' THEN CAST(ltrim(title) AS INTEGER)
+                                ELSE 2147483647
+                              END
+                            END ASC,
+                          CASE WHEN ?4 = 'taskNumber' AND ?5 = 'desc' THEN
+                              CASE
+                                WHEN upper(title) GLOB '[[]TSK-[0-9]*[]]*' THEN
+                                  CAST(substr(title, 6, instr(substr(title, 6), ']') - 1) AS INTEGER)
+                                WHEN ltrim(title) GLOB '[0-9]*' THEN CAST(ltrim(title) AS INTEGER)
+                                ELSE -1
+                              END
+                            END DESC,
+                          CASE WHEN ?4 = 'title' AND ?5 = 'asc' THEN
+                              CASE
+                                WHEN upper(title) LIKE '[TSK-%]%' THEN
+                                  ltrim(substr(title, instr(title, ']') + 1))
+                                WHEN ltrim(title) GLOB '[0-9]*' THEN
+                                  ltrim(ltrim(ltrim(title), '0123456789'))
+                                ELSE title
+                              END
+                            END COLLATE NOCASE ASC,
+                          CASE WHEN ?4 = 'title' AND ?5 = 'desc' THEN
+                              CASE
+                                WHEN upper(title) LIKE '[TSK-%]%' THEN
+                                  ltrim(substr(title, instr(title, ']') + 1))
+                                WHEN ltrim(title) GLOB '[0-9]*' THEN
+                                  ltrim(ltrim(ltrim(title), '0123456789'))
+                                ELSE title
+                              END
+                            END COLLATE NOCASE DESC,
+                          CASE WHEN ?4 = '' THEN project END COLLATE NOCASE ASC,
+                          CASE WHEN ?4 = '' THEN status END COLLATE NOCASE ASC,
+                          CASE WHEN ?4 = '' THEN due_date IS NULL END ASC,
+                          CASE WHEN ?4 = '' THEN due_date END ASC,
                           title COLLATE NOCASE ASC,
                           source_task_id ASC
-                 LIMIT ?4 OFFSET ?5",
+                 LIMIT ?6 OFFSET ?7",
             )
             .map_err(|error| {
                 StoreError::sqlite("could not prepare the Notion task projection page", error)
@@ -1707,6 +1743,8 @@ impl SessionStore {
                     search.trim(),
                     project.trim(),
                     status.trim(),
+                    sort_by.trim(),
+                    sort_direction.trim(),
                     i64::from(lookahead_limit),
                     i64::from(offset)
                 ],
@@ -3407,7 +3445,7 @@ mod tests {
 
         assert_eq!(
             store
-                .query_notion_task_projections(0, 10, "", "", "")
+                .query_notion_task_projections(0, 10, "", "", "", "", "")
                 .expect("read Notion task snapshot"),
             super::NotionTaskProjectionPage {
                 tasks: second.to_vec(),
@@ -3436,7 +3474,7 @@ mod tests {
         let reopened = SessionStore::open(&path).expect("reopen session store offline");
         assert_eq!(
             reopened
-                .query_notion_task_projections(0, 10, "", "", "")
+                .query_notion_task_projections(0, 10, "", "", "", "", "")
                 .expect("read offline Notion task snapshot")
                 .tasks,
             tasks
@@ -3457,7 +3495,7 @@ mod tests {
             .expect("write Notion task snapshot");
 
         let first_page = store
-            .query_notion_task_projections(0, 2, "", "", "")
+            .query_notion_task_projections(0, 2, "", "", "", "", "")
             .expect("read first Notion task page");
         assert_eq!(
             first_page
@@ -3469,7 +3507,7 @@ mod tests {
         );
 
         let second_page = store
-            .query_notion_task_projections(2, 2, "", "", "")
+            .query_notion_task_projections(2, 2, "", "", "", "", "")
             .expect("read second Notion task page");
         assert_eq!(
             second_page
@@ -3480,6 +3518,68 @@ mod tests {
             ["task-3", "task-4"]
         );
         assert!(!second_page.has_more);
+    }
+
+    #[test]
+    fn notion_task_projection_sorts_by_task_number_or_title() {
+        let (_directory, _path, store) = open_temp_store();
+        let tasks = [
+            fixture_notion_task("task-1116", "Assembly", "Doing", "[TSK-1116] Alpha", None),
+            fixture_notion_task("task-2", "Assembly", "Doing", "[TSK-2] Zulu", None),
+            fixture_notion_task("task-997", "Assembly", "Doing", "997 pipeline gap", None),
+            fixture_notion_task("task-new", "Assembly", "Doing", "[TSK-NEW] Beta", None),
+        ];
+        store
+            .replace_notion_task_projections(&tasks)
+            .expect("write sortable Notion task snapshot");
+
+        let by_number = store
+            .query_notion_task_projections(0, 10, "", "", "", "taskNumber", "asc")
+            .expect("sort Notion tasks by task number");
+        assert_eq!(
+            by_number
+                .tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-2", "task-997", "task-1116", "task-new"]
+        );
+
+        let by_title = store
+            .query_notion_task_projections(0, 10, "", "", "", "title", "asc")
+            .expect("sort Notion tasks by title");
+        assert_eq!(
+            by_title
+                .tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-1116", "task-new", "task-997", "task-2"]
+        );
+
+        let number_descending = store
+            .query_notion_task_projections(0, 10, "", "", "", "taskNumber", "desc")
+            .expect("sort Notion tasks by descending task number");
+        assert_eq!(
+            number_descending
+                .tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-1116", "task-997", "task-2", "task-new"]
+        );
+
+        let title_descending = store
+            .query_notion_task_projections(0, 10, "", "", "", "title", "desc")
+            .expect("sort Notion tasks by descending title");
+        assert_eq!(
+            title_descending
+                .tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-2", "task-997", "task-new", "task-1116"]
+        );
     }
 
     #[test]
@@ -3494,7 +3594,7 @@ mod tests {
             .expect("write Notion task snapshot");
 
         let page = store
-            .query_notion_task_projections(0, 10, "work", "Assembly", "Doing")
+            .query_notion_task_projections(0, 10, "work", "Assembly", "Doing", "", "")
             .expect("filter Notion task snapshot");
         assert_eq!(page.tasks, tasks[..1]);
         assert_eq!(page.projects, ["Assembly", "Rental Command"]);
@@ -3513,12 +3613,12 @@ mod tests {
             .expect("write Notion task snapshot");
 
         let default_page = store
-            .query_notion_task_projections(0, 10, "", "", "")
+            .query_notion_task_projections(0, 10, "", "", "", "", "")
             .expect("read default Notion task page");
         assert_eq!(default_page.tasks, tasks[..1]);
 
         let future_page = store
-            .query_notion_task_projections(0, 10, "", "", "Future")
+            .query_notion_task_projections(0, 10, "", "", "Future", "", "")
             .expect("read future Notion task page");
         assert_eq!(future_page.tasks, tasks[1..]);
     }

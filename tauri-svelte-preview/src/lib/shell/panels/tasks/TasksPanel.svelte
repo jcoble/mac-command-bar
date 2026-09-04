@@ -2,17 +2,23 @@
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
+  import List from '@lucide/svelte/icons/list';
   import ListTodo from '@lucide/svelte/icons/list-todo';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Search from '@lucide/svelte/icons/search';
   import Settings2 from '@lucide/svelte/icons/settings-2';
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
+  import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
+  import * as Select from '$lib/components/ui/select/index.js';
+  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import {
     clearNotionTaskSettings,
     listNotionTasks,
@@ -23,6 +29,7 @@
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
+  import { cn } from '$lib/utils.js';
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 25;
@@ -58,6 +65,10 @@
   let search = $state('');
   let statusFilter = $state('');
   let projectFilter = $state('');
+  let sortBy = $state('taskNumber');
+  let sortDirection = $state('asc');
+  let searchOpen = $state(false);
+  let searchInput = $state<HTMLInputElement | null>(null);
   let loading = $state(true);
   let refreshing = $state(false);
   let saving = $state(false);
@@ -94,7 +105,9 @@
       PAGE_SIZE,
       search,
       projectFilter,
-      statusFilter
+      statusFilter,
+      sortBy,
+      sortDirection
     );
     if (owner !== generation || readOwner !== readGeneration) return;
     tasks = append ? [...tasks, ...page.tasks] : page.tasks;
@@ -120,6 +133,18 @@
     event.preventDefault();
     search = searchDraft.trim();
     void reloadCached();
+  }
+
+  async function toggleSearch(): Promise<void> {
+    searchOpen = !searchOpen;
+    if (!searchOpen) return;
+    await tick();
+    searchInput?.focus();
+  }
+
+  function directionLabel(direction: string): string {
+    if (sortBy === 'taskNumber') return direction === 'asc' ? 'Lowest first' : 'Highest first';
+    return direction === 'asc' ? 'A to Z' : 'Z to A';
   }
 
   async function refresh(owner = generation): Promise<void> {
@@ -273,6 +298,7 @@
     selectedTask = null;
     taskViewport = null;
     taskLoadSentinel = null;
+    searchInput = null;
   });
 </script>
 
@@ -284,10 +310,124 @@
 >
   <PanelHeader title="Tasks" count={tasks.length}>
     {#snippet actions()}
-      <IconButton label="Task settings" onclick={() => (showSetup = !showSetup)}><Settings2 /></IconButton>
-      <IconButton label="Refresh tasks" disabled={refreshing || showSetup} onclick={() => void refresh()}>
-        <RefreshCw />
-      </IconButton>
+      <div class="flex items-center rounded-full bg-[var(--color-elevated)] p-0.5">
+        <IconButton label="Search tasks" tooltip={false} onclick={() => void toggleSearch()}>
+          <Search />
+        </IconButton>
+        <DropdownMenu.Root>
+          <Tooltip.Root>
+            <Tooltip.Trigger>
+              {#snippet child({ props })}
+                <DropdownMenu.Trigger
+                  {...props}
+                  class={cn(
+                    buttonVariants({ variant: 'ghost', size: 'icon-sm' }),
+                    'rounded-full text-[var(--color-text-3)]',
+                    (projectFilter || statusFilter) && 'text-[var(--color-accent)]'
+                  )}
+                  aria-label="View task options"
+                >
+                  <List aria-hidden="true" />
+                </DropdownMenu.Trigger>
+              {/snippet}
+            </Tooltip.Trigger>
+            <Tooltip.Content side="bottom">View task options</Tooltip.Content>
+          </Tooltip.Root>
+          <DropdownMenu.Content
+            align="end"
+            sideOffset={7}
+            class="flex w-[304px]! flex-col gap-[var(--space-3)] p-[var(--space-4)] text-foreground"
+          >
+            <div class="flex min-h-8 items-center justify-between gap-3">
+              <span class="text-[13px] text-foreground">Sort</span>
+              <Select.Root
+                type="single"
+                value={sortBy}
+                onValueChange={(value) => {
+                  sortBy = value;
+                  void reloadCached();
+                }}
+              >
+                <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort tasks">
+                  {sortBy === 'taskNumber' ? 'Task number' : 'Title'}
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="taskNumber" label="Task number" />
+                  <Select.Item value="title" label="Title" />
+                </Select.Content>
+              </Select.Root>
+            </div>
+            <div class="flex min-h-8 items-center justify-between gap-3">
+              <span class="text-[13px] text-foreground">Direction</span>
+              <Select.Root
+                type="single"
+                value={sortDirection}
+                onValueChange={(value) => {
+                  sortDirection = value;
+                  void reloadCached();
+                }}
+              >
+                <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort direction">
+                  {directionLabel(sortDirection)}
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="asc" label={directionLabel('asc')} />
+                  <Select.Item value="desc" label={directionLabel('desc')} />
+                </Select.Content>
+              </Select.Root>
+            </div>
+            <div class="flex min-h-8 items-center justify-between gap-3">
+              <span class="text-[13px] text-foreground">Project</span>
+              <Select.Root
+                type="single"
+                value={projectFilter || 'all'}
+                onValueChange={(value) => {
+                  projectFilter = value === 'all' ? '' : value;
+                  void reloadCached();
+                }}
+              >
+                <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Filter tasks by project">
+                  {projectFilter || 'All projects'}
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="all" label="All projects" />
+                  {#each projects as project}<Select.Item value={project} label={project} />{/each}
+                </Select.Content>
+              </Select.Root>
+            </div>
+            <div class="flex min-h-8 items-center justify-between gap-3">
+              <span class="text-[13px] text-foreground">Status</span>
+              <Select.Root
+                type="single"
+                value={statusFilter || 'all'}
+                onValueChange={(value) => {
+                  statusFilter = value === 'all' ? '' : value;
+                  void reloadCached();
+                }}
+              >
+                <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Filter tasks by status">
+                  {statusFilter || 'All statuses'}
+                </Select.Trigger>
+                <Select.Content>
+                  <Select.Item value="all" label="All statuses" />
+                  {#each statuses as status}<Select.Item value={status} label={status} />{/each}
+                </Select.Content>
+              </Select.Root>
+            </div>
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+        <IconButton label="Task settings" tooltip={false} onclick={() => (showSetup = !showSetup)}>
+          <Settings2 />
+        </IconButton>
+        <IconButton
+          label="Refresh tasks"
+          tooltip={false}
+          disabled={refreshing || showSetup}
+          onclick={() => void refresh()}
+        >
+          <RefreshCw />
+        </IconButton>
+      </div>
     {/snippet}
     Latest successful Notion snapshot
   </PanelHeader>
@@ -333,22 +473,10 @@
     <p class="mx-3 mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
   {/if}
 
-  {#if projects.length > 0 || statuses.length > 0 || searchDraft || projectFilter || statusFilter}
-    <form class="grid gap-2 px-3 pb-3" onsubmit={applySearch}>
-      <div class="flex gap-2">
-        <Input bind:value={searchDraft} placeholder="Search tasks" aria-label="Search tasks" />
-        <Button type="submit" variant="ghost" disabled={loading}>Search</Button>
-      </div>
-      <div class="grid grid-cols-2 gap-2">
-        <select bind:value={projectFilter} onchange={() => void reloadCached()} aria-label="Filter by project" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground">
-          <option value="">All projects</option>
-          {#each projects as project}<option value={project}>{project}</option>{/each}
-        </select>
-        <select bind:value={statusFilter} onchange={() => void reloadCached()} aria-label="Filter by status" class="h-8 min-w-0 rounded-md border border-border bg-background px-2 text-xs text-foreground">
-          <option value="">All statuses</option>
-          {#each statuses as status}<option value={status}>{status}</option>{/each}
-        </select>
-      </div>
+  {#if searchOpen}
+    <form class="flex gap-2 px-3 pb-3" onsubmit={applySearch}>
+      <Input bind:ref={searchInput} bind:value={searchDraft} placeholder="Search tasks" aria-label="Search tasks" />
+      <Button type="submit" variant="ghost" disabled={loading}>Search</Button>
     </form>
   {/if}
 

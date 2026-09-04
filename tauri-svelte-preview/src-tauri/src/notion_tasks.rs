@@ -336,11 +336,21 @@ pub async fn list_notion_tasks(
     search: String,
     project: String,
     status: String,
+    sort_by: String,
+    sort_direction: String,
 ) -> Result<NotionTaskPage, String> {
     let store = manager.store_handle();
     tauri::async_runtime::spawn_blocking(move || {
         store
-            .query_notion_task_projections(offset, limit.min(100), &search, &project, &status)
+            .query_notion_task_projections(
+                offset,
+                limit.min(100),
+                &search,
+                &project,
+                &status,
+                &sort_by,
+                &sort_direction,
+            )
             .map(NotionTaskPage::from)
             .map_err(|error| error.to_string())
     })
@@ -611,11 +621,7 @@ fn finish_task_projection(
     NotionTaskProjection {
         source_task_id: task.source_task_id,
         title: task.title,
-        project: if project.is_empty() {
-            "Unassigned".to_string()
-        } else {
-            project
-        },
+        project,
         status: task.status,
         priority: task.priority,
         assignee: task.assignee,
@@ -768,6 +774,24 @@ mod tests {
         assert_eq!(task.status, "Doing");
         assert_eq!(task.assignee.as_deref(), Some("Codex"));
         assert_eq!(task.fetched_at_ms, 42);
+    }
+
+    #[test]
+    fn task_without_project_does_not_invent_an_assignment() {
+        let page = json!({
+            "id": "task-1",
+            "url": "https://www.notion.so/task-1",
+            "properties": {
+                "Name": { "title": [{ "plain_text": "[TSK-808] Workbench" }] },
+                "Status": { "select": { "name": "Doing" } }
+            }
+        });
+        let task = finish_task_projection(
+            pending_task_projection(&page, 42).unwrap(),
+            &HashMap::new(),
+        );
+
+        assert!(task.project.is_empty());
     }
 
     #[test]

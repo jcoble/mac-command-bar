@@ -55,9 +55,19 @@ export async function listNotionTasks(
   limit = 100,
   search = '',
   project = '',
-  status = ''
+  status = '',
+  sortBy = 'taskNumber',
+  sortDirection = 'asc'
 ): Promise<NotionTaskPage> {
-  return await invokeDesktop('list_notion_tasks', { offset, limit, search, project, status });
+  return await invokeDesktop('list_notion_tasks', {
+    offset,
+    limit,
+    search,
+    project,
+    status,
+    sortBy,
+    sortDirection
+  });
 }
 
 export async function refreshNotionTasks(): Promise<NotionTaskRefreshReceipt> {
