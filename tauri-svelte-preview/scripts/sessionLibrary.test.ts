@@ -198,6 +198,35 @@ function available(id, cwd, extra = {}) {
   assert.equal(service.records.length, 0);
 }
 
+// Opening a project reuses the summary records already in the rail. Opening one
+// card reads only that transcript for details instead of rescanning the project.
+{
+  const cached = available('cached', '/repo', {
+    logPath: '/logs/cached.jsonl',
+    latestTurns: undefined
+  });
+  let projectScans = 0;
+  let detailReads = 0;
+  const service = createSessionLibraryService({
+    getAvailableSessions: () => [cached],
+    listProviderSessions: async () => { projectScans += 1; return []; },
+    readProviderSessionDetails: async () => {
+      detailReads += 1;
+      return [available('cached', '/repo', {
+        logPath: '/logs/cached.jsonl',
+        latestTurns: [{ speaker: 'agent', text: 'Finished.' }]
+      })];
+    }
+  });
+  const key = buildSessionLibrary([], [cached])[0].key;
+  assert.equal((await service.refresh(new Set([key]))).length, 1);
+  assert.equal(projectScans, 0);
+  const details = await service.refresh(new Set([key]), { projectPath: '/repo' }, { includeDetails: true });
+  assert.equal(details[0].latestTurns[0].text, 'Finished.');
+  assert.equal(detailReads, 1);
+  assert.equal(projectScans, 0);
+}
+
 // Center/right placement is one runtime host lease over the same service/store;
 // construction and movement never call the provider adapter or create a second
 // lease while the first host is live.

@@ -141,6 +141,36 @@ const rows = [
   ]);
 }
 
+// A session run below the main checkout is grouped into that checkout, and a
+// deleted worktree's historical sessions remain visible beside live checkouts.
+{
+  const view = buildSessionHistoryViewModel([
+    record('nested-main', {
+      canonicalCwd: '/Users/dev/work/atlas/packages/app',
+      projectPath: '/Users/dev/work/atlas/packages/app',
+      projectRoot: '/Users/dev/work/atlas'
+    }),
+    record('deleted-lane', {
+      canonicalCwd: '/Users/dev/work/worktrees/atlas/deleted-lane',
+      projectPath: '/Users/dev/work/worktrees/atlas/deleted-lane',
+      projectRoot: '/Users/dev/work/atlas'
+    })
+  ], {
+    checkouts: {
+      '/Users/dev/work/atlas': [
+        { path: '/Users/dev/work/atlas', branch: 'main', isMain: true },
+        { path: '/Users/dev/work/worktrees/atlas/live-lane', branch: 'live', isMain: false }
+      ]
+    }
+  });
+  assert.deepEqual(view.projects[0].worktrees.map((worktree) => [worktree.name, worktree.count]), [
+    ['atlas', 1],
+    ['deleted-lane', 1],
+    ['live-lane', 0]
+  ]);
+  assert.equal(view.totalCount, 2);
+}
+
 // Groups start closed. Opening a worktree is independent, while closing its
 // project still hides every row below it.
 {

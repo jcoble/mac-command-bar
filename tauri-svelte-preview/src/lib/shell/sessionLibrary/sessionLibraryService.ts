@@ -27,6 +27,8 @@ export interface SessionLibraryActionHandlers {
 export interface SessionLibrarySource {
   /** Explicit provider ACP `session/list` adapter; not called at construction. */
   listProviderSessions?(projectPath?: string): Promise<AgentSession[]>;
+  /** Read one transcript when an expanded card needs its turn text. */
+  readProviderSessionDetails?(logPath: string): Promise<AgentSession[]>;
   /** Existing rail authority, read only when refresh is explicitly requested. */
   getOwnedSessions?(): readonly OwnedSession[];
   /** Existing scanner/rail authority, read only when refresh is explicitly requested. */
@@ -128,10 +130,32 @@ export function createSessionLibraryService(
     ): Promise<SessionLibraryRecord[]> {
       const owned = source.getOwnedSessions?.() ?? [];
       const current = source.getAvailableSessions?.() ?? [];
-      const provider = source.listProviderSessions
-        ? await source.listProviderSessions(scope?.projectPath)
-        : [];
-      const records = buildSessionLibrary(owned, [...current, ...provider], options);
+      const currentRecords = buildSessionLibrary(owned, current, options);
+      const currentSelection = keys
+        ? currentRecords.filter((record) => keys.has(record.key))
+        : currentRecords;
+      const alreadyComplete = keys
+        && currentSelection.length === keys.size
+        && options?.includeDetails !== true;
+
+      let provider: AgentSession[] = [];
+      if (!alreadyComplete && options?.includeDetails === true && keys?.size === 1) {
+        const logPath = currentSelection[0]?.logPath;
+        if (logPath && source.readProviderSessionDetails) {
+          provider = await source.readProviderSessionDetails(logPath);
+        }
+      }
+      if (!alreadyComplete && provider.length === 0 && source.listProviderSessions) {
+        provider = await source.listProviderSessions(scope?.projectPath);
+      }
+
+      const records = provider.length > 0
+        ? buildSessionLibrary(
+            owned,
+            options?.includeDetails === true ? provider : [...current, ...provider],
+            options
+          )
+        : currentRecords;
       const selected = keys ? records.filter((record) => keys.has(record.key)) : records;
       if (!keys) held.clear();
       for (const record of selected) held.set(record.key, record);

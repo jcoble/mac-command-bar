@@ -40,6 +40,7 @@
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import { normalizeProvider } from '$lib/shell/ownedSessions.ts';
   import { exactLocalTime, formatLastActivity } from '$lib/shell/relativeTime.ts';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import type {
     SessionLibraryRecord,
     SessionLibraryTurn
@@ -349,8 +350,8 @@
         {#if detailsLoading}
           <p class={QUIET_LINE}>Loading session details…</p>
         {:else if firstPrompt}
-          <ScrollArea>
-            <p class="m-0 max-h-48 overflow-y-auto whitespace-pre-wrap text-(length:--text-quiet) leading-relaxed">
+          <ScrollArea type="always" class="first-prompt-scroll">
+            <p class="m-0 whitespace-pre-wrap pr-2 text-(length:--text-quiet) leading-relaxed">
               {firstPrompt}
             </p>
           </ScrollArea>
@@ -371,15 +372,22 @@
                    transition-colors outline-none hover:text-foreground
                    focus-visible:ring-3 focus-visible:ring-ring/50"
           >
-            <ChevronRight
-              class={cn('size-3.5 transition-transform', turnsOpen && 'rotate-90')}
-              aria-hidden="true"
-            />
-            Turns ({turns.length})
+            {#if detailsLoading}
+              <WorkingSpinner seed={record.key} size={14} />
+              Loading turns…
+            {:else}
+              <ChevronRight
+                class={cn('size-3.5 transition-transform', turnsOpen && 'rotate-90')}
+                aria-hidden="true"
+              />
+              Turns ({turns.length})
+            {/if}
           </Collapsible.Trigger>
           <Collapsible.Content>
             <div class="flex flex-col gap-(--space-2) pt-(--space-2)">
-              {#if turns.length === 0}
+              {#if detailsLoading}
+                <p class={QUIET_LINE}>Loading turns…</p>
+              {:else if turns.length === 0}
                 <p class={QUIET_LINE}>No turns were stored for this session.</p>
               {:else}
                 {#each shownTurns as turn, index (index)}
@@ -409,7 +417,7 @@
                         <Copy />
                       </IconButton>
                     </div>
-                    <ScrollArea>
+                    <ScrollArea type="always">
                       <p
                         class="m-0 px-(--space-2) py-(--space-2) text-(length:--text-quiet)
                                leading-relaxed whitespace-pre-wrap text-foreground"
@@ -551,6 +559,11 @@
   */
   .turn-block :global([data-slot='scroll-area-viewport']) {
     height: auto;
-    max-height: 11rem;
+    max-height: 16rem;
+  }
+
+  .first-prompt-scroll :global([data-slot='scroll-area-viewport']) {
+    height: auto;
+    max-height: 12rem;
   }
 </style>

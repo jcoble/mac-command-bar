@@ -400,6 +400,46 @@ pub fn scan_sessions_for_project(project_root: &str) -> Vec<AgentSessionRecord> 
     scan_sessions_from_home(&home, Some(project_root))
 }
 
+/// Read the bounded detail window for one transcript already named by History.
+/// Project expansion uses the cached summary scan; only opening one card pays
+/// for transcript text, and it opens one file rather than walking every session
+/// on the machine again.
+pub fn scan_session_details(log_path: &str) -> Vec<AgentSessionRecord> {
+    let path = Path::new(log_path);
+    let Ok(contents) =
+        read_head_and_tail_utf8(path, CODEX_SESSION_HEAD_BYTES, CODEX_SESSION_TAIL_BYTES)
+    else {
+        return Vec::new();
+    };
+
+    let mut codex = parse_codex_rollout_jsonl(&contents);
+    if !codex.is_empty() {
+        if let Ok(tail) = read_tail_utf8(path, CODEX_SESSION_TAIL_BYTES) {
+            let spoken = codex_turns_in(&tail);
+            if !spoken.is_empty() {
+                for record in codex.iter_mut() {
+                    record.latest_turns = spoken.clone();
+                }
+            }
+        }
+        return with_derived_agent_session_metadata(with_log_path(codex, path));
+    }
+
+    let project_path = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(OsStr::to_str)
+        .and_then(decode_claude_project_dir)
+        .unwrap_or_default();
+    let Ok(tail) = read_tail_utf8(path, CLAUDE_SESSION_TAIL_BYTES) else {
+        return Vec::new();
+    };
+    with_derived_agent_session_metadata(with_log_path(
+        parse_claude_jsonl(&tail, &project_path),
+        path,
+    ))
+}
+
 fn scan_sessions_from_home(home: &Path, project_root: Option<&str>) -> Vec<AgentSessionRecord> {
     let mut records = Vec::new();
     let mut project_roots = HashMap::new();
@@ -412,8 +452,7 @@ fn scan_sessions_from_home(home: &Path, project_root: Option<&str>) -> Vec<Agent
     // the rail exists to show.
     let mut codex_files = Vec::new();
     let mut codex_subagent_ids = HashSet::new();
-    for file in jsonl_files(&home.join(".codex/sessions")) {
-        let (marker, cwd) = codex_rollout_head_meta(&file);
+    for (file, marker, cwd) in codex_rollout_heads(jsonl_files(&home.join(".codex/sessions"))) {
         match marker {
             Some(marker) if marker.spawned_by_codex => codex_subagent_ids.extend(marker.id),
             // No marker, or nothing readable: keep the file. Older Codex builds
@@ -547,6 +586,44 @@ fn scan_sessions_from_home(home: &Path, project_root: Option<&str>) -> Vec<Agent
     records.truncate(AGENT_SESSION_RESULT_LIMIT);
     records = with_derived_agent_session_metadata(records);
     records
+}
+
+/// Read independent rollout headers concurrently. A busy machine can hold
+/// thousands of these files; doing 64 KB reads one after another made History
+/// wait minutes before it could replace the lightweight rail rows.
+fn codex_rollout_heads(
+    files: Vec<PathBuf>,
+) -> Vec<(PathBuf, Option<CodexThreadMarker>, Option<String>)> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .min(4)
+        .min(files.len());
+    let chunk_size = files.len().div_ceil(workers);
+
+    std::thread::scope(|scope| {
+        let tasks = files
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|file| {
+                            let (marker, cwd) = codex_rollout_head_meta(file);
+                            (file.clone(), marker, cwd)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        tasks
+            .into_iter()
+            .flat_map(|task| task.join().unwrap_or_default())
+            .collect()
+    })
 }
 
 /// Whether a scanned session holds a conversation at all.
@@ -2531,6 +2608,20 @@ mod tests {
             merged[0].latest_turn_preview.as_deref(),
             Some("Agent: Here is the plan for 2027.")
         );
+    }
+
+    #[test]
+    fn one_session_detail_read_opens_only_the_named_transcript() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("rollout-019fa964.jsonl");
+        fs::write(&path, CODEX_CONVERSATION_ROLLOUT_JSONL).expect("write transcript");
+
+        let records = scan_session_details(path.to_string_lossy().as_ref());
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].message_count, Some(2));
+        assert_eq!(records[0].latest_turns.len(), 2);
+        assert_eq!(records[0].log_path.as_deref(), path.to_str());
     }
 
     /// Pressing Escape in the middle of an answer is how a session usually

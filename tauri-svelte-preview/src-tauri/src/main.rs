@@ -17,7 +17,7 @@ use mcb_core::reference_counts::{
     MAX_REFERENCE_SCAN_BYTES,
 };
 use mcb_core::scanners::sessions::{
-    scan_sessions, scan_sessions_for_project, AgentSessionRecord,
+    scan_session_details, scan_sessions, scan_sessions_for_project, AgentSessionRecord,
 };
 use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 use orchestration::{
@@ -2029,6 +2029,13 @@ async fn list_agent_sessions_for_project(
     tauri::async_runtime::spawn_blocking(move || scan_sessions_for_project(&project_path))
         .await
         .map_err(|error| format!("Agent session scan task failed: {error}"))
+}
+
+#[tauri::command]
+async fn read_agent_session_details(log_path: String) -> Result<Vec<AgentSessionRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_session_details(&log_path))
+        .await
+        .map_err(|error| format!("Agent session detail task failed: {error}"))
 }
 
 #[tauri::command]
@@ -6759,6 +6766,7 @@ fn main() {
             list_git_repository_summaries,
             list_agent_sessions,
             list_agent_sessions_for_project,
+            read_agent_session_details,
             list_runtime_contexts,
             list_playwright_sessions,
             kill_playwright_session,

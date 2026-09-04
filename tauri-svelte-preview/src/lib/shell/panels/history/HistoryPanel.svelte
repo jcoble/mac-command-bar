@@ -777,14 +777,15 @@
                      transition-colors hover:bg-accent/60 focus-visible:ring-3
                      focus-visible:ring-ring/50"
             >
-              <ChevronRight
-                class={`size-3.5 shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1 truncate">{project.name}</span>
               {#if loadingProjectKey === project.key}
-                <WorkingSpinner seed={project.key} size={12} />
+                <WorkingSpinner seed={project.key} size={14} />
+              {:else}
+                <ChevronRight
+                  class={`size-3.5 shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+                  aria-hidden="true"
+                />
               {/if}
+              <span class="min-w-0 flex-1 truncate">{project.name}</span>
               <Chip tone="count">{project.count}</Chip>
             </Collapsible.Trigger>
           </h2>

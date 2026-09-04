@@ -354,12 +354,17 @@ export function buildSessionHistoryViewModel(
   for (const row of filtered) {
     const projectKey = `project:${row.projectPath}`;
     const live = known[row.projectPath];
-    // A session whose folder is gone is not shown. Git listed this repository's
-    // checkouts and this one is not among them, so there is nothing left to
-    // open, resume, or run in.
-    if (live && !live.some((checkout) => canonicalPath(checkout.path) === row.worktreePath)) {
-      continue;
-    }
+    // A session can run in a folder BELOW its checkout root. Match the longest
+    // live checkout prefix so `/repo/packages/app` is filed under `/repo`, not
+    // presented as a vanished worktree. If the checkout really was deleted,
+    // keep its historical row; History is still useful even when Git no longer
+    // lists the folder.
+    const checkoutPath = live
+      ?.map((checkout) => canonicalPath(checkout.path))
+      .filter((path) => row.worktreePath === path || row.worktreePath.startsWith(`${path}/`))
+      .toSorted((left, right) => right.length - left.length)[0];
+    const worktreePath = checkoutPath ?? row.worktreePath;
+    const worktreeName = pathName(worktreePath, row.worktreeName);
 
     let project = projects.get(projectKey);
     if (!project) {
@@ -367,10 +372,10 @@ export function buildSessionHistoryViewModel(
       projects.set(projectKey, project);
     }
 
-    const worktreeKey = `worktree:${row.worktreePath}`;
+    const worktreeKey = `worktree:${worktreePath}`;
     let worktree = project.worktrees.get(worktreeKey);
     if (!worktree) {
-      worktree = { name: row.worktreeName, path: row.worktreePath, rows: [] };
+      worktree = { name: worktreeName, path: worktreePath, rows: [] };
       project.worktrees.set(worktreeKey, worktree);
     }
     worktree.rows.push(row);
