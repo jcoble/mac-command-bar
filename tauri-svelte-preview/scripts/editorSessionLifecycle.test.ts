@@ -32,8 +32,8 @@ assert.match(selection, /async dispose\(\): Promise<void>[\s\S]*?await editorDis
 assert.doesNotMatch(selection, /void this\.editorSessions\.dispose\(\)/);
 assert.match(selection, /await this\.editorSessions\.restoreEditorWorkspaceForSession\([\s\S]*?owner\.signal/);
 assert.match(editor, /async restoreEditorWorkspaceForSession\([\s\S]*?stopSignal: AbortSignal/);
-assert.match(editor, /await this\.checkpointActiveWorkspace\(stopSignal\);\s*if \(stopSignal\.aborted\) return;/);
-assert.match(editor, /this\.releaseActiveEditorResources\(\);\s*if \(stopSignal\.aborted\) return;\s*const snapshot = await readAgentConversationWorkspaceFromTauri\(ownedId\);\s*if \(stopSignal\.aborted\) return;/);
+assert.match(editor, /await this\.checkpointActiveWorkspace\(stopSignal\);\s*if \(stopSignal\.aborted\) return null;/);
+assert.match(editor, /this\.releaseActiveEditorResources\(\);\s*if \(stopSignal\.aborted\) return null;\s*const snapshot = await readAgentConversationWorkspaceFromTauri\(ownedId\);\s*if \(stopSignal\.aborted\) return null;/);
 assert.match(editor, /planWorkspaceRestore\(snapshot\)/);
 assert.match(editor, /restoreEditorFiles\(plan\.openFiles, plan\.activePath\)/);
 assert.match(editor, /await writeAgentConversationWorkspaceFromTauri\(ownedId, snapshot\);\s*if \(stopSignal\.aborted\) return;/);

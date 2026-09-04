@@ -177,6 +177,7 @@
         }
         return;
       }
+      if (stopSignal.aborted) return;
       answer = await listGitRefs(projectPath);
       if (stopSignal.aborted) return;
     } catch (error) {

@@ -240,7 +240,7 @@ impl RemoteConnectionManager {
         if !PathBuf::from(&default_cwd).is_absolute() {
             return Err("ASSEMBLY_REMOTE_DEFAULT_CWD must be an absolute path".to_string());
         }
-        let (request_tx, request_rx) = mpsc::channel(32);
+        let (request_tx, mut request_rx) = mpsc::channel(32);
         manager
             .client
             .lock()
@@ -254,7 +254,9 @@ impl RemoteConnectionManager {
                 },
             );
         let event_sink = manager.event_sink.clone();
-        tauri::async_runtime::spawn(client_loop(url, token, request_rx, event_sink));
+        tauri::async_runtime::spawn(async move {
+            client_loop(url, token, &mut request_rx, event_sink, None).await;
+        });
         Ok(manager)
     }
 
@@ -1009,28 +1011,37 @@ fn deploy_remote_service(profile: &RemoteAssemblyProfile) -> Result<(), String> 
 
 async fn profile_client_loop(
     profile: RemoteAssemblyProfile,
-    requests: mpsc::Receiver<ClientRequest>,
+    mut requests: mpsc::Receiver<ClientRequest>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
     tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
 ) {
-    let target = profile.ssh_target.clone();
-    let connection =
-        tauri::async_runtime::spawn_blocking(move || open_remote_tunnel(&target, tunnel_processes))
-            .await;
-    let Ok(Ok(tunnel)) = connection else {
-        let message = match connection {
-            Ok(Err(error)) => error,
-            Err(error) => format!("Remote Assembly connection task failed: {error}"),
-            Ok(Ok(_)) => unreachable!(),
+    while !requests.is_closed() {
+        let target = profile.ssh_target.clone();
+        let processes = tunnel_processes.clone();
+        let connection =
+            tauri::async_runtime::spawn_blocking(move || open_remote_tunnel(&target, processes))
+                .await;
+        let tunnel = match connection {
+            Ok(Ok(tunnel)) => tunnel,
+            Ok(Err(error)) => {
+                fail_queued_requests(&mut requests, error);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            Err(error) => {
+                fail_queued_requests(
+                    &mut requests,
+                    format!("Remote Assembly connection task failed: {error}"),
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
         };
-        let mut requests = requests;
-        fail_queued_requests(&mut requests, message);
-        return;
-    };
-    let url = format!("ws://127.0.0.1:{}/assembly", tunnel.local_port);
-    let token = tunnel.token.clone();
-    client_loop(url, token, requests, event_sink).await;
-    drop(tunnel);
+        let url = format!("ws://127.0.0.1:{}/assembly", tunnel.local_port);
+        let token = tunnel.token.clone();
+        client_loop(url, token, &mut requests, event_sink.clone(), Some(4)).await;
+        drop(tunnel);
+    }
 }
 
 struct RemoteTunnel {
@@ -1243,15 +1254,17 @@ systemctl --user is-active --quiet assembly-remote.service
 async fn client_loop(
     url: String,
     token: String,
-    mut requests: mpsc::Receiver<ClientRequest>,
+    requests: &mut mpsc::Receiver<ClientRequest>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
+    reconnect_tunnel_after_failures: Option<u8>,
 ) {
     let cursors = Arc::new(Mutex::new(BTreeMap::<String, i64>::new()));
+    let mut failed_connections = 0_u8;
     loop {
         let mut request = match url.as_str().into_client_request() {
             Ok(request) => request,
             Err(error) => {
-                fail_queued_requests(&mut requests, format!("Invalid remote URL: {error}"));
+                fail_queued_requests(requests, format!("Invalid remote URL: {error}"));
                 return;
             }
         };
@@ -1261,15 +1274,20 @@ async fn client_loop(
                 request.headers_mut().insert("authorization", value);
             }
             Err(error) => {
-                fail_queued_requests(&mut requests, format!("Invalid remote token: {error}"));
+                fail_queued_requests(requests, format!("Invalid remote token: {error}"));
                 return;
             }
         }
         let connected = tokio_tungstenite::connect_async(request).await;
         let Ok((mut socket, _)) = connected else {
+            failed_connections = failed_connections.saturating_add(1);
+            if reconnect_tunnel_after_failures.is_some_and(|limit| failed_connections >= limit) {
+                return;
+            }
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         };
+        failed_connections = 0;
         let resume = ClientFrame::Resume {
             cursors: cursors
                 .lock()
