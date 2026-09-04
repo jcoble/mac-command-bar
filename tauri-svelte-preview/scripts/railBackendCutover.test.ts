@@ -23,6 +23,7 @@ const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
 const languageControls = read('../src/lib/shell/components/LanguageIntelligenceControls.svelte');
 const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
+const browserPanel = read('../src/lib/shell/panels/browser/BrowserPanel.svelte');
 const frame = read('../src/lib/shell/layout/frame.ts');
 const workbenchController = read('../src/lib/shell/controllers/workbenchController.svelte.ts');
 const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
@@ -106,6 +107,16 @@ assert.match(centerTabs, /data-testid="toggle-right-panel"/);
 assert.match(page, /visible=\{workbench\.rightPanelOpen\}/);
 assert.match(frame, /setToolsPresent[\s\S]*?api\.removePanel\(panel\)/);
 assert.match(workbenchController, /toggleRightPanel\(\)[\s\S]*?setToolsPresent\(open\)/);
+assert.doesNotMatch(
+  workbenchController,
+  /releaseBrowserWorkspace/,
+  'the right-panel controller must not release the Browser before Svelte hides its owner'
+);
+assert.match(
+  browserPanel,
+  /return \(\) => untrack\(\(\) => \{\s*releaseBrowserWorkspace\(\);/,
+  'the Browser component releases its native workspace from its own lifecycle cleanup'
+);
 assert.match(page, /onProblemsLocationChange=\{\(location\) => workbench\.applyProblemsLocation\(location\)\}/);
 assert.match(workbenchController, /applyProblemsLocation\(location: ProblemsLocation\)[\s\S]*?setDockPresent\(atBottom\)/);
 assert.match(workbenchController, /onFrameReady\([\s\S]*?applyProblemsLocation\(settings\.panels\.problemsLocation\)/);

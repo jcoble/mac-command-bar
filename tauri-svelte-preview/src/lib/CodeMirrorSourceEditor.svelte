@@ -50,6 +50,11 @@
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
   import { codeMirrorCodeLens } from '$lib/shell/editor/codeMirrorCodeLens';
   import {
+    codeMirrorSemanticTokens,
+    semanticTokenDecorations,
+    setCodeMirrorSemanticTokens
+  } from '$lib/shell/editor/codeMirrorSemanticTokens';
+  import {
     codeMirrorThemeForAppearance,
     loadCodeMirrorTheme
   } from '$lib/shell/editor/codeMirrorTheme';
@@ -63,12 +68,14 @@
     SourceLookupRequest
   } from '$lib/shell/editor/sourceIntelligence';
   import {
+    extractSourceSemanticTokens,
     extractSourceSymbols,
     type SourceCodeAction,
     type SourceCodeActionDiagnostic,
     type SourceCodeActionLookupRequest,
     type SourceDiagnostic,
     type SourcePreview,
+    type SourceSemanticToken,
     type SourceSymbol
   } from '$lib/sourceData';
 
@@ -123,6 +130,7 @@
     onReferenceLookup,
     onReferenceCountLookup,
     onReferenceCountsOutOfDate,
+    onSemanticTokensLookup,
     onSaveRequest,
     onSymbolsChange,
     onWorkspaceEditAction,
@@ -155,6 +163,8 @@
   let loadedThemeKey = '';
   let codeActionGeneration = 0;
   let codeLensGeneration = 0;
+  let semanticTokenGeneration = 0;
+  let semanticTokenStopController: AbortController | null = null;
 
   function currentThemeKey(): string {
     const editor = settings.editor;
@@ -260,6 +270,45 @@
   function clearCodeLens(): void {
     codeLensGeneration += 1;
     if (view) view.dispatch({ effects: codeLens.reconfigure([]) });
+  }
+
+  function replaceSemanticTokens(tokens: readonly SourceSemanticToken[]): void {
+    if (!view) return;
+    view.dispatch({
+      effects: setCodeMirrorSemanticTokens.of(semanticTokenDecorations(view.state, tokens))
+    });
+  }
+
+  function clearSemanticTokens(): void {
+    semanticTokenGeneration += 1;
+    semanticTokenStopController?.abort();
+    semanticTokenStopController = null;
+    replaceSemanticTokens([]);
+  }
+
+  async function refreshSemanticTokens(): Promise<void> {
+    if (!view || !visible || !currentPath || currentPath !== preview.path) return;
+    semanticTokenStopController?.abort();
+    const stopController = new AbortController();
+    semanticTokenStopController = stopController;
+    const generation = ++semanticTokenGeneration;
+    const path = currentPath;
+    const content = view.state.doc.toString();
+    const tokenPreview = { ...preview, content };
+
+    replaceSemanticTokens(extractSourceSemanticTokens(tokenPreview, content));
+    if (!languageServerRoot || !onSemanticTokensLookup || stopController.signal.aborted) return;
+
+    try {
+      const tokens = await onSemanticTokensLookup(tokenPreview, stopController.signal);
+      if (
+        stopController.signal.aborted || !view || generation !== semanticTokenGeneration ||
+        currentPath !== path || preview.path !== path || view.state.doc.toString() !== content
+      ) return;
+      if (tokens.length > 0) replaceSemanticTokens(tokens);
+    } catch {
+      // The syntax-derived tokens already on screen remain the safe fallback.
+    }
   }
 
   function desiredContent(): string {
@@ -699,6 +748,7 @@
     editing.of(editingExtensions()),
     codeActionMenuState,
     codeLens.of([]),
+    codeMirrorSemanticTokens,
     EditorView.domEventHandlers({
       mousedown: (event, editor) => {
         if (!(event.metaKey || event.ctrlKey) || event.button !== 0) return false;
@@ -718,6 +768,10 @@
       }
       if (!update.docChanged || applyingContent) return;
       const next = update.state.doc.toString();
+      semanticTokenGeneration += 1;
+      semanticTokenStopController?.abort();
+      semanticTokenStopController = null;
+      replaceSemanticTokens(extractSourceSemanticTokens({ ...preview, content: next }, next));
       onContentChange?.(next);
       onSymbolsChange?.(extractSourceSymbols(preview, next));
       onReferenceCountsOutOfDate?.(preview.path);
@@ -765,6 +819,7 @@
     void loadVisibleLanguageSupport();
     void loadVisibleThemeSupport();
     void loadVisibleLspSupport();
+    void refreshSemanticTokens();
     configureCodeLens();
     if (restored && view && currentPath === preview.path) {
       view.scrollDOM.scrollTop = restored.scrollTop;
@@ -783,6 +838,7 @@
     if (wasCurrent) {
       clearLspSupport(false);
       clearCodeLens();
+      clearSemanticTokens();
       currentPath = '';
     }
     sessionEditorStates.delete(path);
@@ -796,6 +852,7 @@
   export function disposeAllTabModels(): void {
     clearLspSupport();
     clearCodeLens();
+    clearSemanticTokens();
     currentPath = '';
     sessionViewStates.clear();
     sessionEditorStates.clear();
@@ -812,6 +869,7 @@
     clearLspSupport();
     clearLanguageSupport();
     clearCodeLens();
+    clearSemanticTokens();
     currentPath = '';
     sessionViewStates.clear();
     sessionEditorStates.clear();
@@ -846,15 +904,18 @@
 
   $effect(() => {
     languageServerRoot;
+    onSemanticTokensLookup;
     preview.path;
     preview.language;
     if (visible) {
       void loadVisibleLanguageSupport();
       if (officialLspExpected()) void loadVisibleLspSupport();
       else clearLspSupport();
+      void refreshSemanticTokens();
     } else {
       clearLanguageSupport();
       clearLspSupport();
+      clearSemanticTokens();
     }
     if (view && currentPath === preview.path) configureCodeLens();
   });
@@ -894,6 +955,7 @@
   onDestroy(() => {
     clearLspSupport();
     clearCodeLens();
+    clearSemanticTokens();
     languageGeneration += 1;
     themeGeneration += 1;
     view?.destroy();

@@ -223,7 +223,10 @@ export interface SourceIntelligenceCallbacks {
   onDocumentHighlightLookup(request: SourceLookupRequest): Promise<SourceDocumentHighlight[]>;
   onSignatureHelpLookup(request: SourceLookupRequest): Promise<SourceSignatureHelp | null>;
   onInlayHintLookup(request: SourceInlayHintRequest): Promise<SourceInlayHint[]>;
-  onSemanticTokensLookup(preview: SourcePreview): Promise<SourceSemanticToken[]>;
+  onSemanticTokensLookup(
+    preview: SourcePreview,
+    stopSignal?: AbortSignal
+  ): Promise<SourceSemanticToken[]>;
 }
 
 /** The service the editor panel drives. */
@@ -1126,12 +1129,15 @@ export function createSourceIntelligence(): SourceIntelligence {
     }
   }
 
-  /** Colouring for the file Monaco is about to paint (its own copy of it). */
-  async function lookupSemanticTokens(preview: SourcePreview): Promise<SourceSemanticToken[]> {
-    if (!sourceSupportsLanguageIntelligence(preview.language)) return [];
+  /** Colouring for the file the editor is about to paint (its own copy of it). */
+  async function lookupSemanticTokens(
+    preview: SourcePreview,
+    stopSignal?: AbortSignal
+  ): Promise<SourceSemanticToken[]> {
+    if (stopSignal?.aborted || !sourceSupportsLanguageIntelligence(preview.language)) return [];
     try {
       countInvoke('find_source_lsp_semantic_tokens');
-      return (
+      const tokens = (
         (await findSourceLspSemanticTokensFromTauri(preview, {
           root: lookupRoot(),
           line: 1,
@@ -1139,6 +1145,7 @@ export function createSourceIntelligence(): SourceIntelligence {
           limit: 5000
         })) ?? []
       );
+      return stopSignal?.aborted ? [] : tokens;
     } catch {
       return [];
     }
