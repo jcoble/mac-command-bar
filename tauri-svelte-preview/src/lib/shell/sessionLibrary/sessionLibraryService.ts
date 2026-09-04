@@ -168,12 +168,20 @@ export interface SessionLibraryHost {
   rescan?(): void | Promise<void>;
 }
 
-let registeredHost: SessionLibraryHost = { service: inertSessionLibraryService };
+// Components are constructed before their parent's onMount callback registers
+// the route-owned host. Keep this object stable so a panel that captured it
+// during construction sees the registration when it arrives.
+const registeredHost: SessionLibraryHost = { service: inertSessionLibraryService };
+let hostRegistration = 0;
 
 export function registerSessionLibraryHost(host: SessionLibraryHost): () => void {
-  registeredHost = host;
+  const registration = ++hostRegistration;
+  registeredHost.service = host.service;
+  registeredHost.rescan = host.rescan;
   return () => {
-    if (registeredHost === host) registeredHost = { service: inertSessionLibraryService };
+    if (registration !== hostRegistration) return;
+    registeredHost.service = inertSessionLibraryService;
+    registeredHost.rescan = undefined;
   };
 }
 

@@ -33,6 +33,7 @@
 	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
 	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
 	import { gitService } from "$lib/shell/git/gitService";
+	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
 	import {
@@ -42,6 +43,13 @@
 
 	const selection = new SessionSelectionController();
 	const workbench = new WorkbenchController();
+	// Register before the right-panel children are constructed. History reads
+	// this route-owned bridge during its own construction, while the scan itself
+	// remains an on-mount async operation with an AbortSignal below.
+	const historyHost = registerSessionHistoryHost({
+		openOwned: selectSession,
+		deleteOwned: (ownedId) => selection.removeSession(ownedId),
+	});
 
 	let sessionsColumn = $state<SessionsColumn | null>(null);
 	let editorPanel = $state<EditorPanelLifecycle | null>(null);
@@ -53,6 +61,7 @@
 	});
 
 	onMount(() => {
+		const historyStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
 			selectSession,
 			showCenterPanel: (_ownedId, id) => workbench.selectCenterTab(id),
@@ -87,8 +96,11 @@
 				if (stopSignal.aborted) return;
 			},
 		});
+		void historyHost.rescan(historyStop.signal);
 
 		return () => {
+			historyStop.abort();
+			historyHost.release();
 			releaseSessionRowJump();
 			clearWorkbenchNavigation();
 			void disposeRoute();

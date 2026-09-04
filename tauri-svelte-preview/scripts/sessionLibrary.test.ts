@@ -14,7 +14,9 @@ import {
 import { sessionContextMenuRoster } from '../src/lib/shell/sessionLibrary/sessionLibraryContextMenu.ts';
 import {
   createSessionLibraryMountCoordinator,
-  createSessionLibraryService
+  createSessionLibraryService,
+  registerSessionLibraryHost,
+  sessionLibraryHost
 } from '../src/lib/shell/sessionLibrary/sessionLibraryService.ts';
 
 function owned(ownedId, cwd, extra = {}) {
@@ -217,6 +219,19 @@ function available(id, cwd, extra = {}) {
   assert.equal(mounts.mountedPlacement, null);
   assert.equal(listed, 0);
   assert.equal(typeof service.refresh, 'function');
+}
+
+// A panel can be constructed before the route registers its live host. The
+// captured handle must still begin forwarding once registration lands.
+{
+  const captured = sessionLibraryHost();
+  const live = createSessionLibraryService({
+    listProviderSessions: async () => [available('late-host', '/repo')]
+  });
+  const release = registerSessionLibraryHost({ service: live });
+  assert.equal((await captured.service.refresh()).length, 1);
+  release();
+  assert.equal((await captured.service.refresh()).length, 0);
 }
 
 console.log('sessionLibrary: all tests passed');
