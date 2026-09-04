@@ -91,6 +91,36 @@ test('restore_plan_marks_the_active_path_without_file_contents', () => {
   assert.equal(plan.activePath, '/repo/b.ts');
 });
 
+test('workspace_record_round_trips_bounded_git_and_history_view_state', () => {
+  const snapshot = normalizeWorkspaceSnapshot(captureWorkspace({
+    openFiles: [],
+    activePath: null,
+    selectedPath: null,
+    scrollTop: 0,
+    rightTab: 'history',
+    sourceControl: { openSectionIds: ['staged', 'changes', 'staged'], scrollTop: 84 },
+    history: {
+      scope: 'project',
+      openProjectKey: '/repo',
+      openWorktreeKeys: ['/repo/worktree'],
+      expandedKey: 'codex:session-a',
+      scrollTop: 240
+    }
+  }));
+
+  assert.deepEqual(snapshot?.sourceControl, {
+    openSectionIds: ['staged', 'changes'],
+    scrollTop: 84
+  });
+  assert.deepEqual(snapshot?.history, {
+    scope: 'project',
+    openProjectKey: '/repo',
+    openWorktreeKeys: ['/repo/worktree'],
+    expandedKey: 'codex:session-a',
+    scrollTop: 240
+  });
+});
+
 // A capture is exactly what was on screen: the strip in order, the file showing,
 // the highlighted file, the scroll offset, and the file the Diff tab was
 // showing. A capture that says nothing about a diff still carries both diff

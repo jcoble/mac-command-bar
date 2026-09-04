@@ -37,33 +37,48 @@ export class EditorSessionController {
 		projectRoot: string,
 		rootAvailable: boolean,
 		stopSignal: AbortSignal,
-	): Promise<void> {
-		if (stopSignal.aborted) return;
+	): Promise<SessionWorkspaceSnapshot | null> {
+		if (stopSignal.aborted) return null;
 		if (this.activeOwnedId === ownedId) {
 			setEditorProjectRoot(rootAvailable ? projectRoot : null);
-			return;
+			return this.activeSnapshot;
 		}
 
 		await this.checkpointActiveWorkspace(stopSignal);
-		if (stopSignal.aborted) return;
+		if (stopSignal.aborted) return null;
 		this.releaseActiveEditorResources();
 
-		if (stopSignal.aborted) return;
+		if (stopSignal.aborted) return null;
 		const snapshot = await readAgentConversationWorkspaceFromTauri(ownedId);
-		if (stopSignal.aborted) return;
+		if (stopSignal.aborted) return null;
 		this.activeOwnedId = ownedId;
 		this.activeSnapshot = snapshot;
 		setEditorProjectRoot(rootAvailable ? projectRoot : null);
 		if (!rootAvailable) {
 			this.panel?.restoreViewStates([]);
 			resetEditorState();
-			return;
+			return snapshot;
 		}
 
 		const plan = planWorkspaceRestore(snapshot);
 		this.panel?.restoreViewStates(plan.openFiles);
 		if (plan.openFiles.length > 0) restoreEditorFiles(plan.openFiles, plan.activePath);
 		else resetEditorState();
+		return snapshot;
+	}
+
+	/** Merge small non-editor surface state into the same per-session record. */
+	rememberWorkspaceState(patch: Partial<SessionWorkspaceSnapshot>): SessionWorkspaceSnapshot | null {
+		if (!this.activeOwnedId) return null;
+		const fallback = captureWorkspace({
+			openFiles: editorState.openFiles,
+			activePath: editorState.activePath,
+			selectedPath: null,
+			scrollTop: 0,
+			rightTab: 'files',
+		});
+		this.activeSnapshot = { ...(this.activeSnapshot ?? fallback), ...patch };
+		return this.activeSnapshot;
 	}
 
 	async dispose(): Promise<void> {
@@ -125,7 +140,13 @@ export class EditorSessionController {
 		if (stopSignal.aborted) return;
 		const latest = await readAgentConversationWorkspaceFromTauri(ownedId);
 		if (stopSignal.aborted) return;
-		const previous = latest ?? this.activeSnapshot;
+		const previous = latest && this.activeSnapshot
+			? {
+					...latest,
+					...this.activeSnapshot,
+					conversation: latest.conversation ?? this.activeSnapshot.conversation,
+				}
+			: latest ?? this.activeSnapshot;
 		const editorCapture = captureWorkspace({
 			openFiles,
 			activePath,

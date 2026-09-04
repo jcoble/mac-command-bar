@@ -18,7 +18,7 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Server from '@lucide/svelte/icons/server';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -75,6 +75,7 @@
     type RepositoryCheckout
   } from '$lib/tauriSource.ts';
   import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation.ts';
+  import type { SessionHistoryWorkspace } from '$lib/shell/sessionWorkspaces.ts';
 
   const SCOPE_OPTIONS: readonly { value: SessionHistoryScope; label: string }[] = [
     { value: 'workspace', label: 'Workspace' },
@@ -98,16 +99,29 @@
     root: string;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
+    workspaceState?: SessionHistoryWorkspace;
+    onWorkspaceStateChange?(ownedId: string | null, state: SessionHistoryWorkspace): void;
   }
-  let { visible, root, ownedId }: Props = $props();
+  let { visible, root, ownedId, workspaceState, onWorkspaceStateChange }: Props = $props();
+  const workspaceOwnedId = untrack(() => ownedId);
+  const initialWorkspaceState = untrack(() => workspaceState);
+
+  if (initialWorkspaceState) sessionLibraryState.scope = initialWorkspaceState.scope;
 
   // Read once, at init: the page registers its actions in its own component
   // body, which runs before this panel is created.
   const host = sessionLibraryHost();
 
+  function restoredCollapseState(): ReturnType<typeof createSessionHistoryCollapseState> {
+    return {
+      projects: new Set(initialWorkspaceState?.openProjectKey ? [initialWorkspaceState.openProjectKey] : []),
+      worktrees: new Set(initialWorkspaceState?.openWorktreeKeys ?? [])
+    };
+  }
+
   const query = $derived(sessionLibraryState.query);
   let expandedKey = $state<string | null>(null);
-  let collapseState = $state(createSessionHistoryCollapseState());
+  let collapseState = $state(restoredCollapseState());
   let windowState = $state(createSessionHistoryWindowState());
   let pendingDelete = $state<SessionLibraryRecord | null>(null);
   /** Redrawn only while the panel is on screen, so ages do not go stale in it. */
@@ -149,6 +163,10 @@
   let loadingProjectKey = $state<string | null>(null);
   let loadingOlder = $state(false);
   let historyViewport = $state<HTMLElement | null>(null);
+  const restoreWorktreeKeys = new Set(initialWorkspaceState?.openWorktreeKeys ?? []);
+  const restoreScrollTop = initialWorkspaceState?.scrollTop ?? 0;
+  let restoreScrollPending = restoreScrollTop > 0;
+  let restoredProjectLoaded = false;
   let loadVersion = 0;
   let loadStopController = new AbortController();
   type SessionHistoryDetail = Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'>;
@@ -180,6 +198,16 @@
     stopHistoryLoads();
     releaseDetails();
   });
+
+  function publishWorkspaceState(): void {
+    onWorkspaceStateChange?.(workspaceOwnedId, {
+      scope: sessionLibraryState.scope,
+      openProjectKey: [...collapseState.projects][0] ?? null,
+      openWorktreeKeys: [...collapseState.worktrees],
+      expandedKey,
+      scrollTop: historyViewport?.scrollTop ?? restoreScrollTop
+    });
+  }
 
   /**
    * The checkouts each repository still has, asked of git once the sessions have
@@ -234,6 +262,18 @@
       query,
       provider: sessionLibraryState.provider
     });
+    publishWorkspaceState();
+  }
+
+  async function restoreProject(project: SessionHistoryProjectGroup): Promise<void> {
+    await toggleProject(project, true);
+    if (!visible) return;
+    for (const key of restoreWorktreeKeys) {
+      if (!isSessionHistoryGroupOpen(collapseState, 'worktree', key)) {
+        collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
+      }
+    }
+    publishWorkspaceState();
   }
 
   $effect(() => {
@@ -243,7 +283,7 @@
     loadedRecords = [];
     loadOutcome = null;
     checkouts = {};
-    collapseState = createSessionHistoryCollapseState();
+    collapseState = restoredCollapseState();
     expandedKey = null;
   });
 
@@ -256,9 +296,30 @@
     loadedRecords = [];
     loadOutcome = null;
     checkouts = {};
-    collapseState = createSessionHistoryCollapseState();
+    collapseState = restoredCollapseState();
     loadingProjectKey = null;
     expandedKey = null;
+    restoredProjectLoaded = false;
+  });
+
+  // Restore only after the root-change reset above has torn down the outgoing
+  // projection. Running these in the opposite order immediately closes the
+  // group that the incoming session asked to reopen.
+  $effect(() => {
+    const projectKey = workspaceState?.openProjectKey ?? null;
+    if (!visible || projectKey === null) return;
+    const project = summaryViewModel.projects.find((candidate) => candidate.key === projectKey);
+    if (!project || restoredProjectLoaded) return;
+    restoredProjectLoaded = true;
+    void restoreProject(project);
+  });
+
+  $effect(() => {
+    loadedRecords.length;
+    const viewport = historyViewport;
+    if (!visible || !viewport || !restoreScrollPending) return;
+    viewport.scrollTop = restoreScrollTop;
+    restoreScrollPending = false;
   });
 
   $effect(() => {
@@ -281,7 +342,10 @@
     checkouts = {};
     collapseState = createSessionHistoryCollapseState();
     loadingProjectKey = null;
-    if (closing) return;
+    if (closing) {
+      publishWorkspaceState();
+      return;
+    }
 
     const keys = new Set(project.worktrees.flatMap((worktree) =>
       worktree.rows.map((row) => row.record.key)
@@ -325,13 +389,17 @@
       // Cleared whatever happened, and only for the read still in front: a
       // slow project answering after the reader has opened another one must
       // not take that one's spinner away with it.
-      if (version === loadVersion) loadingProjectKey = null;
+      if (version === loadVersion) {
+        loadingProjectKey = null;
+        publishWorkspaceState();
+      }
     }
   }
 
   function toggleWorktree(key: string): void {
     releaseDetails();
     collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
+    publishWorkspaceState();
   }
 
   async function showOlder(worktreeKey: string, stopSignal: AbortSignal): Promise<void> {
@@ -395,7 +463,9 @@
 
   async function handleHistoryScroll(): Promise<void> {
     const viewport = historyViewport;
-    if (!viewport || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 120) return;
+    if (!viewport) return;
+    publishWorkspaceState();
+    if (viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 120) return;
     await loadOlderVisibleSessions();
   }
 
@@ -565,10 +635,12 @@
     if (expandedKey === row.record.key) {
       releaseDetails(new Set([row.record.key]));
       expandedKey = null;
+      publishWorkspaceState();
       return;
     }
     releaseDetails();
     expandedKey = row.record.key;
+    publishWorkspaceState();
     void loadCardDetails(row.record);
   }
 

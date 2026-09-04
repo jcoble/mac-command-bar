@@ -20,6 +20,7 @@ import {
 	changeStructuredConversationCheckout,
 	flushConversationSessionDraft,
 } from '../conversation/conversationService';
+import type { SessionWorkspaceSnapshot } from '../sessionWorkspaces';
 
 export class SessionSelectionController {
 	controlledSelectionOwnedId = $state<string | null>(null);
@@ -29,6 +30,7 @@ export class SessionSelectionController {
 	editorSessions = new EditorSessionController();
 	activeRootAvailable = $state(true);
 	activeRootRemote = $state(false);
+	activeWorkspaceSnapshot = $state.raw<SessionWorkspaceSnapshot | null>(null);
 
 	private workspaceWriteQueue: Promise<void> | null = null;
 	private selectionGeneration = 0;
@@ -96,6 +98,7 @@ export class SessionSelectionController {
 	}
 
 	async selectSession(ownedId: string): Promise<void> {
+		this.activeWorkspaceSnapshot = null;
 		this.controlledSelectionOwnedId = ownedId;
 		setActiveOwned(ownedId);
 		this.pendingSelectionOwnedId = ownedId;
@@ -160,6 +163,10 @@ export class SessionSelectionController {
 		const write = this.writeExpandedPathsAfter(previousWrite, ownedId, projectRoot, paths);
 		this.workspaceWriteQueue = write;
 		void this.ignoreWorkspaceWriteFailure(write);
+	}
+
+	rememberWorkspaceState(patch: Partial<SessionWorkspaceSnapshot>): void {
+		this.activeWorkspaceSnapshot = this.editorSessions.rememberWorkspaceState(patch);
 	}
 
 	/** One removable seam for changing every checkout-backed session surface. */
@@ -227,6 +234,7 @@ export class SessionSelectionController {
 		const editorDisposal = this.editorSessions.dispose();
 		this.controlledSelectionOwnedId = null;
 		this.expandedPathsByRoot = {};
+		this.activeWorkspaceSnapshot = null;
 		this.sessionSelectionLayers.clearTreeView();
 		this.sessionSelectionLayers.clearChatHistory();
 		await editorDisposal;
@@ -268,13 +276,15 @@ export class SessionSelectionController {
 		if (!this.isCurrent(owner)) return;
 		this.activeRootAvailable = Boolean(this.sessionSelectionLayers.treeRoot) && !this.activeRootRemote;
 		shellPanels.sessionPicked(this.activeRootAvailable);
-		await this.editorSessions.restoreEditorWorkspaceForSession(
+		const snapshot = await this.editorSessions.restoreEditorWorkspaceForSession(
 			session.ownedId,
 			this.sessionSelectionLayers.treeRoot,
 			Boolean(this.sessionSelectionLayers.treeRoot) && !this.activeRootRemote,
 			owner.signal,
 		);
-		if (!this.isCurrent(owner) || !root || this.activeRootRemote) return;
+		if (!this.isCurrent(owner)) return;
+		this.activeWorkspaceSnapshot = snapshot;
+		if (!root || this.activeRootRemote) return;
 		if (needsWorkspaceState) await this.loadExpandedPaths(session.ownedId, root, owner);
 	}
 

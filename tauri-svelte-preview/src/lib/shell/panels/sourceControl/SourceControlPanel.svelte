@@ -34,6 +34,7 @@
    * change one, so Stage All and Commit are off there and say why: a page left
    * open on a repository must not be able to commit it by accident.
    */
+  import { untrack } from 'svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
@@ -73,7 +74,10 @@
   import { canonicalPath } from '$lib/shell/explorer/explorerStore.svelte';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
-  import type { CheckoutScope } from '$lib/shell/sessionWorkspaces';
+  import type {
+    CheckoutScope,
+    SessionSourceControlWorkspace
+  } from '$lib/shell/sessionWorkspaces';
   import { validateProjectRootFromTauri, type ProjectGitFileStatus } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
 
@@ -108,6 +112,8 @@
     canWrite?: boolean;
     inspectionRoot?: string | null;
     onInspectionRootChange?(root: string | null): void;
+    workspaceState?: SessionSourceControlWorkspace;
+    onWorkspaceStateChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
     /** Applies a selected linked worktree as the active session checkout. */
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
@@ -123,8 +129,12 @@
     canWrite = canChangeRepository(),
     inspectionRoot,
     onInspectionRootChange,
+    workspaceState,
+    onWorkspaceStateChange,
     onUseSessionCheckout
   }: Props = $props();
+  const workspaceOwnedId = untrack(() => ownedId);
+  const initialWorkspaceState = untrack(() => workspaceState);
 
   /** Why nothing can be changed while the panel is on another checkout. */
   const READ_ONLY_SCOPE_MESSAGE =
@@ -360,11 +370,22 @@
 
   /** Which file sections the reader has opened. Starting collapsed keeps a
    * large working copy from mounting every changed-file row in one pass. */
-  let openSections = $state<Record<string, boolean>>({});
+  let openSections = $state<Record<string, boolean>>(Object.fromEntries(
+    (initialWorkspaceState?.openSectionIds ?? []).map((id) => [id, true])
+  ));
 
   /** The list DOM is rebuilt on return, but the reader stays at the same place. */
   let scrollViewport = $state<HTMLElement | null>(null);
-  let savedScrollTop = 0;
+  let savedScrollTop = initialWorkspaceState?.scrollTop ?? 0;
+
+  function publishWorkspaceState(): void {
+    onWorkspaceStateChange?.(workspaceOwnedId, {
+      openSectionIds: Object.entries(openSections)
+        .filter(([, open]) => open)
+        .map(([id]) => id),
+      scrollTop: savedScrollTop
+    });
+  }
 
   $effect(() => {
     const viewport = scrollViewport;
@@ -372,10 +393,12 @@
     viewport.scrollTop = savedScrollTop;
     const rememberScroll = () => {
       savedScrollTop = viewport.scrollTop;
+      publishWorkspaceState();
     };
     viewport.addEventListener('scroll', rememberScroll, { passive: true });
     return () => {
       savedScrollTop = viewport.scrollTop;
+      publishWorkspaceState();
       viewport.removeEventListener('scroll', rememberScroll);
     };
   });
@@ -433,6 +456,7 @@
 
   function toggleSection(id: string): void {
     openSections = { ...openSections, [id]: !openSections[id] };
+    publishWorkspaceState();
   }
 
   function stageOne(file: ProjectGitFileStatus): void {

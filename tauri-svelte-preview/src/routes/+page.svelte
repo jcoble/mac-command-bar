@@ -64,12 +64,12 @@
 		const historyStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
 			selectSession,
-			showCenterPanel: (_ownedId, id) => workbench.selectCenterTab(id),
-			showSidebarView: (_ownedId, id) => workbench.selectRightTab(id),
+			showCenterPanel: (_ownedId, id) => selectCenterTab(id),
+			showSidebarView: (_ownedId, id) => selectRightTab(id),
 		});
 		registerWorkbenchNavigation({
-			showCenterTab: (id) => workbench.selectCenterTab(id),
-			showRightTab: (id) => workbench.selectRightTab(id),
+			showCenterTab: selectCenterTab,
+			showRightTab: selectRightTab,
 			openDiff: async (request) => {
 				if (!selection.activeRootAvailable) return;
 				await gitService.showStoredDiff(request.projectRoot, request.relativePath);
@@ -78,7 +78,7 @@
 				const ownedId = selection.activeOwnedId;
 				const sessionRoot = selection.durableSessionRoot;
 				if (!selection.activeRootAvailable || !ownedId || !sessionRoot) return false;
-				workbench.selectCenterTab("git-history");
+				selectCenterTab("git-history");
 				await gitService.showFileHistory(request.projectRoot, request.relativePath);
 				if (
 					!selection.activeRootAvailable ||
@@ -92,7 +92,7 @@
 		void startShell({
 			onSelectInitial: async (ownedId, stopSignal) => {
 				if (stopSignal.aborted) return;
-				await selection.selectSession(ownedId);
+				await selectSession(ownedId);
 				if (stopSignal.aborted) return;
 			},
 		});
@@ -118,23 +118,41 @@
 	}
 
 	async function selectSession(ownedId: string): Promise<void> {
+		if (selection.activeOwnedId === ownedId && selection.activeWorkspaceSnapshot !== null) return;
+		if (selection.activeOwnedId !== null) {
+			selection.rememberWorkspaceState(workbench.captureSessionState());
+		}
+		workbench.beginSessionSwitch();
 		await selection.selectSession(ownedId);
+		if (selection.activeOwnedId === ownedId) {
+			workbench.restoreSessionState(selection.activeWorkspaceSnapshot);
+		}
+	}
+
+	function selectCenterTab(id: Parameters<WorkbenchController["selectCenterTab"]>[0]): void {
+		workbench.selectCenterTab(id);
+		selection.rememberWorkspaceState(workbench.captureSessionState());
+	}
+
+	function selectRightTab(id: Parameters<WorkbenchController["selectRightTab"]>[0]): void {
+		workbench.selectRightTab(id);
+		selection.rememberWorkspaceState(workbench.captureSessionState());
 	}
 
 	function openNewSession(): void {
 		selection.newSession.open();
-		workbench.selectCenterTab("session");
+		selectCenterTab("session");
 	}
 
 	async function startNewSession(request: ThreadStartRequest): Promise<void> {
 		await selection.newSession.start(
 			request,
 			async (ownedId) => {
-				await selection.selectSession(ownedId);
+				await selectSession(ownedId);
 			},
 			() => {
-				workbench.selectCenterTab("session");
-				workbench.selectRightTab("files");
+				selectCenterTab("session");
+				selectRightTab("files");
 			},
 		);
 	}
@@ -166,7 +184,7 @@
 {#snippet toolsArea()}
 	<RightPanel
 		activeId={workbench.rightTab}
-		onSelect={(id) => workbench.selectRightTab(id)}
+		onSelect={selectRightTab}
 		root={selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
@@ -174,6 +192,18 @@
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(root, paths) => selection.rememberExpandedPaths(root, paths)}
+		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
+		sourceControlInspectionRoot={selection.activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
+		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}
+		onSourceControlInspectionRootChange={(root) => selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
+		sourceControlWorkspace={selection.activeWorkspaceSnapshot?.sourceControl}
+		historyWorkspace={selection.activeWorkspaceSnapshot?.history}
+		onSourceControlWorkspaceChange={(ownedId, sourceControl) => {
+			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl });
+		}}
+		onHistoryWorkspaceChange={(ownedId, history) => {
+			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ history });
+		}}
 		checkoutDiscoveryRoots={selection.controlledSession?.projectPath ? [selection.controlledSession.projectPath] : []}
 		onUseSessionCheckout={selection.controlledSession?.agent === "codex" && selection.controlledSession.origin === "app"
 			? async (root) => {
@@ -186,7 +216,7 @@
 {#snippet centerTabsArea()}
 	<CenterCornerTabs
 		activeId={workbench.centerTab}
-		onSelect={(id) => workbench.selectCenterTab(id)}
+		onSelect={selectCenterTab}
 	/>
 {/snippet}
 
@@ -238,7 +268,7 @@
 		showing={workbench.centerTab === "editor"}
 		rootAvailable={selection.controlledEditorRootAvailable}
 		onCloseAllEditors={() => selection.editorSessions.clearActiveEditors()}
-		onFileOpened={() => workbench.selectCenterTab("editor")}
+		onFileOpened={() => selectCenterTab("editor")}
 	/>
 {/snippet}
 

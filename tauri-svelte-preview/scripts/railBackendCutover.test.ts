@@ -58,8 +58,8 @@ assert.match(rowVisual, /runShortcut\(event, onOpenSourceControl \?\? onSelect\)
 assert.match(rail, /onOpenEditor=\{\(\) => void jumpTo\(session, "editor"\)\}/);
 assert.match(rail, /onOpenSourceControl=\{\(\) => void jumpTo\(session, "source-control"\)\}/);
 assert.match(page, /registerSessionRowJumpTarget\(\{/);
-assert.match(page, /showCenterPanel: \(_ownedId, id\) => workbench\.selectCenterTab\(id\)/);
-assert.match(page, /showSidebarView: \(_ownedId, id\) => workbench\.selectRightTab\(id\)/);
+assert.match(page, /showCenterPanel: \(_ownedId, id\) => selectCenterTab\(id\)/);
+assert.match(page, /showSidebarView: \(_ownedId, id\) => selectRightTab\(id\)/);
 assert.doesNotMatch(
   filesPanel,
   /const sessionKey = `\$\{ownedId/,

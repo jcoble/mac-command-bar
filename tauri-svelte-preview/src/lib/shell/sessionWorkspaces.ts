@@ -66,6 +66,19 @@ export interface SessionCenterWorkspace {
   layout: object;
 }
 
+export interface SessionSourceControlWorkspace {
+  openSectionIds: string[];
+  scrollTop: number;
+}
+
+export interface SessionHistoryWorkspace {
+  scope: 'workspace' | 'project' | 'all';
+  openProjectKey: string | null;
+  openWorktreeKeys: string[];
+  expandedKey: string | null;
+  scrollTop: number;
+}
+
 export interface SessionWorkspaceFileState {
   /** Unsaved text only. Saved file contents are always read from disk. */
   draftContent?: string;
@@ -118,6 +131,10 @@ export interface SessionWorkspaceSnapshot {
   filesInspectionRoot?: string | null;
   /** Source-control checkout being inspected, or null for the session checkout. */
   sourceControlInspectionRoot?: string | null;
+  /** Small view state for the lazily mounted Source Control panel. */
+  sourceControl?: SessionSourceControlWorkspace;
+  /** Small view state for the lazily mounted History panel. */
+  history?: SessionHistoryWorkspace;
 }
 
 /** Current checkout ownership as the /next route hands it to inspection panels. */
@@ -200,6 +217,8 @@ export function captureWorkspace(input: {
   expandedPathsByRoot?: SessionWorkspaceExpandedPathsByRoot;
   filesInspectionRoot?: string | null;
   sourceControlInspectionRoot?: string | null;
+  sourceControl?: SessionSourceControlWorkspace;
+  history?: SessionHistoryWorkspace;
 }): SessionWorkspaceSnapshot {
   const activePath = input.activePath ?? null;
   // A path with no folder cannot be checked against the session being restored,
@@ -249,6 +268,10 @@ export function captureWorkspace(input: {
   if (filesInspectionRoot) snapshot.filesInspectionRoot = filesInspectionRoot;
   const sourceControlInspectionRoot = normalizeInspectionRoot(input.sourceControlInspectionRoot);
   if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
+  const sourceControl = normalizeSourceControl(input.sourceControl);
+  if (sourceControl) snapshot.sourceControl = sourceControl;
+  const history = normalizeHistory(input.history);
+  if (history) snapshot.history = history;
   return snapshot;
 }
 
@@ -420,6 +443,26 @@ function normalizeInspectionRoot(value: unknown): string | null {
   return root || null;
 }
 
+function normalizeSourceControl(value: unknown): SessionSourceControlWorkspace | null {
+  if (!isRecord(value)) return null;
+  return {
+    openSectionIds: [...new Set(stringsOf(value.openSectionIds))],
+    scrollTop: typeof value.scrollTop === 'number' && value.scrollTop > 0 ? value.scrollTop : 0
+  };
+}
+
+function normalizeHistory(value: unknown): SessionHistoryWorkspace | null {
+  if (!isRecord(value)) return null;
+  const scope = value.scope === 'workspace' || value.scope === 'project' ? value.scope : 'all';
+  return {
+    scope,
+    openProjectKey: pathOf(value.openProjectKey),
+    openWorktreeKeys: [...new Set(stringsOf(value.openWorktreeKeys))],
+    expandedKey: pathOf(value.expandedKey),
+    scrollTop: typeof value.scrollTop === 'number' && value.scrollTop > 0 ? value.scrollTop : 0
+  };
+}
+
 function isPathAtOrBelow(path: string, root: string): boolean {
   if (path === root) return true;
   if (root === '/') return path.startsWith('/');
@@ -488,6 +531,10 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if (filesInspectionRoot) snapshot.filesInspectionRoot = filesInspectionRoot;
   const sourceControlInspectionRoot = normalizeInspectionRoot(entry.sourceControlInspectionRoot);
   if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
+  const sourceControl = normalizeSourceControl(entry.sourceControl);
+  if (sourceControl) snapshot.sourceControl = sourceControl;
+  const history = normalizeHistory(entry.history);
+  if (history) snapshot.history = history;
   return snapshot;
 }
 

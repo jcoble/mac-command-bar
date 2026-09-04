@@ -14,7 +14,11 @@
    * click goes straight back out.
    */
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
-  import type { CheckoutScope } from '$lib/shell/sessionWorkspaces';
+  import type {
+    CheckoutScope,
+    SessionHistoryWorkspace,
+    SessionSourceControlWorkspace
+  } from '$lib/shell/sessionWorkspaces';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
   import BrowserPanel from '$lib/shell/panels/browser/BrowserPanel.svelte';
@@ -51,6 +55,10 @@
     sourceControlInspectionRoot?: string | null;
     onFilesInspectionRootChange?(root: string | null): void;
     onSourceControlInspectionRootChange?(root: string | null): void;
+    sourceControlWorkspace?: SessionSourceControlWorkspace;
+    historyWorkspace?: SessionHistoryWorkspace;
+    onSourceControlWorkspaceChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
+    onHistoryWorkspaceChange?(ownedId: string | null, state: SessionHistoryWorkspace): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
@@ -70,6 +78,10 @@
     sourceControlInspectionRoot,
     onFilesInspectionRootChange,
     onSourceControlInspectionRootChange,
+    sourceControlWorkspace,
+    historyWorkspace,
+    onSourceControlWorkspaceChange,
+    onHistoryWorkspaceChange,
     onUseSessionCheckout
   }: Props = $props();
 </script>
@@ -102,6 +114,8 @@
           {checkoutScope}
           inspectionRoot={sourceControlInspectionRoot}
           onInspectionRootChange={onSourceControlInspectionRootChange}
+          workspaceState={sourceControlWorkspace}
+          onWorkspaceStateChange={onSourceControlWorkspaceChange}
           {onUseSessionCheckout}
         />
       </div>
@@ -116,7 +130,15 @@
     {:else if activeId === 'browser'}
       <div class="panel-body showing"><BrowserPanel visible={true} {root} {ownedId} /></div>
     {:else if activeId === 'history'}
-      <div class="panel-body showing"><HistoryPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing">
+        <HistoryPanel
+          visible={true}
+          {root}
+          {ownedId}
+          workspaceState={historyWorkspace}
+          onWorkspaceStateChange={onHistoryWorkspaceChange}
+        />
+      </div>
     {:else if activeId === 'tasks'}
       <div class="panel-body showing"><TasksPanel /></div>
     {/if}

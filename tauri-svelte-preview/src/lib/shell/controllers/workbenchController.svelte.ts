@@ -3,7 +3,11 @@
  */
 import { DEFAULT_CENTER_TAB, DEFAULT_RIGHT_TAB } from '../layout/workbenchTabs';
 import type { CenterTabId, RightTabId } from '../workbenchNavigation';
-import { DEFAULT_DIFF_MODE, type DiffMode } from '../sessionWorkspaces';
+import {
+	DEFAULT_DIFF_MODE,
+	type DiffMode,
+	type SessionWorkspaceSnapshot,
+} from '../sessionWorkspaces';
 import { gitService } from '../git/gitService';
 import { gitCommitFilesService } from '../git/gitCommitFilesService';
 import { shellPanels } from '../shellPanels';
@@ -98,6 +102,34 @@ export class WorkbenchController {
 
 	setDiffMode(mode: DiffMode): void {
 		this.diffMode = mode;
+	}
+
+	captureSessionState(): Partial<SessionWorkspaceSnapshot> {
+		return {
+			rightTab: this.rightTab,
+			diffMode: this.diffMode,
+			center: this.frameControls?.captureCenterLayout() ?? undefined,
+		};
+	}
+
+	/** Remove outgoing lazy surfaces while the next session is being restored. */
+	beginSessionSwitch(): void {
+		this.selectRightTab(DEFAULT_RIGHT_TAB);
+		this.selectCenterTab(DEFAULT_CENTER_TAB);
+	}
+
+	restoreSessionState(snapshot: SessionWorkspaceSnapshot | null): void {
+		this.restoringTabs = true;
+		try {
+			this.diffMode = snapshot?.diffMode ?? DEFAULT_DIFF_MODE;
+			if (snapshot?.center) this.frameControls?.restoreCenterLayout(snapshot.center);
+			const center = snapshot?.center?.activePanelId;
+			this.selectCenterTab(this.isCenterTabId(center ?? '') ? center as CenterTabId : DEFAULT_CENTER_TAB);
+			this.selectRightTab(snapshot?.rightTab ?? DEFAULT_RIGHT_TAB);
+		} finally {
+			this.restoringTabs = false;
+		}
+		this.syncGitSurfaceVisibility();
 	}
 
 	resetLayout(): void {
