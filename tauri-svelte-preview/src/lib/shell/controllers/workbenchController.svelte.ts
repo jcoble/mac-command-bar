@@ -13,6 +13,7 @@ import { gitCommitFilesService } from '../git/gitCommitFilesService';
 import { shellPanels } from '../shellPanels';
 import {
 	CENTER_MIN_WIDTH,
+	DOCK_HEIGHT,
 	SESSIONS_MAX_WIDTH,
 	SESSIONS_MIN_WIDTH,
 	SESSIONS_STRIP_WIDTH,
@@ -23,6 +24,7 @@ import {
 	type RegionWidthLimits,
 	type ShellRegionId,
 } from '../layout/frame';
+import { settings, type ProblemsLocation } from '../../settingsStore.svelte';
 import type { CenterDockSnapshot } from '../layout/centerDock';
 import { writeAssemblySettingFromTauri } from '../../tauriSource';
 import { releaseBrowserWorkspace } from '../browser/browserStore.svelte';
@@ -60,6 +62,7 @@ export class WorkbenchController {
 		});
 		controls.setRegionLimits('center', { minimumWidth: CENTER_MIN_WIDTH });
 		controls.setToolsPresent(this.rightPanelOpen);
+		this.applyProblemsLocation(settings.panels.problemsLocation);
 		if (this.sessionsCollapsed) {
 			this.applySessionsWidth(true);
 		} else {
@@ -153,8 +156,20 @@ export class WorkbenchController {
 	resetLayout(): void {
 		this.rightPanelOpen = true;
 		this.frameControls?.resetLayout();
+		this.applyProblemsLocation(settings.panels.problemsLocation);
 		this.syncRightPanelVisibility();
 		this.syncGitSurfaceVisibility();
+	}
+
+	applyProblemsLocation(location: ProblemsLocation): void {
+		const atBottom = location === 'bottom';
+		this.frameControls?.setDockPresent(atBottom);
+		if (atBottom) {
+			this.frameControls?.setRegionHeight('dock', DOCK_HEIGHT, {
+				minimumHeight: 96,
+				maximumHeight: Number.MAX_SAFE_INTEGER,
+			});
+		}
 	}
 
 	collapseSessions(collapsed: boolean): void {

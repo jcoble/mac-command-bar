@@ -224,7 +224,10 @@
 {/snippet}
 
 {#snippet dockArea()}
-	<DockPanel onReset={() => workbench.resetLayout()} />
+	<DockPanel
+		onReset={() => workbench.resetLayout()}
+		onProblemsLocationChange={(location) => workbench.applyProblemsLocation(location)}
+	/>
 {/snippet}
 
 {#snippet sessionArea()}
@@ -330,6 +333,7 @@
 		bind:this={overlays}
 		onResetLayout={() => workbench.resetLayout()}
 		message={null}
+		onProblemsLocationChange={(location) => workbench.applyProblemsLocation(location)}
 		onUtilityStateChange={(id, open) => {
 			openUtility = open ? id : null;
 		}}
