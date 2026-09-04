@@ -25,6 +25,7 @@ import {
 } from '../layout/frame';
 import type { CenterDockSnapshot } from '../layout/centerDock';
 import { writeAssemblySettingFromTauri } from '../../tauriSource';
+import { releaseBrowserWorkspace } from '../browser/browserStore.svelte';
 
 const SESSIONS_COLLAPSED_KEY = 'shell.sessions.collapsed';
 
@@ -95,6 +96,7 @@ export class WorkbenchController {
 	}
 
 	private setRightPanelOpen(open: boolean): void {
+		if (!open && this.rightTab === 'browser') releaseBrowserWorkspace();
 		this.rightPanelOpen = open;
 		this.frameControls?.setToolsPresent(open);
 		this.syncRightPanelVisibility();

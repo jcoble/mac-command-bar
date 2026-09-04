@@ -67,3 +67,24 @@ export function usableHostRect(rect: PanelRect | null): rect is PanelRect {
       rect.height >= 1
   );
 }
+
+/**
+ * A docked page may fill its page host, but it may not escape the right tools
+ * region or overlap the center. Gridview briefly moves adopted DOM while a
+ * removed region is being restored; rejecting that intermediate rectangle
+ * keeps the native child view from being placed over the whole shell.
+ */
+export function hostRectFitsPanel(
+  rect: PanelRect,
+  tools: PanelRect,
+  center: PanelRect
+): boolean {
+  const slop = 1;
+  return (
+    rect.x >= tools.x - slop &&
+    rect.y >= tools.y - slop &&
+    rect.x + rect.width <= tools.x + tools.width + slop &&
+    rect.y + rect.height <= tools.y + tools.height + slop &&
+    rect.x >= center.x + center.width - slop
+  );
+}

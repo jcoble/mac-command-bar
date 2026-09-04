@@ -186,6 +186,10 @@ export function deactivateBrowserWorkspace(): void {
 export function releaseBrowserWorkspace(): void {
   const url = browser.url;
   const inputUrl = browser.inputUrl;
+  // Hide the whole native workspace first. Closing its tabs is asynchronous,
+  // so relying on close alone can leave the child view intercepting the shell
+  // after the Svelte panel that owned it has already been removed.
+  deactivateBrowserWorkspaceModel(modelContext());
   for (const tabId of Object.keys(browser.workspace.tabs)) {
     closeBrowserTab(modelContext(), tabId);
   }

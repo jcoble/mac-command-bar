@@ -101,6 +101,7 @@
   import { elementTagFromSelector, formatAnnotationRequest } from './browserAttachmentNote.ts';
   import {
     boundsForHost,
+    hostRectFitsPanel,
     samePlacement,
     usableHostRect,
     HIDDEN_PLACEMENT,
@@ -239,7 +240,17 @@
     if (!pageHost || typeof window === 'undefined') return null;
     const rect = pageHost.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return null;
-    return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    const measured = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    if (fillsWindow) return measured;
+
+    const toolsHost = pageHost.closest<HTMLElement>('.shell-region-host-tools');
+    const centerHost = document.querySelector<HTMLElement>('.shell-region-host-center');
+    if (!toolsHost || !centerHost) return null;
+    const tools = toolsHost.getBoundingClientRect();
+    const center = centerHost.getBoundingClientRect();
+    const toolsRect = { x: tools.left, y: tools.top, width: tools.width, height: tools.height };
+    const centerRect = { x: center.left, y: center.top, width: center.width, height: center.height };
+    return hostRectFitsPanel(measured, toolsRect, centerRect) ? measured : null;
   }
 
   function windowSize(): { width: number; height: number } {

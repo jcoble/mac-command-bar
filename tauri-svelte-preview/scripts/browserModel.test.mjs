@@ -4,6 +4,26 @@ import {
   BrowserModelError,
   createBrowserModel
 } from '../src/lib/shell/browser/browserModel.ts';
+import { hostRectFitsPanel } from '../src/lib/shell/panels/browser/browserPanelBounds.ts';
+
+assert.equal(
+  hostRectFitsPanel(
+    { x: 1200, y: 100, width: 300, height: 700 },
+    { x: 1197, y: 3, width: 306, height: 894 },
+    { x: 363, y: 3, width: 828, height: 894 }
+  ),
+  true,
+  'a page contained by the tools region may be placed'
+);
+assert.equal(
+  hostRectFitsPanel(
+    { x: 3, y: 100, width: 1497, height: 700 },
+    { x: 3, y: 3, width: 1500, height: 894 },
+    { x: 363, y: 3, width: 828, height: 894 }
+  ),
+  false,
+  'a transient tools rectangle overlapping the center may not cover the shell'
+);
 
 const workspace = createBrowserWorkspace({ workspaceId: 'workspace-1', ownedId: 'owned-1' });
 const model = createBrowserModel({ workspace, now: () => '2026-08-05T00:00:00.000Z' });
