@@ -16,15 +16,14 @@ use mcb_core::reference_counts::{
     normalized_reference_count_symbols, ReferenceCountFile, ReferenceCountPlan,
     MAX_REFERENCE_SCAN_BYTES,
 };
-use mcb_core::scanners::sessions::{
-    scan_session_details, scan_sessions, scan_sessions_for_project, AgentSessionRecord,
-};
 use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 use orchestration::import_legacy_orchestration_events;
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
+use commands::agent_sessions::*;
 use commands::orchestration::*;
 use commands::terminal::*;
+use commands::usage::*;
 use commands::workflow::*;
 use workflow::WorkflowEngine;
 
@@ -2015,29 +2014,6 @@ async fn list_git_repository_summaries(
     tauri::async_runtime::spawn_blocking(move || list_git_repository_summaries_sync(projects))
         .await
         .map_err(|error| format!("Repository dashboard task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn list_agent_sessions() -> Result<Vec<AgentSessionRecord>, String> {
-    tauri::async_runtime::spawn_blocking(scan_sessions)
-        .await
-        .map_err(|error| format!("Agent session scan task failed: {error}"))
-}
-
-#[tauri::command]
-async fn list_agent_sessions_for_project(
-    project_path: String,
-) -> Result<Vec<AgentSessionRecord>, String> {
-    tauri::async_runtime::spawn_blocking(move || scan_sessions_for_project(&project_path))
-        .await
-        .map_err(|error| format!("Agent session scan task failed: {error}"))
-}
-
-#[tauri::command]
-async fn read_agent_session_details(log_path: String) -> Result<Vec<AgentSessionRecord>, String> {
-    tauri::async_runtime::spawn_blocking(move || scan_session_details(&log_path))
-        .await
-        .map_err(|error| format!("Agent session detail task failed: {error}"))
 }
 
 #[tauri::command]
@@ -6263,45 +6239,6 @@ fn source_file_matches_query(relative_path: &str, file_name: &str, query: Option
         return true;
     };
     relative_path.to_lowercase().contains(query) || file_name.to_lowercase().contains(query)
-}
-
-#[tauri::command]
-async fn read_usage_token_breakdown(
-    app: tauri::AppHandle,
-    query: usage_history::UsageHistoryQuery,
-) -> Result<usage_db::UsageTokenBreakdown, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
-            .read_usage_token_breakdown(&query.into())
-    })
-    .await
-    .map_err(|error| format!("usage task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn read_usage_provider_daily_totals(
-    app: tauri::AppHandle,
-    query: usage_history::UsageHistoryQuery,
-) -> Result<Vec<usage_db::UsageProviderDailyTotalsRow>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
-            .read_usage_provider_daily_totals(&query.into())
-    })
-    .await
-    .map_err(|error| format!("usage task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn read_usage_cost_inputs(
-    app: tauri::AppHandle,
-    query: usage_history::UsageHistoryQuery,
-) -> Result<Vec<usage_db::UsageCostInputRow>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        usage_db::UsageDb::open(usage_history::usage_db_path(&app)?)?
-            .read_usage_cost_inputs(&query.into())
-    })
-    .await
-    .map_err(|error| format!("usage task failed: {error}"))?
 }
 
 fn install_panic_hook() {
