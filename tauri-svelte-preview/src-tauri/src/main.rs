@@ -20,12 +20,11 @@ use mcb_core::scanners::sessions::{
     scan_session_details, scan_sessions, scan_sessions_for_project, AgentSessionRecord,
 };
 use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
-use orchestration::{
-    import_legacy_orchestration_events, list_orchestration_runs_sync,
-    record_orchestration_event_sync, OrchestrationEvent, OrchestrationRun,
-};
+use orchestration::import_legacy_orchestration_events;
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
+use commands::orchestration::*;
+use commands::terminal::*;
 use commands::workflow::*;
 use workflow::WorkflowEngine;
 
@@ -327,7 +326,7 @@ struct ProjectWorktreeArchiveResult {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RuntimeContextProject {
+pub(crate) struct RuntimeContextProject {
     id: String,
     name: String,
     path: String,
@@ -2087,84 +2086,6 @@ async fn kill_process(
     tauri::async_runtime::spawn_blocking(move || kill_process_sync(pid, expected_command))
         .await
         .map_err(|error| format!("Stop process task failed: {error}"))
-}
-
-#[tauri::command]
-async fn list_orchestration_runs(
-    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
-    projects: Vec<RuntimeContextProject>,
-) -> Result<Vec<OrchestrationRun>, String> {
-    let store = manager.store_handle();
-    tauri::async_runtime::spawn_blocking(move || list_orchestration_runs_sync(&store, projects))
-        .await
-        .map_err(|error| format!("Orchestration run task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn record_orchestration_event(
-    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
-    event: OrchestrationEvent,
-) -> Result<OrchestrationRun, String> {
-    let store = manager.store_handle();
-    tauri::async_runtime::spawn_blocking(move || record_orchestration_event_sync(&store, event))
-        .await
-        .map_err(|error| format!("Orchestration event task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn start_terminal_session(
-    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
-    projection_streams: tauri::State<'_, projection_streams::ProjectionStreams>,
-    request: terminal::TerminalStartRequest,
-) -> Result<terminal::TerminalSessionInfo, String> {
-    terminal::start_terminal_session(
-        &terminal_registry,
-        projection_streams.inner().clone(),
-        request,
-    )
-}
-
-#[tauri::command]
-async fn list_terminal_sessions(
-    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
-) -> Result<Vec<terminal::TerminalSessionInfo>, String> {
-    terminal::list_terminal_sessions(&terminal_registry)
-}
-
-#[tauri::command]
-async fn read_terminal_session_scrollback(
-    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
-    session_id: String,
-    max_bytes: Option<usize>,
-) -> Result<Option<String>, String> {
-    terminal::read_terminal_session_scrollback(&terminal_registry, &session_id, max_bytes)
-}
-
-#[tauri::command]
-async fn write_terminal_session(
-    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
-    session_id: String,
-    data: String,
-) -> Result<bool, String> {
-    terminal::write_terminal_session(&terminal_registry, &session_id, &data)
-}
-
-#[tauri::command]
-async fn resize_terminal_session(
-    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
-    session_id: String,
-    cols: Option<u16>,
-    rows: Option<u16>,
-) -> Result<bool, String> {
-    terminal::resize_terminal_session(&terminal_registry, &session_id, cols, rows)
-}
-
-#[tauri::command]
-async fn close_terminal_session(
-    terminal_registry: tauri::State<'_, terminal::TerminalRegistry>,
-    session_id: String,
-) -> Result<bool, String> {
-    terminal::close_terminal_session(&terminal_registry, &session_id)
 }
 
 #[cfg(test)]
