@@ -34,6 +34,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "app",
     "resources": [
       "adapters/*"
@@ -45,5 +46,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlFNEY5NDczNkUwMkJEMTkKUldRWnZRSnVjNVJQbnA5eE84K1Y5cHBFM2NDaW9kRUZIUFlxSnBJTU1WUmhBbmF4bzB1ZHA4eGgK",
+      "endpoints": [
+        "https://github.com/jcoble/mac-command-bar/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

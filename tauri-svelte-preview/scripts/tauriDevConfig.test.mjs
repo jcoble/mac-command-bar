@@ -9,13 +9,26 @@ const providerCapabilitiesSource = await readFile(
   new URL('../src-tauri/src/agent_conversation/capabilities.rs', import.meta.url),
   'utf8'
 );
+const cargoManifest = await readFile(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
+const desktopCapabilities = JSON.parse(
+  await readFile(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8')
+);
+const releaseWorkflow = await readFile(
+  new URL('../../.github/workflows/release.yml', import.meta.url),
+  'utf8'
+);
 
 assert.equal(defaultConfig.build.beforeDevCommand, 'pnpm dev');
 assert.equal(defaultConfig.build.beforeBuildCommand, 'pnpm prepare:release-adapters && pnpm build');
 assert.equal(defaultConfig.build.devUrl, 'http://127.0.0.1:5177/');
 assert.equal(defaultConfig.bundle.active, true);
 assert.equal(defaultConfig.bundle.targets, 'app');
+assert.equal(defaultConfig.bundle.createUpdaterArtifacts, true);
 assert.deepEqual(defaultConfig.bundle.resources, ['adapters/*']);
+assert.deepEqual(defaultConfig.plugins.updater.endpoints, [
+  'https://github.com/jcoble/mac-command-bar/releases/latest/download/latest.json'
+]);
+assert.match(defaultConfig.plugins.updater.pubkey, /^[A-Za-z0-9+/]+=*$/);
 assert.equal(defaultConfig.app.windows[0].url, '/');
 assert.equal(defaultConfig.app.windows[0].width, 1600, 'native preview should open wide enough for laptop layout work');
 assert.equal(defaultConfig.app.windows[0].height, 1000, 'native preview should open tall enough for docked panes');
@@ -24,6 +37,14 @@ assert.equal(packageJson.scripts['tauri:dev:next'], undefined);
 assert.equal(packageJson.scripts['tauri:dev:next:alt'], undefined);
 assert.equal(packageJson.dependencies['@agentclientprotocol/codex-acp'], '1.10.0');
 assert.equal(packageJson.dependencies['@agentclientprotocol/claude-agent-acp'], '0.75.0');
+assert.equal(packageJson.dependencies['@tauri-apps/plugin-updater'], '2.11.0');
+assert.equal(packageJson.dependencies['@tauri-apps/plugin-process'], '2.3.1');
+assert.match(cargoManifest, /tauri-plugin-updater = "2\.11\.0"/);
+assert.match(cargoManifest, /tauri-plugin-process = "2\.3\.1"/);
+assert.ok(desktopCapabilities.permissions.includes('updater:default'));
+assert.ok(desktopCapabilities.permissions.includes('process:allow-restart'));
+assert.match(releaseWorkflow, /TAURI_SIGNING_PRIVATE_KEY:/);
+assert.match(releaseWorkflow, /releaseDraft: false/);
 assert.match(providerCapabilitiesSource, /CODEX_ACP_VERSION: &str = "1\.10\.0"/);
 assert.match(providerCapabilitiesSource, /CLAUDE_AGENT_ACP_VERSION: &str = "0\.75\.0"/);
 assert.equal(

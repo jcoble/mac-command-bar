@@ -11,8 +11,8 @@
   The settings surface is `$lib/shell/components/SettingsDialog.svelte` — the
   /next shell's own, built from the shadcn components. It is pulled in on
   demand rather than with the rest of the shell so that starting the app costs
-  nothing for a screen most launches never show. Nothing here reads or writes
-  the backend.
+  nothing for a screen most launches never show. The host also owns the one
+  launch-time update check; destruction aborts its result publication.
 
   Usage:
     <script>
@@ -28,9 +28,10 @@
      even before the page imports the files itself. */
   import '$lib/shell/styles/nextTokens.css';
   import '$lib/shell/styles/next.css';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
 
   import type { ProblemsLocation } from '$lib/settingsStore.svelte';
+  import { checkForAppUpdate } from '$lib/shell/appUpdateService.svelte';
 
   /** The real settings surface, referred to by type only — no load yet. */
   type SettingsDialogComponent =
@@ -50,8 +51,14 @@
   let loading = false;
   let mounted = true;
   let loadGeneration = 0;
+  const updateOwner = new AbortController();
+
+  onMount(() => {
+    void checkForAppUpdate(updateOwner.signal, true);
+  });
 
   onDestroy(() => {
+    updateOwner.abort();
     mounted = false;
     loadGeneration += 1;
   });

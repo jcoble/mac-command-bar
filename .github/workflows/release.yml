@@ -1,0 +1,56 @@
+name: Release Assembly
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'assembly-v*'
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: tauri-svelte-preview/pnpm-lock.yaml
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-svelte-preview/src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: tauri-svelte-preview
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: tauri-svelte-preview
+          tagName: assembly-v__VERSION__
+          releaseName: Assembly v__VERSION__
+          releaseBody: Download the signed Assembly update for macOS.
+          releaseDraft: false
+          prerelease: false

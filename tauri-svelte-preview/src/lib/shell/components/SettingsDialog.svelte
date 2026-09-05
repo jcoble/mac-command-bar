@@ -23,7 +23,7 @@
     <SettingsDialog bind:open />
 -->
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { onDestroy, type Snippet } from 'svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Palette from '@lucide/svelte/icons/palette';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
@@ -32,6 +32,7 @@
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Type from '@lucide/svelte/icons/type';
+  import Download from '@lucide/svelte/icons/download';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -63,6 +64,11 @@
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
   import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
   import { getMonoFont, UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
+  import {
+    appUpdateState,
+    checkForAppUpdate,
+    installAppUpdate
+  } from '$lib/shell/appUpdateService.svelte';
 
   interface Props {
     /** Whether the settings screen is showing. */
@@ -128,6 +134,7 @@
     { id: 'editor', group: 'Workspace', label: 'Editor', icon: Type },
     { id: 'terminal', group: 'Workspace', label: 'Terminal', icon: SquareTerminal },
     { id: 'general', group: 'Application', label: 'General', icon: SlidersHorizontal },
+    { id: 'updates', group: 'Application', label: 'Updates', icon: Download },
     { id: 'helper', group: 'Application', label: 'Helper model', icon: Sparkles }
   ];
 
@@ -293,6 +300,22 @@
       keywords: 'rust rust-analyzer lsp'
     },
     {
+      id: 'app-update-check',
+      section: 'updates',
+      card: 'Assembly',
+      title: 'Check for updates',
+      description: 'Look for a newer signed Assembly release.',
+      keywords: 'version release upgrade'
+    },
+    {
+      id: 'app-update-install',
+      section: 'updates',
+      card: 'Assembly',
+      title: 'Install update',
+      description: 'Download, verify, install and restart Assembly.',
+      keywords: 'download restart upgrade'
+    },
+    {
       id: 'helper-vendor',
       section: 'helper',
       card: 'Which model',
@@ -399,6 +422,9 @@
   let languageServersNote = $state<string | null>(null);
   let languageServersSupported = $state(true);
   let languageServerNote = $state<string | null>(null);
+  const updateOwner = new AbortController();
+
+  onDestroy(() => updateOwner.abort());
 
   function moveProblems(location: ProblemsLocation): void {
     settings.panels.problemsLocation = location;
@@ -742,6 +768,10 @@
                       {@render settingRow(id, typescriptLanguageServerControl)}
                     {:else if id === 'rust-language-server'}
                       {@render settingRow(id, rustLanguageServerControl)}
+                    {:else if id === 'app-update-check'}
+                      {@render settingRow(id, appUpdateCheckControl)}
+                    {:else if id === 'app-update-install'}
+                      {@render settingRow(id, appUpdateInstallControl)}
                     {:else if id === 'helper-vendor'}
                       {@render settingRow(id, helperVendorControl)}
                     {:else if id === 'helper-model'}
@@ -953,6 +983,35 @@
 {#snippet csharpLanguageServerControl()}{@render languageServerControl('csharp')}{/snippet}
 {#snippet typescriptLanguageServerControl()}{@render languageServerControl('typescript')}{/snippet}
 {#snippet rustLanguageServerControl()}{@render languageServerControl('rust')}{/snippet}
+
+{#snippet appUpdateCheckControl()}
+  <div class="flex flex-col items-end gap-1.5">
+    <Button
+      variant="secondary"
+      size="sm"
+      disabled={appUpdateState.phase === 'checking' || appUpdateState.phase === 'installing'}
+      onclick={() => void checkForAppUpdate(updateOwner.signal)}
+    >
+      {appUpdateState.phase === 'checking' ? 'Checking…' : 'Check now'}
+    </Button>
+    {#if appUpdateState.message}
+      <p class="text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]">
+        {appUpdateState.message}
+      </p>
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet appUpdateInstallControl()}
+  <Button
+    variant="secondary"
+    size="sm"
+    disabled={appUpdateState.phase !== 'available'}
+    onclick={() => void installAppUpdate(updateOwner.signal)}
+  >
+    {appUpdateState.phase === 'installing' ? 'Installing…' : 'Install and restart'}
+  </Button>
+{/snippet}
 
 {#snippet helperVendorControl()}
   <SettingsSelect
