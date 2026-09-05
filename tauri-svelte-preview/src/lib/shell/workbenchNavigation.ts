@@ -180,7 +180,7 @@ export async function focusComposerWith(handoff: ComposerHandoff): Promise<void>
  */
 export async function sendToSession(request: SendToSessionRequest): Promise<void> {
   const send = handlers.sendToSession;
-  if (!send) return;
+  if (!send) throw new Error('The session sender is not ready');
   await send(request);
   showCenterTab('session');
 }

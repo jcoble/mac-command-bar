@@ -11,6 +11,7 @@ import {
   openUrlInBrowser,
   registerBrowserUrlNavigation,
   registerWorkbenchNavigation,
+  sendToSession,
   showCenterTab,
   showRightTab,
   startWorkbenchSession
@@ -67,6 +68,12 @@ assert.deepEqual(
   'a second registration adds to the first rather than replacing it'
 );
 
+await assert.rejects(
+  sendToSession({ ownedId: 'one', text: 'look' }),
+  /session sender is not ready/,
+  'an explicit send must not silently discard a message when its handler is missing'
+);
+
 // ── The composed callers, and the order they do things in ───────────────────
 
 clearWorkbenchNavigation();
@@ -83,6 +90,9 @@ registerWorkbenchNavigation({
   },
   focusComposer: (handoff) => {
     trace.push(`composer:${handoff.ownedId}`);
+  },
+  sendToSession: async (request) => {
+    trace.push(`send:${request.ownedId}:${request.text}`);
   },
   startSession: async (request) => {
     trace.push(`session:${request.cwd}`);
@@ -120,6 +130,14 @@ assert.deepEqual(
   trace,
   ['composer:one', 'center:session'],
   'the composer is handed its content, then the session comes to the front'
+);
+
+trace = [];
+await sendToSession({ ownedId: 'one', text: 'send this' });
+assert.deepEqual(
+  trace,
+  ['send:one:send this', 'center:session'],
+  'the message is accepted before the session comes to the front'
 );
 
 trace = [];

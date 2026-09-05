@@ -17,6 +17,11 @@
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
 	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
+	import { sendStructuredMessage } from "$lib/shell/conversation/conversationService";
+	import {
+		getConversationSession,
+		setConversationAttachments,
+	} from "$lib/shell/conversation/conversationStore.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
 	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
 	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
@@ -87,6 +92,17 @@
 				)
 					return false;
 				return true;
+			},
+			sendToSession: async (request) => {
+				const conversation = getConversationSession(request.ownedId);
+				if (!conversation) throw new Error("The selected conversation is not ready");
+				if (request.attachments?.length) {
+					setConversationAttachments(request.ownedId, [
+						...conversation.attachments,
+						...request.attachments,
+					]);
+				}
+				await sendStructuredMessage(request.ownedId, request.text);
 			},
 		});
 		void startShell({
