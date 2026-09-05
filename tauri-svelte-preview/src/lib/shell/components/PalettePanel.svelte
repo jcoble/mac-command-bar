@@ -29,9 +29,11 @@
     onResetLayout?: () => void;
     /** Open the settings dialog. */
     onOpenSettings?: () => void;
+    /** Restore the hidden bottom dock. */
+    onShowBottomDock?: () => void;
   }
 
-  let { onResetLayout, onOpenSettings }: Props = $props();
+  let { onResetLayout, onOpenSettings, onShowBottomDock }: Props = $props();
 
   let visible = $state(false);
   let query = $state('');
@@ -147,6 +149,13 @@
       detail: 'Fonts, terminal and appearance',
       disabled: () => onOpenSettings == null,
       perform: () => onOpenSettings?.()
+    },
+    {
+      id: 'show-bottom-dock',
+      label: 'Show bottom dock',
+      detail: 'Open the Problems and Terminal strip at the bottom',
+      disabled: () => onShowBottomDock == null,
+      perform: () => onShowBottomDock?.()
     }
   ]);
 

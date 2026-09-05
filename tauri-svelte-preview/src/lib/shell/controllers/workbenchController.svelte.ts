@@ -170,6 +170,11 @@ export class WorkbenchController {
 		}
 	}
 
+	showBottomDock(): void {
+		settings.panels.problemsLocation = 'bottom';
+		this.applyProblemsLocation('bottom');
+	}
+
 	collapseSessions(collapsed: boolean): void {
 		this.sessionsCollapsed = collapsed;
 		this.applySessionsWidth(collapsed);

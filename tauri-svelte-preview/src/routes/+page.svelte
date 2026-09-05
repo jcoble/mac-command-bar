@@ -225,6 +225,7 @@
 
 {#snippet dockArea()}
 	<DockPanel
+		root={selection.activeRootAvailable ? selection.durableSessionRoot : ""}
 		onReset={() => workbench.resetLayout()}
 		onProblemsLocationChange={(location) => workbench.applyProblemsLocation(location)}
 	/>
@@ -334,6 +335,7 @@
 		onResetLayout={() => workbench.resetLayout()}
 		message={null}
 		onProblemsLocationChange={(location) => workbench.applyProblemsLocation(location)}
+		onShowBottomDock={() => workbench.showBottomDock()}
 		onUtilityStateChange={(id, open) => {
 			openUtility = open ? id : null;
 		}}

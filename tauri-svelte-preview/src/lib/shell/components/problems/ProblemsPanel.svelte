@@ -50,12 +50,14 @@
   } from '$lib/shell/problems/problemsStore.svelte.ts';
 
   interface Props {
+    /** Replaces the title at the start of the header, used by the dock's tabs. */
+    headerStart?: Snippet;
     /** Anything the region around this panel wants on the end of its header row.
      * The bottom dock puts its "Reset layout" button here — it used to float in
      * the same corner and landed on top of Refresh. */
     headerEnd?: Snippet;
   }
-  let { headerEnd }: Props = $props();
+  let { headerStart, headerEnd }: Props = $props();
 
   /** Files the user has folded shut. Everything is open until it is closed. */
   let closedFiles = $state<Record<string, boolean>>({});
@@ -139,7 +141,7 @@
     class="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--color-border)]
            px-2 py-1.5"
   >
-    <h2 class="text-[13px] font-semibold">Problems</h2>
+    {#if headerStart}{@render headerStart()}{:else}<h2 class="text-[13px] font-semibold">Problems</h2>{/if}
     <div class="flex items-center gap-1">
       {@render severityCount('error', totals.error)}
       {@render severityCount('warning', totals.warning)}

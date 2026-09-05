@@ -29,6 +29,9 @@ const browserToolbar = read('../src/lib/shell/panels/browser/BrowserToolbar.svel
 const frame = read('../src/lib/shell/layout/frame.ts');
 const workbenchController = read('../src/lib/shell/controllers/workbenchController.svelte.ts');
 const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
+const dockPanel = read('../src/lib/shell/components/DockPanel.svelte');
+const workspaceTerminal = read('../src/lib/shell/components/WorkspaceTerminal.svelte');
+const palettePanel = read('../src/lib/shell/components/PalettePanel.svelte');
 const sourceControlPanel = read('../src/lib/shell/panels/sourceControl/SourceControlPanel.svelte');
 
 assert.match(shellStartup, /listAgentConversationSessionsFromTauri\(\)/);
@@ -135,8 +138,15 @@ assert.doesNotMatch(
   'panel tabs must not mount tooltip state over the native Browser view'
 );
 assert.match(page, /onProblemsLocationChange=\{\(location\) => workbench\.applyProblemsLocation\(location\)\}/);
+assert.match(page, /onShowBottomDock=\{\(\) => workbench\.showBottomDock\(\)\}/);
 assert.match(workbenchController, /applyProblemsLocation\(location: ProblemsLocation\)[\s\S]*?setDockPresent\(atBottom\)/);
+assert.match(workbenchController, /showBottomDock\(\)[\s\S]*?problemsLocation = 'bottom'/);
 assert.match(workbenchController, /onFrameReady\([\s\S]*?applyProblemsLocation\(settings\.panels\.problemsLocation\)/);
+assert.match(dockPanel, /\{#if terminalOpened\}[\s\S]*?<WorkspaceTerminal/);
+assert.match(dockPanel, /await terminal\?\.close\(\)[\s\S]*?problemsLocation = location/);
+assert.match(workspaceTerminal, /new AbortController\(\)/);
+assert.match(workspaceTerminal, /stop\.abort\(\)[\s\S]*?closeTerminalSessionFromTauri/);
+assert.match(palettePanel, /id: 'show-bottom-dock'/);
 assert.match(rightPanel, /visible && activeId === 'browser'/);
 assert.match(rightPanel, /visible=\{visible && activeId === 'files'\}/);
 assert.match(utilityStrip, /<LanguageIntelligenceControls \/>/);

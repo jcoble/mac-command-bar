@@ -1,7 +1,6 @@
 <script lang="ts">
   /**
-   * The bottom dock region: the Problems panel, plus the frame's reset control
-   * and the two buttons that move the Problems list somewhere else.
+   * The bottom dock region: lazy workspace Terminal and Problems tabs.
    *
    * This region is on screen from the moment the shell opens, so the panel it
    * hosts must load nothing when it mounts — `ProblemsPanel` reads the language
@@ -15,12 +14,17 @@
    * disagree, and the choice survives a restart.
    */
   import X from '@lucide/svelte/icons/x';
+  import { tick } from 'svelte';
 
   import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
 
   import ProblemsPanel from './problems/ProblemsPanel.svelte';
+  import WorkspaceTerminal from './WorkspaceTerminal.svelte';
+
+  type DockTab = 'problems' | 'terminal';
 
   interface Props {
+    root: string;
     onReset(): void;
     /**
      * The user asked for the Problems list somewhere else. The setting is
@@ -30,35 +34,148 @@
      */
     onProblemsLocationChange?(location: ProblemsLocation): void;
   }
-  let { onReset, onProblemsLocationChange }: Props = $props();
+  let { root, onReset, onProblemsLocationChange }: Props = $props();
+  let activeTab = $state<DockTab>('problems');
+  let terminalOpened = $state(false);
+  let terminal = $state<WorkspaceTerminal | null>(null);
 
-  function moveProblems(location: ProblemsLocation): void {
+  async function selectTab(tab: DockTab): Promise<void> {
+    activeTab = tab;
+    if (tab !== 'terminal') return;
+    terminalOpened = true;
+    await tick();
+    terminal?.refit();
+  }
+
+  async function moveProblems(location: ProblemsLocation): Promise<void> {
+    await terminal?.close();
+    terminalOpened = false;
+    activeTab = 'problems';
     settings.panels.problemsLocation = location;
     onProblemsLocationChange?.(location);
   }
 </script>
 
+{#snippet tabs()}
+  <div class="dock-tabs" role="tablist" aria-label="Bottom dock">
+    <button
+      type="button"
+      role="tab"
+      aria-selected={activeTab === 'problems'}
+      class:active={activeTab === 'problems'}
+      onclick={() => void selectTab('problems')}
+    >Problems</button>
+    <button
+      type="button"
+      role="tab"
+      aria-selected={activeTab === 'terminal'}
+      class:active={activeTab === 'terminal'}
+      onclick={() => void selectTab('terminal')}
+    >Terminal</button>
+  </div>
+{/snippet}
+
+{#snippet actions()}
+  <button
+    class="dock-action"
+    type="button"
+    title="Hide the bottom dock. Settings or the command palette brings it back."
+    onclick={() => void moveProblems('hidden')}
+  >
+    <X size={13} strokeWidth={1.6} />
+    Hide
+  </button>
+  <button class="dock-action" type="button" onclick={onReset}>Reset layout</button>
+{/snippet}
+
 <div class="dock-slot">
-  <ProblemsPanel>
-    {#snippet headerEnd()}
-      <button
-        class="dock-action"
-        type="button"
-        title="Stop showing the Problems list. Settings brings it back."
-        onclick={() => moveProblems('hidden')}
-      >
-        <X size={13} strokeWidth={1.6} />
-        Hide
-      </button>
-      <button class="dock-action" type="button" onclick={onReset}>Reset layout</button>
-    {/snippet}
-  </ProblemsPanel>
+  <div class="dock-content" hidden={activeTab !== 'problems'}>
+    <ProblemsPanel headerStart={tabs} headerEnd={actions} />
+  </div>
+  {#if terminalOpened}
+    <div class="dock-content terminal-panel" hidden={activeTab !== 'terminal'}>
+      <div class="terminal-header">
+        {@render tabs()}
+        <div class="terminal-actions">{@render actions()}</div>
+      </div>
+      {#key root}
+        <WorkspaceTerminal bind:this={terminal} {root} />
+      {/key}
+    </div>
+  {/if}
 </div>
 
 <style>
   .dock-slot {
     position: relative;
     height: 100%;
+  }
+
+  .dock-content {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .dock-content[hidden] {
+    display: none;
+  }
+
+  .terminal-panel {
+    display: grid;
+    grid-template-rows: 40px minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+  }
+
+  .terminal-header {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid var(--color-border);
+    padding: 0 8px;
+  }
+
+  .terminal-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+  }
+
+  .dock-tabs {
+    display: flex;
+    align-self: stretch;
+    gap: 14px;
+  }
+
+  .dock-tabs button {
+    position: relative;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-2);
+    font: inherit;
+    font-size: 13px;
+    padding: 0 2px;
+    cursor: pointer;
+  }
+
+  .dock-tabs button:hover,
+  .dock-tabs button.active {
+    color: var(--color-text);
+  }
+
+  .dock-tabs button.active::after {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 2px;
+    background: var(--color-accent);
+    content: '';
+  }
+
+  .dock-tabs button:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   /* On the end of the panel's own header row. These used to float in that
