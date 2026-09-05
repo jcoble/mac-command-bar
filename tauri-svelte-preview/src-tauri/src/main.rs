@@ -1,6 +1,6 @@
 //! Heavy Tauri commands are async because synchronous command bodies run on the UI thread.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,13 +16,13 @@ use mcb_core::reference_counts::{
     normalized_reference_count_symbols, ReferenceCountFile, ReferenceCountPlan,
     MAX_REFERENCE_SCAN_BYTES,
 };
-use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 use orchestration::import_legacy_orchestration_events;
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
 use commands::agent_sessions::*;
 use commands::orchestration::*;
 use commands::runtime::*;
+use commands::source_control::*;
 use commands::terminal::*;
 use commands::usage::*;
 use commands::workflow::*;
@@ -235,7 +235,7 @@ struct SourceReferenceTarget {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectGitStatus {
+pub(crate) struct ProjectGitStatus {
     branch: Option<String>,
     ahead: usize,
     behind: usize,
@@ -245,7 +245,7 @@ struct ProjectGitStatus {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GitActionResult {
+pub(crate) struct GitActionResult {
     message: String,
     status: ProjectGitStatus,
 }
@@ -262,7 +262,7 @@ struct GitFileStatus {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SourceGitDiff {
+pub(crate) struct SourceGitDiff {
     relative_path: String,
     status: String,
     diff: String,
@@ -276,7 +276,7 @@ struct SourceGitDiff {
 /// same way.
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct GitCommitFileChange {
+pub(crate) struct GitCommitFileChange {
     relative_path: String,
     status: String,
     badge: String,
@@ -284,7 +284,7 @@ struct GitCommitFileChange {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct ProjectWorktree {
+pub(crate) struct ProjectWorktree {
     repo: String,
     path: String,
     branch: String,
@@ -301,7 +301,7 @@ struct ProjectWorktree {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct ProjectGitRef {
+pub(crate) struct ProjectGitRef {
     name: String,
     is_default: bool,
     is_current: bool,
@@ -318,7 +318,7 @@ pub(crate) struct ProjectWorktreeActionResult {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectWorktreeArchiveResult {
+pub(crate) struct ProjectWorktreeArchiveResult {
     message: String,
     archive_path: String,
     worktrees: Vec<ProjectWorktree>,
@@ -439,7 +439,7 @@ struct WorkspaceLanguageIntelligence {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-struct GitRepositorySummary {
+pub(crate) struct GitRepositorySummary {
     #[serde(rename = "projectID")]
     project_id: String,
     project_name: String,
@@ -484,7 +484,7 @@ struct GitCommitHistoryEntry {
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GitHistoryPage {
+pub(crate) struct GitHistoryPage {
     root: String,
     relative_path: Option<String>,
     commits: Vec<GitCommitHistoryEntry>,
@@ -1746,79 +1746,6 @@ async fn list_source_lsp_diagnostics_for_root(
     .map_err(|error| format!("Source LSP project diagnostics task failed: {error}"))?
 }
 
-#[tauri::command]
-async fn project_git_status(root: String) -> Result<ProjectGitStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || project_git_status_sync(PathBuf::from(root)))
-        .await
-        .map_err(|error| format!("Git status task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn read_source_git_diff(root: String, path: String) -> Result<SourceGitDiff, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        read_source_git_diff_sync(PathBuf::from(root), PathBuf::from(path))
-    })
-    .await
-    .map_err(|error| format!("Git diff task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn stage_git_paths(root: String, paths: Vec<String>) -> Result<GitActionResult, String> {
-    tauri::async_runtime::spawn_blocking(move || stage_git_paths_sync(PathBuf::from(root), paths))
-        .await
-        .map_err(|error| format!("Git stage task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn unstage_git_paths(root: String, paths: Vec<String>) -> Result<GitActionResult, String> {
-    tauri::async_runtime::spawn_blocking(move || unstage_git_paths_sync(PathBuf::from(root), paths))
-        .await
-        .map_err(|error| format!("Git unstage task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn commit_git_repository(root: String, message: String) -> Result<GitActionResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        commit_git_repository_sync(PathBuf::from(root), message)
-    })
-    .await
-    .map_err(|error| format!("Git commit task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn fetch_git_repository(root: String) -> Result<GitActionResult, String> {
-    tauri::async_runtime::spawn_blocking(move || fetch_git_repository_sync(PathBuf::from(root)))
-        .await
-        .map_err(|error| format!("Git fetch task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn pull_git_repository(root: String) -> Result<GitActionResult, String> {
-    tauri::async_runtime::spawn_blocking(move || pull_git_repository_sync(PathBuf::from(root)))
-        .await
-        .map_err(|error| format!("Git pull task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn push_git_repository(root: String) -> Result<GitActionResult, String> {
-    tauri::async_runtime::spawn_blocking(move || push_git_repository_sync(PathBuf::from(root)))
-        .await
-        .map_err(|error| format!("Git push task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn read_git_commit_history(
-    root: String,
-    cursor: Option<String>,
-    relative_path: Option<String>,
-) -> Result<GitHistoryPage, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        read_git_commit_history_page_sync(PathBuf::from(root), cursor, relative_path)
-    })
-    .await
-    .map_err(|error| format!("Git history task failed: {error}"))?
-}
-
 /// What this build of the backend can do, by name.
 ///
 /// The frontend needs this because some additions are new ARGUMENTS on commands that
@@ -1907,114 +1834,6 @@ fn backend_capabilities() -> Vec<String> {
 #[tauri::command]
 async fn read_backend_capabilities() -> Result<Vec<String>, String> {
     Ok(backend_capabilities())
-}
-
-#[tauri::command]
-async fn read_git_commit_files(
-    root: String,
-    sha: String,
-) -> Result<Vec<GitCommitFileChange>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        read_git_commit_files_sync(PathBuf::from(root), sha)
-    })
-    .await
-    .map_err(|error| format!("Git commit file list task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn read_git_commit_file_diff(
-    root: String,
-    sha: String,
-    relative_path: String,
-) -> Result<SourceGitDiff, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        read_git_commit_file_diff_sync(PathBuf::from(root), sha, relative_path)
-    })
-    .await
-    .map_err(|error| format!("Git commit file diff task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn list_project_worktrees(root: String) -> Result<Vec<ProjectWorktree>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_project_worktrees_sync(PathBuf::from(root)))
-        .await
-        .map_err(|error| format!("Worktree scan task failed: {error}"))?
-}
-
-/// The checkouts of several repositories at once, for the History panel's tree.
-///
-/// The panel sends the repository roots it already learned from the session
-/// scan and gets back, for each, the folders that still exist: the repository
-/// itself and its live worktrees. That is what makes a worktree appear even when
-/// the only thing ever run inside it was a dispatched lane.
-///
-/// One command rather than one per repository — there are dozens of them, and a
-/// round trip each would draw the panel in stages.
-#[tauri::command]
-async fn list_repository_checkouts(
-    roots: Vec<String>,
-) -> Result<BTreeMap<String, Vec<RepositoryCheckout>>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        roots
-            .into_iter()
-            .map(|root| {
-                let checkouts = repository_checkouts(&root);
-                (root, checkouts)
-            })
-            .collect()
-    })
-    .await
-    .map_err(|error| format!("Checkout scan task failed: {error}"))
-}
-
-#[tauri::command]
-async fn list_project_git_refs(root: String) -> Result<Vec<ProjectGitRef>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_project_git_refs_sync(PathBuf::from(root)))
-        .await
-        .map_err(|error| format!("Git ref scan task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn init_project_repository(root: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || init_project_repository_sync(PathBuf::from(root)))
-        .await
-        .map_err(|error| format!("Repository creation task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn remove_project_worktree(
-    root: String,
-    path: String,
-    force: Option<bool>,
-) -> Result<ProjectWorktreeActionResult, String> {
-    // Leaving `force` out keeps the safe remove that refuses to lose work.
-    let force = force.unwrap_or(false);
-    tauri::async_runtime::spawn_blocking(move || {
-        remove_project_worktree_sync(PathBuf::from(root), PathBuf::from(path), force)
-    })
-    .await
-    .map_err(|error| format!("Worktree remove task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn archive_project_worktree(
-    root: String,
-    path: String,
-) -> Result<ProjectWorktreeArchiveResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        archive_project_worktree_sync(PathBuf::from(root), PathBuf::from(path))
-    })
-    .await
-    .map_err(|error| format!("Worktree archive task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn list_git_repository_summaries(
-    projects: Vec<RuntimeContextProject>,
-) -> Result<Vec<GitRepositorySummary>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_git_repository_summaries_sync(projects))
-        .await
-        .map_err(|error| format!("Repository dashboard task failed: {error}"))?
 }
 
 #[cfg(test)]
@@ -3315,7 +3134,7 @@ fn applescript_string_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
+pub(crate) fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
     validate_git_root(&root)?;
 
     let root_arg = root.display().to_string();
@@ -3343,7 +3162,7 @@ fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus, String> {
     parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn stage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionResult, String> {
+pub(crate) fn stage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     let validated_paths = validate_git_relative_paths(&paths)?;
     run_git_with_paths(&root, &["add"], &validated_paths)?;
@@ -3353,7 +3172,7 @@ fn stage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionRe
     })
 }
 
-fn unstage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionResult, String> {
+pub(crate) fn unstage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     let validated_paths = validate_git_relative_paths(&paths)?;
     run_git_with_paths(&root, &["restore", "--staged"], &validated_paths)?;
@@ -3363,7 +3182,7 @@ fn unstage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitAction
     })
 }
 
-fn commit_git_repository_sync(root: PathBuf, message: String) -> Result<GitActionResult, String> {
+pub(crate) fn commit_git_repository_sync(root: PathBuf, message: String) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     let message = message.trim();
     if message.is_empty() {
@@ -3383,7 +3202,7 @@ fn commit_git_repository_sync(root: PathBuf, message: String) -> Result<GitActio
     })
 }
 
-fn fetch_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+pub(crate) fn fetch_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     run_git_text(&root, &["fetch", "--prune"])?;
     Ok(GitActionResult {
@@ -3392,7 +3211,7 @@ fn fetch_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
     })
 }
 
-fn pull_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+pub(crate) fn pull_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     run_git_text(&root, &["pull", "--ff-only"])?;
     Ok(GitActionResult {
@@ -3401,7 +3220,7 @@ fn pull_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
     })
 }
 
-fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+pub(crate) fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     run_git_text(&root, &["push"])?;
     Ok(GitActionResult {
@@ -3423,7 +3242,7 @@ fn git_history_cursor_offset(cursor: Option<String>) -> Result<usize, String> {
         .map_err(|_| "Git history cursor was not recognized".to_string())
 }
 
-fn read_git_commit_history_page_sync(
+pub(crate) fn read_git_commit_history_page_sync(
     root: PathBuf,
     cursor: Option<String>,
     relative_path: Option<String>,
@@ -3483,7 +3302,7 @@ fn read_git_commit_history_page_sync(
     }
 }
 
-fn read_git_commit_files_sync(
+pub(crate) fn read_git_commit_files_sync(
     root: PathBuf,
     sha: String,
 ) -> Result<Vec<GitCommitFileChange>, String> {
@@ -3494,7 +3313,7 @@ fn read_git_commit_files_sync(
     Ok(parse_git_commit_file_changes(&output))
 }
 
-fn read_git_commit_file_diff_sync(
+pub(crate) fn read_git_commit_file_diff_sync(
     root: PathBuf,
     sha: String,
     relative_path: String,
@@ -3685,7 +3504,7 @@ fn format_git_path_action_message(action: &str, count: usize) -> String {
     format!("{action} {count} {noun}")
 }
 
-fn read_source_git_diff_sync(root: PathBuf, path: PathBuf) -> Result<SourceGitDiff, String> {
+pub(crate) fn read_source_git_diff_sync(root: PathBuf, path: PathBuf) -> Result<SourceGitDiff, String> {
     validate_git_root(&root)?;
 
     let path_metadata = std::fs::metadata(&path)
@@ -3806,7 +3625,7 @@ fn combine_source_git_diffs(staged_diff: &str, working_diff: &str) -> String {
     }
 }
 
-fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, String> {
+pub(crate) fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWorktree>, String> {
     let metadata = std::fs::metadata(&root)
         .map_err(|error| format!("Could not read worktree root metadata: {error}"))?;
     if !metadata.is_dir() {
@@ -3874,7 +3693,7 @@ fn classify_project_git_refs(
         .collect()
 }
 
-fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGitRef>, String> {
+pub(crate) fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGitRef>, String> {
     let refs = run_git_text(
         &root,
         &[
@@ -3908,7 +3727,7 @@ fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGitRef>, Strin
     Ok(classify_project_git_refs(refs, current.trim(), &checkouts))
 }
 
-fn init_project_repository_sync(root: PathBuf) -> Result<(), String> {
+pub(crate) fn init_project_repository_sync(root: PathBuf) -> Result<(), String> {
     if root.to_string_lossy().trim().is_empty() {
         return Err("Choose a project folder first.".to_string());
     }
@@ -4152,7 +3971,7 @@ fn worktree_record_gitdir_names(gitdir: &str) -> Option<String> {
     Path::new(gitdir).parent().map(normalized_path_string)
 }
 
-fn archive_project_worktree_sync(
+pub(crate) fn archive_project_worktree_sync(
     root: PathBuf,
     path: PathBuf,
 ) -> Result<ProjectWorktreeArchiveResult, String> {
@@ -4612,7 +4431,7 @@ fn is_safe_git_relative_path(path: &str) -> bool {
             .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
-fn list_git_repository_summaries_sync(
+pub(crate) fn list_git_repository_summaries_sync(
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<GitRepositorySummary>, String> {
     let mut seen_paths = HashSet::new();
