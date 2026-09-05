@@ -21,3 +21,15 @@ export async function readNotionTaskDetail(
   if (signal.aborted) throw signal.reason ?? new DOMException('Task closed', 'AbortError');
   return detail;
 }
+
+export async function updateNotionTaskStatus(
+  sourceTaskId: string,
+  status: string,
+  signal: AbortSignal
+): Promise<void> {
+  if (signal.aborted) throw signal.reason ?? new DOMException('Task closed', 'AbortError');
+  if (!isNativeTauriRuntime()) throw new Error('Notion Tasks is available in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('update_notion_task_status', { sourceTaskId, status });
+  if (signal.aborted) throw signal.reason ?? new DOMException('Task closed', 'AbortError');
+}

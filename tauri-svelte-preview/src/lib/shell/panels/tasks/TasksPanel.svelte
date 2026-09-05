@@ -494,7 +494,7 @@
           ? 'Configuration stays local to this Mac.'
           : search || projectFilter || statusFilter
             ? 'Try a different search or filter.'
-            : 'Refresh to ask Notion for the latest read-only task list.'}
+            : 'Refresh to ask Notion for the latest task list.'}
       >
         {#snippet icon()}<ListTodo />{/snippet}
       </EmptyState>
@@ -531,8 +531,13 @@
     {#key selectedTask.sourceTaskId}
       <NotionTaskViewer
         task={selectedTask}
+        {statuses}
         onBack={() => (selectedTask = null)}
         onOpenExternal={(url) => void openNotionUrl(url)}
+        onStatusUpdated={async (status) => {
+          selectedTask = selectedTask ? { ...selectedTask, status } : null;
+          await reloadCached();
+        }}
       />
     {/key}
   {/if}

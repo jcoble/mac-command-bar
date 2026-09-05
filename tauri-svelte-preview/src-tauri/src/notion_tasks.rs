@@ -360,18 +360,46 @@ pub async fn list_notion_tasks(
 
 #[tauri::command]
 pub async fn read_notion_task_detail(source_task_id: String) -> Result<NotionTaskDetail, String> {
-    if source_task_id.len() > 64
-        || !source_task_id
-            .chars()
-            .all(|character| character.is_ascii_hexdigit() || character == '-')
-    {
-        return Err("The Notion task ID is invalid".to_string());
-    }
+    validate_task_id(&source_task_id)?;
     let token = tauri::async_runtime::spawn_blocking(read_keychain_token)
         .await
         .map_err(|error| format!("Notion Keychain task failed: {error}"))??
         .ok_or_else(|| "Connect Notion first".to_string())?;
     read_task_blocks(&reqwest::Client::new(), &token, &source_task_id).await
+}
+
+#[tauri::command]
+pub async fn update_notion_task_status(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    source_task_id: String,
+    status: String,
+) -> Result<NotionTaskRefreshReceipt, String> {
+    validate_task_id(&source_task_id)?;
+    let status = status.trim();
+    if status.is_empty() || status.len() > 100 {
+        return Err("Choose a valid Notion task status".to_string());
+    }
+    let token = tauri::async_runtime::spawn_blocking(read_keychain_token)
+        .await
+        .map_err(|error| format!("Notion Keychain task failed: {error}"))??
+        .ok_or_else(|| "Connect Notion first".to_string())?;
+    let client = reqwest::Client::new();
+    let response = notion_request(
+        client.patch(format!("https://api.notion.com/v1/pages/{source_task_id}")),
+        &token,
+    )
+    .json(&status_update_payload(status))
+    .send()
+    .await
+    .map_err(|error| format!("Notion could not update this task: {error}"))?;
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err(
+            "Assembly's Notion connection needs the Update content capability. Enable it in Notion Developer tools, then reconnect Notion in Assembly."
+                .to_string(),
+        );
+    }
+    response_payload(response).await?;
+    refresh_notion_tasks(manager).await
 }
 
 #[tauri::command]
@@ -693,6 +721,21 @@ fn property_date(properties: &Value, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn validate_task_id(source_task_id: &str) -> Result<(), String> {
+    if source_task_id.len() > 64
+        || !source_task_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        return Err("The Notion task ID is invalid".to_string());
+    }
+    Ok(())
+}
+
+fn status_update_payload(status: &str) -> Value {
+    json!({ "properties": { "Status": { "select": { "name": status } } } })
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -820,5 +863,13 @@ mod tests {
         assert_eq!(paragraph.checked, None);
         assert_eq!(checkbox.text, "Verify it");
         assert_eq!(checkbox.checked, Some(true));
+    }
+
+    #[test]
+    fn task_status_update_changes_only_the_status_property() {
+        assert_eq!(
+            status_update_payload("Doing"),
+            json!({ "properties": { "Status": { "select": { "name": "Doing" } } } })
+        );
     }
 }

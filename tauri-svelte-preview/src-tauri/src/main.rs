@@ -6899,6 +6899,7 @@ fn main() {
             notion_tasks::clear_notion_task_settings,
             notion_tasks::list_notion_tasks,
             notion_tasks::read_notion_task_detail,
+            notion_tasks::update_notion_task_status,
             notion_tasks::refresh_notion_tasks,
             notion_oauth::begin_notion_oauth,
             notion_oauth::claim_notion_oauth,
