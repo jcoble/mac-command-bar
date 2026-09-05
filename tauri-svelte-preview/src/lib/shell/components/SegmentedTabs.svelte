@@ -13,8 +13,6 @@
   handed back out.
 -->
 <script lang="ts">
-  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-
   import { indicatorFrame, type SegmentedTabItem } from './segmentedTabs';
 
   interface Props {
@@ -71,49 +69,40 @@
   }
 </script>
 
-<Tooltip.Provider delayDuration={0}>
-  <div
-    bind:this={strip}
-    class="segmented-tabs"
-    class:placed
-    role="tablist"
-    aria-label={label}
-    style="--indicator-left: {frame.left}px; --indicator-width: {frame.width}px"
-    onkeydown={onKeyDown}
-    tabindex={-1}
-  >
-    <span class="indicator" aria-hidden="true"></span>
-    {#each items as item, index (item.id)}
-      {@const Icon = item.icon}
-      {@const chosen = item.id === value}
-      <Tooltip.Root>
-        <Tooltip.Trigger>
-          {#snippet child({ props })}
-            <button
-              {...props}
-              bind:this={segments[index]}
-              type="button"
-              role="tab"
-              class="segment"
-              aria-selected={chosen}
-              aria-label={item.label}
-              tabindex={chosen ? 0 : -1}
-              data-testid={item.testId}
-              onclick={() => onChange(item.id)}
-            >
-              {#if Icon}
-                <Icon class="size-[20px]" strokeWidth={chosen ? 1.9 : 1.6} aria-hidden="true" />
-              {:else}
-                <span class="text">{item.label}</span>
-              {/if}
-            </button>
-          {/snippet}
-        </Tooltip.Trigger>
-        <Tooltip.Content side="bottom" sideOffset={6}>{item.label}</Tooltip.Content>
-      </Tooltip.Root>
-    {/each}
-  </div>
-</Tooltip.Provider>
+<div
+  bind:this={strip}
+  class="segmented-tabs"
+  class:placed
+  role="tablist"
+  aria-label={label}
+  style="--indicator-left: {frame.left}px; --indicator-width: {frame.width}px"
+  onkeydown={onKeyDown}
+  tabindex={-1}
+>
+  <span class="indicator" aria-hidden="true"></span>
+  {#each items as item, index (item.id)}
+    {@const Icon = item.icon}
+    {@const chosen = item.id === value}
+    <button
+      bind:this={segments[index]}
+      type="button"
+      role="tab"
+      class="segment"
+      aria-selected={chosen}
+      aria-label={item.label}
+      title={item.label}
+      tabindex={chosen ? 0 : -1}
+      data-testid={item.testId}
+      onclick={() => onChange(item.id)}
+    >
+      {#if Icon}
+        <Icon class="size-[20px]" strokeWidth={chosen ? 1.9 : 1.6} aria-hidden="true" />
+      {:else}
+        <span class="text">{item.label}</span>
+      {/if}
+    </button>
+  {/each}
+</div>
 
 <style>
   .segmented-tabs {

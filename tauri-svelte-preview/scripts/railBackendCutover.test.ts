@@ -22,6 +22,7 @@ const editorSessions = read('../src/lib/shell/controllers/editorSessionControlle
 const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
 const languageControls = read('../src/lib/shell/components/LanguageIntelligenceControls.svelte');
 const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
+const segmentedTabs = read('../src/lib/shell/components/SegmentedTabs.svelte');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
 const browserPanel = read('../src/lib/shell/panels/browser/BrowserPanel.svelte');
 const browserToolbar = read('../src/lib/shell/panels/browser/BrowserToolbar.svelte');
@@ -118,10 +119,20 @@ assert.match(
   /return \(\) => untrack\(\(\) => \{\s*releaseBrowserWorkspace\(\);/,
   'the Browser component releases its native workspace from its own lifecycle cleanup'
 );
+assert.match(
+  browserPanel,
+  /untrack\(\(\) => subscribeToBrowserNavigation\(syncBrowserNavigation\)\)/,
+  'Browser navigation diagnostics cannot become a dependency of their subscribing effect'
+);
 assert.equal(
   (browserToolbar.match(/tooltip=\{false\}/g) ?? []).length,
   7,
   'Browser toolbar icons must not mount the tooltip state loop over the native view'
+);
+assert.doesNotMatch(
+  segmentedTabs,
+  /Tooltip\./,
+  'panel tabs must not mount tooltip state over the native Browser view'
 );
 assert.match(page, /onProblemsLocationChange=\{\(location\) => workbench\.applyProblemsLocation\(location\)\}/);
 assert.match(workbenchController, /applyProblemsLocation\(location: ProblemsLocation\)[\s\S]*?setDockPresent\(atBottom\)/);

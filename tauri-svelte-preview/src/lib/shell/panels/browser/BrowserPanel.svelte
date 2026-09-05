@@ -742,7 +742,10 @@
 
   $effect(() => {
     if (!visible || !root || !ownedId) return;
-    const stopNavigation = subscribeToBrowserNavigation(syncBrowserNavigation);
+    // The diagnostics wrapper increments a reactive counter while subscribing.
+    // Keep that bookkeeping outside this effect's dependencies or the counter
+    // invalidates the effect that just changed it.
+    const stopNavigation = untrack(() => subscribeToBrowserNavigation(syncBrowserNavigation));
     return () => stopNavigation();
   });
 
