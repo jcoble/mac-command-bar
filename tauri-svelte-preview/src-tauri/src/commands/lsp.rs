@@ -247,3 +247,222 @@ pub(crate) async fn list_source_lsp_diagnostics_for_root(
     .await
     .map_err(|error| format!("Source LSP project diagnostics task failed: {error}"))?
 }
+
+#[tauri::command]
+pub(crate) async fn read_source_lsp_status(
+    root: String,
+    language: String,
+) -> Result<lsp::SourceLspStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        lsp::read_source_lsp_status_sync(PathBuf::from(root), language)
+    })
+    .await
+    .map_err(|error| format!("Source LSP status task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn list_source_lsp_statuses(root: String) -> Result<Vec<lsp::SourceLspStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        lsp::list_source_lsp_statuses_sync(PathBuf::from(root))
+    })
+    .await
+    .map_err(|error| format!("Source LSP readiness task failed: {error}"))
+}
+
+/// Proactively re-point any already-running language server(s) at a freshly-selected
+/// project root so the cold re-index happens in the background on switch, not on the first
+/// file-open under the new project. No-op when no server is running for that root's
+/// languages (see `SourceLspRegistry::warm_running_servers_for_root`).
+#[tauri::command]
+pub(crate) async fn warm_source_lsp_for_root(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<usize, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || registry.warm_running_servers_for_root(&root))
+        .await
+        .map_err(|error| format!("Source LSP warm task failed: {error}"))?
+}
+
+/// Ensure the one native C# language-client endpoint for this canonical root.
+/// Both workspace warming and editor startup call this command; the registry
+/// coalesces them into the same bounded slot.
+#[tauri::command]
+pub(crate) async fn ensure_native_csharp_language_client(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<Option<lsp::NativeCsharpEndpoint>, String> {
+    if !lsp::workspace_has_csharp_project_marker(&root) {
+        return Ok(None);
+    }
+    // Read mode: no endpoint, and so no Roslyn. "Nothing here" rather than an
+    // error, because a workspace the reader has not switched on is the ordinary
+    // case, not a failure worth showing them.
+    if !lsp::language_intelligence_on(&root) {
+        return Ok(None);
+    }
+    registry.ensure_native_csharp_endpoint(&root).map(Some)
+}
+
+#[tauri::command]
+pub(crate) async fn mark_native_csharp_language_client_ready(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<(), String> {
+    registry.mark_native_csharp_client_ready(&root)
+}
+
+/// Turn the C# language server off or on, and stop it now if it is running.
+///
+/// The reader's setting drives this. Call it with what the setting says when
+/// the app starts as well as when the switch is flipped: the flag lives in this
+/// process and starts out on, so a reader who turned it off last week would
+/// otherwise get the server back on the next launch.
+#[tauri::command]
+pub(crate) async fn set_csharp_language_server_enabled(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
+    enabled: bool,
+) -> Result<CsharpLanguageServerToggleResult, String> {
+    let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let previous = lsp::language_server_settings_snapshot().to_string();
+        let changed = lsp::set_csharp_language_server_enabled(enabled);
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
+        let stopped_servers = if enabled {
+            0
+        } else {
+            registry.stop_servers_for_language("csharp")?
+        };
+
+        Ok(CsharpLanguageServerToggleResult {
+            enabled,
+            stopped_servers,
+            message: describe_csharp_language_server_toggle(enabled, changed, stopped_servers),
+        })
+    })
+    .await
+    .map_err(|error| format!("C# language server switch task failed: {error}"))?
+}
+
+/// Switch every language server off or on. Off stops each one that is running,
+/// every language and every workspace, and nothing starts until it is on
+/// again. Like the C# switch, the desktop app forgets this between launches,
+/// so the shell pushes the saved setting on start.
+#[tauri::command]
+pub(crate) async fn set_language_servers_enabled(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
+    enabled: bool,
+) -> Result<LanguageServersToggleResult, String> {
+    let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let previous = lsp::language_server_settings_snapshot().to_string();
+        let changed = lsp::set_language_servers_enabled(enabled);
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
+        let stopped_servers = if enabled {
+            0
+        } else {
+            registry.stop_all_servers()?
+        };
+        Ok(LanguageServersToggleResult {
+            enabled,
+            stopped_servers,
+            message: describe_language_servers_toggle(enabled, changed, stopped_servers),
+        })
+    })
+    .await
+    .map_err(|error| format!("Language servers switch task failed: {error}"))?
+}
+
+/// What full mode is doing for one workspace right now.
+///
+/// Reading costs nothing and starts nothing: the editor asks this when it
+/// points at a workspace so the switch shows the right position.
+#[tauri::command]
+pub(crate) async fn read_workspace_language_intelligence(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+) -> Result<WorkspaceLanguageIntelligence, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = lsp::language_intelligence_key(&root);
+        let enabled = lsp::language_intelligence_on(&key);
+        let server_pids = workspace_language_server_pids(&registry, &key);
+        Ok(WorkspaceLanguageIntelligence {
+            enabled,
+            running_servers: server_pids.len(),
+            message: describe_workspace_language_intelligence(enabled, server_pids.len(), 0),
+            server_pids,
+            stopped_servers: 0,
+            root: key,
+        })
+    })
+    .await
+    .map_err(|error| format!("Language intelligence read task failed: {error}"))?
+}
+
+/// Turn language intelligence on or off for one workspace.
+///
+/// Give it the language the reader is looking at and turning it on starts that
+/// language's server there and then, through the same slot the first hover
+/// would have used. Leave the language out and it only records the choice,
+/// which is what lets a saved choice be restored on a file open without waking
+/// a server for a project nobody is looking at. Off stops the workspace's
+/// servers now and gives their memory back.
+#[tauri::command]
+pub(crate) async fn set_workspace_language_intelligence(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    root: String,
+    enabled: bool,
+    language: Option<String>,
+) -> Result<WorkspaceLanguageIntelligence, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = lsp::language_intelligence_key(&root);
+        let change = lsp::set_language_intelligence(&key, enabled);
+        let enabled = change.may_start_servers();
+        let stopped_servers = if enabled {
+            registry.set_active_root(&key, true)?
+        } else {
+            registry.set_active_root(&key, false)?
+        };
+        // What the switch now says is what the state machine decided, not what
+        // the caller asked for — the two only differ if something else changed
+        // this workspace in between, and the reader should see the truth.
+        // A start that fails is not a failed switch: the choice is recorded
+        // either way, so the reason comes back in the message rather than as an
+        // error that would make the switch look like it never moved.
+        let start = language
+            .as_deref()
+            .map(str::trim)
+            .filter(|language| enabled && !language.is_empty())
+            .map(|language| registry.start_server_for_language(&key, language));
+        let server_pids = workspace_language_server_pids(&registry, &key);
+        Ok(WorkspaceLanguageIntelligence {
+            enabled,
+            running_servers: server_pids.len(),
+            message: match &start {
+                Some(start) => describe_language_server_start(start),
+                None => describe_workspace_language_intelligence(
+                    enabled,
+                    server_pids.len(),
+                    stopped_servers,
+                ),
+            },
+            server_pids,
+            stopped_servers,
+            root: key,
+        })
+    })
+    .await
+    .map_err(|error| format!("Language intelligence switch task failed: {error}"))?
+}
