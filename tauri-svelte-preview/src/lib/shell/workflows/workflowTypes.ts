@@ -431,6 +431,10 @@ export interface ApproveWorkflowGateDto extends WorkflowNodeIdempotencyDto {
   approval: { approved: boolean; [key: string]: unknown };
 }
 
+export interface RedirectWorkflowNodeDto extends WorkflowNodeIdempotencyDto {
+  provider: string;
+}
+
 export interface SubmitWorkflowResultDto extends WorkflowNodeIdempotencyDto {
   result: WorkflowResultReceipt;
 }
@@ -449,6 +453,7 @@ export type WorkflowCommandDto =
   | { kind: 'resume'; input: ResumeWorkflowRunDto }
   | { kind: 'cancel'; input: CancelWorkflowRunDto }
   | { kind: 'retry-node'; input: RetryWorkflowNodeDto }
+  | { kind: 'redirect-node'; input: RedirectWorkflowNodeDto }
   | { kind: 'skip-node'; input: SkipWorkflowNodeDto }
   | { kind: 'approve-gate'; input: ApproveWorkflowGateDto }
   | { kind: 'submit-result'; input: SubmitWorkflowResultDto };

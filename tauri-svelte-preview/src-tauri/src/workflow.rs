@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 
 use crate::agent_conversation::manager::AgentRuntimeManager;
 use crate::agent_conversation::protocol::{
-    AgentConversationProvider, EnsureAgentConversationRequest,
+    AgentConversationEvent, AgentConversationPayload, AgentConversationProvider,
+    EnsureAgentConversationRequest, TurnState,
 };
 use crate::agent_conversation::providers::AgentPrompt;
 use crate::orchestration::{append_workflow_event_value, read_workflow_event_values};
@@ -998,6 +999,7 @@ impl WorkflowPolicy {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct WorkflowEngine {
     runtime: Arc<dyn AgentRuntimePort>,
     leases: Arc<dyn WorktreeLeasePort>,
@@ -1031,6 +1033,86 @@ impl WorkflowEngine {
             Arc::new(UuidGenerator),
             store,
         )
+    }
+
+    /// Advance the one workflow node owned by a completed provider turn. The
+    /// provider's structured receipt is the only handoff payload; transcript
+    /// history remains owned by the provider session.
+    pub async fn accept_agent_event(
+        &self,
+        event: &AgentConversationEvent,
+    ) -> Result<Option<WorkflowRunRecord>, WorkflowError> {
+        let AgentConversationPayload::Turn { turn_id, state } = &event.payload else {
+            return Ok(None);
+        };
+        if !matches!(
+            state,
+            TurnState::Completed | TurnState::Interrupted | TurnState::Failed
+        ) {
+            return Ok(None);
+        }
+        let Some((run_id, node_id)) = self.list_runs()?.into_iter().find_map(|run| {
+            run.nodes
+                .iter()
+                .find(|node| {
+                    node.owned_id == event.owned_id && node.state == WorkflowNodeState::Running
+                })
+                .map(|node| (run.id.clone(), node.node_id.clone()))
+        }) else {
+            return Ok(None);
+        };
+        let idempotency_key = format!("agent-turn:{}:{turn_id}", event.owned_id);
+        if *state != TurnState::Completed {
+            return self
+                .fail_agent_node(
+                    &run_id,
+                    &node_id,
+                    "agent-turn",
+                    "The provider turn did not complete",
+                    &idempotency_key,
+                )
+                .map(Some);
+        }
+        let payload = self
+            .store
+            .latest_completed_assistant_payload(&event.owned_id, turn_id)
+            .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        let Some(payload) = payload else {
+            return self
+                .fail_agent_node(
+                    &run_id,
+                    &node_id,
+                    "output-contract",
+                    "The provider completed without a final assistant message",
+                    &idempotency_key,
+                )
+                .map(Some);
+        };
+        let receipt = decode_agent_receipt(&payload).and_then(|value| {
+            let run = self.require_run(&run_id)?;
+            let node = run
+                .nodes
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .ok_or_else(|| WorkflowError::NotFound(node_id.clone()))?;
+            WorkflowPolicy::validate_output(node.output_contract, &value)?;
+            Ok(value)
+        });
+        match receipt {
+            Ok(receipt) => self
+                .submit_result(&run_id, &node_id, receipt, &idempotency_key)
+                .await
+                .map(Some),
+            Err(error) => self
+                .fail_agent_node(
+                    &run_id,
+                    &node_id,
+                    "output-contract",
+                    &error.to_string(),
+                    &idempotency_key,
+                )
+                .map(Some),
+        }
     }
 
     pub fn create_run(
@@ -1141,6 +1223,58 @@ impl WorkflowEngine {
         Ok(run)
     }
 
+    pub fn redirect_node(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        provider: &str,
+        idempotency_key: &str,
+    ) -> Result<WorkflowRunRecord, WorkflowError> {
+        if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
+            return Ok(existing);
+        }
+        let mut run = self.require_run(run_id)?;
+        let provider = provider.trim().to_ascii_lowercase();
+        let node = run
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+            .ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
+        if node.started_at_ms.is_some()
+            || !matches!(node.state, WorkflowNodeState::Blocked | WorkflowNodeState::Ready)
+        {
+            return Err(WorkflowError::InvalidTransition(
+                "Only a pending stage can be redirected".into(),
+            ));
+        }
+        let role = run
+            .definition
+            .roles
+            .iter_mut()
+            .find(|role| role.id == node.role_id)
+            .ok_or_else(|| WorkflowError::NotFound(node.role_id.clone()))?;
+        if !role
+            .provider_policy
+            .allowed_providers
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(&provider))
+        {
+            return Err(WorkflowError::PolicyDenied(format!(
+                "Provider {provider} is not allowed for role {}",
+                role.id
+            )));
+        }
+        role.provider_policy.provider = provider.clone();
+        node.provider = provider;
+        self.append(
+            &mut run,
+            "workflow.node.redirected",
+            idempotency_key,
+            Some(node_id),
+        )?;
+        Ok(run)
+    }
+
     pub async fn resume(
         &self,
         run_id: &str,
@@ -1202,7 +1336,7 @@ impl WorkflowEngine {
         Ok(run)
     }
 
-    pub fn retry_node(
+    pub async fn retry_node(
         &self,
         run_id: &str,
         node_id: &str,
@@ -1282,10 +1416,10 @@ impl WorkflowEngine {
             idempotency_key,
             Some(node_id),
         )?;
-        Ok(run)
+        self.dispatch_ready(run_id).await
     }
 
-    pub fn skip_node(
+    pub async fn skip_node(
         &self,
         run_id: &str,
         node_id: &str,
@@ -1310,6 +1444,7 @@ impl WorkflowEngine {
         }
         node.state = WorkflowNodeState::Skipped;
         node.finished_at_ms = Some(self.clock.now_ms());
+        run.state = WorkflowRunState::Running;
         refresh_ready_and_phase(&mut run);
         self.append(
             &mut run,
@@ -1317,10 +1452,10 @@ impl WorkflowEngine {
             idempotency_key,
             Some(node_id),
         )?;
-        Ok(run)
+        self.dispatch_ready(run_id).await
     }
 
-    pub fn approve_gate(
+    pub async fn approve_gate(
         &self,
         run_id: &str,
         node_id: &str,
@@ -1364,10 +1499,60 @@ impl WorkflowEngine {
         if !approved && run.definition.completion.cancel_descendants_on_failure {
             cancel_descendants(&mut run, node_id);
         }
+        if approved {
+            run.state = WorkflowRunState::Running;
+        }
         refresh_ready_and_phase(&mut run);
         self.append(
             &mut run,
             "workflow.gate.decided",
+            idempotency_key,
+            Some(node_id),
+        )?;
+        if approved {
+            self.dispatch_ready(run_id).await
+        } else {
+            Ok(run)
+        }
+    }
+
+    fn fail_agent_node(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        code: &str,
+        message: &str,
+        idempotency_key: &str,
+    ) -> Result<WorkflowRunRecord, WorkflowError> {
+        if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
+            return Ok(existing);
+        }
+        let mut run = self.require_run(run_id)?;
+        let node = run
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == node_id)
+            .ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
+        if node.state != WorkflowNodeState::Running {
+            return Ok(run);
+        }
+        if let Some(lease_id) = node.lease_id.take() {
+            self.leases.release(&lease_id)?;
+        }
+        node.state = WorkflowNodeState::Failed;
+        node.failure = Some(WorkflowFailure {
+            code: code.into(),
+            message: message.into(),
+            budget: None,
+        });
+        node.finished_at_ms = Some(self.clock.now_ms());
+        if run.definition.completion.cancel_descendants_on_failure {
+            cancel_descendants(&mut run, node_id);
+        }
+        refresh_ready_and_phase(&mut run);
+        self.append(
+            &mut run,
+            "workflow.node.failed",
             idempotency_key,
             Some(node_id),
         )?;
@@ -1569,6 +1754,13 @@ impl WorkflowEngine {
                 .find(|role| role.id == run.nodes[index].role_id)
                 .unwrap()
                 .clone();
+            let node_definition = run
+                .definition
+                .nodes
+                .iter()
+                .find(|definition| definition.id == node_id)
+                .expect("validated node")
+                .clone();
             let provider = WorkflowPolicy::provider_for(&role)?;
             let provider_active = all_runs
                 .iter()
@@ -1653,7 +1845,44 @@ impl WorkflowEngine {
                 &starting_key,
                 Some(&node_id),
             )?;
-            let prompt = json!({ "workflowRunId": run.id, "nodeId": node_id, "inputHash": run.input_hash, "input": run.input_snapshot }).to_string();
+            let mut dependency_ids = node_definition.depends_on.clone();
+            dependency_ids.extend(
+                run.definition
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.to == node_id)
+                    .map(|edge| edge.from.clone()),
+            );
+            dependency_ids.sort();
+            dependency_ids.dedup();
+            let prior_results: BTreeMap<_, _> = run
+                .nodes
+                .iter()
+                .filter(|node| dependency_ids.contains(&node.node_id))
+                .filter_map(|node| {
+                    node.structured_output
+                        .clone()
+                        .map(|output| (node.node_id.clone(), output))
+                })
+                .collect();
+            let prompt = json!({
+                "workflowRunId": run.id,
+                "nodeId": node_id,
+                "inputHash": run.input_hash,
+                "stage": {
+                    "title": node_definition.title,
+                    "role": role.name,
+                    "purpose": role.purpose,
+                },
+                "input": run.input_snapshot,
+                "priorStageReceipts": prior_results,
+                "responseRequirements": {
+                    "format": "Return only one JSON object. Do not wrap it in commentary.",
+                    "outputContract": role.output_contract.name(),
+                    "requiredShape": output_contract_shape(role.output_contract),
+                }
+            })
+            .to_string();
             let dispatch = self
                 .runtime
                 .dispatch(AgentDispatchRequest {
@@ -1831,6 +2060,7 @@ impl WorkflowEngine {
         run.phase = derive_phase(run);
         let node = node_id.and_then(|id| run.nodes.iter().find(|node| node.node_id == id));
         let event = json!({
+            "id": format!("workflow:{}:{}", run.id, run.last_sequence.saturating_add(1)),
             "schemaVersion": 1, "runId": run.id, "timestamp": run.updated_at_ms.to_string(), "kind": kind,
             "status": format!("{:?}", run.state).to_ascii_lowercase(), "workflowId": run.workflow_id,
             "workflowVersion": run.definition.version, "nodeId": node_id,
@@ -1852,6 +2082,56 @@ impl WorkflowEngine {
             .and_then(Value::as_u64)
             .unwrap_or(run.last_sequence);
         Ok(())
+    }
+}
+
+fn decode_agent_receipt(payload_json: &str) -> Result<Value, WorkflowError> {
+    let event: AgentConversationEvent = serde_json::from_str(payload_json).map_err(|error| {
+        WorkflowError::OutputContract(format!(
+            "The completed assistant message could not be decoded: {error}"
+        ))
+    })?;
+    let AgentConversationPayload::AssistantMessage { text, .. } = event.payload else {
+        return Err(WorkflowError::OutputContract(
+            "The completed event was not an assistant message".into(),
+        ));
+    };
+    let trimmed = text.trim();
+    if let Ok(value) = serde_json::from_str(trimmed) {
+        return Ok(value);
+    }
+    let fenced = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim)
+        .ok_or_else(|| {
+            WorkflowError::OutputContract(
+                "The agent must return one JSON object matching its output contract".into(),
+            )
+        })?;
+    serde_json::from_str(fenced).map_err(|error| {
+        WorkflowError::OutputContract(format!("The agent receipt is not valid JSON: {error}"))
+    })
+}
+
+fn output_contract_shape(contract: WorkflowOutputContract) -> &'static str {
+    match contract {
+        WorkflowOutputContract::ImplementationReceipt => {
+            r#"{"changedFiles":[],"summary":"","tests":[],"knownRisks":[],"commit":null,"branch":null,"worktree":null,"artifacts":[]}"#
+        }
+        WorkflowOutputContract::ReviewReceipt => {
+            r#"{"severity":"none","file":"","line":0,"evidence":"","recommendation":"","confidence":1,"blocking":false}"#
+        }
+        WorkflowOutputContract::SpecComplianceReceipt => {
+            r#"{"requirementId":"","status":"","evidence":{},"gap":null,"recommendedAction":null}"#
+        }
+        WorkflowOutputContract::VerificationReceipt => {
+            r#"{"command":"","exit":0,"duration":0,"evidenceArtifacts":[],"cleanupReceipt":{}}"#
+        }
+        WorkflowOutputContract::PlanReceipt => {
+            r#"{"orderedSteps":[],"dependencies":[],"risk":{},"estimatedParallelLanes":1}"#
+        }
     }
 }
 
@@ -2083,11 +2363,12 @@ fn stable_hash(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mcb_core::session_store::{EventRow, SessionRow};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[derive(Default)]
     struct FakeRuntime {
-        dispatched: Mutex<Vec<String>>,
+        dispatched: Mutex<Vec<AgentDispatchRequest>>,
     }
     impl AgentRuntimePort for FakeRuntime {
         fn dispatch<'a>(
@@ -2095,7 +2376,7 @@ mod tests {
             request: AgentDispatchRequest,
         ) -> PortFuture<'a, AgentDispatchReceipt> {
             Box::pin(async move {
-                self.dispatched.lock().unwrap().push(request.owned_id);
+                self.dispatched.lock().unwrap().push(request);
                 Ok(AgentDispatchReceipt {
                     provider_instance_id: "fake-1".into(),
                 })
@@ -2266,6 +2547,24 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn workflow_receipt_decoder_accepts_plain_and_fenced_json() {
+        let receipt = json!({
+            "payload": {
+                "kind": "assistantMessage",
+                "itemId": "assistant-1",
+                "text": "```json\n{\"orderedSteps\":[],\"dependencies\":[],\"risk\":{},\"estimatedParallelLanes\":1}\n```",
+                "completed": true
+            },
+            "ownedId": "workflow-agent",
+            "provider": "codex",
+            "generation": 1,
+            "sequence": 1,
+            "timestampMs": 1
+        });
+        let decoded = decode_agent_receipt(&receipt.to_string()).unwrap();
+        assert_eq!(decoded["estimatedParallelLanes"], 1);
+    }
+    #[test]
     fn workflow_phase_is_derived_from_node_state_and_role_not_prose() {
         let mut run = sample_run();
         run.nodes[0].role_id = "reviewer".into();
@@ -2354,6 +2653,34 @@ mod tests {
         run.nodes[0].state = WorkflowNodeState::Skipped;
         run.state = WorkflowRunState::Cancelled;
         assert_eq!(derive_phase(&run), WorkflowLoopPhase::Cancelled);
+    }
+
+    #[test]
+    fn workflow_pending_stage_can_be_redirected_to_an_allowed_provider() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let engine = WorkflowEngine::new(
+            Arc::new(FakeRuntime::default()),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            store,
+        );
+        let mut definition = definition();
+        definition.roles[0].provider_policy.allowed_providers =
+            vec!["codex".into(), "claude".into()];
+        let created = engine
+            .create_run(definition, json!({"cwd":"/repo"}), "create".into())
+            .unwrap();
+
+        let redirected = engine
+            .redirect_node(&created.id, "a", "claude", "redirect")
+            .unwrap();
+
+        assert_eq!(redirected.nodes[0].provider, "claude");
+        assert_eq!(
+            redirected.definition.roles[0].provider_policy.provider,
+            "claude"
+        );
     }
     #[test]
     fn workflow_concurrency_provider_depth_and_attempt_policy_are_bounded() {
@@ -2449,6 +2776,118 @@ mod tests {
             .iter()
             .any(|event| event.get("ownedId").is_some_and(|value| !value.is_null())));
         assert_eq!(engine.list_runs().unwrap()[0].id, created.id);
+    }
+
+    #[test]
+    fn completed_agent_receipt_advances_to_the_next_provider_stage() {
+        let runtime = Arc::new(FakeRuntime::default());
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let engine = WorkflowEngine::new(
+            runtime.clone(),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            store.clone(),
+        );
+        let mut cross_provider = definition();
+        let reviewer = cross_provider
+            .roles
+            .iter_mut()
+            .find(|role| role.id == "reviewer")
+            .unwrap();
+        reviewer.provider_policy.provider = "claude".into();
+        reviewer.provider_policy.allowed_providers = vec!["claude".into()];
+        let created = engine
+            .create_run(
+                cross_provider,
+                json!({"cwd":"/repo","task":"Do the work"}),
+                "create".to_string(),
+            )
+            .unwrap();
+        let started = tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
+        let first = started
+            .nodes
+            .iter()
+            .find(|node| node.node_id == "a")
+            .unwrap();
+        store
+            .upsert_session(&SessionRow {
+                owned_id: first.owned_id.clone(),
+                native_session_id: Some("native-1".into()),
+                provider: "codex".into(),
+                model: None,
+                effort: None,
+                cwd: "/repo".into(),
+                worktree: None,
+                branch: None,
+                title: None,
+                title_source: None,
+                project: None,
+                state: "ready".into(),
+                suspended: false,
+                created_at_ms: 100,
+                last_activity_at_ms: 100,
+                extra_json: "{}".into(),
+            })
+            .unwrap();
+        let assistant = AgentConversationEvent {
+            owned_id: first.owned_id.clone(),
+            provider: AgentConversationProvider::Codex,
+            generation: 1,
+            sequence: 1,
+            timestamp_ms: 100,
+            payload: AgentConversationPayload::AssistantMessage {
+                item_id: "assistant-1".into(),
+                text: json!({
+                    "changedFiles": ["src/app.ts"],
+                    "summary": "implemented",
+                    "tests": [],
+                    "knownRisks": [],
+                    "commit": null,
+                    "branch": null,
+                    "worktree": null,
+                    "artifacts": []
+                })
+                .to_string(),
+                completed: true,
+                blocks: None,
+            },
+        };
+        store
+            .append_event(&EventRow {
+                owned_id: first.owned_id.clone(),
+                seq: 1,
+                turn_id: Some("turn-1".into()),
+                kind: "item.completed".into(),
+                payload_json: serde_json::to_string(&assistant).unwrap(),
+                created_at_ms: 100,
+            })
+            .unwrap();
+        let terminal = AgentConversationEvent {
+            sequence: 2,
+            payload: AgentConversationPayload::Turn {
+                turn_id: "turn-1".into(),
+                state: TurnState::Completed,
+            },
+            ..assistant
+        };
+
+        let advanced = tauri::async_runtime::block_on(engine.accept_agent_event(&terminal))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            advanced.nodes.iter().find(|node| node.node_id == "a").unwrap().state,
+            WorkflowNodeState::Completed
+        );
+        assert_eq!(
+            advanced.nodes.iter().find(|node| node.node_id == "b").unwrap().state,
+            WorkflowNodeState::Running
+        );
+        let dispatches = runtime.dispatched.lock().unwrap();
+        assert_eq!(dispatches.len(), 2);
+        assert_eq!(dispatches[1].provider, "claude");
+        let handoff: Value = serde_json::from_str(&dispatches[1].prompt).unwrap();
+        assert_eq!(handoff["priorStageReceipts"]["a"]["summary"], "implemented");
     }
     fn sample_run() -> WorkflowRunRecord {
         let definition = definition();

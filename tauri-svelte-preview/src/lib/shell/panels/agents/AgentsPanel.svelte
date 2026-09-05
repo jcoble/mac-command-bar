@@ -10,7 +10,9 @@
   The selected running child's transcript refreshes while this panel is visible.
   The child list itself still comes from conversation snapshots.
 
-  Starting or editing workflows is not part of this panel.
+  The Workflows view hosts the app-owned, cross-provider handoff loop. It stays
+  separate from provider-native child agents so either surface can be removed
+  without disturbing the other.
 -->
 <script lang="ts">
   import Bot from '@lucide/svelte/icons/bot';
@@ -18,6 +20,7 @@
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
+  import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import type {
     AgentConversationProvider,
     ConversationTimelineEntry
@@ -35,6 +38,7 @@
 
   import AgentRow from './AgentRow.svelte';
   import { agentActivityRows, agentStatus } from './agentActivityModel.ts';
+  import WorkflowRuns from './WorkflowRuns.svelte';
 
   interface Props {
     /** True while this panel's tab is the selected one. */
@@ -44,7 +48,13 @@
     /** The active session's ownedId, or null. */
     ownedId: string | null;
   }
-  let { visible, ownedId }: Props = $props();
+  let { visible, root, ownedId }: Props = $props();
+  let view = $state<'session' | 'workflows'>('session');
+
+  const VIEW_OPTIONS = [
+    { value: 'session', label: 'Session' },
+    { value: 'workflows', label: 'Workflows' }
+  ] as const;
 
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
@@ -142,11 +152,23 @@
 </script>
 
 <section class="flex h-full min-h-0 flex-col" data-testid="agents-panel">
-  <PanelHeader title="Agents" count={rows.length > 0 ? rows.length : null} />
+  <PanelHeader title="Agents" count={view === 'session' && rows.length > 0 ? rows.length : null} />
+  <div class="border-b border-border px-3 pb-2">
+    <SegmentedControl
+      items={VIEW_OPTIONS}
+      value={view}
+      size="sm"
+      aria-label="Agent view"
+      class="w-full"
+      onValueChange={(value) => (view = value as typeof view)}
+    />
+  </div>
 
-  {#if rows.length === 0}
+  {#if view === 'workflows'}
+    <WorkflowRuns visible={visible} {root} />
+  {:else if rows.length === 0}
     <EmptyState
-      title="No agents yet"
+      title="No session agents yet"
       body="When this thread spawns subagents or runs a workflow, they show up here with live status, activity, and token usage."
       data-testid="agents-panel-empty"
     >

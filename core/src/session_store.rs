@@ -1908,6 +1908,33 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the event list", error))
     }
 
+    /// The final completed assistant message for one turn, selected in SQLite
+    /// so workflow handoff does not materialize or scan the conversation.
+    pub fn latest_completed_assistant_payload(
+        &self,
+        owned_id: &str,
+        turn_id: &str,
+    ) -> Result<Option<String>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT payload
+                 FROM events
+                 WHERE owned_id = ?1
+                   AND turn_id = ?2
+                   AND json_extract(payload, '$.payload.kind') = 'assistantMessage'
+                   AND json_extract(payload, '$.payload.completed') = 1
+                 ORDER BY seq DESC
+                 LIMIT 1",
+                params![owned_id, turn_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| {
+                StoreError::sqlite("could not read the completed assistant message", error)
+            })
+    }
+
     pub fn first_user_message_payload(&self, owned_id: &str) -> Result<Option<String>> {
         let connection = self.lock()?;
         connection
@@ -4345,6 +4372,42 @@ mod tests {
             .map(|event| event.seq)
             .collect();
         assert_eq!(seqs, [6]);
+    }
+
+    #[test]
+    fn completed_assistant_receipt_is_selected_by_turn_in_sql() {
+        let store = SessionStore::open_in_memory().expect("open store");
+        store
+            .upsert_session(&fixture_session("workflow-agent", 1_000))
+            .expect("insert session");
+        for (seq, turn_id, completed, text) in [
+            (1, "turn-a", true, "old"),
+            (2, "turn-b", false, "partial"),
+            (3, "turn-b", true, "receipt"),
+        ] {
+            store
+                .append_event(&EventRow {
+                    owned_id: "workflow-agent".into(),
+                    seq,
+                    turn_id: Some(turn_id.into()),
+                    kind: "item.completed".into(),
+                    payload_json: format!(
+                        r#"{{"payload":{{"kind":"assistantMessage","itemId":"a","text":"{text}","completed":{completed}}}}}"#
+                    ),
+                    created_at_ms: 1_000 + seq,
+                })
+                .expect("append event");
+        }
+
+        assert_eq!(
+            store
+                .latest_completed_assistant_payload("workflow-agent", "turn-b")
+                .expect("read receipt")
+                .as_deref(),
+            Some(
+                r#"{"payload":{"kind":"assistantMessage","itemId":"a","text":"receipt","completed":true}}"#
+            )
+        );
     }
 
     /// Scrolling up asks for the window just older than what is on screen, and

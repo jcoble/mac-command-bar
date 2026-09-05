@@ -2270,6 +2270,17 @@ export async function retryWorkflowNodeFromTauri(runId: string, nodeId: string, 
   return invoke<WorkflowRunRecord>('retry_workflow_node', { runId, nodeId, idempotencyKey });
 }
 
+export async function redirectWorkflowNodeFromTauri(
+  runId: string,
+  nodeId: string,
+  provider: string,
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<WorkflowRunRecord>('redirect_workflow_node', { runId, nodeId, provider, idempotencyKey });
+}
+
 export async function skipWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('@tauri-apps/api/core');

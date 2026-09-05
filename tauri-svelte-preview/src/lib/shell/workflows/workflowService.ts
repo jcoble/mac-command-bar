@@ -14,6 +14,7 @@ import {
   isNativeTauriRuntime,
   listWorkflowRunsFromTauri,
   pauseWorkflowRunFromTauri,
+  redirectWorkflowNodeFromTauri,
   resumeWorkflowRunFromTauri,
   retryWorkflowNodeFromTauri,
   skipWorkflowNodeFromTauri,
@@ -29,6 +30,7 @@ import type {
   CancelWorkflowRunDto,
   CreateWorkflowRunDto,
   PauseWorkflowRunDto,
+  RedirectWorkflowNodeDto,
   ResumeWorkflowRunDto,
   RetryWorkflowNodeDto,
   SkipWorkflowNodeDto,
@@ -77,6 +79,17 @@ export async function retryWorkflowNode(
   input: RetryWorkflowNodeDto
 ): Promise<WorkflowRunRecord | null> {
   return retryWorkflowNodeFromTauri(input.runId, input.nodeId, input.idempotencyKey);
+}
+
+export async function redirectWorkflowNode(
+  input: RedirectWorkflowNodeDto
+): Promise<WorkflowRunRecord | null> {
+  return redirectWorkflowNodeFromTauri(
+    input.runId,
+    input.nodeId,
+    input.provider,
+    input.idempotencyKey
+  );
 }
 
 export async function skipWorkflowNode(

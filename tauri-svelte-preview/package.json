@@ -30,6 +30,7 @@
     "test:git-task-links": "node --experimental-strip-types scripts/gitTaskLinks.test.mjs",
     "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
     "test:orchestration-view": "node --experimental-strip-types scripts/orchestrationView.test.mjs",
+    "test:task-workflow": "node --experimental-strip-types scripts/taskWorkflowTemplate.test.ts",
     "test:worktree-cleanup-plan": "node --experimental-strip-types scripts/worktreeCleanupPlan.test.mjs",
     "test:worktree-cleanup-runbook": "node --experimental-strip-types scripts/worktreeCleanupRunbook.test.mjs",
     "test:worktree-safety": "node --experimental-strip-types scripts/worktreeSafety.test.mjs",

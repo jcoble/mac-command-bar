@@ -2204,6 +2204,23 @@ async fn retry_workflow_node(
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
         .retry_node(&run_id, &node_id, &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+async fn redirect_workflow_node(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    provider: String,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .redirect_node(&run_id, &node_id, &provider, &idempotency_key)
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
     Ok(run)
@@ -2219,6 +2236,7 @@ async fn skip_workflow_node(
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
         .skip_node(&run_id, &node_id, &idempotency_key)
+        .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
     Ok(run)
@@ -2235,6 +2253,7 @@ async fn approve_workflow_gate(
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
         .approve_gate(&run_id, &node_id, approval, &idempotency_key)
+        .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
     Ok(run)
@@ -6645,8 +6664,33 @@ fn main() {
                     )?;
                 }
             }
+            let workflow_events = workflow_engine.clone();
+            let workflow_handle = app.handle().clone();
             agent_runtime.set_emitter(Arc::new(move |event| {
-                projection_streams.publish_agent_event(event);
+                let is_terminal_turn = matches!(
+                    &event.payload,
+                    agent_conversation::protocol::AgentConversationPayload::Turn {
+                        state: agent_conversation::protocol::TurnState::Completed
+                            | agent_conversation::protocol::TurnState::Interrupted
+                            | agent_conversation::protocol::TurnState::Failed,
+                        ..
+                    }
+                );
+                projection_streams.publish_agent_event(event.clone());
+                if !is_terminal_turn {
+                    return;
+                }
+                let workflow_events = workflow_events.clone();
+                let workflow_handle = workflow_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    match workflow_events.accept_agent_event(&event).await {
+                        Ok(Some(run)) => emit_workflow_run_updated(&workflow_handle, &run),
+                        Ok(None) => {}
+                        Err(error) => debug_log::stderr_log!(
+                            "Could not advance workflow from agent event: {error}"
+                        ),
+                    }
+                });
             }));
             let handle = app.handle().clone();
             agent_runtime.set_broker_emitter(Arc::new(move |event| {
@@ -6813,6 +6857,7 @@ fn main() {
             resume_workflow_run,
             cancel_workflow_run,
             retry_workflow_node,
+            redirect_workflow_node,
             skip_workflow_node,
             approve_workflow_gate,
             submit_workflow_result,
