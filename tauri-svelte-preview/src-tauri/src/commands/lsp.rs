@@ -466,3 +466,50 @@ pub(crate) async fn set_workspace_language_intelligence(
     .await
     .map_err(|error| format!("Language intelligence switch task failed: {error}"))?
 }
+
+#[tauri::command]
+pub(crate) async fn set_language_server_enabled(
+    registry: tauri::State<'_, lsp::SourceLspRegistry>,
+    manager: tauri::State<'_, agent_conversation::manager::AgentRuntimeManager>,
+    language: String,
+    enabled: bool,
+) -> Result<LanguageServerToggleResult, String> {
+    let registry = registry.inner().clone();
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let language = language.trim().to_ascii_lowercase();
+        let previous = lsp::language_server_settings_snapshot().to_string();
+        let changed = lsp::set_language_server_enabled(&language, enabled)?;
+        persist_language_server_settings(&manager).map_err(|error| {
+            let _ = lsp::restore_language_server_settings(&previous);
+            error
+        })?;
+        let stop_languages: &[&str] = match language.as_str() {
+            "typescript" | "tsx" | "javascript" | "jsx" =>
+                &["typescript", "tsx", "javascript", "jsx"],
+            "csharp" | "c#" => &["csharp"],
+            "rust" => &["rust"],
+            _ => &[],
+        };
+        let mut stopped_servers = 0;
+        if !enabled {
+            for language in stop_languages {
+                stopped_servers += registry.stop_servers_for_language(language)?;
+            }
+        }
+        Ok(LanguageServerToggleResult {
+            language: language.clone(),
+            enabled,
+            stopped_servers,
+            message: if !enabled && stopped_servers > 0 {
+                format!("The {language} language server is off and has been stopped.")
+            } else if changed {
+                format!("The {language} language server is {}.", if enabled { "on" } else { "off" })
+            } else {
+                format!("The {language} language server was already {}.", if enabled { "on" } else { "off" })
+            },
+        })
+    })
+    .await
+    .map_err(|error| format!("Language server switch task failed: {error}"))?
+}
