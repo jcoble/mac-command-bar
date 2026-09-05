@@ -759,51 +759,6 @@ fn source_scan_cancellation_for_command(
     SourceScanCancellation::new(cancelled, Some(progress))
 }
 
-/// Move one path to the Finder's Trash.
-///
-/// The file-system plugin's `remove` deletes for good, and deleting a file from
-/// a tree is the kind of press people take back a second later, so the Files
-/// panel goes through here instead. The path must sit inside a folder the
-/// plugin's scope already covers — the same folders `list_source_files` grants
-/// — so this command can never be pointed at somewhere the window has no
-/// business changing.
-#[tauri::command]
-async fn move_to_trash(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let target = std::fs::canonicalize(&path)
-        .map_err(|error| format!("Could not find {path}: {error}"))?;
-    if !app.fs_scope().is_allowed(&target) {
-        return Err(format!(
-            "{} is outside the folders this window is allowed to change.",
-            target.display()
-        ));
-    }
-
-    tauri::async_runtime::spawn_blocking(move || {
-        trash::delete(&target).map_err(|error| {
-            format!("Could not move {} to the Trash: {error}", target.display())
-        })
-    })
-    .await
-    .map_err(|error| format!("Trash task failed: {error}"))?
-}
-
-/// Open the web inspector on the shell's own window.
-///
-/// The embedded browser's tabs have had this for a while; the window the app
-/// itself is drawn in did not, so looking at the shell meant reaching for the
-/// context menu. WebKit offers its own shortcut, but only where the inspector is
-/// compiled in, which before the `devtools` feature meant debug builds alone.
-#[tauri::command]
-fn open_main_devtools(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.open_devtools();
-    Ok(())
-}
-
-
-
-
-
-
 const LANGUAGE_SERVER_SETTINGS_KEY: &str = "workbench.languageServers";
 
 fn persist_language_server_settings(
@@ -814,11 +769,6 @@ fn persist_language_server_settings(
         &lsp::language_server_settings_snapshot().to_string(),
     )
 }
-
-
-
-
-
 
 /// The process ids of the language servers serving one workspace.
 fn workspace_language_server_pids(registry: &lsp::SourceLspRegistry, root: &str) -> Vec<u32> {

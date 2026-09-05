@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use tauri_plugin_fs::FsExt;
 
 use crate::{
     allow_workspace_root_in_fs_scope, count_source_references_sync, find_source_definitions_sync,
@@ -314,4 +315,32 @@ pub(crate) async fn count_source_references(
     })
     .await
     .map_err(|error| format!("Source reference count task failed: {error}"))?
+}
+
+/// Move one path to the Finder's Trash.
+///
+/// The file-system plugin's `remove` deletes for good, and deleting a file from
+/// a tree is the kind of press people take back a second later, so the Files
+/// panel goes through here instead. The path must sit inside a folder the
+/// plugin's scope already covers — the same folders `list_source_files` grants
+/// — so this command can never be pointed at somewhere the window has no
+/// business changing.
+#[tauri::command]
+pub(crate) async fn move_to_trash(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let target = std::fs::canonicalize(&path)
+        .map_err(|error| format!("Could not find {path}: {error}"))?;
+    if !app.fs_scope().is_allowed(&target) {
+        return Err(format!(
+            "{} is outside the folders this window is allowed to change.",
+            target.display()
+        ));
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        trash::delete(&target).map_err(|error| {
+            format!("Could not move {} to the Trash: {error}", target.display())
+        })
+    })
+    .await
+    .map_err(|error| format!("Trash task failed: {error}"))?
 }
