@@ -22,6 +22,7 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
 use commands::agent_sessions::*;
 use commands::orchestration::*;
+use commands::runtime::*;
 use commands::terminal::*;
 use commands::usage::*;
 use commands::workflow::*;
@@ -333,7 +334,7 @@ pub(crate) struct RuntimeContextProject {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RuntimeContext {
+pub(crate) struct RuntimeContext {
     pid: u32,
     command: String,
     port: u16,
@@ -358,7 +359,7 @@ struct PlaywrightProcessInfo {
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PlaywrightSessionInfo {
+pub(crate) struct PlaywrightSessionInfo {
     pgid: u32,
     label: String,
     pids: Vec<u32>,
@@ -367,7 +368,7 @@ struct PlaywrightSessionInfo {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PlaywrightCleanupResult {
+pub(crate) struct PlaywrightCleanupResult {
     sessions: Vec<PlaywrightSessionInfo>,
     terminated_pgids: Vec<u32>,
     terminated_pids: Vec<u32>,
@@ -389,7 +390,7 @@ struct PlaywrightCleanupFailure {
 /// another user, it already exited) and "failed" on its own tells them nothing.
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProcessKillResult {
+pub(crate) struct ProcessKillResult {
     ok: bool,
     message: String,
 }
@@ -2014,54 +2015,6 @@ async fn list_git_repository_summaries(
     tauri::async_runtime::spawn_blocking(move || list_git_repository_summaries_sync(projects))
         .await
         .map_err(|error| format!("Repository dashboard task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn list_runtime_contexts(
-    projects: Vec<RuntimeContextProject>,
-) -> Result<Vec<RuntimeContext>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_runtime_contexts_sync(projects))
-        .await
-        .map_err(|error| format!("Runtime context task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn list_playwright_sessions() -> Result<Vec<PlaywrightSessionInfo>, String> {
-    tauri::async_runtime::spawn_blocking(list_playwright_sessions_sync)
-        .await
-        .map_err(|error| format!("Playwright session scan task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn kill_playwright_session(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
-    tauri::async_runtime::spawn_blocking(move || kill_playwright_session_sync(pgid))
-        .await
-        .map_err(|error| format!("Playwright session cleanup task failed: {error}"))?
-}
-
-#[tauri::command]
-async fn kill_playwright_sessions() -> Result<PlaywrightCleanupResult, String> {
-    tauri::async_runtime::spawn_blocking(kill_playwright_sessions_sync)
-        .await
-        .map_err(|error| format!("Playwright cleanup task failed: {error}"))?
-}
-
-/// Ask one process to stop — the button next to a running process in the
-/// context panel.
-///
-/// This sends the polite stop signal only. A process that ignores it keeps
-/// running and the reader is told so, rather than the app escalating to a kill
-/// nobody asked for: these are the reader's own dev servers and test runners,
-/// and losing unsaved work in one because a click was read as "destroy" is not
-/// a trade this makes on their behalf.
-#[tauri::command]
-async fn kill_process(
-    pid: u32,
-    expected_command: Option<String>,
-) -> Result<ProcessKillResult, String> {
-    tauri::async_runtime::spawn_blocking(move || kill_process_sync(pid, expected_command))
-        .await
-        .map_err(|error| format!("Stop process task failed: {error}"))
 }
 
 #[cfg(test)]
@@ -4961,7 +4914,7 @@ fn task_id_from_text(text: &str) -> Option<String> {
     None
 }
 
-fn list_runtime_contexts_sync(
+pub(crate) fn list_runtime_contexts_sync(
     projects: Vec<RuntimeContextProject>,
 ) -> Result<Vec<RuntimeContext>, String> {
     let output = Command::new("lsof")
@@ -5017,7 +4970,7 @@ fn list_runtime_contexts_sync(
     Ok(contexts)
 }
 
-fn list_playwright_sessions_sync() -> Result<Vec<PlaywrightSessionInfo>, String> {
+pub(crate) fn list_playwright_sessions_sync() -> Result<Vec<PlaywrightSessionInfo>, String> {
     let output = Command::new("ps")
         .args(["-axo", "pid=,pgid=,etime=,command="])
         .output()
@@ -5043,14 +4996,14 @@ fn list_playwright_sessions_sync() -> Result<Vec<PlaywrightSessionInfo>, String>
 /// and the forcing happens behind it — the same shape `resources.rs` uses.
 const PLAYWRIGHT_STOP_GRACE: std::time::Duration = std::time::Duration::from_millis(800);
 
-fn kill_playwright_sessions_sync() -> Result<PlaywrightCleanupResult, String> {
+pub(crate) fn kill_playwright_sessions_sync() -> Result<PlaywrightCleanupResult, String> {
     let sessions = list_playwright_sessions_sync()?;
     let (result, survivors) = term_playwright_sessions(sessions, signal_process);
     force_playwright_survivors_after_grace(survivors);
     Ok(result)
 }
 
-fn kill_playwright_session_sync(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
+pub(crate) fn kill_playwright_session_sync(pgid: i32) -> Result<PlaywrightCleanupResult, String> {
     let sessions = list_playwright_sessions_sync()?;
     let session = select_playwright_session(sessions, pgid)?;
     let (result, survivors) = term_playwright_sessions(vec![session], signal_process);
@@ -5254,7 +5207,7 @@ where
     failed_pgids
 }
 
-fn kill_process_sync(pid: u32, expected_command: Option<String>) -> ProcessKillResult {
+pub(crate) fn kill_process_sync(pid: u32, expected_command: Option<String>) -> ProcessKillResult {
     // Process numbers get handed out again after a process exits. The panel the
     // reader clicked in may be minutes old, so before anything is signalled,
     // check the number still belongs to the command the panel showed them.
