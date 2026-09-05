@@ -20,6 +20,7 @@ use orchestration::import_legacy_orchestration_events;
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
 use commands::agent_sessions::*;
+use commands::application::*;
 use commands::orchestration::*;
 use commands::runtime::*;
 use commands::source_control::*;
@@ -1824,16 +1825,11 @@ struct SessionTitleChanged {
     title: String,
 }
 
-fn backend_capabilities() -> Vec<String> {
+pub(crate) fn backend_capabilities() -> Vec<String> {
     BACKEND_CAPABILITIES
         .iter()
         .map(|capability| capability.to_string())
         .collect()
-}
-
-#[tauri::command]
-async fn read_backend_capabilities() -> Result<Vec<String>, String> {
-    Ok(backend_capabilities())
 }
 
 #[cfg(test)]
