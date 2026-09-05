@@ -24,6 +24,7 @@ const languageControls = read('../src/lib/shell/components/LanguageIntelligenceC
 const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
 const browserPanel = read('../src/lib/shell/panels/browser/BrowserPanel.svelte');
+const browserToolbar = read('../src/lib/shell/panels/browser/BrowserToolbar.svelte');
 const frame = read('../src/lib/shell/layout/frame.ts');
 const workbenchController = read('../src/lib/shell/controllers/workbenchController.svelte.ts');
 const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
@@ -116,6 +117,11 @@ assert.match(
   browserPanel,
   /return \(\) => untrack\(\(\) => \{\s*releaseBrowserWorkspace\(\);/,
   'the Browser component releases its native workspace from its own lifecycle cleanup'
+);
+assert.equal(
+  (browserToolbar.match(/tooltip=\{false\}/g) ?? []).length,
+  7,
+  'Browser toolbar icons must not mount the tooltip state loop over the native view'
 );
 assert.match(page, /onProblemsLocationChange=\{\(location\) => workbench\.applyProblemsLocation\(location\)\}/);
 assert.match(workbenchController, /applyProblemsLocation\(location: ProblemsLocation\)[\s\S]*?setDockPresent\(atBottom\)/);

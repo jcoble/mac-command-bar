@@ -72,19 +72,22 @@
 </script>
 
 <div class="browser-toolbar" data-testid="browser-toolbar">
-  <IconButton label="Go back" size="xs" disabled={!canGoBack} data-testid="browser-back" onclick={onBack}>
+  <!-- Bits UI's tooltip state loops when this toolbar is mounted beside the
+       native child view. The aria-labels still name every control. -->
+  <IconButton label="Go back" size="xs" tooltip={false} disabled={!canGoBack} data-testid="browser-back" onclick={onBack}>
     <ArrowLeft aria-hidden="true" />
   </IconButton>
   <IconButton
     label="Go forward"
     size="xs"
+    tooltip={false}
     disabled={!canGoForward}
     data-testid="browser-forward"
     onclick={onForward}
   >
     <ArrowRight aria-hidden="true" />
   </IconButton>
-  <IconButton label="Reload the page" size="xs" data-testid="browser-reload" onclick={onReload}>
+  <IconButton label="Reload the page" size="xs" tooltip={false} data-testid="browser-reload" onclick={onReload}>
     <RotateCw aria-hidden="true" />
   </IconButton>
 
@@ -109,6 +112,7 @@
   <IconButton
     label={tool === 'element' ? 'Stop marking elements' : 'Mark an element on the page'}
     size="xs"
+    tooltip={false}
     class={tool === 'element' ? ARMED : undefined}
     data-testid="browser-tool-element"
     onclick={() => choose('element')}
@@ -118,6 +122,7 @@
   <IconButton
     label={tool === 'region' ? 'Stop marking regions' : 'Draw a region on the page'}
     size="xs"
+    tooltip={false}
     class={tool === 'region' ? ARMED : undefined}
     data-testid="browser-tool-region"
     onclick={() => choose('region')}
@@ -127,6 +132,7 @@
   <IconButton
     label={tool === 'drawing' ? 'Put the marker down' : 'Draw on the page with a marker'}
     size="xs"
+    tooltip={false}
     class={tool === 'drawing' ? ARMED : undefined}
     data-testid="browser-tool-marker"
     onclick={() => choose('drawing')}
@@ -139,6 +145,7 @@
   <IconButton
     label={expanded ? 'Put the browser back in its column' : 'Fill the window with the browser'}
     size="xs"
+    tooltip={false}
     data-testid="browser-expand"
     onclick={onToggleExpand}
   >
