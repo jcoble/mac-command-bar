@@ -11,15 +11,21 @@ const providerCapabilitiesSource = await readFile(
 );
 
 assert.equal(defaultConfig.build.beforeDevCommand, 'pnpm dev');
+assert.equal(defaultConfig.build.beforeBuildCommand, 'pnpm prepare:release-adapters && pnpm build');
 assert.equal(defaultConfig.build.devUrl, 'http://127.0.0.1:5177/');
+assert.equal(defaultConfig.bundle.active, true);
+assert.equal(defaultConfig.bundle.targets, 'app');
+assert.deepEqual(defaultConfig.bundle.resources, ['adapters/*']);
 assert.equal(defaultConfig.app.windows[0].url, '/');
 assert.equal(defaultConfig.app.windows[0].width, 1600, 'native preview should open wide enough for laptop layout work');
 assert.equal(defaultConfig.app.windows[0].height, 1000, 'native preview should open tall enough for docked panes');
 assert.equal(packageJson.scripts['tauri:dev'], 'sh scripts/dev-app.sh');
 assert.equal(packageJson.scripts['tauri:dev:next'], undefined);
 assert.equal(packageJson.scripts['tauri:dev:next:alt'], undefined);
-assert.equal(packageJson.dependencies['@agentclientprotocol/claude-agent-acp'], '0.73.0');
-assert.match(providerCapabilitiesSource, /CLAUDE_AGENT_ACP_VERSION: &str = "0\.73\.0"/);
+assert.equal(packageJson.dependencies['@agentclientprotocol/codex-acp'], '1.10.0');
+assert.equal(packageJson.dependencies['@agentclientprotocol/claude-agent-acp'], '0.75.0');
+assert.match(providerCapabilitiesSource, /CODEX_ACP_VERSION: &str = "1\.10\.0"/);
+assert.match(providerCapabilitiesSource, /CLAUDE_AGENT_ACP_VERSION: &str = "0\.75\.0"/);
 assert.equal(
   packageJson.scripts['test:tauri-app'],
   'pnpm test:tauri-source && pnpm test:tauri-config && pnpm build && pnpm test:native-lsp && cargo build --manifest-path src-tauri/Cargo.toml',

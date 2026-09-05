@@ -7,8 +7,8 @@ use super::protocol::{
     AgentCapabilities, AgentConfigOption, AgentProviderManifest, ProviderTransport,
 };
 
-pub const CODEX_ACP_VERSION: &str = "1.1.9";
-pub const CLAUDE_AGENT_ACP_VERSION: &str = "0.73.0";
+pub const CODEX_ACP_VERSION: &str = "1.10.0";
+pub const CLAUDE_AGENT_ACP_VERSION: &str = "0.75.0";
 pub const AGY_ACP_VERSION: &str = "0.1.0";
 
 pub fn validate_manifest(manifest: &AgentProviderManifest) -> Result<(), String> {

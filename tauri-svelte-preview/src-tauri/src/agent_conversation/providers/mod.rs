@@ -1,5 +1,6 @@
 pub mod acp;
 pub mod acp_client;
+mod packaged;
 pub mod process;
 
 pub use acp::{AcpRuntimeAdapter, StructuredRuntimeHandle};
@@ -152,6 +153,9 @@ impl ProviderRegistry {
         let mut claude =
             configured_pair("MCB_CLAUDE_AGENT_ACP_PATH", "MCB_CLAUDE_AGENT_ACP_SHA256")?;
         let mut antigravity = configured_pair("MCB_AGY_ACP_PATH", "MCB_AGY_ACP_SHA256")?;
+        if codex.is_none() && claude.is_none() && antigravity.is_none() {
+            (codex, claude, antigravity) = packaged::discover()?;
+        }
         if codex.is_none() || claude.is_none() || antigravity.is_none() {
             if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
                 if codex.is_none() {
