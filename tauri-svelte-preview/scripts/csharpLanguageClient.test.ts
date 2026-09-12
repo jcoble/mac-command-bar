@@ -26,6 +26,8 @@ assert.match(
   'the official client should own completion, hover, formatting, rename, definition, references, signature help, and diagnostics'
 );
 assert.match(client, /new WebSocket\(endpoint\.wsUrl\)/);
+assert.match(client, /workspaceFolders: \[\{/);
+assert.match(client, /socket\.send\(withCsharpWorkspaceFolder\(message, requestedRoot\)\)/);
 assert.match(
   client,
   /new WebSocket\(endpoint\.wsUrl\)[\s\S]*await new Promise<void>[\s\S]*addEventListener\('open'[\s\S]*new LSPClient/,

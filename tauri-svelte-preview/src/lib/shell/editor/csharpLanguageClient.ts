@@ -58,6 +58,33 @@ function pathFromFileUri(uri: string): string | null {
   }
 }
 
+/** Roslyn requires a workspace folder even when the standard root URI is set. */
+export function withCsharpWorkspaceFolder(message: string, root: string): string {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(message);
+  } catch {
+    return message;
+  }
+  if (!payload || typeof payload !== 'object') return message;
+  const request = payload as Record<string, unknown>;
+  if (request.method !== 'initialize') return message;
+  const params = request.params && typeof request.params === 'object'
+    ? request.params as Record<string, unknown>
+    : {};
+  const normalizedRoot = normalizedPath(root);
+  return JSON.stringify({
+    ...request,
+    params: {
+      ...params,
+      workspaceFolders: [{
+        uri: fileUri(normalizedRoot),
+        name: normalizedRoot.split('/').filter(Boolean).at(-1) ?? normalizedRoot
+      }]
+    }
+  });
+}
+
 async function startCsharpLanguageClient(
   requestedRoot: string,
   state: CsharpClientState,
@@ -121,7 +148,7 @@ async function startCsharpLanguageClient(
 
     const transport: Transport = {
       send(message) {
-        socket.send(message);
+        socket.send(withCsharpWorkspaceFolder(message, requestedRoot));
       },
       subscribe(handler) {
         handlers.add(handler);
