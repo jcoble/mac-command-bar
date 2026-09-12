@@ -5,10 +5,7 @@
   import { settings } from '$lib/settingsStore.svelte';
   import { setLanguageServersEnabled } from '$lib/shell/editor/sourceIntelligence';
   import { readLanguageServerState } from '$lib/shell/components/editor/languageServerStatus';
-  import {
-    languageIntelligenceBar,
-    requestLanguageIntelligence
-  } from '$lib/shell/editor/languageIntelligenceBar.svelte';
+  import { languageIntelligenceBar } from '$lib/shell/editor/languageIntelligenceBar.svelte';
 
   let busy = $state(false);
   const stopController = new AbortController();
@@ -23,7 +20,6 @@
     if (stopSignal.aborted) return;
     if (result.supported) {
       settings.intelligence.languageServers = enabled;
-      requestLanguageIntelligence(enabled);
     }
     busy = false;
   }

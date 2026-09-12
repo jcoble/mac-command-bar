@@ -72,7 +72,7 @@ class LensWidget extends WidgetType {
     return button;
   }
 
-  ignoreEvent(): boolean { return false; }
+  ignoreEvent(): boolean { return true; }
 }
 
 class PeekWidget extends WidgetType {
@@ -104,7 +104,7 @@ class PeekWidget extends WidgetType {
     return panel;
   }
 
-  ignoreEvent(): boolean { return false; }
+  ignoreEvent(): boolean { return true; }
 }
 
 const codeLensBaseTheme = EditorView.baseTheme({
@@ -256,7 +256,7 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
           return;
         }
         if (!row.request || !options.onReferences) return;
-        void this.openReferences(row.request);
+        this.view.dispatch({ effects: showCodeMirrorReferences.of(row.request) });
       };
 
       private async openReferences(request: SourceLookupRequest): Promise<void> {

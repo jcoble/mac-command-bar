@@ -51,18 +51,6 @@ test('warming a project is behind that project switch', () => {
   );
 });
 
-test('turning the switch on asks for the open file language server', () => {
-  const on = panelSource.slice(
-    panelSource.indexOf('async function switchLanguageIntelligence'),
-    panelSource.indexOf('/** Keep the lookup service pointed')
-  );
-  assert.match(
-    on,
-    /queueLanguageIntelligenceOwner\(\s*root,\s*enabled,\s*enabled \? activeFileLanguage\(\) : null,\s*true\s*\)/,
-    'the language of the file on screen is what the desktop app starts a server for'
-  );
-});
-
 test('the editor waits for backend workspace ownership before connecting Roslyn', () => {
   assert.match(panelSource, /let backendOwnerRoot = \$state<string \| null>\(null\)/);
   assert.match(
@@ -119,7 +107,6 @@ test('the switch is the kit component in the editor status bar', () => {
 
 test('flipping the global switch uses the shared async language-server controller', () => {
   assert.match(controlsSource, /await setLanguageServersEnabled\(enabled\)/);
-  assert.match(controlsSource, /requestLanguageIntelligence\(enabled\)/);
   assert.match(controlsSource, /onCheckedChange=\{\(checked\) => void chooseMode\(checked\)\}/);
 });
 

@@ -33,6 +33,8 @@ assert.match(
 );
 assert.match(client, /ensureNativeCsharpLanguageClientFromTauri\(requestedRoot\)/);
 assert.match(client, /markNativeCsharpLanguageClientReadyFromTauri\(requestedRoot\)/);
+assert.match(client, /'textDocument\/references'/);
+assert.match(client, /export async function findCsharpReferenceLocations/);
 assert.match(client, /activeSession\?\.dispose\(\)/);
 assert.match(client, /client\?\.disconnect\(\)/);
 assert.match(client, /socket\?\.close\(\)/);
@@ -40,9 +42,9 @@ assert.doesNotMatch(client, /monaco|LanguageClientWrapper|fallback/i);
 assert.doesNotMatch(client, /(?:document|result)(?:Cache|Map|State)/i);
 
 assert.match(editor, /languageServerRoot/);
-assert.match(editor, /connectCodeMirrorCsharpClient\(root\)/);
+assert.match(editor, /connectCodeMirrorCsharpClient\(root, onLanguageServerReady\)/);
 assert.match(editor, /intelligence\.reconfigure\(extension\)/);
-assert.match(editor, /intelligence\.reconfigure\(extension\)[\s\S]*onLanguageServerReady\?\.\(\)/);
+assert.match(client, /markNativeCsharpLanguageClientReadyFromTauri\(requestedRoot\)[\s\S]*onReady\?\.\(\)/);
 assert.match(
   editor,
   /key: 'F12'[\s\S]*if \(officialLspExpected\(\)\) return false;[\s\S]*navigate\('definition'\)/,

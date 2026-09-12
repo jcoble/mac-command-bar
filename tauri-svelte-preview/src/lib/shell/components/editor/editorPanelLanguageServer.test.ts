@@ -153,7 +153,7 @@ test('the mode choice uses the shared async controller', () => {
   assert.match(controlsSource, /await setLanguageServersEnabled\(enabled\)/);
   assert.match(
     controlsSource,
-    /if \(result\.supported\) \{[\s\S]*?settings\.intelligence\.languageServers = enabled;[\s\S]*?requestLanguageIntelligence\(enabled\);[\s\S]*?\}/,
+    /if \(result\.supported\) \{[\s\S]*?settings\.intelligence\.languageServers = enabled;[\s\S]*?\}/,
     'unsupported builds must not change the saved mode'
   );
 });

@@ -758,7 +758,7 @@
     requestedLspKey = key;
     const generation = ++lspGeneration;
     setNativeCsharpActiveRoot(root);
-    const session = connectCodeMirrorCsharpClient(root);
+    const session = connectCodeMirrorCsharpClient(root, onLanguageServerReady);
     lspSession = session;
     view.dispatch({ effects: intelligence.reconfigure([]) });
     view.dispatch(setDiagnostics(view.state, []));
@@ -777,7 +777,6 @@
       requestedLspKey = '';
       loadedLspKey = key;
       view.dispatch({ effects: intelligence.reconfigure(extension) });
-      onLanguageServerReady?.();
     } catch {
       if (generation !== lspGeneration || requestedLspKey !== key) return;
       requestedLspKey = '';
