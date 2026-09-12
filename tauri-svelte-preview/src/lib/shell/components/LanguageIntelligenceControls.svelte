@@ -6,7 +6,8 @@
   import { setLanguageServersEnabled } from '$lib/shell/editor/sourceIntelligence';
   import { readLanguageServerState } from '$lib/shell/components/editor/languageServerStatus';
   import {
-    languageIntelligenceBar
+    languageIntelligenceBar,
+    requestLanguageIntelligence
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
 
   let busy = $state(false);
@@ -20,7 +21,10 @@
     busy = true;
     const result = await setLanguageServersEnabled(enabled);
     if (stopSignal.aborted) return;
-    if (result.supported) settings.intelligence.languageServers = enabled;
+    if (result.supported) {
+      settings.intelligence.languageServers = enabled;
+      requestLanguageIntelligence(enabled);
+    }
     busy = false;
   }
 

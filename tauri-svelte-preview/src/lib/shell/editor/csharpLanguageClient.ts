@@ -58,6 +58,29 @@ async function startCsharpLanguageClient(
     let socketError: Error | null = null;
     const socket = new WebSocket(endpoint.wsUrl);
     state.socket = socket;
+    await new Promise<void>((resolve, reject) => {
+      function cleanup(): void {
+        socket.removeEventListener('open', handleOpen);
+        socket.removeEventListener('error', handleConnectionError);
+        socket.removeEventListener('close', handleConnectionClose);
+      }
+      function handleOpen(): void {
+        cleanup();
+        resolve();
+      }
+      function handleConnectionError(): void {
+        cleanup();
+        reject(new Error('Could not connect to Roslyn.'));
+      }
+      function handleConnectionClose(): void {
+        cleanup();
+        reject(new Error('The Roslyn connection closed before it was ready.'));
+      }
+      socket.addEventListener('open', handleOpen, { once: true });
+      socket.addEventListener('error', handleConnectionError, { once: true });
+      socket.addEventListener('close', handleConnectionClose, { once: true });
+    });
+    if (state.disposed) throw new Error('The C# client left the visible editor.');
     function handleSocketError(): void {
       socketError = new Error('Could not connect to Roslyn.');
     }

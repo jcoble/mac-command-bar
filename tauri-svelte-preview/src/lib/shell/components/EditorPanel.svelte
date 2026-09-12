@@ -195,7 +195,7 @@
   /** True while a switch is being acted on, so it cannot be flipped twice. */
   let languageIntelligenceBusy = $state(false);
   let nativeCsharpRoot: string | null = null;
-  let backendOwnerRoot: string | null = null;
+  let backendOwnerRoot = $state<string | null>(null);
   let requestedOwnerKey: string | null = null;
   let ownerSelectionGeneration = 0;
   let ownerTransitionTail: Promise<void> = Promise.resolve();
@@ -281,6 +281,10 @@
       && settings.intelligence.languageServers
       && activeServerEnabled === true
   );
+  const activeLanguageServerRoot = $derived.by(() => {
+    const root = activeLanguageRoot();
+    return fullMode && root && backendOwnerRoot === workspaceKey(root) ? root : null;
+  });
   /**
    * The sentence on hover: what the mode means for this project, and the
    * process numbers behind it so they can be found in the resource view.
@@ -480,6 +484,19 @@
     // project or another language must not move this file's chip.
     if (!statusMessageIsAboutThisFile(status, root, language)) return;
     applyLanguageServerStatus(status, { root, language });
+  }
+
+  /** The official CodeMirror client reports this only after Roslyn's ready
+   * handshake succeeds, so do not let an older in-flight status read keep the
+   * bottom switch yellow. */
+  function handleLanguageServerReady(): void {
+    const root = editorState.projectRoot;
+    const language = activeFileLanguage();
+    if (!root || !language) return;
+    applyLanguageServerStatus(
+      { root, language, state: 'ready', detail: null },
+      { root, language }
+    );
   }
 
   function handleReferenceCountUpdate(path: string): void {
@@ -908,7 +925,7 @@
   });
 
   $effect(() => {
-    const root = fullMode ? activeLanguageRoot() : null;
+    const root = activeLanguageServerRoot;
     if (root === nativeCsharpRoot) return;
     nativeCsharpRoot = root;
     void publishNativeCsharpActiveRoot(root);
@@ -1734,13 +1751,14 @@
             content={activeFile.draftContent ?? activeFile.preview?.content ?? ''}
             editable={rootAvailable && !activeFileReadOnly && !closeActionBusy}
             visible={showing}
-            languageServerRoot={fullMode ? editorState.projectRoot : null}
+            languageServerRoot={activeLanguageServerRoot}
             loading={activeFile.loading}
             targetLine={activeFile.targetLine}
             targetLineRequestId={activeFile.targetLineRequestId}
             externalDiagnostics={activeFileReadOnly ? NO_DIAGNOSTICS : diagnosticsByPath[activeFile.path] ?? NO_DIAGNOSTICS}
             {restoredViewStates}
             onExternalNavigation={activeFileReadOnly ? undefined : navigateToExternalSource}
+            onLanguageServerReady={handleLanguageServerReady}
             onContentChange={activeFileReadOnly ? undefined : updateActiveDraft}
             onRestoredViewStateConsumed={consumeRestoredViewState}
             onSaveRequest={() => void saveActiveFile()}

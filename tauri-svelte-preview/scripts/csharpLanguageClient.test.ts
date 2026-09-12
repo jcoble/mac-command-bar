@@ -26,6 +26,11 @@ assert.match(
   'the official client should own completion, hover, formatting, rename, definition, references, signature help, and diagnostics'
 );
 assert.match(client, /new WebSocket\(endpoint\.wsUrl\)/);
+assert.match(
+  client,
+  /new WebSocket\(endpoint\.wsUrl\)[\s\S]*await new Promise<void>[\s\S]*addEventListener\('open'[\s\S]*new LSPClient/,
+  'the official client should wait for the Roslyn WebSocket to open before sending initialization'
+);
 assert.match(client, /ensureNativeCsharpLanguageClientFromTauri\(requestedRoot\)/);
 assert.match(client, /markNativeCsharpLanguageClientReadyFromTauri\(requestedRoot\)/);
 assert.match(client, /activeSession\?\.dispose\(\)/);
@@ -37,6 +42,7 @@ assert.doesNotMatch(client, /(?:document|result)(?:Cache|Map|State)/i);
 assert.match(editor, /languageServerRoot/);
 assert.match(editor, /connectCodeMirrorCsharpClient\(root\)/);
 assert.match(editor, /intelligence\.reconfigure\(extension\)/);
+assert.match(editor, /intelligence\.reconfigure\(extension\)[\s\S]*onLanguageServerReady\?\.\(\)/);
 assert.match(
   editor,
   /key: 'F12'[\s\S]*if \(officialLspExpected\(\)\) return false;[\s\S]*navigate\('definition'\)/,
@@ -44,7 +50,7 @@ assert.match(
 );
 assert.match(
   editor,
-  /key: 'Shift-F12'[\s\S]*if \(officialLspExpected\(\)\) return false;[\s\S]*navigate\('references'\)/,
+  /key: 'Shift-F12'[\s\S]*if \(officialLspExpected\(\)\) return false;[\s\S]*peekReferences\(\)/,
   'official C# LSP should receive Shift-F12 before callback intelligence'
 );
 assert.match(editor, /function clearLspSupport\(disposeClient = true\)/);
@@ -69,6 +75,8 @@ assert.match(
   'a current failed official client load should restore callback intelligence and diagnostics'
 );
 assert.match(editor, /if \(visible\)[\s\S]*loadVisibleLspSupport\(\)[\s\S]*else \{[\s\S]*clearLspSupport\(\)/);
-assert.match(panel, /languageServerRoot=\{fullMode \? editorState\.projectRoot : null\}/);
+assert.match(panel, /languageServerRoot=\{activeLanguageServerRoot\}/);
+assert.match(panel, /onLanguageServerReady=\{handleLanguageServerReady\}/);
+assert.match(panel, /state: 'ready'/);
 
 console.log('official CodeMirror C# language client contract tests passed');

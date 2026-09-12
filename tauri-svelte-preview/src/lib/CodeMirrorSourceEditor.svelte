@@ -115,6 +115,7 @@
     onWorkspaceEditAction?: (action: SourceCodeAction) => void | Promise<void>;
     onRestoredViewStateConsumed?: (path: string) => void;
     onExternalNavigation?: (request: { path: string; line: number; column: number }) => void | Promise<void>;
+    onLanguageServerReady?: () => void;
     onSaveRequest?: () => void;
     onSymbolsChange?: (symbols: SourceSymbol[]) => void;
     onDotnetBuildRequest?: () => void | Promise<void>;
@@ -137,6 +138,7 @@
     onCompletionLookup,
     onDefinitionLookup,
     onExternalNavigation,
+    onLanguageServerReady,
     onHoverLookup,
     onCodeLensAnchorLookup,
     onReferenceLookup,
@@ -775,6 +777,7 @@
       requestedLspKey = '';
       loadedLspKey = key;
       view.dispatch({ effects: intelligence.reconfigure(extension) });
+      onLanguageServerReady?.();
     } catch {
       if (generation !== lspGeneration || requestedLspKey !== key) return;
       requestedLspKey = '';
