@@ -2794,27 +2794,42 @@ pub(crate) fn read_source_git_diff_sync(
 ) -> Result<SourceGitDiff, String> {
     validate_git_root(&root)?;
 
-    let path_metadata = std::fs::metadata(&path)
-        .map_err(|error| format!("Could not read source path metadata: {error}"))?;
-    if !path_metadata.is_file() {
-        return Err("Source path is not a file".to_string());
-    }
-
     let canonical_root = std::fs::canonicalize(&root)
         .map_err(|error| format!("Could not resolve Git root: {error}"))?;
-    let canonical_path = std::fs::canonicalize(&path)
-        .map_err(|error| format!("Could not resolve source path: {error}"))?;
-    let root_string = normalized_path_string(&canonical_root);
-    let path_string = normalized_path_string(&canonical_path);
-    if !path_is_within(&path_string, &root_string) {
-        return Err("Source path is outside Git root".to_string());
-    }
-
-    let relative_path = canonical_path
-        .strip_prefix(&canonical_root)
-        .map_err(|error| format!("Could not derive source relative path: {error}"))?
-        .to_string_lossy()
-        .replace('\\', "/");
+    let (relative_path, worktree_path) = match std::fs::metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err("Source path is not a file".to_string());
+            }
+            let canonical_path = std::fs::canonicalize(&path)
+                .map_err(|error| format!("Could not resolve source path: {error}"))?;
+            let root_string = normalized_path_string(&canonical_root);
+            let path_string = normalized_path_string(&canonical_path);
+            if !path_is_within(&path_string, &root_string) {
+                return Err("Source path is outside Git root".to_string());
+            }
+            let relative_path = canonical_path
+                .strip_prefix(&canonical_root)
+                .map_err(|error| format!("Could not derive source relative path: {error}"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            (relative_path, canonical_path)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let relative_path = path
+                .strip_prefix(&root)
+                .or_else(|_| path.strip_prefix(&canonical_root))
+                .map_err(|_| "Source path is outside Git root".to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !is_safe_git_relative_path(&relative_path) {
+                return Err("Source path is outside Git root".to_string());
+            }
+            let worktree_path = canonical_root.join(&relative_path);
+            (relative_path, worktree_path)
+        }
+        Err(error) => return Err(format!("Could not read source path metadata: {error}")),
+    };
     let status = read_source_git_status(&canonical_root, &relative_path)?;
     let staged_diff = run_git_text(
         &canonical_root,
@@ -2838,7 +2853,7 @@ pub(crate) fn read_source_git_diff_sync(
             modified_content: None,
         }
     } else {
-        git_diff_models::working_tree_models(&canonical_root, &relative_path, &canonical_path)?
+        git_diff_models::working_tree_models(&canonical_root, &relative_path, &worktree_path)?
     };
     let status = if status.is_empty() && !diff.is_empty() {
         "modified".to_string()
@@ -7084,6 +7099,41 @@ mod tests {
         assert!(!diff.is_binary);
         assert!(diff.diff.contains("-export const value = 1;"));
         assert!(diff.diff.contains("+export const value = 2;"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_git_diff_reads_deleted_file_from_head() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let file_path = root.join("TODO.md");
+        std::fs::write(&file_path, "one\ntwo\n").unwrap();
+
+        run_git_for_test(&root, &["init"]);
+        run_git_for_test(&root, &["add", "TODO.md"]);
+        run_git_for_test(
+            &root,
+            &[
+                "-c",
+                "user.name=MacCommandBar Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+        );
+        std::fs::remove_file(&file_path).unwrap();
+
+        let diff = read_source_git_diff_sync(root.clone(), file_path).unwrap();
+
+        assert_eq!(diff.relative_path, "TODO.md");
+        assert_eq!(diff.status, "deleted");
+        assert_eq!(diff.original_content.as_deref(), Some("one\ntwo\n"));
+        assert_eq!(diff.modified_content.as_deref(), Some(""));
+        assert!(diff.diff.contains("-one"));
+        assert!(diff.diff.contains("-two"));
 
         std::fs::remove_dir_all(root).unwrap();
     }

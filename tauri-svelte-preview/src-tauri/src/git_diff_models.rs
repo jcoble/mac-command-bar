@@ -37,8 +37,13 @@ pub(crate) fn commit_models(
 }
 
 fn read_file_text(path: &Path) -> Result<Option<String>, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("Could not read Git diff model from disk: {error}"))?;
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Some(String::new()))
+        }
+        Err(error) => return Err(format!("Could not read Git diff model from disk: {error}")),
+    };
     Ok(bounded_text(bytes))
 }
 

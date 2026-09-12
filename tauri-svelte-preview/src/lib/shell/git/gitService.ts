@@ -57,7 +57,6 @@ import {
 import {
   clearSelectedGitFile,
   gitPanel,
-  isGitFileDeleted,
   resetGitPanelState,
   type GitActionKind,
   type GitPanelState
@@ -501,15 +500,6 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.selectedDiff = null;
     state.diffError = '';
     publishGitDiagnostics();
-
-    if (isGitFileDeleted(file)) {
-      // The diff command reads the file off disk first, so a deleted file always
-      // fails there. Say what happened instead of showing its error.
-      diffGuard.invalidate();
-      state.diffLoading = false;
-      state.diffError = 'This file was deleted, so there is nothing on disk to compare.';
-      return;
-    }
 
     const id = diffGuard.next();
     state.diffLoading = true;
