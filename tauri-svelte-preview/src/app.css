@@ -273,17 +273,17 @@ textarea,
  * They live here as global rules (same pattern as the BrowserPanel dock shells
  * above). Extracted from `+page.svelte` with the ActivityWorktreesPanel markup;
  * the worktree arms were the only ones removed from the page's shared multi-panel
- * `:has(.row-action-menu)` groups — the other panels' arms stay in `+page.svelte`.
+ * `.menu-open` groups — the other panels' arms stay in `+page.svelte`.
  * ------------------------------------------------------------------ */
-.activity-panel-list .activity-worktree-row:has(.row-action-menu) {
+.activity-panel-list .activity-worktree-row.menu-open {
   align-items: start;
 }
 
-.activity-panel-list .worktree-activity-actions:has(.row-action-menu) {
+.activity-panel-list .worktree-activity-actions.menu-open {
   display: contents;
 }
 
-.activity-panel-list .worktree-activity-actions:has(.row-action-menu) > button {
+.activity-panel-list .worktree-activity-actions.menu-open > button {
   grid-column: 3;
   grid-row: 1;
   justify-self: end;
@@ -511,7 +511,7 @@ textarea,
  *
  * Only the bare bases are globalized. Descendant/compound rules that qualify
  * these classes (`.activity-row-main strong`, `.activity-row-actions button`,
- * `.row-action-menu button`, the `.activity-panel-list .X:has(.row-action-menu)`
+ * `.row-action-menu button`, the `.activity-panel-list .X.menu-open`
  * reflow rules, the `.activity-panel-list .row-action-menu { position: static }`
  * override, and the `.git-task-link` ancestor combos) stay scoped where they
  * are — they layer on top of these globals and several are grouped with

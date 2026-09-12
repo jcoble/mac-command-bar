@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MacCommandBar Webview Preview",
+  "productName": "Assembly",
   "version": "0.1.0",
   "identifier": "dev.blackcolours.MacCommandBarWebviewPreview",
   "build": {
@@ -13,11 +13,13 @@
     "windows": [
       {
         "label": "main",
-        "title": "MacCommandBar Webview Preview",
+        "title": "Assembly",
         "width": 1600,
         "height": 1000,
         "minWidth": 900,
-        "minHeight": 600
+        "minHeight": 600,
+        "url": "/next",
+        "dragDropEnabled": false
       }
     ],
     "security": {

@@ -41,7 +41,7 @@
     "test:tauri-source": "node --experimental-strip-types scripts/tauriSource.test.mjs",
     "test:tauri-config": "node scripts/tauriDevConfig.test.mjs",
     "test:tauri-app": "pnpm test:tauri-source && pnpm test:tauri-config && pnpm build && pnpm test:native-lsp && cargo build --manifest-path src-tauri/Cargo.toml",
-    "test:native-lsp": "MCB_RUN_CSHARP_LSP_SMOKE=1 cargo test --manifest-path src-tauri/Cargo.toml lsp -- --nocapture",
+    "test:native-lsp": "cargo test --manifest-path src-tauri/Cargo.toml lsp -- --nocapture",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:dev:attach": "tauri dev --config src-tauri/tauri.dev.attach.conf.json",

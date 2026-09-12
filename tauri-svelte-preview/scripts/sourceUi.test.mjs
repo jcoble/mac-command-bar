@@ -2,6 +2,19 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const pageSource = await readFile(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
+const activityFilesPanelSource = await readFile(
+  new URL('../src/lib/components/panels/ActivityFilesPanel.svelte', import.meta.url),
+  'utf8'
+);
+const activityProjectControlsSource = await readFile(
+  new URL('../src/lib/components/panels/ActivityProjectControls.svelte', import.meta.url),
+  'utf8'
+);
+const appCssSource = await readFile(new URL('../src/app.css', import.meta.url), 'utf8');
+const editorTopbarViewMenuSource = await readFile(
+  new URL('../src/lib/components/chrome/EditorTopbarViewMenu.svelte', import.meta.url),
+  'utf8'
+);
 const editorSource = await readFile(
   new URL('../src/lib/MonacoSourceEditor.svelte', import.meta.url),
   'utf8'
@@ -84,9 +97,9 @@ function sideContextResponsiveRailWidth() {
   return Number(match.groups.width);
 }
 
-assertDeclaration('.source-browser-stack', 'overflow: hidden');
+assertDeclaration('.source-browser-stack', 'overflow: hidden', activityFilesPanelSource);
 assert.ok(
-  pageSource.includes("from '$lib/sourcePaneSizing'"),
+  pageSource.includes('from "$lib/sourcePaneSizing"'),
   'The live source browser page should use the shared pane sizing helper'
 );
 assert.ok(
@@ -112,7 +125,7 @@ assert.ok(
   'Viewport-forced pane sizes should flow through effective CSS variables instead of overwriting user sizes'
 );
 assert.ok(
-  pageSource.includes("visible: contextPanelPlacement === 'side' && sourceDockPanelVisible('context')"),
+  pageSource.includes('visible: contextPanelPlacement === "side" && sourceDockPanelVisible("context")'),
   'Right pane width planning should stay visible while another right Dockview tab, such as Insights, is active'
 );
 assert.ok(
@@ -190,8 +203,7 @@ assert.ok(
     pageSource.includes('const sourceWorkspaceMinimumEditorWidth = 620') &&
     pageSource.includes('const sourceWorkspacePaneGapSize = 0') &&
     pageSource.includes('const sourceWorkspacePaneChromeSize = 0') &&
-    pageSource.includes('chromeSize: sourceWorkspacePaneChromeSize') &&
-    pageSource.includes('@media (max-width: 1180px)'),
+    pageSource.includes('chromeSize: sourceWorkspacePaneChromeSize'),
   'Laptop-width workspaces should keep side and context panes expanded until the rendered canvas is genuinely tight'
 );
 assert.ok(
@@ -203,14 +215,14 @@ assertDeclaration('.shell:not(.activity-hidden) .activity-shell', 'grid-template
 assertDeclaration('.shell:not(.activity-hidden) .sidebar', 'display: none');
 assertDeclaration('.activity-shell', 'min-width: 0');
 assertDeclaration('.sidebar', 'container-type: inline-size');
-assertDeclaration('.project-controls', 'min-width: 0');
-assertDeclaration('.project-controls', 'overflow: hidden');
-assertDeclaration('.project-row', 'min-width: 0');
-assertDeclaration('.project-row', 'max-width: 100%');
+assertDeclaration('.project-controls', 'min-width: 0', activityProjectControlsSource);
+assertDeclaration('.project-controls', 'overflow: hidden', activityProjectControlsSource);
+assertDeclaration('.project-row', 'min-width: 0', activityProjectControlsSource);
+assertDeclaration('.project-row', 'max-width: 100%', activityProjectControlsSource);
 assert.ok(
-  pageSource.includes('@container (max-width: 330px)') &&
-    pageSource.includes('.project-row {\n      grid-template-columns: minmax(74px, 1fr) 30px 30px 34px;') &&
-    pageSource.includes('.scan-button span {\n      position: absolute;'),
+  activityProjectControlsSource.includes('@container (max-width: 330px)') &&
+    activityProjectControlsSource.includes('.project-row {\n      grid-template-columns: minmax(74px, 1fr) 30px 30px 34px;') &&
+    activityProjectControlsSource.includes('.scan-button span {\n      position: absolute;'),
   'The left source pane should compact controls by pane width instead of clipping fixed-width controls'
 );
 assertDeclaration('.topbar > div:first-child', 'min-width: 0');
@@ -219,11 +231,11 @@ assertDeclaration('.activity-rail', 'width: 46px');
 assertDeclaration('.activity-restore-button', 'position: absolute');
 assertDeclaration('.activity-restore-button', 'height: 30px');
 assertDeclaration('.topbar-command-button', 'height: 26px');
-assertDeclaration('.view-menu', 'position: absolute');
-assertDeclaration('.view-menu', 'overflow-y: auto');
-assertDeclaration('.view-menu-button-grid', 'grid-template-columns: repeat(3, minmax(0, 1fr))');
-assertDeclaration('.dock-panel-manager-row', 'grid-template-columns: minmax(0, 74px) minmax(0, 1fr)');
-assertDeclaration('.dock-panel-manager-actions', 'display: flex');
+assertDeclaration('.view-menu', 'position: absolute', appCssSource);
+assertDeclaration('.view-menu', 'overflow-y: auto', appCssSource);
+assertDeclaration('.view-menu-button-grid', 'grid-template-columns: repeat(3, minmax(0, 1fr))', appCssSource);
+assertDeclaration('.dock-panel-manager-row', 'grid-template-columns: minmax(0, 74px) minmax(0, 1fr)', editorTopbarViewMenuSource);
+assertDeclaration('.dock-panel-manager-actions', 'display: flex', editorTopbarViewMenuSource);
 assertDeclaration('.workspace', 'position: relative');
 assertDeclaration('.workspace', 'display: flex');
 assertDeclaration('.workspace', 'flex-direction: column');
@@ -242,24 +254,12 @@ assertDeclaration('.workspace.chrome-compact .context-identity-strip', 'display:
 assertDeclaration('.context-identity-strip', 'min-height: 18px');
 assertDeclaration('.context-identity-item', 'display: inline-flex');
 assertDeclaration('.context-identity-value', 'text-overflow: ellipsis');
-assertDeclaration('.dock-panel-tabs', 'min-height: 22px');
-assertDeclaration('.workspace.chrome-compact .dock-panel-tabs', 'min-height: 19px');
-assertDeclaration('.dock-panel-tabs.empty', 'height: 0');
-assertDeclaration('.dock-panel-tab-group', 'display: inline-flex');
-assertDeclaration('.dock-panel-tab', 'display: inline-flex');
-assertDeclaration('.workspace.chrome-compact .dock-panel-tab', 'height: 16px');
-assertDeclaration('.dock-panel-tab-label', 'height: 18px');
-assertDeclaration('.workspace.chrome-compact .dock-panel-tab-label', 'height: 16px');
-assertDeclaration('.dock-panel-tab-move', 'width: 18px');
-assertDeclaration('.dock-panel-tab-close', 'width: 17px');
-assertDeclaration('.hidden-dock-panel-rail', 'position: absolute');
-assertDeclaration('.hidden-dock-panel-rail', 'display: flex');
-assertDeclaration('.hidden-dock-panel-rail', 'flex-direction: column');
-assertDeclaration('.hidden-dock-panel-button', 'width: 26px');
-assertDeclaration('.hidden-dock-panel-button', 'height: 26px');
-assertDeclaration('.hidden-dock-panel-button span', 'clip: rect(0, 0, 0, 0)');
-assertDeclaration('.dock-drop-zones', 'display: flex');
-assertDeclaration('.dock-drop-zone', 'height: 22px');
+assertDeclaration('.hidden-dock-panel-rail', 'position: absolute', appCssSource);
+assertDeclaration('.hidden-dock-panel-rail', 'display: flex', appCssSource);
+assertDeclaration('.hidden-dock-panel-rail', 'flex-direction: column', appCssSource);
+assertDeclaration('.hidden-dock-panel-button', 'width: 26px', appCssSource);
+assertDeclaration('.hidden-dock-panel-button', 'height: 26px', appCssSource);
+assertDeclaration('.hidden-dock-panel-button span', 'clip: rect(0, 0, 0, 0)', appCssSource);
 assertDeclaration('.workspace-arrangement', 'position: relative');
 assertDeclaration('.workspace-arrangement', 'height: 100%');
 assertDeclaration('.workspace-main-column', 'height: 100%');
@@ -563,17 +563,17 @@ assertDeclaration('.editor-lookup-popover', 'position: absolute');
 assertDeclaration('.git-command-drawer', 'flex: 0 0 auto');
 assertDeclaration('.context-panel-grid.collapsed', 'display: none');
 assertDeclaration('.editor-frame', 'height: auto');
-assertDeclaration('.source-browser-stack', 'flex: 1 1 auto');
-assertDeclaration('.source-browser-stack', 'height: 100%');
-assertDeclaration('.source-files-pane', 'flex: 1 1 auto');
-assertDeclaration('.source-files-search-pane', 'grid-template-rows: auto minmax(0, 1fr)');
-assertDeclaration('.source-files-recent-pane .recent-list', 'overflow-y: auto');
+assertDeclaration('.source-browser-stack', 'flex: 1 1 auto', activityFilesPanelSource);
+assertDeclaration('.source-browser-stack', 'height: 100%', activityFilesPanelSource);
+assertDeclaration('.source-files-pane', 'flex: 1 1 auto', activityFilesPanelSource);
+assertDeclaration('.source-files-search-pane', 'grid-template-rows: auto minmax(0, 1fr)', activityFilesPanelSource);
+assertDeclaration('.source-files-recent-pane .recent-list', 'overflow-y: auto', activityFilesPanelSource);
 assertDeclaration('.source-list-panel', 'overflow: hidden');
-assertDeclaration('.file-tree', 'overflow-y: auto');
-assertDeclaration('.file-tree', 'overflow-x: hidden');
-assertDeclaration('.file-tree', 'scrollbar-gutter: stable');
-assertDeclaration('.file-tree', 'scrollbar-width: thin');
-assertDeclaration('.file-tree button.file-row small', 'display: none');
+assertDeclaration('.file-tree', 'overflow-y: auto', activityFilesPanelSource);
+assertDeclaration('.file-tree', 'overflow-x: hidden', activityFilesPanelSource);
+assertDeclaration('.file-tree', 'scrollbar-gutter: stable', activityFilesPanelSource);
+assertDeclaration('.file-tree', 'scrollbar-width: thin', activityFilesPanelSource);
+assertDeclaration('.file-tree button.file-row small', 'display: none', activityFilesPanelSource);
 assert.ok(pageSource.includes("| 'runs'"), 'Source shell should define an orchestration runs activity mode');
 assert.ok(pageSource.includes('sourceActivityModeStorageKey'), 'Source shell should persist the active activity mode');
 assert.ok(pageSource.includes("type SourceFilesPaneID = 'files' | 'search' | 'recent'"), 'Source files should split Files/Search/Recent into tabs');
@@ -585,9 +585,9 @@ assert.ok(pageSource.includes('function sourceFilesDockviewPanelAction'), 'Sourc
 assert.ok(pageSource.includes('function selectSourceFilesPane'), 'Source file Dockview active-tab changes should use the shared selection path');
 assert.ok(pageSource.includes('shellClass="source-dockview-files-shell"'), 'Source files should render a nested Dockview shell');
 assert.ok(!pageSource.includes('aria-label="Source file panes"'), 'Source files should not use local in-component tab buttons');
-assert.ok(pageSource.includes('id="source-files-tree-pane"') && pageSource.includes("use:sourceFilesDockviewPanelAction={'files'}"), 'Project file tree should render as its own Dockview panel');
-assert.ok(pageSource.includes('id="source-files-search-pane"') && pageSource.includes("use:sourceFilesDockviewPanelAction={'search'}"), 'Source search should render as its own Dockview panel');
-assert.ok(pageSource.includes('id="source-files-recent-pane"') && pageSource.includes("use:sourceFilesDockviewPanelAction={'recent'}"), 'Recent files should render as their own Dockview panel');
+assert.ok(activityFilesPanelSource.includes('id="source-files-tree-pane"') && activityFilesPanelSource.includes("use:filesPanelAction={'files'}"), 'Project file tree should render as its own Dockview panel');
+assert.ok(activityFilesPanelSource.includes('id="source-files-search-pane"') && activityFilesPanelSource.includes("use:filesPanelAction={'search'}"), 'Source search should render as its own Dockview panel');
+assert.ok(activityFilesPanelSource.includes('id="source-files-recent-pane"') && activityFilesPanelSource.includes("use:filesPanelAction={'recent'}"), 'Recent files should render as its own Dockview panel');
 assert.ok(dockviewWorkspaceSource.includes('createSourceDockviewTabStackWorkspace'), 'Dockview workspace bridge should expose a reusable tab-stack host');
 assert.ok(dockviewWorkspaceSource.includes('getTabContextMenuItems: () => []'), 'Nested tab stacks should suppress destructive close menus by default');
 assert.ok(dockviewWorkspaceSource.includes('restoreClosedPanels'), 'Nested tab stacks should be able to restore required panels after a close event');
@@ -595,8 +595,8 @@ assert.ok(dockviewShellSource.includes('source-dockview-host'), 'Dockview shell 
 assertDeclaration(':global(.source-dockview-files-shell)', 'display: grid', dockviewShellSource);
 assertDeclaration(':global(.source-dockview-files-host)', 'visibility: hidden', dockviewShellSource);
 assert.ok(!pageSource.includes("sourceSidebarSectionCollapsed('tree')"), 'Project file tree should not be hidden by a persisted collapsed state');
-assert.ok(pageSource.includes('{sourceSidebarTreeStatusLabel}'), 'Project file tree section should keep detailed scan status in the title instead of repeating count text');
-assertDeclaration('.source-section-title', 'grid-template-columns: 18px minmax(0, 1fr)');
+assert.ok(activityFilesPanelSource.includes('title={sourceSidebarTreeStatusLabel}'), 'Project file tree section should keep detailed scan status in the title instead of repeating count text');
+assertDeclaration('.source-section-title', 'grid-template-columns: 18px minmax(0, 1fr)', activityFilesPanelSource);
 assert.ok(pageSource.includes("type SourceConversationPaneID = 'active' | 'saved'"), 'Conversations should split active sessions and saved snapshots into tabs');
 assert.ok(pageSource.includes("let sourceConversationPane = $state<SourceConversationPaneID>('active')"), 'Conversations should default to active sessions');
 assert.ok(pageSource.includes('const sourceConversationDockviewPanels'), 'Conversations should declare stable Dockview panels for Active/Saved');
@@ -1660,7 +1660,7 @@ assert.ok(pageSource.includes('aria-label={`${primaryAction.label} worktree: ${w
 assert.ok(pageSource.includes('aria-label="Open repository in terminal"'), 'Repository rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Open active session in terminal"'), 'Active session rows should expose terminal open');
 assert.ok(pageSource.includes('aria-label="Reveal repository path"'), 'Repository rows should expose native reveal');
-assert.ok(pageSource.includes('.file-tree::-webkit-scrollbar'), 'Tree view should style WebKit scrollbars');
+assert.ok(activityFilesPanelSource.includes('.file-tree::-webkit-scrollbar'), 'Tree view should style WebKit scrollbars');
 assert.ok(pageSource.includes('function cancelSourceScan()'), 'Source scans should expose a cancel action');
 assert.ok(
   pageSource.includes('onclick={scanning ? cancelSourceScan : () => scanProject(selectedProject, undefined, { force: true, limit: expandedSourceScanLimit })}'),

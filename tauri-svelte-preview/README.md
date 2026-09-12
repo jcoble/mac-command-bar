@@ -47,7 +47,10 @@ pnpm test:native-lsp
 
 Monaco is the default source surface, so the prototype now exercises a real editor viewport instead of static highlighted HTML. The current build intentionally accepts Monaco's large editor chunks for this visual comparison; production would lazy-load the editor route and add language intelligence only where needed.
 
-`pnpm test:native-lsp` exercises the Rust LSP bridge directly. It uses TypeScript and C# scratch workspaces and verifies symbols, hover, definition, references, and diagnostics against the same registry used by the Tauri commands.
+`pnpm test:native-lsp` exercises the Rust LSP bridge directly. It verifies the legacy
+TypeScript, Svelte, and Rust request path plus the native C# bridge lifecycle. C# editor
+intelligence runs through Monaco's VS Code-compatible language client and is verified in
+the desktop app rather than by the retired direct-stdio client.
 
 ## Orchestration Events
 

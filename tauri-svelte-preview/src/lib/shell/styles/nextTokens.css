@@ -17,7 +17,7 @@
  * WHERE IT APPLIES (both selectors are needed)
  *   .next-shell               — the shell element and everything
  *                               rendered inside it.
- *   :root:has(.next-shell)    — the whole document while the /next
+ *   :root.next-shell-active   — the whole document while the /next
  *                               shell is mounted. Dialogs, menus
  *                               and popovers from bits-ui are moved
  *                               ("portaled") to the end of <body>,
@@ -27,9 +27,8 @@
  *                               /next and the old page are separate
  *                               routes and never mounted together,
  *                               so this cannot recolor the old shell.
- * The two are written as one `:is(...)` list on purpose: `:is()`
- * quietly drops any part a browser does not understand, so on an
- * engine without `:has()` the `.next-shell` part still works.
+ * The route adds and removes `next-shell-active` when it mounts and
+ * unmounts, avoiding an ancestor-dependent selector on every DOM update.
  *
  * SCOPE: colors and elevation only. Spacing, font sizes, weights
  * and radii are identical in both shells and keep coming from
@@ -38,7 +37,7 @@
  * invented here.
  * ============================================================ */
 
-:is(:root:has(.next-shell), .next-shell) {
+:is(:root.next-shell-active, .next-shell) {
   /* ------------------------------------------------------------------
    * Background layers — the /next shell's three depths.
    *   bg      the shell backdrop, same value the /next page and the

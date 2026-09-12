@@ -832,6 +832,10 @@
   }
 
   onMount(() => {
+    // Portaled menus and dialogs sit outside `.next-shell`. Mark the document
+    // explicitly while this route is mounted so their theme does not require
+    // the browser to re-scan the entire tree through ancestor-dependent selectors.
+    document.documentElement.classList.add('next-shell-active');
     // First, and synchronous: it only touches the DOM, and every panel below
     // paints in the theme it sets.
     applyStoredTheme();
@@ -941,6 +945,7 @@
     window.addEventListener('pagehide', saveOnLeaving);
 
     return () => {
+      document.documentElement.classList.remove('next-shell-active');
       window.removeEventListener('pagehide', saveOnLeaving);
       // Navigating away inside the app ends here instead, and it is the same
       // last chance to remember what the session on screen had open.

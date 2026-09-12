@@ -45,7 +45,8 @@ assert.deepEqual(
     ['context', 'Context', 'source-panel'],
     ['insights', 'Insights', 'source-panel'],
     ['terminal', 'Terminal', 'source-panel'],
-    ['browser', 'Browser', 'source-panel']
+    ['browser', 'Browser', 'source-panel'],
+    ['markdown', 'Markdown', 'source-panel']
   ],
   'Dockview panel descriptors should expose all stable workspace panels'
 );
@@ -320,11 +321,11 @@ assert.deepEqual(
 );
 
 assert.ok(
-  pageSource.includes("import 'dockview-core/dist/styles/dockview.css';"),
+  pageSource.includes('import "dockview-core/dist/styles/dockview.css";'),
   'Source page should load Dockview base CSS'
 );
 assert.ok(
-  pageSource.includes("from '$lib/sourceDockviewWorkspace'"),
+  pageSource.includes('from "$lib/sourceDockviewWorkspace"'),
   'Source page should import the Dockview workspace bridge'
 );
 

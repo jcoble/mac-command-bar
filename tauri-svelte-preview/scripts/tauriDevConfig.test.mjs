@@ -8,6 +8,9 @@ const viteConfigSource = await readFile(new URL('../vite.config.ts', import.meta
 
 assert.equal(defaultConfig.build.beforeDevCommand, 'pnpm dev');
 assert.equal(defaultConfig.build.devUrl, 'http://localhost:5177');
+assert.equal(defaultConfig.productName, 'Assembly');
+assert.equal(defaultConfig.app.windows[0].title, 'Assembly');
+assert.equal(defaultConfig.app.windows[0].url, '/next', 'the bundled app should open the primary shell');
 assert.equal(defaultConfig.app.windows[0].width, 1600, 'native preview should open wide enough for laptop layout work');
 assert.equal(defaultConfig.app.windows[0].height, 1000, 'native preview should open tall enough for docked panes');
 assert.equal(packageJson.scripts['tauri:dev'], 'tauri dev');
