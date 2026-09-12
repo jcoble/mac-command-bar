@@ -861,7 +861,14 @@
     codeLens.of([]),
     codeMirrorSemanticTokens,
     EditorView.domEventHandlers({
-      contextmenu: (_event, editor) => {
+      contextmenu: (event, editor) => {
+        const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
+        const clickedSelection = position !== null && editor.state.selection.ranges.some(
+          (range) => !range.empty && position >= range.from && position <= range.to
+        );
+        if (position !== null && !clickedSelection) {
+          editor.dispatch({ selection: { anchor: position } });
+        }
         const hasSelection = editor.state.selection.ranges.some((range) => !range.empty);
         const hasSymbol = Boolean(lookupRequestAt(editor.state));
         const lspReady = officialLspReady();

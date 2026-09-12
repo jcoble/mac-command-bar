@@ -175,7 +175,11 @@ assert.match(
 );
 assert.match(codeMirrorTheme, /fontVariantLigatures: appearance\.fontLigatures \? 'normal' : 'none'/);
 assert.match(codeMirrorSourceEditor, /<ContextMenu\.Content side="left"[^>]+aria-label="Editor actions"/);
-assert.match(codeMirrorSourceEditor, /contextmenu: \(_event, editor\) =>/);
+assert.match(
+  codeMirrorSourceEditor,
+  /contextmenu: \(event, editor\)[\s\S]*?posAtCoords\([\s\S]*?editor\.dispatch\(\{ selection: \{ anchor: position \} \}\)/,
+  'editor context actions must target the symbol that was right-clicked'
+);
 assert.match(codeMirrorSourceEditor, />Go to Definition<\/ContextMenu\.Item>/);
 assert.match(codeMirrorSourceEditor, />Change All Occurrences<\/ContextMenu\.Item>/);
 assert.match(codeMirrorSourceEditor, />Format Document<\/ContextMenu\.Item>/);
