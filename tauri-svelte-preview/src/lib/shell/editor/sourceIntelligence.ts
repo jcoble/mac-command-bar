@@ -11,11 +11,11 @@
  * (`src/routes/+page.svelte:8446`, `:8486`, `:8548`, `:8607`, `:10104-10214`)
  * with the constitution's rules applied:
  *
- *  - **One native authority.** The desktop editor gets reference results and
- *    counts only from Roslyn. The browser preview still uses the backend's
- *    plain-text scan because it has no language server. The old shell had a
- *    third tier that answered from bundled demo files; /next never invents
- *    results.
+ *  - **One native authority at a time.** With Supercharged enabled, the
+ *    desktop editor gets semantic reference results from the language server.
+ *    With it disabled, Peek References uses the backend's bounded plain-text
+ *    project scan. The old shell had a third tier that answered from bundled
+ *    demo files; /next never invents results.
  *  - **Every backend call is counted** with `countInvoke('<command name>')`
  *    immediately before it, so the dev counter tells the truth.
  *  - **Nothing runs on import.** The first backend call of any kind happens
@@ -57,6 +57,8 @@ import {
 } from '../../sourceData.ts';
 import {
   countSourceReferencesFromTauri,
+  findSourceDefinitionsInRootFromTauri,
+  findSourceReferencesInRootFromTauri,
   findSourceLspCompletionsFromTauri,
   findSourceLspDefinitionsFromTauri,
   findSourceLspDocumentHighlightsFromTauri,
@@ -177,6 +179,8 @@ export function countingReadinessForStatus(
 /** What the editor knows about the spot the user is asking about. */
 export interface SourceLookupRequest {
   symbolName: string;
+  /** Whether this request came from an editor with Supercharged active. */
+  languageServerEnabled?: boolean;
   /** 1-based. */
   line: number;
   /** 1-based. */
@@ -344,7 +348,9 @@ export function createSourceIntelligence(): SourceIntelligence {
     request: SourceLookupRequest
   ): Promise<SourceDefinitionTarget[] | null> {
     const preview = previewWithDraft();
-    if (!preview || !languageIntelligenceAvailable()) return null;
+    if (request.languageServerEnabled === false || !preview || !languageIntelligenceAvailable()) {
+      return null;
+    }
     countInvoke('find_source_lsp_definitions');
     try {
       return await findSourceLspDefinitionsFromTauri(preview, {
@@ -385,7 +391,16 @@ export function createSourceIntelligence(): SourceIntelligence {
     if (!symbolName) return [];
     try {
       const lspTargets = await lspDefinitions(request);
-      return lspTargets ?? [];
+      if (lspTargets?.length) return lspTargets;
+      if (!isNativeTauriRuntime() || !projectRoot) return [];
+      countInvoke('find_source_definitions_in_root');
+      return (
+        (await findSourceDefinitionsInRootFromTauri(
+          projectRoot,
+          symbolName,
+          maxSourceDefinitionResults
+        )) ?? []
+      );
     } catch {
       return [];
     }
@@ -395,6 +410,18 @@ export function createSourceIntelligence(): SourceIntelligence {
     const symbolName = request.symbolName.trim();
     if (!symbolName) return [];
     try {
+      if (request.languageServerEnabled === false) {
+        if (!isNativeTauriRuntime() || !projectRoot) return [];
+        countInvoke('find_source_references_in_root');
+        return (
+          (await findSourceReferencesInRootFromTauri(
+            projectRoot,
+            symbolName,
+            maxSourceReferenceResults
+          )) ?? []
+        );
+      }
+
       // A finished semantic count already obtained the exact targets for this
       // spot. Reuse them instead of sending the same request to the language
       // server again — this is what makes a displayed count clickable now.
@@ -414,7 +441,16 @@ export function createSourceIntelligence(): SourceIntelligence {
         if (semantic) return semantic.targets;
       }
 
-      if (isNativeTauriRuntime()) return [];
+      if (isNativeTauriRuntime() && root) {
+        countInvoke('find_source_references_in_root');
+        return (
+          (await findSourceReferencesInRootFromTauri(
+            root,
+            symbolName,
+            maxSourceReferenceResults
+          )) ?? []
+        );
+      }
       return [];
     } catch {
       return [];

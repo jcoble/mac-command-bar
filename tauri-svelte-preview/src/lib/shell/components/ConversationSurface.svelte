@@ -234,6 +234,10 @@
 
   $effect(() => {
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
+    // A draft becomes visible before its first send has created the native
+    // session. Its selected model/access already live in the draft, so there is
+    // nothing native to read until startup finishes.
+    if (active.source === 'fresh' && active.runtimeState === 'starting') return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     const key = `${ownedId}:${generation}:${conversation.connectionState}`;
@@ -420,13 +424,13 @@
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
     const steering = conversation.sending;
     const text = conversation.draft;
+    const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
+    sendAnchorRequest = {
+      requestId: ++sendAnchorRequestId,
+      conversationId: ownedId,
+      previousUserItemId
+    };
     if (!steering) {
-      const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
-      sendAnchorRequest = {
-        requestId: ++sendAnchorRequestId,
-        conversationId: ownedId,
-        previousUserItemId
-      };
       localTurnActive = true;
       localTurnStarted = false;
     }
@@ -676,6 +680,7 @@
           draft={conversation.draft}
           attachments={conversation.attachments}
           sending={conversation.sending}
+          supportsSteering={conversation.capabilities?.session.steering === true}
           workingPhase={conversation.timelineRevision}
           configState={conversation.agentConfig}
           pendingConfig={conversation.pendingAgentConfig}

@@ -167,14 +167,18 @@
   const restoreScrollTop = initialWorkspaceState?.scrollTop ?? 0;
   let restoreScrollPending = restoreScrollTop > 0;
   let restoredProjectLoaded = false;
-  let loadVersion = 0;
+  // Project paging and card details are independent reads. Sharing one version
+  // let opening a card cancel a still-finishing project refresh, which could
+  // leave the project spinner on screen indefinitely.
+  let historyLoadVersion = 0;
+  let detailLoadVersion = 0;
   let loadStopController = new AbortController();
   type SessionHistoryDetail = Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'>;
   let detailsByKey = $state<Record<string, SessionHistoryDetail>>({});
   let detailLoadingKey = $state<string | null>(null);
 
   function releaseDetails(keys?: ReadonlySet<string>): void {
-    loadVersion += 1;
+    detailLoadVersion += 1;
     if (!keys) {
       detailsByKey = {};
       detailLoadingKey = null;
@@ -189,8 +193,10 @@
   }
 
   function stopHistoryLoads(): void {
+    historyLoadVersion += 1;
     loadStopController.abort();
     loadStopController = new AbortController();
+    loadingProjectKey = null;
     loadingOlder = false;
   }
 
@@ -336,7 +342,7 @@
     releaseDetails();
     const closing = !reload
       && isSessionHistoryGroupOpen(collapseState, 'project', project.key);
-    const version = ++loadVersion;
+    const version = ++historyLoadVersion;
     loadedRecords = [];
     loadOutcome = null;
     checkouts = {};
@@ -363,7 +369,7 @@
           : host.service.refresh(keys, { projectPath: project.path }),
         listRepositoryCheckoutsFromTauri([project.path])
       ]);
-      if (stopSignal.aborted || !visible || version !== loadVersion) {
+      if (stopSignal.aborted || !visible || version !== historyLoadVersion) {
         if (!fullyHeld) host.service.release(keys);
         return;
       }
@@ -381,7 +387,7 @@
       }
       if (outcome.state === 'incomplete' && !reload && host.rescan) {
         await host.rescan();
-        if (!stopSignal.aborted && visible && version === loadVersion) {
+        if (!stopSignal.aborted && visible && version === historyLoadVersion) {
           await toggleProject(project, true);
         }
       }
@@ -389,7 +395,7 @@
       // Cleared whatever happened, and only for the read still in front: a
       // slow project answering after the reader has opened another one must
       // not take that one's spinner away with it.
-      if (version === loadVersion) {
+      if (version === historyLoadVersion) {
         loadingProjectKey = null;
         publishWorkspaceState();
       }
@@ -421,17 +427,17 @@
       .filter((row) => !loadedKeys.has(row.record.key))
       .map((row) => row.record.key));
     if (keys.size === 0) return;
-    const version = ++loadVersion;
+    const version = ++historyLoadVersion;
     try {
       const refreshed = await host.service.refresh(keys, { projectPath: project.path });
-      if (stopSignal.aborted || !visible || version !== loadVersion) return;
+      if (stopSignal.aborted || !visible || version !== historyLoadVersion) return;
       loadedRecords = [...new Map(
         [...loadedRecords, ...refreshed].map((record) => [record.key, record])
       ).values()];
     } catch (error) {
-      if (version === loadVersion) console.error('[history] could not load older sessions', error);
+      if (version === historyLoadVersion) console.error('[history] could not load older sessions', error);
     } finally {
-      if (version === loadVersion) host.service.release(keys);
+      host.service.release(keys);
     }
   }
 
@@ -646,7 +652,7 @@
 
   async function loadCardDetails(record: SessionLibraryRecord): Promise<void> {
     const key = record.key;
-    const version = ++loadVersion;
+    const version = ++detailLoadVersion;
     detailLoadingKey = key;
     const projectPath = record.projectPath?.trim() || record.canonicalCwd.trim();
     try {
@@ -655,7 +661,7 @@
         projectPath ? { projectPath } : undefined,
         { includeDetails: true }
       );
-      if (!visible || version !== loadVersion || expandedKey !== key) {
+      if (!visible || version !== detailLoadVersion || expandedKey !== key) {
         host.service.release(new Set([key]));
         return;
       }
@@ -668,9 +674,9 @@
       }
       host.service.release(new Set([key]));
     } catch (error) {
-      if (version === loadVersion) console.error('[history] could not load session details', error);
+      if (version === detailLoadVersion) console.error('[history] could not load session details', error);
     } finally {
-      if (version === loadVersion) detailLoadingKey = null;
+      if (version === detailLoadVersion) detailLoadingKey = null;
     }
   }
 </script>

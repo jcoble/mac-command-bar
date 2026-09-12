@@ -37,11 +37,13 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
+  import ProviderUpdateControl from '$lib/shell/components/ProviderUpdateControl.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import {
     PROBLEMS_LOCATIONS,
     PROBLEMS_LOCATION_LABELS,
+    defaultSettings,
     resetSettings,
     settings,
     type ProblemsLocation,
@@ -64,6 +66,7 @@
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
   import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
   import { getMonoFont, UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
+  import { applyTerminalSettings } from '$lib/shell/xtermFactory';
   import {
     appUpdateState,
     checkForAppUpdate,
@@ -99,13 +102,6 @@
     { value: 'Menlo', label: 'Menlo' },
     { value: 'Monaco', label: 'Monaco' },
     { value: 'Consolas', label: 'Consolas' }
-  ];
-
-  const terminalThemeItems = [
-    { value: 'dracula', label: 'Dracula' },
-    { value: 'houston', label: 'Houston' },
-    { value: 'solarized-dark', label: 'Solarized Dark' },
-    { value: 'one-dark', label: 'One Dark' }
   ];
 
   // Mirrors the SourceTerminalApp options in +page.svelte.
@@ -234,14 +230,6 @@
       keywords: 'spacing leading'
     },
     {
-      id: 'terminal-theme',
-      section: 'terminal',
-      card: 'Colors',
-      title: 'Color theme',
-      description: 'Palette applied to terminal output.',
-      keywords: 'dracula solarized one dark'
-    },
-    {
       id: 'terminal-cursor-blink',
       section: 'terminal',
       card: 'Behaviour',
@@ -314,6 +302,14 @@
       title: 'Install update',
       description: 'Download, verify, install and restart Assembly.',
       keywords: 'download restart upgrade'
+    },
+    {
+      id: 'provider-updates',
+      section: 'updates',
+      card: 'Provider adapters',
+      title: 'Codex, Claude and Antigravity',
+      description: 'Check for signed adapter updates without replacing Assembly.',
+      keywords: 'agents acp adapters codex claude antigravity update'
     },
     {
       id: 'helper-vendor',
@@ -408,11 +404,6 @@
     // Every id passed below is one of the entries above, so this cannot miss.
     return rows.find((row) => row.id === id)!;
   }
-
-  // Local UI-only toggles (no store field yet) — kept here so the switches are
-  // functional in isolation. Application is a later step.
-  let editorLigatures = $state(false);
-  let terminalCursorBlink = $state(true);
 
   /**
    * What the app said the last time the C# language server was switched. Shown
@@ -577,13 +568,27 @@
       : DEFAULT_THEME_ID
   );
 
-  function resetShownSection(): void {
+  async function resetShownSection(): Promise<void> {
     if (!shownSection) return;
-    resetSettings(shownSection.id as SettingsSection);
+    if (shownSection.id === 'general') {
+      resetSettings('general');
+      resetSettings('panels');
+      resetSettings('intelligence');
+      onProblemsLocationChange?.(settings.panels.problemsLocation);
+      const defaults = defaultSettings().intelligence;
+      await switchLanguageServers(defaults.languageServers);
+      for (const id of ['csharp', 'typescript', 'rust'] as const) {
+        await switchLanguageServer(id, defaults.languageServerEnabled[id]);
+      }
+    } else if (shownSection.id === 'appearance' || shownSection.id === 'editor' || shownSection.id === 'terminal') {
+      resetSettings(shownSection.id as SettingsSection);
+    } else {
+      return;
+    }
     // Putting the settings back has to put the SCREEN back too, or the app says
     // one thing and shows another. A reset stores `dark`, which resolves to the
     // theme the app ships with.
-    applyTheme(settings.appearance.themeId);
+    if (shownSection.id === 'appearance') applyTheme(settings.appearance.themeId);
   }
 
   function backToApp(): void {
@@ -610,6 +615,14 @@
   // removed elsewhere is not shown stale.
   $effect(() => {
     if (open) void loadHelper();
+  });
+
+  $effect(() => {
+    settings.terminal.fontFamily;
+    settings.terminal.fontSize;
+    settings.terminal.lineHeight;
+    settings.terminal.cursorBlink;
+    applyTerminalSettings();
   });
 
 </script>
@@ -717,8 +730,8 @@
               </div>
               <!-- The Helper section has nothing in the settings store to put
                    back, so it is not offered a reset it could not carry out. -->
-              {#if shownSection.id !== 'helper'}
-                <Button variant="ghost" size="sm" onclick={resetShownSection} class="gap-1.5">
+              {#if shownSection.id !== 'helper' && shownSection.id !== 'updates'}
+                <Button variant="ghost" size="sm" onclick={() => void resetShownSection()} class="gap-1.5">
                   <RotateCcw aria-hidden="true" />
                   Reset section
                 </Button>
@@ -752,8 +765,6 @@
                       {@render settingRow(id, terminalFontSizeControl, true)}
                     {:else if id === 'terminal-line-height'}
                       {@render settingRow(id, terminalLineHeightControl, true)}
-                    {:else if id === 'terminal-theme'}
-                      {@render settingRow(id, terminalThemeControl)}
                     {:else if id === 'terminal-cursor-blink'}
                       {@render settingRow(id, terminalCursorBlinkControl)}
                     {:else if id === 'terminal-app'}
@@ -772,6 +783,8 @@
                       {@render settingRow(id, appUpdateCheckControl)}
                     {:else if id === 'app-update-install'}
                       {@render settingRow(id, appUpdateInstallControl)}
+                    {:else if id === 'provider-updates'}
+                      {@render settingRow(id, providerUpdateControl)}
                     {:else if id === 'helper-vendor'}
                       {@render settingRow(id, helperVendorControl)}
                     {:else if id === 'helper-model'}
@@ -877,7 +890,7 @@
 {/snippet}
 
 {#snippet editorLigaturesControl()}
-  <Switch bind:checked={editorLigatures} aria-label="Font ligatures" />
+  <Switch bind:checked={settings.editor.fontLigatures} aria-label="Font ligatures" />
 {/snippet}
 
 {#snippet terminalFontFamilyControl()}
@@ -917,17 +930,8 @@
   </div>
 {/snippet}
 
-{#snippet terminalThemeControl()}
-  <SettingsSelect
-    items={terminalThemeItems}
-    value={settings.terminal.theme}
-    ariaLabel="Terminal color theme"
-    onChange={(value) => (settings.terminal.theme = value)}
-  />
-{/snippet}
-
 {#snippet terminalCursorBlinkControl()}
-  <Switch bind:checked={terminalCursorBlink} aria-label="Cursor blink" />
+  <Switch bind:checked={settings.terminal.cursorBlink} aria-label="Cursor blink" />
 {/snippet}
 
 {#snippet terminalAppControl()}
@@ -1011,6 +1015,10 @@
   >
     {appUpdateState.phase === 'installing' ? 'Installing…' : 'Install and restart'}
   </Button>
+{/snippet}
+
+{#snippet providerUpdateControl()}
+  <ProviderUpdateControl />
 {/snippet}
 
 {#snippet helperVendorControl()}

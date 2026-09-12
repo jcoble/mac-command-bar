@@ -140,8 +140,13 @@ const spot = (symbolName, line, column) => ({ symbolName, line, column });
 	);
 	assert.match(
 		sourceIntelligenceSource,
-		/findReferences[\s\S]*?if \(isNativeTauriRuntime\(\)\) return \[\];[\s\S]*?return \[\];/,
-		'Peek reference lookup must not fall back to the legacy text reference finder'
+		/findReferences[\s\S]*?request\.languageServerEnabled === false[\s\S]*?findSourceReferencesInRootFromTauri\([\s\S]*?maxSourceReferenceResults/,
+		'Peek without Supercharged must use the bounded native project scan'
+	);
+	assert.doesNotMatch(
+		sourceIntelligenceSource,
+		/\bfindSourceReferences\(/,
+		'Peek must not use the removed in-memory legacy reference finder'
 	);
 	assert.match(
 		sourceIntelligenceSource,

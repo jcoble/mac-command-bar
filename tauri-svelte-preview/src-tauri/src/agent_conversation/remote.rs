@@ -1088,14 +1088,18 @@ fn open_remote_tunnel(
         "ExitOnForwardFailure=yes",
         "-o",
         "ServerAliveInterval=15",
-        "-N",
+        "-T",
         "-L",
         &forwarding,
         "--",
         target,
+        "cat >/dev/null",
     ]);
     let child = command
-        .stdin(Stdio::null())
+        // Keep the remote command alive through this parent-owned pipe. If
+        // Assembly is terminated before its shutdown hook runs, EOF closes
+        // the remote command and the SSH forward exits instead of orphaning.
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()

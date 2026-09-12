@@ -630,6 +630,7 @@ fn safe_extension(value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::GenericImageView;
     use mcb_core::session_store::SessionStore;
     use std::path::PathBuf;
 

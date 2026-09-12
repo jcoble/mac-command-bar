@@ -7,33 +7,40 @@ use crate::agent_conversation::capabilities::{
     AGY_ACP_VERSION, CLAUDE_AGENT_ACP_VERSION, CODEX_ACP_VERSION,
 };
 
-pub(super) type AdapterPair = (PathBuf, String);
+#[derive(Clone, Debug)]
+pub(super) struct AdapterPackage {
+    pub executable: PathBuf,
+    pub content_hash: String,
+    pub version: String,
+}
+
+pub(super) type AdapterPair = AdapterPackage;
 pub(super) type AdapterPairs = (
     Option<AdapterPair>,
     Option<AdapterPair>,
     Option<AdapterPair>,
 );
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PackagedManifest {
-    schema_version: u32,
-    adapters: Vec<PackagedAdapter>,
+pub(super) struct PackagedManifest {
+    pub schema_version: u32,
+    pub adapters: Vec<PackagedAdapter>,
 }
 
-#[derive(Deserialize)]
-struct PackagedAdapter {
-    provider: String,
-    id: String,
-    version: String,
-    executable: String,
-    files: Vec<PackagedFile>,
+#[derive(Debug, Deserialize)]
+pub(super) struct PackagedAdapter {
+    pub provider: String,
+    pub id: String,
+    pub version: String,
+    pub executable: String,
+    pub files: Vec<PackagedFile>,
 }
 
-#[derive(Deserialize)]
-struct PackagedFile {
-    path: String,
-    sha256: String,
+#[derive(Debug, Deserialize)]
+pub(super) struct PackagedFile {
+    pub path: String,
+    pub sha256: String,
 }
 
 pub(super) fn discover() -> Result<AdapterPairs, String> {
@@ -53,10 +60,13 @@ pub(super) fn discover() -> Result<AdapterPairs, String> {
     else {
         return Ok((None, None, None));
     };
-    discover_in(&directory)
+    discover_in(&directory, true)
 }
 
-fn discover_in(directory: &Path) -> Result<AdapterPairs, String> {
+pub(super) fn discover_in(
+    directory: &Path,
+    require_bundled_versions: bool,
+) -> Result<AdapterPairs, String> {
     let manifest_path = directory.join("manifest.json");
     let manifest: PackagedManifest =
         serde_json::from_slice(&std::fs::read(&manifest_path).map_err(|error| {
@@ -83,7 +93,7 @@ fn discover_in(directory: &Path) -> Result<AdapterPairs, String> {
             "antigravity" => ("agy-acp", AGY_ACP_VERSION),
             other => return Err(format!("Unknown packaged adapter provider {other}")),
         };
-        if adapter.id != expected.0 || adapter.version != expected.1 {
+        if adapter.id != expected.0 || (require_bundled_versions && adapter.version != expected.1) {
             return Err(format!(
                 "Packaged {} adapter is {}, expected {} {}",
                 adapter.provider, adapter.version, expected.0, expected.1
@@ -106,7 +116,11 @@ fn discover_in(directory: &Path) -> Result<AdapterPairs, String> {
         }
         let path = directory.join(&adapter.executable);
         let actual_hash = file_sha256(&path)?;
-        let pair = Some((path, actual_hash));
+        let pair = Some(AdapterPackage {
+            executable: path,
+            content_hash: actual_hash,
+            version: adapter.version,
+        });
         match adapter.provider.as_str() {
             "codex" => codex = pair,
             "claude" => claude = pair,
@@ -154,11 +168,13 @@ mod tests {
         )
         .unwrap();
 
-        let (codex, claude, antigravity) = discover_in(&directory).unwrap();
+        let (codex, claude, antigravity) = discover_in(&directory, true).unwrap();
         assert!(codex.is_some() && claude.is_some() && antigravity.is_some());
 
         std::fs::write(directory.join("codex-acp"), b"tampered").unwrap();
-        assert!(discover_in(&directory).unwrap_err().contains("SHA-256"));
+        assert!(discover_in(&directory, true)
+            .unwrap_err()
+            .contains("SHA-256"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

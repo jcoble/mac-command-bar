@@ -18,6 +18,16 @@ import {
   decideConversationScroll,
   initialConversationScrollAnchorState
 } from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
+import { readFileSync } from 'node:fs';
+
+const timelineSource = readFileSync(new URL('../src/lib/shell/components/conversation/ConversationTimeline.svelte', import.meta.url), 'utf8');
+assert.match(timelineSource, /class:send-anchor-space=\{anchoredUserItemId !== null\}/, 'the sent message keeps its anchor space until the reader moves');
+assert.match(timelineSource, /timeline-bottom-spacer\.send-anchor-space\{height:max\([^}]*100vh\)\}/, 'the send anchor reserves a viewport without a resize observer');
+assert.match(timelineSource, /anchoredUserItemId = null;\n\s+const decision = decideConversationScroll\(scrollState, \{ type: 'user-input' \}/, 'reader input releases the sent-message anchor space');
+assert.match(timelineSource, /follow = anchoredUserItemId === null && distanceBelowReader\(\) <= 80/, 'programmatic anchor scrolling does not turn reply following back on');
+assert.match(timelineSource, /overflow-anchor:none/, 'browser scroll anchoring cannot undo the explicit sent-message anchor');
+assert.match(timelineSource, /if \(anchoredUserItemId && host\)[\s\S]*host\.scrollTop = top;[\s\S]*return;/, 'stream and completion revisions restore the explicit sent-message anchor');
+assert.match(timelineSource, /turnJustFinished[\s\S]*itemTop\(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX\)[\s\S]*host\.scrollTop = top/, 'turn completion restores the sent-message anchor after the working row is removed');
 
 const sentAnchor = decideConversationScroll(initialConversationScrollAnchorState, {
   type: 'send',

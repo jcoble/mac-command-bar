@@ -15,6 +15,7 @@
     decideConversationScroll,
     initialConversationScrollAnchorState,
     nextWritingFollowScrollTop,
+    USER_SEND_ANCHOR_OFFSET_PX,
     type ConversationScrollAction,
     type ConversationScrollAnchorState,
     type ConversationScrollMotion,
@@ -91,10 +92,10 @@
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
   let seenAnchorRequest = '';
   let anchoredUserItemId = $state<string | null>(null);
-  let viewportHeight = $state(0);
   let lastContentRevision = -1;
   let lastComposerHeight = -1;
   let lastItemCount = -1;
+  let turnWasActive = false;
   let userItemIds = $state<string[]>([]);
   let openedConversationId = $state('');
   let foldConversationId = $state('');
@@ -205,20 +206,6 @@
       && anchoredUserIndex >= 0
       && renderedItems.slice(anchoredUserIndex + 1).every((item) => !conversationItemHasVisibleContent(item))
   );
-
-  $effect(() => {
-    if (!host) return;
-    const publish = (): void => {
-      const nextHeight = host?.clientHeight ?? 0;
-      if (viewportHeight !== nextHeight) viewportHeight = nextHeight;
-    };
-    const observer = new ResizeObserver(publish);
-    observer.observe(host);
-    publish();
-    return () => {
-      observer.disconnect();
-    };
-  });
 
   $effect(() => {
     if (openedConversationId === renderWindowId) return;
@@ -333,7 +320,12 @@
    * just above the prompt instead of hiding behind it. */
   function latestWritingScrollTop(): number {
     if (!host) return 0;
-    return Math.max(0, host.scrollHeight - host.clientHeight);
+    const item = [...host.querySelectorAll<HTMLElement>('[data-item-id]')].at(-1);
+    if (!item) return 0;
+    const hostTop = host.getBoundingClientRect().top + host.clientTop;
+    const writingBottom = host.scrollTop + item.getBoundingClientRect().bottom - hostTop;
+    const composerClearance = Math.max(composerHeight, 120) + 60;
+    return Math.max(0, writingBottom - host.clientHeight + composerClearance);
   }
 
   /** How far the reader is above the end of the writing. Zero means they are
@@ -435,7 +427,7 @@
     if (host.scrollTop > maxScroll) {
       host.scrollTop = maxScroll;
     }
-    follow = distanceBelowReader() <= 80;
+    follow = anchoredUserItemId === null && distanceBelowReader() <= 80;
     // Keep the anchor fresh while reading so a live append that trims the top
     // can restore the same visible item instead of moving the reader.
     if (follow) pageAnchor = null;
@@ -448,6 +440,7 @@
   let jumpingToLatest = false;
   async function jumpToLatest(): Promise<void> {
     if (jumpingToLatest) return;
+    anchoredUserItemId = null;
     if (hasNewer && onJumpToLatest) {
       jumpingToLatest = true;
       // A direct tail reload replaces the paging operation. Do not let its
@@ -498,6 +491,11 @@
   $effect(() => {
     if (timelineRevision === lastContentRevision) return;
     lastContentRevision = timelineRevision;
+    if (anchoredUserItemId && host) {
+      const top = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX);
+      if (top !== null) host.scrollTop = top;
+      return;
+    }
     const decision = decideConversationScroll(scrollState, { type: 'stream-growth' });
     scrollState = decision.state;
     perform(decision.action);
@@ -513,6 +511,15 @@
   });
 
   $effect(() => {
+    const turnIsActive = localTurnActive;
+    const turnJustFinished = turnWasActive && !turnIsActive;
+    turnWasActive = turnIsActive;
+    if (!turnJustFinished || !anchoredUserItemId || !host) return;
+    const top = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX);
+    if (top !== null) host.scrollTop = top;
+  });
+
+  $effect(() => {
     if (composerHeight === lastComposerHeight) return;
     lastComposerHeight = composerHeight;
     if (follow || scrollState.pinnedToBottom || scrollState.openingToLatest) {
@@ -523,6 +530,7 @@
 
 
   function handleUserInput(): void {
+    anchoredUserItemId = null;
     const decision = decideConversationScroll(scrollState, { type: 'user-input' });
     scrollState = decision.state;
     perform(decision.action);
@@ -623,7 +631,7 @@
           {/if}
         </div>
       {/each}
-      <div class="timeline-bottom-spacer" aria-hidden="true"></div>
+      <div class:send-anchor-space={anchoredUserItemId !== null} class="timeline-bottom-spacer" aria-hidden="true"></div>
     </div>
   </div>
   {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" aria-label="Jump to latest" onclick={() => void jumpToLatest()}><ArrowDown size={16} strokeWidth={2} aria-hidden="true" /></button>{/if}
@@ -635,12 +643,13 @@
   .older-spinner{width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--color-text-3) 45%,transparent);border-top-color:var(--color-text-2);border-radius:50%;animation:older-spin 700ms linear infinite}
   @keyframes older-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
-  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:auto;padding:var(--center-head-height, 0px) 28px 0;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
+  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:var(--center-head-height, 0px) 28px 0;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
   .timeline-list{position:relative;display:flex;flex-direction:column;gap:26px;width:min(820px,100%);min-height:1px;margin:0 auto}
   .show-earlier{align-self:center;display:flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-elevated);color:var(--color-text-2);font:inherit;font-size:12px;cursor:pointer}
   .show-earlier:hover{background:var(--color-hover);color:var(--color-text)}
   .show-earlier:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
   .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
+  .timeline-bottom-spacer.send-anchor-space{height:max(calc(max(var(--composer-height, 0px), 120px) + 60px),100vh)}
   .turn-row{position:relative;display:flex;flex-direction:column;gap:26px;width:100%}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{display:flex;align-items:center;gap:8px;min-height:24px;color:var(--color-text-3);font-size:13px}

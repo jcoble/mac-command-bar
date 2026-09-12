@@ -330,12 +330,26 @@ export class TauriBrowserBackend implements BrowserBackend {
    */
   private commandTail: Promise<void> = Promise.resolve();
 
+  private async runAfter<T>(previous: Promise<void>, command: () => Promise<T>): Promise<T> {
+    try {
+      await previous;
+    } catch {
+      // A failed native command must not block the commands queued behind it.
+    }
+    return await command();
+  }
+
+  private async settle<T>(result: Promise<T>): Promise<void> {
+    try {
+      await result;
+    } catch {
+      // The caller receives the failure; the queue only tracks completion.
+    }
+  }
+
   private async enqueue<T>(command: () => Promise<T>): Promise<T> {
-    const result = this.commandTail.then(command, command);
-    this.commandTail = result.then(
-      () => undefined,
-      () => undefined
-    );
+    const result = this.runAfter(this.commandTail, command);
+    this.commandTail = this.settle(result);
     return await result;
   }
 

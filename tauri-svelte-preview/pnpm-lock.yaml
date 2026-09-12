@@ -17,11 +17,11 @@ importers:
   .:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
-        specifier: 0.75.0
-        version: 0.75.0(@anthropic-ai/sdk@0.123.0(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))
+        specifier: 0.76.0
+        version: 0.76.0(@anthropic-ai/sdk@0.123.0(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))
       '@agentclientprotocol/codex-acp':
-        specifier: 1.10.0
-        version: 1.10.0
+        specifier: 1.11.0
+        version: 1.11.0
       '@codemirror/autocomplete':
         specifier: 6.20.3
         version: 6.20.3
@@ -248,13 +248,13 @@ importers:
 
 packages:
 
-  '@agentclientprotocol/claude-agent-acp@0.75.0':
-    resolution: {integrity: sha512-EPlnY5gJb0LRyKBNmFOjSGBaJj14JqQRzoYh6Ss9QWAj46w91Wv/Dm4jloboBmAiPBErn+Kxerw2BcS8cF8wOw==}
+  '@agentclientprotocol/claude-agent-acp@0.76.0':
+    resolution: {integrity: sha512-8Xh1ryud5b1fOGLfF+S7dW2hhIZ/h4WopKtD//JRcQWxu7dutZvzN/MhRSDjqRcxqf3UIZRx1K0OhnlY/hMaOg==}
     engines: {node: '>=22'}
     hasBin: true
 
-  '@agentclientprotocol/codex-acp@1.10.0':
-    resolution: {integrity: sha512-b4dDCPkH/GgHRb3JelXz4QdNirdoTjO3yYM1ImUJMxVXxgZLZMguEXNhZOH2G755UKzf6ZypiiC7UHe3fKgp2Q==}
+  '@agentclientprotocol/codex-acp@1.11.0':
+    resolution: {integrity: sha512-opPKsRaekgdmQpOpHrR0EEDn9chgtiN+b+h0V78fTuQP84TNzB7vrn3EtKODwbiJQTBHJAlynjSFQazFfaT+VQ==}
     hasBin: true
 
   '@agentclientprotocol/sdk@1.4.0':
@@ -2010,7 +2010,7 @@ packages:
 
 snapshots:
 
-  '@agentclientprotocol/claude-agent-acp@0.75.0(@anthropic-ai/sdk@0.123.0(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))':
+  '@agentclientprotocol/claude-agent-acp@0.76.0(@anthropic-ai/sdk@0.123.0(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.5.4)
       '@anthropic-ai/claude-agent-sdk': 0.3.257(@anthropic-ai/sdk@0.123.0(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(zod@4.5.4)
@@ -2019,7 +2019,7 @@ snapshots:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  '@agentclientprotocol/codex-acp@1.10.0':
+  '@agentclientprotocol/codex-acp@1.11.0':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.5.4)
       '@openai/codex': 0.153.4

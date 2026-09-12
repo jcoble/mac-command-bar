@@ -378,7 +378,15 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
         return;
       }
       state.desktopOnly = false;
-      state.history = loadingMore ? [...state.history, ...page.commits] : page.commits;
+      if (loadingMore) {
+        const loadedShas = new Set(state.history.map((commit) => commit.sha));
+        state.history = [
+          ...state.history,
+          ...page.commits.filter((commit) => !loadedShas.has(commit.sha))
+        ];
+      } else {
+        state.history = page.commits;
+      }
       state.historyRequested = state.history.length;
       state.historyNextCursor = page.nextCursor;
       state.historyComplete = page.complete;

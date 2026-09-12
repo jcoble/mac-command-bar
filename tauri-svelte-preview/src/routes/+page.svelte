@@ -38,6 +38,7 @@
 	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
 	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
 	import { gitService } from "$lib/shell/git/gitService";
+	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
@@ -311,6 +312,7 @@
 		<GitHistoryView
 			root={selection.activeRootAvailable ? selection.durableSessionRoot : ""}
 			rootAvailable={selection.activeRootAvailable}
+			historyPath={gitPanel.historyPath}
 		/>
 	{/if}
 {/snippet}

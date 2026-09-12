@@ -31,6 +31,7 @@
     draft: string;
     attachments: readonly ComposerAttachment[];
     sending: boolean;
+    supportsSteering?: boolean;
     workingPhase?: number;
     configState: AgentConversationConfigState;
     pendingConfig: Partial<Record<AgentConversationConfigField, string>>;
@@ -81,6 +82,7 @@
     draft,
     attachments,
     sending,
+    supportsSteering = false,
     workingPhase = 0,
     configState,
     pendingConfig,
@@ -512,7 +514,7 @@
               </span>
               <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
             {/if}
-            {#if hasSendableContent}
+            {#if hasSendableContent && (!sending || supportsSteering)}
               <button class="round-control send" data-testid="conversation-send" type="submit" aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
             {/if}
           </div>

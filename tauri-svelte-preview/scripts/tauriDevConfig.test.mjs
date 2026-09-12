@@ -9,6 +9,10 @@ const providerCapabilitiesSource = await readFile(
   new URL('../src-tauri/src/agent_conversation/capabilities.rs', import.meta.url),
   'utf8'
 );
+const providerUpdateServiceSource = await readFile(
+  new URL('../src/lib/shell/providerUpdateService.svelte.ts', import.meta.url),
+  'utf8'
+);
 const cargoManifest = await readFile(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
 const desktopCapabilities = JSON.parse(
   await readFile(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8')
@@ -35,8 +39,8 @@ assert.equal(defaultConfig.app.windows[0].height, 1000, 'native preview should o
 assert.equal(packageJson.scripts['tauri:dev'], 'sh scripts/dev-app.sh');
 assert.equal(packageJson.scripts['tauri:dev:next'], undefined);
 assert.equal(packageJson.scripts['tauri:dev:next:alt'], undefined);
-assert.equal(packageJson.dependencies['@agentclientprotocol/codex-acp'], '1.10.0');
-assert.equal(packageJson.dependencies['@agentclientprotocol/claude-agent-acp'], '0.75.0');
+assert.equal(packageJson.dependencies['@agentclientprotocol/codex-acp'], '1.11.0');
+assert.equal(packageJson.dependencies['@agentclientprotocol/claude-agent-acp'], '0.76.0');
 assert.equal(packageJson.dependencies['@tauri-apps/plugin-updater'], '2.11.0');
 assert.equal(packageJson.dependencies['@tauri-apps/plugin-process'], '2.3.1');
 assert.match(cargoManifest, /tauri-plugin-updater = "2\.11\.0"/);
@@ -45,8 +49,16 @@ assert.ok(desktopCapabilities.permissions.includes('updater:default'));
 assert.ok(desktopCapabilities.permissions.includes('process:allow-restart'));
 assert.match(releaseWorkflow, /TAURI_SIGNING_PRIVATE_KEY:/);
 assert.match(releaseWorkflow, /releaseDraft: false/);
-assert.match(providerCapabilitiesSource, /CODEX_ACP_VERSION: &str = "1\.10\.0"/);
-assert.match(providerCapabilitiesSource, /CLAUDE_AGENT_ACP_VERSION: &str = "0\.75\.0"/);
+assert.match(releaseWorkflow, /prepare:provider-release-assets/);
+assert.match(releaseWorkflow, /tauri signer sign/);
+assert.match(releaseWorkflow, /gh release upload/);
+assert.match(providerCapabilitiesSource, /CODEX_ACP_VERSION: &str = "1\.11\.0"/);
+assert.match(providerCapabilitiesSource, /CLAUDE_AGENT_ACP_VERSION: &str = "0\.76\.0"/);
+assert.match(
+  providerUpdateServiceSource,
+  /if \(!status\.restartRequired\) \{[\s\S]*phase = 'current';[\s\S]*Provider adapters are up to date\.[\s\S]*return;[\s\S]*\}[\s\S]*await relaunch\(\);/,
+  'provider installs that became current before download must not relaunch the app'
+);
 assert.equal(
   packageJson.scripts['test:tauri-app'],
   'pnpm test:tauri-source && pnpm test:tauri-config && pnpm build && pnpm test:native-lsp && cargo build --manifest-path src-tauri/Cargo.toml',

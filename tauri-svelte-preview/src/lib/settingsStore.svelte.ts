@@ -40,6 +40,7 @@ export interface EditorSettings {
 	fontSize: number;
 	/** Absolute line height in px (Monaco-style). */
 	lineHeight: number;
+	fontLigatures: boolean;
 }
 
 export interface TerminalSettings {
@@ -48,6 +49,7 @@ export interface TerminalSettings {
 	/** Unitless line-height multiplier (xterm-style). */
 	lineHeight: number;
 	theme: string;
+	cursorBlink: boolean;
 }
 
 export interface GeneralSettings {
@@ -143,13 +145,15 @@ export function defaultSettings(): Settings {
 		editor: {
 			fontFamily: DEFAULT_MONO_FONT_ID,
 			fontSize: 13,
-			lineHeight: 21
+			lineHeight: 21,
+			fontLigatures: false
 		},
 		terminal: {
 			fontFamily: 'Google Sans Mono',
 			fontSize: 15,
 			lineHeight: 1.2,
-			theme: 'dracula'
+			theme: 'dracula',
+			cursorBlink: true
 		},
 		general: {
 			terminalApp: 'Warp'

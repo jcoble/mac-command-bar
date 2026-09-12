@@ -1,3 +1,4 @@
+pub use crate::agent_conversation::protocol::ToolTerminalIdentity;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -6,7 +7,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-pub use crate::agent_conversation::protocol::ToolTerminalIdentity;
 /// Per-session scrollback ring held by the backend. 16 MB is enough to survive a
 /// genuinely long agent run (256 KB was ~2 minutes of a chatty build), and it is
 /// the backend that has to hold it: a hidden view holds nothing, so a re-attach
@@ -857,8 +857,8 @@ mod tests {
             loop {
                 let scrollback =
                     read_terminal_session_scrollback(&registry, &copied_session_id, None)
-                    .expect("terminal scrollback should read")
-                    .unwrap_or_default();
+                        .expect("terminal scrollback should read")
+                        .unwrap_or_default();
                 if scrollback.contains("mcb-terminal-ready") {
                     break Ok(());
                 }

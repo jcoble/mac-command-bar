@@ -9,10 +9,7 @@ pub(crate) async fn list_workflow_runs(
     engine.list_runs().map_err(|error| error.to_string())
 }
 
-pub(crate) fn emit_workflow_run_updated(
-    app: &tauri::AppHandle,
-    run: &WorkflowRunRecord,
-) {
+pub(crate) fn emit_workflow_run_updated(app: &tauri::AppHandle, run: &WorkflowRunRecord) {
     let _ = app.emit("workflow-run-updated", run);
 }
 

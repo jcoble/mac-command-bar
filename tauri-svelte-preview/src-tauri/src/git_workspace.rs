@@ -19,6 +19,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::bounded_process;
 use crate::git_pr::{format_gh_spawn_error, format_process_failure, summarize_checks};
 use crate::{
     project_git_status_sync, run_git_text, validate_git_relative_paths, validate_git_root,
@@ -600,11 +601,14 @@ fn amend_git_commit_sync(root: PathBuf, message: String) -> Result<GitActionResu
 
 fn list_open_pull_requests_sync(root: PathBuf) -> Result<Vec<PullRequestSummary>, String> {
     validate_git_root(&root)?;
-    let output = Command::new("gh")
-        .current_dir(&root)
-        .args(build_gh_pr_list_args(PULL_REQUEST_LIST_LIMIT))
-        .output()
-        .map_err(format_gh_spawn_error)?;
+    let output = bounded_process::output(
+        Command::new("gh")
+            .current_dir(&root)
+            .args(build_gh_pr_list_args(PULL_REQUEST_LIST_LIMIT)),
+        "gh pr list",
+        bounded_process::NETWORK_COMMAND_TIMEOUT,
+    )
+    .map_err(format_gh_spawn_error)?;
     if !output.status.success() {
         return Err(format_process_failure(
             "gh pr list",

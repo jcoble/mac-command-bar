@@ -49,8 +49,8 @@ const editorPanelSource = await readFile(
   new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
   'utf8'
 );
-const shellSource = await readFile(
-  new URL('../src/routes/+page.svelte', import.meta.url),
+const codeMirrorEditorSource = await readFile(
+  new URL('../src/lib/CodeMirrorSourceEditor.svelte', import.meta.url),
   'utf8'
 );
 
@@ -65,9 +65,39 @@ assert.match(
   'the active editor workspace must provide the command working directory'
 );
 assert.match(
-  shellSource,
-  /onStartWorkspaceCommand=\{\(request\) =>[\s\S]*?onStartStack\(\{/,
-  'workspace actions must reuse the owned terminal-session starter'
+  editorPanelSource,
+  /onDotnetBuildRequest=\{onStartWorkspaceCommand \? \(\) => runDotnetWorkspace\('build'\) : undefined\}/,
+  'the editor must not expose an inert Build workspace action without a command owner'
+);
+assert.match(
+  codeMirrorEditorSource,
+  /onDotnetAction: onDotnetBuildRequest && onDotnetTestRequest[\s\S]*?: undefined/,
+  'CodeMirror must omit workspace lenses when their command callbacks are unavailable'
+);
+assert.match(
+  codeMirrorLensSource,
+  /showCodeMirrorReferences = StateEffect\.define<SourceLookupRequest>\(\)/,
+  'the editor context menu must be able to open the existing inline reference viewer'
+);
+assert.match(
+  codeMirrorEditorSource,
+  /showCodeMirrorReferences\.of\(request\)/,
+  'Peek References must reuse the CodeLens reference viewer'
+);
+assert.match(
+  codeMirrorLensSource,
+  /refreshCodeMirrorCodeLens\.of\(\)/,
+  'asynchronous reference results must dispatch a real effect so CodeMirror repaints the peek viewer'
+);
+assert.match(
+  codeMirrorLensSource,
+  /requestMeasure\(\{[\s\S]*?write: \(\) => \{[\s\S]*?openReferences\(request\)/,
+  'the context-menu effect must use CodeMirror\'s owned event boundary before repainting'
+);
+assert.match(
+  codeMirrorLensSource,
+  /new PeekWidget[\s\S]*?block: true/,
+  'Peek References must render as a left-aligned editor block instead of after the symbol text'
 );
 
 console.log('workspace CodeLens tests passed');

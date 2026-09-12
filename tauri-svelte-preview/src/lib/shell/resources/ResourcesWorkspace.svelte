@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { refreshResources, resourceState } from './resourceStore.svelte.ts';
+  import { onDestroy } from 'svelte';
+  import { refreshResources, releaseResourceRefresh, resourceState } from './resourceStore.svelte.ts';
   import { countInactiveResourceWorkspaces, formatBytes, groupResourceProcesses, resourceCanStop, resourceOwnerLabel } from './resourceViewModel.ts';
   import { resourceService } from './resourceService.ts';
   import type { ResourceDiskRoot } from './resourceTypes.ts';
@@ -10,6 +11,8 @@
   let stoppingPid = $state<number | null>(null);
   let groups = $derived(resourceState.snapshot ? groupResourceProcesses(resourceState.snapshot.processes) : []);
   let inactiveWorkspaceCount = $derived(countInactiveResourceWorkspaces(resourceState.snapshot?.processes ?? [], spaceRoots.map((root) => root.workspaceId)));
+
+  onDestroy(releaseResourceRefresh);
 
   async function stop(pid: number): Promise<void> {
     const process = resourceState.snapshot?.processes.find((item) => item.pid === pid);

@@ -141,7 +141,9 @@ pub fn read<R: tauri::Runtime>(
                     .thumbnail_byte_length
                     .map(usize::try_from)
                     .transpose()
-                    .map_err(|_| "Attachment thumbnail is too large to describe".to_string())?,
+                    .map_err(|_| {
+                    "Attachment thumbnail is too large to describe".to_string()
+                })?,
             })
         })
         .collect()
@@ -392,7 +394,11 @@ fn validate_optional_managed_file(root: &Path, path: &Path) -> Result<Option<Pat
     let target = match path.canonicalize() {
         Ok(target) => target,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("Could not verify screenshot thumbnail path: {error}")),
+        Err(error) => {
+            return Err(format!(
+                "Could not verify screenshot thumbnail path: {error}"
+            ))
+        }
     };
     if !target.starts_with(root) || target.parent() != Some(root) {
         return Err(
@@ -456,18 +462,17 @@ mod tests {
     use std::fs;
 
     const PNG_1X1: &[u8] = &[
-        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H',
-        b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
-        0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, b'I', b'D', b'A', b'T', 0x78,
-        0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
-        0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
+        0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H', b'D',
+        b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, b'I', b'D', b'A', b'T', 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, b'I',
+        b'E', b'N', b'D', 0xae, 0x42, 0x60, 0x82,
     ];
 
     const GIF_1X1: &[u8] = &[
-        b'G', b'I', b'F', b'8', b'9', b'a', 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c,
-        0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00,
-        0x3b,
+        b'G', b'I', b'F', b'8', b'9', b'a', 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b,
     ];
 
     /// Attachment rows point at their session, so every test owns a stored session.
@@ -501,22 +506,8 @@ mod tests {
         let app = tauri::test::mock_app();
         let owned_id = format!("owned-{}", uuid::Uuid::new_v4());
         let store = store_with_session(&owned_id);
-        let first = save(
-            app.handle(),
-            &store,
-            &owned_id,
-            "image/png",
-            PNG_1X1,
-        )
-        .unwrap();
-        let second = save(
-            app.handle(),
-            &store,
-            &owned_id,
-            "image/gif",
-            GIF_1X1,
-        )
-        .unwrap();
+        let first = save(app.handle(), &store, &owned_id, "image/png", PNG_1X1).unwrap();
+        let second = save(app.handle(), &store, &owned_id, "image/gif", GIF_1X1).unwrap();
         let mut expected = vec![first.clone(), second.clone()];
         expected.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -546,10 +537,7 @@ mod tests {
 
     #[test]
     fn attachment_validation_accepts_supported_image_signatures() {
-        assert_eq!(
-            validate_image("image/png", PNG_1X1).unwrap(),
-            "png"
-        );
+        assert_eq!(validate_image("image/png", PNG_1X1).unwrap(), "png");
         assert_eq!(
             validate_image("image/jpeg", b"\xff\xd8\xffrest").unwrap(),
             "jpg"

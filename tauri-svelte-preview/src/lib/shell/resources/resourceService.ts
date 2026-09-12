@@ -1,5 +1,7 @@
 import {
   applyResourceMemoryPressure,
+  cancelResourceDiskScan,
+  cancelResourceSnapshot,
   cleanupWorkspaceDiskEntry,
   readLanguageServerLog,
   readResourceDiskScan,
@@ -19,15 +21,12 @@ import type {
 } from './resourceTypes.ts';
 import type { ResourceUnavailable } from './resourceTypes.ts';
 
-let refreshInFlight: Promise<ResourceSnapshot | null> | null = null;
-
 export const resourceService = {
   async refresh(): Promise<ResourceSnapshot | null> {
-    if (!refreshInFlight) {
-      refreshInFlight = refreshResourceSnapshotOnce();
-    }
-    const snapshot = await refreshInFlight;
-    return snapshot;
+    return readResourceSnapshot();
+  },
+  async cancelRefresh(): Promise<void> {
+    await cancelResourceSnapshot();
   },
   async readDisk(
     roots: ResourceDiskRoot[],
@@ -35,6 +34,9 @@ export const resourceService = {
   ): Promise<DiskScanReport | null> {
     const report = await readResourceDiskScan(roots, options);
     return report;
+  },
+  async cancelDisk(): Promise<void> {
+    await cancelResourceDiskScan();
   },
   async stop(request: ResourceStopRequest): Promise<ResourceCommandReceipt | null> {
     const receipt = await stopOwnedResource(request);
@@ -61,11 +63,3 @@ export const resourceService = {
     return activeRoot;
   }
 };
-
-async function refreshResourceSnapshotOnce(): Promise<ResourceSnapshot | null> {
-  try {
-    return await readResourceSnapshot();
-  } finally {
-    refreshInFlight = null;
-  }
-}

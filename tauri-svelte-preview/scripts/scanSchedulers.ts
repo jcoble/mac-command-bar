@@ -20,9 +20,18 @@ const promiseWrapperPattern = /\b(new\s+Promise|Promise\.(?:race|withResolvers))
 const anonymousAsyncIifePattern =
   /\b(void|[A-Za-z_$][\w$]*(?:\s*\?\?=|\s*=))\s*\(\s*async\s*\(\s*\)\s*=>/g;
 
-const allowedSchedulerHits = new Set([
+const allowedHits = new Set([
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
-  'src/lib/shell/components/UtilityStrip.svelte:clearInterval:window.clearInterval(refreshInterval);'
+  'src/lib/shell/components/UtilityStrip.svelte:clearInterval:window.clearInterval(refreshInterval);',
+  // Svelte tick is awaited only after mounting a user-requested lazy surface.
+  "src/lib/shell/components/DockPanel.svelte:tick:import { tick } from 'svelte';",
+  'src/lib/shell/components/DockPanel.svelte:tick:await tick();',
+  "src/lib/shell/panels/tasks/TasksPanel.svelte:tick:import { onDestroy, onMount, tick } from 'svelte';",
+  'src/lib/shell/panels/tasks/TasksPanel.svelte:tick:await tick();',
+  // These one-shot timers are both stopped by the AbortSignal-owning surface.
+  'src/lib/shell/notionOAuth.ts:new Promise:await new Promise<void>((resolve, reject) => {',
+  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
+  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {'
 ]);
 
 interface Hit {
@@ -161,7 +170,7 @@ function scanConcretePromiseImplementations(rel: string, source: string): Hit[] 
 
 const sourceFiles = files(srcRoot).sort();
 const hits = sourceFiles.flatMap(scanFile).filter((hit) =>
-  !allowedSchedulerHits.has(`${hit.file}:${hit.term}:${hit.text}`)
+  !allowedHits.has(`${hit.file}:${hit.term}:${hit.text}`)
 );
 const schedulerHits = hits.filter((hit) => hit.category === 'scheduler');
 const promiseChainHits = hits.filter((hit) => hit.category === 'promise-chain');

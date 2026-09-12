@@ -22,12 +22,14 @@ export interface CodeMirrorAppearance {
   fontFamily: string;
   fontSize: number;
   lineHeight: number;
+  fontLigatures: boolean;
 }
 
 const defaultAppearance: CodeMirrorAppearance = {
   fontFamily: 'system',
   fontSize: 13,
-  lineHeight: 21
+  lineHeight: 21,
+  fontLigatures: false
 };
 
 /** Build the editor chrome from current settings so an open editor repaints live. */
@@ -47,6 +49,7 @@ export function codeMirrorThemeForAppearance(
       '.cm-scroller': {
         overflow: 'auto',
         fontFamily: editorFontFamily,
+        fontVariantLigatures: appearance.fontLigatures ? 'normal' : 'none',
         lineHeight: `${appearance.lineHeight}px`
       },
       '.cm-content': { caretColor: 'var(--color-accent, #82aaff)' },
@@ -110,5 +113,7 @@ export async function loadCodeMirrorTheme(
   if (!loader) return base;
   // Keep ThemeMirror, including its catalog, out of the startup chunk.
   const themes = await import('thememirror');
-  return [base, loader(themes)];
+  // CodeMirror reverses theme style modules when it mounts them. Put the
+  // selected theme first so its equal-specificity rules are mounted last.
+  return [loader(themes), base];
 }

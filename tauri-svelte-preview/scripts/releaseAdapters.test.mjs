@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 const adapterDir = new URL('../src-tauri/adapters/', import.meta.url);
 const manifest = JSON.parse(await readFile(new URL('manifest.json', adapterDir), 'utf8'));
 assert.equal(manifest.schemaVersion, 1);
+const execFileAsync = promisify(execFile);
 
 async function sha256(path) {
   return createHash('sha256').update(await readFile(path)).digest('hex');
@@ -51,5 +53,27 @@ for (const adapter of manifest.adapters) {
   const initialized = await initialize(adapter);
   assert.equal(initialized.result.agentInfo.version, adapter.version);
 }
+
+const releaseTarget = process.arch === 'arm64'
+  ? 'aarch64-apple-darwin'
+  : 'x86_64-apple-darwin';
+await execFileAsync(process.execPath, [
+  new URL('prepareProviderReleaseAssets.mjs', import.meta.url).pathname,
+  releaseTarget
+]);
+const releaseDir = new URL(`../provider-release/${releaseTarget}/`, import.meta.url);
+const releaseManifest = JSON.parse(
+  await readFile(new URL(`provider-manifest-${releaseTarget}.json`, releaseDir), 'utf8')
+);
+assert.equal(releaseManifest.target, releaseTarget);
+for (const adapter of releaseManifest.adapters) {
+  for (const file of adapter.files) {
+    assert.equal(
+      await sha256(new URL(`provider-${releaseTarget}-${file.path}`, releaseDir)),
+      file.sha256
+    );
+  }
+}
+await rm(new URL('../provider-release/', import.meta.url), { recursive: true, force: true });
 
 console.log('release adapter checks passed');

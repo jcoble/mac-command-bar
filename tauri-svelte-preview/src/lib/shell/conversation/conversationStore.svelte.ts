@@ -152,6 +152,9 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
    * It is retained only for the active projection so either trimmed end can be
    * rebuilt without introducing a second display model. */
   loadedEvents: AgentConversationEvent[];
+  /** Cached UTF-8 payload bytes for `loadedEvents`. Keeping this incrementally
+   * avoids serializing the entire conversation again for every live event. */
+  loadedEventsBytes: number;
   /** The lowest stored sequence currently on screen, and where scrolling up
    * asks from. Zero until a session has been opened. */
   oldestLoadedSequence: number;
@@ -298,6 +301,7 @@ function freshState(
     configErrors: {},
     recentEvents: [],
     loadedEvents: [],
+    loadedEventsBytes: 0,
     oldestLoadedSequence: 0,
     newestLoadedSequence: 0,
     loadingOlder: false,
@@ -377,13 +381,13 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   }
   applyTypedEventPayload(current, displayEvent);
   current.loadedEvents.push(event);
-  let bytes = serializedEventsBytes(current.loadedEvents);
+  let bytes = current.loadedEventsBytes + serializedEventBytes(event);
   let trimmed = false;
   if (current.loadedEvents.length > ACTIVE_EVENT_WINDOW_EVENTS) {
     const excess = current.loadedEvents.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS;
-    current.loadedEvents.splice(0, excess);
+    const removed = current.loadedEvents.splice(0, excess);
+    for (const removedEvent of removed) bytes -= serializedEventBytes(removedEvent);
     trimmed = true;
-    bytes = serializedEventsBytes(current.loadedEvents);
   }
   while (bytes > ACTIVE_EVENT_WINDOW_BYTES && current.loadedEvents.length > 0) {
     const removed = current.loadedEvents.shift();
@@ -392,6 +396,7 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
       trimmed = true;
     }
   }
+  current.loadedEventsBytes = Math.max(0, bytes);
   current.oldestLoadedSequence = current.loadedEvents[0]?.sequence ?? event.sequence;
   if (trimmed) {
     applyAgentConversationSnapshot(projectionSnapshot(current), {
@@ -712,11 +717,19 @@ function summarizeRecentEvent(event: AgentConversationEvent | AgentEvent): strin
  * checks, but make only the repeated delta empty while rebuilding the view.
  */
 function idempotentSnapshotEvents(events: AgentConversationEvent[]): AgentConversationEvent[] {
+  const assistantDelta = (event: AgentConversationEvent): { itemId: string; delta: string } | null => {
+    const payload = event.payload as { kind?: unknown; itemId?: unknown; delta?: unknown };
+    return payload.kind === 'assistantDelta'
+      && typeof payload.itemId === 'string'
+      && typeof payload.delta === 'string'
+      ? { itemId: payload.itemId, delta: payload.delta }
+      : null;
+  };
   let previous: { itemId: string; delta: string } | null = null;
   const replayedChunksByItem = new Map<string, Set<string>>();
   const completedItemIds = new Set<string>();
   let insideCompletedItemReplay = false;
-  return events.map((event) => {
+  const normalized = events.map<AgentConversationEvent>((event) => {
     if (event.payload.kind === 'userMessage' || event.payload.kind === 'assistantMessage') {
       if (completedItemIds.has(event.payload.itemId)) insideCompletedItemReplay = true;
       completedItemIds.add(event.payload.itemId);
@@ -726,7 +739,7 @@ function idempotentSnapshotEvents(events: AgentConversationEvent[]): AgentConver
       // suppress it and its following completed items while preserving journal
       // sequence continuity for the snapshot reducer.
       return insideCompletedItemReplay
-        ? { ...event, payload: { kind: 'usage' } }
+        ? { ...event, payload: { kind: 'usage' } as AgentConversationEvent['payload'] }
         : event;
     }
     insideCompletedItemReplay = false;
@@ -751,6 +764,84 @@ function idempotentSnapshotEvents(events: AgentConversationEvent[]): AgentConver
       ? { ...event, payload: { ...event.payload, delta: '' } }
       : event;
   });
+
+  // A stored answer can contain hundreds of tiny deltas. Replaying them one at
+  // a time builds every intermediate version of the same string in both
+  // conversation projections. The UI never observes those intermediate states
+  // because the rebuilt snapshot is published only after replay finishes, so
+  // carry the same final text on the last delta and leave the earlier sequence
+  // positions empty. Live events still stream one delta at a time.
+  const deltaIndexesByItem = new Map<string, number[]>();
+  for (let index = 0; index < normalized.length; index++) {
+    const event = normalized[index];
+    const payload = assistantDelta(event);
+    if (!payload) continue;
+    const indexes = deltaIndexesByItem.get(payload.itemId) ?? [];
+    indexes.push(index);
+    deltaIndexesByItem.set(payload.itemId, indexes);
+  }
+  for (const indexes of deltaIndexesByItem.values()) {
+    if (indexes.length < 2) continue;
+    const joined = indexes
+      .map((index) => {
+        return assistantDelta(normalized[index])?.delta ?? '';
+      })
+      .join('');
+    for (const index of indexes.slice(0, -1)) {
+      const event = normalized[index];
+      if (assistantDelta(event)?.delta) {
+        normalized[index] = {
+          ...event,
+          payload: { ...event.payload, delta: '' } as AgentConversationEvent['payload']
+        };
+      }
+    }
+    const lastIndex = indexes[indexes.length - 1];
+    const last = normalized[lastIndex];
+    if (assistantDelta(last)?.delta !== joined) {
+      normalized[lastIndex] = {
+        ...last,
+        payload: { ...last.payload, delta: joined } as AgentConversationEvent['payload']
+      };
+    }
+  }
+
+  // Some stored providers write the complete diff again on every progress
+  // update. A snapshot publishes only the final tool state, so replay the call
+  // that fixes its position and one merged final update instead of proxying the
+  // same twenty-kilobyte patch dozens of times.
+  const toolIndexesByItem = new Map<string, number[]>();
+  for (let index = 0; index < normalized.length; index++) {
+    const payload = normalized[index].payload as unknown as Record<string, unknown>;
+    if (payload.kind !== 'tool' || typeof payload.itemId !== 'string') continue;
+    const indexes = toolIndexesByItem.get(payload.itemId) ?? [];
+    indexes.push(index);
+    toolIndexesByItem.set(payload.itemId, indexes);
+  }
+  for (const indexes of toolIndexesByItem.values()) {
+    if (indexes.length < 3) continue;
+    const merged = {
+      ...(normalized[indexes[0]].payload as unknown as Record<string, unknown>)
+    };
+    for (const index of indexes.slice(1)) {
+      const payload = normalized[index].payload as unknown as Record<string, unknown>;
+      for (const key of ['name', 'state', 'summary', 'output', 'path', 'diff']) {
+        if (payload[key] !== undefined && (key !== 'name' || payload[key])) merged[key] = payload[key];
+      }
+    }
+    for (const index of indexes.slice(1, -1)) {
+      normalized[index] = {
+        ...normalized[index],
+        payload: { kind: 'usage' } as AgentConversationEvent['payload']
+      };
+    }
+    const lastIndex = indexes[indexes.length - 1];
+    normalized[lastIndex] = {
+      ...normalized[lastIndex],
+      payload: merged as AgentConversationEvent['payload']
+    };
+  }
+  return normalized;
 }
 
 interface ProjectionWindowState {
@@ -899,7 +990,8 @@ export function applyAgentConversationSnapshot(
     pendingAgentConfig: current.pendingAgentConfig,
     agentConfigError: current.agentConfigError,
     recentEvents: [],
-    loadedEvents: sourceEvents,
+    loadedEvents: events,
+    loadedEventsBytes: serializedEventsBytes(events),
     // A snapshot is the newest window of a longer journal. Scrolling up asks
     // for what came before its first event.
     oldestLoadedSequence: window?.oldestSequence ?? firstEvent?.sequence ?? snapshot.lastSequence,

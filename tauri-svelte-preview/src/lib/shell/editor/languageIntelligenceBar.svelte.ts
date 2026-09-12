@@ -1,8 +1,8 @@
 /**
- * languageIntelligenceBar.svelte.ts — what the bottom rail needs to show the
+ * languageIntelligenceBar.svelte.ts — what the editor status bar needs to show the
  * project's language-server controls.
  *
- * The controls live in the utility strip along the bottom of the shell, but everything
+ * The controls live in the editor status bar, but everything
  * they show and everything they do belongs to `EditorPanel.svelte`: it is the
  * panel that asks the desktop app for the server's status, listens for pushed
  * updates, remembers the per-project choice and starts or stops the server.

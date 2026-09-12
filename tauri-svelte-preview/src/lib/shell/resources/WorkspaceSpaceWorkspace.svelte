@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { formatClockTime } from '$lib/shell/dateFormat.ts';
-  import { scanWorkspaceSpaceRoots, workspaceSpaceState } from './workspaceSpaceStore.svelte.ts';
+  import { releaseWorkspaceSpaceScan, scanWorkspaceSpaceRoots, workspaceSpaceState } from './workspaceSpaceStore.svelte.ts';
   import { diskProtectionLabel, filterWorkspaceEntries, reclaimableBytes } from './workspaceSpaceViewModel.ts';
   import { formatBytes } from './resourceViewModel.ts';
   import { resourceService } from './resourceService.ts';
@@ -19,6 +20,8 @@
   let workspaceFilter = $state('');
   let deleting = $state(false);
   let lastReceipt = $state<string | null>(null);
+
+  onDestroy(releaseWorkspaceSpaceScan);
 
   let report = $derived(workspaceSpaceState.report);
   let selectableEntries = $derived(report?.entries.filter((entry) => entry.protection === 'safe-candidate' && reclaimableBytes(entry) > 0) ?? []);

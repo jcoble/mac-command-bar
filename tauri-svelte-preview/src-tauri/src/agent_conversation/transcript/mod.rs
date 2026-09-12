@@ -538,7 +538,10 @@ mod tests {
         match tool.native.as_ref().expect("it is a tool event") {
             AgentConversationPayload::Tool { output, name, .. } => {
                 assert_eq!(output.as_deref(), Some("running 3 tests\nall passed"));
-                assert!(name.is_empty(), "a result names no tool; the call already did");
+                assert!(
+                    name.is_empty(),
+                    "a result names no tool; the call already did"
+                );
             }
             other => panic!("expected Tool, got {other:?}"),
         }
@@ -599,7 +602,11 @@ mod tests {
             line.as_bytes(),
         );
         assert_eq!(records.len(), 1, "one record, and it is the compaction");
-        match records[0].native.as_ref().expect("it is a compaction event") {
+        match records[0]
+            .native
+            .as_ref()
+            .expect("it is a compaction event")
+        {
             AgentConversationPayload::ContextCompaction {
                 trigger,
                 pre_tokens,
@@ -738,23 +745,24 @@ mod tests {
         let claude = r#"{"type":"assistant","uuid":"a1","sessionId":"s1","isSidechain":false,"message":{"content":[{"type":"text","text":"Reading it now"},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/one.rs","limit":120}}]}}"#;
         let codex = r#"{"type":"response_item","payload":{"type":"function_call","id":"fc_1","name":"exec_command","arguments":"{\"cmd\":\"git status --short\"}","call_id":"call_1"}}"#;
 
-        let records = parse_durable_line(AgentConversationProvider::Claude, "s1", claude.as_bytes())
-            .into_iter()
-            .chain(parse_durable_line(
-                AgentConversationProvider::Codex,
-                "s1",
-                codex.as_bytes(),
-            ))
-            .filter_map(|record| match record.native {
-                Some(AgentConversationPayload::Tool {
-                    item_id,
-                    name,
-                    summary,
-                    ..
-                }) => Some((item_id, name, summary)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let records =
+            parse_durable_line(AgentConversationProvider::Claude, "s1", claude.as_bytes())
+                .into_iter()
+                .chain(parse_durable_line(
+                    AgentConversationProvider::Codex,
+                    "s1",
+                    codex.as_bytes(),
+                ))
+                .filter_map(|record| match record.native {
+                    Some(AgentConversationPayload::Tool {
+                        item_id,
+                        name,
+                        summary,
+                        ..
+                    }) => Some((item_id, name, summary)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
 
         assert_eq!(
             records,

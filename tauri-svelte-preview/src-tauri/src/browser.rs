@@ -1113,6 +1113,12 @@ impl BrowserRegistry {
                     "Timed out waiting for the page snapshot",
                 )
             })??;
+        // Snapshotting can outlive the tab that requested it. Revalidate after
+        // the await so a released workspace cannot receive a late still.
+        {
+            let workspaces = self.validate_target(&target)?;
+            Self::require_tab(&workspaces, &target)?;
+        }
         Ok(BrowserMarkupCapture {
             mime_type: "image/png".to_string(),
             bytes,
@@ -2256,6 +2262,7 @@ mod tests {
         set_bounds_calls: AtomicUsize,
         evals: Mutex<Vec<String>>,
         snapshot_never_answers: bool,
+        snapshot_delay: Option<Duration>,
     }
 
     impl BrowserView for FakeView {
@@ -2297,6 +2304,12 @@ mod tests {
             if self.snapshot_never_answers {
                 return Box::pin(std::future::pending());
             }
+            if let Some(delay) = self.snapshot_delay {
+                return Box::pin(async move {
+                    tokio::time::sleep(delay).await;
+                    Ok((vec![1, 2, 3], 4, 5))
+                });
+            }
             Box::pin(std::future::ready(Ok((vec![1, 2, 3], 4, 5))))
         }
 
@@ -2334,6 +2347,23 @@ mod tests {
         ) -> Result<Arc<dyn BrowserView>, BrowserCommandError> {
             Ok(Arc::new(FakeView {
                 snapshot_never_answers: true,
+                ..FakeView::default()
+            }))
+        }
+    }
+
+    struct DelayedSnapshotFactory;
+
+    impl BrowserViewFactory for DelayedSnapshotFactory {
+        fn create(
+            &self,
+            _app: Option<&tauri::AppHandle>,
+            _input: &BrowserTabInput,
+            _profile: &BrowserProfile,
+            _callbacks: BrowserViewCallbacks,
+        ) -> Result<Arc<dyn BrowserView>, BrowserCommandError> {
+            Ok(Arc::new(FakeView {
+                snapshot_delay: Some(Duration::from_millis(30)),
                 ..FakeView::default()
             }))
         }
@@ -2454,6 +2484,28 @@ mod tests {
         assert_eq!(error.code, BrowserErrorCode::Native);
         assert_eq!(error.message, "Timed out waiting for the page snapshot");
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn capture_rejects_a_tab_released_while_snapshotting() {
+        let registry = BrowserRegistry::with_factory(Arc::new(DelayedSnapshotFactory));
+        let capture_target = target("workspace", "tab", 1);
+        registry
+            .create_tab(
+                None,
+                input("workspace", "tab", 1, "https://example.test/"),
+                Arc::new(FakeSink::default()),
+            )
+            .unwrap();
+
+        let capture = registry.capture(capture_target.clone());
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            registry.close_tab(capture_target).unwrap();
+        };
+        let (result, ()) = tokio::join!(capture, release);
+
+        assert_eq!(result.unwrap_err().code, BrowserErrorCode::UnknownTab);
     }
 
     #[tokio::test(flavor = "current_thread")]

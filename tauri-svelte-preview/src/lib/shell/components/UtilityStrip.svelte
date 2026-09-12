@@ -20,7 +20,6 @@
   import ChartNoAxesCombined from '@lucide/svelte/icons/chart-no-axes-combined';
   import Cpu from '@lucide/svelte/icons/cpu';
   import Settings from '@lucide/svelte/icons/settings';
-  import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
 
   import {
     formatResourceBytes,
@@ -98,7 +97,6 @@
   >
     <Settings class="glyph" strokeWidth={1.6} aria-hidden="true" />
   </button>
-  <LanguageIntelligenceControls />
   <button
     type="button"
     class="utility resources"

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createFakeBrowserBackend } from '../src/lib/shell/browser/browserBackend.ts';
+
+globalThis.$state = (value) => value;
+
+const { createFakeBrowserBackend } = await import(
+  '../src/lib/shell/browser/browserBackend.ts'
+);
 
 function testTauriBackendWrapsEveryCommandInInputKey() {
   const source = readFileSync(new URL('../src/lib/shell/browser/browserBackend.ts', import.meta.url), 'utf8');

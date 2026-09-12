@@ -653,6 +653,76 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   assert.equal(store.getConversationSession('owned-poisoned').agentItems[0].content[0].text, 'Recovered answer');
 }
 
+// Snapshot replay combines stored streaming chunks before rebuilding the two
+// display projections. The final answer stays identical without allocating
+// every intermediate string that was visible only while the answer was live.
+{
+  const ownedId = 'owned-streamed-snapshot';
+  const chunks = Array.from({ length: 650 }, (_, index) => `chunk-${index};`);
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId,
+      provider: 'codex',
+      generation: 1,
+      state: 'connected',
+      nativeSessionId: 'thread-streamed'
+    },
+    lastSequence: chunks.length,
+    events: chunks.map((delta, index) => ({
+      ownedId,
+      provider: 'codex',
+      generation: 1,
+      sequence: index + 1,
+      timestampMs: 400 + index,
+      payload: { kind: 'assistantDelta', itemId: 'assistant-streamed', delta }
+    }))
+  });
+  const restored = store.getConversationSession(ownedId);
+  const expected = chunks.join('');
+  assert.equal(restored.timeline[0].text, expected);
+  assert.equal(restored.agentItems[0].content[0].text, expected);
+  assert.equal(restored.loadedEvents.length, chunks.length);
+}
+
+// Repeated full tool progress is one stored tool after snapshot replay. The
+// call keeps its original position and the final update keeps the latest diff.
+{
+  const ownedId = 'owned-repeated-tool-snapshot';
+  store.applyAgentConversationSnapshot({
+    connection: {
+      ownedId,
+      provider: 'codex',
+      generation: 1,
+      state: 'connected',
+      nativeSessionId: 'thread-repeated-tool'
+    },
+    lastSequence: 4,
+    events: [
+      {
+        ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 500,
+        payload: { kind: 'tool', itemId: 'tool-diff', name: 'Apply file changes', state: 'started' }
+      },
+      {
+        ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 510,
+        payload: { kind: 'tool', itemId: 'tool-diff', name: '', state: 'updated', path: 'src/a.ts', diff: '-old\n+first' }
+      },
+      {
+        ownedId, provider: 'codex', generation: 1, sequence: 3, timestampMs: 520,
+        payload: { kind: 'tool', itemId: 'tool-diff', name: '', state: 'updated', path: 'src/a.ts', diff: '-old\n+final' }
+      },
+      {
+        ownedId, provider: 'codex', generation: 1, sequence: 4, timestampMs: 530,
+        payload: { kind: 'tool', itemId: 'tool-diff', name: '', state: 'completed' }
+      }
+    ]
+  });
+  const restored = store.getConversationSession(ownedId);
+  assert.equal(restored.timeline[0].name, 'Apply file changes');
+  assert.equal(restored.timeline[0].state, 'completed');
+  assert.equal(restored.timeline[0].diff, '-old\n+final');
+  assert.equal(restored.loadedEvents.filter((event: AgentConversationEvent) => event.payload.kind === 'tool').length, 2);
+}
+
 // A backend-sized snapshot is rebuilt once without losing the bounded event
 // inspector or duplicating streamed assistant content on a second read.
 {

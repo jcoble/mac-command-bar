@@ -42,6 +42,7 @@ pub(crate) fn begin_source_directory_read() -> SourceDirectoryReadGuard {
 
 pub struct ResourceRegistry {
     generation: AtomicU64,
+    disk_scan_generation: Arc<AtomicU64>,
     active_source_root: Arc<Mutex<Option<PathBuf>>>,
     sample_system: Arc<Mutex<System>>,
     sampled_process_ids: Arc<Mutex<Vec<u32>>>,
@@ -51,6 +52,7 @@ impl Default for ResourceRegistry {
     fn default() -> Self {
         Self {
             generation: AtomicU64::default(),
+            disk_scan_generation: Arc::new(AtomicU64::default()),
             active_source_root: Arc::new(Mutex::new(None)),
             sample_system: Arc::new(Mutex::new(System::new())),
             sampled_process_ids: Arc::new(Mutex::new(Vec::new())),
@@ -290,7 +292,22 @@ pub async fn read_resource_snapshot(
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
 ) -> Result<ResourceSnapshot, String> {
     let generation = next_generation(&registry);
-    read_resource_snapshot_at_generation(generation, &terminal_registry, &agent_runtime)
+    let terminal_registry = terminal_registry.inner().clone();
+    let agent_runtime = agent_runtime.inner().clone();
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+        read_resource_snapshot_at_generation(generation, &terminal_registry, &agent_runtime)
+    })
+    .await
+    .map_err(|error| format!("Resource inventory task failed: {error}"))??;
+    if registry.generation.load(Ordering::Relaxed) != generation {
+        return Err("Resource inventory cancelled".to_string());
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn cancel_resource_snapshot(registry: State<'_, ResourceRegistry>) {
+    registry.generation.fetch_add(1, Ordering::Relaxed);
 }
 
 fn read_resource_snapshot_at_generation(
@@ -1101,7 +1118,11 @@ fn build_resource_sample(
     app_parts.sort_by(|left, right| {
         (left.pid != app_pid)
             .cmp(&(right.pid != app_pid))
-            .then_with(|| right.physical_footprint_bytes.cmp(&left.physical_footprint_bytes))
+            .then_with(|| {
+                right
+                    .physical_footprint_bytes
+                    .cmp(&left.physical_footprint_bytes)
+            })
             .then_with(|| left.pid.cmp(&right.pid))
     });
 
@@ -1111,13 +1132,8 @@ fn build_resource_sample(
             claims.contains_key(&process.pid) || app_process_ids.contains(&process.pid)
         })
         .collect::<Vec<_>>();
-    let process_categories = resource_process_categories(
-        app_pid,
-        processes,
-        &claims,
-        &app_process_ids,
-        owners,
-    );
+    let process_categories =
+        resource_process_categories(app_pid, processes, &claims, &app_process_ids, owners);
     ResourceSample {
         generated_at_ms,
         totals: ResourceSampleTotals {
@@ -1131,9 +1147,7 @@ fn build_resource_sample(
             active_source_directory_reads: ACTIVE_SOURCE_DIRECTORY_READS.load(Ordering::Relaxed),
         },
         diagnostics: ResourceDiagnostics::default(),
-        app: ResourceSampleApp {
-            parts: app_parts,
-        },
+        app: ResourceSampleApp { parts: app_parts },
         process_categories,
         groups,
     }
@@ -1241,6 +1255,7 @@ fn heuristic_resource_path_labels(path: &Path) -> ResourceIdentity {
 
 #[tauri::command]
 pub async fn read_resource_disk_scan(
+    registry: State<'_, ResourceRegistry>,
     roots: Vec<ResourceDiskRootRequest>,
     max_depth: Option<usize>,
     max_entries: Option<usize>,
@@ -1259,13 +1274,30 @@ pub async fn read_resource_disk_scan(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    scan_disk_roots(
-        &roots,
-        DiskScanOptions {
-            max_depth: max_depth.unwrap_or(3),
-            max_entries: max_entries.unwrap_or(2_000),
-        },
-    )
+    let generation = registry
+        .disk_scan_generation
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
+    let active_generation = Arc::clone(&registry.disk_scan_generation);
+    tauri::async_runtime::spawn_blocking(move || {
+        scan_disk_roots(
+            &roots,
+            DiskScanOptions {
+                max_depth: max_depth.unwrap_or(3),
+                max_entries: max_entries.unwrap_or(2_000),
+            },
+            || active_generation.load(Ordering::Relaxed) == generation,
+        )
+    })
+    .await
+    .map_err(|error| format!("Resource disk scan task failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn cancel_resource_disk_scan(registry: State<'_, ResourceRegistry>) {
+    registry
+        .disk_scan_generation
+        .fetch_add(1, Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -1764,6 +1796,7 @@ fn scan_disk_entry(request: &ResourceCleanupRequest, canonical: &PathBuf) -> Res
             max_depth: request.max_depth.unwrap_or(3),
             max_entries: request.max_entries.unwrap_or(2_000),
         },
+        || true,
     )?;
     report
         .entries
@@ -2130,7 +2163,14 @@ mod tests {
             90,
         ));
         // Not a WebKit helper at all.
-        assert!(!webkit_helper_of_app("node", Some(500), 1_000, 100, Some(500), 90));
+        assert!(!webkit_helper_of_app(
+            "node",
+            Some(500),
+            1_000,
+            100,
+            Some(500),
+            90
+        ));
     }
 
     #[test]
@@ -2150,11 +2190,12 @@ mod tests {
             .iter()
             .find(|process| process.pid == std::process::id())
             .expect("the running process is observed");
-        assert_eq!(
-            Some(this.physical_footprint_bytes),
-            mcb_core::scanners::resources::phys_footprint_bytes(std::process::id()),
-            "the footprint is what is reported"
+        let current = mcb_core::scanners::resources::phys_footprint_bytes(std::process::id())
+            .expect("the running process has a physical footprint");
+        assert!(this.physical_footprint_bytes > 0);
+        assert!(
+            this.physical_footprint_bytes.abs_diff(current) <= 4 * 1024 * 1024,
+            "two adjacent live samples should describe the same process footprint"
         );
     }
-
 }

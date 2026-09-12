@@ -86,9 +86,10 @@
   interface Props {
     root?: string;
     rootAvailable?: boolean;
+    historyPath?: string;
   }
-  let { root = '', rootAvailable = true }: Props = $props();
-  let requestedRoot = '';
+  let { root = '', rootAvailable = true, historyPath = '' }: Props = $props();
+  let requestedHistory = '';
   let contextMenu = $state.raw<SourceControlMenuSnapshot | null>(null);
 
   const historyPanel = $state(createGitPanelState());
@@ -106,8 +107,10 @@
 
   $effect(() => {
     const targetRoot = rootAvailable ? root.trim() : '';
-    if (targetRoot === requestedRoot) return;
-    requestedRoot = targetRoot;
+    const targetPath = historyPath.trim();
+    const requestKey = `${targetRoot}\u0000${targetPath}`;
+    if (requestKey === requestedHistory) return;
+    requestedHistory = requestKey;
     if (!targetRoot) {
       historyService.releaseHistorySurface();
       historyCommitFilesService.release();
@@ -116,7 +119,8 @@
     historyService.activate(targetRoot);
     void historyService.refreshStatus();
     historyCommitFilesService.activate(targetRoot);
-    historyService.ensureHistorySurface();
+    if (targetPath) void historyService.showFileHistory(targetRoot, targetPath);
+    else historyService.ensureHistorySurface();
   });
 
   /** One row of the table is exactly this tall, so its SVG can be drawn to size. */

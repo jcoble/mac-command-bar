@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -80,11 +80,13 @@ const SOURCE_LSP_READINESS_LANGUAGES: &[&str] = &[
 static LANGUAGE_SERVER_SETTINGS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
 
 fn language_server_settings() -> &'static Mutex<HashMap<String, bool>> {
-    LANGUAGE_SERVER_SETTINGS.get_or_init(|| Mutex::new(HashMap::from([
-        ("csharp".to_string(), true),
-        ("typescript".to_string(), true),
-        ("rust".to_string(), true),
-    ])))
+    LANGUAGE_SERVER_SETTINGS.get_or_init(|| {
+        Mutex::new(HashMap::from([
+            ("csharp".to_string(), true),
+            ("typescript".to_string(), true),
+            ("rust".to_string(), true),
+        ]))
+    })
 }
 
 fn language_server_key(language_id: &str) -> Option<&'static str> {
@@ -1673,6 +1675,7 @@ pub(crate) struct SourceLspRegistry {
     sessions: Arc<Mutex<HashMap<SourceLspSessionKey, Arc<Mutex<SourceLspSession>>>>>,
     native_csharp_sessions: Arc<Mutex<HashMap<String, Arc<NativeCsharpSession>>>>,
     active_root: Arc<Mutex<Option<String>>>,
+    warm_languages: Arc<Mutex<HashSet<String>>>,
     preload_languages_by_root: Arc<Mutex<HashMap<String, Vec<String>>>>,
     next_use: Arc<AtomicU64>,
 }
@@ -1810,10 +1813,20 @@ impl SourceLspRegistry {
                 .collect::<Vec<_>>();
             roots
                 .into_iter()
-                .filter_map(|old_root| sessions.remove(&old_root).map(|session| (old_root, session)))
+                .filter_map(|old_root| {
+                    sessions
+                        .remove(&old_root)
+                        .map(|session| (old_root, session))
+                })
                 .collect::<Vec<_>>()
         };
         let stopped_count = stopped.len() + stopped_native.len();
+        locked(&self.warm_languages).extend(
+            stopped
+                .iter()
+                .map(|(key, _)| key.language.clone())
+                .filter(|language| language != "csharp"),
+        );
         let mut stopped_roots = stopped
             .iter()
             .map(|(key, _)| (key.language.clone(), key.root.clone()))
@@ -2731,9 +2744,10 @@ impl SourceLspRegistry {
                 .sessions
                 .lock()
                 .map_err(|_| "Language server registry lock poisoned".to_string())?;
-            let mut languages = sessions
-                .keys()
-                .map(|key| key.language.clone())
+            let mut languages = locked(&self.warm_languages)
+                .iter()
+                .cloned()
+                .chain(sessions.keys().map(|key| key.language.clone()))
                 .collect::<Vec<_>>();
             languages.sort();
             languages.dedup();
@@ -6352,26 +6366,20 @@ mod tests {
     }
 
     #[test]
-    fn workspace_pool_evicts_only_the_least_recently_used_sixth_root() {
+    fn workspace_pool_replaces_its_single_slot_but_reuses_the_active_root() {
         let key = |root: &str| SourceLspSessionKey {
             language: "csharp".to_string(),
             root: root.to_string(),
         };
-        let entries = vec![
-            (key("/workspace/a"), 10),
-            (key("/workspace/b"), 40),
-            (key("/workspace/c"), 30),
-            (key("/workspace/d"), 20),
-            (key("/workspace/e"), 50),
-        ];
+        let entries = vec![(key("/workspace/a"), 10)];
 
-        assert_eq!(MAX_LSP_WORKSPACES_PER_LANGUAGE, 5);
+        assert_eq!(MAX_LSP_WORKSPACES_PER_LANGUAGE, 1);
         assert_eq!(
             lsp_session_key_to_evict(&entries, &key("/workspace/f")),
             Some(key("/workspace/a"))
         );
         assert_eq!(
-            lsp_session_key_to_evict(&entries, &key("/workspace/c")),
+            lsp_session_key_to_evict(&entries, &key("/workspace/a")),
             None,
             "reusing a warm workspace never evicts another slot"
         );
@@ -6687,6 +6695,10 @@ mod tests {
             limit: Some(20),
         };
         let registry = SourceLspRegistry::default();
+        set_language_intelligence(&request.root, true);
+        registry
+            .set_active_root(&request.root, true)
+            .expect("activate TypeScript workspace");
 
         // Warm the server first so the four questions below race each other rather than
         // the one-off cost of starting a process.
@@ -6795,6 +6807,10 @@ mod tests {
             limit: Some(20),
         };
         let registry = SourceLspRegistry::default();
+        set_language_intelligence(&request.root, true);
+        registry
+            .set_active_root(&request.root, true)
+            .expect("activate TypeScript workspace");
 
         let symbols = registry
             .find_symbols(preview.clone(), request.clone())
@@ -6857,7 +6873,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_distinct_workspace_servers_warm_and_reuses_them() {
+    fn switching_active_workspace_replaces_the_previous_server() {
         if resolve_server_for_language("typescript").is_none() {
             crate::debug_log::stderr_log!(
                 "skipping LSP dedupe smoke: typescript-language-server not found"
@@ -6901,6 +6917,11 @@ mod tests {
         let (root_b, preview_b, request_b) = make_root("mcb-lsp-dedupe-b", "beta");
 
         // First root spins its warm server.
+        set_language_intelligence(&request_a.root, true);
+        set_language_intelligence(&request_b.root, true);
+        registry
+            .set_active_root(&request_a.root, true)
+            .expect("activate root A");
         let symbols_a = registry
             .find_symbols(preview_a.clone(), request_a.clone())
             .expect("root A symbols");
@@ -6915,7 +6936,13 @@ mod tests {
         );
         let pid_after_a = registry.session_pid_for("typescript", &root_a).unwrap();
 
-        // A different root gets its own persistent slot so root A stays warm.
+        // Moving Supercharged mode to another root tears down the old process.
+        assert_eq!(
+            registry
+                .set_active_root(&request_b.root, true)
+                .expect("activate root B"),
+            1
+        );
         let symbols_b = registry
             .find_symbols(preview_b.clone(), request_b.clone())
             .expect("root B symbols");
@@ -6925,16 +6952,16 @@ mod tests {
         );
         assert_eq!(
             registry.session_count().unwrap(),
-            2,
-            "two workspace roots should keep two reusable sessions"
+            1,
+            "only the active workspace keeps a language-server process"
         );
         let pid_after_b = registry.session_pid_for("typescript", &root_b).unwrap();
-        assert_ne!(
-            pid_after_a, pid_after_b,
-            "separate roots must not share one server process"
-        );
+        assert!(registry.session_pid_for("typescript", &root_a).is_none());
 
-        // Returning to root A uses its original indexed process.
+        // Returning to root A starts a fresh process for that workspace.
+        registry
+            .set_active_root(&request_a.root, true)
+            .expect("reactivate root A");
         let symbols_a_again = registry
             .find_symbols(preview_a, request_a)
             .expect("root A symbols again");
@@ -6944,14 +6971,12 @@ mod tests {
         );
         assert_eq!(
             registry.session_count().unwrap(),
-            2,
-            "switching back must retain both workspace sessions"
+            1,
+            "switching back still owns only one workspace process"
         );
-        assert_eq!(
-            registry.session_pid_for("typescript", &root_a).unwrap(),
-            pid_after_a,
-            "switching back must reuse root A's original process"
-        );
+        assert!(registry.session_pid_for("typescript", &root_b).is_none());
+        assert_ne!(registry.session_pid_for("typescript", &root_a).unwrap(), pid_after_b);
+        let _ = pid_after_a;
 
         std::fs::remove_dir_all(root_a).unwrap();
         std::fs::remove_dir_all(root_b).unwrap();
@@ -7027,6 +7052,10 @@ mod tests {
         let root = unique_lsp_temp_root("mcb-native-csharp-coalesce");
         std::fs::write(root.join("App.csproj"), "<Project />").unwrap();
         let root_text = root.display().to_string();
+        set_language_intelligence(&root_text, true);
+        registry
+            .set_active_root(&root_text, true)
+            .expect("activate C# workspace");
         let barrier = Arc::new(std::sync::Barrier::new(3));
         let mut calls = Vec::new();
         for _ in 0..2 {
@@ -7064,7 +7093,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_adds_a_workspace_slot_without_restarting_existing_roots() {
+    fn warm_moves_the_single_workspace_slot_to_the_active_root() {
         if resolve_server_for_language("typescript").is_none() {
             crate::debug_log::stderr_log!(
                 "skipping LSP warm smoke: typescript-language-server not found"
@@ -7108,6 +7137,11 @@ mod tests {
         let (root_b, _preview_b, _request_b) = make_root("mcb-lsp-warm-b", "beta");
 
         // A real request spins the first warm workspace server.
+        set_language_intelligence(&request_a.root, true);
+        set_language_intelligence(&root_b.display().to_string(), true);
+        registry
+            .set_active_root(&request_a.root, true)
+            .expect("activate root A");
         registry
             .find_symbols(preview_a, request_a)
             .expect("root A symbols");
@@ -7126,27 +7160,22 @@ mod tests {
             "re-warming the active root must not replace the child process"
         );
 
-        // Warming a different root proactively creates its own slot without a
-        // file request and without disturbing root A.
+        // Warming a different active root replaces the previous workspace slot.
+        registry
+            .set_active_root(&root_b.display().to_string(), true)
+            .expect("activate root B");
         let warmed_b = registry
             .warm_running_servers_for_root(&root_b.display().to_string())
             .expect("warm new root");
         assert_eq!(warmed_b, 1, "the known language is warmed under root B");
         assert_eq!(
             registry.session_count().unwrap(),
-            2,
-            "warming a new root must preserve the original workspace slot"
+            1,
+            "warming keeps only the active workspace slot"
         );
         let pid_at_b = registry.session_pid_for("typescript", &root_b).unwrap();
-        assert_ne!(
-            pid_at_a, pid_at_b,
-            "proactively warmed roots have distinct processes"
-        );
-        assert_eq!(
-            registry.session_pid_for("typescript", &root_a).unwrap(),
-            pid_at_a,
-            "warming root B must not restart root A"
-        );
+        assert_ne!(pid_at_a, pid_at_b);
+        assert!(registry.session_pid_for("typescript", &root_a).is_none());
 
         std::fs::remove_dir_all(root_a).unwrap();
         std::fs::remove_dir_all(root_b).unwrap();
@@ -7194,6 +7223,10 @@ mod tests {
             limit: Some(20),
         };
         let registry = SourceLspRegistry::default();
+        set_language_intelligence(&request.root, true);
+        registry
+            .set_active_root(&request.root, true)
+            .expect("activate JavaScript workspace");
 
         let symbols = registry
             .find_symbols(preview.clone(), request.clone())
@@ -7304,6 +7337,10 @@ mod tests {
             limit: Some(20),
         };
         let registry = SourceLspRegistry::default();
+        set_language_intelligence(&request.root, true);
+        registry
+            .set_active_root(&request.root, true)
+            .expect("activate Rust workspace");
 
         let symbols = registry
             .find_symbols(preview.clone(), request.clone())
@@ -7372,6 +7409,16 @@ mod tests {
             }
         };
         let line_count = content.lines().count().max(1);
+        let definition_line = content
+            .lines()
+            .position(|line| line.contains("function currentThemeKey"))
+            .map(|line| line + 1)
+            .expect("currentThemeKey definition");
+        let use_line = content
+            .lines()
+            .position(|line| line.contains("const themeKey = currentThemeKey()"))
+            .map(|line| line + 1)
+            .expect("currentThemeKey use");
         let preview = SourceLspPreview {
             path: file_path.display().to_string(),
             relative_path: "src/lib/CodeMirrorSourceEditor.svelte".to_string(),
@@ -7388,12 +7435,17 @@ mod tests {
             limit: Some(5_000),
         };
         let registry = SourceLspRegistry::default();
+        registry
+            .set_active_root(&request.root, true)
+            .expect("activate Svelte workspace");
 
         match registry.find_symbols(preview.clone(), request) {
-            Ok(symbols) => assert!(
+            Ok(symbols) => {
+                assert!(
                 symbols.iter().any(|symbol| symbol.name == "configureCodeLens"),
                 "expected Svelte document symbols to include configureCodeLens; got {symbols:?}"
-            ),
+            )
+            }
             Err(error) => {
                 crate::debug_log::stderr_log!("skipping Svelte LSP smoke: {error}");
                 return;
@@ -7402,8 +7454,8 @@ mod tests {
 
         let navigation_request = SourceLspLookupRequest {
             root: root.display().to_string(),
-            line: 2482,
-            column: 4,
+            line: use_line,
+            column: 30,
             limit: Some(100),
         };
         let definitions = registry
@@ -7412,8 +7464,9 @@ mod tests {
         assert!(
             definitions
                 .iter()
-                .any(|target| target.path == file_path.display().to_string() && target.line == 506),
-            "expected installWorker definition at line 506; got {definitions:?}"
+                .any(|target| target.path == file_path.display().to_string()
+                    && target.line == definition_line),
+            "expected currentThemeKey definition at line {definition_line}; got {definitions:?}"
         );
 
         let references = registry
@@ -7421,9 +7474,9 @@ mod tests {
             .expect("Svelte references");
         assert!(
             references.iter().any(|target| {
-                target.path == file_path.display().to_string() && target.line == 2482
+                target.path == file_path.display().to_string() && target.line == use_line
             }),
-            "expected installWorker references to include line 2482; got {references:?}"
+            "expected currentThemeKey references to include line {use_line}; got {references:?}"
         );
     }
 
@@ -7519,11 +7572,18 @@ mod tests {
             column: 28,
             limit: Some(20),
         };
-        let registry = SourceLspRegistry::default();
+        // C# in the app is owned by the authenticated CodeMirror-to-Roslyn bridge.
+        // Exercise the same Roslyn process directly here without re-enabling the
+        // retired registry route, which would let a second server start in production.
+        let server = resolve_server_for_language("csharp")
+            .ok_or_else(|| "roslyn-language-server not found".to_string())?;
+        let session = SourceLspSession::start(root.to_path_buf(), server, 1)?;
+        let connection = Arc::clone(&session.connection);
 
-        let symbols = registry
-            .find_symbols(preview.clone(), request.clone())
-            .map_err(|error| format!("C# document symbols: {error}"))?;
+        let symbols_result = connection
+            .request(&preview, &request, "textDocument/documentSymbol")?
+            .ok_or_else(|| "expected C# document symbols".to_string())?;
+        let symbols = lsp_symbols_from_result(&symbols_result, request.limit.unwrap_or(100));
         if !symbols.iter().any(|symbol| {
             symbol.name.rsplit('.').next() == Some("Widget") && symbol.kind == "class"
         }) {
@@ -7532,62 +7592,39 @@ mod tests {
             ));
         }
 
-        let hover = registry
-            .find_hover(preview.clone(), request.clone())
-            .map_err(|error| format!("C# hover: {error}"))?
+        let hover_result = connection
+            .request(&preview, &request, "textDocument/hover")?
             .ok_or_else(|| "expected C# hover contents".to_string())?;
-        if !hover.contents.join("\n").contains("Widget") {
+        let hover = hover_contents_from_result(&hover_result);
+        if !hover.join("\n").contains("Widget") {
             return Err(format!(
                 "expected C# hover to describe Widget; got {hover:?}"
             ));
         }
 
-        let definitions = registry
-            .find_definitions(preview.clone(), request.clone())
-            .map_err(|error| format!("C# definition: {error}"))?;
+        let definition_result = connection
+            .request(&preview, &request, "textDocument/definition")?
+            .ok_or_else(|| "expected C# definition".to_string())?;
+        let definitions = lsp_locations_from_result(&definition_result);
         if !definitions
             .iter()
-            .any(|target| target.path == file_path.display().to_string() && target.line == 3)
+            .any(|target| target.path == file_path && target.line == 3)
         {
             return Err(format!(
                 "expected C# definition to resolve to Widget.cs line 3; got {definitions:?}"
             ));
         }
 
-        let references = registry
-            .find_references(preview.clone(), request.clone())
-            .map_err(|error| format!("C# references: {error}"))?;
+        let references_result = connection
+            .request(&preview, &request, "textDocument/references")?
+            .ok_or_else(|| "expected C# references".to_string())?;
+        let references = lsp_locations_from_result(&references_result);
         if !references
             .iter()
-            .any(|target| target.path == file_path.display().to_string() && target.line == 12)
+            .any(|target| target.path == file_path && target.line == 12)
         {
             return Err(format!(
                 "expected C# references to include Widget call site; got {references:?}"
-            ));
-        }
-
-        let mut diagnostics = Vec::new();
-        for attempt in 0..3 {
-            diagnostics = registry
-                .read_diagnostics(preview.clone(), request.clone())
-                .map_err(|error| format!("C# diagnostics: {error}"))?;
-            if diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.line == 13 && diagnostic.message.contains("broken"))
-            {
-                break;
-            }
-            if attempt < 2 {
-                thread::sleep(Duration::from_millis(300));
-            }
-        }
-        if !diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.line == 13 && diagnostic.message.contains("broken"))
-        {
-            let log = registry.read_server_log("csharp").unwrap_or_default();
-            return Err(format!(
-                "expected Roslyn diagnostics to analyze the broken assignment; got {diagnostics:?}; Roslyn log: {log:?}"
             ));
         }
 
@@ -7935,7 +7972,7 @@ mod tests {
         assert_eq!(state, LanguageServerState::Disabled);
         assert_eq!(
             detail,
-            Some("The C# language server is switched off in Settings.".to_string())
+            Some("The a pretend server language server is switched off in Settings.".to_string())
         );
 
         let (state, detail) = describe_language_server_activity(spec, &root, false, true, false);

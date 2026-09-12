@@ -2,6 +2,7 @@ pub mod acp;
 pub mod acp_client;
 mod packaged;
 pub mod process;
+pub mod updates;
 
 pub use acp::{AcpRuntimeAdapter, StructuredRuntimeHandle};
 pub use acp_client::AcpClient;
@@ -12,9 +13,9 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use sha2::{Digest, Sha256};
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::capabilities::{
     validate_manifest, AGY_ACP_VERSION, CLAUDE_AGENT_ACP_VERSION, CODEX_ACP_VERSION,
@@ -138,12 +139,20 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn bundled_from_environment() -> Result<Self, String> {
+        Self::bundled_from_environment_at(None)
+    }
+
+    pub fn bundled_from_environment_at(app_data_dir: Option<&Path>) -> Result<Self, String> {
         let configured_pair = |path_name: &str, hash_name: &str| match (
             std::env::var_os(path_name),
             std::env::var(hash_name).ok(),
         ) {
             (None, None) => Ok(None),
-            (Some(path), Some(hash)) => Ok(Some((path.into(), hash))),
+            (Some(path), Some(hash)) => Ok(Some(packaged::AdapterPackage {
+                executable: path.into(),
+                content_hash: hash,
+                version: String::new(),
+            })),
             _ => Err(
                 "Packaged ACP adapter paths and SHA-256 values must be configured together"
                     .to_string(),
@@ -154,15 +163,23 @@ impl ProviderRegistry {
             configured_pair("MCB_CLAUDE_AGENT_ACP_PATH", "MCB_CLAUDE_AGENT_ACP_SHA256")?;
         let mut antigravity = configured_pair("MCB_AGY_ACP_PATH", "MCB_AGY_ACP_SHA256")?;
         if codex.is_none() && claude.is_none() && antigravity.is_none() {
+            if let Some(app_data_dir) = app_data_dir {
+                match updates::discover_active(app_data_dir) {
+                    Ok(active) => (codex, claude, antigravity) = active,
+                    Err(error) => crate::debug_log::stderr_log!(
+                        "Ignoring invalid active provider adapters and using the bundled set: {error}"
+                    ),
+                }
+            }
+        }
+        if codex.is_none() && claude.is_none() && antigravity.is_none() {
             (codex, claude, antigravity) = packaged::discover()?;
         }
         if codex.is_none() || claude.is_none() || antigravity.is_none() {
             if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
                 if codex.is_none() {
-                    codex = discover_home_wrapper(
-                        &home,
-                        &["codex-acp-bridge.sh", "codex-acp-dev.sh"],
-                    )?;
+                    codex =
+                        discover_home_wrapper(&home, &["codex-acp-bridge.sh", "codex-acp-dev.sh"])?;
                 }
                 if claude.is_none() {
                     claude = discover_home_wrapper(&home, &["claude-acp-wrapper.sh"])?;
@@ -197,53 +214,53 @@ impl ProviderRegistry {
         })
     }
 
-    pub fn initial_manifests(
-        codex: Option<(PathBuf, String)>,
-        claude: Option<(PathBuf, String)>,
-        antigravity: Option<(PathBuf, String)>,
+    fn initial_manifests(
+        codex: Option<packaged::AdapterPackage>,
+        claude: Option<packaged::AdapterPackage>,
+        antigravity: Option<packaged::AdapterPackage>,
     ) -> Result<Self, String> {
         let mut manifests = Vec::new();
-        if let Some((codex_executable, codex_hash)) = codex {
+        if let Some(codex) = codex {
             manifests.push((
                 AgentConversationProvider::Codex,
                 AgentProviderManifest {
                     id: "codex-acp".into(),
                     display_name: "Codex".into(),
                     transport: ProviderTransport::AcpStdio,
-                    executable: codex_executable,
+                    executable: codex.executable,
                     args: Vec::new(),
-                    version: CODEX_ACP_VERSION.into(),
-                    content_hash: codex_hash,
+                    version: package_version(&codex.version, CODEX_ACP_VERSION),
+                    content_hash: codex.content_hash,
                     trusted_source: ProviderSource::Bundled,
                 },
             ));
         }
-        if let Some((claude_executable, claude_hash)) = claude {
+        if let Some(claude) = claude {
             manifests.push((
                 AgentConversationProvider::Claude,
                 AgentProviderManifest {
                     id: "claude-agent-acp".into(),
                     display_name: "Claude".into(),
                     transport: ProviderTransport::AcpStdio,
-                    executable: claude_executable,
+                    executable: claude.executable,
                     args: Vec::new(),
-                    version: CLAUDE_AGENT_ACP_VERSION.into(),
-                    content_hash: claude_hash,
+                    version: package_version(&claude.version, CLAUDE_AGENT_ACP_VERSION),
+                    content_hash: claude.content_hash,
                     trusted_source: ProviderSource::Bundled,
                 },
             ));
         }
-        if let Some((agy_executable, agy_hash)) = antigravity {
+        if let Some(antigravity) = antigravity {
             manifests.push((
                 AgentConversationProvider::Antigravity,
                 AgentProviderManifest {
                     id: "agy-acp".into(),
                     display_name: "Antigravity".into(),
                     transport: ProviderTransport::AcpStdio,
-                    executable: agy_executable,
+                    executable: antigravity.executable,
                     args: Vec::new(),
-                    version: AGY_ACP_VERSION.into(),
-                    content_hash: agy_hash,
+                    version: package_version(&antigravity.version, AGY_ACP_VERSION),
+                    content_hash: antigravity.content_hash,
                     trusted_source: ProviderSource::Bundled,
                 },
             ));
@@ -268,9 +285,9 @@ fn discover_home_wrappers(
     home: &Path,
 ) -> Result<
     (
-        Option<(PathBuf, String)>,
-        Option<(PathBuf, String)>,
-        Option<(PathBuf, String)>,
+        Option<packaged::AdapterPackage>,
+        Option<packaged::AdapterPackage>,
+        Option<packaged::AdapterPackage>,
     ),
     String,
 > {
@@ -280,13 +297,27 @@ fn discover_home_wrappers(
     Ok((codex, claude, antigravity))
 }
 
+fn package_version(version: &str, fallback: &str) -> String {
+    if version.is_empty() {
+        fallback.to_string()
+    } else {
+        version.to_string()
+    }
+}
+
 fn discover_home_wrapper(
     home: &Path,
     names: &[&str],
-) -> Result<Option<(PathBuf, String)>, String> {
+) -> Result<Option<packaged::AdapterPackage>, String> {
     let wrapper_dir = home.join(".mac-command-bar");
     executable_wrapper(&wrapper_dir, names)
-        .map(|path| file_sha256(&path).map(|hash| (path, hash)))
+        .map(|path| {
+            file_sha256(&path).map(|content_hash| packaged::AdapterPackage {
+                executable: path,
+                content_hash,
+                version: String::new(),
+            })
+        })
         .transpose()
 }
 
@@ -310,8 +341,12 @@ fn executable_wrapper(directory: &Path, names: &[&str]) -> Option<PathBuf> {
 }
 
 fn file_sha256(path: &Path) -> Result<String, String> {
-    let contents = std::fs::read(path)
-        .map_err(|error| format!("Could not read ACP adapter wrapper {}: {error}", path.display()))?;
+    let contents = std::fs::read(path).map_err(|error| {
+        format!(
+            "Could not read ACP adapter wrapper {}: {error}",
+            path.display()
+        )
+    })?;
     Ok(format!("{:x}", Sha256::digest(contents)))
 }
 
@@ -329,10 +364,14 @@ mod tests {
 
     #[test]
     fn initial_provider_manifests_pin_both_official_adapters() {
-        let hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let package = |version: &str| packaged::AdapterPackage {
+            executable: PathBuf::from("/bin/sh"),
+            content_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
+            version: version.into(),
+        };
         let registry = ProviderRegistry::initial_manifests(
-            Some((PathBuf::from("/bin/sh"), hash.clone())),
-            Some((PathBuf::from("/bin/sh"), hash)),
+            Some(package(CODEX_ACP_VERSION)),
+            Some(package(CLAUDE_AGENT_ACP_VERSION)),
             None,
         )
         .unwrap();
@@ -354,10 +393,30 @@ mod tests {
             .all(|(_, manifest)| !manifest.args.iter().any(|arg| arg.contains("@latest"))));
     }
 
+    #[test]
+    fn invalid_active_adapter_pointer_does_not_block_registry_startup() {
+        let app_data = std::env::temp_dir().join(format!(
+            "mcb-provider-active-fallback-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let adapter_root = app_data.join("provider-adapters");
+        std::fs::create_dir_all(&adapter_root).unwrap();
+        std::fs::write(
+            adapter_root.join("active.json"),
+            br#"{"directory":"../outside"}"#,
+        )
+        .unwrap();
+
+        assert!(ProviderRegistry::bundled_from_environment_at(Some(&app_data)).is_ok());
+
+        std::fs::remove_dir_all(app_data).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn home_wrapper_resolver_prefers_codex_bridge_and_hashes_executable_files() {
-        let home = std::env::temp_dir().join(format!("mcb-provider-wrappers-{}", uuid::Uuid::new_v4()));
+        let home =
+            std::env::temp_dir().join(format!("mcb-provider-wrappers-{}", uuid::Uuid::new_v4()));
         let wrapper_dir = home.join(".mac-command-bar");
         std::fs::create_dir_all(&wrapper_dir).unwrap();
 
@@ -371,15 +430,18 @@ mod tests {
         write_executable(&antigravity, b"agy", 0o644);
 
         let (codex, resolved_claude, resolved_antigravity) = discover_home_wrappers(&home).unwrap();
-        let (codex_path, codex_hash) = codex.unwrap();
-        assert_eq!(codex_path, bridge);
-        assert_eq!(codex_hash, "17f29b073143d8cd97b5bbe492bdeffec1c5fee55cc1fe2112c8b9335f8b6121");
-        assert_eq!(resolved_claude.unwrap().0, claude);
+        let codex = codex.unwrap();
+        assert_eq!(codex.executable, bridge);
+        assert_eq!(
+            codex.content_hash,
+            "17f29b073143d8cd97b5bbe492bdeffec1c5fee55cc1fe2112c8b9335f8b6121"
+        );
+        assert_eq!(resolved_claude.unwrap().executable, claude);
         assert!(resolved_antigravity.is_none());
 
         write_executable(&bridge, b"bridge", 0o644);
         let (codex_fallback, _, _) = discover_home_wrappers(&home).unwrap();
-        assert_eq!(codex_fallback.unwrap().0, legacy);
+        assert_eq!(codex_fallback.unwrap().executable, legacy);
 
         std::fs::remove_dir_all(home).unwrap();
     }

@@ -54,3 +54,16 @@ jobs:
           releaseBody: Download the signed Assembly update for macOS.
           releaseDraft: false
           prerelease: false
+
+      - name: Publish signed provider adapters
+        working-directory: tauri-svelte-preview
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          TARGET=$(rustc -vV | sed -n 's/^host: //p')
+          pnpm prepare:provider-release-assets -- "$TARGET"
+          MANIFEST="provider-release/$TARGET/provider-manifest-$TARGET.json"
+          pnpm exec tauri signer sign "$MANIFEST"
+          gh release upload "$GITHUB_REF_NAME" "provider-release/$TARGET/"* --clobber

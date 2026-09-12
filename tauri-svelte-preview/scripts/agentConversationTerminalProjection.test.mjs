@@ -8,6 +8,9 @@ const conversation = path.join(root, 'src-tauri/src/agent_conversation');
 const projectionPath = path.join(conversation, 'terminal_projection.rs');
 const projection = fs.readFileSync(projectionPath, 'utf8');
 const productionProjection = projection.split('#[cfg(test)]')[0];
+const manager = fs.readFileSync(path.join(conversation, 'manager.rs'), 'utf8');
+const main = fs.readFileSync(path.join(root, 'src-tauri/src/main.rs'), 'utf8');
+const projectionStreams = fs.readFileSync(path.join(root, 'src-tauri/src/projection_streams.rs'), 'utf8');
 const transcriptRoot = path.join(conversation, 'transcript');
 
 assert.equal(fs.existsSync(path.join(conversation, 'transcript.rs')), false, 'legacy monolithic transcript reader must be removed');
@@ -25,7 +28,13 @@ assert.match(projection, /MAX_RECONCILIATION_EVENTS/, 'reconciliation output mus
 assert.match(projection, /impl Drop for TerminalProjectionRegistry/, 'app-state drop must stop all watchers');
 assert.match(projection, /previous\.stop\(\)/, 'replacement must stop and join the prior watcher');
 assert.match(projection, /watcher\.stop\(\)/, 'explicit stop must stop and join the watcher');
-assert.match(projection, /TERMINAL_PROJECTION_EVENT: &str = "agent-conversation-event"/, 'projection must use the canonical frontend event channel');
+assert.match(productionProjection, /manager\.submit_terminal_projection\(/, 'projection must enter the shared conversation journal');
+assert.match(manager, /record_payload_for_session_and_dispatch\([\s\S]*AgentConversationPayload::TerminalProjection\(projection\)/,
+  'projected events must be journaled and dispatched through the shared manager');
+assert.match(main, /projection_streams\.publish_agent_event\(event\.clone\(\)\)/,
+  'the shared manager emitter must publish conversation events');
+assert.match(projectionStreams, /BoundedProjectionStream::new\("agent-conversation-event"\)/,
+  'conversation events must use the canonical bounded frontend stream');
 assert.doesNotMatch(productionProjection, /AgentEventType::(?:TurnStarted|ApprovalRequested|ItemStarted|ItemUpdated)/,
   'durable transcript projection must not invent live turns, approvals, or active item/tool state');
 assert.doesNotMatch(productionProjection, /portable_pty|CommandBuilder|spawn_command/,

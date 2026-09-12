@@ -38,7 +38,25 @@
   const MAX_RENDERED_LINES = 2000;
 
   const diff = $derived(gitPanel.selectedDiff);
-  const parsed = $derived(diff ? parseUnifiedDiff(diff.diff) : null);
+  const parsed = $derived.by(() => {
+    if (!diff) return null;
+
+    let unified = diff.diff;
+    if (!unified && diff.status === 'untracked' && diff.modifiedContent) {
+      const lines = diff.modifiedContent.replace(/\r\n/g, '\n').split('\n');
+      if (lines.at(-1) === '') lines.pop();
+      unified = [
+        `diff --git a/${diff.relativePath} b/${diff.relativePath}`,
+        'new file mode 100644',
+        '--- /dev/null',
+        `+++ b/${diff.relativePath}`,
+        `@@ -0,0 +1,${lines.length} @@`,
+        ...lines.map((line) => `+${line}`)
+      ].join('\n');
+    }
+
+    return parseUnifiedDiff(unified);
+  });
   const summary = $derived(parsed ? summarizeParsedDiff(parsed) : '');
   const hasNativeModels = $derived(
     diff?.originalContent !== null &&
@@ -87,6 +105,12 @@
     return value === null ? '' : String(value);
   }
 
+  function hunkRange(hunk: { beforeStart: number; beforeCount: number; afterStart: number; afterCount: number }): string {
+    const start = hunk.beforeCount === 0 ? hunk.afterStart : hunk.beforeStart;
+    const count = hunk.beforeCount === 0 ? hunk.afterCount : hunk.beforeCount;
+    return `${start}–${start + Math.max(count - 1, 0)}`;
+  }
+
   /**
    * Open the changed file itself, at the line that was clicked.
    *
@@ -120,7 +144,7 @@
   }
 </script>
 
-<div class="diff-view">
+<div class="diff-view" data-selectable="true">
   {#if !rootAvailable}
     <p class="notice">Checkout/Worktree deleted.</p>
   {:else if gitPanel.selectedPath === ''}
@@ -189,7 +213,7 @@
               title={`${hunk.header} — open this file in the editor at line ${hunk.afterStart}`}
               onclick={() => openAtLine(hunk.afterStart)}
             >
-              Lines {hunk.beforeStart}–{hunk.beforeStart + Math.max(hunk.beforeCount - 1, 0)}
+              Lines {hunkRange(hunk)}
               {#if hunk.heading}<span class="hunk-heading">{hunk.heading}</span>{/if}
             </button>
             <div class="hunk">

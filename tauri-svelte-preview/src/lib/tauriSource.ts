@@ -816,6 +816,12 @@ export async function readResourceSnapshotFromTauri(): Promise<ResourceSnapshot 
   return invoke<ResourceSnapshot>('read_resource_snapshot');
 }
 
+export async function cancelResourceSnapshotFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_resource_snapshot');
+}
+
 export async function readResourceDiskScanFromTauri(
   roots: ResourceDiskRoot[],
   maxDepth = 3,
@@ -824,6 +830,12 @@ export async function readResourceDiskScanFromTauri(
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<DiskScanReport>('read_resource_disk_scan', { roots, maxDepth, maxEntries });
+}
+
+export async function cancelResourceDiskScanFromTauri(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_resource_disk_scan');
 }
 
 export async function stopOwnedResourceFromTauri(
@@ -1161,6 +1173,16 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
     language: record.language,
     byteCount: record.byteCount
   };
+}
+
+/** Read one raster image for the editor without turning its bytes into JSON. */
+export async function readSourceImageFromTauri(path: string): Promise<Uint8Array> {
+  if (!isTauriRuntime()) {
+    throw new Error('Image preview is available in the desktop app.');
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  const buffer = await invoke<ArrayBuffer>('read_source_image', { path });
+  return new Uint8Array(buffer);
 }
 
 let sourceFileReadGeneration = 1;
@@ -2351,6 +2373,21 @@ export async function findSourceDefinitionsFromTauri(
   });
 }
 
+export async function findSourceDefinitionsInRootFromTauri(
+  root: string,
+  symbolName: string,
+  limit = 20
+): Promise<SourceDefinitionTarget[] | null> {
+  if (!isTauriRuntime()) return null;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceDefinitionTarget[]>('find_source_definitions_in_root', {
+    root,
+    symbolName,
+    limit
+  });
+}
+
 export async function readSourceLspStatusFromTauri(
   root: string,
   language: string
@@ -2660,6 +2697,21 @@ export async function findSourceReferencesFromTauri(
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<SourceReferenceTarget[]>('find_source_references', {
     records,
+    symbolName,
+    limit
+  });
+}
+
+export async function findSourceReferencesInRootFromTauri(
+  root: string,
+  symbolName: string,
+  limit = 50
+): Promise<SourceReferenceTarget[] | null> {
+  if (!isTauriRuntime()) return null;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<SourceReferenceTarget[]>('find_source_references_in_root', {
+    root,
     symbolName,
     limit
   });

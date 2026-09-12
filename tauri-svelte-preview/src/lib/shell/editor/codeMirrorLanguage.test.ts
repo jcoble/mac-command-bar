@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { codeMirrorLanguageForPath, loadCodeMirrorLanguage } from './codeMirrorLanguage.ts';
+import {
+  codeMirrorLanguageForPath,
+  enhancedCSharpTokenStyle,
+  loadCodeMirrorLanguage
+} from './codeMirrorLanguage.ts';
 
 test('maps source and diff paths to the matching CodeMirror language', () => {
   assert.equal(codeMirrorLanguageForPath('/work/App.tsx'), 'tsx');
@@ -20,4 +24,14 @@ test('every configured CodeMirror language loader resolves', async () => {
   ]) {
     assert.notDeepEqual(await loadCodeMirrorLanguage(language), [], `${language} must load`);
   }
+});
+
+test('C# lexical highlighting distinguishes types, calls, and member properties', () => {
+  assert.equal(enhancedCSharpTokenStyle('variable', 'FormatDetector', 'private ', ' value'), 'type');
+  assert.equal(enhancedCSharpTokenStyle('variable', 'FormatDetector', 'new ', '()'), 'type');
+  assert.equal(enhancedCSharpTokenStyle('variable', 'DetectAsync', 'detector.', '()'), 'def');
+  assert.equal(enhancedCSharpTokenStyle('variable', 'Current', 'detector.', ';'), 'property');
+  assert.equal(enhancedCSharpTokenStyle('variable', 'Compute', '', '(value)'), 'def');
+  assert.equal(enhancedCSharpTokenStyle('variable', 'value', '', ';'), 'variable');
+  assert.equal(enhancedCSharpTokenStyle('string', 'FormatDetector', '', ''), 'string');
 });

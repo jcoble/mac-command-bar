@@ -309,8 +309,8 @@ fn read_settings(app: &AppHandle) -> Result<HelperSettings, HelperError> {
 }
 
 fn write_settings(app: &AppHandle, settings: &HelperSettings) -> Result<(), HelperError> {
-    let value_json =
-        serde_json::to_string(settings).map_err(|error| HelperError::Settings(error.to_string()))?;
+    let value_json = serde_json::to_string(settings)
+        .map_err(|error| HelperError::Settings(error.to_string()))?;
     let runtime = app
         .try_state::<crate::agent_conversation::manager::AgentRuntimeManager>()
         .ok_or_else(|| HelperError::Settings("the session database is unavailable".to_string()))?;

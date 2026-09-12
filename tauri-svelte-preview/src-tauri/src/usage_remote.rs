@@ -49,7 +49,9 @@ pub enum RemoteQuotaError {
     /// The sign-in has run out and it is not this app's to renew — it was read
     /// from Claude Code's Keychain item, and Claude Code renews it as it works.
     SignInExpired,
-    RateLimited { retry_after_seconds: u64 },
+    RateLimited {
+        retry_after_seconds: u64,
+    },
 }
 
 impl RemoteQuotaError {

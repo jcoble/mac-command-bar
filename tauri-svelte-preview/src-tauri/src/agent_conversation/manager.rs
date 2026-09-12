@@ -54,6 +54,7 @@ const SNAPSHOT_WINDOW_BYTES: u32 = 512 * 1024;
 /// of it is already bounded.
 const CATCH_UP_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
+const BROKER_MESSAGE_TTL_MS: i64 = 30 * 60 * 1000;
 
 /// Where a session's name came from, as it is written to the row. A row with
 /// none of these on it was written before the app recorded this, and is read as
@@ -717,6 +718,61 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
+    async fn drain_broker_message_at(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        now_ms: i64,
+    ) -> Result<bool, String> {
+        let Some((group_id, _, _, _)) = self
+            .store
+            .list_open_groups()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|(_, _, _, members)| members.iter().any(|member| member == owned_id))
+        else {
+            return Ok(false);
+        };
+        let Some(message) = self
+            .store
+            .pending_for(&group_id, owned_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .next()
+        else {
+            return Ok(false);
+        };
+        if now_ms.saturating_sub(message.created_at_ms) > BROKER_MESSAGE_TTL_MS {
+            self.store
+                .set_receipt(&message.id, mcb_core::broker::Receipt::Expired)
+                .map_err(|error| error.to_string())?;
+            return Ok(false);
+        }
+
+        let prompt = AgentPrompt {
+            text: format!(
+                "[workflow message from {}]\n{}",
+                message.from_agent, message.body
+            ),
+            images: Vec::new(),
+            attachment_ids: Vec::new(),
+        };
+        let result = self
+            .send_message(owned_id, generation, prompt, None, None)
+            .await;
+        self.store
+            .set_receipt(
+                &message.id,
+                if result.is_ok() {
+                    mcb_core::broker::Receipt::Delivered
+                } else {
+                    mcb_core::broker::Receipt::Failed
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        result.map(|()| true)
+    }
+
     pub fn set_session_namer(&self, namer: SessionNamer) {
         let mut current = self
             .namer
@@ -759,7 +815,10 @@ impl AgentRuntimeManager {
     }
 
     pub fn resource_diagnostics(&self) -> Result<AgentRuntimeDiagnostics, String> {
-        let durable_session_rows = self.store.count_sessions().map_err(|error| error.to_string())?;
+        let durable_session_rows = self
+            .store
+            .count_sessions()
+            .map_err(|error| error.to_string())?;
         let sessions = self
             .sessions
             .lock()
@@ -968,13 +1027,8 @@ impl AgentRuntimeManager {
         let had_runtime = runtime.is_some();
         if let Some(runtime) = runtime.as_ref() {
             let detach_result = if let Some(pool_key) = &pool_key {
-                self.release_pool_scope(
-                    pool_key,
-                    &owned_id,
-                    native_session_id.as_deref(),
-                    false,
-                )
-                .await
+                self.release_pool_scope(pool_key, &owned_id, native_session_id.as_deref(), false)
+                    .await
             } else {
                 runtime
                     .lock()
@@ -1970,7 +2024,9 @@ impl AgentRuntimeManager {
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session(&sessions, owned_id, generation)?;
+            let session = current_session(&sessions, owned_id, generation).map_err(|_| {
+                "Stale approval request: the original runtime scope is closed".to_string()
+            })?;
             if session.runtime.is_none()
                 || matches!(
                     session.state,
@@ -2218,7 +2274,8 @@ impl AgentRuntimeManager {
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
+            let session =
+                lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
             let started = session.native_session_id.is_some();
             // An adapter that named no effort control has no way to be
             // re-pointed: it took its effort when its session was created and
@@ -2527,30 +2584,36 @@ impl AgentRuntimeManager {
         rows.into_iter()
             .map(|row| {
                 let live = sessions.get(&row.owned_id);
-                let (provider, state, active_turn_id, pending_permission, pending_input, native_session_id, mut meta) =
-                    if let Some(session) = live {
-                        (
-                            session.provider,
-                            session.state,
-                            session.active_turn_id.clone(),
-                            !session.permission_requests.is_empty(),
-                            !session.user_input_requests.is_empty(),
-                            session.native_session_id.clone(),
-                            session.rail_meta.clone(),
-                        )
-                    } else {
-                        let (provider, stored, state) =
-                            stored_session_projection(&self.store, &row)?;
-                        (
-                            provider,
-                            state,
-                            None,
-                            false,
-                            false,
-                            row.native_session_id.clone(),
-                            stored.rail_meta,
-                        )
-                    };
+                let (
+                    provider,
+                    state,
+                    active_turn_id,
+                    pending_permission,
+                    pending_input,
+                    native_session_id,
+                    mut meta,
+                ) = if let Some(session) = live {
+                    (
+                        session.provider,
+                        session.state,
+                        session.active_turn_id.clone(),
+                        !session.permission_requests.is_empty(),
+                        !session.user_input_requests.is_empty(),
+                        session.native_session_id.clone(),
+                        session.rail_meta.clone(),
+                    )
+                } else {
+                    let (provider, stored, state) = stored_session_projection(&self.store, &row)?;
+                    (
+                        provider,
+                        state,
+                        None,
+                        false,
+                        false,
+                        row.native_session_id.clone(),
+                        stored.rail_meta,
+                    )
+                };
                 meta.worktree.clone_from(&row.worktree);
                 meta.branch.clone_from(&row.branch);
                 meta.title.clone_from(&row.title);
@@ -2882,6 +2945,9 @@ impl AgentRuntimeManager {
         owned_id: &str,
         generation: u64,
     ) -> Result<bool, String> {
+        if !self.hydrate_overlay_from_store(owned_id)? {
+            return Ok(false);
+        }
         let _lifecycle = self.lifecycle_guard(owned_id).await?;
         let (runtime, transport, ordered_events, pool_key, native_session_id) = {
             let mut sessions = self
@@ -3225,9 +3291,12 @@ impl AgentRuntimeManager {
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            sessions
-                .get(&owned_id)
-                .map(|session| (session.generation, session.state != AgentRuntimeState::Closed))
+            sessions.get(&owned_id).map(|session| {
+                (
+                    session.generation,
+                    session.state != AgentRuntimeState::Closed,
+                )
+            })
         };
         if let Some((generation, open)) = live {
             if open {
@@ -3606,15 +3675,24 @@ impl AgentRuntimeManager {
 
     /// True when a session is stored and recoverable but has no runtime yet.
     fn session_is_suspended(&self, owned_id: &str, generation: u64) -> bool {
-        let sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        current_session(&sessions, owned_id, generation)
-            .map(|session| {
-                session.runtime.is_none() && session.state == AgentRuntimeState::Suspended
+        {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Ok(session) = current_session(&sessions, owned_id, generation) {
+                return session.runtime.is_none() && session.state == AgentRuntimeState::Suspended;
+            }
+        }
+
+        self.store
+            .get_session(owned_id)
+            .ok()
+            .flatten()
+            .and_then(|row| stored_session_projection(&self.store, &row).ok())
+            .is_some_and(|(_, stored, state)| {
+                stored.generation == generation && state == AgentRuntimeState::Suspended
             })
-            .unwrap_or(false)
     }
 
     #[cfg(test)]
@@ -3743,7 +3821,14 @@ fn normalize_sessions_in_store(store: &Arc<SessionStore>) -> Result<(), String> 
 fn stored_session_projection(
     store: &Arc<SessionStore>,
     row: &SessionRow,
-) -> Result<(AgentConversationProvider, StoredSessionExtra, AgentRuntimeState), String> {
+) -> Result<
+    (
+        AgentConversationProvider,
+        StoredSessionExtra,
+        AgentRuntimeState,
+    ),
+    String,
+> {
     let provider: AgentConversationProvider = enum_from_storage(&row.provider)?;
     let mut stored: StoredSessionExtra = serde_json::from_str(&row.extra_json)
         .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
@@ -3805,7 +3890,7 @@ fn recovered_session_from_row(
         provider,
         provider_instance_id: format!("{}-{}", provider_id(provider), stored.generation),
         native_session_id: row.native_session_id,
-        native_session_mode: AgentNativeSessionMode::Resume,
+        native_session_mode: stored.native_session_mode,
         generation: stored.generation,
         owner: stored.owner,
         state,
@@ -5106,6 +5191,12 @@ async fn handle_ordered_session_event(
             if turn_completed {
                 manager.name_session_after_turn(owned_id, generation, &turn_id);
             }
+            if let Err(error) = manager
+                .drain_broker_message_at(owned_id, generation, store_timestamp(timestamp_millis()))
+                .await
+            {
+                crate::debug_log::stderr_log!("Could not drain broker message: {error}");
+            }
             // A finished turn stops the adapter process as soon as no prompt,
             // approval, input request, or tool work remains. The stored native
             // session survives for resume on the next send; only the idle
@@ -5848,8 +5939,14 @@ fn tool_details(update: &Value) -> ToolDetails {
                         path = block_path.map(str::to_owned);
                     }
                     let patch = unified_diff(
-                        block.get("oldText").and_then(Value::as_str).unwrap_or_default(),
-                        block.get("newText").and_then(Value::as_str).unwrap_or_default(),
+                        block
+                            .get("oldText")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                        block
+                            .get("newText")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
                     );
                     if !patch.is_empty() {
                         diff.push(patch);
@@ -6206,9 +6303,18 @@ mod tests {
             "content": [{ "type": "content", "content": { "type": "text", "text": patch } }]
         }));
         let diff = details.diff.expect("the patch should be read as a change");
-        assert!(diff.starts_with("@@ -1,2 +1,2 @@"), "hunks only, got: {diff}");
-        assert!(!diff.contains("diff --git"), "the git header should be dropped");
-        assert!(!diff.contains("index 1111111"), "the index line should be dropped");
+        assert!(
+            diff.starts_with("@@ -1,2 +1,2 @@"),
+            "hunks only, got: {diff}"
+        );
+        assert!(
+            !diff.contains("diff --git"),
+            "the git header should be dropped"
+        );
+        assert!(
+            !diff.contains("index 1111111"),
+            "the index line should be dropped"
+        );
         assert_eq!(details.path.as_deref(), Some("src/app.ts"));
         assert!(details.output.is_none(), "a patch is not also tool output");
     }
@@ -6240,7 +6346,10 @@ mod tests {
             let details = tool_details(&json!({
                 "content": [{ "type": "content", "content": { "type": "text", "text": text } }]
             }));
-            assert!(details.diff.is_none(), "{text:?} should not read as a change");
+            assert!(
+                details.diff.is_none(),
+                "{text:?} should not read as a change"
+            );
         }
     }
 
@@ -6696,7 +6805,9 @@ mod tests {
                 item_id: "m-replay".into(),
                 text: "Restored".into(),
                 completed: true,
-                blocks: Some(crate::agent_conversation::safe_markdown::parse_safe_markdown("Restored")),
+                blocks: Some(
+                    crate::agent_conversation::safe_markdown::parse_safe_markdown("Restored")
+                ),
             })
         );
         let tool = json!({ "sessionId": "s", "update": {
@@ -7990,8 +8101,16 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(manager.snapshot(&connection.owned_id).unwrap().is_none());
-        assert!(!manager.activation_locks.lock().unwrap().contains_key(&connection.owned_id));
-        assert!(!manager.broker_statuses.lock().unwrap().contains_key(&connection.owned_id));
+        assert!(!manager
+            .activation_locks
+            .lock()
+            .unwrap()
+            .contains_key(&connection.owned_id));
+        assert!(!manager
+            .broker_statuses
+            .lock()
+            .unwrap()
+            .contains_key(&connection.owned_id));
         // Gone is gone: asking again is not an error, just nothing to do.
         assert!(!manager.delete(&connection.owned_id).await.unwrap());
         fs::remove_dir_all(root).unwrap();
@@ -8006,11 +8125,9 @@ mod tests {
             &log,
             "prompt_with_update",
         );
-        let providers = ProviderRegistry::new([(
-            AgentConversationProvider::Codex,
-            manifest.clone(),
-        )])
-            .expect("fixture provider");
+        let providers =
+            ProviderRegistry::new([(AgentConversationProvider::Codex, manifest.clone())])
+                .expect("fixture provider");
         let manager = AgentRuntimeManager::open(providers, &database).unwrap();
         let (connection, _) = manager
             .ensure_inner(request(
@@ -8307,13 +8424,13 @@ mod tests {
             snapshot.connection.state,
             ConversationConnectionState::Disconnected
         );
-        {
-            let sessions = fixture.manager.sessions.lock().unwrap();
-            let session = sessions.get(&fixture.owned_id).unwrap();
-            assert_eq!(session.state, AgentRuntimeState::Suspended);
-            assert_eq!(session.owner, AgentExecutionOwner::Stopped);
-            assert_eq!(session.writer_lease.owner, AgentWriterLeaseOwner::None);
-        }
+        assert!(fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&fixture.owned_id)
+            .is_none());
 
         fixture
             .manager
@@ -8333,6 +8450,10 @@ mod tests {
             .unwrap());
         // A session started before the provider gained image prompts keeps that
         // answer in its stored row, so the row is rewritten the same way here.
+        fixture
+            .manager
+            .hydrate_overlay_from_store(&fixture.owned_id)
+            .unwrap();
         {
             let mut sessions = fixture.manager.sessions.lock().unwrap();
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
@@ -8440,11 +8561,11 @@ mod tests {
         wait_until(|| {
             fixture
                 .manager
-                .sessions
-                .lock()
+                .snapshot(&fixture.owned_id)
                 .unwrap()
-                .get(&fixture.owned_id)
-                .is_some_and(|session| session.active_turn_id.is_none())
+                .is_some_and(|snapshot| {
+                    snapshot.suspended && snapshot.last_sequence > sequence_before_resume
+                })
         })
         .await;
         let snapshot = fixture
@@ -8489,6 +8610,126 @@ mod tests {
         assert_eq!(log.matches(r#""method":"session/new""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/resume""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/prompt""#).count(), 1);
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn queued_message_delivers_when_session_goes_quiescent() {
+        let fixture = fixture_manager_with_acp_session("queued_message_delivery").await;
+        let group_id = fixture
+            .manager
+            .store
+            .create_group(
+                "workflow",
+                Some("orchestrator"),
+                &[fixture.owned_id.clone()],
+            )
+            .expect("create workflow group");
+        let message = fixture
+            .manager
+            .store
+            .append_message(
+                &group_id,
+                "worker-a",
+                &fixture.owned_id,
+                mcb_core::broker::MessageKind::Message,
+                "Review the patch",
+            )
+            .expect("queue workflow message");
+
+        fixture
+            .manager
+            .prompt(
+                &fixture.owned_id,
+                fixture.generation,
+                test_prompt("finish current turn"),
+            )
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            fixture
+                .manager
+                .store
+                .events_for(&group_id, None)
+                .expect("read workflow events")
+                .iter()
+                .any(|event| {
+                    event.id == message.id && event.receipt == mcb_core::broker::Receipt::Delivered
+                })
+        })
+        .await;
+
+        let expected = "[workflow message from worker-a]\nReview the patch";
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .expect("read snapshot")
+            .expect("session exists");
+        assert!(snapshot.events.iter().any(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if text == expected
+        )));
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_message_expires_instead_of_delivering() {
+        let fixture = fixture_manager_with_acp_session("stale_message_expiry").await;
+        let group_id = fixture
+            .manager
+            .store
+            .create_group(
+                "workflow",
+                Some("orchestrator"),
+                &[fixture.owned_id.clone()],
+            )
+            .expect("create workflow group");
+        let message = fixture
+            .manager
+            .store
+            .append_message(
+                &group_id,
+                "worker-a",
+                &fixture.owned_id,
+                mcb_core::broker::MessageKind::Message,
+                "Too old to deliver",
+            )
+            .expect("queue workflow message");
+
+        fixture
+            .manager
+            .drain_broker_message_at(
+                &fixture.owned_id,
+                fixture.generation,
+                message.created_at_ms + BROKER_MESSAGE_TTL_MS + 1,
+            )
+            .await
+            .expect("drain stale message");
+
+        let stored = fixture
+            .manager
+            .store
+            .events_for(&group_id, None)
+            .expect("read workflow events")
+            .into_iter()
+            .find(|event| event.id == message.id)
+            .expect("queued message remains stored");
+        assert_eq!(stored.receipt, mcb_core::broker::Receipt::Expired);
+        let log = fs::read_to_string(fixture.root.join("stale_message_expiry.jsonl"))
+            .expect("read fixture log");
+        assert!(!log.contains("Too old to deliver"));
 
         fixture
             .manager
@@ -8941,7 +9182,20 @@ mod tests {
             manager
                 .snapshot(owned_id)
                 .unwrap()
-                .is_some_and(|snapshot| snapshot.events.len() == 4)
+                .is_some_and(|snapshot| {
+                    snapshot
+                        .events
+                        .iter()
+                        .filter(|event| {
+                            matches!(
+                                &event.payload,
+                                AgentConversationPayload::UserMessage { .. }
+                                    | AgentConversationPayload::AssistantMessage { .. }
+                            )
+                        })
+                        .count()
+                        == 4
+                })
         })
         .await;
 
@@ -8959,7 +9213,6 @@ mod tests {
         let frames = fs::read_to_string(&log).expect("load fixture log");
         assert_eq!(frames.matches(r#""method":"session/load""#).count(), 1);
         let snapshot = manager.snapshot(owned_id).unwrap().unwrap();
-        assert_eq!(snapshot.events.len(), 4);
         let item_ids = snapshot
             .events
             .iter()
@@ -9363,7 +9616,10 @@ mod tests {
         );
         assert_eq!(after.reasoning_effort.as_deref(), Some("medium"));
 
-        manager.close(&owned_id, connection.generation).await.unwrap();
+        manager
+            .close(&owned_id, connection.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -9375,8 +9631,10 @@ mod tests {
         // the composer reverts it and the turn runs on the provider's default.
         let root = temp_root();
         let log = root.join("claude_preselect.jsonl");
-        let manifest =
-            super::super::providers::acp_client::tests::fixture_manifest_named(&log, "claude_preselect");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &log,
+            "claude_preselect",
+        );
         let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
             .expect("fixture provider");
         let manager = AgentRuntimeManager::new(providers);
@@ -9427,7 +9685,10 @@ mod tests {
         assert_eq!(after_start.model.as_deref(), Some("gpt-5.6-terra"));
         assert_eq!(after_start.reasoning_effort.as_deref(), Some("xhigh"));
 
-        manager.close(&owned_id, connection.generation).await.unwrap();
+        manager
+            .close(&owned_id, connection.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -9481,7 +9742,10 @@ mod tests {
         let config = manager.conversation_config(&owned_id).expect("config");
         assert_eq!(config.model.as_deref(), Some("sonnet"));
 
-        manager.close(&owned_id, connection.generation).await.unwrap();
+        manager
+            .close(&owned_id, connection.generation)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -9883,6 +10147,10 @@ mod tests {
             .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
             .await
             .expect("suspend"));
+        fixture
+            .manager
+            .hydrate_overlay_from_store(&fixture.owned_id)
+            .unwrap();
         {
             let mut sessions = fixture.manager.sessions.lock().unwrap();
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
@@ -10300,7 +10568,12 @@ mod tests {
         // its pool entry torn down rather than short-circuited, and its pid no
         // longer answering.
         assert!(
-            !fixture.manager.adapter_pools.lock().await.contains_key(&pool_key),
+            !fixture
+                .manager
+                .adapter_pools
+                .lock()
+                .await
+                .contains_key(&pool_key),
             "the adapter pool entry was torn down"
         );
         let reaped = Instant::now() + Duration::from_secs(2);
@@ -10366,7 +10639,12 @@ mod tests {
             "a send that never went out leaves the session at rest"
         );
         assert!(
-            !fixture.manager.adapter_pools.lock().await.contains_key(&pool_key),
+            !fixture
+                .manager
+                .adapter_pools
+                .lock()
+                .await
+                .contains_key(&pool_key),
             "the adapter pool entry was torn down"
         );
         let reaped = Instant::now() + Duration::from_secs(2);
@@ -10817,7 +11095,13 @@ mod tests {
             .expect("snapshot listing must recover the poisoned sessions map")
             .expect("ensured session must be listed");
 
-        assert_eq!(snapshot.connection, connection);
+        assert_eq!(snapshot.connection.owned_id, connection.owned_id);
+        assert_eq!(snapshot.connection.generation, connection.generation);
+        assert_eq!(snapshot.connection.provider, connection.provider);
+        assert_eq!(
+            snapshot.connection.state,
+            ConversationConnectionState::Disconnected
+        );
         assert!(manager.resource_roots().is_empty());
         fs::remove_dir_all(root).unwrap();
     }

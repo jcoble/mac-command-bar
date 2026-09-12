@@ -21,6 +21,11 @@ const elapsed = read('../src/lib/shell/components/railElapsedTicker.ts');
 const editorSessions = read('../src/lib/shell/controllers/editorSessionController.svelte.ts');
 const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
 const languageControls = read('../src/lib/shell/components/LanguageIntelligenceControls.svelte');
+const settingsDialog = read('../src/lib/shell/components/SettingsDialog.svelte');
+const settingsStore = read('../src/lib/settingsStore.svelte.ts');
+const codeMirrorTheme = read('../src/lib/shell/editor/codeMirrorTheme.ts');
+const codeMirrorSourceEditor = read('../src/lib/CodeMirrorSourceEditor.svelte');
+const xtermFactory = read('../src/lib/shell/xtermFactory.ts');
 const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
 const segmentedTabs = read('../src/lib/shell/components/SegmentedTabs.svelte');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
@@ -149,9 +154,34 @@ assert.match(workspaceTerminal, /stop\.abort\(\)[\s\S]*?closeTerminalSessionFrom
 assert.match(palettePanel, /id: 'show-bottom-dock'/);
 assert.match(rightPanel, /visible && activeId === 'browser'/);
 assert.match(rightPanel, /visible=\{visible && activeId === 'files'\}/);
-assert.match(utilityStrip, /<LanguageIntelligenceControls \/>/);
+assert.doesNotMatch(utilityStrip, /LanguageIntelligenceControls/);
+assert.match(editorPanel, /<div class="editor-status">[\s\S]*?<LanguageIntelligenceControls \/>/);
 assert.match(languageControls, /<Switch[\s\S]*?size="sm"/);
 assert.match(languageControls, /data-tone=\{tone\}/);
+assert.match(settingsStore, /fontLigatures: false/);
+assert.match(settingsStore, /cursorBlink: true/);
+assert.match(settingsDialog, /bind:checked=\{settings\.editor\.fontLigatures\}/);
+assert.match(settingsDialog, /bind:checked=\{settings\.terminal\.cursorBlink\}/);
+assert.doesNotMatch(settingsDialog, /id: 'terminal-theme'/);
+assert.match(
+  settingsDialog,
+  /shownSection\.id === 'general'[\s\S]*?resetSettings\('general'\);[\s\S]*?resetSettings\('panels'\);[\s\S]*?resetSettings\('intelligence'\);[\s\S]*?onProblemsLocationChange\?\.\(settings\.panels\.problemsLocation\)[\s\S]*?await switchLanguageServers\(defaults\.languageServers\)[\s\S]*?await switchLanguageServer\(id, defaults\.languageServerEnabled\[id\]\)/,
+  'resetting General must reset every settings-store section represented on that screen and apply the Problems layout immediately'
+);
+assert.match(
+  settingsDialog,
+  /shownSection\.id !== 'helper' && shownSection\.id !== 'updates'/,
+  'sections without settings-store state must not offer a Reset section action'
+);
+assert.match(codeMirrorTheme, /fontVariantLigatures: appearance\.fontLigatures \? 'normal' : 'none'/);
+assert.match(codeMirrorSourceEditor, /<ContextMenu\.Content side="left"[^>]+aria-label="Editor actions"/);
+assert.match(codeMirrorSourceEditor, /contextmenu: \(_event, editor\) =>/);
+assert.match(codeMirrorSourceEditor, />Go to Definition<\/ContextMenu\.Item>/);
+assert.match(codeMirrorSourceEditor, />Change All Occurrences<\/ContextMenu\.Item>/);
+assert.match(codeMirrorSourceEditor, />Format Document<\/ContextMenu\.Item>/);
+assert.match(codeMirrorSourceEditor, />Rename Symbol<\/ContextMenu\.Item>/);
+assert.match(codeMirrorSourceEditor, />Peek References<\/ContextMenu\.Item>/);
+assert.match(xtermFactory, /terminal\.options\.cursorBlink = appearance\.cursorBlink/);
 assert.match(languageControls, /serverState === 'ready'[\s\S]*?'running'[\s\S]*?'waiting'/);
 assert.match(page, /onCloseAllEditors=\{\(\) => selection\.editorSessions\.clearActiveEditors\(\)\}/);
 assert.match(editorSessions, /async clearActiveEditors\(\): Promise<boolean>/);

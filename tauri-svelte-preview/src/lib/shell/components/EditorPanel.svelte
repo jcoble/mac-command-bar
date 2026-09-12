@@ -19,7 +19,7 @@
    *    project, never before.
    *  - **Read mode is the default.** Opening a file colours it and stops
    *    there. A language server starts only for a project whose switch in the
-   *    bottom rail has been turned on, and turning it off stops that server. The
+   *    editor status bar has been turned on, and turning it off stops that server. The
    *    global choice is remembered between launches.
    *  - **No `$effect` reads a file.** Every read is started by a user action: a
    *    file-open request, or a click in the strip. The one effect that starts
@@ -43,6 +43,7 @@
     type MarkdownView
   } from './editor/markdownPreview.ts';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import {
@@ -99,6 +100,7 @@
     cancelSourceFileReadsFromTauri,
     isNativeTauriRuntime,
     readAssemblySettingFromTauri,
+    readSourceImageFromTauri,
     readSourceFromTauri,
     readSourceLspStatusFromTauri,
     setWorkspaceLanguageIntelligenceFromTauri,
@@ -238,6 +240,7 @@
   }
 
   const activeFile = $derived(activeEditorFile());
+  const activeImageMimeType = $derived(rasterImageMimeType(activeFile?.fileName));
   const activePreview = $derived(activeFile?.preview ?? (activeFile
     ? {
         path: activeFile.path,
@@ -310,6 +313,7 @@
    * logically hidden behind the strip.
    */
   let markdownViewByPath = $state<Record<string, MarkdownView>>({});
+  let imagePreview = $state<{ path: string; url: string } | null>(null);
   const activeFileIsMarkdown = $derived(isMarkdownFile(activeFile?.fileName));
   const markdownView = $derived(
     activeFile && activeFileIsMarkdown ? (markdownViewByPath[activeFile.path] ?? 'raw') : 'raw'
@@ -338,6 +342,38 @@
     if (!markdownViewByPath[path]) return;
     const { [path]: _released, ...rest } = markdownViewByPath;
     markdownViewByPath = rest;
+  }
+
+  function rasterImageMimeType(fileName: string | null | undefined): string | null {
+    const extension = fileName?.split('.').at(-1)?.toLowerCase();
+    if (extension === 'png') return 'image/png';
+    if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
+    if (extension === 'gif') return 'image/gif';
+    if (extension === 'webp') return 'image/webp';
+    if (extension === 'bmp') return 'image/bmp';
+    if (extension === 'ico') return 'image/x-icon';
+    if (extension === 'avif') return 'image/avif';
+    return null;
+  }
+
+  function releaseImagePreview(path?: string): void {
+    if (!imagePreview || (path && imagePreview.path !== path)) return;
+    URL.revokeObjectURL(imagePreview.url);
+    imagePreview = null;
+  }
+
+  function imageNeedsRead(file: {
+    path: string;
+    fileName: string;
+    loading: boolean;
+    error: string | null;
+  }): boolean {
+    return Boolean(
+      rasterImageMimeType(file.fileName)
+      && !file.loading
+      && file.error === null
+      && imagePreview?.path !== file.path
+    );
   }
 
   /**
@@ -892,12 +928,21 @@
       // path, language and size back out of it onto the preview it returns.
       countInvoke('read_source_file');
       if (stopSignal.aborted) return;
-      const preview = await readSourceFromTauri(record);
+      const imageMimeType = rasterImageMimeType(record.fileName);
+      const imageBytes = imageMimeType ? await readSourceImageFromTauri(record.path) : null;
+      const preview = imageMimeType
+        ? {
+            ...record,
+            content: '',
+            lineCount: 0
+          }
+        : await readSourceFromTauri(record);
       if (stopSignal.aborted) return;
       if (
         destroyed
         || generation !== sessionResourceGeneration
         || editorState.activePath !== record.path
+        || (imageMimeType !== null && !showing)
         || (!readOnly && editorState.projectRoot !== projectRoot)
         || !editorFileFor(record.path)
       ) {
@@ -907,7 +952,16 @@
         return;
       }
       if (preview) {
-        setEditorFilePreview(record.path, preview, null, readOnly);
+        if (imageMimeType && imageBytes) {
+          releaseImagePreview();
+          imagePreview = {
+            path: record.path,
+            url: URL.createObjectURL(new Blob([imageBytes], { type: imageMimeType }))
+          };
+          setEditorFilePreview(record.path, preview, null, true);
+        } else {
+          setEditorFilePreview(record.path, preview, null, readOnly);
+        }
       } else {
         setEditorFileError(record.path, 'This file could not be read from here.');
       }
@@ -944,7 +998,7 @@
     const readOnly = Boolean(readOnlyByPath[record.path]);
     const projectRoot = editorState.projectRoot;
     markEditorFileLoading(record.path);
-    if (!readOnly) void warmLanguageServer(editorState.projectRoot);
+    if (!readOnly && !rasterImageMimeType(record.fileName)) void warmLanguageServer(editorState.projectRoot);
     const token = {};
     const work = readFileIntoEditorForOwner(record, generation, readOnly, projectRoot, token);
     readsInFlight.set(record.path, { byteCount: record.byteCount, generation, token, work });
@@ -1098,6 +1152,7 @@
     if (editorState.activePath && editorState.activePath !== path) {
       releaseReadOnlyEditorModel(editorState.activePath);
       releaseMarkdownView(editorState.activePath);
+      releaseImagePreview(editorState.activePath);
     }
     if (!readOnly) activateEditor(projectRoot);
     const record = recordForPath(path, projectRoot);
@@ -1119,7 +1174,9 @@
     rememberMarkdownDefault(record.path, entry.fileName, origin);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
     syncIntelligenceWithActiveFile();
-    if (needsRead(entry)) void readFileIntoEditor(record);
+    if (needsRead(entry) || imageNeedsRead(entry)) {
+      void readFileIntoEditor(record);
+    }
     return true;
   }
 
@@ -1157,6 +1214,7 @@
   function selectOpenFile(path: string): void {
     if (closeActionBusy) return;
     if (editorState.activePath && editorState.activePath !== path) {
+      releaseImagePreview(editorState.activePath);
       releaseReadOnlyEditorModel(editorState.activePath);
       releaseMarkdownView(editorState.activePath);
     }
@@ -1167,7 +1225,7 @@
     // A file restored into the strip never went through `openPath`, so this is
     // where it gets its first view. Picking a tab is editing, not reading.
     if (entry) rememberMarkdownDefault(path, entry.fileName, 'strip');
-    if (entry && needsRead(entry)) {
+    if (entry && (needsRead(entry) || imageNeedsRead(entry))) {
       void readFileIntoEditor(recordForPath(path));
     }
   }
@@ -1181,6 +1239,7 @@
     const disposePath = discard ? path : modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
     releaseMarkdownView(path);
+    releaseImagePreview(path);
     if (disposePath) codeEditor?.disposeTabModel(disposePath);
     sourceIntelligence.releasePreview(path);
     syncIntelligenceWithActiveFile();
@@ -1231,6 +1290,7 @@
       for (const path of paths) sourceIntelligence.releasePreview(path);
       codeEditor?.disposeAllTabModels();
       resetEditorState();
+      releaseImagePreview();
       markdownViewByPath = {};
       diagnosticsByPath = {};
       readOnlyByPath = {};
@@ -1390,6 +1450,7 @@
     closeRequest = null;
     closeDialogOpen = false;
     sourceIntelligence.setActivePreview(null);
+    releaseImagePreview();
     codeEditor?.releaseSessionResources();
     for (const path of paths) {
       sourceIntelligence.releasePreview(path);
@@ -1440,9 +1501,19 @@
    * startup path when a restored file is not visible.
    */
   $effect(() => {
-    if (!showing || !editorState.activePath) return;
+    if (!showing) {
+      releaseImagePreview();
+      return;
+    }
+    if (!editorState.activePath) return;
     const entry = activeEditorFile();
-    if (entry && needsRead(entry)) void readFileIntoEditor(recordForPath(entry.path));
+    if (
+      entry
+      && (needsRead(entry) || imageNeedsRead(entry))
+    ) {
+      void readFileIntoEditor(recordForPath(entry.path));
+    }
+    if (rasterImageMimeType(entry?.fileName)) return;
     void ensureCodeEditor();
   });
 
@@ -1510,6 +1581,7 @@
     return () => {
       destroyed = true;
       sessionStopController.abort();
+      releaseImagePreview();
       unsubscribeReferenceCounts();
       unsubscribeStatus();
       // Anything still waiting on the server has nowhere to go now.
@@ -1595,8 +1667,8 @@
         {/each}
       </div>
 
-      <!-- Only the open file's own controls belong here. The global
-           language-server switch sits in the bottom utility rail. -->
+      <!-- Only the open file's own controls belong here. The language-server
+           switch sits in this editor's status bar. -->
       <div class="editor-controls">
         <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
           <X class="size-3.5" aria-hidden="true" />
@@ -1635,6 +1707,14 @@
         </div>
       {:else if !rootAvailable}
         <p class="canvas-message">Checkout/Worktree deleted.</p>
+      {:else if activeFile && activeImageMimeType}
+        {#if imagePreview?.path === activeFile.path}
+          <div class="image-preview">
+            <img src={imagePreview.url} alt={activeFile.fileName} />
+          </div>
+        {:else}
+          <p class="canvas-message">Reading {activeFile.fileName}…</p>
+        {/if}
       {:else if showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
         <SourceMarkdownPreview
           content={activeFile.draftContent ?? activeFile.preview.content}
@@ -1665,8 +1745,8 @@
             onRestoredViewStateConsumed={consumeRestoredViewState}
             onSaveRequest={() => void saveActiveFile()}
             onSymbolsChange={handleSymbolsChange}
-            onDotnetBuildRequest={() => runDotnetWorkspace('build')}
-            onDotnetTestRequest={() => runDotnetWorkspace('test')}
+            onDotnetBuildRequest={onStartWorkspaceCommand ? () => runDotnetWorkspace('build') : undefined}
+            onDotnetTestRequest={onStartWorkspaceCommand ? () => runDotnetWorkspace('test') : undefined}
           />
         {:else}
           <p class="canvas-message">Starting the code editor…</p>
@@ -1678,24 +1758,29 @@
 
     <div class="editor-status">
       <span class="status-path">{activeFile?.relativePath ?? ''}</span>
-      <span class="status-detail" title={activeFile?.conflict ?? undefined}>
-        {activeFile?.language ?? ''}
-        {#if editorState.symbols.length > 0}
-          · {editorState.symbols.length}
-          {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
-        {/if}
-        {#if activeFileReadOnly}
-          · read-only
-        {:else if activeFile?.saving}
-          · saving
-        {:else if activeFile?.conflict}
-          · conflict
-        {:else if activeFile?.dirty}
-          · unsaved
-        {:else}
-          · editable
-        {/if}
-      </span>
+      <div class="status-right">
+        <LanguageIntelligenceControls />
+        <span class="status-detail" title={activeFile?.conflict ?? undefined}>
+          {activeFile?.language ?? ''}
+          {#if editorState.symbols.length > 0}
+            · {editorState.symbols.length}
+            {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
+          {/if}
+          {#if activeFileReadOnly}
+            · read-only
+          {:else if activeImageMimeType}
+            · preview
+          {:else if activeFile?.saving}
+            · saving
+          {:else if activeFile?.conflict}
+            · conflict
+          {:else if activeFile?.dirty}
+            · unsaved
+          {:else}
+            · editable
+          {/if}
+        </span>
+      </div>
     </div>
   {/if}
 </div>
@@ -1902,6 +1987,31 @@
     color: var(--color-bad);
   }
 
+  .image-preview {
+    display: grid;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    place-items: center;
+    padding: 24px;
+    background:
+      linear-gradient(45deg, rgb(255 255 255 / 3%) 25%, transparent 25%),
+      linear-gradient(-45deg, rgb(255 255 255 / 3%) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, rgb(255 255 255 / 3%) 75%),
+      linear-gradient(-45deg, transparent 75%, rgb(255 255 255 / 3%) 75%);
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    background-size: 16px 16px;
+  }
+
+  .image-preview img {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+
   .retry {
     background: var(--color-elevated);
     border: 0;
@@ -1933,9 +2043,18 @@
   }
 
   .status-path {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .status-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex: 0 0 auto;
+    font-family: var(--font-ui);
   }
 
   .status-detail {

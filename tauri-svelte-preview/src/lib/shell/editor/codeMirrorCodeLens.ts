@@ -1,4 +1,4 @@
-import { RangeSetBuilder, type Extension } from '@codemirror/state';
+import { RangeSetBuilder, StateEffect, type Extension } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 
 import { formatSourceCodeLensTitle, sourceCodeLensCountKey } from '$lib/sourceCodeLensKeys';
@@ -7,6 +7,9 @@ import type { SourceLookupRequest } from './sourceIntelligence';
 import type { SourcePreview, SourceReferenceTarget, SourceSymbol } from '$lib/sourceData';
 
 type Count = { count: number; atLeast: boolean };
+
+export const showCodeMirrorReferences = StateEffect.define<SourceLookupRequest>();
+const refreshCodeMirrorCodeLens = StateEffect.define<void>();
 
 export interface CodeMirrorCodeLensOptions {
   preview: SourcePreview;
@@ -103,7 +106,7 @@ class PeekWidget extends WidgetType {
 const codeLensBaseTheme = EditorView.baseTheme({
   '.cm-code-lens': { border: '0', background: 'transparent', color: '#8aa9d6', cursor: 'pointer', padding: '0 8px 0 4px', fontSize: '11px' },
   '.cm-code-lens.loading': { color: '#8b909b', cursor: 'progress' },
-  '.cm-code-lens-peek': { display: 'inline-grid', gap: '4px', padding: '8px 12px', borderBlock: '1px solid #343944', background: '#111318', fontSize: '12px' },
+  '.cm-code-lens-peek': { display: 'grid', boxSizing: 'border-box', width: '100%', gap: '4px', padding: '8px 12px', borderBlock: '1px solid #343944', background: '#111318', fontSize: '12px' },
   '.cm-code-lens-peek button': { border: '0', background: 'transparent', color: '#c9d5e8', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }
 });
 
@@ -133,6 +136,17 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
       }
 
       update(update: ViewUpdate): void {
+        for (const effect of update.transactions.flatMap((transaction) => transaction.effects)) {
+          if (effect.is(showCodeMirrorReferences)) {
+            const request = effect.value;
+            this.view.requestMeasure({
+              read: () => null,
+              write: () => {
+                if (this.alive) void this.openReferences(request);
+              }
+            });
+          }
+        }
         if (update.docChanged) {
           this.loadGeneration += 1;
           this.rows = this.rows.filter((row) => Boolean(row.action));
@@ -211,7 +225,7 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         this.paint(true);
         let targets: SourceReferenceTarget[] = [];
         try {
-          targets = await options.onReferences?.(request) ?? [];
+          targets = (await options.onReferences?.(request)) ?? [];
         } catch {
           targets = [];
         }
@@ -235,14 +249,15 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
             side: 1,
             decoration: Decoration.widget({
               widget: new PeekWidget(this.peek.request, this.peek.targets, (target) => void options.onOpenReference?.(target)),
-              side: 1
+              side: 1,
+              block: true
             })
           });
         }
         items.sort((left, right) => left.at - right.at || left.side - right.side);
         for (const item of items) builder.add(item.at, item.at, item.decoration);
         this.decorations = builder.finish();
-        if (refresh) this.view.dispatch({});
+        if (refresh) this.view.dispatch({ effects: refreshCodeMirrorCodeLens.of() });
       }
     }, { decorations: (plugin) => plugin.decorations }),
     codeLensBaseTheme

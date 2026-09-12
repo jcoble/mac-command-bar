@@ -15,12 +15,20 @@ const surface = readFileSync(
   new URL('../src/lib/shell/newSession/DraftSessionSurface.svelte', import.meta.url),
   'utf8'
 );
+const conversationSurface = readFileSync(
+  new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
+  'utf8'
+);
 const backend = readFileSync(
   new URL('../src/lib/shell/newSession/newSessionBackend.ts', import.meta.url),
   'utf8'
 );
 const nativeSource = readFileSync(
   new URL('../src-tauri/src/main.rs', import.meta.url),
+  'utf8'
+);
+const nativeSourceControl = readFileSync(
+  new URL('../src-tauri/src/commands/source_control.rs', import.meta.url),
   'utf8'
 );
 const conversationService = readFileSync(
@@ -61,7 +69,7 @@ assert.match(surface, /const repository = await initProjectRepository\(projectPa
 // read as a list only when it really is one — see newSessionGitRefs.test.ts.
 assert.match(backend, /invoke<ProjectGitRef\[] \| null>\('list_project_git_refs'/);
 assert.match(backend, /Array\.isArray\(refs\) \? refs : \[]/);
-assert.match(nativeSource, /async fn list_project_git_refs\(/);
+assert.match(nativeSourceControl, /async fn list_project_git_refs\(/);
 assert.match(nativeSource, /list_project_git_refs,/);
 
 assert.match(controller, /get providerConfigs\(\): ThreadStartProviderConfig\[\]/);
@@ -102,6 +110,11 @@ assert.doesNotMatch(startNewSession, /ensureStructuredConversation|setAgentConve
 assert.match(startNewSession, /await sendStructuredMessage\(owned\.ownedId, request\.prompt, \{/);
 assert.match(startNewSession, /model: request\.model/);
 assert.match(startNewSession, /approvalPolicy: request\.approvalPolicy/);
+assert.match(
+  conversationSurface,
+  /if \(active\.source === 'fresh' && active\.runtimeState === 'starting'\) return;/,
+  'the mounted conversation does not read native config before a fresh session exists'
+);
 assert.match(startNewSession, /throw error;/);
 assert.match(startNewSession, /could not start \$\{owned\.agent\} session: \$\{detail\}/);
 assert.match(conversationService, /reasoningEffort\?: string \| null;/);

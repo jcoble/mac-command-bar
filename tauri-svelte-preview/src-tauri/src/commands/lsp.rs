@@ -261,7 +261,9 @@ pub(crate) async fn read_source_lsp_status(
 }
 
 #[tauri::command]
-pub(crate) async fn list_source_lsp_statuses(root: String) -> Result<Vec<lsp::SourceLspStatus>, String> {
+pub(crate) async fn list_source_lsp_statuses(
+    root: String,
+) -> Result<Vec<lsp::SourceLspStatus>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         lsp::list_source_lsp_statuses_sync(PathBuf::from(root))
     })
@@ -485,8 +487,9 @@ pub(crate) async fn set_language_server_enabled(
             error
         })?;
         let stop_languages: &[&str] = match language.as_str() {
-            "typescript" | "tsx" | "javascript" | "jsx" =>
-                &["typescript", "tsx", "javascript", "jsx"],
+            "typescript" | "tsx" | "javascript" | "jsx" => {
+                &["typescript", "tsx", "javascript", "jsx"]
+            }
             "csharp" | "c#" => &["csharp"],
             "rust" => &["rust"],
             _ => &[],
@@ -504,9 +507,15 @@ pub(crate) async fn set_language_server_enabled(
             message: if !enabled && stopped_servers > 0 {
                 format!("The {language} language server is off and has been stopped.")
             } else if changed {
-                format!("The {language} language server is {}.", if enabled { "on" } else { "off" })
+                format!(
+                    "The {language} language server is {}.",
+                    if enabled { "on" } else { "off" }
+                )
             } else {
-                format!("The {language} language server was already {}.", if enabled { "on" } else { "off" })
+                format!(
+                    "The {language} language server was already {}.",
+                    if enabled { "on" } else { "off" }
+                )
             },
         })
     })

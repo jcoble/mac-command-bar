@@ -1,5 +1,5 @@
 <script lang="ts">
-  /** Compact global Editor/Supercharged switch shown in the bottom rail. */
+  /** Compact global Editor/Supercharged switch shown in the editor status bar. */
   import { onDestroy } from 'svelte';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import { settings } from '$lib/settingsStore.svelte';

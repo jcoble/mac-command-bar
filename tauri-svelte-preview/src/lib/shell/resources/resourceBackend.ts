@@ -1,5 +1,7 @@
 import {
   applyResourceMemoryPressureFromTauri,
+  cancelResourceDiskScanFromTauri,
+  cancelResourceSnapshotFromTauri,
   cleanupWorkspaceDiskEntryFromTauri,
   readResourceDiskScanFromTauri,
   readLanguageServerLogFromTauri,
@@ -23,11 +25,19 @@ export async function readResourceSnapshot(): Promise<ResourceSnapshot | null> {
   return readResourceSnapshotFromTauri();
 }
 
+export async function cancelResourceSnapshot(): Promise<void> {
+  await cancelResourceSnapshotFromTauri();
+}
+
 export async function readResourceDiskScan(
   roots: ResourceDiskRoot[],
   options: { maxDepth?: number; maxEntries?: number } = {}
 ): Promise<DiskScanReport | null> {
   return readResourceDiskScanFromTauri(roots, options.maxDepth ?? 3, options.maxEntries ?? 2000);
+}
+
+export async function cancelResourceDiskScan(): Promise<void> {
+  await cancelResourceDiskScanFromTauri();
 }
 
 export async function stopOwnedResource(

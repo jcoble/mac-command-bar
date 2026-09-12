@@ -11,7 +11,7 @@
  * are the promises that would be silently broken by an ordinary-looking
  * edit:
  *
- *  0. The project's switch lives with the centre pane's pill tabs, and the
+ *  0. The project's switch lives in the editor status bar, and the
  *     editor's file-tab row keeps only the open file's own controls. The panel
  *     remains the single owner of the status pipeline; the switch only reads
  *     what the panel publishes.
@@ -47,7 +47,7 @@ const barSource = readFileSync(
   'utf8'
 );
 const shellPageSource = readFileSync(
-  path.join(here, '..', '..', '..', '..', 'routes', 'next', '+page.svelte'),
+  path.join(here, '..', '..', '..', '..', 'routes', '+page.svelte'),
   'utf8'
 );
 const pillsSource = readFileSync(path.join(here, '..', 'CenterCornerTabs.svelte'), 'utf8');
@@ -66,9 +66,10 @@ test('the global mode control is a compact switch', () => {
   );
 });
 
-test('the bottom rail owns the switch and the pill group keeps only surface icons', () => {
+test('the editor status bar owns the switch and the pill group keeps only surface icons', () => {
   assert.doesNotMatch(pillsSource, /LanguageIntelligenceControls/);
-  assert.match(utilityStripSource, /<LanguageIntelligenceControls \/>/);
+  assert.doesNotMatch(utilityStripSource, /<LanguageIntelligenceControls \/>/);
+  assert.match(panelSource, /<div class="editor-status">[\s\S]*?<LanguageIntelligenceControls \/>/);
   const group = pillsSource.slice(pillsSource.indexOf('<nav'), pillsSource.indexOf('</nav>'));
   assert.ok(group.length > 0, 'the pill group must still exist');
   // Icons, not words: the label survives as the accessible name and the
@@ -105,9 +106,10 @@ test('the pill row sits at one offset, clear of the editor tab row', () => {
   );
   assert.match(
     panelSource,
-    /\.file-strip \{[\s\S]*?scrollbar-width:\s*none;/,
-    'a scrollbar that claims height would grow the row it is measured from'
+    /\.file-strip \{[\s\S]*?scrollbar-width:\s*thin;/,
+    'the fixed-height row keeps the file strip scrollable with the shared slim scrollbar'
   );
+  assert.match(panelSource, /\.file-strip::-webkit-scrollbar \{[\s\S]*?height:\s*4px;/);
   assert.ok(
     !panelSource.includes('--center-pill-group-width'),
     'the reserved gutter is gone; the group is below the row, not beside it'
@@ -115,17 +117,14 @@ test('the pill row sits at one offset, clear of the editor tab row', () => {
 });
 
 test('the group answers for its own focus, not the whole pane', () => {
-  // `:focus-within` on the region meant typing in the composer or the editor
-  // held the pills open the entire time.
-  assert.match(pillsSource, /\.center-pills:focus-within \{/);
+  // No focus selector keeps the always-visible compact capsule in a separate
+  // reveal state. In particular, typing elsewhere in the pane cannot change it.
+  assert.ok(!pillsSource.includes(':focus-within'));
   assert.ok(
     !frameSource.includes('.center-region:focus-within'),
-    'the pane reveals on hover only; focus is the group\'s own business'
+    'focus elsewhere in the pane must not change the capsule'
   );
-  // A pointer click leaves focus on the button, which would pin the group open
-  // for good. `detail` is 0 for a keyboard-driven click, so Tab-and-Enter keeps
-  // its focus and its reveal.
-  assert.match(pillsSource, /event\.detail > 0[\s\S]*?\.blur\(\)/);
+  assert.ok(!pillsSource.includes('.blur()'));
 });
 
 test('the shell has no strip along its top any more', () => {
@@ -229,8 +228,9 @@ test('the panel reads the status when a file opens', () => {
 });
 
 test('pushed updates are only listened for when the build says it sends them', () => {
-  assert.match(panelSource, /'source-lsp-status-changed'/);
-  assert.match(panelSource, /hasBackendCapability\('lspStatusEvents'\)/);
+  assert.match(intelligenceSource, /'source-lsp-status-changed'/);
+  assert.match(intelligenceSource, /hasBackendCapability\('lspStatusEvents'\)/);
+  assert.match(panelSource, /sourceIntelligence\.subscribeToLanguageServerStatus\(/);
 });
 
 test('a pushed update about another project or language is ignored', () => {
@@ -258,7 +258,8 @@ test('the waiting inline-hint lookup replaces the original, not the other way ro
 
 test('the second diagnostics read goes through the waiting room', () => {
   assert.match(panelSource, /languageServerGate/);
-  assert.match(panelSource, /waitUntilReady\(\)/);
+  assert.match(panelSource, /languageServerGate\.onReady\(\(\) => \{/);
+  assert.match(panelSource, /loadDiagnosticsAfterServerReady\(path, generation\)/);
 });
 
 test('the chip and the controls are painted only from the shared colour names', () => {

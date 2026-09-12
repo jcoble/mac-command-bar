@@ -14,6 +14,7 @@ use tauri::State;
 
 use crate::agent_conversation::manager::AgentRuntimeManager;
 use crate::agent_conversation::providers::AgentPrompt;
+use crate::bounded_process;
 
 const MAX_PROMPT_DIFF_BYTES: usize = 160_000;
 
@@ -312,11 +313,12 @@ fn create_pull_request_sync(
     )?;
 
     let args = build_gh_pr_create_args(&context.branch, base, title, description, draft);
-    let output = Command::new("gh")
-        .current_dir(&root)
-        .args(&args)
-        .output()
-        .map_err(format_gh_spawn_error)?;
+    let output = bounded_process::output(
+        Command::new("gh").current_dir(&root).args(&args),
+        "gh pr create",
+        bounded_process::NETWORK_COMMAND_TIMEOUT,
+    )
+    .map_err(format_gh_spawn_error)?;
     if !output.status.success() {
         return Err(format_process_failure(
             "gh pr create",
@@ -358,17 +360,18 @@ fn read_pull_request_status_for_ref(
     root: &Path,
     branch: &str,
 ) -> Result<PullRequestStatus, String> {
-    let output = Command::new("gh")
-        .current_dir(root)
-        .args([
+    let output = bounded_process::output(
+        Command::new("gh").current_dir(root).args([
             "pr",
             "view",
             branch,
             "--json",
             "number,url,state,statusCheckRollup",
-        ])
-        .output()
-        .map_err(format_gh_spawn_error)?;
+        ]),
+        "gh pr view",
+        bounded_process::NETWORK_COMMAND_TIMEOUT,
+    )
+    .map_err(format_gh_spawn_error)?;
     if !output.status.success() {
         return Err(format_process_failure(
             "gh pr view",
@@ -473,25 +476,35 @@ fn validate_branch_name(branch: &str) -> Result<(), String> {
 }
 
 fn has_upstream(root: &Path) -> bool {
-    Command::new("git")
-        .current_dir(root)
-        .args([
+    bounded_process::output(
+        Command::new("git").current_dir(root).args([
             "rev-parse",
             "--abbrev-ref",
             "--symbolic-full-name",
             "@{upstream}",
-        ])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        ]),
+        "git rev-parse upstream",
+        bounded_process::LOCAL_COMMAND_TIMEOUT,
+    )
+    .map(|output| output.status.success())
+    .unwrap_or(false)
 }
 
 fn run_git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .current_dir(root)
-        .args(args)
-        .output()
-        .map_err(|error| format!("Could not run git {}: {error}", args.join(" ")))?;
+    let timeout = if args
+        .first()
+        .is_some_and(|arg| matches!(*arg, "fetch" | "pull" | "push"))
+    {
+        bounded_process::NETWORK_COMMAND_TIMEOUT
+    } else {
+        bounded_process::LOCAL_COMMAND_TIMEOUT
+    };
+    let output = bounded_process::output(
+        Command::new("git").current_dir(root).args(args),
+        &format!("git {}", args.join(" ")),
+        timeout,
+    )
+    .map_err(|error| format!("Could not run git {}: {error}", args.join(" ")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {

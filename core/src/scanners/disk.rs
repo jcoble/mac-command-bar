@@ -71,7 +71,11 @@ pub struct DiskScanReport {
     pub truncated: bool,
 }
 
-pub fn scan_disk_roots(roots: &[DiskScanRoot], options: DiskScanOptions) -> Result<DiskScanReport, String> {
+pub fn scan_disk_roots(
+    roots: &[DiskScanRoot],
+    options: DiskScanOptions,
+    is_current: impl Fn() -> bool,
+) -> Result<DiskScanReport, String> {
     let max_depth = options.max_depth.min(8);
     let max_entries = options.max_entries.clamp(1, 10_000);
     let mut entries = Vec::new();
@@ -79,6 +83,9 @@ pub fn scan_disk_roots(roots: &[DiskScanRoot], options: DiskScanOptions) -> Resu
     let mut truncated = false;
 
     for root in roots {
+        if !is_current() {
+            return Err("Disk scan cancelled".to_string());
+        }
         if visited >= max_entries {
             truncated = true;
             break;
@@ -87,7 +94,15 @@ pub fn scan_disk_roots(roots: &[DiskScanRoot], options: DiskScanOptions) -> Resu
             .path
             .canonicalize()
             .map_err(|error| format!("cannot inspect {}: {error}", root.path.display()))?;
-        let (bytes, top_level_items) = measure_path(&canonical, 0, max_depth, max_entries, &mut visited, &mut truncated);
+        let (bytes, top_level_items) = measure_path(
+            &canonical,
+            0,
+            max_depth,
+            max_entries,
+            &mut visited,
+            &mut truncated,
+            &is_current,
+        )?;
         let reclaimable_bytes = if root.protection == DiskProtection::SafeCandidate {
             bytes
         } else {
@@ -122,25 +137,29 @@ fn measure_path(
     max_entries: usize,
     visited: &mut usize,
     truncated: &mut bool,
-) -> (u64, Vec<WorkspaceDiskItem>) {
+    is_current: &impl Fn() -> bool,
+) -> Result<(u64, Vec<WorkspaceDiskItem>), String> {
+    if !is_current() {
+        return Err("Disk scan cancelled".to_string());
+    }
     if *visited >= max_entries {
         *truncated = true;
-        return (0, Vec::new());
+        return Ok((0, Vec::new()));
     }
     *visited += 1;
 
     let Ok(metadata) = fs::symlink_metadata(path) else {
-        return (0, Vec::new());
+        return Ok((0, Vec::new()));
     };
     if !metadata.is_dir() {
-        return (metadata.len(), Vec::new());
+        return Ok((metadata.len(), Vec::new()));
     }
     if depth >= max_depth {
-        return (0, Vec::new());
+        return Ok((0, Vec::new()));
     }
 
     let Ok(read_dir) = fs::read_dir(path) else {
-        return (0, Vec::new());
+        return Ok((0, Vec::new()));
     };
     let mut children = read_dir.filter_map(Result::ok).collect::<Vec<_>>();
     children.sort_by_key(|entry| entry.file_name());
@@ -152,7 +171,15 @@ fn measure_path(
             break;
         }
         let child_path = child.path();
-        let (child_bytes, _) = measure_path(&child_path, depth + 1, max_depth, max_entries, visited, truncated);
+        let (child_bytes, _) = measure_path(
+            &child_path,
+            depth + 1,
+            max_depth,
+            max_entries,
+            visited,
+            truncated,
+            is_current,
+        )?;
         bytes = bytes.saturating_add(child_bytes);
         if depth == 0 {
             top_level_items.push(WorkspaceDiskItem {
@@ -161,7 +188,7 @@ fn measure_path(
             });
         }
     }
-    (bytes, top_level_items)
+    Ok((bytes, top_level_items))
 }
 
 pub fn disk_protection_allows_cleanup(protection: DiskProtection) -> bool {
@@ -194,6 +221,7 @@ fn now_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn disk_scan_uses_protection_and_totals() {
@@ -204,8 +232,15 @@ mod tests {
             kind: WorkspaceDiskKind::BuildOutput,
             protection: DiskProtection::SafeCandidate,
         };
-        let report = scan_disk_roots(&[root], DiskScanOptions { max_depth: 0, max_entries: 1 })
-            .expect("bounded scan should produce a report");
+        let report = scan_disk_roots(
+            &[root],
+            DiskScanOptions {
+                max_depth: 0,
+                max_entries: 1,
+            },
+            || true,
+        )
+        .expect("bounded scan should produce a report");
 
         assert_eq!(report.entries.len(), 1);
         assert!(report.reclaimable_bytes <= report.scanned_bytes);
@@ -214,8 +249,36 @@ mod tests {
 
     #[test]
     fn disk_cleanup_only_allows_safe_candidates() {
-        assert!(disk_protection_allows_cleanup(DiskProtection::SafeCandidate));
+        assert!(disk_protection_allows_cleanup(
+            DiskProtection::SafeCandidate
+        ));
         assert!(!disk_protection_allows_cleanup(DiskProtection::Dirty));
         assert!(!disk_protection_allows_cleanup(DiskProtection::UserData));
+    }
+
+    #[test]
+    fn replacement_cancels_disk_scan_during_traversal() {
+        let checks = Cell::new(0);
+        let root = DiskScanRoot {
+            repository_id: "repo-1".into(),
+            workspace_id: "workspace-1".into(),
+            path: std::env::temp_dir(),
+            kind: WorkspaceDiskKind::BuildOutput,
+            protection: DiskProtection::SafeCandidate,
+        };
+
+        let result = scan_disk_roots(
+            &[root],
+            DiskScanOptions {
+                max_depth: 3,
+                max_entries: 2_000,
+            },
+            || {
+                checks.set(checks.get() + 1);
+                checks.get() == 1
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), "Disk scan cancelled");
     }
 }

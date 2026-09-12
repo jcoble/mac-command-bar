@@ -11,7 +11,7 @@
     loadCodeMirrorLanguage
   } from '$lib/shell/editor/codeMirrorLanguage';
   import { settings } from '$lib/settingsStore.svelte';
-  import { codeMirrorThemeForAppearance } from '$lib/shell/editor/codeMirrorTheme';
+  import { loadCodeMirrorTheme } from '$lib/shell/editor/codeMirrorTheme';
 
   let {
     relativePath,
@@ -31,14 +31,10 @@
   let mounted = false;
   let renderGeneration = 0;
 
-  function readOnlyExtensions(language: Extension, openLine = false): Extension[] {
+  function readOnlyExtensions(language: Extension, theme: Extension, openLine = false): Extension[] {
     return [
       basicSetup,
-      codeMirrorThemeForAppearance({
-        fontFamily: settings.editor.fontFamily,
-        fontSize: settings.editor.fontSize,
-        lineHeight: settings.editor.lineHeight
-      }),
+      theme,
       language,
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
@@ -59,7 +55,15 @@
   async function render(): Promise<void> {
     if (!mounted) return;
     const generation = ++renderGeneration;
-    const language = await loadCodeMirrorLanguage(codeMirrorLanguageForPath(relativePath));
+    const [language, theme] = await Promise.all([
+      loadCodeMirrorLanguage(codeMirrorLanguageForPath(relativePath)),
+      loadCodeMirrorTheme(settings.appearance.themeId, {
+        fontFamily: settings.editor.fontFamily,
+        fontSize: settings.editor.fontSize,
+        lineHeight: settings.editor.lineHeight,
+        fontLigatures: settings.editor.fontLigatures
+      })
+    ]);
     if (!mounted || generation !== renderGeneration) return;
     if (mergeView) {
       mergeView.destroy();
@@ -68,11 +72,12 @@
     }
     mergeView = new MergeView({
       parent: host,
-      a: { doc: originalContent, extensions: readOnlyExtensions(language) },
-      b: { doc: modifiedContent, extensions: readOnlyExtensions(language, true) },
+      a: { doc: originalContent, extensions: readOnlyExtensions(language, theme) },
+      b: { doc: modifiedContent, extensions: readOnlyExtensions(language, theme, true) },
       orientation: 'a-b',
       highlightChanges: true,
       gutter: true,
+      collapseUnchanged: { margin: 3, minSize: 4 },
       diffConfig: { scanLimit: 1000, timeout: 500 }
     });
     addMergeView(1);
@@ -83,9 +88,11 @@
     relativePath;
     originalContent;
     modifiedContent;
+    settings.appearance.themeId;
     settings.editor.fontFamily;
     settings.editor.fontSize;
     settings.editor.lineHeight;
+    settings.editor.fontLigatures;
     void render();
   });
 
@@ -106,7 +113,7 @@
   });
 </script>
 
-<div class="codemirror-diff" bind:this={host} aria-label="File changes"></div>
+<div class="codemirror-diff" bind:this={host} aria-label="File changes" data-selectable="true"></div>
 
 <style>
   .codemirror-diff {
@@ -129,5 +136,23 @@
 
   :global(.codemirror-diff .cm-editor) {
     min-width: 0;
+  }
+
+  :global(.codemirror-diff .cm-merge-a .cm-changedLine) {
+    background: rgba(255, 85, 85, 0.18) !important;
+    box-shadow: inset 3px 0 rgba(255, 85, 85, 0.72);
+  }
+
+  :global(.codemirror-diff .cm-merge-b .cm-changedLine) {
+    background: rgba(80, 250, 123, 0.16) !important;
+    box-shadow: inset 3px 0 rgba(80, 250, 123, 0.66);
+  }
+
+  :global(.codemirror-diff .cm-merge-a .cm-changedText) {
+    background: rgba(255, 85, 85, 0.28) !important;
+  }
+
+  :global(.codemirror-diff .cm-merge-b .cm-changedText) {
+    background: rgba(80, 250, 123, 0.25) !important;
   }
 </style>

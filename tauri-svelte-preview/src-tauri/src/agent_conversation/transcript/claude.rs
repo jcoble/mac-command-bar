@@ -88,7 +88,10 @@ fn strip_injected(text: &str) -> String {
         ("<local-command-stdout>", "</local-command-stdout>"),
     ] {
         while let Some(start) = cleaned.find(open) {
-            let Some(end) = cleaned[start..].find(close).map(|at| start + at + close.len()) else {
+            let Some(end) = cleaned[start..]
+                .find(close)
+                .map(|at| start + at + close.len())
+            else {
                 break;
             };
             cleaned.replace_range(start..end, "");
@@ -157,7 +160,11 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
             .join("\n\n"),
         _ => String::new(),
     };
-    let text = if role == "user" { strip_injected(&text) } else { text };
+    let text = if role == "user" {
+        strip_injected(&text)
+    } else {
+        text
+    };
     let mut records = Vec::new();
     if !text.is_empty() {
         let item_id = value

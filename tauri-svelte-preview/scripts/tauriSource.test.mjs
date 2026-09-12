@@ -8,6 +8,7 @@ import {
   createSourceScanId,
   findSourceDefinitionsFromTauri,
   findSourceReferencesFromTauri,
+  findSourceReferencesInRootFromTauri,
   findSourceLspDefinitionsFromTauri,
   findSourceLspCompletionsFromTauri,
   findSourceLspHoverFromTauri,
@@ -265,6 +266,10 @@ assert.equal(
     ],
     'App'
   ),
+  null
+);
+assert.equal(
+  await findSourceReferencesInRootFromTauri('/tmp/project', 'App'),
   null
 );
 assert.equal(

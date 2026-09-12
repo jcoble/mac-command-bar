@@ -14,6 +14,7 @@ tauri-svelte-preview/src-tauri/adapters/manifest.json
 tauri-svelte-preview/src-tauri/adapters/codex-acp*
 tauri-svelte-preview/src-tauri/adapters/claude-agent-acp*
 tauri-svelte-preview/src-tauri/adapters/agy-acp*
+tauri-svelte-preview/provider-release/
 tauri-svelte-preview/tools/agy-acp/target/
 *.xcuserstate
 .DS_Store

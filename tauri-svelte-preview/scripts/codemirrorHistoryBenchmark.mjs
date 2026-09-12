@@ -3,6 +3,11 @@ import { TextEncoder } from 'node:util';
 import { history, historyField, isolateHistory, undoDepth } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
 
+import {
+  limitSavedEditorHistory,
+  savedHistoryDepthLimit
+} from '../src/lib/shell/editor/codeMirrorHistory.ts';
+
 const encoder = new TextEncoder();
 const DOC_BYTES = 1024 * 1024;
 const EDIT_COUNT = 100;
@@ -41,9 +46,10 @@ function applyRepresentativeEdits(state) {
   return state;
 }
 
-function measureState(label, extensions) {
+function measureState(label, extensions, limitSavedHistory = false) {
   const initialDoc = makeDocument();
-  const state = applyRepresentativeEdits(EditorState.create({ doc: initialDoc, extensions }));
+  let state = applyRepresentativeEdits(EditorState.create({ doc: initialDoc, extensions }));
+  if (limitSavedHistory) state = limitSavedEditorHistory(state, extensions);
   const documentBytes = bytes(state.doc.toString());
   const tabStateBytes = bytes(representativeTabs(documentBytes));
   let historyJsonBytes = 0;
@@ -70,12 +76,17 @@ function measureState(label, extensions) {
 
 const rows = [
   measureState('history disabled baseline', []),
-  measureState('CodeMirror history({ minDepth: 5 })', [history({ minDepth: 5 })])
+  measureState(
+    'saved CodeMirror state capped at 5 groups',
+    [history({ minDepth: savedHistoryDepthLimit })],
+    true
+  )
 ];
 const baselineRow = rows[0];
 const historyRow = rows[1];
 const retainedHistoryDeltaBytes = historyRow.retainedStateProxyBytes - baselineRow.retainedStateProxyBytes;
 const withinThreshold = retainedHistoryDeltaBytes <= THRESHOLD_BYTES;
+const withinDepthLimit = historyRow.undoGroups <= savedHistoryDepthLimit;
 
 console.table(rows.map((row) => ({
   scenario: row.label,
@@ -92,8 +103,10 @@ console.log(JSON.stringify({
   retainedHistoryDeltaBytes,
   thresholdBytes: THRESHOLD_BYTES,
   withinThreshold,
+  savedHistoryDepthLimit,
+  withinDepthLimit,
   measurement: rows.map(({ label, historyMeasure }) => ({ label, historyMeasure })),
-  conclusion: withinThreshold
-    ? 'A separate exact five-group stack is not warranted by this retained-history proxy delta.'
-    : 'Investigate retained history before adding a separate exact five-group stack.'
+  conclusion: withinThreshold && withinDepthLimit
+    ? 'Saved editor state stays within the five-group undo cap and retained-history byte threshold.'
+    : 'Investigate retained editor history before release.'
 }, null, 2));

@@ -6,8 +6,10 @@
    * rest. The Resources/Usage strip now runs the full width of the window as
    * the shell's status bar, so it no longer lives here. Files keeps one bounded
    * panel instance for the active session because repeatedly reconstructing the
-   * virtual tree makes WebKit retain allocator pages. Every other panel mounts
-   * only while it is visible.
+   * virtual tree makes WebKit retain allocator pages. Browser also keeps one
+   * controller while this region is open so switching tabs only hides its
+   * native child view; closing the region still releases it. Every other panel
+   * mounts only while it is visible.
    *
    * No backend IO and no state of its own beyond the layout. Which tab is open
    * is decided by the page (it is remembered per session) and handed in; every
@@ -111,6 +113,13 @@
         {onUseSessionCheckout}
       />
     </div>
+    <div
+      class="panel-body"
+      class:showing={visible && activeId === 'browser'}
+      aria-hidden={!visible || activeId !== 'browser'}
+    >
+      <BrowserPanel visible={visible && activeId === 'browser'} panelOpen={visible} {root} {ownedId} />
+    </div>
     {#if visible && activeId === 'source-control'}
       <div class="panel-body showing">
         <SourceControlPanel
@@ -134,8 +143,6 @@
       <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'agents'}
       <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
-    {:else if visible && activeId === 'browser'}
-      <div class="panel-body showing"><BrowserPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'history'}
       <div class="panel-body showing">
         <HistoryPanel

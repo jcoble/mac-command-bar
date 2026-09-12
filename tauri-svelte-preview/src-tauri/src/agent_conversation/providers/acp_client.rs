@@ -1273,10 +1273,7 @@ fn apply_config_options(value: &Value, config: &mut AgentConversationConfigState
             .collect::<Vec<_>>();
         let (chosen, available) = match option.get("id").and_then(Value::as_str) {
             Some("model") => (&mut config.model, &mut config.available_models),
-            Some("effort") => (
-                &mut config.reasoning_effort,
-                &mut config.available_efforts,
-            ),
+            Some("effort") => (&mut config.reasoning_effort, &mut config.available_efforts),
             Some("mode") => (
                 &mut config.approval_policy,
                 &mut config.available_approval_policies,
@@ -2018,7 +2015,10 @@ done"#,
 
         client.close().await.unwrap();
         let frames = std::fs::read_to_string(&log).unwrap();
-        assert!(!frames.contains("session/set_model"), "the adapter has no session/set_model");
+        assert!(
+            !frames.contains("session/set_model"),
+            "the adapter has no session/set_model"
+        );
         assert!(frames.contains(r#""configId":"model","value":"sonnet""#));
         assert!(frames.contains(r#""configId":"effort","value":"high""#));
         assert!(frames.contains(r#""method":"session/set_mode""#));

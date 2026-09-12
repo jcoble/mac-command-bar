@@ -111,11 +111,12 @@
 
   interface Props {
     visible: boolean;
+    panelOpen: boolean;
     root: string;
     /** The session whose browser this is. */
     ownedId: string | null;
   }
-  let { visible, root, ownedId }: Props = $props();
+  let { visible, panelOpen, root, ownedId }: Props = $props();
 
   let pageHost = $state<HTMLDivElement | null>(null);
   /** The panel's own rows above the page — measured, never assumed. */
@@ -701,11 +702,9 @@
 
   /**
    * A session that comes back to a page it had open comes back to the page.
-   * Switching away closes the native view — one view, and the next session's
-   * page is not this one's — so the address survives the switch but the view
-   * does not, and the session returns to a panel that says it is on a page and
-   * shows nothing. Opening it again here is also what clears whatever the last
-   * session's teardown left in the workspace's error.
+   * Closing the right region or changing sessions releases the native view, so
+   * the address survives but the view does not. Opening it again here restores
+   * the saved page.
    */
   $effect(() => {
     const wanted = visible && Boolean(root) && Boolean(browser.url) && !browser.workspace.activeTabId;
@@ -717,12 +716,14 @@
     });
   });
 
-  // Release the native view and panel-owned resources whenever this scope is
-  // hidden or handed to another session/root, not only when it unmounts.
+  // Switching right-side tabs only hides the native view through placement.
+  // Release it when the whole right region closes or this controller is handed
+  // to another session/root.
   $effect(() => {
-    visible;
+    const ownsResources = panelOpen;
     ownedId;
     root;
+    if (!ownsResources) return;
     return () => untrack(() => {
       releaseBrowserWorkspace();
       discard();

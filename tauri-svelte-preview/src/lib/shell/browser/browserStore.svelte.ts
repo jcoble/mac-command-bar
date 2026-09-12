@@ -186,6 +186,10 @@ export function deactivateBrowserWorkspace(): void {
 export function releaseBrowserWorkspace(): void {
   const url = browser.url;
   const inputUrl = browser.inputUrl;
+  const lastGeneration = Math.max(
+    browser.workspace.activeGeneration,
+    ...Object.values(browser.workspace.tabs).map((tab) => tab.generation)
+  );
   // Hide the whole native workspace first. Closing its tabs is asynchronous,
   // so relying on close alone can leave the child view intercepting the shell
   // after the Svelte panel that owned it has already been removed.
@@ -196,7 +200,10 @@ export function releaseBrowserWorkspace(): void {
   browser.workspace.tabs = {};
   browser.workspace.tabOrder = [];
   browser.workspace.activeTabId = null;
-  browser.workspace.activeGeneration = 0;
+  // The native workspace keeps its generation after the view closes. Keep the
+  // same watermark here so reopening creates a newer tab instead of retrying
+  // generation 1 and being rejected as stale.
+  browser.workspace.activeGeneration = lastGeneration;
   browser.workspace.activated = false;
   browser.workspace.interaction = 'browse';
   browser.workspace.pendingSelection = null;

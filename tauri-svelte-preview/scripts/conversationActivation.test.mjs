@@ -97,7 +97,7 @@ const remoteConversation = readFileSync(
 );
 assert.match(
   page,
-  /async function selectSession\(ownedId: string\): Promise<void> \{\s+await selection\.selectSession\(ownedId\);\s+\}/,
+  /async function selectSession\(ownedId: string\): Promise<void> \{[\s\S]*?await selection\.selectSession\(ownedId\);/,
   'rail selection automatically runs the owned conversation activation'
 );
 assert.match(
@@ -146,6 +146,11 @@ assert.match(
   remoteConversation,
   /pub async fn cancel_request[\s\S]*?try_send\(ClientRequest::Cancel \{ id: request_id \}\)/,
   'remote request cancellation never waits behind a saturated request queue'
+);
+assert.match(
+  remoteConversation,
+  /"-T",[\s\S]*?target,[\s\S]*?"cat >\/dev\/null"[\s\S]*?\.stdin\(Stdio::piped\(\)\)/,
+  'the SSH tunnel exits on parent pipe EOF even when the app cannot run its shutdown hook'
 );
 assert.match(
   tauriSource,

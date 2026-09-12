@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   sessionHistoryLoadOutcome,
@@ -90,4 +91,17 @@ run('everything_present_is_ready', () => {
   assert.equal(outcome.state, 'ready');
   assert.deepEqual(outcome.missingKeys, []);
   assert.deepEqual(outcome.checkouts, checkouts);
+});
+
+run('project_and_detail_reads_have_independent_lifecycles', () => {
+  const panel = readFileSync(
+    new URL('../src/lib/shell/panels/history/HistoryPanel.svelte', import.meta.url),
+    'utf8'
+  );
+  assert.match(panel, /let historyLoadVersion = 0;/);
+  assert.match(panel, /let detailLoadVersion = 0;/);
+  assert.match(panel, /function releaseDetails[\s\S]*?detailLoadVersion \+= 1;/);
+  assert.match(panel, /function stopHistoryLoads[\s\S]*?historyLoadVersion \+= 1;[\s\S]*?loadingProjectKey = null;/);
+  assert.match(panel, /async function loadCardDetails[\s\S]*?\+\+detailLoadVersion/);
+  assert.doesNotMatch(panel, /\bloadVersion\b/);
 });

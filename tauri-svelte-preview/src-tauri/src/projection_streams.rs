@@ -167,10 +167,12 @@ impl<T: Serialize + Send + 'static> BoundedProjectionStream<T> {
     }
 
     fn current_channel_registration(&self) -> Option<String> {
-        self.state
-            .lock()
-            .ok()
-            .and_then(|state| state.registration_id.clone().filter(|_| state.channel.is_some()))
+        self.state.lock().ok().and_then(|state| {
+            state
+                .registration_id
+                .clone()
+                .filter(|_| state.channel.is_some())
+        })
     }
 
     fn can_admit(state: &StreamState<T>, bytes: u64, reserve_control: bool) -> bool {
@@ -183,13 +185,7 @@ impl<T: Serialize + Send + 'static> BoundedProjectionStream<T> {
                 <= MAX_TOTAL_BYTES
     }
 
-    fn enqueue_nonblocking(
-        &self,
-        session: String,
-        generation: u64,
-        sequence: i64,
-        chunk: T,
-    ) {
+    fn enqueue_nonblocking(&self, session: String, generation: u64, sequence: i64, chunk: T) {
         let Some(registration_id) = self.current_channel_registration() else {
             return;
         };
@@ -244,13 +240,7 @@ impl<T: Serialize + Send + 'static> BoundedProjectionStream<T> {
         self.wake.notify_all();
     }
 
-    fn enqueue_terminal(
-        &self,
-        session: String,
-        generation: u64,
-        sequence: i64,
-        chunk: T,
-    ) {
+    fn enqueue_terminal(&self, session: String, generation: u64, sequence: i64, chunk: T) {
         let Some(registration_id) = self.current_channel_registration() else {
             return;
         };
@@ -450,12 +440,7 @@ impl ProjectionStreams {
         self.agent_conversation.replace(registration_id, channel);
     }
 
-    pub fn acknowledge_agent_conversation(
-        &self,
-        registration_id: &str,
-        frames: usize,
-        bytes: u64,
-    ) {
+    pub fn acknowledge_agent_conversation(&self, registration_id: &str, frames: usize, bytes: u64) {
         self.agent_conversation
             .acknowledge(registration_id, frames, bytes);
     }

@@ -1,10 +1,26 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   filesPanelActions,
   type FilesPanelActionId
 } from '../src/lib/shell/panels/files/filesPanelActions.ts';
 import type { FileTreeNode } from '../src/lib/shell/panels/files/fileTreeModel.ts';
+import { fileIconForName } from '../src/lib/shell/components/explorer/fileIcons.ts';
+
+const filesPanel = readFileSync(
+  new URL('../src/lib/shell/panels/files/FilesPanel.svelte', import.meta.url),
+  'utf8'
+);
+const fileHistoryPane = readFileSync(
+  new URL('../src/lib/shell/panels/files/FileHistoryPane.svelte', import.meta.url),
+  'utf8'
+);
+const gitHistoryView = readFileSync(
+  new URL('../src/lib/shell/components/git/GitHistoryView.svelte', import.meta.url),
+  'utf8'
+);
+const shellRoute = readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
 
 function node(path: string, isDirectory: boolean): FileTreeNode {
   return {
@@ -56,5 +72,43 @@ assert.deepEqual(
     .map((action) => action.id),
   ['delete']
 );
+
+assert.match(filesPanel, /<FileIcon fileName=\{node\.name\} size=\{15\} \/>/);
+assert.match(filesPanel, /<FolderOpen size=\{15\}/);
+assert.match(filesPanel, /<Folder size=\{15\}/);
+assert.match(filesPanel, /<FileHistoryPane/);
+assert.match(filesPanel, /id === "open-timeline"/);
+assert.match(filesPanel, /fileHistoryOpen = true/);
+assert.match(
+  filesPanel,
+  /open-timeline[\s\S]{0,240}gitService\.showFileHistory/,
+  'the Files timeline primes Source Control without opening its panel'
+);
+assert.match(filesPanel, /id === "git-file-history"/);
+assert.match(filesPanel, /await openFileTimeline/);
+assert.match(fileHistoryPane, /const stop = new AbortController\(\)/);
+assert.match(fileHistoryPane, /service\.releaseHistorySurface\(\)/);
+assert.match(fileHistoryPane, /await service\.loadMoreHistory\(\)/);
+assert.match(fileHistoryPane, /\{#if open\}[\s\S]*<Collapsible\.Content>/);
+assert.match(shellRoute, /historyPath=\{gitPanel\.historyPath\}/);
+assert.match(gitHistoryView, /showFileHistory\(targetRoot, targetPath\)/);
+assert.equal(
+  (filesPanel.match(/<ContextMenu\.Root/g) ?? []).length,
+  1,
+  'the virtualized tree owns one context menu, not retained state for every row'
+);
+assert.match(filesPanel, /listRepositoryCheckoutsFromTauri\(roots\)/);
+assert.match(filesPanel, /<Select\.Item value=\{option\.path\} label=\{option\.label\} \/>/);
+assert.doesNotMatch(filesPanel, /class="files-context-menu"/);
+assert.deepEqual(fileIconForName('PreviewIntegrationConfigurationContractTests.cs'), {
+  kind: 'sharp',
+  tone: 'csharp',
+  label: 'C#'
+});
+assert.deepEqual(fileIconForName('FilesPanel.svelte'), {
+  kind: 'flame',
+  tone: 'svelte',
+  label: 'Svelte component'
+});
 
 console.log('filesPanelActions tests passed');

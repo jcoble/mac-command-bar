@@ -124,6 +124,30 @@ function makeBackend({ total = 1000 } = {}) {
   assert.equal(state.history[0].subject, 'commit 1000');
 }
 
+// A cursor may repeat its boundary commit. The list still contains each SHA
+// once, because duplicate keyed rows crash every Svelte history surface.
+{
+  const backend = makeBackend({ total: 48 });
+  const originalReadHistory = backend.readHistory;
+  let previousBoundary = null;
+  backend.readHistory = async (...args) => {
+    const page = await originalReadHistory(...args);
+    if (args[1] !== null && previousBoundary) page.commits.unshift(previousBoundary);
+    previousBoundary = page.commits.at(-1) ?? previousBoundary;
+    return page;
+  };
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+
+  git.activate('/repo');
+  git.ensureHistorySurface();
+  await settle();
+  await git.loadMoreHistory();
+
+  assert.equal(state.history.length, 48);
+  assert.equal(new Set(state.history.map((entry) => entry.sha)).size, 48);
+}
+
 // ── two visible history surfaces page independently ────────────────────────
 {
   const leftState = createGitPanelState();

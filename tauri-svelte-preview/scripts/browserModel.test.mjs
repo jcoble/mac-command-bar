@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
-import { createBrowserWorkspace } from '../src/lib/shell/browser/browserTypes.ts';
-import {
-  BrowserModelError,
-  createBrowserModel
-} from '../src/lib/shell/browser/browserModel.ts';
-import { hostRectFitsPanel } from '../src/lib/shell/panels/browser/browserPanelBounds.ts';
+
+globalThis.$state = (value) => value;
+
+const { createBrowserWorkspace } = await import('../src/lib/shell/browser/browserTypes.ts');
+const { BrowserModelError, createBrowserModel } = await import(
+  '../src/lib/shell/browser/browserModel.ts'
+);
+const { hostRectFitsPanel } = await import(
+  '../src/lib/shell/panels/browser/browserPanelBounds.ts'
+);
 
 assert.equal(
   hostRectFitsPanel(

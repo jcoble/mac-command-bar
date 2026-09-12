@@ -1,12 +1,14 @@
 <script lang="ts">
 		import { dev } from "$app/environment";
-		import { Button } from "$lib/components/ui/button/index.js";
+	import { Button } from "$lib/components/ui/button/index.js";
+	import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
 	import { EmptyState } from "$lib/components/ui/empty-state/index.js";
 	import { IconButton } from "$lib/components/ui/icon-button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
 	import { PanelHeader } from "$lib/components/ui/panel-header/index.js";
 	import * as Select from "$lib/components/ui/select/index.js";
 	import FileIcon from "$lib/shell/components/explorer/FileIcon.svelte";
+	import FileHistoryPane from "./FileHistoryPane.svelte";
 	import {
 		activate as activateExplorer,
 		loadDirectory,
@@ -36,6 +38,7 @@
 			windowFileTreeNodes,
 		} from "./fileTreeModel.ts";
 	import { watchFileTree } from "./fileTreeWatch.ts";
+	import { gitService } from "$lib/shell/git/gitService";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
 	import type { SourceTreeSearchMatch } from "$lib/sourceData";
 	import type { RepositoryCheckout } from "$lib/tauriSource";
@@ -87,12 +90,6 @@
 		isDirectory: boolean;
 	};
 
-	type FilesContextMenuState = {
-		node: TreeItem;
-		left: number;
-		top: number;
-	};
-
 	type TreeItem = ExplorerTreeNode & {
 		treePath: string;
 		treeParentPath: string;
@@ -125,7 +122,7 @@
 	let entryField = $state<HTMLInputElement | null>(null);
 	let actionError = $state<string | null>(null);
 	let fileClipboard = $state.raw<FileClipboard | null>(null);
-		let contextMenu = $state.raw<FilesContextMenuState | null>(null);
+	let contextMenuNode = $state.raw<TreeItem | null>(null);
 		let treeHost = $state<HTMLDivElement | null>(null);
 		let treeScroll = $state<HTMLDivElement | null>(null);
 		let treeScrollTop = $state(0);
@@ -147,6 +144,8 @@
 	let inspectionGeneration = 0;
 	let checkoutGeneration = 0;
 	let checkoutBusy = $state(false);
+	let scopePickerOpen = $state(false);
+	let fileHistoryOpen = $state(false);
 	let filesOwnerSignal: AbortSignal | undefined;
 
 	const READ_ONLY_SCOPE_MESSAGE =
@@ -234,7 +233,10 @@
 				FILE_TREE_OVERSCAN_ROWS,
 			),
 		);
-		const renderedRows = $derived(virtualized ? treeWindow.nodes : visibleRows);
+	const renderedRows = $derived(virtualized ? treeWindow.nodes : visibleRows);
+	const selectedFile = $derived(
+		displayedTreeData.find((node) => node.path === explorer.selectedPath && !node.isDirectory) ?? null,
+	);
 
 	$effect(() => {
 		const treeRoot = projectRoot.replace(/\/+$/, "");
@@ -271,7 +273,7 @@
 				expanded = new Set();
 				pending = null;
 				fileClipboard = null;
-				contextMenu = null;
+				contextMenuNode = null;
 				searchText = "";
 				if (nextRoot && canonicalPath(explorer.root ?? "") === nextRoot) {
 					for (const directory of loadedExplorerDirectories()) {
@@ -454,27 +456,7 @@
 
 	$effect(() => {
 		if (visible) return;
-		contextMenu = null;
-	});
-
-	$effect(() => {
-		if (!contextMenu) return;
-
-		const closeFromClick = (event: MouseEvent) => {
-			const target = event.target;
-			if (!(target instanceof Element) || !target.closest("[data-files-context-menu]")) {
-				contextMenu = null;
-			}
-		};
-		const closeFromKeyboard = (event: KeyboardEvent) => {
-			if (event.key === "Escape") contextMenu = null;
-		};
-		window.addEventListener("click", closeFromClick, true);
-		window.addEventListener("keydown", closeFromKeyboard);
-		return () => {
-			window.removeEventListener("click", closeFromClick, true);
-			window.removeEventListener("keydown", closeFromKeyboard);
-		};
+		contextMenuNode = null;
 	});
 
 	$effect(() => {
@@ -522,6 +504,7 @@
 	}
 
 	function selectInspectionRoot(value: string): void {
+		scopePickerOpen = false;
 		const target = canonicalPath(value);
 		if (!target || target === canonicalPath(sessionRoot)) {
 			if (inspectedRoot === "" && !inspectionRoot) return;
@@ -887,9 +870,18 @@
 				};
 			} else if (id === "paste") {
 				await pasteInto(node);
-			} else if (id === "open-timeline" || id === "git-file-history") {
+			} else if (id === "open-timeline") {
 				const projectRoot = projectRootForView();
-				if (projectRoot) await openFileTimeline({ projectRoot, relativePath: node.relativePath });
+				if (!projectRoot || node.isDirectory) return;
+				selectPath(node.path);
+				fileHistoryOpen = true;
+				await gitService.showFileHistory(projectRoot, node.relativePath);
+			} else if (id === "git-file-history") {
+				const projectRoot = projectRootForView();
+				if (projectRoot && !node.isDirectory) {
+					selectPath(node.path);
+					await openFileTimeline({ projectRoot, relativePath: node.relativePath });
+				}
 			} else if (id === "toggle-excluded") {
 				await toggleExcludedFiles();
 			}
@@ -982,22 +974,9 @@
 		];
 	}
 
-	function openContextMenu(node: TreeItem, event: MouseEvent): void {
-		event.preventDefault();
-		event.stopPropagation();
-		const items = contextMenuItems(node);
-		const separatorCount = items.filter((item) => item.separatorBefore).length;
-		const width = 220;
-		const height = items.length * 32 + separatorCount * 7 + 8;
-		contextMenu = {
-			node,
-			left: Math.max(8, Math.min(event.clientX, window.innerWidth - width - 8)),
-			top: Math.max(8, Math.min(event.clientY, window.innerHeight - height - 8)),
-		};
-	}
-
-	function closeContextMenu(): void {
-		contextMenu = null;
+	function selectContextMenuNode(node: TreeItem): void {
+		selectPath(node.path);
+		contextMenuNode = node;
 	}
 
 	onDestroy(() => {
@@ -1005,7 +984,7 @@
 		searchGeneration += 1;
 		revealGeneration += 1;
 		cancelActiveSearch();
-		contextMenu = null;
+		contextMenuNode = null;
 		activateExplorer(null);
 	});
 </script>
@@ -1014,7 +993,12 @@
 	<PanelHeader title="Files" count={explorer.activated ? listedCount : null}>
 		{#snippet actions()}
 			{#if scopeOptions.length > 1}
-				<Select.Root type="single" value={scopeValue} onValueChange={selectInspectionRoot}>
+				<Select.Root
+					type="single"
+					bind:open={scopePickerOpen}
+					value={scopeValue}
+					onValueChange={selectInspectionRoot}
+				>
 					<Select.Trigger size="sm" class="w-44 min-w-0" aria-label="Folder this panel reads">
 						<span class="min-w-0 truncate">
 							{scopeOptions.find((option) => canonicalPath(option.path) === canonicalPath(scopeValue))?.label ??
@@ -1040,14 +1024,17 @@
 				</Button>
 			{/if}
 			{#if explorer.activated && explorer.unavailable === null}
-					<Input
+				<Input
 					type="search"
 					class="h-7 w-32"
 					placeholder="Search files"
 					aria-label="Search project files"
+					autocomplete="off"
+					autocapitalize="none"
+					spellcheck={false}
 					value={searchText}
-						oninput={onFilterInput}
-					/>
+					oninput={onFilterInput}
+				/>
 					{#if dev}
 						<Button
 							size="sm"
@@ -1145,21 +1132,29 @@
 		{/if}
 	{/if}
 
-		<div
+	<div
 			class="tree-host"
 			class:hidden={!treeVisible}
 			aria-hidden={!treeVisible}
 			bind:this={treeHost}
 			use:observeTreeHost
+	>
+		<ContextMenu.Root
+			onOpenChange={(open) => {
+				if (!open) contextMenuNode = null;
+			}}
 		>
+			<ContextMenu.Trigger>
+				{#snippet child({ props })}
 		<div
+			{...props}
 			class="tree-scroll"
 			role="tree"
 			tabindex={treeVisible ? 0 : -1}
-				aria-label="Project files"
-				bind:this={treeScroll}
-				onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
-			>
+			aria-label="Project files"
+			bind:this={treeScroll}
+			onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
+		>
 				{#if renderedRows.length === 0}
 					<p class="tree-empty">Nothing matches that search.</p>
 				{:else}
@@ -1181,11 +1176,29 @@
 							style={`padding-left: ${node.depth * 12}px; transform: translateY(${(virtualized ? treeWindow.topSpacerHeight : 0) + rowIndex * FILE_TREE_ROW_HEIGHT}px)`}
 						onclick={() => onTreeNodeClicked(node)}
 						ondblclick={(event) => pinTreeNodeOpen(node, event)}
-						oncontextmenu={(event) => openContextMenu(node, event)}
+						oncontextmenu={() => selectContextMenuNode(node)}
 					>
-						<span class="tree-toggle" aria-hidden="true">{#if node.isDirectory}{expanded.has(node.path) ? "\u2304" : "\u203A"}{/if}</span>
+						<span class="tree-toggle" aria-hidden="true">
+							{#if node.isDirectory}
+								{#if expanded.has(node.path)}
+									<ChevronDown size={13} strokeWidth={2} />
+								{:else}
+									<ChevronRight size={13} strokeWidth={2} />
+								{/if}
+							{/if}
+						</span>
 						<span class="tree-row" class:excluded={node.ignored} title={node.path}>
-							<span class="tree-file-icon" aria-hidden="true"></span>
+							<span class="tree-file-icon" aria-hidden="true">
+								{#if node.isDirectory}
+									{#if expanded.has(node.path)}
+										<FolderOpen size={15} strokeWidth={1.75} />
+									{:else}
+										<Folder size={15} strokeWidth={1.75} />
+									{/if}
+								{:else}
+									<FileIcon fileName={node.name} size={15} />
+								{/if}
+							</span>
 							<span class="tree-name">{node.name}</span>
 							{#if fileClipboard?.path === node.path}
 								<span class="clipboard-mark">{fileClipboard.operation}</span>
@@ -1196,6 +1209,24 @@
 				</div>
 			{/if}
 		</div>
+				{/snippet}
+			</ContextMenu.Trigger>
+			{#if contextMenuNode}
+				<ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${contextMenuNode.name}`}>
+					{#each contextMenuItems(contextMenuNode) as item (item.id)}
+						{#if item.separatorBefore}<ContextMenu.Separator />{/if}
+						<ContextMenu.Item
+							variant={item.danger ? "destructive" : "default"}
+							disabled={item.disabled}
+							title={item.title}
+							onSelect={item.onselect}
+						>
+							{item.label}
+						</ContextMenu.Item>
+					{/each}
+				</ContextMenu.Content>
+			{/if}
+		</ContextMenu.Root>
 	</div>
 	{#if treeVisible && searching && searchNextCursor !== null}
 		<div class="search-more">
@@ -1204,32 +1235,20 @@
 			</Button>
 		</div>
 	{/if}
+	<FileHistoryPane
+		visible={visible && treeVisible}
+		root={projectRootForView()}
+		relativePath={selectedFile?.relativePath ?? ""}
+		fileName={selectedFile?.name ?? ""}
+		bind:open={fileHistoryOpen}
+		onOpenLarge={() => {
+			const projectRoot = projectRootForView();
+			if (projectRoot && selectedFile) {
+				void openFileTimeline({ projectRoot, relativePath: selectedFile.relativePath });
+			}
+		}}
+	/>
 
-	{#if contextMenu}
-		<div
-			class="files-context-menu"
-			data-files-context-menu
-			role="group"
-			aria-label={`Actions for ${contextMenu.node.name}`}
-			style={`left:${contextMenu.left}px;top:${contextMenu.top}px`}
-			oncontextmenu={(event) => event.preventDefault()}
-		>
-			{#each contextMenuItems(contextMenu.node) as item (item.id)}
-				{#if item.separatorBefore}<div class="files-context-separator" role="separator"></div>{/if}
-				<button
-					class="files-context-item"
-					class:danger={item.danger}
-					type="button"
-					disabled={item.disabled}
-					title={item.title}
-					onclick={() => {
-						closeContextMenu();
-						item.onselect();
-					}}>{item.label}</button
-				>
-			{/each}
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -1291,45 +1310,6 @@
 		color: var(--color-text-3);
 		text-align: center;
 	}
-	.files-context-menu {
-		position: fixed;
-		z-index: 1000;
-		width: 220px;
-		padding: 4px;
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		background: var(--color-surface-2);
-		box-shadow: 0 12px 32px rgb(0 0 0/0.35);
-	}
-	.files-context-item {
-		display: flex;
-		width: 100%;
-		height: 32px;
-		align-items: center;
-		border: 0;
-		border-radius: 4px;
-		background: transparent;
-		padding: 0 9px;
-		color: var(--color-text);
-		font: inherit;
-		text-align: left;
-		cursor: default;
-	}
-	.files-context-item:hover:not(:disabled) {
-		background: var(--color-surface-hover);
-	}
-	.files-context-item.danger {
-		color: var(--color-bad);
-	}
-	.files-context-item:disabled {
-		opacity: 0.45;
-	}
-	.files-context-separator {
-		height: 1px;
-		margin: 3px 4px;
-		background: var(--color-border);
-	}
-
 	.tree-scroll {
 		width: 100%;
 		height: 100%;

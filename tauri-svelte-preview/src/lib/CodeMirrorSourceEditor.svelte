@@ -4,19 +4,22 @@
     closeBrackets,
     type CompletionContext
   } from '@codemirror/autocomplete';
-  import { history, undoDepth } from '@codemirror/commands';
+  import { history, redo, redoDepth, undo, undoDepth } from '@codemirror/commands';
   import {
     bracketMatching,
+    codeFolding,
     defaultHighlightStyle,
     foldGutter,
     indentOnInput,
     syntaxHighlighting
   } from '@codemirror/language';
   import { forEachDiagnostic, lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
-  import { highlightSelectionMatches } from '@codemirror/search';
+  import { formatDocument, renameSymbol } from '@codemirror/lsp-client';
+  import { highlightSelectionMatches, selectSelectionMatches } from '@codemirror/search';
   import {
     EditorState,
     Compartment,
+    RangeSet,
     StateEffect,
     StateField,
     Transaction,
@@ -24,6 +27,7 @@
   } from '@codemirror/state';
   import {
     crosshairCursor,
+    Decoration,
     drawSelection,
     dropCursor,
     EditorView,
@@ -40,6 +44,7 @@
   import { vscodeKeymap } from '@replit/codemirror-vscode-keymap';
   import { onDestroy, onMount } from 'svelte';
 
+  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import {
     addCodeMirrorEditorView,
     setCodeMirrorEditorStateCount,
@@ -48,7 +53,14 @@
     textBytes
   } from '$lib/shell/resourceDiagnostics.svelte';
   import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
-  import { codeMirrorCodeLens } from '$lib/shell/editor/codeMirrorCodeLens';
+  import {
+    limitSavedEditorHistory,
+    savedHistoryDepthLimit
+  } from '$lib/shell/editor/codeMirrorHistory';
+  import {
+    codeMirrorCodeLens,
+    showCodeMirrorReferences
+  } from '$lib/shell/editor/codeMirrorCodeLens';
   import {
     codeMirrorSemanticTokens,
     semanticTokenDecorations,
@@ -140,6 +152,19 @@
 
   let host: HTMLDivElement;
   let view: EditorView | null = null;
+  let editorMenuStatus = $state({
+    canUndo: false,
+    canRedo: false,
+    canCut: false,
+    canCopy: false,
+    canPaste: false,
+    canSelectAll: false,
+    canChangeOccurrences: false,
+    canFormat: false,
+    canRename: false,
+    canDefinition: false,
+    canReferences: false
+  });
   let currentPath = '';
   let applyingContent = false;
   let languageGeneration = 0;
@@ -168,14 +193,15 @@
 
   function currentThemeKey(): string {
     const editor = settings.editor;
-    return `${settings.appearance.themeId}\0${editor.fontFamily}\0${editor.fontSize}\0${editor.lineHeight}`;
+    return `${settings.appearance.themeId}\0${editor.fontFamily}\0${editor.fontSize}\0${editor.lineHeight}\0${editor.fontLigatures}`;
   }
 
   function currentEditorTheme(): Extension {
     return codeMirrorThemeForAppearance({
       fontFamily: settings.editor.fontFamily,
       fontSize: settings.editor.fontSize,
-      lineHeight: settings.editor.lineHeight
+      lineHeight: settings.editor.lineHeight,
+      fontLigatures: settings.editor.fontLigatures
     });
   }
 
@@ -241,14 +267,14 @@
 
   function configureCodeLens(): void {
     if (!view || !currentPath || currentPath !== preview.path) return;
-    if (!visible || !languageServerRoot || !onCodeLensAnchorLookup || !onReferenceCountLookup) {
+    if (!visible || !onReferenceLookup) {
       clearCodeLens();
       return;
     }
     const generation = ++codeLensGeneration;
     const extension = codeMirrorCodeLens({
       preview: { ...preview, content: view.state.doc.toString() },
-      enabled: true,
+      enabled: Boolean(languageServerRoot && onCodeLensAnchorLookup && onReferenceCountLookup),
       onAnchorLookup: onCodeLensAnchorLookup,
       onCount: onReferenceCountLookup,
       onReferences: onReferenceLookup,
@@ -262,7 +288,9 @@
           await onExternalNavigation?.({ path: target.path, line: target.line, column: target.column });
         }
       },
-      onDotnetAction: (action) => action === 'build' ? onDotnetBuildRequest?.() : onDotnetTestRequest?.()
+      onDotnetAction: onDotnetBuildRequest && onDotnetTestRequest
+        ? (action) => action === 'build' ? onDotnetBuildRequest() : onDotnetTestRequest()
+        : undefined
     });
     view.dispatch({ effects: codeLens.reconfigure(extension) });
   }
@@ -329,9 +357,12 @@
    * without a cap one session's tabs grow without limit. `Map.set` on a key
    * that is already there does not move it, hence the delete first.
    */
-  function rememberEditorState(path: string, state: EditorState): void {
+  function rememberEditorState(path: string, state: EditorState, limitHistory = false): void {
     sessionEditorStates.delete(path);
-    sessionEditorStates.set(path, state);
+    sessionEditorStates.set(
+      path,
+      limitHistory ? limitSavedEditorHistory(state, editorExtensions) : state
+    );
     while (sessionEditorStates.size > retainedEditorStateLimit) {
       let oldest: string | null = null;
       for (const candidate of sessionEditorStates.keys()) {
@@ -405,7 +436,8 @@
       const extension = await loadCodeMirrorTheme(themeId, {
         fontFamily: settings.editor.fontFamily,
         fontSize: settings.editor.fontSize,
-        lineHeight: settings.editor.lineHeight
+        lineHeight: settings.editor.lineHeight,
+        fontLigatures: settings.editor.fontLigatures
       });
       if (
         !view ||
@@ -436,7 +468,7 @@
 
   function rememberCurrentView(): void {
     if (!view || !currentPath) return;
-    rememberEditorState(currentPath, view.state);
+    rememberEditorState(currentPath, view.state, true);
     const selection = view.state.selection.main;
     sessionViewStates.delete(currentPath);
     sessionViewStates.set(currentPath, {
@@ -465,7 +497,8 @@
       symbolName,
       line: line.number,
       column: start + 1,
-      filePath: preview.path
+      filePath: preview.path,
+      languageServerEnabled: officialLspExpected()
     };
   }
 
@@ -490,6 +523,60 @@
     await onExternalNavigation?.({ path: target.path, line: target.line, column: target.column });
   }
 
+  function runEditorCommand(command: (target: EditorView) => boolean): void {
+    if (!view || !editable) return;
+    command(view);
+    view.focus();
+  }
+
+  function peekReferences(): void {
+    if (!view || !onReferenceLookup) return;
+    const request = lookupRequestAt(view.state);
+    if (!request) return;
+    view.dispatch({ effects: showCodeMirrorReferences.of(request) });
+    view.focus();
+  }
+
+  async function writeClipboard(text: string): Promise<void> {
+    if (!text) return;
+    const { writeText } = await import('@tauri-apps/plugin-clipboard-manager');
+    await writeText(text);
+  }
+
+  async function copySelection(): Promise<void> {
+    if (!view) return;
+    const { from, to } = view.state.selection.main;
+    await writeClipboard(view.state.sliceDoc(from, to));
+    view?.focus();
+  }
+
+  async function cutSelection(): Promise<void> {
+    if (!view || !editable) return;
+    const editor = view;
+    const selection = editor.state.selection.main;
+    if (selection.empty) return;
+    const text = editor.state.sliceDoc(selection.from, selection.to);
+    await writeClipboard(text);
+    if (view !== editor || !editor.state.selection.main.eq(selection)) return;
+    editor.dispatch({ changes: { from: selection.from, to: selection.to } });
+    editor.focus();
+  }
+
+  async function pasteClipboard(): Promise<void> {
+    if (!view || !editable) return;
+    const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
+    const text = await readText();
+    if (!view || !editable || !text) return;
+    view.dispatch(view.state.replaceSelection(text));
+    view.focus();
+  }
+
+  function selectAll(): void {
+    if (!view) return;
+    view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+    view.focus();
+  }
+
   async function completionSource(context: CompletionContext) {
     if (!onCompletionLookup) return null;
     const word = context.matchBefore(/[\w$]*/);
@@ -498,7 +585,8 @@
       symbolName: word.text,
       line: context.state.doc.lineAt(context.pos).number,
       column: context.pos - context.state.doc.lineAt(context.pos).from + 1,
-      filePath: preview.path
+      filePath: preview.path,
+      languageServerEnabled: officialLspExpected()
     };
     const items = await onCompletionLookup(request);
     if (!items?.length) return null;
@@ -535,9 +623,20 @@
     };
   }, { hoverTime: 350, hideOnChange: true });
 
+  const hoverRange = EditorView.decorations.from(hover.active, (tooltips) => {
+    const mark = Decoration.mark({ class: 'cm-hover-range' });
+    return RangeSet.of(
+      tooltips
+        .filter((tooltip): tooltip is Tooltip & { end: number } => typeof tooltip.end === 'number')
+        .map((tooltip) => mark.range(tooltip.pos, tooltip.end)),
+      true
+    );
+  });
+
   const callbackIntelligence: Extension = [
     autocompletion({ defaultKeymap: false, override: [completionSource], activateOnTypingDelay: 180 }),
-    hover
+    hover,
+    hoverRange
   ];
 
   function codeActionDiagnostics(state: EditorState): SourceCodeActionDiagnostic[] {
@@ -637,6 +736,13 @@
     );
   }
 
+  function officialLspReady(): boolean {
+    return Boolean(
+      officialLspExpected() && languageServerRoot &&
+      loadedLspKey === `${languageServerRoot}\0${currentPath}`
+    );
+  }
+
   async function loadVisibleLspSupport(): Promise<void> {
     const root = languageServerRoot;
     if (!officialLspExpected() || !view || !root) return;
@@ -702,8 +808,12 @@
       {
         key: 'Escape',
         run: (editor) => {
-          if (!editor.state.field(codeActionMenuState, false)) return false;
-          clearCodeActions();
+          if (editor.state.field(codeActionMenuState, false)) {
+            clearCodeActions();
+            return true;
+          }
+          if (editor.state.selection.ranges.length < 2) return false;
+          editor.dispatch({ selection: editor.state.selection.asSingle() });
           return true;
         }
       },
@@ -727,8 +837,9 @@
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightSpecialChars(),
-    history({ minDepth: 5 }),
+    history({ minDepth: savedHistoryDepthLimit }),
     foldGutter(),
+    codeFolding({ placeholderText: '⋯' }),
     drawSelection(),
     dropCursor(),
     EditorState.allowMultipleSelections.of(true),
@@ -750,6 +861,25 @@
     codeLens.of([]),
     codeMirrorSemanticTokens,
     EditorView.domEventHandlers({
+      contextmenu: (_event, editor) => {
+        const hasSelection = editor.state.selection.ranges.some((range) => !range.empty);
+        const hasSymbol = Boolean(lookupRequestAt(editor.state));
+        const lspReady = officialLspReady();
+        editorMenuStatus = {
+          canUndo: editable && undoDepth(editor.state) > 0,
+          canRedo: editable && redoDepth(editor.state) > 0,
+          canCut: editable && hasSelection,
+          canCopy: hasSelection,
+          canPaste: editable,
+          canSelectAll: editor.state.doc.length > 0,
+          canChangeOccurrences: editable && hasSelection && editor.state.selection.ranges.length === 1,
+          canFormat: editable && lspReady,
+          canRename: editable && hasSymbol && lspReady,
+          canDefinition: hasSymbol && Boolean(onDefinitionLookup),
+          canReferences: hasSymbol && Boolean(onReferenceLookup)
+        };
+        return false;
+      },
       mousedown: (event, editor) => {
         if (!(event.metaKey || event.ctrlKey) || event.button !== 0) return false;
         const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
@@ -762,9 +892,6 @@
     EditorView.updateListener.of((update) => {
       if (update.docChanged || update.selectionSet) {
         codeActionGeneration += 1;
-      }
-      if (currentPath) {
-        rememberEditorState(currentPath, update.state);
       }
       if (!update.docChanged || applyingContent) return;
       const next = update.state.doc.toString();
@@ -787,6 +914,8 @@
     const doc = desiredContent();
     const max = doc.length;
     const retained = sessionEditorStates.get(currentPath);
+    sessionEditorStates.delete(currentPath);
+    publishRetainedEditorDiagnostics();
     let nextState = retained;
     if (!nextState) {
       nextState = EditorState.create({
@@ -810,7 +939,6 @@
     applyingContent = true;
     view.setState(nextState);
     applyingContent = false;
-    rememberEditorState(currentPath, view.state);
     setCodeMirrorDocBytes(textBytes(doc));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
@@ -925,6 +1053,7 @@
     settings.editor.fontFamily;
     settings.editor.fontSize;
     settings.editor.lineHeight;
+    settings.editor.fontLigatures;
     if (visible) void loadVisibleThemeSupport();
     else clearThemeSupport();
   });
@@ -967,7 +1096,29 @@
   });
 </script>
 
-<div class="codemirror-host" bind:this={host} aria-label={`Editor for ${preview.fileName}`}></div>
+<ContextMenu.Root>
+  <ContextMenu.Trigger>
+    {#snippet child({ props })}
+      <div {...props} class="codemirror-host" bind:this={host} aria-label={`Editor for ${preview.fileName}`}></div>
+    {/snippet}
+  </ContextMenu.Trigger>
+  <ContextMenu.Content side="left" class="w-[220px]" aria-label="Editor actions">
+    <ContextMenu.Item disabled={!editorMenuStatus.canUndo} onSelect={() => runEditorCommand(undo)}>Undo</ContextMenu.Item>
+    <ContextMenu.Item disabled={!editorMenuStatus.canRedo} onSelect={() => runEditorCommand(redo)}>Redo</ContextMenu.Item>
+    <ContextMenu.Separator />
+    <ContextMenu.Item disabled={!editorMenuStatus.canCut} onSelect={() => void cutSelection()}>Cut</ContextMenu.Item>
+    <ContextMenu.Item disabled={!editorMenuStatus.canCopy} onSelect={() => void copySelection()}>Copy</ContextMenu.Item>
+    <ContextMenu.Item disabled={!editorMenuStatus.canPaste} onSelect={() => void pasteClipboard()}>Paste</ContextMenu.Item>
+    <ContextMenu.Item disabled={!editorMenuStatus.canSelectAll} onSelect={selectAll}>Select All</ContextMenu.Item>
+    <ContextMenu.Item disabled={!editorMenuStatus.canChangeOccurrences} onSelect={() => runEditorCommand(selectSelectionMatches)}>Change All Occurrences</ContextMenu.Item>
+    <ContextMenu.Separator />
+    <ContextMenu.Item disabled={!editorMenuStatus.canFormat} onSelect={() => runEditorCommand(formatDocument)}>Format Document</ContextMenu.Item>
+    <ContextMenu.Item disabled={!editorMenuStatus.canRename} onSelect={() => runEditorCommand(renameSymbol)}>Rename Symbol</ContextMenu.Item>
+    <ContextMenu.Separator />
+    <ContextMenu.Item disabled={!editorMenuStatus.canDefinition} onSelect={() => void navigate('definition')}>Go to Definition</ContextMenu.Item>
+    <ContextMenu.Item disabled={!editorMenuStatus.canReferences} onSelect={peekReferences}>Peek References</ContextMenu.Item>
+  </ContextMenu.Content>
+</ContextMenu.Root>
 
 <style>
   .codemirror-host {
@@ -986,6 +1137,26 @@
     font-family: var(--font-mono);
     font-size: 12px;
     line-height: 1.45;
+  }
+
+  :global(.cm-hover-range) {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  }
+
+  .codemirror-host :global(.cm-matchingBracket) {
+    color: #eaffc7 !important;
+    background: rgb(184 255 90 / 22%) !important;
+    outline: 1px solid #b8ff5a;
+    border-radius: 2px;
+    text-shadow: 0 0 7px rgb(184 255 90 / 85%);
+  }
+
+  .codemirror-host :global(.cm-nonmatchingBracket) {
+    color: #fff0f3 !important;
+    background: rgb(255 70 104 / 28%) !important;
+    outline: 1px solid #ff4668;
+    border-radius: 2px;
+    text-shadow: 0 0 7px rgb(255 70 104 / 80%);
   }
 
   :global(.cm-code-actions) {

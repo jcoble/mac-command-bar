@@ -33,6 +33,10 @@ import { currentTheme, registerTerminalApplier } from './themes/themeService';
  */
 const liveTerminals = new Set<import('@xterm/xterm').Terminal>();
 
+// The addon currently retains its WebGL2 context after a view is disposed.
+// Keep terminal projections on xterm's default renderer until that lifecycle is safe.
+const ENABLE_XTERM_WEBGL = false;
+
 // Called at once with the theme in force, and again on every switch.
 registerTerminalApplier((theme) => {
   for (const terminal of liveTerminals) {
@@ -93,7 +97,12 @@ const DRACULA_THEME = {
   brightWhite: '#ffffff'
 } as const;
 
-function terminalAppearance(): { fontFamily: string; fontSize: number; lineHeight: number } {
+function terminalAppearance(): {
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+  cursorBlink: boolean;
+} {
   const fallbacks = defaultSettings().terminal;
   const current = settings.terminal;
   return {
@@ -106,8 +115,20 @@ function terminalAppearance(): { fontFamily: string; fontSize: number; lineHeigh
     lineHeight:
       current.lineHeight !== fallbacks.lineHeight
         ? current.lineHeight
-        : TERMINAL_FONT_DEFAULTS.lineHeight
+        : TERMINAL_FONT_DEFAULTS.lineHeight,
+    cursorBlink: current.cursorBlink
   };
+}
+
+/** Apply persisted terminal text and cursor preferences to every live view. */
+export function applyTerminalSettings(): void {
+  const appearance = terminalAppearance();
+  for (const terminal of liveTerminals) {
+    terminal.options.fontFamily = appearance.fontFamily;
+    terminal.options.fontSize = appearance.fontSize;
+    terminal.options.lineHeight = appearance.lineHeight;
+    terminal.options.cursorBlink = appearance.cursorBlink;
+  }
 }
 
 /**
@@ -127,10 +148,12 @@ export async function loadXtermModules(): Promise<{
   ]);
 
   let WebglAddon: typeof import('@xterm/addon-webgl').WebglAddon | null = null;
-  try {
-    ({ WebglAddon } = await import('@xterm/addon-webgl'));
-  } catch {
-    WebglAddon = null;
+  if (ENABLE_XTERM_WEBGL) {
+    try {
+      ({ WebglAddon } = await import('@xterm/addon-webgl'));
+    } catch {
+      WebglAddon = null;
+    }
   }
 
   return { Terminal, FitAddon, SerializeAddon, WebglAddon };
@@ -149,7 +172,7 @@ export function makeTerminalView(
 
   const terminal = new modules.Terminal({
     convertEol: true,
-    cursorBlink: true,
+    cursorBlink: appearance.cursorBlink,
     cursorStyle: 'block',
     allowProposedApi: true,
     macOptionIsMeta: true,

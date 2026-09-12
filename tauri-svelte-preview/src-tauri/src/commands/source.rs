@@ -3,10 +3,12 @@ use std::sync::atomic::Ordering;
 use tauri_plugin_fs::FsExt;
 
 use crate::{
-    allow_workspace_root_in_fs_scope, count_source_references_sync, find_source_definitions_sync,
-    find_source_references_sync, list_source_directory_sync_with_cancellation,
-    list_source_files_sync_with_cancellation, read_source_file_sync, read_source_file_sync_while,
-    run_path_action, run_source_file_action, run_terminal_command_action, run_terminal_path_action,
+    allow_workspace_root_in_fs_scope, count_source_references_sync,
+    find_source_definitions_in_root_sync, find_source_definitions_sync,
+    find_source_references_in_root_sync, find_source_references_sync,
+    list_source_directory_sync_with_cancellation, list_source_files_sync_with_cancellation,
+    read_source_file_sync, read_source_file_sync_while, read_source_image_sync, run_path_action,
+    run_source_file_action, run_terminal_command_action, run_terminal_path_action,
     search_source_files_sync, search_source_tree_sync, source_scan_cancellation_for_command,
     validate_project_root_sync_while, write_source_file_sync, PathAction,
     ProjectRootValidationOwner, ProjectRootValidationResult, SourceDefinitionTarget,
@@ -130,6 +132,16 @@ pub(crate) async fn read_source_file(
     })
     .await
     .map_err(|error| format!("Source preview task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn read_source_image(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        read_source_image_sync(PathBuf::from(path))
+    })
+    .await
+    .map_err(|error| format!("Source image task failed: {error}"))??;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
@@ -292,6 +304,21 @@ pub(crate) async fn find_source_definitions(
 }
 
 #[tauri::command]
+pub(crate) async fn find_source_definitions_in_root(
+    app: tauri::AppHandle,
+    root: String,
+    symbol_name: String,
+    limit: Option<usize>,
+) -> Result<Vec<SourceDefinitionTarget>, String> {
+    allow_workspace_root_in_fs_scope(&app, &root);
+    tauri::async_runtime::spawn_blocking(move || {
+        find_source_definitions_in_root_sync(PathBuf::from(root), symbol_name, limit)
+    })
+    .await
+    .map_err(|error| format!("Source definition scan task failed: {error}"))?
+}
+
+#[tauri::command]
 pub(crate) async fn find_source_references(
     records: Vec<SourceRecord>,
     symbol_name: String,
@@ -302,6 +329,21 @@ pub(crate) async fn find_source_references(
     })
     .await
     .map_err(|error| format!("Source reference task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn find_source_references_in_root(
+    app: tauri::AppHandle,
+    root: String,
+    symbol_name: String,
+    limit: Option<usize>,
+) -> Result<Vec<SourceReferenceTarget>, String> {
+    allow_workspace_root_in_fs_scope(&app, &root);
+    tauri::async_runtime::spawn_blocking(move || {
+        find_source_references_in_root_sync(PathBuf::from(root), symbol_name, limit)
+    })
+    .await
+    .map_err(|error| format!("Source reference scan task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -327,8 +369,8 @@ pub(crate) async fn count_source_references(
 /// business changing.
 #[tauri::command]
 pub(crate) async fn move_to_trash(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let target = std::fs::canonicalize(&path)
-        .map_err(|error| format!("Could not find {path}: {error}"))?;
+    let target =
+        std::fs::canonicalize(&path).map_err(|error| format!("Could not find {path}: {error}"))?;
     if !app.fs_scope().is_allowed(&target) {
         return Err(format!(
             "{} is outside the folders this window is allowed to change.",
@@ -337,9 +379,8 @@ pub(crate) async fn move_to_trash(app: tauri::AppHandle, path: String) -> Result
     }
 
     tauri::async_runtime::spawn_blocking(move || {
-        trash::delete(&target).map_err(|error| {
-            format!("Could not move {} to the Trash: {error}", target.display())
-        })
+        trash::delete(&target)
+            .map_err(|error| format!("Could not move {} to the Trash: {error}", target.display()))
     })
     .await
     .map_err(|error| format!("Trash task failed: {error}"))?

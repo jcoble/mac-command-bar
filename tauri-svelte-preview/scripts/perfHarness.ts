@@ -309,10 +309,10 @@ async function main(): Promise<number> {
     await page.locator('[data-testid="worktree-agent-select"][aria-current="true"]')
       .waitFor({ state: 'attached', timeout: 30_000 });
     await initialRow.locator('[data-testid="worktree-agent-select"]').click({ button: 'right' });
-    await page.locator('[data-testid="worktree-agent-context-menu"]')
+    await page.locator('[data-testid="session-row-context-menu"]')
       .waitFor({ state: 'visible', timeout: 30_000 });
     await page.keyboard.press('Escape');
-    await page.locator('[data-testid="worktree-agent-context-menu"]')
+    await page.locator('[data-testid="session-row-context-menu"]')
       .waitFor({ state: 'detached', timeout: 30_000 });
     const actualViewport = await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
     if (actualViewport.width !== VIEWPORT.width || actualViewport.height !== VIEWPORT.height) {

@@ -77,6 +77,22 @@ export function codeMirrorLanguageForPath(path: string): string {
   return extensionLanguages[extension] ?? 'plain';
 }
 
+export function enhancedCSharpTokenStyle(
+  style: string | null,
+  token: string,
+  before: string,
+  after: string
+): string | null {
+  if (style !== 'variable') return style;
+
+  const prefix = before.trimEnd();
+  const called = /^\s*\(/.test(after);
+  if (prefix.endsWith('.')) return called ? 'def' : 'property';
+  if (/\bnew\s*$/.test(prefix)) return 'type';
+  if (called) return 'def';
+  return /^[A-Z]/.test(token) ? 'type' : style;
+}
+
 export async function loadCodeMirrorLanguage(language: string): Promise<Extension> {
   switch (language) {
     case 'javascript':
@@ -140,7 +156,18 @@ export async function loadCodeMirrorLanguage(language: string): Promise<Extensio
     }
     case 'csharp': {
       const { csharp } = await import('@codemirror/legacy-modes/mode/clike');
-      return StreamLanguage.define(csharp);
+      return StreamLanguage.define({
+        ...csharp,
+        token(stream, state) {
+          const style = csharp.token(stream, state);
+          return enhancedCSharpTokenStyle(
+            style,
+            stream.current(),
+            stream.string.slice(0, stream.start),
+            stream.string.slice(stream.pos)
+          );
+        }
+      });
     }
     case 'kotlin': {
       const { kotlin } = await import('@codemirror/legacy-modes/mode/clike');

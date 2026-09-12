@@ -11,14 +11,6 @@ use std::time::{Duration, Instant};
 // The counting pass behind the margin reference counts lives in mcb-core, not
 // here, so that it is compiled optimized even when this crate is not — see the
 // module's own note and the `[profile.dev.package."*"]` block in Cargo.toml.
-use mcb_core::reference_counts::{
-    count_reference_lines_across_files, is_source_token_boundary,
-    normalized_reference_count_symbols, ReferenceCountFile, ReferenceCountPlan,
-    MAX_REFERENCE_SCAN_BYTES,
-};
-use orchestration::import_legacy_orchestration_events;
-use tauri::{Emitter, Manager};
-use tauri_plugin_fs::FsExt;
 use commands::agent_sessions::*;
 use commands::application::*;
 use commands::lsp::*;
@@ -29,9 +21,18 @@ use commands::source_control::*;
 use commands::terminal::*;
 use commands::usage::*;
 use commands::workflow::*;
+use mcb_core::reference_counts::{
+    count_reference_lines_across_files, is_source_token_boundary,
+    normalized_reference_count_symbols, ReferenceCountFile, ReferenceCountPlan,
+    MAX_REFERENCE_SCAN_BYTES,
+};
+use orchestration::import_legacy_orchestration_events;
+use tauri::{Emitter, Manager};
+use tauri_plugin_fs::FsExt;
 use workflow::WorkflowEngine;
 
 mod agent_conversation;
+mod bounded_process;
 mod browser;
 mod claude_quota;
 mod commands;
@@ -59,6 +60,7 @@ mod usage_sources;
 mod workflow;
 
 const MAX_PREVIEW_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SOURCE_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_SOURCE_LIST_LIMIT: usize = 10_000;
 const MAX_SOURCE_LIST_LIMIT: usize = 25_000;
 const DEFAULT_SOURCE_SEARCH_LIMIT: usize = 50;
@@ -726,10 +728,7 @@ fn allow_workspace_root_in_fs_scope(app: &tauri::AppHandle, root: &str) {
         return;
     };
     if let Err(error) = app.fs_scope().allow_directory(&canonical, true) {
-        crate::debug_log::stderr_log!(
-            "fs scope: could not allow {}: {error}",
-            canonical.display()
-        );
+        crate::debug_log::stderr_log!("fs scope: could not allow {}: {error}", canonical.display());
     }
 }
 
@@ -852,7 +851,11 @@ fn describe_language_server_start(start: &Result<lsp::LanguageServerStart, Strin
     }
 }
 
-fn describe_language_servers_toggle(enabled: bool, changed: bool, stopped_servers: usize) -> String {
+fn describe_language_servers_toggle(
+    enabled: bool,
+    changed: bool,
+    stopped_servers: usize,
+) -> String {
     if enabled {
         return if changed {
             "Language servers are back on. One starts the next time you open a file in a project that has language intelligence on."
@@ -894,25 +897,6 @@ fn describe_csharp_language_server_toggle(
             .to_string()
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /// What this build of the backend can do, by name.
 ///
@@ -1326,6 +1310,19 @@ fn read_source_file_sync(path: PathBuf) -> Result<SourcePreview, String> {
         .ok_or_else(|| "Source read was cancelled".to_string())
 }
 
+fn read_source_image_sync(path: PathBuf) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err("Source image path is not a file".to_string());
+    }
+    if metadata.len() > MAX_SOURCE_IMAGE_BYTES {
+        return Err(format!("Image is too large to preview: {} bytes", metadata.len()));
+    }
+    std::fs::read(&path)
+        .map_err(|error| format!("Could not read source image {}: {error}", path.display()))
+}
+
 fn read_source_file_sync_while(
     path: PathBuf,
     keep_reading: impl Fn() -> bool,
@@ -1687,6 +1684,61 @@ fn find_source_definitions_sync(
     Ok(targets)
 }
 
+fn find_source_definitions_in_root_sync(
+    root: PathBuf,
+    symbol_name: String,
+    limit: Option<usize>,
+) -> Result<Vec<SourceDefinitionTarget>, String> {
+    let normalized_symbol_name = symbol_name.trim().to_lowercase();
+    if normalized_symbol_name.is_empty() {
+        return Ok(Vec::new());
+    }
+    let capped_limit = limit
+        .unwrap_or(DEFAULT_SOURCE_DEFINITION_LIMIT)
+        .min(MAX_SOURCE_DEFINITION_LIMIT);
+    if capped_limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut progress = SourceScanWalkProgress::default();
+    let deadline = Instant::now() + Duration::from_millis(DEFAULT_REFERENCE_COUNT_DEADLINE_MS);
+    let _ = collect_source_files(
+        &root,
+        &root,
+        source_collection_limit(DEFAULT_SOURCE_LIST_LIMIT),
+        None,
+        &mut records,
+        &SourceScanCancellation::until(deadline),
+        &mut progress,
+    );
+
+    let mut targets = Vec::new();
+    for record in records {
+        if targets.len() >= capped_limit || Instant::now() >= deadline {
+            break;
+        }
+        let path = PathBuf::from(&record.path);
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_PREVIEW_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        append_source_definition_targets(
+            &record,
+            &String::from_utf8_lossy(&bytes),
+            &normalized_symbol_name,
+            capped_limit,
+            &mut targets,
+        );
+    }
+    Ok(targets)
+}
+
 fn append_source_definition_targets(
     record: &SourceRecord,
     content: &str,
@@ -1759,6 +1811,59 @@ fn find_source_references_sync(
         append_source_reference_targets(
             &record,
             &content,
+            &normalized_symbol_name,
+            capped_limit,
+            &mut targets,
+        );
+    }
+
+    Ok(targets)
+}
+
+fn find_source_references_in_root_sync(
+    root: PathBuf,
+    symbol_name: String,
+    limit: Option<usize>,
+) -> Result<Vec<SourceReferenceTarget>, String> {
+    let capped_limit = limit
+        .unwrap_or(DEFAULT_SOURCE_REFERENCE_LIMIT)
+        .min(MAX_SOURCE_REFERENCE_LIMIT);
+    if symbol_name.trim().is_empty() || capped_limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let deadline = Instant::now() + Duration::from_millis(DEFAULT_REFERENCE_COUNT_DEADLINE_MS);
+    let mut records = Vec::new();
+    let mut progress = SourceScanWalkProgress::default();
+    let _ = collect_source_files(
+        &root,
+        &root,
+        source_collection_limit(DEFAULT_SOURCE_LIST_LIMIT),
+        None,
+        &mut records,
+        &SourceScanCancellation::until(deadline),
+        &mut progress,
+    );
+
+    let normalized_symbol_name = symbol_name.trim().to_lowercase();
+    let mut targets = Vec::new();
+    for record in records {
+        if targets.len() >= capped_limit || Instant::now() >= deadline {
+            break;
+        }
+        let path = PathBuf::from(&record.path);
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_PREVIEW_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        append_source_reference_targets(
+            &record,
+            &String::from_utf8_lossy(&bytes),
             &normalized_symbol_name,
             capped_limit,
             &mut targets,
@@ -2301,17 +2406,19 @@ pub(crate) fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus,
     validate_git_root(&root)?;
 
     let root_arg = root.display().to_string();
-    let output = Command::new("git")
-        .args([
+    let output = bounded_process::output(
+        Command::new("git").args([
             "-C",
             root_arg.as_str(),
             "status",
             "--porcelain=v1",
             "--branch",
             "--untracked-files=normal",
-        ])
-        .output()
-        .map_err(|error| format!("Could not run git status: {error}"))?;
+        ]),
+        "git status",
+        bounded_process::LOCAL_COMMAND_TIMEOUT,
+    )
+    .map_err(|error| format!("Could not run git status: {error}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -2325,7 +2432,10 @@ pub(crate) fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus,
     parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
 }
 
-pub(crate) fn stage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionResult, String> {
+pub(crate) fn stage_git_paths_sync(
+    root: PathBuf,
+    paths: Vec<String>,
+) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     let validated_paths = validate_git_relative_paths(&paths)?;
     run_git_with_paths(&root, &["add"], &validated_paths)?;
@@ -2335,7 +2445,10 @@ pub(crate) fn stage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<
     })
 }
 
-pub(crate) fn unstage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Result<GitActionResult, String> {
+pub(crate) fn unstage_git_paths_sync(
+    root: PathBuf,
+    paths: Vec<String>,
+) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     let validated_paths = validate_git_relative_paths(&paths)?;
     run_git_with_paths(&root, &["restore", "--staged"], &validated_paths)?;
@@ -2345,7 +2458,10 @@ pub(crate) fn unstage_git_paths_sync(root: PathBuf, paths: Vec<String>) -> Resul
     })
 }
 
-pub(crate) fn commit_git_repository_sync(root: PathBuf, message: String) -> Result<GitActionResult, String> {
+pub(crate) fn commit_git_repository_sync(
+    root: PathBuf,
+    message: String,
+) -> Result<GitActionResult, String> {
     validate_git_root(&root)?;
     let message = message.trim();
     if message.is_empty() {
@@ -2639,12 +2755,17 @@ fn run_git_with_paths(root: &Path, args: &[&str], paths: &[String]) -> Result<St
 
 fn git_has_staged_changes(root: &Path) -> Result<bool, String> {
     let root_arg = root.display().to_string();
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root_arg)
-        .args(["diff", "--cached", "--quiet", "--exit-code"])
-        .output()
-        .map_err(|error| format!("Could not run git diff --cached: {error}"))?;
+    let output = bounded_process::output(
+        Command::new("git").arg("-C").arg(root_arg).args([
+            "diff",
+            "--cached",
+            "--quiet",
+            "--exit-code",
+        ]),
+        "git diff --cached",
+        bounded_process::LOCAL_COMMAND_TIMEOUT,
+    )
+    .map_err(|error| format!("Could not run git diff --cached: {error}"))?;
 
     if output.status.success() {
         return Ok(false);
@@ -2667,7 +2788,10 @@ fn format_git_path_action_message(action: &str, count: usize) -> String {
     format!("{action} {count} {noun}")
 }
 
-pub(crate) fn read_source_git_diff_sync(root: PathBuf, path: PathBuf) -> Result<SourceGitDiff, String> {
+pub(crate) fn read_source_git_diff_sync(
+    root: PathBuf,
+    path: PathBuf,
+) -> Result<SourceGitDiff, String> {
     validate_git_root(&root)?;
 
     let path_metadata = std::fs::metadata(&path)
@@ -2755,12 +2879,20 @@ fn read_source_git_status(root: &Path, relative_path: &str) -> Result<String, St
 
 fn run_git_text(root: &Path, args: &[&str]) -> Result<String, String> {
     let root_arg = root.display().to_string();
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root_arg)
-        .args(args)
-        .output()
-        .map_err(|error| format!("Could not run git {}: {error}", args.join(" ")))?;
+    let timeout = if args
+        .first()
+        .is_some_and(|arg| matches!(*arg, "fetch" | "pull" | "push"))
+    {
+        bounded_process::NETWORK_COMMAND_TIMEOUT
+    } else {
+        bounded_process::LOCAL_COMMAND_TIMEOUT
+    };
+    let output = bounded_process::output(
+        Command::new("git").arg("-C").arg(root_arg).args(args),
+        &format!("git {}", args.join(" ")),
+        timeout,
+    )
+    .map_err(|error| format!("Could not run git {}: {error}", args.join(" ")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -4877,7 +5009,9 @@ fn source_collection_limit(limit: usize) -> usize {
 }
 
 fn clamp_source_search_page_size(page_size: Option<usize>) -> usize {
-    page_size.unwrap_or(DEFAULT_SOURCE_SEARCH_LIMIT).clamp(1, MAX_SOURCE_SEARCH_LIMIT)
+    page_size
+        .unwrap_or(DEFAULT_SOURCE_SEARCH_LIMIT)
+        .clamp(1, MAX_SOURCE_SEARCH_LIMIT)
 }
 
 fn compare_source_walk_entries(
@@ -5247,10 +5381,12 @@ fn main() {
             debug_log::install_file_mirror(app_data_dir.join("logs/backend.log"));
             let session_db_path = app_data_dir.join("sessions.db");
             let agent_runtime = agent_conversation::manager::AgentRuntimeManager::open(
-                agent_conversation::providers::ProviderRegistry::bundled_from_environment()
-                    .map_err(|error| {
-                        format!("Packaged ACP adapter configuration is invalid: {error}")
-                    })?,
+                agent_conversation::providers::ProviderRegistry::bundled_from_environment_at(Some(
+                    &app_data_dir,
+                ))
+                .map_err(|error| {
+                    format!("Packaged ACP adapter configuration is invalid: {error}")
+                })?,
                 &session_db_path,
             )?;
             if let Some(settings) = agent_runtime.read_app_setting(LANGUAGE_SERVER_SETTINGS_KEY)? {
@@ -5361,6 +5497,7 @@ fn main() {
             validate_project_root,
             cancel_project_root_validation,
             read_source_file,
+            read_source_image,
             cancel_source_file_reads,
             read_native_csharp_file,
             write_source_file,
@@ -5374,7 +5511,9 @@ fn main() {
             search_source_files,
             search_source_tree,
             find_source_definitions,
+            find_source_definitions_in_root,
             find_source_references,
+            find_source_references_in_root,
             count_source_references,
             open_main_devtools,
             read_source_lsp_status,
@@ -5450,7 +5589,9 @@ fn main() {
             resources::read_resource_sample,
             resources::read_resource_totals,
             resources::read_resource_snapshot,
+            resources::cancel_resource_snapshot,
             resources::read_resource_disk_scan,
+            resources::cancel_resource_disk_scan,
             resources::cleanup_workspace_disk_entry,
             resources::stop_owned_resource,
             resources::stop_resource_process_tree,
@@ -5546,6 +5687,8 @@ fn main() {
             agent_conversation::agent_conversation_list_session_annotations,
             agent_conversation::agent_conversation_delete_session_annotation,
             agent_conversation::handoff::handoff_agent_conversation,
+            agent_conversation::providers::updates::check_provider_updates,
+            agent_conversation::providers::updates::install_provider_updates,
             start_terminal_session,
             list_terminal_sessions,
             read_terminal_session_scrollback,
@@ -6072,6 +6215,26 @@ mod tests {
         assert!(scan.stats.visited_entries >= 8);
         assert!(scan.stats.skipped_directories >= 1);
         assert!(scan.stats.unsupported_files >= 1);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_image_read_returns_bytes_and_rejects_oversized_files() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let image = root.join("preview.png");
+        std::fs::write(&image, [0x89, b'P', b'N', b'G']).unwrap();
+        assert_eq!(read_source_image_sync(image).unwrap(), [0x89, b'P', b'N', b'G']);
+
+        let oversized = root.join("oversized.png");
+        std::fs::File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_SOURCE_IMAGE_BYTES + 1)
+            .unwrap();
+        assert!(read_source_image_sync(oversized)
+            .unwrap_err()
+            .contains("too large to preview"));
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -8237,6 +8400,16 @@ mod tests {
             )]
         );
 
+        let root_targets = find_source_definitions_in_root_sync(
+            root.clone(),
+            "FormatDetector".to_string(),
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(root_targets.len(), 1);
+        assert_eq!(root_targets[0].relative_path, "src/FormatDetector.cs");
+        assert_eq!(root_targets[0].line, 2);
+
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -8313,6 +8486,23 @@ mod tests {
                     "public sealed class FormatDetector"
                 )
             ]
+        );
+
+        let root_targets = find_source_references_in_root_sync(
+            root.clone(),
+            "formatdetector".to_string(),
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(root_targets.len(), 2);
+        let mut root_paths = root_targets
+            .iter()
+            .map(|target| target.relative_path.as_str())
+            .collect::<Vec<_>>();
+        root_paths.sort_unstable();
+        assert_eq!(
+            root_paths,
+            vec!["src/FormatDetector.cs", "src/FormatResolver.cs"]
         );
 
         std::fs::remove_dir_all(root).unwrap();

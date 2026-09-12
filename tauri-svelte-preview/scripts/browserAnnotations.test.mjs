@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import {
+
+globalThis.$state = (value) => value;
+
+const {
   BROWSER_MAX_ANNOTATIONS_PER_TAB,
   BROWSER_SELECTOR_MAX_LENGTH,
   BROWSER_SNIPPET_MAX_LENGTH,
@@ -8,9 +11,9 @@ import {
   boundTextSnippet,
   createImmutableBrowserFeedbackAttachment,
   selectionFromElementInput
-} from '../src/lib/shell/browser/browserAnnotations.ts';
-import { createBrowserWorkspace } from '../src/lib/shell/browser/browserTypes.ts';
-import { createBrowserModel } from '../src/lib/shell/browser/browserModel.ts';
+} = await import('../src/lib/shell/browser/browserAnnotations.ts');
+const { createBrowserWorkspace } = await import('../src/lib/shell/browser/browserTypes.ts');
+const { createBrowserModel } = await import('../src/lib/shell/browser/browserModel.ts');
 
 assert.equal(boundSelector('x'.repeat(BROWSER_SELECTOR_MAX_LENGTH + 20)).length, BROWSER_SELECTOR_MAX_LENGTH);
 assert.equal(boundTextSnippet('x'.repeat(BROWSER_SNIPPET_MAX_LENGTH + 20)).length, BROWSER_SNIPPET_MAX_LENGTH);

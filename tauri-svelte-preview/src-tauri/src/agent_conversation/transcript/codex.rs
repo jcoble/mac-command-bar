@@ -169,7 +169,10 @@ fn strip_injected(text: &str) -> String {
     const CLOSE: &str = "</environment_context>";
     let mut cleaned = text.to_string();
     while let Some(start) = cleaned.find(OPEN) {
-        let Some(end) = cleaned[start..].find(CLOSE).map(|at| start + at + CLOSE.len()) else {
+        let Some(end) = cleaned[start..]
+            .find(CLOSE)
+            .map(|at| start + at + CLOSE.len())
+        else {
             break;
         };
         cleaned.replace_range(start..end, "");
@@ -268,10 +271,7 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                 native: Some(native),
             });
         }
-        (
-            Some("response_item"),
-            Some("function_call_output" | "custom_tool_call_output"),
-        ) => {
+        (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
             // The result line carries the same `call_id` as the call and no
             // tool name, so it is the same row saying what came back. It used
             // to be read past, which left every tool row with nothing in it.
