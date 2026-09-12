@@ -288,6 +288,9 @@ export function defaultThreadStartState(input: {
   const configs = input.providerConfigs ?? [];
   const provider: ThreadStartProvider = input.provider ?? 'codex';
   const config = configForProvider(provider, configs);
+  const hasLiveCatalog = (config?.availableModels.length ?? 0) > 0;
+  const effortChoices = effortChoicesFor(provider, configs);
+  const accessChoices = accessChoicesFor(provider, configs);
   return {
     prompt: '',
     executionEnvironment: 'local',
@@ -297,10 +300,10 @@ export function defaultThreadStartState(input: {
     // A remembered value the provider does not know — a spelling an earlier
     // build made up, or another provider's — is not offered back: it would be
     // refused at the first send and start nothing.
-    effort: choiceAmong(config?.reasoningEffort, effortChoicesFor(provider, configs))
-      || FALLBACK_EFFORTS[provider],
-    access: choiceAmong(config?.approvalPolicy, accessChoicesFor(provider, configs))
-      || FALLBACK_ACCESS[provider],
+    effort: choiceAmong(config?.reasoningEffort, effortChoices)
+      || (hasLiveCatalog ? (effortChoices[0] ?? '') : FALLBACK_EFFORTS[provider]),
+    access: choiceAmong(config?.approvalPolicy, accessChoices)
+      || (hasLiveCatalog ? (accessChoices[0] ?? '') : FALLBACK_ACCESS[provider]),
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
     branch: tidy(input.branch),
@@ -321,6 +324,7 @@ export function effortChoicesFor(
 ): string[] {
   const config = configForProvider(provider, configs);
   const available = unique(config?.availableEfforts ?? []);
+  if ((config?.availableModels.length ?? 0) > 0) return available;
   return available.length ? available : [...FALLBACK_EFFORT_CHOICES[provider]];
 }
 
@@ -330,6 +334,7 @@ export function accessChoicesFor(
 ): string[] {
   const config = configForProvider(provider, configs);
   const available = unique(config?.availableApprovalPolicies ?? []);
+  if ((config?.availableModels.length ?? 0) > 0) return available;
   return available.length ? available : [...FALLBACK_ACCESS_CHOICES[provider]];
 }
 

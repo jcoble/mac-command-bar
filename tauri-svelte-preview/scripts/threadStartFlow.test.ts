@@ -27,6 +27,37 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
   ]);
 }
 
+// A current Codex ACP catalog encodes effort in each model id and uses its own
+// access ids. Empty reported effort choices are meaningful, not a reason to
+// revive the older fallback ids that the provider rejects.
+{
+  const currentCodex = [{
+    provider: 'codex',
+    model: 'gpt-6-astra[medium]',
+    availableModels: ['gpt-6-astra[low]', 'gpt-6-astra[medium]'],
+    reasoningEffort: null,
+    availableEfforts: [],
+    approvalPolicy: 'agent',
+    availableApprovalPolicies: ['read-only', 'agent', 'agent-full-access']
+  }];
+  const state = defaultThreadStartState({
+    projectPath: '/Users/me/dev/work/app',
+    cwd: '/Users/me/dev/work/app',
+    branch: 'main',
+    providerConfigs: currentCodex
+  });
+  assert.equal(state.model, 'gpt-6-astra[medium]');
+  assert.equal(state.effort, '');
+  assert.equal(state.access, 'agent');
+  assert.deepEqual(effortChoicesFor('codex', currentCodex), []);
+  assert.deepEqual(accessChoicesFor('codex', currentCodex), [
+    'read-only', 'agent', 'agent-full-access'
+  ]);
+  const request = buildThreadStartRequest({ ...state, prompt: 'say hello' });
+  assert.equal(request?.reasoningEffort, null);
+  assert.equal(request?.approvalPolicy, 'agent');
+}
+
 {
   const refs = Array.from({ length: 120 }, (_, index) => ({
     name: index === 0 ? 'main' : `feature/${index}`,
