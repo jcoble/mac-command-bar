@@ -1,4 +1,4 @@
-import { RangeSetBuilder, StateEffect, type Extension } from '@codemirror/state';
+import { RangeSetBuilder, StateEffect, StateField, type Extension } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 
 import { formatSourceCodeLensTitle, sourceCodeLensCountKey } from '$lib/sourceCodeLensKeys';
@@ -9,6 +9,10 @@ import type { SourcePreview, SourceReferenceTarget, SourceSymbol } from '$lib/so
 type Count = { count: number; atLeast: boolean };
 
 export const showCodeMirrorReferences = StateEffect.define<SourceLookupRequest>();
+const setCodeMirrorReferenceTargets = StateEffect.define<{
+  request: SourceLookupRequest;
+  targets: SourceReferenceTarget[];
+}>();
 const refreshCodeMirrorCodeLens = StateEffect.define<void>();
 
 export interface CodeMirrorCodeLensOptions {
@@ -83,7 +87,7 @@ class PeekWidget extends WidgetType {
   }
 
   toDOM(): HTMLElement {
-    const panel = document.createElement('span');
+    const panel = document.createElement('div');
     panel.className = 'cm-code-lens-peek';
     const heading = document.createElement('strong');
     heading.textContent = this.targets === null
@@ -106,18 +110,57 @@ class PeekWidget extends WidgetType {
 const codeLensBaseTheme = EditorView.baseTheme({
   '.cm-code-lens': { border: '0', background: 'transparent', color: '#8aa9d6', cursor: 'pointer', padding: '0 8px 0 4px', fontSize: '11px' },
   '.cm-code-lens.loading': { color: '#8b909b', cursor: 'progress' },
-  '.cm-code-lens-peek': { display: 'grid', boxSizing: 'border-box', width: '100%', gap: '4px', padding: '8px 12px', borderBlock: '1px solid #343944', background: '#111318', fontSize: '12px' },
+  '.cm-code-lens-peek': { display: 'grid', boxSizing: 'border-box', width: '100%', maxHeight: '240px', overflowY: 'auto', gap: '4px', padding: '8px 12px', borderBlock: '1px solid #343944', background: '#111318', fontSize: '12px' },
   '.cm-code-lens-peek button': { border: '0', background: 'transparent', color: '#c9d5e8', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }
 });
 
 export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extension {
   const generation = Symbol(options.preview.path);
+  const peekState = StateField.define<{
+    request: SourceLookupRequest;
+    targets: SourceReferenceTarget[] | null;
+    decorations: DecorationSet;
+  } | null>({
+    create: () => null,
+    update(value, transaction) {
+      if (transaction.docChanged) value = null;
+      for (const effect of transaction.effects) {
+        if (effect.is(showCodeMirrorReferences)) {
+          const request = effect.value;
+          const line = transaction.state.doc.line(Math.max(1, Math.min(request.line, transaction.state.doc.lines)));
+          value = {
+            request,
+            targets: null,
+            decorations: Decoration.set([Decoration.widget({
+              widget: new PeekWidget(request, null, (target) => void options.onOpenReference?.(target)),
+              side: 1,
+              block: true
+            }).range(line.to)])
+          };
+        } else if (effect.is(setCodeMirrorReferenceTargets) && value?.request === effect.value.request) {
+          const { request, targets } = effect.value;
+          const line = transaction.state.doc.line(Math.max(1, Math.min(request.line, transaction.state.doc.lines)));
+          value = {
+            request,
+            targets,
+            decorations: Decoration.set([Decoration.widget({
+              widget: new PeekWidget(request, targets, (target) => void options.onOpenReference?.(target)),
+              side: 1,
+              block: true
+            }).range(line.to)])
+          };
+        }
+      }
+      return value;
+    },
+    provide: (field) => EditorView.decorations.from(field, (value) => value?.decorations ?? Decoration.none)
+  });
 
   return [
+    peekState,
     ViewPlugin.fromClass(class {
       decorations: DecorationSet = Decoration.none;
       private rows: LensRow[] = [];
-      private peek: { request: SourceLookupRequest; targets: SourceReferenceTarget[] | null } | null = null;
       private alive = true;
       private loadGeneration = 0;
 
@@ -150,7 +193,6 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
           if (options.enabled && options.onAnchorLookup && options.onCount) {
             this.rows.push({ key: 'reference-anchors', line: 1, title: 'Loading references…', state: 'loading' });
           }
-          this.peek = null;
           this.paint();
           if (options.enabled && options.onAnchorLookup && options.onCount) void this.loadReferences(generation);
         }
@@ -218,17 +260,14 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
       };
 
       private async openReferences(request: SourceLookupRequest): Promise<void> {
-        this.peek = { request, targets: null };
-        this.paint(true);
         let targets: SourceReferenceTarget[] = [];
         try {
           targets = (await options.onReferences?.(request)) ?? [];
         } catch {
           targets = [];
         }
-        if (!this.alive || this.peek?.request !== request) return;
-        this.peek = { request, targets };
-        this.paint(true);
+        if (!this.alive) return;
+        this.view.dispatch({ effects: setCodeMirrorReferenceTargets.of({ request, targets }) });
       }
 
       private paint(refresh = false): void {
@@ -238,18 +277,6 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         for (const row of this.rows) {
           const line = this.view.state.doc.line(Math.max(1, Math.min(row.line, this.view.state.doc.lines)));
           items.push({ at: line.from, side: -1, decoration: Decoration.widget({ widget: new LensWidget(row, this.run), side: -1 }) });
-        }
-        if (this.peek) {
-          const line = this.view.state.doc.line(Math.max(1, Math.min(this.peek.request.line, this.view.state.doc.lines)));
-          items.push({
-            at: line.to,
-            side: 1,
-            decoration: Decoration.widget({
-              widget: new PeekWidget(this.peek.request, this.peek.targets, (target) => void options.onOpenReference?.(target)),
-              side: 1,
-              block: true
-            })
-          });
         }
         items.sort((left, right) => left.at - right.at || left.side - right.side);
         for (const item of items) builder.add(item.at, item.at, item.decoration);

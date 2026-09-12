@@ -165,6 +165,7 @@
     canDefinition: false,
     canReferences: false
   });
+  let editorMenuReferenceRequest: SourceLookupRequest | null = null;
   let currentPath = '';
   let applyingContent = false;
   let languageGeneration = 0;
@@ -529,15 +530,11 @@
     view.focus();
   }
 
-  function peekReferences(): void {
+  function peekReferences(capturedRequest?: SourceLookupRequest | null): void {
     if (!view || !onReferenceLookup) return;
     const editor = view;
-    const request = lookupRequestAt(editor.state);
+    const request = capturedRequest ?? lookupRequestAt(editor.state);
     if (!request) return;
-    // The editor can remain visible while a lifecycle transition has cleared
-    // its optional CodeLens compartment. Install the panel owner before
-    // sending the request so the menu never dispatches an unhandled effect.
-    configureCodeLens();
     if (view !== editor || currentPath !== preview.path) return;
     editor.dispatch({ effects: showCodeMirrorReferences.of(request) });
     editor.focus();
@@ -876,7 +873,8 @@
           editor.dispatch({ selection: { anchor: position } });
         }
         const hasSelection = editor.state.selection.ranges.some((range) => !range.empty);
-        const hasSymbol = Boolean(lookupRequestAt(editor.state));
+        editorMenuReferenceRequest = lookupRequestAt(editor.state);
+        const hasSymbol = Boolean(editorMenuReferenceRequest);
         const lspReady = officialLspReady();
         editorMenuStatus = {
           canUndo: editable && undoDepth(editor.state) > 0,
@@ -1129,7 +1127,7 @@
     <ContextMenu.Item disabled={!editorMenuStatus.canRename} onSelect={() => runEditorCommand(renameSymbol)}>Rename Symbol</ContextMenu.Item>
     <ContextMenu.Separator />
     <ContextMenu.Item disabled={!editorMenuStatus.canDefinition} onSelect={() => void navigate('definition')}>Go to Definition</ContextMenu.Item>
-    <ContextMenu.Item disabled={!editorMenuStatus.canReferences} onSelect={peekReferences}>Peek References</ContextMenu.Item>
+    <ContextMenu.Item disabled={!editorMenuStatus.canReferences} onSelect={() => peekReferences(editorMenuReferenceRequest)}>Peek References</ContextMenu.Item>
   </ContextMenu.Content>
 </ContextMenu.Root>
 

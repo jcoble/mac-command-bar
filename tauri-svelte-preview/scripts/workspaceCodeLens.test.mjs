@@ -81,8 +81,13 @@ assert.match(
 );
 assert.match(
   codeMirrorEditorSource,
-  /function peekReferences\(\): void \{[\s\S]*?configureCodeLens\(\);[\s\S]*?showCodeMirrorReferences\.of\(request\)/,
-  'Peek References must restore and reuse the CodeLens reference viewer'
+  /editorMenuReferenceRequest = lookupRequestAt\(editor\.state\)[\s\S]*?onSelect=\{\(\) => peekReferences\(editorMenuReferenceRequest\)\}/,
+  'Peek References must use the symbol captured at the right-click location after the menu takes focus'
+);
+assert.match(
+  codeMirrorEditorSource,
+  /function peekReferences\(capturedRequest\?: SourceLookupRequest \| null\): void \{[\s\S]*?capturedRequest \?\? lookupRequestAt\(editor\.state\)[\s\S]*?showCodeMirrorReferences\.of\(request\)/,
+  'Peek References must reuse the installed CodeLens reference viewer with the captured request'
 );
 assert.match(
   codeMirrorEditorSource,
@@ -106,8 +111,13 @@ assert.doesNotMatch(
 );
 assert.match(
   codeMirrorLensSource,
-  /new PeekWidget[\s\S]*?block: true/,
-  'Peek References must render as a left-aligned editor block instead of after the symbol text'
+  /const peekState = StateField\.define<[\s\S]*?block: true[\s\S]*?provide: \(field\) => EditorView\.decorations\.from\(field/,
+  'Peek References must own its block decoration in editor state so CodeMirror can measure vertical layout'
+);
+assert.match(
+  codeMirrorLensSource,
+  /document\.createElement\('div'\)[\s\S]*?maxHeight: '240px'[\s\S]*?overflowY: 'auto'/,
+  'the block reference viewer must use bounded block content so it cannot create blank editor gaps'
 );
 
 console.log('workspace CodeLens tests passed');
