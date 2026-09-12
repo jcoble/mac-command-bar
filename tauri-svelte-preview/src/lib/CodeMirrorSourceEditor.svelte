@@ -531,10 +531,16 @@
 
   function peekReferences(): void {
     if (!view || !onReferenceLookup) return;
-    const request = lookupRequestAt(view.state);
+    const editor = view;
+    const request = lookupRequestAt(editor.state);
     if (!request) return;
-    view.dispatch({ effects: showCodeMirrorReferences.of(request) });
-    view.focus();
+    // The editor can remain visible while a lifecycle transition has cleared
+    // its optional CodeLens compartment. Install the panel owner before
+    // sending the request so the menu never dispatches an unhandled effect.
+    configureCodeLens();
+    if (view !== editor || currentPath !== preview.path) return;
+    editor.dispatch({ effects: showCodeMirrorReferences.of(request) });
+    editor.focus();
   }
 
   async function writeClipboard(text: string): Promise<void> {
@@ -829,7 +835,7 @@
         key: 'Shift-F12',
         run: () => {
           if (officialLspExpected()) return false;
-          void navigate('references');
+          peekReferences();
           return true;
         }
       }

@@ -81,8 +81,13 @@ assert.match(
 );
 assert.match(
   codeMirrorEditorSource,
-  /showCodeMirrorReferences\.of\(request\)/,
-  'Peek References must reuse the CodeLens reference viewer'
+  /function peekReferences\(\): void \{[\s\S]*?configureCodeLens\(\);[\s\S]*?showCodeMirrorReferences\.of\(request\)/,
+  'Peek References must restore and reuse the CodeLens reference viewer'
+);
+assert.match(
+  codeMirrorEditorSource,
+  /key: 'Shift-F12',[\s\S]*?peekReferences\(\)/,
+  'the non-LSP Find References shortcut must open the same inline reference viewer'
 );
 assert.match(
   codeMirrorLensSource,
