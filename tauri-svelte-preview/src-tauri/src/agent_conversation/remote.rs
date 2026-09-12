@@ -953,29 +953,13 @@ fn validate_profile(profile: &RemoteAssemblyProfile) -> Result<(), String> {
     if profile.name.trim().is_empty() {
         return Err("Remote machine name is required".to_string());
     }
-    if profile.ssh_target.is_empty()
-        || profile.ssh_target.starts_with('-')
-        || !profile
-            .ssh_target
-            .bytes()
-            .all(|value| value.is_ascii_alphanumeric() || b"._@-".contains(&value))
-    {
-        return Err(
-            "SSH destination may contain only letters, numbers, '.', '_', '@', and '-'".to_string(),
-        );
-    }
+    validate_ssh_target(&profile.ssh_target)?;
     for (label, value) in [
         ("Remote Assembly checkout", profile.source_root.as_str()),
         ("Remote working directory", profile.default_cwd.as_str()),
     ] {
-        if !value.starts_with('/')
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
-        {
-            return Err(format!(
-                "{label} must be an absolute path containing only letters, numbers, '/', '.', '_', and '-'"
-            ));
+        if !value.starts_with('/') || value.contains('\0') || value.len() > 4096 {
+            return Err(format!("{label} must be an absolute path of at most 4096 bytes"));
         }
     }
     Ok(())
@@ -983,7 +967,7 @@ fn validate_profile(profile: &RemoteAssemblyProfile) -> Result<(), String> {
 
 fn deploy_remote_service(profile: &RemoteAssemblyProfile) -> Result<(), String> {
     let mut child = ssh_command(&profile.ssh_target)
-        .args(["sh", "-s", "--", &profile.source_root])
+        .args(["sh", "-s", "--", &shell_quote(&profile.source_root)])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1768,5 +1752,145 @@ async fn execute_remote_command(
                 .await?;
             Ok(RemoteResponse::Empty)
         }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteDirectoryListing {
+    path: String,
+    directories: Vec<String>,
+    truncated: bool,
+}
+
+#[tauri::command]
+pub async fn list_remote_directories(
+    ssh_target: String,
+    path: String,
+) -> Result<RemoteDirectoryListing, super::protocol::CommandError> {
+    tauri::async_runtime::spawn_blocking(move || read_remote_directories(&ssh_target, &path))
+        .await
+        .map_err(|error| super::protocol::CommandError::from(error.to_string()))?
+        .map_err(super::protocol::CommandError::from)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn directory_listing_script(path: &str) -> Result<String, String> {
+    if path.contains('\0') || path.len() > 4096 {
+        return Err("Folder path is invalid or too long".into());
+    }
+    let destination = if path.is_empty() || path == "~" {
+        "\"$HOME\"".to_string()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("\"$HOME\"/{}", shell_quote(rest))
+    } else if path.starts_with('/') {
+        shell_quote(path)
+    } else {
+        return Err("Enter an absolute path or a path beginning with ~/".into());
+    };
+    Ok(format!(r#"set -eu
+LC_ALL=C; export LC_ALL
+cd -- {destination}
+[ -r . ] && [ -x . ] || {{ echo 'Permission denied reading this folder' >&2; exit 1; }}
+printf '%s\0' "$(pwd -P)"
+count=0
+for entry in ./* ./.[!.]* ./..?*; do
+  [ -d "$entry" ] || continue
+  printf '%s\0' "${{entry#./}}"
+  count=$((count + 1))
+  [ "$count" -lt 501 ] || break
+done
+"#))
+}
+
+fn parse_directory_listing(bytes: &[u8]) -> Result<RemoteDirectoryListing, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "Folder names are not valid UTF-8")?;
+    let mut parts = text.split_terminator('\0');
+    let path = parts.next().filter(|path| path.starts_with('/'))
+        .ok_or("SSH returned an invalid folder listing")?.to_string();
+    let mut directories = parts.map(str::to_string).collect::<Vec<_>>();
+    let truncated = directories.len() > 500;
+    directories.truncate(500);
+    directories.sort();
+    Ok(RemoteDirectoryListing { path, directories, truncated })
+}
+
+fn read_remote_directories(target: &str, path: &str) -> Result<RemoteDirectoryListing, String> {
+    validate_ssh_target(target)?;
+    let script = directory_listing_script(path)?;
+    // One request owns one SSH process; never create a persistent control master.
+    let mut command = Command::new("ssh");
+    command.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+        "-o", "ControlMaster=no", "-o", "ControlPath=none", "--", target, &script]);
+    let output = crate::bounded_process::output(&mut command, "Remote folder listing", Duration::from_secs(15))
+        .map_err(|error| format!("Could not browse remote folders: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("Could not browse remote folders. Check the SSH destination and your SSH key/configuration. {}",
+            String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    parse_directory_listing(&output.stdout)
+}
+
+fn validate_ssh_target(target: &str) -> Result<(), String> {
+    if target.is_empty() || target.starts_with('-')
+        || !target.bytes().all(|value| value.is_ascii_alphanumeric() || b"._@-".contains(&value)) {
+        return Err("SSH destination may contain only letters, numbers, '.', '_', '@', and '-'".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+
+    #[test]
+    fn lists_only_directories_and_quotes_paths() {
+        let root = std::env::temp_dir().join(format!("assembly-directory-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let folder = root.join("space ' quote $(false)");
+        std::fs::create_dir(&folder).unwrap();
+        for name in ["visible", ".hidden", "unicode-é", "line\nbreak"] {
+            std::fs::create_dir(folder.join(name)).unwrap();
+        }
+        std::fs::write(folder.join("file"), "not a folder").unwrap();
+        std::os::unix::fs::symlink(folder.join("visible"), folder.join("link")).unwrap();
+        let output = Command::new("sh").args(["-c", &directory_listing_script(folder.to_str().unwrap()).unwrap()]).output().unwrap();
+        assert!(output.status.success());
+        let listing = parse_directory_listing(&output.stdout).unwrap();
+        assert_eq!(listing.directories, [".hidden", "line\nbreak", "link", "unicode-é", "visible"]);
+        assert!(!listing.truncated);
+        assert_eq!(listing.path, folder.canonicalize().unwrap().to_str().unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn limits_output_and_rejects_invalid_inputs() {
+        let data = format!("/tmp\0{}", (0..501).map(|n| format!("folder-{n}\0")).collect::<String>());
+        let listing = parse_directory_listing(data.as_bytes()).unwrap();
+        assert!(listing.truncated);
+        assert_eq!(listing.directories.len(), 500);
+        for target in ["-oProxyCommand=x", "host;false", "", "a b"] {
+            assert!(validate_ssh_target(target).is_err());
+        }
+        assert!(validate_ssh_target("user@agent-workbox").is_ok());
+        assert!(directory_listing_script("relative").is_err());
+        assert!(directory_listing_script("/bad\0path").is_err());
+        assert!(parse_directory_listing(b"banner\0").is_err());
+        let output = Command::new("sh").args(["-c", &directory_listing_script("/nonexistent-assembly-directory-test").unwrap()]).output().unwrap();
+        assert!(!output.status.success());
+    }
+
+    #[test]
+    #[ignore = "requires the owner's SSH-accessible workbox"]
+    fn live_workbox_directory_listing() {
+        let listing = read_remote_directories("agent-workbox", "~").unwrap();
+        assert!(listing.path.starts_with("/home/"));
+        assert!(listing.directories.iter().any(|name| name == "dev"));
+        let nested = read_remote_directories("agent-workbox", &format!("{}/dev/work", listing.path)).unwrap();
+        assert!(nested.directories.iter().any(|name| name == "worktrees"));
+        eprintln!("SSH browse verified: {} then {}", listing.path, nested.path);
     }
 }

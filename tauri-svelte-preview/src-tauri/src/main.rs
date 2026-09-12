@@ -5633,6 +5633,7 @@ fn main() {
             agent_conversation::ensure_agent_conversation,
             agent_conversation::remote::read_remote_assembly_environment,
             agent_conversation::remote::deploy_remote_assembly,
+            agent_conversation::remote::list_remote_directories,
             agent_conversation::remote::remove_remote_assembly_profile,
             agent_conversation::send_agent_conversation_message,
             agent_conversation::agent_conversation_set_session_draft,

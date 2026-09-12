@@ -2799,3 +2799,11 @@ async function postLocalSourceBridge<T>(
 
   return body as T;
 }
+
+export type RemoteDirectoryListing = { path: string; directories: string[]; truncated: boolean };
+
+export async function listRemoteDirectoriesFromTauri(sshTarget: string, path: string): Promise<RemoteDirectoryListing> {
+  if (!isTauriRuntime()) throw new Error('Remote browsing is available in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<RemoteDirectoryListing>('list_remote_directories', { sshTarget, path });
+}

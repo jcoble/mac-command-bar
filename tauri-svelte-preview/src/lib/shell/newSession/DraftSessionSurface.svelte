@@ -19,11 +19,16 @@
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import Search from '@lucide/svelte/icons/search';
+  import Monitor from '@lucide/svelte/icons/monitor';
+  import Server from '@lucide/svelte/icons/server';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Settings2 from '@lucide/svelte/icons/settings-2';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import RemoteDirectoryField from './RemoteDirectoryField.svelte';
   import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
   import type {
     AgentConversationConfigField,
@@ -429,20 +434,20 @@
         </Button>
       {/snippet}
     </DropdownMenu.Trigger>
-    <DropdownMenu.Content side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
+    <DropdownMenu.Content class="draft-machine-menu" side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
       <DropdownMenu.Label>Work in</DropdownMenu.Label>
       <DropdownMenu.Item onSelect={() => selectEnvironment('local')}>
-        <span class="draft-check">
-          {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="size-3.5" />{/if}
-        </span>
-        This Mac
+        <Monitor aria-hidden="true" class="size-4" />
+        <span class="draft-machine-name">This Mac</span>
+        {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
       </DropdownMenu.Item>
       {#each remoteAssembly.profiles as profile (profile.id)}
         <DropdownMenu.Item title={profile.defaultCwd} onSelect={() => selectEnvironment('remote', profile)}>
-          <span class="draft-check">
-            {#if draft.remoteProfileId === profile.id}<Check aria-hidden="true" class="size-3.5" />{/if}
-          </span>
-          {profile.name}
+          <Server aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">{profile.name}</span>
+          {#if draft.remoteProfileId === profile.id}
+            <Check aria-hidden="true" class="draft-machine-selected size-4" />
+          {/if}
         </DropdownMenu.Item>
       {/each}
       <DropdownMenu.Separator />
@@ -450,13 +455,13 @@
         remoteProfile = emptyRemoteProfile();
         remoteSetupOpen = true;
       }}>
-        <span class="draft-check"></span>
-        Add remote machine…
+        <Plus aria-hidden="true" class="size-4" />
+        <span class="draft-machine-name">Add remote machine…</span>
       </DropdownMenu.Item>
       {#if remoteAssembly.profiles.length > 0}
         <DropdownMenu.Item onSelect={() => (remoteSetupOpen = true)}>
-          <span class="draft-check"></span>
-          Manage remote machines…
+          <Settings2 aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">Manage remote machines…</span>
         </DropdownMenu.Item>
       {/if}
     </DropdownMenu.Content>
@@ -638,14 +643,10 @@
           <span>SSH destination</span>
           <Input bind:value={remoteProfile.sshTarget} placeholder="user@hostname" autocomplete="off" />
         </label>
-        <label>
-          <span>Remote Assembly checkout</span>
-          <Input bind:value={remoteProfile.sourceRoot} placeholder="/home/user/mac-command-bar" autocomplete="off" />
-        </label>
-        <label>
-          <span>Remote working directory</span>
-          <Input bind:value={remoteProfile.defaultCwd} placeholder="/home/user/project" autocomplete="off" />
-        </label>
+        <RemoteDirectoryField label="Remote Assembly checkout" sshTarget={remoteProfile.sshTarget}
+          bind:value={remoteProfile.sourceRoot} placeholder="/home/user/mac-command-bar" disabled={remoteDeploying} />
+        <RemoteDirectoryField label="Remote working directory" sshTarget={remoteProfile.sshTarget}
+          bind:value={remoteProfile.defaultCwd} placeholder="/home/user/project" disabled={remoteDeploying} />
         {#if remoteDeploying}
           <p class="remote-deploy-status" role="status" aria-live="polite">
             Deploying the Assembly backend to the remote machine. Please wait; this may take a minute.
@@ -820,6 +821,45 @@
 
   :global(.draft-control:hover) { color: var(--color-text); }
   :global(.draft-branch) { max-width: 220px; min-width: 0; }
+
+  :global(.draft-machine-menu) {
+    width: 280px;
+    max-width: calc(100vw - 24px);
+    padding: 6px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-text) 9%, var(--color-surface));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+    animation: none;
+    --menu-row-radius: 3px;
+    --menu-row-inset: 10px 12px;
+    --menu-row-gap: 12px;
+  }
+
+  :global(.draft-machine-menu [data-slot="dropdown-menu-label"]) {
+    padding: 8px 12px;
+    color: var(--color-text-3);
+    font-size: 12px;
+  }
+
+  :global(.draft-machine-menu [data-slot="dropdown-menu-separator"]) {
+    margin: 5px 6px;
+  }
+
+  :global(.draft-machine-menu [data-slot="dropdown-menu-item"] > svg) {
+    color: var(--color-text-2);
+  }
+
+  :global(.draft-machine-menu [data-slot="dropdown-menu-item"] > .draft-machine-selected) {
+    color: var(--color-accent);
+  }
+
+  .draft-machine-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .draft-check {
     display: inline-flex;
