@@ -139,11 +139,8 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         for (const effect of update.transactions.flatMap((transaction) => transaction.effects)) {
           if (effect.is(showCodeMirrorReferences)) {
             const request = effect.value;
-            this.view.requestMeasure({
-              read: () => null,
-              write: () => {
-                if (this.alive) void this.openReferences(request);
-              }
+            queueMicrotask(() => {
+              if (this.alive) void this.openReferences(request);
             });
           }
         }

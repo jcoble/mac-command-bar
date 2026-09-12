@@ -91,8 +91,13 @@ assert.match(
 );
 assert.match(
   codeMirrorLensSource,
-  /requestMeasure\(\{[\s\S]*?write: \(\) => \{[\s\S]*?openReferences\(request\)/,
-  'the context-menu effect must use CodeMirror\'s owned event boundary before repainting'
+  /effect\.is\(showCodeMirrorReferences\)[\s\S]*?queueMicrotask\([\s\S]*?openReferences\(request\)/,
+  'Peek References must wait until the current CodeMirror update finishes before dispatching its panel refresh'
+);
+assert.doesNotMatch(
+  codeMirrorLensSource,
+  /effect\.is\(showCodeMirrorReferences\)[\s\S]{0,500}?requestMeasure/,
+  'Peek References must not dispatch from CodeMirror DOM measurement callbacks'
 );
 assert.match(
   codeMirrorLensSource,
