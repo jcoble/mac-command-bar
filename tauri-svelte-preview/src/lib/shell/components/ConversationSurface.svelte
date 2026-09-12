@@ -171,15 +171,15 @@
   const attachmentError = $derived(conversation?.attachmentError ?? '');
   const sendError = $derived(conversation?.sendError ?? '');
   const providerNotice = $derived(conversation?.providerNotice ?? '');
-  let capabilityRequest = $state('');
-  let configRequest = $state('');
+  let capabilityRequest = '';
+  let configRequest = '';
   /** A request key whose failure has already bought its one retry. The guard
    * above is claimed before the call, so without this a read that lost a
    * start-up race left the composer empty for good: the key still matched, so
    * the effect never asked again. Clearing the guard lets it ask once more —
    * and this remembers that it did, because the effect reads the guard and
    * would otherwise retry forever against a failure that is not going away. */
-  let configRetried = $state('');
+  let configRetried = '';
   let sendAnchorRequest = $state<ConversationSendAnchorRequest | null>(null);
   let surfaceController = new AbortController();
 
@@ -234,10 +234,6 @@
 
   $effect(() => {
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
-    // A draft becomes visible before its first send has created the native
-    // session. Its selected model/access already live in the draft, so there is
-    // nothing native to read until startup finishes.
-    if (active.source === 'fresh' && active.runtimeState === 'starting') return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     const key = `${ownedId}:${generation}:${conversation.connectionState}`;
@@ -247,6 +243,7 @@
     void readAgentConfigForSurface(controller.signal, ownedId, generation, key);
     return () => {
       controller.abort();
+      if (configRequest === key) configRequest = '';
     };
   });
 
