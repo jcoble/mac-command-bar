@@ -138,6 +138,7 @@
     onCompletionLookup,
     onDefinitionLookup,
     onExternalNavigation,
+    onExternalPreviewLookup,
     onLanguageServerReady,
     onHoverLookup,
     onCodeLensAnchorLookup,
@@ -281,6 +282,19 @@
       onAnchorLookup: onCodeLensAnchorLookup,
       onCount: onReferenceCountLookup,
       onReferences: onReferenceLookup,
+      onPreview: async (target) => {
+        const targetPreview = target.path === preview.path && view
+          ? { ...preview, content: view.state.doc.toString() }
+          : await onExternalPreviewLookup?.(target);
+        if (!targetPreview) return null;
+        return {
+          preview: targetPreview,
+          extensions: [
+            currentEditorTheme(),
+            await loadCodeMirrorLanguage(targetPreview.language)
+          ]
+        };
+      },
       onOpenReference: async (target) => {
         if (!view || generation !== codeLensGeneration || currentPath !== preview.path) return;
         if (target.path === preview.path) {
