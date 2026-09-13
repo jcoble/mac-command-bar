@@ -36,6 +36,7 @@
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
+  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
   import ProviderUpdateControl from '$lib/shell/components/ProviderUpdateControl.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
@@ -351,6 +352,10 @@
   let activeSection = $state('appearance');
   let query = $state('');
   let searchField = $state<HTMLElement | null>(null);
+  let resetSectionPending = $state<'appearance' | 'editor' | 'terminal' | 'general' | null>(null);
+  const resetSectionLabel = $derived(
+    sections.find((section) => section.id === resetSectionPending)?.label ?? ''
+  );
 
   /** Rows the current search leaves visible. An empty search leaves them all. */
   const matches = $derived.by(() => {
@@ -568,9 +573,8 @@
       : DEFAULT_THEME_ID
   );
 
-  async function resetShownSection(): Promise<void> {
-    if (!shownSection) return;
-    if (shownSection.id === 'general') {
+  async function resetSection(section: 'appearance' | 'editor' | 'terminal' | 'general'): Promise<void> {
+    if (section === 'general') {
       resetSettings('general');
       resetSettings('panels');
       resetSettings('intelligence');
@@ -580,15 +584,19 @@
       for (const id of ['csharp', 'typescript', 'rust'] as const) {
         await switchLanguageServer(id, defaults.languageServerEnabled[id]);
       }
-    } else if (shownSection.id === 'appearance' || shownSection.id === 'editor' || shownSection.id === 'terminal') {
-      resetSettings(shownSection.id as SettingsSection);
     } else {
-      return;
+      resetSettings(section as SettingsSection);
     }
     // Putting the settings back has to put the SCREEN back too, or the app says
     // one thing and shows another. A reset stores `dark`, which resolves to the
     // theme the app ships with.
-    if (shownSection.id === 'appearance') applyTheme(settings.appearance.themeId);
+    if (section === 'appearance') applyTheme(settings.appearance.themeId);
+  }
+
+  async function confirmSectionReset(): Promise<void> {
+    const section = resetSectionPending;
+    resetSectionPending = null;
+    if (section) await resetSection(section);
   }
 
   function backToApp(): void {
@@ -731,7 +739,12 @@
               <!-- The Helper section has nothing in the settings store to put
                    back, so it is not offered a reset it could not carry out. -->
               {#if shownSection.id !== 'helper' && shownSection.id !== 'updates'}
-                <Button variant="ghost" size="sm" onclick={() => void resetShownSection()} class="gap-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onclick={() => (resetSectionPending = shownSection.id as 'appearance' | 'editor' | 'terminal' | 'general')}
+                  class="gap-1.5"
+                >
                   <RotateCcw aria-hidden="true" />
                   Reset section
                 </Button>
@@ -804,6 +817,26 @@
     </div>
   </div>
 {/if}
+
+<AlertDialog.Root
+  open={resetSectionPending !== null}
+  onOpenChange={(next) => { if (!next) resetSectionPending = null; }}
+>
+  <AlertDialog.Content>
+    <AlertDialog.Header>
+      <AlertDialog.Title>Reset {resetSectionLabel} settings?</AlertDialog.Title>
+      <AlertDialog.Description>
+        This replaces every setting in {resetSectionLabel} with its default. Your current choices will be lost.
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer>
+      <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action variant="destructive" onclick={() => void confirmSectionReset()}>
+        Reset
+      </AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
 
 <!-- ── The controls themselves ──────────────────────────────────────────── -->
 
