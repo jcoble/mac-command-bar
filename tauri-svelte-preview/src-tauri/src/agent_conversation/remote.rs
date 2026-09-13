@@ -1056,6 +1056,9 @@ fn validate_profile(profile: &RemoteAssemblyProfile) -> Result<(), String> {
         return Err("Remote machine name is required".to_string());
     }
     validate_ssh_target(&profile.ssh_target)?;
+    if !PathBuf::from(profile.default_cwd.trim()).is_absolute() {
+        return Err("Remote working directory must be an absolute path".to_string());
+    }
     Ok(())
 }
 
@@ -1924,7 +1927,20 @@ mod connection_tests {
     use super::*;
 
     fn profile(id: &str) -> RemoteAssemblyProfile {
-        RemoteAssemblyProfile { id: id.into(), name: "Workbox".into(), ssh_target: "agent-workbox".into(), source_root: String::new(), default_cwd: String::new() }
+        RemoteAssemblyProfile { id: id.into(), name: "Workbox".into(), ssh_target: "agent-workbox".into(), source_root: String::new(), default_cwd: "/home/blackcolours/dev/work".into() }
+    }
+
+    #[test]
+    fn profile_requires_an_absolute_working_directory() {
+        for cwd in ["", "relative/project"] {
+            let mut candidate = profile("invalid-cwd");
+            candidate.default_cwd = cwd.into();
+            assert_eq!(
+                validate_profile(&candidate).unwrap_err(),
+                "Remote working directory must be an absolute path"
+            );
+        }
+        assert!(validate_profile(&profile("valid-cwd")).is_ok());
     }
 
     #[tokio::test]

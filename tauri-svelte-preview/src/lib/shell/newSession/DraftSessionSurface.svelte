@@ -273,6 +273,10 @@
 
   async function connectRemote(profile = remoteProfile): Promise<void> {
     if (remoteConnecting || stopSignal.aborted) return;
+    if (!profile.name.trim() || !profile.sshTarget.trim() || !profile.defaultCwd.trim()) {
+      remoteError = 'Machine name, SSH destination, and remote working directory are required.';
+      return;
+    }
     const owner = new AbortController();
     connectionOwner = owner;
     remoteConnecting = true;
@@ -674,7 +678,7 @@
         {#if remoteError}<p class="remote-connection-status" role="alert">{remoteError}</p>{/if}
         <div class="remote-setup-actions">
           <Button variant="ghost" size="sm" onclick={cancelRemote}>{remoteConnecting ? 'Cancel connection' : 'Done'}</Button>
-          <Button size="sm" disabled={remoteConnecting || !remoteProfile.name || !remoteProfile.sshTarget}
+          <Button size="sm" disabled={remoteConnecting || !remoteProfile.name.trim() || !remoteProfile.sshTarget.trim() || !remoteProfile.defaultCwd.trim()}
             onclick={() => void connectRemote()}>{remoteConnecting ? 'Connecting…' : 'Connect'}</Button>
         </div>
       </div>
