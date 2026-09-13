@@ -110,10 +110,10 @@ assert.doesNotMatch(startNewSession, /ensureStructuredConversation|setAgentConve
 assert.match(startNewSession, /await sendStructuredMessage\(owned\.ownedId, request\.prompt, \{/);
 assert.match(startNewSession, /model: request\.model/);
 assert.match(startNewSession, /approvalPolicy: request\.approvalPolicy/);
-assert.match(
+assert.doesNotMatch(
   conversationSurface,
   /if \(active\.source === 'fresh' && active\.runtimeState === 'starting'\) return;/,
-  'the mounted conversation does not read native config before a fresh session exists'
+  'fresh-session startup still reads persisted model and access settings'
 );
 assert.match(startNewSession, /throw error;/);
 assert.match(startNewSession, /could not start \$\{owned\.agent\} session: \$\{detail\}/);
