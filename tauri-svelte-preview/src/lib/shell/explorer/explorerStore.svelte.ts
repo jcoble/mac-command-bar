@@ -1,3 +1,4 @@
+import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../workspacePaths';
 /**
  * State for the lazy /next file explorer.
  *
@@ -46,6 +47,8 @@ const loadedDirectoryDepths = new Map<string, number>();
 let scanGeneration = 0;
 
 export function canonicalPath(path: string): string {
+  const remote = parseRemoteWorkspacePath(path);
+  if (remote) return remoteWorkspacePath(remote.profileId, canonicalPath(remote.path));
   const value = path.trim().replaceAll('\\', '/');
   if (!value) return '';
 

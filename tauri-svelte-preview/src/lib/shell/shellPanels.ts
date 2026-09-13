@@ -26,6 +26,8 @@ import { activateStacks } from "./stacks/stackService.ts";
 import { rail } from "./stores/sessionRailStore.svelte.ts";
 import { activate as activateWorktrees } from "./worktrees/worktreeManagerService.ts";
 import type { WorktreeSessionInput } from "./worktrees/worktreeManagerRows.ts";
+import { sessionWorkspaceRoot } from "../workspacePaths";
+import type { OwnedSession } from "./ownedSessions";
 import { activateBrowser } from "./browser/browserStore.svelte.ts";
 
 /** Last folder of a path, for naming a project. */
@@ -37,11 +39,8 @@ function folderName(path: string): string {
 /** A session's working folder: its cwd (the worktree checkout) first, else the
  * project it was opened for. The cwd is where the session's files and branch
  * actually live — a worktree session pointed at projectPath shows the WRONG tree. */
-function folderFor(session: {
-  projectPath: string | null;
-  cwd: string;
-}): string {
-  return session.cwd.trim() || (session.projectPath ?? "").trim();
+function folderFor(session: OwnedSession): string {
+  return sessionWorkspaceRoot(session);
 }
 
 /**
@@ -69,8 +68,8 @@ function worktreeSessions(): WorktreeSessionInput[] {
   return rail.owned.map((session) => ({
     ownedId: session.ownedId,
     title: session.title,
-    cwd: session.cwd,
-    projectPath: session.projectPath,
+    cwd: folderFor(session),
+    projectPath: folderFor(session),
     state: session.state,
   }));
 }

@@ -25,6 +25,7 @@
   import { setConversationTimelineDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import TimelineItem from './TimelineItem.svelte';
   import TurnFileCard from './TurnFileCard.svelte';
+  import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
 
   const CONVERSATION_GROUP_BATCH = 6;
@@ -41,6 +42,7 @@
     assistantLabel?: string;
     savedScrollTop?: number;
     emptyText?: string;
+    pendingFirstMessage?: string | null;
     /** Older history exists behind the first row on screen. */
     hasOlder?: boolean;
     loadingOlder?: boolean;
@@ -70,6 +72,7 @@
     assistantLabel = 'Assistant',
     savedScrollTop = 0,
     emptyText = 'Start the conversation below.',
+    pendingFirstMessage = null,
     hasOlder = false,
     loadingOlder = false,
     onLoadOlder,
@@ -590,7 +593,10 @@
     onscroll={handleScroll}
     use:userInputInterrupts
   >
-    {#if renderedItems.length === 0}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
+    {#if renderedItems.length === 0}
+      {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} />
+      {:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
+    {/if}
     <div
       class="timeline-list"
       data-testid="conversation-timeline-list"

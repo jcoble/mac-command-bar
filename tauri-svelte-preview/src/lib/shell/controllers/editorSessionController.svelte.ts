@@ -1,3 +1,4 @@
+import { parseRemoteWorkspacePath, mapWorkspaceSnapshotPaths } from '../../workspacePaths';
 /** Saves and restores only the editor portion of each session workspace. */
 import {
 	editorState,
@@ -49,7 +50,9 @@ export class EditorSessionController {
 		this.releaseActiveEditorResources();
 
 		if (stopSignal.aborted) return null;
-		const snapshot = await readAgentConversationWorkspaceFromTauri(ownedId);
+		const stored = await readAgentConversationWorkspaceFromTauri(ownedId);
+		const remote = parseRemoteWorkspacePath(projectRoot);
+		const snapshot = remote ? mapWorkspaceSnapshotPaths(stored, remote.profileId) as SessionWorkspaceSnapshot | null : stored;
 		if (stopSignal.aborted) return null;
 		this.activeOwnedId = ownedId;
 		this.activeSnapshot = snapshot;

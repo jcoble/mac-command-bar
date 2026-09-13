@@ -16,6 +16,7 @@
 
 	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
 	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts";
+	import PendingFirstMessage from "$lib/shell/components/conversation/PendingFirstMessage.svelte";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
 	import { sendStructuredMessage } from "$lib/shell/conversation/conversationService";
 	import {
@@ -206,7 +207,7 @@
 		root={selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
-		filesRoot={selection.activeRootRemote ? "" : selection.filesProjectionRoot || selection.durableSessionRoot}
+		filesRoot={selection.filesProjectionRoot || selection.durableSessionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(root, paths) => selection.rememberExpandedPaths(root, paths)}
@@ -222,7 +223,7 @@
 		onHistoryWorkspaceChange={(ownedId, history) => {
 			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ history });
 		}}
-		checkoutDiscoveryRoots={selection.controlledSession?.projectPath ? [selection.controlledSession.projectPath] : []}
+		checkoutDiscoveryRoots={selection.durableSessionRoot ? [selection.durableSessionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.agent === "codex" && selection.controlledSession.origin === "app"
 			? async (root) => {
 					await selection.useSessionCheckout(root);
@@ -260,13 +261,16 @@
 				<ConversationSurface
 					owned={selection.railOwned}
 					activeOwnedId={selection.chatOwnedId}
+					pendingFirstMessage={selection.newSession.pendingFirstMessage?.ownedId === selection.chatOwnedId ? selection.newSession.pendingFirstMessage.text : null}
 					rootAvailable={selection.activeRootAvailable}
 				/>
 			</div>
 		{/if}
 		{#if selection.activeOwnedId && (!selection.hasChatProjection || selection.chatOwnedId !== selection.activeOwnedId)}
-			<div class="conversation-data-isolation" aria-label="Loading conversation">
-				<p>Loading conversation…</p>
+			<div class="conversation-data-isolation" class:pending-first-send={selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId} aria-label="Loading conversation">
+                {#if selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId}
+                  <PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} />
+                {:else}<p>Loading conversation…</p>{/if}
 			</div>
 		{:else if !selection.activeOwnedId}
 			<div class="conversation-data-isolation" aria-label="No session selected">
@@ -352,6 +356,7 @@
 
 	<ShellOverlays
 		bind:this={overlays}
+		onRemoteConnected={(profileId) => void selection.refreshRemoteConnection(profileId)}
 		onResetLayout={() => workbench.resetLayout()}
 		message={null}
 		onProblemsLocationChange={(location) => workbench.applyProblemsLocation(location)}
@@ -439,4 +444,5 @@
 		background: var(--color-bg);
 	}
 
+	.conversation-data-isolation.pending-first-send { align-items: flex-start; justify-content: flex-end; }
 </style>

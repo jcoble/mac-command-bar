@@ -120,7 +120,7 @@ export async function readGitCommitFilesFromTauri(
   sha: string
 ): Promise<GitCommitFileChange[] | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('../../workspaceInvoke');
   return invoke<GitCommitFileChange[]>('read_git_commit_files', { root, sha });
 }
 
@@ -134,7 +134,7 @@ export async function readGitCommitFileDiffFromTauri(
   relativePath: string
 ): Promise<SourceGitDiff | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import('../../workspaceInvoke');
   return invoke<SourceGitDiff>('read_git_commit_file_diff', { root, sha, relativePath });
 }
 

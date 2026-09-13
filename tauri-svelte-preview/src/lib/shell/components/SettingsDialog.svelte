@@ -32,6 +32,8 @@
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Type from '@lucide/svelte/icons/type';
+  import Server from '@lucide/svelte/icons/server';
+  import RemoteConnections from './RemoteConnections.svelte';
   import Download from '@lucide/svelte/icons/download';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -83,9 +85,10 @@
      * along the bottom straight away, rather than on the next launch.
      */
     onProblemsLocationChange?: (location: ProblemsLocation) => void;
+    onRemoteConnected?: (profileId: string) => void;
   }
 
-  let { open = $bindable(false), onProblemsLocationChange }: Props = $props();
+  let { open = $bindable(false), onProblemsLocationChange, onRemoteConnected }: Props = $props();
 
   // ── Option lists ────────────────────────────────────────────────────────
   /** The themes the app actually ships, straight from the registry. */
@@ -131,6 +134,7 @@
     { id: 'editor', group: 'Workspace', label: 'Editor', icon: Type },
     { id: 'terminal', group: 'Workspace', label: 'Terminal', icon: SquareTerminal },
     { id: 'general', group: 'Application', label: 'General', icon: SlidersHorizontal },
+    { id: 'connections', group: 'Application', label: 'Connections', icon: Server },
     { id: 'updates', group: 'Application', label: 'Updates', icon: Download },
     { id: 'helper', group: 'Application', label: 'Helper model', icon: Sparkles }
   ];
@@ -142,6 +146,8 @@
    * to type that the row does not itself say.
    */
   const rows = [
+    { id: 'remote-connections', section: 'connections', card: 'Remote machines', title: 'Saved connections',
+      description: 'Connect or disconnect an Assembly backend.', keywords: 'ssh workbox server remote reconnect' },
     {
       id: 'theme',
       section: 'appearance',
@@ -738,7 +744,7 @@
               </div>
               <!-- The Helper section has nothing in the settings store to put
                    back, so it is not offered a reset it could not carry out. -->
-              {#if shownSection.id !== 'helper' && shownSection.id !== 'updates'}
+              {#if shownSection.id !== 'helper' && shownSection.id !== 'updates' && shownSection.id !== 'connections'}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -756,7 +762,9 @@
                 <h3 class="text-muted-foreground px-1 text-[12px] font-medium">{card.name}</h3>
                 <div class="border-border/70 bg-card rounded-xl border">
                   {#each card.rowIds as id (id)}
-                    {#if id === 'theme'}
+                    {#if id === 'remote-connections'}
+                      <RemoteConnections onConnected={(profile) => onRemoteConnected?.(profile.id)} />
+                    {:else if id === 'theme'}
                       {@render settingRow(id, themeControl)}
                     {:else if id === 'ui-font'}
                       {@render settingRow(id, uiFontControl)}

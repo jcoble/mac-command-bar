@@ -13,17 +13,25 @@
   the state and leaves nothing behind.
 -->
 <script lang="ts">
+  import { parseRemoteWorkspacePath } from '$lib/workspacePaths';
   import { onMount } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import Search from '@lucide/svelte/icons/search';
+  import Monitor from '@lucide/svelte/icons/monitor';
+  import Server from '@lucide/svelte/icons/server';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Settings2 from '@lucide/svelte/icons/settings-2';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import PendingFirstMessage from '$lib/shell/components/conversation/PendingFirstMessage.svelte';
+  import RemoteDirectoryPicker from './RemoteDirectoryPicker.svelte';
+  import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
   import type {
     AgentConversationConfigField,
@@ -60,9 +68,7 @@
   } from '$lib/shell/newSession/newSessionBackend.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
-    deployRemoteAssemblyFromTauri,
     readRemoteAssemblyEnvironmentFromTauri,
-    removeRemoteAssemblyProfileFromTauri,
     type RemoteAssemblyEnvironment,
     type RemoteAssemblyProfile,
     type ExecutionEnvironment
@@ -104,9 +110,8 @@
   let submitting = $state(false);
   let submitError = $state('');
   let loadSequence = 0;
-  let remoteAssembly = $state<RemoteAssemblyEnvironment>({ profiles: [] });
+  let remoteAssembly = $state<RemoteAssemblyEnvironment>({ profiles: [], readyProfileIds: [] });
   let remoteSetupOpen = $state(false);
-  let remoteDeploying = $state(false);
   let remoteProfile = $state<RemoteAssemblyProfile>({
     id: '',
     name: '',
@@ -221,7 +226,7 @@
     if (environment === draft.executionEnvironment && profile?.id === draft.remoteProfileId) return;
     if (environment === 'remote') {
       const cwd = profile?.defaultCwd.trim();
-      if (!profile || !cwd) {
+      if (!profile) {
         remoteProfile = emptyRemoteProfile();
         remoteSetupOpen = true;
         return;
@@ -233,8 +238,8 @@
       updateDraft({
         executionEnvironment: environment,
         remoteProfileId: profile.id,
-        projectPath: cwd,
-        cwd,
+        projectPath: cwd ?? '',
+        cwd: cwd ?? '',
         branch: '',
         branchesAvailable: false
       });
@@ -259,45 +264,6 @@
       if (typeof message === 'string') return message;
     }
     return String(error);
-  }
-
-  async function deployRemote(): Promise<void> {
-    if (remoteDeploying || stopSignal.aborted) return;
-    remoteDeploying = true;
-    submitError = '';
-    try {
-      if (stopSignal.aborted) return;
-      remoteAssembly = await deployRemoteAssemblyFromTauri(remoteProfile);
-      if (stopSignal.aborted) return;
-      remoteSetupOpen = false;
-      const saved = remoteAssembly.profiles.find((profile) => profile.id === remoteProfile.id) ?? null;
-      selectEnvironment('remote', saved);
-    } catch (error) {
-      if (!stopSignal.aborted) submitError = describeError(error);
-    } finally {
-      remoteDeploying = false;
-    }
-  }
-
-  function editRemote(profile: RemoteAssemblyProfile): void {
-    remoteProfile = { ...profile };
-    remoteSetupOpen = true;
-  }
-
-  async function removeRemote(profile: RemoteAssemblyProfile): Promise<void> {
-    if (remoteDeploying || stopSignal.aborted) return;
-    remoteDeploying = true;
-    submitError = '';
-    try {
-      remoteAssembly = await removeRemoteAssemblyProfileFromTauri(profile.id);
-      if (stopSignal.aborted) return;
-      if (draft.remoteProfileId === profile.id) selectEnvironment('local');
-      if (remoteProfile.id === profile.id) remoteProfile = emptyRemoteProfile();
-    } catch (error) {
-      if (!stopSignal.aborted) submitError = describeError(error);
-    } finally {
-      remoteDeploying = false;
-    }
   }
 
   async function addProject(): Promise<void> {
@@ -380,7 +346,7 @@
     setSessionRoots(sessionRoots);
     const sequence = ++loadSequence;
     void hydrateDraft(owner, sequence);
-    void hydrateRemoteAssembly(owner, sequence);
+    void hydrateRemoteAssembly(owner);
     return () => {
       owner.active = false;
       loadSequence += 1;
@@ -398,19 +364,22 @@
       return;
     }
     if (stopSignal.aborted || !owner.active || sequence !== loadSequence) return;
-    const projectPath = preferredRoot(presetProjectPath);
+    const remote = presetProjectPath ? parseRemoteWorkspacePath(presetProjectPath) : null;
+    const projectPath = remote?.path ?? preferredRoot(presetProjectPath);
     draft = defaultThreadStartState({ projectPath, providerConfigs });
-    if (projectPath) void loadRefs(projectPath);
+    if (remote) {
+      draft = { ...draft, executionEnvironment: 'remote', remoteProfileId: remote.profileId };
+    } else if (projectPath) void loadRefs(projectPath);
     composer?.focus();
   }
 
-  async function hydrateRemoteAssembly(owner: { active: boolean }, sequence: number): Promise<void> {
+  async function hydrateRemoteAssembly(owner: { active: boolean }): Promise<void> {
     if (stopSignal.aborted) return;
     try {
       if (stopSignal.aborted) return;
       const environment = await readRemoteAssemblyEnvironmentFromTauri();
       if (stopSignal.aborted) return;
-      if (!owner.active || sequence !== loadSequence) return;
+      if (!owner.active) return;
       remoteAssembly = environment;
       remoteProfile = emptyRemoteProfile();
     } catch {
@@ -429,20 +398,23 @@
         </Button>
       {/snippet}
     </DropdownMenu.Trigger>
-    <DropdownMenu.Content side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
+    <DropdownMenu.Content class="draft-machine-menu" side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
       <DropdownMenu.Label>Work in</DropdownMenu.Label>
       <DropdownMenu.Item onSelect={() => selectEnvironment('local')}>
-        <span class="draft-check">
-          {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="size-3.5" />{/if}
-        </span>
-        This Mac
+        <Monitor aria-hidden="true" class="size-4" />
+        <span class="draft-machine-name">This Mac</span>
+        {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
       </DropdownMenu.Item>
       {#each remoteAssembly.profiles as profile (profile.id)}
-        <DropdownMenu.Item title={profile.defaultCwd} onSelect={() => selectEnvironment('remote', profile)}>
-          <span class="draft-check">
-            {#if draft.remoteProfileId === profile.id}<Check aria-hidden="true" class="size-3.5" />{/if}
-          </span>
-          {profile.name}
+        <DropdownMenu.Item title={profile.defaultCwd} onSelect={() => {
+          if (remoteAssembly.readyProfileIds.includes(profile.id)) selectEnvironment('remote', profile);
+          else { remoteSetupOpen = true; remoteProfile = { ...profile }; }
+        }}>
+          <Server aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">{profile.name}</span>
+          {#if draft.remoteProfileId === profile.id}
+            <Check aria-hidden="true" class="draft-machine-selected size-4" />
+          {/if}
         </DropdownMenu.Item>
       {/each}
       <DropdownMenu.Separator />
@@ -450,13 +422,13 @@
         remoteProfile = emptyRemoteProfile();
         remoteSetupOpen = true;
       }}>
-        <span class="draft-check"></span>
-        Add remote machine…
+        <Plus aria-hidden="true" class="size-4" />
+        <span class="draft-machine-name">Add remote machine…</span>
       </DropdownMenu.Item>
       {#if remoteAssembly.profiles.length > 0}
         <DropdownMenu.Item onSelect={() => (remoteSetupOpen = true)}>
-          <span class="draft-check"></span>
-          Manage remote machines…
+          <Settings2 aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">Manage remote machines…</span>
         </DropdownMenu.Item>
       {/if}
     </DropdownMenu.Content>
@@ -487,10 +459,14 @@
     </DropdownMenu.Content>
   </DropdownMenu.Root>
 
+  {#if draft.executionEnvironment === 'remote' && selectedRemoteProfile}
+    <RemoteDirectoryPicker label="working folder" profileId={selectedRemoteProfile.id} sshTarget={selectedRemoteProfile.sshTarget} value={draft.cwd}
+      onChange={(path) => updateDraft({ projectPath: path, cwd: path, branch: '', branchesAvailable: false })} />
+  {:else}
   <DropdownMenu.Root>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
-        <Button {...props} disabled={draft.executionEnvironment === 'remote'} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
+        <Button {...props} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
           {projectName || 'Choose a project'}
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
         </Button>
@@ -530,6 +506,7 @@
       </DropdownMenu.Item>
     </DropdownMenu.Content>
   </DropdownMenu.Root>
+  {/if}
 
   <DropdownMenu.Root onOpenChange={(open) => { if (!open) refSearch = ''; }}>
     <DropdownMenu.Trigger>
@@ -612,55 +589,12 @@
     </Button>
   </div>
 
-  <div class="draft-transcript" data-testid="draft-session-transcript">
-    {#if remoteSetupOpen}
+  <div class="draft-transcript" class:pending-first-send={submitting} data-testid="draft-session-transcript">
+    {#if submitting}<PendingFirstMessage text={draft.prompt} />
+    {:else if remoteSetupOpen}
       <div class="remote-setup" data-testid="draft-session-remote-setup">
-        <div class="remote-setup-heading">
-          <strong>Remote machines</strong>
-          <span>Assembly will deploy its server over SSH and keep it on that machine.</span>
-        </div>
-        {#if remoteAssembly.profiles.length > 0}
-          <div class="remote-profile-list">
-            {#each remoteAssembly.profiles as profile (profile.id)}
-              <div class="remote-profile-row">
-                <span><strong>{profile.name}</strong><small>{profile.sshTarget}</small></span>
-                <Button variant="ghost" size="xs" onclick={() => editRemote(profile)}>Edit</Button>
-                <Button variant="ghost" size="xs" disabled={remoteDeploying} onclick={() => void removeRemote(profile)}>Remove</Button>
-              </div>
-            {/each}
-          </div>
-        {/if}
-        <label>
-          <span>Machine name</span>
-          <Input bind:value={remoteProfile.name} placeholder="Agent Workbox" autocomplete="off" />
-        </label>
-        <label>
-          <span>SSH destination</span>
-          <Input bind:value={remoteProfile.sshTarget} placeholder="user@hostname" autocomplete="off" />
-        </label>
-        <label>
-          <span>Remote Assembly checkout</span>
-          <Input bind:value={remoteProfile.sourceRoot} placeholder="/home/user/mac-command-bar" autocomplete="off" />
-        </label>
-        <label>
-          <span>Remote working directory</span>
-          <Input bind:value={remoteProfile.defaultCwd} placeholder="/home/user/project" autocomplete="off" />
-        </label>
-        {#if remoteDeploying}
-          <p class="remote-deploy-status" role="status" aria-live="polite">
-            Deploying the Assembly backend to the remote machine. Please wait; this may take a minute.
-          </p>
-        {/if}
-        <div class="remote-setup-actions">
-          <Button variant="ghost" size="sm" onclick={() => (remoteSetupOpen = false)}>Cancel</Button>
-          <Button
-            size="sm"
-            disabled={remoteDeploying || !remoteProfile.name || !remoteProfile.sshTarget || !remoteProfile.sourceRoot || !remoteProfile.defaultCwd}
-            onclick={() => void deployRemote()}
-          >
-            {remoteDeploying ? 'Deploying…' : 'Save, deploy, and connect'}
-          </Button>
-        </div>
+        <RemoteConnections initialProfile={remoteProfile} onChange={(next) => remoteAssembly = next}
+          onConnected={(profile) => selectEnvironment('remote', profile)} onClose={() => remoteSetupOpen = false} />
       </div>
     {:else}
       <p>Start the conversation below.</p>
@@ -739,13 +673,14 @@
     text-align: center;
   }
 
+  .draft-transcript.pending-first-send { justify-content: flex-start; align-items: stretch; }
   .draft-transcript p { margin: 0; font-size: 13px; }
   .remote-setup {
     display: flex;
     width: min(520px, 100%);
     flex-direction: column;
     gap: 12px;
-    padding: 18px;
+    padding: 0;
     border: 1px solid var(--color-border);
     border-radius: 12px;
     background: var(--color-surface-raised);
@@ -753,27 +688,6 @@
     text-align: left;
   }
 
-  .remote-setup-heading,
-  .remote-setup label {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-
-  .remote-setup-heading span,
-  .remote-setup label > span { color: var(--color-text-3); font-size: 12px; }
-  .remote-profile-list { display: flex; flex-direction: column; gap: 4px; }
-  .remote-profile-row {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 0;
-    border-bottom: 1px solid var(--color-border);
-  }
-  .remote-profile-row > span { display: flex; min-width: 0; flex: 1; flex-direction: column; }
-  .remote-profile-row small { overflow: hidden; color: var(--color-text-3); text-overflow: ellipsis; }
-  .remote-deploy-status { color: var(--color-text-2); font-size: 12px; }
-  .remote-setup-actions { display: flex; justify-content: flex-end; gap: 6px; }
   .draft-warning {
     display: flex;
     align-items: flex-start;
@@ -820,6 +734,45 @@
 
   :global(.draft-control:hover) { color: var(--color-text); }
   :global(.draft-branch) { max-width: 220px; min-width: 0; }
+
+  :global(.draft-machine-menu) {
+    width: 280px;
+    max-width: calc(100vw - 24px);
+    padding: 6px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-text) 9%, var(--color-surface));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+    animation: none;
+    --menu-row-radius: 3px;
+    --menu-row-inset: 10px 12px;
+    --menu-row-gap: 12px;
+  }
+
+  :global(.draft-machine-menu [data-slot="dropdown-menu-label"]) {
+    padding: 8px 12px;
+    color: var(--color-text-3);
+    font-size: 12px;
+  }
+
+  :global(.draft-machine-menu [data-slot="dropdown-menu-separator"]) {
+    margin: 5px 6px;
+  }
+
+  :global(.draft-machine-menu [data-slot="dropdown-menu-item"] > svg) {
+    color: var(--color-text-2);
+  }
+
+  :global(.draft-machine-menu [data-slot="dropdown-menu-item"] > .draft-machine-selected) {
+    color: var(--color-accent);
+  }
+
+  .draft-machine-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .draft-check {
     display: inline-flex;

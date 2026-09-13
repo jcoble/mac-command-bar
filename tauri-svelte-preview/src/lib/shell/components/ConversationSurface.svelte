@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { remoteWorkspacePath } from '$lib/workspacePaths';
+  import { untrack } from 'svelte';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import type {
     AgentConfigValue,
@@ -79,6 +81,7 @@
     activeOwnedId: string | null;
     activeOrigin?: OwnedSession['origin'];
     rootAvailable?: boolean;
+    pendingFirstMessage?: string | null;
     onOpenNativeCli?(ownedId: string): void | Promise<void>;
     onForkNativeCli?(ownedId: string): void | Promise<void>;
     onReturnToStructured?(ownedId: string): void | Promise<void>;
@@ -88,6 +91,7 @@
     activeOwnedId,
     activeOrigin,
     rootAvailable = true,
+    pendingFirstMessage = null,
     onOpenNativeCli,
     onForkNativeCli,
     onReturnToStructured
@@ -171,7 +175,10 @@
   const attachmentError = $derived(conversation?.attachmentError ?? '');
   const sendError = $derived(conversation?.sendError ?? '');
   const providerNotice = $derived(conversation?.providerNotice ?? '');
-  let capabilityRequest = '';
+  const capabilityTarget = $derived(structured && active && conversation
+    && ['claude', 'codex', 'antigravity'].includes(active.agent)
+    ? `${active.ownedId}:${conversation.generation}:${conversation.provider}:${conversation.connectionState}`
+    : '');
   let configRequest = '';
   /** A request key whose failure has already bought its one retry. The guard
    * above is claimed before the call, so without this a read that lost a
@@ -233,6 +240,7 @@
   });
 
   $effect(() => {
+    if (pendingFirstMessage) return;
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
@@ -248,18 +256,15 @@
   });
 
   $effect(() => {
-    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
-    const ownedId = active.ownedId;
-    const provider = conversation.provider;
-    const generation = conversation.generation;
-    const key = `${ownedId}:${generation}:${provider}:${conversation.connectionState}`;
-    if (capabilityRequest === key) return;
-    // A connection re-reads the snapshot: the stored one can predate a provider
-    // upgrade, and activation refreshes it from the live handshake.
-    if (conversation.capabilities && conversation.connectionState !== 'connected') return;
-    capabilityRequest = key;
+    if (!capabilityTarget) return;
     const controller = new AbortController();
-    void loadCapabilitiesForSurface(controller.signal, ownedId, provider, generation);
+    // Only a changed session/generation/connection owns a new request. Writing
+    // a reactive "requested" flag here cancelled the effect's own request.
+    untrack(() => {
+      if (active && conversation) {
+        void loadCapabilitiesForSurface(controller.signal, active.ownedId, conversation.provider, conversation.generation);
+      }
+    });
     return () => {
       controller.abort();
     };
@@ -586,9 +591,15 @@
     // with a notice and no way to see what the link pointed at.
     const outside = absolute !== root && !absolute.startsWith(`${root}/`);
     const readOnly = outside || Boolean(recordedRootPath && recordedRootPath !== sessionRoot);
+    if (active.executionEnvironment === 'remote' && !active.remoteProfileId) {
+      setConversationAttachmentError(active.ownedId, 'Connect to this conversation’s saved machine first.');
+      return;
+    }
+    const qualify = (path: string): string => active.executionEnvironment === 'remote'
+      ? remoteWorkspacePath(active.remoteProfileId!, path) : path;
     requestOpenFile({
-      path: absolute,
-      projectRoot: readOnly ? sessionRoot : root,
+      path: qualify(absolute),
+      projectRoot: qualify(readOnly ? sessionRoot : root),
       readOnly,
       line
     });
@@ -643,6 +654,7 @@
       {/if}
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
+        {pendingFirstMessage}
         items={visibleTimeline}
         conversationId={active.ownedId}
         renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}

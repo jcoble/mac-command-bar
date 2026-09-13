@@ -1,3 +1,5 @@
+import { warmAgentConversationConfig } from './conversation/conversationConfig';
+import { sessionWorkspaceRoot } from '../workspacePaths';
 /**
  * The projections rebuilt when a person selects a session in the rail.
  *
@@ -14,7 +16,10 @@ import {
 import {
   ensureConversationSession,
   evictInactiveConversationSessions,
-  setConversationMode
+  setConversationMode,
+  setConversationAgentConfigState,
+  setConversationAgentConfigError,
+  getConversationSession
 } from './conversation/conversationStore.svelte';
 import type { AgentConversationProvider } from './conversation/conversationTypes';
 import { countInvoke } from './devInvokeCounter.svelte';
@@ -39,9 +44,10 @@ export class SessionSelectionLayers {
     owner: SessionSelectionOwner
   ): Promise<void> {
     this.selectionGeneration = owner.generation;
-    await this.fillTreeView(session, owner);
-    if (!this.isCurrent(owner)) return;
-    await this.fillChatHistory(session, displayedChatOwnedId, owner);
+    await Promise.all([
+      this.fillTreeView(session, owner),
+      this.fillChatHistory(session, displayedChatOwnedId, owner)
+    ]);
   }
 
   async fillTreeView(
@@ -49,14 +55,7 @@ export class SessionSelectionLayers {
     owner: SessionSelectionOwner
   ): Promise<void> {
     if (!this.isCurrent(owner)) return;
-    if (session.executionEnvironment === 'remote') {
-      if (!this.isCurrent(owner)) return;
-      this.treeOwnedId = session.ownedId;
-      this.treeRoot = '';
-      this.hasTreeProjection = true;
-      return;
-    }
-    const root = session.cwd.trim() || (session.projectPath ?? '').trim();
+    const root = sessionWorkspaceRoot(session);
 
     if (!root) {
       if (!this.isCurrent(owner)) return;
@@ -118,6 +117,14 @@ export class SessionSelectionLayers {
     }
     this.hasChatProjection = true;
     this.chatOwnedId = session.ownedId;
+    if (session.executionEnvironment === 'remote' && session.nativeSessionId) {
+      const generation = getConversationSession(session.ownedId)?.generation;
+      if (generation !== undefined) void warmAgentConversationConfig(session.ownedId, generation).then((config) => {
+        if (this.isCurrent(owner)) setConversationAgentConfigState(session.ownedId, config);
+      }).catch((error: unknown) => {
+        if (this.isCurrent(owner)) setConversationAgentConfigError(session.ownedId, error instanceof Error ? error.message : String(error));
+      });
+    }
     if (departingOwnedId && departingOwnedId !== session.ownedId) {
       releaseConversationForRead(departingOwnedId);
     }

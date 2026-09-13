@@ -85,12 +85,12 @@ const APPROVAL_LABELS: Record<string, { label: string; description: string }> = 
     description: 'The agent runs everything itself. Nothing stops to wait for you.'
   },
   'read-only': {
-    label: 'Read only',
-    description: 'The agent can inspect the project but cannot change it.'
+    label: 'Ask for approval',
+    description: 'Can edit this workspace; asks before external files or internet access.'
   },
   agent: {
-    label: 'Ask when needed',
-    description: 'The agent works on its own and asks before anything risky.'
+    label: 'Approve for me',
+    description: 'Can edit this workspace; automatic review checks actions for safety.'
   },
   'agent-full-access': {
     label: 'Full access',
