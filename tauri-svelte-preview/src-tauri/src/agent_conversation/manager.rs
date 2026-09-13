@@ -1536,7 +1536,7 @@ impl AgentRuntimeManager {
         // already starts on the wanted settings needs no call, and a request
         // the adapter resolves to something else must not be reported as if it
         // had been honoured.
-        let requested = AgentConversationConfigUpdate {
+        let mut requested = AgentConversationConfigUpdate {
             model: requested_model
                 .filter(|model| Some(model.as_str()) != started.config.model.as_deref()),
             reasoning_effort: reasoning_effort.clone().filter(|effort| {
@@ -1546,6 +1546,14 @@ impl AgentRuntimeManager {
                 Some(policy.as_str()) != started.config.approval_policy.as_deref()
             }),
         };
+        normalize_codex_composite_config_update(provider, &started.config, &mut requested);
+        // An obsolete approval id must not prevent valid saved model/effort
+        // choices from being restored. Keep the adapter's advertised mode.
+        if requested.approval_policy.as_ref().is_some_and(|policy| {
+            !started.config.available_approval_policies.contains(policy)
+        }) {
+            requested.approval_policy = None;
+        }
         if requested != AgentConversationConfigUpdate::default() {
             match runtime
                 .lock()

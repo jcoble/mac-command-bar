@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { parseRemoteWorkspacePath } from '$lib/workspacePaths';
   /**
    * EditorPanel.svelte — the /next code-reading panel.
    *
@@ -703,7 +704,7 @@
 
   /** A language service exists only for a visible, editable source document. */
   function activeLanguageRoot(): string | null {
-    return showing && rootAvailable && editorState.activePath && !activeFileReadOnly
+    return showing && rootAvailable && editorState.activePath && !activeFileReadOnly && !parseRemoteWorkspacePath(editorState.projectRoot ?? '')
       ? editorState.projectRoot
       : null;
   }

@@ -30,13 +30,14 @@
 		/** The user moved the Problems list from the settings dialog, which lives
 		 * here; the page is what opens or closes the strip along the bottom. */
 		onProblemsLocationChange?: (location: ProblemsLocation) => void;
+    onRemoteConnected?: (profileId: string) => void;
 		/** Restore the hidden Problems and Terminal dock. */
 		onShowBottomDock?: () => void;
 		/** One of the two bottom-strip surfaces opened or closed. The strip draws
 		 * its own button as on or off from this. */
 		onUtilityStateChange?: (id: UtilityId, open: boolean) => void;
 	}
-	let { onResetLayout, message, onProblemsLocationChange, onShowBottomDock, onUtilityStateChange }: Props = $props();
+	let { onResetLayout, message, onProblemsLocationChange, onRemoteConnected, onShowBottomDock, onUtilityStateChange }: Props = $props();
 
 	let settingsHost: { open: () => void; close: () => void } | null = null;
 	let resourcePopoverHost: HTMLDivElement | null = null;
@@ -103,7 +104,7 @@
 </script>
 
 <PalettePanel {onResetLayout} {onShowBottomDock} onOpenSettings={() => settingsHost?.open()} />
-<SettingsHost bind:this={settingsHost} {onProblemsLocationChange} />
+<SettingsHost bind:this={settingsHost} {onProblemsLocationChange} {onRemoteConnected} />
 <!-- The session's own browser, over the whole window including the sessions
      column. It reads the active session itself and takes no props. -->
 <AssistanceHost />

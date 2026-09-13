@@ -1,3 +1,4 @@
+import { parseRemoteWorkspacePath } from '../../../workspacePaths';
 import { watch, type UnwatchFn, type WatchEvent } from "@tauri-apps/plugin-fs";
 
 /**
@@ -10,7 +11,7 @@ export async function watchFileTree(
 	signal: AbortSignal,
 	onChange: (paths: readonly string[]) => void,
 ): Promise<void> {
-	if (signal.aborted || directories.length === 0) return;
+	if (signal.aborted || directories.length === 0 || directories.some((path) => parseRemoteWorkspacePath(path))) return;
 	let unwatch: UnwatchFn | null = null;
 	let stopped = false;
 	const stop = (): void => {

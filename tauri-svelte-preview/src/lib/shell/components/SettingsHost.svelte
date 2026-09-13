@@ -41,8 +41,9 @@
     /** Passed straight through to the dialog: the user moved the Problems
      * list, and the shell needs to open or close the bottom strip now. */
     onProblemsLocationChange?: (location: ProblemsLocation) => void;
+    onRemoteConnected?: (profileId: string) => void;
   }
-  let { onProblemsLocationChange }: Props = $props();
+  let { onProblemsLocationChange, onRemoteConnected }: Props = $props();
 
   let SettingsDialog = $state<SettingsDialogComponent | null>(null);
   let dialogOpen = $state(false);
@@ -107,7 +108,7 @@
 </script>
 
 {#if SettingsDialog}
-  <SettingsDialog bind:open={dialogOpen} {onProblemsLocationChange} />
+  <SettingsDialog bind:open={dialogOpen} {onProblemsLocationChange} {onRemoteConnected} />
 {/if}
 
 {#if loadFailure}

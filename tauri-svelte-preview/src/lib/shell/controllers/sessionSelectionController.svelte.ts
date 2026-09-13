@@ -1,3 +1,4 @@
+import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths';
 /**
  * Controller for session selection, filesystem projections, and workspace expansion.
  */
@@ -74,14 +75,13 @@ export class SessionSelectionController {
 	get durableSessionRoot(): string {
 		const session = this.controlledSession ?? rail.owned.find((s) => s.ownedId === rail.activeOwnedId);
 		if (!session) return "";
-		return canonicalPath(session.cwd.trim() || (session.projectPath ?? "").trim());
+		return canonicalPath(sessionWorkspaceRoot(session));
 	}
 
 	get controlledEditorRootAvailable(): boolean {
 		return (
 			this.controlledSelectionOwnedId !== null &&
-			Boolean(this.sessionSelectionLayers.treeRoot) &&
-			!this.activeRootRemote
+			Boolean(this.sessionSelectionLayers.treeRoot)
 		);
 	}
 
@@ -105,7 +105,7 @@ export class SessionSelectionController {
 		const requestedSession = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		this.activeRootRemote = requestedSession?.executionEnvironment === "remote";
 		const requestedRoot = canonicalPath(
-			requestedSession?.cwd.trim() || (requestedSession?.projectPath ?? "").trim(),
+			requestedSession ? sessionWorkspaceRoot(requestedSession) : "",
 		);
 		if (canonicalPath(this.sessionSelectionLayers.treeRoot) !== requestedRoot) {
 			this.sessionSelectionLayers.clearTreeView();
@@ -125,6 +125,15 @@ export class SessionSelectionController {
 		}
 	}
 
+	async refreshRemoteConnection(profileId: string): Promise<void> {
+		const selected = rail.owned.find((session) => session.ownedId === this.activeOwnedId);
+		if (selected?.executionEnvironment !== 'remote' || selected.remoteProfileId !== profileId) return;
+		await flushConversationSessionDraft(selected.ownedId);
+		this.sessionSelectionLayers.clearTreeView();
+		this.sessionSelectionLayers.clearChatHistory();
+		await this.selectSession(selected.ownedId);
+	}
+
 	private async drainSelections(): Promise<void> {
 		while (this.pendingSelectionOwnedId !== null) {
 			const ownedId = this.pendingSelectionOwnedId;
@@ -139,7 +148,7 @@ export class SessionSelectionController {
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		if (session) {
 			this.activeRootRemote = session.executionEnvironment === "remote";
-			const root = canonicalPath(session.cwd.trim() || (session.projectPath ?? "").trim());
+			const root = canonicalPath(sessionWorkspaceRoot(session));
 			const rootChanged = canonicalPath(this.sessionSelectionLayers.treeRoot) !== root;
 			const needsWorkspaceState =
 				rootChanged || !Object.prototype.hasOwnProperty.call(this.expandedPathsByRoot, root);
@@ -184,6 +193,12 @@ export class SessionSelectionController {
 			return false;
 		}
 
+		const remoteRoot = parseRemoteWorkspacePath(root);
+		if ((selected.executionEnvironment === 'remote' && remoteRoot?.profileId !== selected.remoteProfileId)
+			|| (selected.executionEnvironment !== 'remote' && remoteRoot)) {
+			rail.error = 'Choose a folder on this session’s machine.';
+			return false;
+		}
 		const owner = this.beginSelection();
 		try {
 			countInvoke('validate_project_root');
@@ -196,7 +211,7 @@ export class SessionSelectionController {
 
 			await flushConversationSessionDraft(ownedId);
 			if (!this.isCurrent(owner)) return false;
-			const record = await changeStructuredConversationCheckout(ownedId, root);
+			const record = await changeStructuredConversationCheckout(ownedId, parseRemoteWorkspacePath(root)?.path ?? root);
 			if (!record) return false;
 			if (!this.isCurrent(owner)) return true;
 
@@ -206,8 +221,8 @@ export class SessionSelectionController {
 			this.sessionSelectionLayers.clearTreeView();
 			const updated = rail.owned.find((session) => session.ownedId === ownedId);
 			if (!updated) return true;
-			this.activeRootRemote = false;
-			await this.materializeSelection(updated, canonicalPath(record.cwd), owner, this.chatOwnedId, true);
+			this.activeRootRemote = updated.executionEnvironment === "remote";
+			await this.materializeSelection(updated, canonicalPath(sessionWorkspaceRoot(updated)), owner, this.chatOwnedId, true);
 			return true;
 		} catch (error) {
 			if (this.isCurrent(owner)) {
@@ -274,17 +289,17 @@ export class SessionSelectionController {
 		this.newSession.abandonDraftForSessionSwitch(session.ownedId);
 		await this.sessionSelectionLayers.selectSession(session, displayedChatOwnedId, owner);
 		if (!this.isCurrent(owner)) return;
-		this.activeRootAvailable = Boolean(this.sessionSelectionLayers.treeRoot) && !this.activeRootRemote;
+		this.activeRootAvailable = Boolean(this.sessionSelectionLayers.treeRoot);
 		shellPanels.sessionPicked(this.activeRootAvailable);
 		const snapshot = await this.editorSessions.restoreEditorWorkspaceForSession(
 			session.ownedId,
 			this.sessionSelectionLayers.treeRoot,
-			Boolean(this.sessionSelectionLayers.treeRoot) && !this.activeRootRemote,
+			Boolean(this.sessionSelectionLayers.treeRoot),
 			owner.signal,
 		);
 		if (!this.isCurrent(owner)) return;
 		this.activeWorkspaceSnapshot = snapshot;
-		if (!root || this.activeRootRemote) return;
+		if (!root) return;
 		if (needsWorkspaceState) await this.loadExpandedPaths(session.ownedId, root, owner);
 	}
 

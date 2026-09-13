@@ -749,7 +749,7 @@
 	}
 
 	async function isFree(target: string): Promise<boolean> {
-		const { exists } = await import("@tauri-apps/plugin-fs");
+		const { exists } = await import("../../../workspaceFs");
 		if (!(await exists(target))) return true;
 		actionError = `Something is already called ${target.slice(target.lastIndexOf("/") + 1)} here.`;
 		return false;
@@ -768,7 +768,7 @@
 		}
 
 		try {
-			const fs = await import("@tauri-apps/plugin-fs");
+			const fs = await import("../../../workspaceFs");
 			if (generation !== inspectionGeneration || readOnlyInspection) return;
 			if (entry.kind === "rename") {
 				const target = `${parentOf(entry.path)}/${name}`;
@@ -802,7 +802,7 @@
 	}
 
 	async function copyDirectory(source: string, target: string): Promise<void> {
-		const fs = await import("@tauri-apps/plugin-fs");
+		const fs = await import("../../../workspaceFs");
 		await fs.mkdir(target);
 		for (const entry of await fs.readDir(source)) {
 			if (entry.isSymlink) continue;
@@ -822,7 +822,7 @@
 		if (!(await isFree(target))) return;
 		if (generation !== inspectionGeneration || readOnlyInspection) return;
 
-		const fs = await import("@tauri-apps/plugin-fs");
+		const fs = await import("../../../workspaceFs");
 		if (generation !== inspectionGeneration || readOnlyInspection) return;
 		if (entry.operation === "cut") {
 			await fs.rename(entry.path, target);

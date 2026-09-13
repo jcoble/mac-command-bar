@@ -54,6 +54,7 @@ enum ClientFrame {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", content = "input", rename_all = "camelCase")]
 enum RemoteCommand {
+    Workspace { operation: String, args: serde_json::Value },
     ListSessions,
     Ensure(EnsureAgentConversationRequest),
     Snapshot {
@@ -130,6 +131,7 @@ enum RemoteCommand {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", content = "value", rename_all = "camelCase")]
 enum RemoteResponse {
+    Workspace(serde_json::Value),
     Sessions(Vec<AgentConversationSessionRecord>),
     Connection(AgentConversationConnection),
     Snapshot(#[serde(deserialize_with = "deserialize_wire_payload")] Option<AgentConversationSnapshot>),
@@ -454,6 +456,16 @@ impl RemoteConnectionManager {
         Ok(RemoteConnectionResult { profile, sessions })
     }
 
+    pub fn disconnect_profile(&self, profile_id: &str) {
+        let mut state = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(client) = state.clients.get_mut(profile_id) {
+            if let Some(task) = client.task.take() { task.abort(); }
+            client.requests = None;
+            client.target_key = None;
+            client.ready.store(false, Ordering::Release);
+        }
+    }
+
     pub fn remove_profile(&self, profile_id: &str) {
         self.client
             .lock()
@@ -499,12 +511,6 @@ impl RemoteConnectionManager {
         profile_id: &str,
         command: RemoteCommand,
     ) -> Result<RemoteResponse, String> {
-        let dormant = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get(profile_id)
-            .filter(|client| client.requests.as_ref().is_none_or(|sender| sender.is_closed()))
-            .and_then(|client| client.profile.clone());
-        if let Some(profile) = dormant {
-            self.connect_profile(profile, uuid::Uuid::new_v4().to_string(), tauri::ipc::Channel::new(|_| Ok(()))).await?;
-        }
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.request_with_id(profile_id, id, command).await
     }
@@ -1026,6 +1032,14 @@ pub fn cancel_remote_connection(remote: tauri::State<'_, RemoteConnectionManager
 }
 
 #[tauri::command]
+pub fn disconnect_remote_assembly(
+    remote: tauri::State<'_, RemoteConnectionManager>, profile_id: String,
+) -> RemoteAssemblyEnvironment {
+    remote.disconnect_profile(&profile_id);
+    remote.environment()
+}
+
+#[tauri::command]
 pub fn remove_remote_assembly_profile(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
@@ -1131,6 +1145,7 @@ async fn open_remote_tunnel(
         "-o", "ControlMaster=no", "-o", "ControlPath=none",
         "-o",
         "ServerAliveInterval=15",
+        "-C",
         "-T",
         "-L",
         &forwarding,
@@ -1243,7 +1258,7 @@ async fn client_loop(
                 return;
             }
         }
-        let connected = tokio_tungstenite::connect_async(request).await;
+        let connected = tokio_tungstenite::connect_async_with_config(request, None, true).await;
         let (mut socket, _) = match connected {
             Ok(socket) => socket,
             Err(error) => {
@@ -1452,7 +1467,12 @@ pub fn run_server_from_environment() -> Result<(), String> {
             .await
             .map_err(|error| error.to_string())?;
         println!("Assembly remote server listening on {bind}");
-        axum::serve(listener, app)
+        use axum::serve::ListenerExt;
+        axum::serve(listener.tap_io(|stream| {
+            if let Err(error) = stream.set_nodelay(true) {
+                eprintln!("Could not disable remote socket packet delay: {error}");
+            }
+        }), app)
             .await
             .map_err(|error| error.to_string())
     })
@@ -1553,7 +1573,6 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 }
             }
             ClientFrame::Cancel { id } => {
-                state.manager.cancel_snapshot(id);
                 if let Some(task) = request_tasks.remove(&id) {
                     task.abort();
                 }
@@ -1598,6 +1617,7 @@ async fn execute_remote_command(
     command: RemoteCommand,
 ) -> Result<RemoteResponse, String> {
     match command {
+        RemoteCommand::Workspace { operation, args } => super::remote_workspace::execute(operation, args).await.map(RemoteResponse::Workspace),
         RemoteCommand::ListSessions => {
             let mut sessions = manager.list_sessions()?;
             for session in &mut sessions {
@@ -1612,11 +1632,12 @@ async fn execute_remote_command(
                 .await
                 .map(RemoteResponse::Connection)
         }
+        // Request ownership is per WebSocket, not shared across Mac clients.
         RemoteCommand::Snapshot {
             owned_id,
-            request_id,
+            request_id: _,
         } => manager
-            .latest_snapshot(&owned_id, request_id)
+            .snapshot(&owned_id)
             .map(RemoteResponse::Snapshot),
         RemoteCommand::EventsBefore {
             owned_id,
@@ -1779,85 +1800,6 @@ async fn execute_remote_command(
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemoteDirectoryListing {
-    path: String,
-    directories: Vec<String>,
-    truncated: bool,
-}
-
-#[tauri::command]
-pub async fn list_remote_directories(
-    ssh_target: String,
-    path: String,
-) -> Result<RemoteDirectoryListing, super::protocol::CommandError> {
-    tauri::async_runtime::spawn_blocking(move || read_remote_directories(&ssh_target, &path))
-        .await
-        .map_err(|error| super::protocol::CommandError::from(error.to_string()))?
-        .map_err(super::protocol::CommandError::from)
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn directory_listing_script(path: &str) -> Result<String, String> {
-    if path.contains('\0') || path.len() > 4096 {
-        return Err("Folder path is invalid or too long".into());
-    }
-    let destination = if path.is_empty() || path == "~" {
-        "\"$HOME\"".to_string()
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        format!("\"$HOME\"/{}", shell_quote(rest))
-    } else if path.starts_with('/') {
-        shell_quote(path)
-    } else {
-        return Err("Enter an absolute path or a path beginning with ~/".into());
-    };
-    Ok(format!(r#"set -eu
-LC_ALL=C; export LC_ALL
-cd -- {destination}
-[ -r . ] && [ -x . ] || {{ echo 'Permission denied reading this folder' >&2; exit 1; }}
-printf '%s\0' "$(pwd -P)"
-count=0
-for entry in ./* ./.[!.]* ./..?*; do
-  [ -d "$entry" ] || continue
-  printf '%s\0' "${{entry#./}}"
-  count=$((count + 1))
-  [ "$count" -lt 501 ] || break
-done
-"#))
-}
-
-fn parse_directory_listing(bytes: &[u8]) -> Result<RemoteDirectoryListing, String> {
-    let text = std::str::from_utf8(bytes).map_err(|_| "Folder names are not valid UTF-8")?;
-    let mut parts = text.split_terminator('\0');
-    let path = parts.next().filter(|path| path.starts_with('/'))
-        .ok_or("SSH returned an invalid folder listing")?.to_string();
-    let mut directories = parts.map(str::to_string).collect::<Vec<_>>();
-    let truncated = directories.len() > 500;
-    directories.truncate(500);
-    directories.sort();
-    Ok(RemoteDirectoryListing { path, directories, truncated })
-}
-
-fn read_remote_directories(target: &str, path: &str) -> Result<RemoteDirectoryListing, String> {
-    validate_ssh_target(target)?;
-    let script = directory_listing_script(path)?;
-    // One request owns one SSH process; never create a persistent control master.
-    let mut command = Command::new("ssh");
-    command.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-        "-o", "ControlMaster=no", "-o", "ControlPath=none", "--", target, &script]);
-    let output = crate::bounded_process::output(&mut command, "Remote folder listing", Duration::from_secs(15))
-        .map_err(|error| format!("Could not browse remote folders: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("Could not browse remote folders. Check the SSH destination and your SSH key/configuration. {}",
-            String::from_utf8_lossy(&output.stderr).trim()));
-    }
-    parse_directory_listing(&output.stdout)
-}
-
 fn validate_ssh_target(target: &str) -> Result<(), String> {
     if target.is_empty() || target.starts_with('-')
         || !target.bytes().all(|value| value.is_ascii_alphanumeric() || b"._@-".contains(&value)) {
@@ -1867,64 +1809,38 @@ fn validate_ssh_target(target: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod directory_tests {
-    use super::*;
-
-    #[test]
-    fn lists_only_directories_and_quotes_paths() {
-        let root = std::env::temp_dir().join(format!("assembly-directory-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&root).unwrap();
-        let folder = root.join("space ' quote $(false)");
-        std::fs::create_dir(&folder).unwrap();
-        for name in ["visible", ".hidden", "unicode-é", "line\nbreak"] {
-            std::fs::create_dir(folder.join(name)).unwrap();
-        }
-        std::fs::write(folder.join("file"), "not a folder").unwrap();
-        std::os::unix::fs::symlink(folder.join("visible"), folder.join("link")).unwrap();
-        let output = Command::new("sh").args(["-c", &directory_listing_script(folder.to_str().unwrap()).unwrap()]).output().unwrap();
-        assert!(output.status.success());
-        let listing = parse_directory_listing(&output.stdout).unwrap();
-        assert_eq!(listing.directories, [".hidden", "line\nbreak", "link", "unicode-é", "visible"]);
-        assert!(!listing.truncated);
-        assert_eq!(listing.path, folder.canonicalize().unwrap().to_str().unwrap());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn limits_output_and_rejects_invalid_inputs() {
-        let data = format!("/tmp\0{}", (0..501).map(|n| format!("folder-{n}\0")).collect::<String>());
-        let listing = parse_directory_listing(data.as_bytes()).unwrap();
-        assert!(listing.truncated);
-        assert_eq!(listing.directories.len(), 500);
-        for target in ["-oProxyCommand=x", "host;false", "", "a b"] {
-            assert!(validate_ssh_target(target).is_err());
-        }
-        assert!(validate_ssh_target("user@agent-workbox").is_ok());
-        assert!(directory_listing_script("relative").is_err());
-        assert!(directory_listing_script("/bad\0path").is_err());
-        assert!(parse_directory_listing(b"banner\0").is_err());
-        let output = Command::new("sh").args(["-c", &directory_listing_script("/nonexistent-assembly-directory-test").unwrap()]).output().unwrap();
-        assert!(!output.status.success());
-    }
-
-    #[test]
-    #[ignore = "requires the owner's SSH-accessible workbox"]
-    fn live_workbox_directory_listing() {
-        let listing = read_remote_directories("agent-workbox", "~").unwrap();
-        assert!(listing.path.starts_with("/home/"));
-        assert!(listing.directories.iter().any(|name| name == "dev"));
-        let nested = read_remote_directories("agent-workbox", &format!("{}/dev/work", listing.path)).unwrap();
-        assert!(nested.directories.iter().any(|name| name == "worktrees"));
-        eprintln!("SSH browse verified: {} then {}", listing.path, nested.path);
-    }
-}
-
-#[cfg(test)]
 mod connection_tests {
     use super::*;
 
     fn profile(id: &str) -> RemoteAssemblyProfile {
         RemoteAssemblyProfile { id: id.into(), name: "Workbox".into(), ssh_target: "agent-workbox".into(), source_root: String::new(), default_cwd: String::new() }
+    }
+
+    #[tokio::test]
+    async fn disconnect_keeps_profile_and_session_ownership_but_stops_transport() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        manager.register_profile(profile("saved")).unwrap();
+        manager.remember("conversation", "saved");
+        let task = tokio::spawn(std::future::pending::<()>());
+        let (sender, _receiver) = mpsc::channel(1);
+        {
+            let mut state = manager.client.lock().unwrap();
+            let client = state.clients.get_mut("saved").unwrap();
+            client.requests = Some(sender);
+            client.task = Some(task.abort_handle());
+            client.ready.store(true, Ordering::Release);
+        }
+        assert_eq!(manager.environment().ready_profile_ids, vec!["saved"]);
+        manager.disconnect_profile("saved");
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(manager.environment().profiles, vec![profile("saved")]);
+        assert!(manager.environment().ready_profile_ids.is_empty());
+        assert!(manager.owns("conversation"));
+        assert!(manager.request_for_profile("saved", RemoteCommand::ListSessions).await.unwrap_err().contains("not connected"));
+        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        restarted.restore_profiles(&serde_json::to_string(&manager.environment().profiles).unwrap()).unwrap();
+        assert_eq!(restarted.environment().profiles, vec![profile("saved")]);
+        assert!(restarted.environment().ready_profile_ids.is_empty());
     }
 
     #[tokio::test]
@@ -2056,6 +1972,10 @@ mod connection_tests {
         let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
         let result = manager.connect_profile(profile("stage1-proof"), "live-proof".into(), tauri::ipc::Channel::new(|_| Ok(()))).await.unwrap();
         for session in &result.sessions {
+            let workspace = manager.request_for_profile(&result.profile.id, RemoteCommand::Workspace {
+                operation: "validate_project_root".into(), args: serde_json::json!({"path": session.cwd})
+            }).await.unwrap();
+            eprintln!("Remote workspace validation: {:?}", workspace);
             assert!(manager.snapshot(session.owned_id.clone(), 100).await.unwrap().is_some());
             let capabilities = manager.capabilities(session.owned_id.clone(), 101).await.unwrap();
             eprintln!("Remote steering advertised: {}", capabilities.session.steering);
@@ -2067,5 +1987,18 @@ mod connection_tests {
         manager.shutdown();
         tokio::task::yield_now().await;
         assert!(manager.tunnel_processes.lock().unwrap().is_empty());
+    }
+}
+
+#[tauri::command]
+pub async fn remote_workspace(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile_id: String,
+    operation: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match remote.request_for_profile(&profile_id, RemoteCommand::Workspace { operation, args }).await? {
+        RemoteResponse::Workspace(value) => Ok(value),
+        _ => Err("The remote backend returned an incompatible workspace response".into()),
     }
 }

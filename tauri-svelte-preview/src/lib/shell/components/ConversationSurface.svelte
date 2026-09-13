@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { remoteWorkspacePath } from '$lib/workspacePaths';
   import { untrack } from 'svelte';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import type {
@@ -80,6 +81,7 @@
     activeOwnedId: string | null;
     activeOrigin?: OwnedSession['origin'];
     rootAvailable?: boolean;
+    pendingFirstMessage?: string | null;
     onOpenNativeCli?(ownedId: string): void | Promise<void>;
     onForkNativeCli?(ownedId: string): void | Promise<void>;
     onReturnToStructured?(ownedId: string): void | Promise<void>;
@@ -89,6 +91,7 @@
     activeOwnedId,
     activeOrigin,
     rootAvailable = true,
+    pendingFirstMessage = null,
     onOpenNativeCli,
     onForkNativeCli,
     onReturnToStructured
@@ -237,6 +240,7 @@
   });
 
   $effect(() => {
+    if (pendingFirstMessage) return;
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
@@ -587,9 +591,15 @@
     // with a notice and no way to see what the link pointed at.
     const outside = absolute !== root && !absolute.startsWith(`${root}/`);
     const readOnly = outside || Boolean(recordedRootPath && recordedRootPath !== sessionRoot);
+    if (active.executionEnvironment === 'remote' && !active.remoteProfileId) {
+      setConversationAttachmentError(active.ownedId, 'Connect to this conversation’s saved machine first.');
+      return;
+    }
+    const qualify = (path: string): string => active.executionEnvironment === 'remote'
+      ? remoteWorkspacePath(active.remoteProfileId!, path) : path;
     requestOpenFile({
-      path: absolute,
-      projectRoot: readOnly ? sessionRoot : root,
+      path: qualify(absolute),
+      projectRoot: qualify(readOnly ? sessionRoot : root),
       readOnly,
       line
     });
@@ -644,6 +654,7 @@
       {/if}
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
+        {pendingFirstMessage}
         items={visibleTimeline}
         conversationId={active.ownedId}
         renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}
