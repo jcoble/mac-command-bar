@@ -195,11 +195,8 @@ class PeekWidget extends WidgetType {
         ]
       });
       this.previewView = new EditorView({ state: previewState, parent: source });
-      queueMicrotask(() => {
-        if (!this.previewView) return;
-        const at = this.previewView.state.doc.line(selectedLine).from;
-        this.previewView.dispatch({ effects: EditorView.scrollIntoView(at, { y: 'center' }) });
-      });
+      const at = this.previewView.state.doc.line(selectedLine).from;
+      this.previewView.dispatch({ effects: EditorView.scrollIntoView(at, { y: 'center' }) });
     } else {
       source.textContent = this.source === null ? 'Source preview unavailable.' : 'Loading source preview…';
       source.classList.add('loading');
@@ -471,7 +468,11 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         if (options.enabled && options.onAnchorLookup && options.onCount) {
           this.rows.push({ key: 'reference-anchors', line: 1, title: 'Loading references…', state: 'loading' });
         }
-        queueMicrotask(() => this.paint());
+        this.view.requestMeasure({
+          read: () => null,
+          write: () => this.paint(),
+          key: this
+        });
         if (options.enabled && options.onAnchorLookup && options.onCount) void this.loadReferences(generation);
       }
 
@@ -479,9 +480,7 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
         for (const effect of update.transactions.flatMap((transaction) => transaction.effects)) {
           if (effect.is(showCodeMirrorReferences)) {
             const request = effect.value;
-            queueMicrotask(() => {
-              if (this.alive) void this.openReferences(request);
-            });
+            if (this.alive) void this.openReferences(request);
           }
         }
         if (update.docChanged) {
@@ -490,7 +489,6 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
           if (options.enabled && options.onAnchorLookup && options.onCount) {
             this.rows.push({ key: 'reference-anchors', line: 1, title: 'Loading references…', state: 'loading' });
           }
-          queueMicrotask(() => this.paint());
           if (options.enabled && options.onAnchorLookup && options.onCount) void this.loadReferences(generation);
         }
       }

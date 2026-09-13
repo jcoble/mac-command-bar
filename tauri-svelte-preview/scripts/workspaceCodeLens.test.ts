@@ -101,8 +101,13 @@ assert.match(
 );
 assert.match(
   codeMirrorLensSource,
-  /effect\.is\(showCodeMirrorReferences\)[\s\S]*?queueMicrotask\([\s\S]*?openReferences\(request\)/,
-  'Peek References must wait until the current CodeMirror update finishes before dispatching its panel refresh'
+  /effect\.is\(showCodeMirrorReferences\)[\s\S]*?if \(this\.alive\) void this\.openReferences\(request\)/,
+  'Peek References must hand the captured request to its owned view plugin'
+);
+assert.match(
+  codeMirrorLensSource,
+  /private async openReferences[\s\S]*?await options\.onReferences\?\.\(request\)[\s\S]*?this\.view\.dispatch/,
+  'Peek References must await the language-server answer before dispatching its panel refresh'
 );
 assert.doesNotMatch(
   codeMirrorLensSource,

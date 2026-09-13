@@ -26,6 +26,9 @@ const allowedHits = new Set([
   // Svelte tick is awaited only after mounting a user-requested lazy surface.
   "src/lib/shell/components/DockPanel.svelte:tick:import { tick } from 'svelte';",
   'src/lib/shell/components/DockPanel.svelte:tick:await tick();',
+  // The one-shot WebSocket readiness bridge removes every listener when it
+  // settles, and disposing the editor closes the socket so the wait rejects.
+  'src/lib/shell/editor/csharpLanguageClient.ts:new Promise:await new Promise<void>((resolve, reject) => {',
   "src/lib/shell/panels/tasks/TasksPanel.svelte:tick:import { onDestroy, onMount, tick } from 'svelte';",
   'src/lib/shell/panels/tasks/TasksPanel.svelte:tick:await tick();',
   // These one-shot timers are both stopped by the AbortSignal-owning surface.
