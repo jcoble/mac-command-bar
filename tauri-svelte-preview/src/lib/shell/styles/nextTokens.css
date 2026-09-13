@@ -261,19 +261,9 @@
      cannot drift from what anything else assumes about it. */
   --editor-tab-row-height: 35px;
 
-  /* The centre pane's head — the capsule of controls laid OVER the top of the
-     pane rather than given a row of its own. The first name is how tall that
-     capsule is; the second is how far down the pane it reaches once the offset
-     it sits at (clear of the editor's tab row, with 6px of air above and
-     below) is added.
-     The second name is the one anything underneath reads. The transcript did
-     not read anything at all, and its top inset and the resting place of a
-     just-sent message were both shorter than the head — so a message the reader
-     had only just sent came to rest underneath the controls and looked gone. */
+  /* The center surface capsule now lives in the window chrome. Content no
+     longer reserves an overlay inset for it. */
   --center-head-row-height: 32px;
-  --center-head-height: calc(
-    var(--editor-tab-row-height) + 6px + var(--center-head-row-height) + 6px
-  );
 
 
   /* ------------------------------------------------------------------

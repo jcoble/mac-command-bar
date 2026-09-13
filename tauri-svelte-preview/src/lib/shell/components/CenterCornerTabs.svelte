@@ -1,18 +1,12 @@
 <script lang="ts">
   /**
-   * CenterCornerTabs.svelte — the centre pane's surface picker, as ONE capsule
-   * that floats over the pane instead of occupying a bar above it.
+   * CenterCornerTabs.svelte — the centre surface picker in the window chrome.
    *
    * Session is what you talk to, Editor is the code you have open, Diff is the
    * changes to one file. Each control used to carry its own
    * fill and its own shadow, and four separate discs at the top of the pane read
    * as things dropped there rather than as the head of a column. Sharing a
    * surface is what makes them one control, and the head one thing.
-   *
-   * WHY IT FLOATS. A permanent bar charged every surface the same strip of
-   * height to answer a question that is only asked now and then, and on the
-   * Editor there was already a bar — its file tabs. So the group is laid OVER
-   * the pane and stays visible without occupying layout height.
    *
    * PRESENTATIONAL ONLY: no state beyond that hold, no IO. The selected tab is
    * handed in and every click is handed back out.
@@ -47,7 +41,7 @@
   }
 </script>
 
-<nav class="center-pills" aria-label="Center surfaces">
+<nav class="center-pills" aria-label="Center surfaces" data-tauri-drag-region>
   {#each TABS as tab (tab.id)}
     {@const Icon = tab.icon}
     <!-- Icon only. The word lives on `label`, which `IconButton` makes both the
@@ -87,18 +81,8 @@
 </nav>
 
 <style>
-  /* The head is one capsule laid over the pane, so it is only ever as wide as
-     the controls inside it and it lets every click through except its own. The
-     surface and the single shadow belong to the capsule rather than to each
-     control, which is what makes the controls read as one group.
-
-     ONE offset, on every surface: clear of the line the editor keeps its file
-     tabs on. Nothing here reads which surface is showing — an offset that
-     changed with the surface made the row jump as you moved between Session,
-     Editor and Diff. On Session and Diff that leaves empty space above the
-     capsule, which costs nothing, because it floats and takes no layout height
-     anywhere. What it does cost is the band it covers, and the transcript
-     underneath keeps clear of that band by reading `--center-head-height`. */
+  /* One compact surface switch inside the draggable titlebar. The surrounding
+     chrome owns the row; this capsule owns only its controls. */
   .center-pills {
     display: flex;
     flex: 0 0 auto;
@@ -108,10 +92,10 @@
     gap: 2px;
     height: var(--center-head-row-height);
     padding: 2px;
-    margin: calc(var(--editor-tab-row-height) + 6px) 8px 6px;
+    margin: 0;
     border-radius: var(--radius-pill);
     background: var(--pill-surface);
-    box-shadow: var(--shadow-sm);
+    box-shadow: none;
     user-select: none;
   }
 

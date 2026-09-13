@@ -46,10 +46,6 @@ const barSource = readFileSync(
   path.join(here, '..', '..', 'editor', 'languageIntelligenceBar.svelte.ts'),
   'utf8'
 );
-const shellPageSource = readFileSync(
-  path.join(here, '..', '..', '..', '..', 'routes', '+page.svelte'),
-  'utf8'
-);
 const pillsSource = readFileSync(path.join(here, '..', 'CenterCornerTabs.svelte'), 'utf8');
 const frameSource = readFileSync(path.join(here, '..', 'ShellFrame.svelte'), 'utf8');
 const utilityStripSource = readFileSync(path.join(here, '..', 'UtilityStrip.svelte'), 'utf8');
@@ -86,36 +82,6 @@ test('the editor status bar owns the switch and the pill group keeps only surfac
   );
 });
 
-test('the pill row sits at one offset, clear of the editor tab row', () => {
-  assert.ok(
-    !pillsSource.includes('below-editor-tabs'),
-    'nothing about the row\'s position may depend on which surface is showing'
-  );
-  assert.match(
-    pillsSource,
-    /\.center-pills \{[\s\S]*?margin:\s*calc\(var\(--editor-tab-row-height\) \+ 6px\) 8px 6px;/,
-    'one unconditional offset, below the line the editor keeps its tabs on'
-  );
-  // The offset is only honest if that row cannot grow past the stated height.
-  // `min-height` let an overflowing tab strip's scrollbar push it taller on a
-  // Mac showing scrollbars always, and the pills landed inside the row.
-  assert.match(
-    panelSource,
-    /\.editor-header \{[\s\S]*?height:\s*var\(--editor-tab-row-height\);/,
-    'the tab row is pinned to the height everything else is placed against'
-  );
-  assert.match(
-    panelSource,
-    /\.file-strip \{[\s\S]*?scrollbar-width:\s*thin;/,
-    'the fixed-height row keeps the file strip scrollable with the shared slim scrollbar'
-  );
-  assert.match(panelSource, /\.file-strip::-webkit-scrollbar \{[\s\S]*?height:\s*4px;/);
-  assert.ok(
-    !panelSource.includes('--center-pill-group-width'),
-    'the reserved gutter is gone; the group is below the row, not beside it'
-  );
-});
-
 test('the group answers for its own focus, not the whole pane', () => {
   // No focus selector keeps the always-visible compact capsule in a separate
   // reveal state. In particular, typing elsewhere in the pane cannot change it.
@@ -125,17 +91,6 @@ test('the group answers for its own focus, not the whole pane', () => {
     'focus elsewhere in the pane must not change the capsule'
   );
   assert.ok(!pillsSource.includes('.blur()'));
-});
-
-test('the shell has no strip along its top any more', () => {
-  assert.ok(
-    !shellPageSource.includes('<div class="top-bar">'),
-    'the last thing in that strip was this switch, and it now travels with the pills'
-  );
-  assert.ok(
-    !shellPageSource.includes('LanguageIntelligenceControls'),
-    'the page must not mount the switch a second time'
-  );
 });
 
 test('the switch stays in the waiting colour until the server reports ready', () => {
