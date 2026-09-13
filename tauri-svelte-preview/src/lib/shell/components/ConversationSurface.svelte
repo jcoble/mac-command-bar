@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import type {
     AgentConfigValue,
@@ -171,7 +172,10 @@
   const attachmentError = $derived(conversation?.attachmentError ?? '');
   const sendError = $derived(conversation?.sendError ?? '');
   const providerNotice = $derived(conversation?.providerNotice ?? '');
-  let capabilityRequest = $state('');
+  const capabilityTarget = $derived(structured && active && conversation
+    && ['claude', 'codex', 'antigravity'].includes(active.agent)
+    ? `${active.ownedId}:${conversation.generation}:${conversation.provider}:${conversation.connectionState}`
+    : '');
   let configRequest = $state('');
   /** A request key whose failure has already bought its one retry. The guard
    * above is claimed before the call, so without this a read that lost a
@@ -251,18 +255,15 @@
   });
 
   $effect(() => {
-    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
-    const ownedId = active.ownedId;
-    const provider = conversation.provider;
-    const generation = conversation.generation;
-    const key = `${ownedId}:${generation}:${provider}:${conversation.connectionState}`;
-    if (capabilityRequest === key) return;
-    // A connection re-reads the snapshot: the stored one can predate a provider
-    // upgrade, and activation refreshes it from the live handshake.
-    if (conversation.capabilities && conversation.connectionState !== 'connected') return;
-    capabilityRequest = key;
+    if (!capabilityTarget) return;
     const controller = new AbortController();
-    void loadCapabilitiesForSurface(controller.signal, ownedId, provider, generation);
+    // Only a changed session/generation/connection owns a new request. Writing
+    // a reactive "requested" flag here cancelled the effect's own request.
+    untrack(() => {
+      if (active && conversation) {
+        void loadCapabilitiesForSurface(controller.signal, active.ownedId, conversation.provider, conversation.generation);
+      }
+    });
     return () => {
       controller.abort();
     };

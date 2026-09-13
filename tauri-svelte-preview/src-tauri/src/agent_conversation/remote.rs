@@ -2057,6 +2057,8 @@ mod connection_tests {
         let result = manager.connect_profile(profile("stage1-proof"), "live-proof".into(), tauri::ipc::Channel::new(|_| Ok(()))).await.unwrap();
         for session in &result.sessions {
             assert!(manager.snapshot(session.owned_id.clone(), 100).await.unwrap().is_some());
+            let capabilities = manager.capabilities(session.owned_id.clone(), 101).await.unwrap();
+            eprintln!("Remote steering advertised: {}", capabilities.session.steering);
         }
         let again = manager.connect_profile(profile("duplicate"), "live-again".into(), tauri::ipc::Channel::new(|_| Ok(()))).await.unwrap();
         assert_eq!(again.profile.id, "stage1-proof");
