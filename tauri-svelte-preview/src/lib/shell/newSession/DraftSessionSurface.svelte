@@ -14,6 +14,8 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { hydrateOwned, rail } from '$lib/shell/stores/sessionRailStore.svelte';
+  import { ownedSessionFromBackend } from '$lib/shell/ownedSessions';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
@@ -65,7 +67,7 @@
   } from '$lib/shell/newSession/newSessionBackend.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
-    deployRemoteAssemblyFromTauri,
+    connectRemoteAssemblyFromTauri,
     readRemoteAssemblyEnvironmentFromTauri,
     removeRemoteAssemblyProfileFromTauri,
     type RemoteAssemblyEnvironment,
@@ -109,9 +111,12 @@
   let submitting = $state(false);
   let submitError = $state('');
   let loadSequence = 0;
-  let remoteAssembly = $state<RemoteAssemblyEnvironment>({ profiles: [] });
+  let remoteAssembly = $state<RemoteAssemblyEnvironment>({ profiles: [], readyProfileIds: [] });
   let remoteSetupOpen = $state(false);
-  let remoteDeploying = $state(false);
+  let remoteConnecting = $state(false);
+  let remoteStatus = $state('');
+  let remoteError = $state('');
+  let connectionOwner: AbortController | null = null;
   let remoteProfile = $state<RemoteAssemblyProfile>({
     id: '',
     name: '',
@@ -266,22 +271,38 @@
     return String(error);
   }
 
-  async function deployRemote(): Promise<void> {
-    if (remoteDeploying || stopSignal.aborted) return;
-    remoteDeploying = true;
-    submitError = '';
+  async function connectRemote(profile = remoteProfile): Promise<void> {
+    if (remoteConnecting || stopSignal.aborted) return;
+    const owner = new AbortController();
+    connectionOwner = owner;
+    remoteConnecting = true;
+    remoteError = '';
+    remoteStatus = 'Connecting…';
     try {
-      if (stopSignal.aborted) return;
-      remoteAssembly = await deployRemoteAssemblyFromTauri(remoteProfile);
-      if (stopSignal.aborted) return;
-      remoteSetupOpen = false;
-      const saved = remoteAssembly.profiles.find((profile) => profile.id === remoteProfile.id) ?? null;
-      selectEnvironment('remote', saved);
+      const result = await connectRemoteAssemblyFromTauri(profile, owner.signal, (status) => {
+        if (!owner.signal.aborted) remoteStatus = status;
+      });
+      if (owner.signal.aborted || stopSignal.aborted) return;
+      remoteProfile = result.profile;
+      const ids = new Set(result.sessions.map((session) => session.ownedId));
+      hydrateOwned([...rail.owned.filter((session) => !ids.has(session.ownedId)), ...result.sessions.map(ownedSessionFromBackend)]);
+      remoteAssembly = await readRemoteAssemblyEnvironmentFromTauri();
+      if (owner.signal.aborted || stopSignal.aborted) return;
+      remoteStatus = 'Connected. The existing backend is ready.';
+      if (result.profile.defaultCwd) selectEnvironment('remote', result.profile);
     } catch (error) {
-      if (!stopSignal.aborted) submitError = describeError(error);
+      if (!stopSignal.aborted) {
+        remoteStatus = '';
+        remoteError = owner.signal.aborted ? 'Connection cancelled.' : describeError(error);
+      }
     } finally {
-      remoteDeploying = false;
+      if (connectionOwner === owner) { connectionOwner = null; remoteConnecting = false; }
     }
+  }
+
+  function cancelRemote() {
+    if (connectionOwner) { connectionOwner.abort(); remoteStatus = 'Cancelling…'; }
+    else { remoteSetupOpen = false; remoteStatus = ''; remoteError = ''; }
   }
 
   function editRemote(profile: RemoteAssemblyProfile): void {
@@ -290,8 +311,8 @@
   }
 
   async function removeRemote(profile: RemoteAssemblyProfile): Promise<void> {
-    if (remoteDeploying || stopSignal.aborted) return;
-    remoteDeploying = true;
+    if (remoteConnecting || stopSignal.aborted) return;
+    remoteConnecting = true;
     submitError = '';
     try {
       remoteAssembly = await removeRemoteAssemblyProfileFromTauri(profile.id);
@@ -301,7 +322,7 @@
     } catch (error) {
       if (!stopSignal.aborted) submitError = describeError(error);
     } finally {
-      remoteDeploying = false;
+      remoteConnecting = false;
     }
   }
 
@@ -382,12 +403,16 @@
 
   onMount(() => {
     const owner = { active: true };
+    const stopConnection = () => connectionOwner?.abort();
+    stopSignal.addEventListener('abort', stopConnection, { once: true });
     setSessionRoots(sessionRoots);
     const sequence = ++loadSequence;
     void hydrateDraft(owner, sequence);
     void hydrateRemoteAssembly(owner, sequence);
     return () => {
       owner.active = false;
+      stopSignal.removeEventListener('abort', stopConnection);
+      stopConnection();
       loadSequence += 1;
     };
   });
@@ -442,7 +467,7 @@
         {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
       </DropdownMenu.Item>
       {#each remoteAssembly.profiles as profile (profile.id)}
-        <DropdownMenu.Item title={profile.defaultCwd} onSelect={() => selectEnvironment('remote', profile)}>
+        <DropdownMenu.Item title={profile.defaultCwd} onSelect={() => { remoteSetupOpen = true; remoteProfile = { ...profile }; void connectRemote(profile); }}>
           <Server aria-hidden="true" class="size-4" />
           <span class="draft-machine-name">{profile.name}</span>
           {#if draft.remoteProfileId === profile.id}
@@ -622,45 +647,35 @@
       <div class="remote-setup" data-testid="draft-session-remote-setup">
         <div class="remote-setup-heading">
           <strong>Remote machines</strong>
-          <span>Assembly will deploy its server over SSH and keep it on that machine.</span>
+          <span>Connect to an Assembly backend already installed on this machine.</span>
         </div>
         {#if remoteAssembly.profiles.length > 0}
           <div class="remote-profile-list">
             {#each remoteAssembly.profiles as profile (profile.id)}
               <div class="remote-profile-row">
-                <span><strong>{profile.name}</strong><small>{profile.sshTarget}</small></span>
-                <Button variant="ghost" size="xs" onclick={() => editRemote(profile)}>Edit</Button>
-                <Button variant="ghost" size="xs" disabled={remoteDeploying} onclick={() => void removeRemote(profile)}>Remove</Button>
+                <span><strong>{profile.name}</strong><small>{profile.sshTarget}{remoteAssembly.readyProfileIds.includes(profile.id) ? ' · Ready' : ' · Not connected'}</small></span>
+                <Button variant="ghost" size="xs" disabled={remoteConnecting} onclick={() => editRemote(profile)}>Edit</Button>
+                <Button variant="ghost" size="xs" disabled={remoteConnecting} onclick={() => void removeRemote(profile)}>Remove</Button>
               </div>
             {/each}
           </div>
         {/if}
         <label>
           <span>Machine name</span>
-          <Input bind:value={remoteProfile.name} placeholder="Agent Workbox" autocomplete="off" />
+          <Input disabled={remoteConnecting} bind:value={remoteProfile.name} placeholder="Agent Workbox" autocomplete="off" />
         </label>
         <label>
           <span>SSH destination</span>
-          <Input bind:value={remoteProfile.sshTarget} placeholder="user@hostname" autocomplete="off" />
+          <Input disabled={remoteConnecting} bind:value={remoteProfile.sshTarget} placeholder="user@hostname" autocomplete="off" />
         </label>
-        <RemoteDirectoryField label="Remote Assembly checkout" sshTarget={remoteProfile.sshTarget}
-          bind:value={remoteProfile.sourceRoot} placeholder="/home/user/mac-command-bar" disabled={remoteDeploying} />
         <RemoteDirectoryField label="Remote working directory" sshTarget={remoteProfile.sshTarget}
-          bind:value={remoteProfile.defaultCwd} placeholder="/home/user/project" disabled={remoteDeploying} />
-        {#if remoteDeploying}
-          <p class="remote-deploy-status" role="status" aria-live="polite">
-            Deploying the Assembly backend to the remote machine. Please wait; this may take a minute.
-          </p>
-        {/if}
+          bind:value={remoteProfile.defaultCwd} placeholder="/home/user/project" disabled={remoteConnecting} />
+        {#if remoteStatus}<p class="remote-connection-status" role="status" aria-live="polite">{remoteStatus}</p>{/if}
+        {#if remoteError}<p class="remote-connection-status" role="alert">{remoteError}</p>{/if}
         <div class="remote-setup-actions">
-          <Button variant="ghost" size="sm" onclick={() => (remoteSetupOpen = false)}>Cancel</Button>
-          <Button
-            size="sm"
-            disabled={remoteDeploying || !remoteProfile.name || !remoteProfile.sshTarget || !remoteProfile.sourceRoot || !remoteProfile.defaultCwd}
-            onclick={() => void deployRemote()}
-          >
-            {remoteDeploying ? 'Deploying…' : 'Save, deploy, and connect'}
-          </Button>
+          <Button variant="ghost" size="sm" onclick={cancelRemote}>{remoteConnecting ? 'Cancel connection' : 'Done'}</Button>
+          <Button size="sm" disabled={remoteConnecting || !remoteProfile.name || !remoteProfile.sshTarget}
+            onclick={() => void connectRemote()}>{remoteConnecting ? 'Connecting…' : 'Connect'}</Button>
         </div>
       </div>
     {:else}
@@ -773,7 +788,7 @@
   }
   .remote-profile-row > span { display: flex; min-width: 0; flex: 1; flex-direction: column; }
   .remote-profile-row small { overflow: hidden; color: var(--color-text-3); text-overflow: ellipsis; }
-  .remote-deploy-status { color: var(--color-text-2); font-size: 12px; }
+  .remote-connection-status { color: var(--color-text-2); font-size: 12px; }
   .remote-setup-actions { display: flex; justify-content: flex-end; gap: 6px; }
   .draft-warning {
     display: flex;

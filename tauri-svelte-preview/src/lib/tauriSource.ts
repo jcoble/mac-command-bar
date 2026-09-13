@@ -419,6 +419,7 @@ export type ExecutionEnvironment = 'local' | 'remote';
 
 export type RemoteAssemblyEnvironment = {
   profiles: RemoteAssemblyProfile[];
+  readyProfileIds: string[];
 };
 
 export type RemoteAssemblyProfile = {
@@ -1857,7 +1858,7 @@ export async function listRemoteAgentConversationSessionsFromTauri(
 
 export async function readRemoteAssemblyEnvironmentFromTauri(): Promise<RemoteAssemblyEnvironment> {
   if (!isTauriRuntime()) {
-    return { profiles: [] };
+    return { profiles: [], readyProfileIds: [] };
   }
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<RemoteAssemblyEnvironment>('read_remote_assembly_environment');
@@ -1871,12 +1872,30 @@ export async function removeRemoteAssemblyProfileFromTauri(
   return invoke<RemoteAssemblyEnvironment>('remove_remote_assembly_profile', { profileId });
 }
 
-export async function deployRemoteAssemblyFromTauri(
-  profile: RemoteAssemblyProfile
-): Promise<RemoteAssemblyEnvironment> {
+export async function connectRemoteAssemblyFromTauri(
+  profile: RemoteAssemblyProfile,
+  signal: AbortSignal,
+  onStatus: (status: string) => void
+): Promise<{ profile: RemoteAssemblyProfile; sessions: AgentConversationSessionRecord[] }> {
   if (!isTauriRuntime()) throw new Error('Remote setup is available in the desktop app.');
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<RemoteAssemblyEnvironment>('deploy_remote_assembly', { profile });
+  if (signal.aborted) throw new Error('Connection cancelled');
+  const { invoke, Channel } = await import('@tauri-apps/api/core');
+  const operationId = crypto.randomUUID();
+  let registered = false;
+  const cancel = () => {
+    if (registered) void invoke('cancel_remote_connection', { operationId }).catch(() => {});
+  };
+  const status = new Channel<string>((message) => {
+    registered = true;
+    if (signal.aborted) cancel();
+    else onStatus(message);
+  });
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    return await invoke('connect_remote_assembly', { profile, operationId, status });
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
 }
 
 export async function changeAgentConversationCheckoutFromTauri(input: {

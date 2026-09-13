@@ -1,11 +1,10 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
 use std::net::{TcpListener as StdTcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -41,6 +40,7 @@ const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
 pub const REMOTE_ASSEMBLY_PROFILE_SETTING_KEY: &str = "remote-assembly.profile.v1";
 pub const REMOTE_ASSEMBLY_PROFILES_SETTING_KEY: &str = "remote-assembly.profiles.v1";
 const REMOTE_SERVER_PORT: u16 = 7777;
+const READINESS_REQUEST_ID: u64 = u64::MAX;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -132,8 +132,8 @@ enum RemoteCommand {
 enum RemoteResponse {
     Sessions(Vec<AgentConversationSessionRecord>),
     Connection(AgentConversationConnection),
-    Snapshot(Option<AgentConversationSnapshot>),
-    EventPage(AgentConversationEventPage),
+    Snapshot(#[serde(deserialize_with = "deserialize_wire_payload")] Option<AgentConversationSnapshot>),
+    EventPage(#[serde(deserialize_with = "deserialize_wire_payload")] AgentConversationEventPage),
     Capabilities(AgentCapabilities),
     Config(AgentConversationConfigState),
     ConfigOptions(Vec<AgentConfigOption>),
@@ -150,7 +150,15 @@ enum ServerFrame {
     Ready { protocol_version: u16 },
     Response { id: u64, response: RemoteResponse },
     Error { id: u64, message: String },
-    Event { event: AgentConversationEvent },
+    Event { #[serde(deserialize_with = "deserialize_wire_payload")] event: AgentConversationEvent },
+}
+
+// Serde's buffered tagged-enum decoder cannot deserialize u128 timestamps.
+// Decode these existing payloads through JSON's numeric decoder; wire shape stays unchanged.
+fn deserialize_wire_payload<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
 #[derive(Clone)]
@@ -181,6 +189,8 @@ pub struct RemoteConnectionManager {
     remote_sessions: Arc<Mutex<HashMap<String, String>>>,
     next_request_id: Arc<AtomicU64>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
+    connection_lock: Arc<tokio::sync::Mutex<()>>,
+    attempts: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
 }
 
 #[derive(Default)]
@@ -191,6 +201,22 @@ struct RemoteClientState {
 struct RemoteClient {
     requests: Option<mpsc::Sender<ClientRequest>>,
     profile: Option<RemoteAssemblyProfile>,
+    target_key: Option<String>,
+    task: Option<tokio::task::AbortHandle>,
+    ready: Arc<AtomicBool>,
+}
+
+impl Drop for RemoteClient {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task { task.abort(); }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteConnectionResult {
+    profile: RemoteAssemblyProfile,
+    sessions: Vec<AgentConversationSessionRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -215,6 +241,7 @@ struct LegacyRemoteAssemblyProfile {
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAssemblyEnvironment {
     pub profiles: Vec<RemoteAssemblyProfile>,
+    pub ready_profile_ids: Vec<String>,
 }
 
 impl RemoteConnectionManager {
@@ -227,6 +254,8 @@ impl RemoteConnectionManager {
             remote_sessions: Arc::new(Mutex::new(HashMap::new())),
             next_request_id: Arc::new(AtomicU64::new(1)),
             event_sink,
+            connection_lock: Arc::new(tokio::sync::Mutex::new(())),
+            attempts: Arc::new(Mutex::new(HashMap::new())),
         };
         let Some(url) = std::env::var("ASSEMBLY_REMOTE_WS_URL").ok() else {
             return Ok(manager);
@@ -241,6 +270,9 @@ impl RemoteConnectionManager {
             return Err("ASSEMBLY_REMOTE_DEFAULT_CWD must be an absolute path".to_string());
         }
         let (request_tx, mut request_rx) = mpsc::channel(32);
+        let event_sink = manager.event_sink.clone();
+        let ready = Arc::new(AtomicBool::new(false));
+        let actor_ready = ready.clone();
         manager
             .client
             .lock()
@@ -251,11 +283,13 @@ impl RemoteConnectionManager {
                 RemoteClient {
                     requests: Some(request_tx),
                     profile: None,
+                    target_key: None,
+                    task: None,
+                    ready,
                 },
             );
-        let event_sink = manager.event_sink.clone();
         tauri::async_runtime::spawn(async move {
-            client_loop(url, token, &mut request_rx, event_sink, None).await;
+            client_loop(url, token, &mut request_rx, event_sink, None, actor_ready, &mut None).await;
         });
         Ok(manager)
     }
@@ -279,10 +313,17 @@ impl RemoteConnectionManager {
             .filter_map(|client| client.profile.clone())
             .collect::<Vec<_>>();
         profiles.sort_by(|left, right| left.name.cmp(&right.name));
-        RemoteAssemblyEnvironment { profiles }
+        let ready_profile_ids = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clients.iter().filter(|(_, client)| client.ready.load(Ordering::Acquire)
+                && client.requests.as_ref().is_some_and(|sender| !sender.is_closed()))
+            .map(|(id, _)| id.clone()).collect();
+        RemoteAssemblyEnvironment { profiles, ready_profile_ids }
     }
 
     pub fn shutdown(&self) {
+        for (_, attempt) in self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain() {
+            attempt.abort();
+        }
         self.client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -302,7 +343,7 @@ impl RemoteConnectionManager {
         let profiles: Vec<RemoteAssemblyProfile> = serde_json::from_str(profiles_json)
             .map_err(|error| format!("Invalid Remote Assembly profiles: {error}"))?;
         for profile in profiles {
-            self.connect_profile(profile)?;
+            self.register_profile(profile)?;
         }
         Ok(())
     }
@@ -320,44 +361,97 @@ impl RemoteConnectionManager {
             source_root: legacy.source_root,
             default_cwd: legacy.default_cwd,
         };
-        self.connect_profile(profile.clone())?;
+        self.register_profile(profile.clone())?;
         Ok(vec![profile])
     }
 
-    pub fn connect_profile(&self, profile: RemoteAssemblyProfile) -> Result<(), String> {
+    fn register_profile(&self, profile: RemoteAssemblyProfile) -> Result<(), String> {
         validate_profile(&profile)?;
-        let (request_tx, request_rx) = mpsc::channel(32);
-        {
-            let mut state = self
-                .client
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.clients.insert(
-                profile.id.clone(),
-                RemoteClient {
-                    requests: Some(request_tx),
-                    profile: Some(profile.clone()),
-                },
-            );
-        }
-        let event_sink = self.event_sink.clone();
-        let tunnel_processes = self.tunnel_processes.clone();
-        tauri::async_runtime::spawn(profile_client_loop(
-            profile,
-            request_rx,
-            event_sink,
-            tunnel_processes,
-        ));
+        self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.insert(
+            profile.id.clone(), RemoteClient {
+                requests: None, profile: Some(profile), target_key: None, task: None,
+                ready: Arc::new(AtomicBool::new(false)),
+            });
         Ok(())
     }
 
-    pub async fn deploy_profile(&self, profile: RemoteAssemblyProfile) -> Result<(), String> {
+    pub fn cancel_connection(&self, operation_id: &str) {
+        if let Some(task) = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(operation_id) {
+            task.abort();
+        }
+    }
+
+    pub async fn connect_profile(&self, profile: RemoteAssemblyProfile, operation_id: String,
+        status: tauri::ipc::Channel<String>) -> Result<RemoteConnectionResult, String> {
         validate_profile(&profile)?;
-        let deployment = profile.clone();
-        tauri::async_runtime::spawn_blocking(move || deploy_remote_service(&deployment))
-            .await
-            .map_err(|error| format!("Remote Assembly deployment task failed: {error}"))??;
-        self.connect_profile(profile)
+        let manager = self.clone();
+        let progress = status.clone();
+        let mut task = {
+            let mut attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if attempts.contains_key(&operation_id) { return Err("Connection attempt already exists".into()); }
+            let task = tokio::spawn(async move { manager.connect_profile_inner(profile, progress).await });
+            attempts.insert(operation_id.clone(), task.abort_handle());
+            task
+        };
+        // The UI enables cancellation only after this registration acknowledgment.
+        let _ = status.send("Connecting…".into());
+        let result = match tokio::time::timeout(Duration::from_secs(30), &mut task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("Connection cancelled".into()),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                Err("Connection timed out after 30 seconds".into())
+            }
+        };
+        self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&operation_id);
+        result
+    }
+
+    async fn connect_profile_inner(&self, mut profile: RemoteAssemblyProfile,
+        status: tauri::ipc::Channel<String>) -> Result<RemoteConnectionResult, String> {
+        let _owner = self.connection_lock.lock().await;
+        let _ = status.send("Resolving SSH configuration…".into());
+        let target_key = resolve_ssh_target(&profile.ssh_target).await?;
+        let saved = self.environment().profiles;
+        for existing in saved {
+            let key = if existing.ssh_target == profile.ssh_target { Some(target_key.clone()) }
+                else { resolve_ssh_target(&existing.ssh_target).await.ok() };
+            if key.as_ref() != Some(&target_key) { continue; }
+            // Alias and address forms of the same host keep the original profile/session IDs.
+            if existing.id != profile.id { profile = existing; }
+            break;
+        }
+        let reusable = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clients.get(&profile.id).is_some_and(|client| client.target_key.as_ref() == Some(&target_key)
+                && client.requests.as_ref().is_some_and(|sender| !sender.is_closed()));
+        let mut sessions = if reusable {
+            let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+            let RemoteResponse::Sessions(sessions) = self.request_with_id(&profile.id, id, RemoteCommand::ListSessions).await?
+                else { return Err("Backend returned an invalid session list".into()); };
+            sessions
+        } else {
+            let _ = status.send("Checking the installed backend…".into());
+            let (requests, receiver) = mpsc::channel(32);
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let ready = Arc::new(AtomicBool::new(false));
+            let task = tokio::spawn(profile_client_loop(profile.clone(), receiver, self.event_sink.clone(),
+                self.tunnel_processes.clone(), ready.clone(), Some(ready_tx)));
+            // Dropping a failed/cancelled candidate aborts only its own actor and tunnel.
+            let candidate = RemoteClient { requests: Some(requests), profile: Some(profile.clone()),
+                target_key: Some(target_key), task: Some(task.abort_handle()), ready };
+            let sessions = ready_rx.await.map_err(|_| "Backend connection ended before readiness".to_string())??;
+            self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.insert(profile.id.clone(), candidate);
+            sessions
+        };
+        for session in &mut sessions {
+            session.remote_profile_id = Some(profile.id.clone());
+            self.remember(session.owned_id.clone(), profile.id.clone());
+        }
+        if let Some(client) = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get_mut(&profile.id) {
+            client.profile = Some(profile.clone());
+        }
+        Ok(RemoteConnectionResult { profile, sessions })
     }
 
     pub fn remove_profile(&self, profile_id: &str) {
@@ -405,6 +499,12 @@ impl RemoteConnectionManager {
         profile_id: &str,
         command: RemoteCommand,
     ) -> Result<RemoteResponse, String> {
+        let dormant = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get(profile_id)
+            .filter(|client| client.requests.as_ref().is_none_or(|sender| sender.is_closed()))
+            .and_then(|client| client.profile.clone());
+        if let Some(profile) = dormant {
+            self.connect_profile(profile, uuid::Uuid::new_v4().to_string(), tauri::ipc::Channel::new(|_| Ok(()))).await?;
+        }
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.request_with_id(profile_id, id, command).await
     }
@@ -450,8 +550,9 @@ impl RemoteConnectionManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clients
-            .keys()
-            .cloned()
+            .iter()
+            .filter(|(_, client)| client.requests.as_ref().is_some_and(|sender| !sender.is_closed()))
+            .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         let responses = join_all(profile_ids.into_iter().map(|profile_id| async move {
             let response = self
@@ -906,21 +1007,22 @@ pub fn read_remote_assembly_environment(
 }
 
 #[tauri::command]
-pub async fn deploy_remote_assembly(
-    manager: tauri::State<'_, AgentRuntimeManager>,
-    remote: tauri::State<'_, RemoteConnectionManager>,
-    profile: RemoteAssemblyProfile,
-) -> Result<RemoteAssemblyEnvironment, super::protocol::CommandError> {
-    remote
-        .deploy_profile(profile.clone())
-        .await
+pub async fn connect_remote_assembly(
+    manager: tauri::State<'_, AgentRuntimeManager>, remote: tauri::State<'_, RemoteConnectionManager>,
+    profile: RemoteAssemblyProfile, operation_id: String, status: tauri::ipc::Channel<String>,
+) -> Result<RemoteConnectionResult, super::protocol::CommandError> {
+    let result = remote.connect_profile(profile, operation_id, status).await
         .map_err(super::protocol::CommandError::from)?;
     let profiles_json = serde_json::to_string(&remote.environment().profiles)
         .map_err(|error| super::protocol::CommandError::from(error.to_string()))?;
-    manager
-        .write_app_setting(REMOTE_ASSEMBLY_PROFILES_SETTING_KEY, &profiles_json)
+    manager.write_app_setting(REMOTE_ASSEMBLY_PROFILES_SETTING_KEY, &profiles_json)
         .map_err(super::protocol::CommandError::from)?;
-    Ok(remote.environment())
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn cancel_remote_connection(remote: tauri::State<'_, RemoteConnectionManager>, operation_id: String) {
+    remote.cancel_connection(&operation_id);
 }
 
 #[tauri::command]
@@ -954,43 +1056,7 @@ fn validate_profile(profile: &RemoteAssemblyProfile) -> Result<(), String> {
         return Err("Remote machine name is required".to_string());
     }
     validate_ssh_target(&profile.ssh_target)?;
-    for (label, value) in [
-        ("Remote Assembly checkout", profile.source_root.as_str()),
-        ("Remote working directory", profile.default_cwd.as_str()),
-    ] {
-        if !value.starts_with('/') || value.contains('\0') || value.len() > 4096 {
-            return Err(format!("{label} must be an absolute path of at most 4096 bytes"));
-        }
-    }
     Ok(())
-}
-
-fn deploy_remote_service(profile: &RemoteAssemblyProfile) -> Result<(), String> {
-    let mut child = ssh_command(&profile.ssh_target)
-        .args(["sh", "-s", "--", &shell_quote(&profile.source_root)])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Could not start SSH: {error}"))?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| "Could not open SSH input".to_string())?
-        .write_all(REMOTE_INSTALL_SCRIPT.as_bytes())
-        .map_err(|error| format!("Could not send the Remote Assembly installer: {error}"))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Could not wait for SSH deployment: {error}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(if message.is_empty() {
-        "Remote Assembly deployment failed".to_string()
-    } else {
-        format!("Remote Assembly deployment failed: {message}")
-    })
 }
 
 async fn profile_client_loop(
@@ -998,32 +1064,24 @@ async fn profile_client_loop(
     mut requests: mpsc::Receiver<ClientRequest>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
     tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
+    ready: Arc<AtomicBool>,
+    mut initial_ready: Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
 ) {
     while !requests.is_closed() {
         let target = profile.ssh_target.clone();
         let processes = tunnel_processes.clone();
-        let connection =
-            tauri::async_runtime::spawn_blocking(move || open_remote_tunnel(&target, processes))
-                .await;
-        let tunnel = match connection {
-            Ok(Ok(tunnel)) => tunnel,
-            Ok(Err(error)) => {
-                fail_queued_requests(&mut requests, error);
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            }
+        let tunnel = match open_remote_tunnel(&target, processes).await {
+            Ok(tunnel) => tunnel,
             Err(error) => {
-                fail_queued_requests(
-                    &mut requests,
-                    format!("Remote Assembly connection task failed: {error}"),
-                );
+                if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(error)); return; }
+                fail_queued_requests(&mut requests, error);
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
         };
         let url = format!("ws://127.0.0.1:{}/assembly", tunnel.local_port);
         let token = tunnel.token.clone();
-        client_loop(url, token, &mut requests, event_sink.clone(), Some(4)).await;
+        client_loop(url, token, &mut requests, event_sink.clone(), Some(4), ready.clone(), &mut initial_ready).await;
         drop(tunnel);
     }
 }
@@ -1052,11 +1110,11 @@ fn stop_remote_tunnel(processes: &Mutex<HashMap<u32, Child>>, pid: u32) {
     }
 }
 
-fn open_remote_tunnel(
+async fn open_remote_tunnel(
     target: &str,
     processes: Arc<Mutex<HashMap<u32, Child>>>,
 ) -> Result<RemoteTunnel, String> {
-    let token = read_remote_token(target)?;
+    let token = read_remote_token(target).await?;
     let local_port = StdTcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
         .map_err(|error| format!("Could not reserve a local Remote Assembly port: {error}"))?
@@ -1070,6 +1128,7 @@ fn open_remote_tunnel(
         "ConnectTimeout=10",
         "-o",
         "ExitOnForwardFailure=yes",
+        "-o", "ControlMaster=no", "-o", "ControlPath=none",
         "-o",
         "ServerAliveInterval=15",
         "-T",
@@ -1093,15 +1152,9 @@ fn open_remote_tunnel(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(pid, child);
+    let tunnel = RemoteTunnel { pid, processes: processes.clone(), local_port, token };
     for _ in 0..50 {
-        if TcpStream::connect(("127.0.0.1", local_port)).is_ok() {
-            return Ok(RemoteTunnel {
-                pid,
-                processes,
-                local_port,
-                token,
-            });
-        }
+        if TcpStream::connect(("127.0.0.1", local_port)).is_ok() { return Ok(tunnel); }
         let status = {
             let mut tunnels = processes
                 .lock()
@@ -1120,124 +1173,45 @@ fn open_remote_tunnel(
                 .remove(&pid);
             return Err(format!("Remote Assembly tunnel exited with {status}"));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     stop_remote_tunnel(&processes, pid);
     Err("Remote Assembly tunnel did not become ready".to_string())
 }
 
-fn read_remote_token(target: &str) -> Result<String, String> {
-    let mut child = ssh_command(target)
-        .args(["sh", "-s"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Could not start SSH: {error}"))?;
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| "Could not open SSH input".to_string())?
-        .write_all(b"set -eu\nsed -n 's/^ASSEMBLY_SERVER_TOKEN=//p' \"$HOME/.config/assembly/server.env\"\n")
-        .map_err(|error| format!("Could not request the Remote Assembly token: {error}"))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("Could not read the Remote Assembly token: {error}"))?;
+async fn ssh_output(target: &str, command: &str) -> Result<std::process::Output, String> {
+    tokio::process::Command::new("ssh")
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no",
+            "-o", "ControlPath=none", "--", target, command])
+        .stdin(Stdio::null()).kill_on_drop(true).output().await
+        .map_err(|error| format!("Could not start SSH: {error}"))
+}
+
+async fn read_remote_token(target: &str) -> Result<String, String> {
+    let output = ssh_output(target, "test -f \"$HOME/.config/assembly/server.env\" || { echo Backend-not-installed >&2; exit 44; }; sed -n 's/^ASSEMBLY_SERVER_TOKEN=//p' \"$HOME/.config/assembly/server.env\"").await?;
     if !output.status.success() {
-        return Err(format!(
-            "Could not read the Remote Assembly token: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        if output.status.code() == Some(44) { return Err("Backend not installed on this SSH account".into()); }
+        return Err(format!("SSH connection failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
-    let token = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .last()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if token.len() < 32 {
-        return Err(
-            "The Remote Assembly token is missing or invalid; deploy the server again".to_string(),
-        );
-    }
+    let token = String::from_utf8_lossy(&output.stdout).lines().last().unwrap_or_default().trim().to_string();
+    if token.len() < 32 { return Err("Installed backend authentication is missing or invalid".into()); }
     Ok(token)
 }
 
-fn ssh_command(target: &str) -> Command {
-    let mut command = Command::new("ssh");
-    command.args([
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=10",
-        "--",
-        target,
-    ]);
-    command
+fn ssh_target_key(output: &str) -> Result<String, String> {
+    let value = |name: &str| output.lines().find_map(|line| line.strip_prefix(name));
+    let (Some(host), Some(user), Some(port)) = (value("hostname "), value("user "), value("port "))
+        else { return Err("SSH configuration did not resolve hostname, user and port".into()); };
+    Ok(format!("{}@{}:{}", user.trim(), host.trim().to_lowercase(), port.trim()))
 }
 
-const REMOTE_INSTALL_SCRIPT: &str = r#"set -eu
-source_root=$1
-crate_dir="$source_root/tauri-svelte-preview/src-tauri"
-bridge_source="$source_root/tauri-svelte-preview/tools/codex-acp-bridge/bridge.mjs"
-export PATH="$HOME/.cargo/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-for command in cargo node codex sha256sum systemctl openssl; do
-  command -v "$command" >/dev/null 2>&1 || { echo "Required command is missing: $command" >&2; exit 1; }
-done
-[ -f "$crate_dir/Cargo.toml" ] || { echo "Assembly Rust source was not found at $crate_dir" >&2; exit 1; }
-[ -f "$bridge_source" ] || { echo "Codex ACP bridge was not found at $bridge_source" >&2; exit 1; }
-(cd "$crate_dir" && cargo build --release --bin mac-command-bar-webview-preview)
-install -d "$HOME/.local/bin" "$HOME/.local/share/assembly" "$HOME/.config/assembly" "$HOME/.config/systemd/user"
-install -m 755 "$crate_dir/target/release/mac-command-bar-webview-preview" "$HOME/.local/bin/assembly-remote-server"
-install -m 644 "$bridge_source" "$HOME/.local/share/assembly/codex-acp-bridge.mjs"
-codex_path=$(command -v codex)
-node_path=$(command -v node)
-claude_path=$(command -v claude-agent-acp 2>/dev/null || find /opt -maxdepth 4 -path '*/bin/claude-agent-acp' -print -quit 2>/dev/null || true)
-[ -n "$claude_path" ] || { echo "Required command is missing: claude-agent-acp" >&2; exit 1; }
-cat >"$HOME/.local/bin/assembly-codex-acp" <<EOF
-#!/bin/sh
-export CODEX_BIN="$codex_path"
-exec "$node_path" "$HOME/.local/share/assembly/codex-acp-bridge.mjs" "\$@"
-EOF
-cat >"$HOME/.local/bin/assembly-claude-acp" <<EOF
-#!/bin/sh
-exec "$claude_path" "\$@"
-EOF
-chmod 755 "$HOME/.local/bin/assembly-codex-acp" "$HOME/.local/bin/assembly-claude-acp"
-token=$(sed -n 's/^ASSEMBLY_SERVER_TOKEN=//p' "$HOME/.config/assembly/server.env" 2>/dev/null || true)
-[ "${#token}" -ge 32 ] || token=$(openssl rand -hex 32)
-codex_hash=$(sha256sum "$HOME/.local/bin/assembly-codex-acp" | awk '{print $1}')
-claude_hash=$(sha256sum "$HOME/.local/bin/assembly-claude-acp" | awk '{print $1}')
-cat >"$HOME/.config/assembly/server.env" <<EOF
-ASSEMBLY_SERVER_BIND=127.0.0.1:7777
-ASSEMBLY_SERVER_TOKEN=$token
-ASSEMBLY_SERVER_DATA_DIR=$HOME/.local/share/assembly
-MCB_CODEX_ACP_PATH=$HOME/.local/bin/assembly-codex-acp
-MCB_CODEX_ACP_SHA256=$codex_hash
-MCB_CLAUDE_AGENT_ACP_PATH=$HOME/.local/bin/assembly-claude-acp
-MCB_CLAUDE_AGENT_ACP_SHA256=$claude_hash
-PATH=$(dirname "$node_path"):$(dirname "$codex_path"):$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
-EOF
-cat >"$HOME/.config/systemd/user/assembly-remote.service" <<EOF
-[Unit]
-Description=Assembly Remote Service
-After=network.target
-
-[Service]
-Type=simple
-EnvironmentFile=$HOME/.config/assembly/server.env
-ExecStart=$HOME/.local/bin/assembly-remote-server --assembly-server
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-EOF
-systemctl --user daemon-reload
-systemctl --user enable --now assembly-remote.service
-systemctl --user restart assembly-remote.service
-systemctl --user is-active --quiet assembly-remote.service
-"#;
+async fn resolve_ssh_target(target: &str) -> Result<String, String> {
+    validate_ssh_target(target)?;
+    let output = tokio::process::Command::new("ssh").args(["-G", "--", target])
+        .stdin(Stdio::null()).kill_on_drop(true).output().await.map_err(|error| error.to_string())?;
+    if !output.status.success() { return Err(format!("SSH configuration failed: {}", String::from_utf8_lossy(&output.stderr).trim())); }
+    ssh_target_key(&String::from_utf8_lossy(&output.stdout))
+}
 
 async fn client_loop(
     url: String,
@@ -1245,10 +1219,13 @@ async fn client_loop(
     requests: &mut mpsc::Receiver<ClientRequest>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
     reconnect_tunnel_after_failures: Option<u8>,
+    ready: Arc<AtomicBool>,
+    initial_ready: &mut Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
 ) {
     let cursors = Arc::new(Mutex::new(BTreeMap::<String, i64>::new()));
     let mut failed_connections = 0_u8;
     loop {
+        ready.store(false, Ordering::Release);
         let mut request = match url.as_str().into_client_request() {
             Ok(request) => request,
             Err(error) => {
@@ -1267,15 +1244,36 @@ async fn client_loop(
             }
         }
         let connected = tokio_tungstenite::connect_async(request).await;
-        let Ok((mut socket, _)) = connected else {
+        let (mut socket, _) = match connected {
+            Ok(socket) => socket,
+            Err(error) => {
+                if let Some(reply) = initial_ready.take() {
+                    let _ = reply.send(Err(format!("Backend connection/authentication failed: {error}")));
+                    return;
+                }
             failed_connections = failed_connections.saturating_add(1);
             if reconnect_tunnel_after_failures.is_some_and(|limit| failed_connections >= limit) {
                 return;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
+            }
         };
         failed_connections = 0;
+        let handshake = tokio::time::timeout(Duration::from_secs(15), async {
+            let hello = socket.next().await.ok_or("Backend closed before protocol readiness")?
+                .map_err(|error| error.to_string())?;
+            match parse_server_frame(hello)? {
+                Some(ServerFrame::Ready { protocol_version }) if protocol_version == PROTOCOL_VERSION => Ok(()),
+                Some(ServerFrame::Ready { protocol_version }) => Err(format!("Unsupported remote protocol {protocol_version}; expected {PROTOCOL_VERSION}")),
+                _ => Err("Backend did not announce protocol readiness".into()),
+            }
+        }).await.unwrap_or_else(|_| Err("Backend readiness timed out".into()));
+        if let Err(error) = handshake {
+            if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(error.clone())); }
+            fail_queued_requests(requests, error);
+            return;
+        }
         let resume = ClientFrame::Resume {
             cursors: cursors
                 .lock()
@@ -1285,6 +1283,7 @@ async fn client_loop(
         if send_client_frame(&mut socket, &resume).await.is_err() {
             continue;
         }
+        if send_client_frame(&mut socket, &ClientFrame::Request { id: READINESS_REQUEST_ID, command: RemoteCommand::ListSessions }).await.is_err() { return; }
         let mut pending = HashMap::<u64, ClientReply>::new();
         loop {
             tokio::select! {
@@ -1313,7 +1312,15 @@ async fn client_loop(
                 }
                 message = socket.next() => {
                     let Some(Ok(message)) = message else { break; };
-                    let Some(frame) = parse_server_frame(message) else { continue; };
+                    let frame = match parse_server_frame(message) {
+                        Ok(Some(frame)) => frame,
+                        Ok(None) => continue,
+                        Err(error) => {
+                            if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(error.clone())); }
+                            for (_, reply) in pending.drain() { let _ = reply.send(Err(error.clone())); }
+                            return;
+                        }
+                    };
                     match frame {
                         ServerFrame::Ready { protocol_version } if protocol_version != PROTOCOL_VERSION => {
                             for (_, reply) in pending.drain() {
@@ -1322,10 +1329,22 @@ async fn client_loop(
                             return;
                         }
                         ServerFrame::Ready { .. } => {}
+                        ServerFrame::Response { id: READINESS_REQUEST_ID, response } => {
+                            let RemoteResponse::Sessions(sessions) = response else {
+                                if let Some(reply) = initial_ready.take() { let _ = reply.send(Err("Backend returned an invalid readiness response".into())); }
+                                return;
+                            };
+                            ready.store(true, Ordering::Release);
+                            if let Some(reply) = initial_ready.take() { let _ = reply.send(Ok(sessions)); }
+                        }
                         ServerFrame::Response { id, response } => {
                             if let Some(reply) = pending.remove(&id) {
                                 let _ = reply.send(Ok(response));
                             }
+                        }
+                        ServerFrame::Error { id: READINESS_REQUEST_ID, message } => {
+                            if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(message)); }
+                            return;
                         }
                         ServerFrame::Error { id, message } => {
                             if let Some(reply) = pending.remove(&id) {
@@ -1349,6 +1368,11 @@ async fn client_loop(
                     }
                 }
             }
+        }
+        ready.store(false, Ordering::Release);
+        if let Some(reply) = initial_ready.take() {
+            let _ = reply.send(Err("Backend disconnected before readiness".into()));
+            return;
         }
         for (_, reply) in pending.drain() {
             let _ = reply.send(Err(
@@ -1382,11 +1406,11 @@ where
         .map_err(|error| error.to_string())
 }
 
-fn parse_server_frame(message: TungsteniteMessage) -> Option<ServerFrame> {
-    let TungsteniteMessage::Text(text) = message else {
-        return None;
-    };
-    serde_json::from_str(text.as_str()).ok()
+fn parse_server_frame(message: TungsteniteMessage) -> Result<Option<ServerFrame>, String> {
+    let TungsteniteMessage::Text(text) = message else { return Ok(None); };
+    serde_json::from_str(text.as_str()).map(Some).map_err(|error| {
+        format!("Backend response is incompatible with this client: {error}")
+    })
 }
 
 /// Runs the resident remote server instead of starting a Tauri window.
@@ -1892,5 +1916,154 @@ mod directory_tests {
         let nested = read_remote_directories("agent-workbox", &format!("{}/dev/work", listing.path)).unwrap();
         assert!(nested.directories.iter().any(|name| name == "worktrees"));
         eprintln!("SSH browse verified: {} then {}", listing.path, nested.path);
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    fn profile(id: &str) -> RemoteAssemblyProfile {
+        RemoteAssemblyProfile { id: id.into(), name: "Workbox".into(), ssh_target: "agent-workbox".into(), source_root: String::new(), default_cwd: String::new() }
+    }
+
+    #[tokio::test]
+    async fn restored_profiles_are_dormant_and_cancellation_releases_attempt() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        manager.restore_profiles(&serde_json::to_string(&vec![profile("original")]).unwrap()).unwrap();
+        assert!(!manager.is_configured());
+        assert!(manager.environment().ready_profile_ids.is_empty());
+        assert!(manager.tunnel_processes.lock().unwrap().is_empty());
+        let guard = manager.connection_lock.lock().await;
+        let owner = manager.clone();
+        let (registered, registration) = oneshot::channel();
+        let registered = Mutex::new(Some(registered));
+        let task = tokio::spawn(async move {
+            owner.connect_profile(profile("original"), "cancel-test".into(), tauri::ipc::Channel::new(move |_| {
+                if let Some(reply) = registered.lock().unwrap().take() { let _ = reply.send(()); }
+                Ok(())
+            })).await
+        });
+        registration.await.unwrap();
+        manager.cancel_connection("cancel-test");
+        assert_eq!(task.await.unwrap().err().unwrap(), "Connection cancelled");
+        drop(guard);
+        assert!(manager.attempts.lock().unwrap().is_empty());
+        assert!(manager.tunnel_processes.lock().unwrap().is_empty());
+        assert_eq!(manager.environment().profiles[0].id, "original");
+    }
+
+    #[tokio::test]
+    async fn dropping_candidate_reaps_its_tunnel() {
+        let processes = Arc::new(Mutex::new(HashMap::new()));
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        processes.lock().unwrap().insert(pid, child);
+        let tunnel = RemoteTunnel { pid, processes: processes.clone(), local_port: 0, token: String::new() };
+        let (started, running) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _tunnel = tunnel;
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+        running.await.unwrap();
+        let candidate = RemoteClient { requests: None, profile: None, target_key: None,
+            task: Some(task.abort_handle()), ready: Arc::new(AtomicBool::new(false)) };
+        drop(candidate);
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(processes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn connection_timeout_releases_attempt() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        let _guard = manager.connection_lock.lock().await;
+        let result = manager.connect_profile(profile("timeout"), "timeout-test".into(), tauri::ipc::Channel::new(|_| Ok(()))).await;
+        assert_eq!(result.err().unwrap(), "Connection timed out after 30 seconds");
+        assert!(manager.attempts.lock().unwrap().is_empty());
+        assert!(manager.tunnel_processes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn timestamp_payloads_decode_in_snapshots_pages_and_live_events() {
+        let event = serde_json::json!({"ownedId":"test", "provider":"codex", "generation":1,
+            "sequence":7, "timestampMs":1800000000000_u64,
+            "payload":{"kind":"connection", "state":"connected"}});
+        let snapshot = serde_json::json!({"connection":{"ownedId":"test", "provider":"codex",
+            "generation":1, "state":"connected", "config":{}}, "suspended":true,
+            "lastSequence":7, "events":[event.clone()]});
+        for frame in [serde_json::json!({"type":"event", "event":event.clone()}),
+            serde_json::json!({"type":"response", "id":1, "response":{"result":"snapshot", "value":snapshot}}),
+            serde_json::json!({"type":"response", "id":2, "response":{"result":"eventPage", "value":{"events":[event], "hasMore":false}}})] {
+            assert!(parse_server_frame(TungsteniteMessage::Text(frame.to_string().into())).unwrap().is_some());
+        }
+        assert!(parse_server_frame(TungsteniteMessage::Text("{invalid".into())).unwrap_err().contains("incompatible"));
+    }
+
+    #[test]
+    fn resolved_identity_uses_user_host_and_port() {
+        assert_eq!(ssh_target_key("host alias\nuser owner\nhostname BOX.Example\nport 2222\n").unwrap(), "owner@box.example:2222");
+        assert!(ssh_target_key("hostname box\n").is_err());
+    }
+
+    #[tokio::test]
+    async fn readiness_requires_protocol_and_session_response() {
+        for version in [PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (probe_tx, probe_rx) = oneshot::channel();
+            let (release_tx, release_rx) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                socket.send(TungsteniteMessage::Text(serde_json::to_string(&ServerFrame::Ready { protocol_version: version }).unwrap().into())).await.unwrap();
+                if version != PROTOCOL_VERSION { return; }
+                let _resume = socket.next().await.unwrap().unwrap();
+                let request = socket.next().await.unwrap().unwrap();
+                let frame: ClientFrame = serde_json::from_str(request.to_text().unwrap()).unwrap();
+                assert!(matches!(frame, ClientFrame::Request { id: READINESS_REQUEST_ID, command: RemoteCommand::ListSessions }));
+                probe_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                socket.send(TungsteniteMessage::Text(serde_json::to_string(&ServerFrame::Response { id: READINESS_REQUEST_ID, response: RemoteResponse::Sessions(vec![]) }).unwrap().into())).await.unwrap();
+                let _ = socket.next().await;
+            });
+            let (requests, mut receiver) = mpsc::channel(1);
+            let (reply, mut result) = oneshot::channel();
+            let ready = Arc::new(AtomicBool::new(false));
+            let actor_ready = ready.clone();
+            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| {}), Some(1), actor_ready, &mut Some(reply)).await });
+            if version == PROTOCOL_VERSION {
+                probe_rx.await.unwrap();
+                assert!(!ready.load(Ordering::Acquire));
+                assert!(matches!(result.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+                release_tx.send(()).unwrap();
+                assert!(result.await.unwrap().unwrap().is_empty());
+                assert!(ready.load(Ordering::Acquire));
+            } else {
+                assert!(result.await.unwrap().unwrap_err().contains("Unsupported remote protocol"));
+                assert!(!ready.load(Ordering::Acquire));
+            }
+            drop(requests);
+            actor.abort();
+            let _ = actor.await;
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "read-only proof against the owner's installed backend"]
+    async fn live_existing_workbox_connection() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        let result = manager.connect_profile(profile("stage1-proof"), "live-proof".into(), tauri::ipc::Channel::new(|_| Ok(()))).await.unwrap();
+        for session in &result.sessions {
+            assert!(manager.snapshot(session.owned_id.clone(), 100).await.unwrap().is_some());
+        }
+        let again = manager.connect_profile(profile("duplicate"), "live-again".into(), tauri::ipc::Channel::new(|_| Ok(()))).await.unwrap();
+        assert_eq!(again.profile.id, "stage1-proof");
+        assert_eq!(manager.tunnel_processes.lock().unwrap().len(), 1);
+        eprintln!("Read-only connection verified: {} session snapshots; duplicate reused one tunnel", result.sessions.len());
+        manager.shutdown();
+        tokio::task::yield_now().await;
+        assert!(manager.tunnel_processes.lock().unwrap().is_empty());
     }
 }
