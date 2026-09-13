@@ -2264,7 +2264,7 @@ impl AgentRuntimeManager {
         suspend_on_error: bool,
     ) -> Result<AgentConversationConfigState, String> {
         self.hydrate_overlay_from_store(&request.owned_id)?;
-        let update = AgentConversationConfigUpdate {
+        let mut update = AgentConversationConfigUpdate {
             model: normalized_optional_id(request.model),
             reasoning_effort: normalized_optional_id(request.reasoning_effort),
             approval_policy: normalized_optional_id(request.approval_policy),
@@ -2332,6 +2332,11 @@ impl AgentRuntimeManager {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let session = current_session(&sessions, &request.owned_id, request.generation)?;
+                normalize_codex_composite_config_update(
+                    session.provider,
+                    &session.config,
+                    &mut update,
+                );
                 validate_conversation_config_update(&session.config, &update)?;
             }
             runtime
@@ -6286,6 +6291,38 @@ fn validate_conversation_config_update(
     Ok(())
 }
 
+/// A menu opened from an older suspended snapshot may submit Codex's former
+/// composite model shape once. Translate it to the live mutable controls that
+/// activation just negotiated before validating the request.
+fn normalize_codex_composite_config_update(
+    provider: AgentConversationProvider,
+    current: &AgentConversationConfigState,
+    update: &mut AgentConversationConfigUpdate,
+) {
+    if provider != AgentConversationProvider::Codex || current.available_efforts.is_empty() {
+        return;
+    }
+    let Some(model) = update.model.as_deref() else {
+        return;
+    };
+    let Some((base, effort)) = model
+        .strip_suffix(']')
+        .and_then(|value| value.rsplit_once('['))
+    else {
+        return;
+    };
+    let replacement = (current.available_models.iter().any(|value| value == base)
+        && current
+            .available_efforts
+            .iter()
+            .any(|value| value == effort))
+    .then(|| (base.to_string(), effort.to_string()));
+    if let Some((model, effort)) = replacement {
+        update.model = Some(model);
+        update.reasoning_effort = Some(effort);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6296,6 +6333,32 @@ mod tests {
     use crate::agent_conversation::handoff::{
         AgentConversationHistoryBoundary, AgentConversationProcessTreeAssertion,
     };
+
+    #[test]
+    fn stale_codex_composite_choice_becomes_live_model_and_effort_controls() {
+        let current = AgentConversationConfigState {
+            model: Some("gpt-6-astra".into()),
+            available_models: vec!["gpt-6-astra".into(), "gpt-5.6-sol".into()],
+            reasoning_effort: Some("medium".into()),
+            available_efforts: vec!["low".into(), "medium".into(), "high".into()],
+            approval_policy: None,
+            available_approval_policies: Vec::new(),
+        };
+        let mut update = AgentConversationConfigUpdate {
+            model: Some("gpt-5.6-sol[medium]".into()),
+            reasoning_effort: None,
+            approval_policy: None,
+        };
+
+        normalize_codex_composite_config_update(
+            AgentConversationProvider::Codex,
+            &current,
+            &mut update,
+        );
+
+        assert_eq!(update.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(update.reasoning_effort.as_deref(), Some("medium"));
+    }
 
     /// A provider that hands over a whole `git diff` as text still gets a
     /// file-change row rather than a wall of raw patch lines.

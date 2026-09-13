@@ -769,13 +769,16 @@ impl AcpClient {
             }
         }
         if let Some(effort) = &update.reasoning_effort {
-            if !offers("effort") {
-                return Err(AgentRuntimeError::new(
-                    "unsupported-config",
-                    "This ACP session does not expose a reasoning-effort control",
-                ));
-            }
-            self.set_standard_config_option(session_id, "effort", effort)
+            let effort_option_id = ["effort", "reasoning_effort"]
+                .into_iter()
+                .find(|id| offers(id))
+                .ok_or_else(|| {
+                    AgentRuntimeError::new(
+                        "unsupported-config",
+                        "This ACP session does not expose a reasoning-effort control",
+                    )
+                })?;
+            self.set_standard_config_option(session_id, effort_option_id, effort)
                 .await?;
         }
         if let Some(mode_id) = &update.approval_policy {
@@ -1248,10 +1251,9 @@ fn config_option_ids(value: &Value) -> Vec<String> {
 
 /// Reads the model, effort and mode out of a result's `configOptions`.
 ///
-/// The current Claude adapter offers its model and effort as select options
-/// with a current value rather than as `models` and `_meta` fields. Anything
-/// the result already said in those forms wins; the options fill what is
-/// still empty, and a current value always names what the session is on now.
+/// Mutable config options are authoritative when present. Some adapters also
+/// publish a legacy `models` projection with a different value shape; the
+/// option ids and values are the ones `session/set_config_option` accepts.
 fn apply_config_options(value: &Value, config: &mut AgentConversationConfigState) {
     let options = value
         .get("configOptions")
@@ -1273,7 +1275,9 @@ fn apply_config_options(value: &Value, config: &mut AgentConversationConfigState
             .collect::<Vec<_>>();
         let (chosen, available) = match option.get("id").and_then(Value::as_str) {
             Some("model") => (&mut config.model, &mut config.available_models),
-            Some("effort") => (&mut config.reasoning_effort, &mut config.available_efforts),
+            Some("effort" | "reasoning_effort") => {
+                (&mut config.reasoning_effort, &mut config.available_efforts)
+            }
             Some("mode") => (
                 &mut config.approval_policy,
                 &mut config.available_approval_policies,
@@ -1283,7 +1287,7 @@ fn apply_config_options(value: &Value, config: &mut AgentConversationConfigState
         if current.is_some() {
             *chosen = current;
         }
-        if available.is_empty() {
+        if !values.is_empty() {
             *available = values;
         }
     }
@@ -1882,6 +1886,48 @@ done"#,
         assert!(frames.contains("session/set_config_option"));
         assert!(frames.contains("session/close"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn codex_config_options_replace_the_legacy_composite_model_projection() {
+        let result = json!({
+            "models": {
+                "currentModelId": "gpt-6-astra[medium]",
+                "availableModels": [
+                    { "modelId": "gpt-6-astra[low]" },
+                    { "modelId": "gpt-6-astra[medium]" },
+                    { "modelId": "gpt-5.6-sol[medium]" }
+                ]
+            },
+            "configOptions": [
+                {
+                    "id": "model",
+                    "currentValue": "gpt-6-astra",
+                    "options": [
+                        { "value": "gpt-6-astra" },
+                        { "value": "gpt-5.6-sol" }
+                    ]
+                },
+                {
+                    "id": "reasoning_effort",
+                    "currentValue": "medium",
+                    "options": [
+                        { "value": "low" },
+                        { "value": "medium" },
+                        { "value": "high" }
+                    ]
+                }
+            ]
+        });
+
+        let config =
+            parse_standard_conversation_config(&result, Some(AgentConversationProvider::Codex));
+
+        assert_eq!(config.model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(config.available_models, ["gpt-6-astra", "gpt-5.6-sol"]);
+        assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(config.available_efforts, ["low", "medium", "high"]);
+        assert_eq!(config_option_ids(&result), ["model", "reasoning_effort"]);
     }
 
     #[tokio::test(flavor = "current_thread")]
