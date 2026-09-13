@@ -59,7 +59,7 @@
         data-testid={`center-tab-${tab.id}`}
         onclick={() => choose(tab.id)}
       >
-        <Icon class="size-5" strokeWidth={tab.id === activeId ? 1.9 : 1.7} aria-hidden="true" />
+        <Icon class="size-[22px]" strokeWidth={tab.id === activeId ? 1.9 : 1.7} aria-hidden="true" />
       </IconButton>
     </span>
   {/each}
@@ -73,9 +73,9 @@
     onclick={onToggleRightPanel}
   >
     {#if rightPanelOpen}
-      <PanelRightClose class="size-5" strokeWidth={1.7} aria-hidden="true" />
+      <PanelRightClose class="size-[22px]" strokeWidth={1.7} aria-hidden="true" />
     {:else}
-      <PanelRightOpen class="size-5" strokeWidth={1.7} aria-hidden="true" />
+      <PanelRightOpen class="size-[22px]" strokeWidth={1.7} aria-hidden="true" />
     {/if}
   </IconButton>
 </nav>
@@ -89,9 +89,9 @@
     align-items: center;
     /* Tight, because the capsule's own edge is what separates the group from
        the pane now; the controls inside it only need to stay apart. */
-    gap: 2px;
+    gap: 3px;
     height: var(--center-head-row-height);
-    padding: 2px;
+    padding: 3px;
     margin: 0;
     border-radius: var(--radius-pill);
     background: var(--pill-surface);
@@ -120,8 +120,8 @@
      is not shaped like a surface tab. */
   .tab :global(button),
   .center-pills > :global(button) {
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
     border-radius: var(--radius-pill);
     background: transparent;
     color: var(--color-text-2);

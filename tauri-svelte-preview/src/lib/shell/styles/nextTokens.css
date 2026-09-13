@@ -242,8 +242,9 @@
    * makes "which surface am I on" answerable without competing with status
    * colours such as green, amber, or red.
    * ------------------------------------------------------------------ */
-  --segmented-tab-active: #535367;
-  --pill-surface: var(--color-elevated);
+  --segmented-tab-active: #5f607b;
+  --segmented-tab-surface: color-mix(in srgb, var(--color-text) 7%, var(--color-elevated));
+  --pill-surface: var(--segmented-tab-surface);
   --pill-surface-hover: color-mix(in srgb, var(--color-text) 18%, var(--color-surface));
   --pill-surface-active: var(--segmented-tab-active);
   --pill-text-active: var(--color-text);
@@ -264,7 +265,7 @@
 
   /* The center surface capsule now lives in the window chrome. Content no
      longer reserves an overlay inset for it. */
-  --center-head-row-height: 38px;
+  --center-head-row-height: 42px;
 
 
   /* ------------------------------------------------------------------

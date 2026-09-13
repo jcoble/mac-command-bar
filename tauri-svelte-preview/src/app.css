@@ -57,12 +57,12 @@ body {
   background:
     linear-gradient(
       135deg,
-      color-mix(in srgb, var(--color-accent) 16%, transparent),
+      color-mix(in srgb, var(--segmented-tab-active) 28%, transparent),
       transparent 34%
     ),
     radial-gradient(
       circle at 88% 12%,
-      rgba(208, 221, 140, 0.14),
+      color-mix(in srgb, var(--segmented-tab-active) 20%, transparent),
       transparent 26%
     ),
     var(--color-bg);
