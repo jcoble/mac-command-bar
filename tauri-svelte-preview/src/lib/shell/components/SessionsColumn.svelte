@@ -169,6 +169,11 @@
     filterText = '';
   }
 
+  async function selectFilteredSession(ownedId: string): Promise<void> {
+    await onSelectSession?.(ownedId);
+    hideFilter();
+  }
+
   const ACTION_CLASS =
     'text-[var(--color-text-2)] hover:text-foreground hover:bg-[var(--color-elevated)]';
   const TOOLTIP_CLASS =
@@ -365,7 +370,6 @@
             placeholder="Filter sessions"
             aria-label="Filter sessions by title or project"
             onkeydown={(event: KeyboardEvent) => { if (event.key === 'Escape') hideFilter(); }}
-            onblur={hideFilter}
           />
         </div>
       {/if}
@@ -375,7 +379,7 @@
           sessions={filtered}
           options={viewOptions}
           {activeOwnedId}
-          {onSelectSession}
+          onSelectSession={selectFilteredSession}
           {onComplete}
           {onReopen}
           {onSettle}
