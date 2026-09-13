@@ -201,7 +201,7 @@
    * the still covers the page area exactly, so a message drawn inside it is a
    * message that comes and goes with the marking.
    */
-  const errorText = $derived(failure || browser.error);
+  const errorText = $derived(failure || activeTab?.error || browser.error);
 
   function markId(): string {
     nextMarkId += 1;

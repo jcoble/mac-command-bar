@@ -1722,6 +1722,7 @@ fn into_window_space(bounds: BrowserBounds, inset: (f64, f64)) -> BrowserBounds 
 struct TauriBrowserView {
     webview: tauri::Webview,
     navigation_generation: Arc<AtomicU64>,
+    pending_initial_url: Mutex<Option<tauri::Url>>,
     /// Whether the view has been given a rectangle the panel measured. Until
     /// then the only rectangle it has is whatever the workspace was holding —
     /// on a restored session, the floating default over the middle of the
@@ -1751,6 +1752,14 @@ impl BrowserView for TauriBrowserView {
             })
             .map_err(native_error)?;
         self.placed.store(true, Ordering::Release);
+        if let Some(url) = self
+            .pending_initial_url
+            .lock()
+            .expect("browser initial URL mutex poisoned")
+            .take()
+        {
+            self.navigate_url(url)?;
+        }
         if self.pending_show.swap(false, Ordering::AcqRel) {
             self.webview.show().map_err(native_error)?;
         }
@@ -1900,7 +1909,10 @@ impl TauriBrowserView {
                     // thread and `inner` is its live WKWebView pointer.
                     unsafe {
                         let wk = &*platform.inner().cast::<WKWebView>();
-                        let _ = wk.loadFileURL_allowingReadAccessToURL(&target_url, &read_root_url);
+                        let _ = wk.loadFileURL_allowingReadAccessToURL(
+                            &target_url,
+                            &read_root_url,
+                        );
                     }
                 })
                 .map_err(native_error);
@@ -1996,12 +2008,10 @@ impl BrowserViewFactory for TauriBrowserViewFactory {
         let view = Arc::new(TauriBrowserView {
             webview,
             navigation_generation,
+            pending_initial_url: Mutex::new(local_initial_url),
             placed: AtomicBool::new(false),
             pending_show: AtomicBool::new(false),
         });
-        if let Some(local_url) = local_initial_url {
-            view.navigate_url(local_url)?;
-        }
         Ok(view)
     }
 }
