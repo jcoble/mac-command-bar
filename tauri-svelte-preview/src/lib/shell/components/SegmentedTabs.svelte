@@ -139,7 +139,7 @@
     border-radius: var(--radius-pill);
     /* Material's muted lavender-grey: light enough on the container to read as
        filled, quiet enough not to compete with the mint accent. */
-    background: #535367;
+    background: var(--segmented-tab-active);
     pointer-events: none;
   }
 

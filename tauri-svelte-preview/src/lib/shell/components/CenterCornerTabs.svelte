@@ -59,7 +59,7 @@
         data-testid={`center-tab-${tab.id}`}
         onclick={() => choose(tab.id)}
       >
-        <Icon class="size-4" strokeWidth={1.6} aria-hidden="true" />
+        <Icon class="size-5" strokeWidth={tab.id === activeId ? 1.9 : 1.7} aria-hidden="true" />
       </IconButton>
     </span>
   {/each}
@@ -73,9 +73,9 @@
     onclick={onToggleRightPanel}
   >
     {#if rightPanelOpen}
-      <PanelRightClose class="size-4" strokeWidth={1.6} aria-hidden="true" />
+      <PanelRightClose class="size-5" strokeWidth={1.7} aria-hidden="true" />
     {:else}
-      <PanelRightOpen class="size-4" strokeWidth={1.6} aria-hidden="true" />
+      <PanelRightOpen class="size-5" strokeWidth={1.7} aria-hidden="true" />
     {/if}
   </IconButton>
 </nav>
@@ -120,8 +120,8 @@
      is not shaped like a surface tab. */
   .tab :global(button),
   .center-pills > :global(button) {
-    width: 28px;
-    height: 28px;
+    width: 34px;
+    height: 34px;
     border-radius: var(--radius-pill);
     background: transparent;
     color: var(--color-text-2);
@@ -137,8 +137,8 @@
     box-shadow: none;
   }
 
-  /* The one that is filled is the one you are on. With the words gone this fill
-     is the only thing saying so, which is why it is the accent and not a tint. */
+  /* The one that is filled is the one you are on. It shares the right-panel
+     selector colour so green remains a status colour, not a navigation state. */
   .tab[aria-current='page'] :global(button) {
     background: var(--pill-surface-active);
     color: var(--pill-text-active);

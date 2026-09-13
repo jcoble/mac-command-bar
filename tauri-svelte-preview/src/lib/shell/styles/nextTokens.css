@@ -238,14 +238,15 @@
    * The group floats over whatever surface it names, so a rest pill is
    * mixed INTO the surface rather than laid over it as a wash: over code
    * or a transcript a translucent fill let the content read through and
-   * the labels came apart. The selected pill takes the accent, which is
-   * what makes "which surface am I on" answerable at a glance.
-   * Everything derives from the palette, so a theme repaints it too.
+   * the labels came apart. Both tab strips share one lavender selector, which
+   * makes "which surface am I on" answerable without competing with status
+   * colours such as green, amber, or red.
    * ------------------------------------------------------------------ */
-  --pill-surface: color-mix(in srgb, var(--color-text) 10%, var(--color-surface));
+  --segmented-tab-active: #535367;
+  --pill-surface: var(--color-elevated);
   --pill-surface-hover: color-mix(in srgb, var(--color-text) 18%, var(--color-surface));
-  --pill-surface-active: var(--color-accent);
-  --pill-text-active: var(--color-on-accent);
+  --pill-surface-active: var(--segmented-tab-active);
+  --pill-text-active: var(--color-text);
 
   /* ------------------------------------------------------------------
    * The language switch that travels with those pills. Its knob POSITION
@@ -263,7 +264,7 @@
 
   /* The center surface capsule now lives in the window chrome. Content no
      longer reserves an overlay inset for it. */
-  --center-head-row-height: 32px;
+  --center-head-row-height: 38px;
 
 
   /* ------------------------------------------------------------------
