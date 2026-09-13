@@ -169,8 +169,8 @@ assert.equal(
 
 assert.equal(
   restoreWorkspaceSnapshot({ ...unsafeBrowserSnapshot, browserUrl: 'file:///etc/passwd' }).browserUrl,
-  null,
-  'workspace restore should drop local file browser dock URLs from older snapshots'
+  'file:///etc/passwd',
+  'workspace restore should preserve explicit local file browser URLs'
 );
 assert.equal(
   createWorkspaceSnapshot({

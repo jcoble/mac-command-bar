@@ -337,7 +337,7 @@
     if (!root) return;
     const next = normalizeBrowserUrl(addressValue);
     if (!next) {
-      failure = 'Enter an address that starts with http or https';
+      failure = 'Enter an http, https, or file address';
       return;
     }
     failure = '';
@@ -806,7 +806,7 @@
     {#if !browser.url}
       <EmptyState
         title="No page open"
-        body="Enter an http or https address above to open one here."
+        body="Enter an http, https, or local file address above to open one here."
       >
         {#snippet icon()}<Globe strokeWidth={1.5} aria-hidden="true" />{/snippet}
       </EmptyState>

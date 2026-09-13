@@ -753,7 +753,7 @@ impl BrowserRegistry {
         let url = normalize_browser_url(&input.url, false)?.ok_or_else(|| {
             BrowserCommandError::new(
                 BrowserErrorCode::InvalidUrl,
-                "Browser navigation requires an http or https address",
+                "Browser navigation requires an http, https, or file address",
             )
         })?;
         let target = BrowserTarget {
@@ -1076,7 +1076,7 @@ impl BrowserRegistry {
         let url = normalize_browser_url(&tab.url, false)?.ok_or_else(|| {
             BrowserCommandError::new(
                 BrowserErrorCode::InvalidUrl,
-                "The browser tab has no safe http or https address to open",
+                "The browser tab has no safe address to open",
             )
         })?;
         open_external_url(&url)
@@ -1781,10 +1781,10 @@ impl BrowserView for TauriBrowserView {
         let parsed = tauri::Url::parse(url).map_err(|_| {
             BrowserCommandError::new(BrowserErrorCode::InvalidUrl, "Browser URL is invalid")
         })?;
-        if let Err(error) = self.webview.navigate(parsed) {
+        if let Err(error) = self.navigate_url(parsed) {
             self.navigation_generation
                 .store(previous_generation, Ordering::Release);
-            return Err(native_error(error));
+            return Err(error);
         }
         Ok(())
     }
@@ -1867,6 +1867,49 @@ impl BrowserView for TauriBrowserView {
     }
 }
 
+impl TauriBrowserView {
+    fn navigate_url(&self, url: tauri::Url) -> Result<(), BrowserCommandError> {
+        #[cfg(target_os = "macos")]
+        if url.scheme() == "file" {
+            let path = url.to_file_path().map_err(|_| {
+                BrowserCommandError::new(
+                    BrowserErrorCode::InvalidUrl,
+                    "Local file address is invalid",
+                )
+            })?;
+            let read_root = path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .ok_or_else(|| {
+                    BrowserCommandError::new(
+                        BrowserErrorCode::InvalidUrl,
+                        "Local file address is invalid",
+                    )
+                })?;
+            return self
+                .webview
+                .with_webview(move |platform| {
+                    use objc2_foundation::{NSString, NSURL};
+                    use objc2_web_kit::WKWebView;
+
+                    let path = NSString::from_str(&path.to_string_lossy());
+                    let read_root = NSString::from_str(&read_root.to_string_lossy());
+                    let target_url = NSURL::fileURLWithPath(&path);
+                    let read_root_url = NSURL::fileURLWithPath_isDirectory(&read_root, true);
+                    // SAFETY: Tauri runs this closure on the native WebView
+                    // thread and `inner` is its live WKWebView pointer.
+                    unsafe {
+                        let wk = &*platform.inner().cast::<WKWebView>();
+                        let _ = wk.loadFileURL_allowingReadAccessToURL(&target_url, &read_root_url);
+                    }
+                })
+                .map_err(native_error);
+        }
+
+        self.webview.navigate(url).map_err(native_error)
+    }
+}
+
 struct TauriBrowserViewFactory;
 
 impl BrowserViewFactory for TauriBrowserViewFactory {
@@ -1894,13 +1937,18 @@ impl BrowserViewFactory for TauriBrowserViewFactory {
         let initial_url = tauri::Url::parse(&initial_url).map_err(|_| {
             BrowserCommandError::new(BrowserErrorCode::InvalidUrl, "Browser URL is invalid")
         })?;
+        let local_initial_url = (initial_url.scheme() == "file").then(|| initial_url.clone());
+        let builder_url = local_initial_url
+            .as_ref()
+            .map(|_| tauri::Url::parse("about:blank").expect("about:blank is valid"))
+            .unwrap_or(initial_url);
         let label = format!("mcb-browser-{}", Uuid::new_v4().simple());
         let navigation_generation = Arc::new(AtomicU64::new(input.generation));
         let page_load = callbacks.on_page_load.clone();
         let title_changed = callbacks.on_title_changed.clone();
         let page_generation = navigation_generation.clone();
         let title_generation = navigation_generation.clone();
-        let mut builder = WebviewBuilder::new(label, WebviewUrl::External(initial_url))
+        let mut builder = WebviewBuilder::new(label, WebviewUrl::External(builder_url))
             .initialization_script(BROWSER_INSPECTOR_SCRIPT)
             .on_navigation(|url| normalize_browser_url(url.as_str(), true).is_ok())
             .on_page_load(move |_, payload| {
@@ -1945,12 +1993,16 @@ impl BrowserViewFactory for TauriBrowserViewFactory {
             .map_err(native_error)?;
         // Off screen until the panel says where it goes: see `placed`.
         webview.hide().map_err(native_error)?;
-        Ok(Arc::new(TauriBrowserView {
+        let view = Arc::new(TauriBrowserView {
             webview,
             navigation_generation,
             placed: AtomicBool::new(false),
             pending_show: AtomicBool::new(false),
-        }))
+        });
+        if let Some(local_url) = local_initial_url {
+            view.navigate_url(local_url)?;
+        }
+        Ok(view)
     }
 }
 
@@ -1985,16 +2037,74 @@ fn normalize_browser_url(
     let parsed = tauri::Url::parse(value).map_err(|_| {
         BrowserCommandError::new(BrowserErrorCode::InvalidUrl, "Browser URL is invalid")
     })?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(BrowserCommandError::new(
+            BrowserErrorCode::InvalidUrl,
+            "Browser addresses cannot include sign-in information",
+        ));
+    }
+    match parsed.scheme() {
+        "http" | "https" => Ok(Some(parsed.to_string())),
+        "file" => normalize_local_file_url(parsed).map(Some),
+        _ => Err(BrowserCommandError::new(
+            BrowserErrorCode::InvalidUrl,
+            "Only http, https, and file URLs are allowed",
+        )),
+    }
+}
+
+fn normalize_local_file_url(mut url: tauri::Url) -> Result<String, BrowserCommandError> {
+    if url
+        .host_str()
+        .is_some_and(|host| !host.is_empty() && host != "localhost")
     {
         return Err(BrowserCommandError::new(
             BrowserErrorCode::InvalidUrl,
-            "Only http and https URLs without userinfo are allowed",
+            "Local file addresses cannot name another computer",
         ));
     }
-    Ok(Some(parsed.to_string()))
+    if url.query().is_some() {
+        return Err(BrowserCommandError::new(
+            BrowserErrorCode::InvalidUrl,
+            "Local file addresses cannot include a query",
+        ));
+    }
+    let fragment = url.fragment().map(str::to_string);
+    url.set_fragment(None);
+    let path = url.to_file_path().map_err(|_| {
+        BrowserCommandError::new(
+            BrowserErrorCode::InvalidUrl,
+            "Local file address is invalid",
+        )
+    })?;
+    let metadata = std::fs::metadata(&path).map_err(|error| {
+        let message = if error.kind() == std::io::ErrorKind::NotFound {
+            "Local file does not exist".to_string()
+        } else {
+            format!("Local file cannot be opened: {error}")
+        };
+        BrowserCommandError::new(BrowserErrorCode::InvalidUrl, message)
+    })?;
+    if !metadata.is_file() {
+        return Err(BrowserCommandError::new(
+            BrowserErrorCode::InvalidUrl,
+            "Local browser address must point to a file",
+        ));
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        BrowserCommandError::new(
+            BrowserErrorCode::InvalidUrl,
+            format!("Local file cannot be opened: {error}"),
+        )
+    })?;
+    let mut normalized = tauri::Url::from_file_path(canonical).map_err(|_| {
+        BrowserCommandError::new(
+            BrowserErrorCode::InvalidUrl,
+            "Local file address is invalid",
+        )
+    })?;
+    normalized.set_fragment(fragment.as_deref());
+    Ok(normalized.to_string())
 }
 
 fn validate_identity(value: &str, label: &str) -> Result<(), BrowserCommandError> {
@@ -2080,7 +2190,16 @@ fn validate_browser_viewport(viewport: &BrowserViewport) -> Result<(), BrowserCo
 fn title_from_url(url: Option<&str>) -> String {
     let title = url
         .and_then(|value| tauri::Url::parse(value).ok())
-        .and_then(|parsed| parsed.host_str().map(str::to_string));
+        .and_then(|parsed| {
+            if parsed.scheme() == "file" {
+                parsed.to_file_path().ok().and_then(|path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+            } else {
+                parsed.host_str().map(str::to_string)
+            }
+        });
     title
         .and_then(|value| bounded_chars(&value, MAX_TITLE_BYTES))
         .unwrap_or_else(|| "New browser tab".to_string())
@@ -2557,9 +2676,9 @@ mod tests {
     }
 
     #[test]
-    fn url_boundary_rejects_unsafe_schemes_and_userinfo() {
+    fn url_boundary_allows_existing_local_files_and_rejects_unsafe_inputs() {
         for unsafe_url in [
-            "file:///tmp/private.html",
+            "file://other-computer/tmp/private.html",
             "javascript:alert(1)",
             "data:text/html,hello",
             "custom://provider/page",
@@ -2570,6 +2689,41 @@ mod tests {
                 "unsafe URL was accepted: {unsafe_url}"
             );
         }
+
+        let root = std::env::temp_dir().join(format!("mcb-browser-url-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let report = root.join("My Report.html");
+        std::fs::write(&report, "<h1>Local report</h1>").unwrap();
+        let local_url = tauri::Url::from_file_path(&report).unwrap();
+        let canonical_url =
+            tauri::Url::from_file_path(std::fs::canonicalize(&report).unwrap()).unwrap();
+        assert_eq!(
+            normalize_browser_url(local_url.as_str(), false).unwrap(),
+            Some(canonical_url.to_string())
+        );
+        assert_eq!(
+            normalize_browser_url(&format!("{local_url}#findings"), false).unwrap(),
+            Some(format!("{canonical_url}#findings"))
+        );
+        assert_eq!(
+            normalize_browser_url(tauri::Url::from_file_path(&root).unwrap().as_str(), false)
+                .unwrap_err()
+                .message,
+            "Local browser address must point to a file"
+        );
+        assert_eq!(
+            normalize_browser_url(
+                tauri::Url::from_file_path(root.join("missing.html"))
+                    .unwrap()
+                    .as_str(),
+                false
+            )
+            .unwrap_err()
+            .message,
+            "Local file does not exist"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+
         assert_eq!(normalize_browser_url("", true).unwrap(), None);
         assert_eq!(normalize_browser_url("about:blank", true).unwrap(), None);
         assert_eq!(

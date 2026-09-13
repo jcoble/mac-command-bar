@@ -40,9 +40,18 @@ import { normalizeBrowserUrl } from '../src/lib/shell/browser/normalizeBrowserUr
   assert.equal(normalizeBrowserUrl('docs.example.co.uk:8443/start'), 'https://docs.example.co.uk:8443/start');
 }
 
-// anything that is not http or https is rejected
+// explicit local file URLs are accepted for native validation
 {
-  assert.equal(normalizeBrowserUrl('file:///Users/me/index.html'), '');
+  assert.equal(
+    normalizeBrowserUrl('file:///Users/me/My Report.html'),
+    'file:///Users/me/My%20Report.html'
+  );
+  assert.equal(normalizeBrowserUrl(' file:///tmp/report.html#findings '), 'file:///tmp/report.html#findings');
+}
+
+// other schemes and remote file authorities are rejected
+{
+  assert.equal(normalizeBrowserUrl('file://other-computer/tmp/report.html'), '');
   assert.equal(normalizeBrowserUrl('mailto:someone@example.com'), '');
   assert.equal(normalizeBrowserUrl('javascript:alert(1)'), '');
   assert.equal(normalizeBrowserUrl('ftp://example.com'), '');
@@ -58,7 +67,7 @@ import { normalizeBrowserUrl } from '../src/lib/shell/browser/normalizeBrowserUr
 
 // the result of normalizing is stable: feeding it back changes nothing
 {
-  for (const input of [':5177', 'localhost:5177/next', 'https://example.com/a']) {
+  for (const input of [':5177', 'localhost:5177/next', 'https://example.com/a', 'file:///tmp/report.html']) {
     const once = normalizeBrowserUrl(input);
     assert.equal(normalizeBrowserUrl(once), once, `stable for ${input}`);
   }

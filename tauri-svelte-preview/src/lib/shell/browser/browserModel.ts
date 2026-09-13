@@ -234,13 +234,10 @@ function callBackend<T>(
 
 function ensureSafeBrowserUrl(value: string): string {
   const normalized = normalizeBrowserUrl(value);
-  if (!normalized) throw new BrowserModelError('Enter an address that starts with http or https');
+  if (!normalized) throw new BrowserModelError('Enter an http, https, or file address');
   const parsed = new URL(normalized);
-  if (parsed.username || parsed.password) {
-    throw new BrowserModelError('Browser addresses cannot include sign-in information');
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new BrowserModelError('Only http and https addresses are supported');
+  if (!['http:', 'https:', 'file:'].includes(parsed.protocol)) {
+    throw new BrowserModelError('Only http, https, and file addresses are supported');
   }
   return parsed.toString();
 }
@@ -458,7 +455,10 @@ export function navigateActiveBrowserTab(
   const generation = tab.generation + 1;
   tab.url = normalized;
   tab.inputUrl = normalized;
-  tab.title = new URL(normalized).hostname;
+  const parsed = new URL(normalized);
+  tab.title = parsed.protocol === 'file:'
+    ? localFileTitle(parsed)
+    : parsed.hostname;
   tab.generation = generation;
   tab.loadState = 'loading';
   tab.error = null;
@@ -473,6 +473,15 @@ export function navigateActiveBrowserTab(
     setWorkspaceError(context, error);
   }, () => isCurrentBackendTarget(context, target));
   return tab;
+}
+
+function localFileTitle(url: URL): string {
+  const encodedName = url.pathname.split('/').pop() ?? '';
+  try {
+    return decodeURIComponent(encodedName);
+  } catch {
+    return encodedName;
+  }
 }
 
 export function setBrowserViewport(

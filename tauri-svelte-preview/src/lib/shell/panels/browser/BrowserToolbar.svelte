@@ -100,7 +100,7 @@
   >
     <Input
       aria-label="Address"
-      placeholder="Enter an http or https address"
+      placeholder="Enter an http, https, or file address"
       value={address}
       data-testid="browser-address"
       oninput={(event) => onAddressInput(event.currentTarget.value)}

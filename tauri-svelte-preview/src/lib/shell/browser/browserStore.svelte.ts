@@ -50,7 +50,7 @@ import {
 } from './browserTypes.ts';
 import { normalizeBrowserUrl } from './normalizeBrowserUrl.ts';
 
-export const INVALID_URL_MESSAGE = 'Enter an address that starts with http or https';
+export const INVALID_URL_MESSAGE = 'Enter an http, https, or file address';
 
 export interface BrowserCompatibilityState {
   url: string;

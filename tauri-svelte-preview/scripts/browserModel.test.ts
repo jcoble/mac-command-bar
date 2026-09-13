@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 globalThis.$state = (value) => value;
 
 const { createBrowserWorkspace } = await import('../src/lib/shell/browser/browserTypes.ts');
-const { BrowserModelError, createBrowserModel } = await import(
+const { createBrowserModel } = await import(
   '../src/lib/shell/browser/browserModel.ts'
 );
 const { hostRectFitsPanel } = await import(
@@ -52,15 +52,14 @@ model.restoreBrowserToDock();
 const navigated = model.navigateActiveBrowserTab('https://example.com/next');
 assert.equal(navigated.id, identity);
 assert.equal(navigated.generation, initialGeneration + 1);
-assert.throws(
-  () => model.navigateActiveBrowserTab('file:///Users/me/private.txt'),
-  BrowserModelError
-);
+const localFile = model.navigateActiveBrowserTab('file:///Users/me/My Report.html');
+assert.equal(localFile?.url, 'file:///Users/me/My%20Report.html');
+assert.equal(localFile?.title, 'My Report.html');
 assert.throws(
   () => model.navigateActiveBrowserTab('https://user:password@example.com/'),
-  /sign-in information/
+  /http, https, or file/
 );
-assert.equal(model.workspace.tabs[identity].url, 'https://example.com/next');
+assert.equal(model.workspace.tabs[identity].url, 'file:///Users/me/My%20Report.html');
 
 const second = model.createBrowserTab({ url: ':5177', title: 'Local app' });
 assert.notEqual(second.id, identity);
@@ -74,7 +73,7 @@ assert.deepEqual(model.workspace.tabs[identity].viewport, {
 model.closeBrowserTab(second.id);
 assert.deepEqual(model.workspace.tabOrder, [identity]);
 
-assert.throws(() => model.createBrowserTab({ url: 'javascript:alert(1)' }), /http and https|http or https/);
+assert.throws(() => model.createBrowserTab({ url: 'javascript:alert(1)' }), /http, https, or file/);
 model.deactivateBrowserWorkspace();
 assert.equal(model.workspace.activated, false);
 

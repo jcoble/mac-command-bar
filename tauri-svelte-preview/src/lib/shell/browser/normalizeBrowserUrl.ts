@@ -9,9 +9,11 @@
  *   "127.0.0.1", "[::1]:80"  → http://…
  *   "www.example.com"         → https://www.example.com/
  *   "https://example.com"    → unchanged (normalized by the URL parser)
+ *   "file:///Users/me/report.html" → local file URL
  *
- * Anything that is not http or https — a file path, a mailto:, gibberish —
- * comes back as an empty string. Callers treat "" as "not a URL I can show".
+ * Plain file paths are intentionally not guessed. A local file must use an
+ * explicit file:// URL; the native boundary verifies that it exists and is a
+ * regular file before WebKit sees it.
  */
 export function normalizeBrowserUrl(value: string): string {
   const trimmedValue = value.trim();
@@ -29,7 +31,9 @@ export function normalizeBrowserUrl(value: string): string {
 
   try {
     const parsedUrl = new URL(withProtocol);
-    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return '';
+    if (!['http:', 'https:', 'file:'].includes(parsedUrl.protocol)) return '';
+    if (parsedUrl.username || parsedUrl.password) return '';
+    if (parsedUrl.protocol === 'file:' && parsedUrl.host && parsedUrl.host !== 'localhost') return '';
     return parsedUrl.toString();
   } catch {
     return '';
