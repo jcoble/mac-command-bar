@@ -21,7 +21,14 @@ import {
 type CodeMirrorCsharpSession = {
   root: string;
   extension(path: string): Promise<Extension>;
+  references(path: string, line: number, column: number, limit: number): Promise<CsharpReferenceLocation[]>;
   dispose(): void;
+};
+
+export type CsharpReferenceLocation = {
+  path: string;
+  line: number;
+  column: number;
 };
 
 let activeRoot: string | null = null;
@@ -42,10 +49,47 @@ function fileUri(path: string): string {
   return `file://${normalizedPath(path).split('/').map(encodeURIComponent).join('/')}`;
 }
 
+function pathFromFileUri(uri: string): string | null {
+  try {
+    const parsed = new URL(uri);
+    return parsed.protocol === 'file:' ? normalizedPath(decodeURIComponent(parsed.pathname)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Roslyn requires a workspace folder even when the standard root URI is set. */
+export function withCsharpWorkspaceFolder(message: string, root: string): string {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(message);
+  } catch {
+    return message;
+  }
+  if (!payload || typeof payload !== 'object') return message;
+  const request = payload as Record<string, unknown>;
+  if (request.method !== 'initialize') return message;
+  const params = request.params && typeof request.params === 'object'
+    ? request.params as Record<string, unknown>
+    : {};
+  const normalizedRoot = normalizedPath(root);
+  return JSON.stringify({
+    ...request,
+    params: {
+      ...params,
+      workspaceFolders: [{
+        uri: fileUri(normalizedRoot),
+        name: normalizedRoot.split('/').filter(Boolean).at(-1) ?? normalizedRoot
+      }]
+    }
+  });
+}
+
 async function startCsharpLanguageClient(
   requestedRoot: string,
   state: CsharpClientState,
-  disposeOnFailure: () => void
+  disposeOnFailure: () => void,
+  onReady?: () => void
 ): Promise<LSPClient> {
   try {
     const endpoint = await ensureNativeCsharpLanguageClientFromTauri(requestedRoot);
@@ -104,7 +148,7 @@ async function startCsharpLanguageClient(
 
     const transport: Transport = {
       send(message) {
-        socket.send(message);
+        socket.send(withCsharpWorkspaceFolder(message, requestedRoot));
       },
       subscribe(handler) {
         handlers.add(handler);
@@ -131,6 +175,7 @@ async function startCsharpLanguageClient(
       throw new Error('The C# client left the active Supercharged project.');
     }
     await markNativeCsharpLanguageClientReadyFromTauri(requestedRoot);
+    onReady?.();
     return client;
   } catch (error) {
     disposeOnFailure();
@@ -150,7 +195,10 @@ export function setNativeCsharpActiveRoot(root: string | null): void {
 }
 
 /** Connect the visible CodeMirror document to Rust's authenticated Roslyn WebSocket. */
-export function connectCodeMirrorCsharpClient(root: string): CodeMirrorCsharpSession {
+export function connectCodeMirrorCsharpClient(
+  root: string,
+  onReady?: () => void
+): CodeMirrorCsharpSession {
   const requestedRoot = normalizedPath(root);
   if (activeRoot !== requestedRoot) {
     throw new Error('This C# document belongs to an inactive Supercharged project.');
@@ -165,7 +213,12 @@ export function connectCodeMirrorCsharpClient(root: string): CodeMirrorCsharpSes
     detachSocketListeners: null
   };
   let session: CodeMirrorCsharpSession | null = null;
-  const ready = startCsharpLanguageClient(requestedRoot, state, () => session?.dispose());
+  const ready = startCsharpLanguageClient(
+    requestedRoot,
+    state,
+    () => session?.dispose(),
+    onReady
+  );
 
   session = {
     root: requestedRoot,
@@ -175,6 +228,36 @@ export function connectCodeMirrorCsharpClient(root: string): CodeMirrorCsharpSes
         throw new Error('The active C# document is outside its Roslyn workspace root.');
       }
       return (await ready).plugin(fileUri(documentPath), 'csharp');
+    },
+    async references(path: string, line: number, column: number, limit: number) {
+      const documentPath = normalizedPath(path);
+      if (documentPath !== requestedRoot && !documentPath.startsWith(`${requestedRoot}/`)) return [];
+      const client = await ready;
+      if (state.disposed) return [];
+      client.sync();
+      const result = await client.request<
+        {
+          textDocument: { uri: string };
+          position: { line: number; character: number };
+          context: { includeDeclaration: boolean };
+        },
+        { uri?: unknown; range?: { start?: { line?: unknown; character?: unknown } } }[] | null
+      >('textDocument/references', {
+        textDocument: { uri: fileUri(documentPath) },
+        position: { line: Math.max(0, line - 1), character: Math.max(0, column - 1) },
+        context: { includeDeclaration: true }
+      });
+      if (!Array.isArray(result)) return [];
+      const locations: CsharpReferenceLocation[] = [];
+      for (const location of result) {
+        const targetPath = typeof location.uri === 'string' ? pathFromFileUri(location.uri) : null;
+        const targetLine = location.range?.start?.line;
+        const targetColumn = location.range?.start?.character;
+        if (!targetPath || typeof targetLine !== 'number' || typeof targetColumn !== 'number') continue;
+        locations.push({ path: targetPath, line: targetLine + 1, column: targetColumn + 1 });
+        if (locations.length >= limit) break;
+      }
+      return locations;
     },
     dispose() {
       if (state.disposed) return;
@@ -187,4 +270,18 @@ export function connectCodeMirrorCsharpClient(root: string): CodeMirrorCsharpSes
   };
   activeSession = session;
   return session;
+}
+
+/** Ask the one active official C# client for reference locations. */
+export async function findCsharpReferenceLocations(
+  root: string,
+  path: string,
+  line: number,
+  column: number,
+  limit: number
+): Promise<CsharpReferenceLocation[] | null> {
+  const requestedRoot = normalizedPath(root);
+  const session = activeSession;
+  if (!session || activeRoot !== requestedRoot || session.root !== requestedRoot) return null;
+  return await session.references(path, line, column, limit);
 }

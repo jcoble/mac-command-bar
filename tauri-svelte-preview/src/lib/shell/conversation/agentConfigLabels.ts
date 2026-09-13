@@ -84,6 +84,18 @@ const APPROVAL_LABELS: Record<string, { label: string; description: string }> = 
     label: 'Never ask',
     description: 'The agent runs everything itself. Nothing stops to wait for you.'
   },
+  'read-only': {
+    label: 'Read only',
+    description: 'The agent can inspect the project but cannot change it.'
+  },
+  agent: {
+    label: 'Ask when needed',
+    description: 'The agent works on its own and asks before anything risky.'
+  },
+  'agent-full-access': {
+    label: 'Full access',
+    description: 'The agent can make changes and run commands without asking.'
+  },
   default: {
     label: 'Default',
     description: 'Standard behavior. The agent asks before anything dangerous.'

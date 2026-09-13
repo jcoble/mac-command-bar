@@ -5980,6 +5980,16 @@ fn tool_details(update: &Value) -> ToolDetails {
         None => {}
     }
 
+    if output.is_empty() {
+        if let Some(text) = update
+            .pointer("/rawOutput/formatted_output")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            output.push(text.to_string());
+        }
+    }
+
     if path.is_none() {
         path = update.get("locations").and_then(text_from_value);
     }
@@ -11238,6 +11248,25 @@ mod tests {
                 assert_eq!(output.as_deref(), Some("running 3 tests\nall passed"));
                 assert_eq!(path.as_deref(), Some("core/src/lib.rs"));
                 assert_eq!(diff, None);
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_codex_command_update_carries_its_formatted_output() {
+        let update = json!({ "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "exec-1",
+            "status": "completed",
+            "rawOutput": {
+                "formatted_output": "ASSEMBLY_TOOL_OUTPUT_MARKER",
+                "exit_code": 0
+            }
+        } });
+        match payload_from_session_update_for_turn(&update, None) {
+            Some(AgentConversationPayload::Tool { output, .. }) => {
+                assert_eq!(output.as_deref(), Some("ASSEMBLY_TOOL_OUTPUT_MARKER"));
             }
             other => panic!("expected Tool, got {other:?}"),
         }

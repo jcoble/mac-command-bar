@@ -6,16 +6,17 @@ import { tags } from '@lezer/highlight';
 import { getMonoFont } from '../themes/fontRegistry';
 
 const syntax = HighlightStyle.define([
-  { tag: [tags.keyword, tags.modifier], color: '#c792ea' },
-  { tag: [tags.name, tags.variableName], color: '#d8dee9' },
-  { tag: [tags.definition(tags.name), tags.function(tags.variableName)], color: '#82aaff' },
-  { tag: [tags.typeName, tags.className, tags.namespace], color: '#ffcb6b' },
-  { tag: [tags.string, tags.regexp], color: '#c3e88d' },
-  { tag: [tags.number, tags.bool, tags.null], color: '#f78c6c' },
-  { tag: [tags.comment, tags.meta], color: '#6d7480', fontStyle: 'italic' },
-  { tag: [tags.operator, tags.punctuation], color: '#89ddff' },
-  { tag: [tags.propertyName, tags.attributeName], color: '#f07178' },
-  { tag: tags.invalid, color: '#ff5370', textDecoration: 'underline' }
+  { tag: [tags.keyword, tags.modifier], color: '#54b9ff' },
+  { tag: [tags.name, tags.variableName], color: '#4bf3c8' },
+  { tag: [tags.definition(tags.name), tags.function(tags.variableName)], color: '#00daef' },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: '#acafff' },
+  { tag: [tags.string, tags.regexp], color: '#ffd493' },
+  { tag: tags.number, color: '#ffd493' },
+  { tag: [tags.bool, tags.null], color: '#54b9ff' },
+  { tag: [tags.comment, tags.meta], color: '#8f9199', fontStyle: 'italic' },
+  { tag: [tags.operator, tags.punctuation], color: '#eef0f9' },
+  { tag: [tags.propertyName, tags.attributeName], color: '#4bf3c8' },
+  { tag: tags.invalid, color: '#f06788', textDecoration: 'underline' }
 ]);
 
 export interface CodeMirrorAppearance {
@@ -42,8 +43,8 @@ export function codeMirrorThemeForAppearance(
     {
       '&': {
         height: '100%',
-        backgroundColor: 'var(--color-surface, #17191e)',
-        color: 'var(--color-text, #d8dee9)',
+        backgroundColor: '#17191e',
+        color: '#eef0f9',
         fontSize: `${appearance.fontSize}px`
       },
       '.cm-scroller': {
@@ -57,17 +58,17 @@ export function codeMirrorThemeForAppearance(
         borderLeftColor: 'var(--color-accent, #82aaff)'
       },
       '.cm-selectionBackground, ::selection': {
-        backgroundColor: 'color-mix(in srgb, var(--color-accent, #82aaff) 25%, transparent) !important'
+        backgroundColor: '#ad5dca44 !important'
       },
-      '.cm-activeLine': { backgroundColor: 'rgba(255, 255, 255, 0.025)' },
+      '.cm-activeLine': { backgroundColor: '#23262d' },
       '.cm-gutters': {
-        backgroundColor: 'var(--color-surface, #17191e)',
-        color: 'var(--color-text-3, #5f6672)',
-        borderRight: '1px solid var(--color-border, #252a33)'
+        backgroundColor: '#17191e',
+        color: '#545864',
+        borderRight: '1px solid #23262d'
       },
       '.cm-activeLineGutter': {
-        backgroundColor: 'rgba(255, 255, 255, 0.04)',
-        color: 'var(--color-text-2, #aab2bf)'
+        backgroundColor: '#23262d',
+        color: '#858b98'
       },
       '.cm-tooltip': {
         backgroundColor: 'var(--color-elevated, #20242c)',

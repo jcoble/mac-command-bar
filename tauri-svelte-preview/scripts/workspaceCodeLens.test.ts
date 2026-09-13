@@ -96,13 +96,18 @@ assert.match(
 );
 assert.match(
   codeMirrorLensSource,
-  /refreshCodeMirrorCodeLens\.of\(\)/,
-  'asynchronous reference results must dispatch a real effect so CodeMirror repaints the peek viewer'
+  /setCodeMirrorLensRows\.of\(this\.rows\)/,
+  'asynchronous reference results must dispatch into editor state so block CodeLens rows repaint safely'
 );
 assert.match(
   codeMirrorLensSource,
-  /effect\.is\(showCodeMirrorReferences\)[\s\S]*?queueMicrotask\([\s\S]*?openReferences\(request\)/,
-  'Peek References must wait until the current CodeMirror update finishes before dispatching its panel refresh'
+  /effect\.is\(showCodeMirrorReferences\)[\s\S]*?if \(this\.alive\) void this\.openReferences\(request\)/,
+  'Peek References must hand the captured request to its owned view plugin'
+);
+assert.match(
+  codeMirrorLensSource,
+  /private async openReferences[\s\S]*?await options\.onReferences\?\.\(request\)[\s\S]*?this\.view\.dispatch/,
+  'Peek References must await the language-server answer before dispatching its panel refresh'
 );
 assert.doesNotMatch(
   codeMirrorLensSource,
@@ -111,13 +116,13 @@ assert.doesNotMatch(
 );
 assert.match(
   codeMirrorLensSource,
-  /const peekState = StateField\.define<[\s\S]*?block: true[\s\S]*?provide: \(field\) => EditorView\.decorations\.from\(field/,
+  /function peekDecorations\([\s\S]*?block: true[\s\S]*?const peekState = StateField\.define<[\s\S]*?provide: \(field\) => EditorView\.decorations\.from\(field/,
   'Peek References must own its block decoration in editor state so CodeMirror can measure vertical layout'
 );
 assert.match(
   codeMirrorLensSource,
-  /document\.createElement\('div'\)[\s\S]*?maxHeight: '240px'[\s\S]*?overflowY: 'auto'/,
-  'the block reference viewer must use bounded block content so it cannot create blank editor gaps'
+  /destroy\(\): void \{[\s\S]*?this\.previewView\?\.destroy\(\)/,
+  'closing or replacing Peek must destroy its nested source editor'
 );
 
 console.log('workspace CodeLens tests passed');

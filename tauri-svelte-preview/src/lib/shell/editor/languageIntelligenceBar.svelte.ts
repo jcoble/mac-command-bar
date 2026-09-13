@@ -47,9 +47,6 @@ const EMPTY: LanguageIntelligenceBarState = {
  * functions below. */
 export const languageIntelligenceBar = $state<LanguageIntelligenceBarState>({ ...EMPTY });
 
-/** The panel's own switch handler, set while the panel is alive. */
-let switchHandler: ((enabled: boolean) => void) | null = null;
-
 /** Say what the controls should show. Called by the panel that owns the state. */
 export function publishLanguageIntelligenceBar(next: LanguageIntelligenceBarState): void {
   languageIntelligenceBar.language = next.language;
@@ -60,20 +57,7 @@ export function publishLanguageIntelligenceBar(next: LanguageIntelligenceBarStat
   languageIntelligenceBar.title = next.title;
 }
 
-/** Hand over the panel's switch, so a flip in the top strip reaches it. */
-export function setLanguageIntelligenceSwitch(
-  handler: ((enabled: boolean) => void) | null
-): void {
-  switchHandler = handler;
-}
-
-/** Flip the project's switch. Does nothing when no panel is listening. */
-export function requestLanguageIntelligence(enabled: boolean): void {
-  switchHandler?.(enabled);
-}
-
 /** The panel has gone: show nothing rather than the last thing it said. */
 export function clearLanguageIntelligenceBar(): void {
   publishLanguageIntelligenceBar({ ...EMPTY });
-  switchHandler = null;
 }

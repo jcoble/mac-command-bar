@@ -46,18 +46,10 @@
   import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
-  import {
-    languageIntelligenceOn,
-    LANGUAGE_INTELLIGENCE_SETTING_KEY,
-    normalizeLanguageIntelligenceChoices,
-    withLanguageIntelligenceChoice,
-    workspaceKey,
-    type LanguageIntelligenceChoices
-  } from '$lib/shell/editor/languageIntelligenceMode';
+  import { workspaceKey } from '$lib/shell/editor/languageIntelligenceMode';
   import {
     clearLanguageIntelligenceBar,
-    publishLanguageIntelligenceBar,
-    setLanguageIntelligenceSwitch
+    publishLanguageIntelligenceBar
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
@@ -99,13 +91,11 @@
     findSourceLspCodeActionsFromTauri,
     cancelSourceFileReadsFromTauri,
     isNativeTauriRuntime,
-    readAssemblySettingFromTauri,
     readSourceImageFromTauri,
     readSourceFromTauri,
     readSourceLspStatusFromTauri,
     setWorkspaceLanguageIntelligenceFromTauri,
     warmSourceLspForRootFromTauri,
-    writeAssemblySettingFromTauri,
     writeSourceToTauri
   } from '$lib/tauriSource';
   import type CodeMirrorSourceEditor from '$lib/CodeMirrorSourceEditor.svelte';
@@ -186,14 +176,8 @@
   /** Projects whose language server has already been pointed at the project. */
   const warmedProjectRoots = new Set<string>();
 
-  /** The remembered choices. SQLite hydrates them once; every change writes them back. */
-  let languageIntelligenceChoices = $state<LanguageIntelligenceChoices>({});
-  let languageIntelligenceHydrated = false;
-  let languageIntelligenceHydration: Promise<void> | null = null;
   /** What the desktop app last said about this project's mode. */
   let languageIntelligenceNote = $state<string | null>(null);
-  /** True while a switch is being acted on, so it cannot be flipped twice. */
-  let languageIntelligenceBusy = $state(false);
   let nativeCsharpRoot: string | null = null;
   let backendOwnerRoot = $state<string | null>(null);
   let requestedOwnerKey: string | null = null;
@@ -205,39 +189,6 @@
   let languageServerPids = $state<number[]>([]);
   let destroyed = false;
   let fileStrip = $state<HTMLDivElement | null>(null);
-
-  async function hydrateLanguageIntelligenceChoices(): Promise<void> {
-    const stopSignal = sessionStopController.signal;
-    if (stopSignal.aborted) return;
-    if (languageIntelligenceHydrated) return;
-    if (languageIntelligenceHydration) {
-      await languageIntelligenceHydration;
-      if (stopSignal.aborted) return;
-      return;
-    }
-    const hydration = loadLanguageIntelligenceChoices();
-    languageIntelligenceHydration = hydration;
-    try {
-      if (stopSignal.aborted) return;
-      await hydration;
-      if (stopSignal.aborted) return;
-    } finally {
-      if (languageIntelligenceHydration === hydration) {
-        languageIntelligenceHydration = null;
-      }
-    }
-  }
-
-  async function loadLanguageIntelligenceChoices(): Promise<void> {
-    const stopSignal = sessionStopController.signal;
-    if (stopSignal.aborted) return;
-    const stored = await readAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY);
-    if (stopSignal.aborted) return;
-    if (!destroyed) {
-      languageIntelligenceChoices = normalizeLanguageIntelligenceChoices(stored);
-    }
-    languageIntelligenceHydrated = true;
-  }
 
   const activeFile = $derived(activeEditorFile());
   const activeImageMimeType = $derived(rasterImageMimeType(activeFile?.fileName));
@@ -426,6 +377,18 @@
     status: unknown,
     subject: { root: string; language: string } | null
   ): void {
+    const sameSubject = Boolean(
+      subject
+        && languageServerSubject
+        && subject.root === languageServerSubject.root
+        && subject.language === languageServerSubject.language
+    );
+    const nextState = readLanguageServerState(status);
+    if (
+      sameSubject
+        && readLanguageServerState(languageServerStatus) === 'ready'
+        && (nextState === 'starting' || nextState === 'indexing')
+    ) return;
     languageServerStatus = status;
     languageServerSubject = subject;
     languageServerGate.setState(readLanguageServerState(status));
@@ -704,36 +667,6 @@
     return transition;
   }
 
-  /** Hand the ordered backend owner this project's current remembered choice. */
-  async function applySavedModeForProject(projectRoot: string): Promise<void> {
-    const stopSignal = sessionStopController.signal;
-    if (stopSignal.aborted) return;
-    const root = workspaceKey(projectRoot);
-    if (stopSignal.aborted) return;
-    await hydrateLanguageIntelligenceChoices();
-    if (stopSignal.aborted) return;
-    if (
-      destroyed
-      || !rootAvailable
-      || !editorState.projectRoot
-      || workspaceKey(editorState.projectRoot) !== root
-    ) return;
-    try {
-      if (stopSignal.aborted) return;
-      const answer = await queueLanguageIntelligenceOwner(
-        root,
-        settings.intelligence.languageServers
-      );
-      if (stopSignal.aborted || destroyed || !answer) return;
-      if (editorState.projectRoot && workspaceKey(editorState.projectRoot) === root) {
-        languageServerPids = answer.serverPids;
-      }
-    } catch {
-      // A desktop build that has never heard of the switch leaves every
-      // project in read mode, which is the safe half of the choice.
-    }
-  }
-
   /**
    * Tell the language server which project this file belongs to before warming
    * the file's language.
@@ -742,17 +675,16 @@
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted) return;
     if (!projectRoot || activeServerEnabled !== true) return;
+    if (destroyed || !settings.intelligence.languageServers) return;
     try {
-      if (stopSignal.aborted) return;
-      await applySavedModeForProject(projectRoot);
-      if (stopSignal.aborted) return;
+      await queueLanguageIntelligenceOwner(projectRoot, true);
+      if (stopSignal.aborted || destroyed) return;
     } catch (error) {
       if (!stopSignal.aborted && !destroyed) {
-        languageIntelligenceNote = `The saved editor mode could not be read: ${describeError(error)}`;
+        languageIntelligenceNote = `This project's language server could not be selected: ${describeError(error)}`;
       }
       return;
     }
-    if (destroyed || !settings.intelligence.languageServers) return;
     if (warmedProjectRoots.has(projectRoot)) return;
     warmedProjectRoots.add(projectRoot);
     countInvoke('warm_source_lsp_for_root');
@@ -766,82 +698,6 @@
       if (!stopSignal.aborted && !destroyed) {
         languageIntelligenceNote = `This project's language server could not be warmed: ${describeError(error)}`;
       }
-    }
-  }
-
-  /**
-   * Turn language intelligence on or off for the project on screen.
-   *
-   * Off asks the desktop app to stop the process and reclaim its memory. On
-   * records the choice and starts the server for the file already open, saying
-   * so — including when there is no server to start.
-   */
-  async function switchLanguageIntelligence(enabled: boolean): Promise<void> {
-    const stopSignal = sessionStopController.signal;
-    if (stopSignal.aborted) return;
-    const root = editorState.projectRoot;
-    if (!root || activeFileReadOnly || languageIntelligenceBusy) return;
-    languageIntelligenceBusy = true;
-    try {
-      if (stopSignal.aborted) return;
-      await hydrateLanguageIntelligenceChoices();
-      if (stopSignal.aborted || destroyed) return;
-      // Persisted before the desktop call, so the next launch keeps the choice
-      // even if an older desktop build cannot act on it.
-      const nextChoices = withLanguageIntelligenceChoice(
-        languageIntelligenceChoices,
-        root,
-        enabled
-      );
-      if (stopSignal.aborted) return;
-      await writeAssemblySettingFromTauri(LANGUAGE_INTELLIGENCE_SETTING_KEY, nextChoices);
-      if (stopSignal.aborted) return;
-      if (
-        destroyed
-        || !rootAvailable
-        || !editorState.projectRoot
-        || workspaceKey(editorState.projectRoot) !== workspaceKey(root)
-      ) return;
-      languageIntelligenceChoices = nextChoices;
-      if (!enabled) {
-        warmedProjectRoots.delete(root);
-        diagnosticsByPath = {};
-      }
-
-      // Settings is where the C# server is switched off, and that holds. This
-      // switch used to lift that setting back on whenever it was flipped on for
-      // a project — so turning the server off in Settings kept undoing itself,
-      // and the two switches read as one that "would not stay off". A C# start
-      // that Settings has refused now says so in the note under the switch.
-
-      // The file already on screen is the one the reader wants answered, so its
-      // language is what the desktop app starts a server for — now, rather than
-      // at the next file opened. With nothing open there is nothing to start,
-      // and the answer says so.
-      if (stopSignal.aborted) return;
-      const answer = await queueLanguageIntelligenceOwner(
-        root,
-        enabled,
-        enabled ? activeFileLanguage() : null,
-        true
-      );
-      if (stopSignal.aborted || destroyed) return;
-      languageIntelligenceNote = answer?.message ?? null;
-      languageServerPids = answer?.serverPids ?? [];
-
-      if (enabled) {
-        if (stopSignal.aborted) return;
-        await warmLanguageServer(root);
-        if (stopSignal.aborted || destroyed) return;
-        void ensureCodeEditor();
-      }
-      if (!destroyed) void refreshEditorIntelligenceForActiveFile();
-    } catch (error) {
-      if (!stopSignal.aborted && !destroyed) {
-        languageIntelligenceNote = `The switch could not be changed: ${describeError(error)}`;
-      }
-    } finally {
-      if (!destroyed) languageIntelligenceBusy = false;
     }
   }
 
@@ -869,7 +725,6 @@
   ): Promise<void> {
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted) return;
-    await hydrateLanguageIntelligenceChoices();
     if (stopSignal.aborted || destroyed || generation !== ownerSelectionGeneration) return;
     const enabled = Boolean(
       root
@@ -918,7 +773,6 @@
 
   $effect(() => {
     const root = activeLanguageRoot();
-    languageIntelligenceChoices;
     const languageServersEnabled = settings.intelligence.languageServers;
     const generation = ++ownerSelectionGeneration;
     void applyLanguageIntelligenceOwnerForEffect(generation, root, languageServersEnabled);
@@ -1210,6 +1064,12 @@
     } else if (readOnlyByPath[record.path]) {
       const { [record.path]: _wasReadOnly, ...remaining } = readOnlyByPath;
       readOnlyByPath = remaining;
+    }
+    // A rendered Markdown document has no source-line coordinates. An explicit
+    // jump (diff hunk, problem, definition) therefore has to reveal the source,
+    // even when this tab was previously left on Preview.
+    if (typeof request.line === 'number' && request.line > 0 && isMarkdownFile(record.fileName)) {
+      markdownViewByPath = { ...markdownViewByPath, [record.path]: 'raw' };
     }
     // Only once the file is in the strip. The read runs after this and may still
     // fail — the tab is the right place to show that, so it stays in front.
@@ -1557,34 +1417,16 @@
       language: activeFile?.language ?? null,
       status: languageServerStatus,
       fullMode,
-      busy: languageIntelligenceBusy,
+      busy: false,
       hasProject: Boolean(editorState.projectRoot) && !activeFileReadOnly,
       title: languageIntelligenceTitle
     });
   });
 
-  async function hydrateLanguageIntelligenceChoicesForMount(): Promise<void> {
-    const stopSignal = sessionStopController.signal;
-    if (stopSignal.aborted) return;
-    try {
-      if (stopSignal.aborted) return;
-      await hydrateLanguageIntelligenceChoices();
-      if (stopSignal.aborted) return;
-    } catch {
-      // The switch can still show its default choices if hydration fails.
-    }
-  }
-
   onMount(() => {
-    void hydrateLanguageIntelligenceChoicesForMount();
-
     // Subscribing costs nothing and loads nothing; it just means a click in the
     // explorer made before this panel was ever shown still opens its file.
     const unsubscribe = onOpenFile(handleOpenFileRequest);
-
-    // The switch in the top strip is this panel's own; flipping it there runs
-    // exactly the same code as flipping it here once did.
-    setLanguageIntelligenceSwitch((enabled) => void switchLanguageIntelligence(enabled));
 
     // Listening for status updates is likewise free, and it is the only way the
     // chip ever changes after a file opens — nothing here polls.

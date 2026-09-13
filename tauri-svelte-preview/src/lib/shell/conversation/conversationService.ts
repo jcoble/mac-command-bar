@@ -1188,7 +1188,9 @@ export async function sendStructuredMessage(
         cwd: owned.cwd,
         nativeSessionId: owned.nativeSessionId,
         nativeSessionMode,
-        reasoningEffort: startConfig?.reasoningEffort ?? state.agentConfig.reasoningEffort
+        reasoningEffort: startConfig
+          ? startConfig.reasoningEffort
+          : state.agentConfig.reasoningEffort
       });
       const revived = getConversationSession(ownedId);
       const nextGeneration = generationForSend(previousGeneration, activated?.generation ?? -1);
@@ -1272,6 +1274,8 @@ export async function sendStructuredMessage(
     // The transcript keeps only display metadata: thumbnails show what went out,
     // and no provider echoes the image back for it to render from.
     recordSentConversationAttachments(ownedId, state.attachments.map(attachmentDisplayMetadata));
+    const requestedModel = startConfig?.model ?? null;
+    const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
     await invoke('send_agent_conversation_message', {
       request: {
         ownedId,
@@ -1281,8 +1285,14 @@ export async function sendStructuredMessage(
         // Named on the recorded user message so a restart can find the saved
         // files again; the in-memory hold above does not survive one.
         attachmentIds: state.attachments.map((attachment) => attachment.id),
-        model: startConfig?.model ?? null,
-        approvalPolicy: startConfig?.approvalPolicy ?? null
+        model: requestedModel && state.agentConfig.availableModels.includes(requestedModel)
+          ? requestedModel
+          : null,
+        approvalPolicy:
+          requestedApprovalPolicy
+          && state.agentConfig.availableApprovalPolicies.includes(requestedApprovalPolicy)
+            ? requestedApprovalPolicy
+            : null
       }
     });
     setConversationAttachments(ownedId, []);

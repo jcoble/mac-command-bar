@@ -21,9 +21,10 @@ export interface ShellFont {
 const UI_FALLBACK =
   'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif';
 const MONO_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+const MENLO_STACK = 'Menlo, Monaco, "Courier New", monospace';
 
 export const DEFAULT_UI_FONT_ID = 'system';
-export const DEFAULT_MONO_FONT_ID = 'system';
+export const DEFAULT_MONO_FONT_ID = 'menlo';
 
 /** Faces for reading, in the order the chooser lists them. */
 export const UI_FONTS: ShellFont[] = [
@@ -37,6 +38,7 @@ export const UI_FONTS: ShellFont[] = [
 
 /** Faces for code, in the order the chooser lists them. */
 export const MONO_FONTS: ShellFont[] = [
+  { id: 'menlo', label: 'Menlo', stack: MENLO_STACK },
   { id: 'system', label: 'System', stack: MONO_FALLBACK },
   { id: 'jetbrains-mono', label: 'JetBrains Mono', stack: `"JetBrains Mono", ${MONO_FALLBACK}` },
   { id: 'fira-code', label: 'Fira Code', stack: `"Fira Code", ${MONO_FALLBACK}` },

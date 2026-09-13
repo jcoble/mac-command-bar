@@ -37,8 +37,6 @@
       diff: Snippet;
       gitHistory: Snippet;
     };
-    /** The small tabs in the center pane's upper-right corner. */
-    centerTabs: Snippet;
     /** The right column: its tab strip, the open panel, and the bottom strip. */
     tools: Snippet;
     dock: Snippet;
@@ -76,7 +74,6 @@
   let {
     sessions,
     center,
-    centerTabs,
     tools,
     dock,
     onSessionPanelLayout,
@@ -213,7 +210,6 @@
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
   <div class="slot center-region" bind:this={centerRegionSlot}>
-    <div class="center-tabs">{@render centerTabs()}</div>
     <div class="center-dock-host" bind:this={centerSlot}></div>
   </div>
   <div class="slot tools-region" bind:this={toolsSlot}>{@render tools()}</div>
@@ -260,36 +256,13 @@
     overflow: hidden;
   }
 
-  /* The pill tabs are laid OVER the pane, not in a row above it. A row charged
-     every surface the same strip of height whether or not anyone was looking at
-     it, and on the Editor it sat above a bar the editor already has. Floating
-     costs nothing while the group is hidden, which is most of the time. */
   .center-region {
-    position: relative;
     display: grid;
     grid-template-rows: minmax(0, 1fr);
     /* Transparent on purpose: the card behind it paints the surface and its
        gradient, and an opaque fill here would cover both. */
     background: transparent;
   }
-
-  .center-tabs {
-    position: absolute;
-    top: 0;
-    right: 0;
-    left: 0;
-    /* Above the dock's own content, below anything a dialog puts on screen. */
-    z-index: 12;
-    display: flex;
-    min-width: 0;
-    justify-content: flex-end;
-    /* The strip spans the pane only so the group can hang off its right edge;
-       it must not swallow clicks meant for the surface underneath. The pills
-       themselves take the pointer back when they are on screen. */
-    pointer-events: none;
-  }
-
-  .center-tabs :global(.center-pills) { pointer-events: auto; }
 
   .tools-region {
     min-width: 0;

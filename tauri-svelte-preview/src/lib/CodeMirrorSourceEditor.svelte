@@ -130,6 +130,7 @@
     languageServerRoot = null,
     externalDiagnostics = [],
     restoredViewStates = {},
+    loading = false,
     targetLine = null,
     targetLineRequestId = 0,
     onContentChange,
@@ -138,6 +139,7 @@
     onCompletionLookup,
     onDefinitionLookup,
     onExternalNavigation,
+    onExternalPreviewLookup,
     onLanguageServerReady,
     onHoverLookup,
     onCodeLensAnchorLookup,
@@ -281,6 +283,19 @@
       onAnchorLookup: onCodeLensAnchorLookup,
       onCount: onReferenceCountLookup,
       onReferences: onReferenceLookup,
+      onPreview: async (target) => {
+        const targetPreview = target.path === preview.path && view
+          ? { ...preview, content: view.state.doc.toString() }
+          : await onExternalPreviewLookup?.(target);
+        if (!targetPreview) return null;
+        return {
+          preview: targetPreview,
+          extensions: [
+            currentEditorTheme(),
+            await loadCodeMirrorLanguage(targetPreview.language)
+          ]
+        };
+      },
       onOpenReference: async (target) => {
         if (!view || generation !== codeLensGeneration || currentPath !== preview.path) return;
         if (target.path === preview.path) {
@@ -758,7 +773,7 @@
     requestedLspKey = key;
     const generation = ++lspGeneration;
     setNativeCsharpActiveRoot(root);
-    const session = connectCodeMirrorCsharpClient(root);
+    const session = connectCodeMirrorCsharpClient(root, onLanguageServerReady);
     lspSession = session;
     view.dispatch({ effects: intelligence.reconfigure([]) });
     view.dispatch(setDiagnostics(view.state, []));
@@ -777,7 +792,6 @@
       requestedLspKey = '';
       loadedLspKey = key;
       view.dispatch({ effects: intelligence.reconfigure(extension) });
-      onLanguageServerReady?.();
     } catch {
       if (generation !== lspGeneration || requestedLspKey !== key) return;
       requestedLspKey = '';
@@ -1079,20 +1093,26 @@
     }
   });
 
-  $effect(() => {
-    targetLineRequestId;
-    if (!view || !targetLine || targetLine < 1) return;
+  function revealRequestedLine(): void {
+    if (!view || loading || !targetLine || targetLine < 1) return;
     const position = linePosition(view.state, targetLine);
     view.dispatch({
       selection: { anchor: position },
       effects: EditorView.scrollIntoView(position, { y: 'center' })
     });
+  }
+
+  $effect(() => {
+    targetLineRequestId;
+    loading;
+    revealRequestedLine();
   });
 
   onMount(() => {
     view = new EditorView({ parent: host, state: EditorState.create({ extensions: editorExtensions }) });
     addCodeMirrorEditorView(1);
     showFile();
+    revealRequestedLine();
   });
 
   onDestroy(() => {

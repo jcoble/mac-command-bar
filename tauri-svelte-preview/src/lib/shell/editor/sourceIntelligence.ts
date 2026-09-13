@@ -38,6 +38,7 @@
  * `countReferencesForCodeLens`.
  */
 import {
+  extractSourceSymbols,
   normalizeProjectPath,
   previewFromContent,
   sourceSupportsLanguageIntelligence,
@@ -604,17 +605,40 @@ export function createSourceIntelligence(): SourceIntelligence {
     resultKey: string
   ): Promise<{ count: CodeLensCount; targets: SourceReferenceTarget[] } | null> {
     try {
-      countInvoke('find_source_lsp_references');
       let targets: SourceReferenceTarget[] | null;
-      try {
-        targets = await findSourceLspReferencesFromTauri(preview, {
-          root: root ?? '',
-          line: request.line,
-          column: request.column,
-          limit: maxSourceReferenceCountResults
-        });
-      } catch {
-        targets = null;
+      const language = preview.language.toLowerCase();
+      if (language === 'csharp' || language === 'c#') {
+        const { findCsharpReferenceLocations } = await import('./csharpLanguageClient.ts');
+        const locations = await findCsharpReferenceLocations(
+          root ?? '',
+          preview.path,
+          request.line,
+          request.column,
+          maxSourceReferenceCountResults
+        );
+        const previewPath = normalizeProjectPath(preview.path);
+        const previewLines = preview.content.split('\n');
+        targets = locations?.map((location) => ({
+          ...sourceRecordFromPath(root, location.path),
+          symbolName: request.symbolName,
+          line: location.line,
+          column: location.column,
+          excerpt: normalizeProjectPath(location.path) === previewPath
+            ? previewLines[location.line - 1] ?? ''
+            : ''
+        })) ?? null;
+      } else {
+        countInvoke('find_source_lsp_references');
+        try {
+          targets = await findSourceLspReferencesFromTauri(preview, {
+            root: root ?? '',
+            line: request.line,
+            column: request.column,
+            limit: maxSourceReferenceCountResults
+          });
+        } catch {
+          targets = null;
+        }
       }
       if (!targets) return null;
       if (generation !== referenceAnswerGeneration) return null;
@@ -991,6 +1015,10 @@ export function createSourceIntelligence(): SourceIntelligence {
     if (!preview) return null;
     if (normalizeProjectPath(asked.path) !== normalizeProjectPath(preview.path)) return null;
     if (!sourceSupportsLanguageIntelligence(preview.language)) return null;
+    const language = preview.language.toLowerCase();
+    if (language === 'csharp' || language === 'c#') {
+      return extractSourceSymbols(asked, asked.content).slice(0, maxCodeLensSymbols);
+    }
     if (!(await hasBackendCapability('lspDocumentSymbols'))) return null;
 
     try {

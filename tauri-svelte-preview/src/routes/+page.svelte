@@ -325,11 +325,13 @@
 		event.preventDefault();
 	}}
 >
+	<div class="window-chrome" data-tauri-drag-region>
+		{@render centerTabsArea()}
+	</div>
 	<div class="frame-area">
 		<ShellFrame
 			sessions={sessionsArea}
 			tools={toolsArea}
-			centerTabs={centerTabsArea}
 			dock={dockArea}
 			center={{
 				session: sessionArea,
@@ -375,6 +377,16 @@
 		flex: 1 1 auto;
 		min-height: 0;
 		position: relative;
+	}
+
+	.window-chrome {
+		display: flex;
+		flex: 0 0 calc(var(--center-head-row-height) + 6px);
+		align-items: center;
+		justify-content: center;
+		min-height: 0;
+		border-bottom: 1px solid var(--color-border);
+		background: var(--color-bg);
 	}
 
 	.sessions-region {

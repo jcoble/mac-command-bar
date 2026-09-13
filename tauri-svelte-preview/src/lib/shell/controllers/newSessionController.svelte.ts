@@ -25,6 +25,18 @@ import { updateAgentConversationSessionMetaFromTauri } from '../../tauriSource';
 
 const PROVIDERS = ['codex', 'claude', 'antigravity'] as const;
 
+function supportedChoice(
+	remembered: string | null | undefined,
+	current: string | null | undefined,
+	available: readonly string[],
+	hasKnownCatalog: boolean,
+): string | null {
+	if (!hasKnownCatalog) return remembered ?? current ?? null;
+	if (remembered && available.includes(remembered)) return remembered;
+	if (current && available.includes(current)) return current;
+	return available[0] ?? null;
+}
+
 export class NewSessionController {
 	draftOpen = $state(false);
 	draftProjectPath = $state<string | null>(null);
@@ -44,19 +56,42 @@ export class NewSessionController {
 
 	get providerConfigs(): ThreadStartProviderConfig[] {
 		return PROVIDERS.map((provider) => {
-			const existing = Object.values(conversationSessions).find(
-				(session) => session.provider === provider,
-			);
+			const existing = [...rail.owned]
+				.sort(
+					(left, right) =>
+						Date.parse(right.lastActivity ?? '1970-01-01')
+						- Date.parse(left.lastActivity ?? '1970-01-01'),
+				)
+				.map((session) => conversationSessions[session.ownedId])
+				.find((session) => session?.provider === provider);
 			const config = existing?.agentConfig;
 			const chosen = rememberedAgentConfigChoice(provider);
+			const availableModels = config?.availableModels ?? [];
+			const availableEfforts = config?.availableEfforts ?? [];
+			const availableApprovalPolicies = config?.availableApprovalPolicies ?? [];
+			const hasKnownCatalog = Boolean(
+				availableModels.length
+				|| availableEfforts.length
+				|| availableApprovalPolicies.length,
+			);
 			return {
 				provider,
-				model: chosen?.model ?? config?.model ?? null,
-				availableModels: config?.availableModels ?? [],
-				reasoningEffort: chosen?.reasoningEffort ?? config?.reasoningEffort ?? null,
-				availableEfforts: config?.availableEfforts ?? [],
-				approvalPolicy: chosen?.approvalPolicy ?? config?.approvalPolicy ?? null,
-				availableApprovalPolicies: config?.availableApprovalPolicies ?? [],
+				model: supportedChoice(chosen?.model, config?.model, availableModels, hasKnownCatalog),
+				availableModels,
+				reasoningEffort: supportedChoice(
+					chosen?.reasoningEffort,
+					config?.reasoningEffort,
+					availableEfforts,
+					hasKnownCatalog,
+				),
+				availableEfforts,
+				approvalPolicy: supportedChoice(
+					chosen?.approvalPolicy,
+					config?.approvalPolicy,
+					availableApprovalPolicies,
+					hasKnownCatalog,
+				),
+				availableApprovalPolicies,
 			};
 		});
 	}

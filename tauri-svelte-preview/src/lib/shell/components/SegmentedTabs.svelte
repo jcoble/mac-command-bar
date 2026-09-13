@@ -96,7 +96,7 @@
       onclick={() => onChange(item.id)}
     >
       {#if Icon}
-        <Icon class="size-[20px]" strokeWidth={chosen ? 1.9 : 1.6} aria-hidden="true" />
+        <Icon class="size-[22px]" strokeWidth={chosen ? 1.9 : 1.6} aria-hidden="true" />
       {:else}
         <span class="text">{item.label}</span>
       {/if}
@@ -113,10 +113,10 @@
     /* The segments touch: the container's corners are the only round ones
        until the pill lands on one of them. */
     gap: 0;
-    height: 38px;
+    height: 42px;
     padding: 3px;
     border-radius: var(--radius-pill);
-    background: var(--color-elevated);
+    background: var(--segmented-tab-surface);
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
@@ -139,7 +139,7 @@
     border-radius: var(--radius-pill);
     /* Material's muted lavender-grey: light enough on the container to read as
        filled, quiet enough not to compete with the mint accent. */
-    background: #535367;
+    background: var(--segmented-tab-active);
     pointer-events: none;
   }
 

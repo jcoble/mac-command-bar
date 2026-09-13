@@ -18,6 +18,8 @@
         "height": 1000,
         "minWidth": 900,
         "minHeight": 600,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "url": "/",
         "dragDropEnabled": false
       }

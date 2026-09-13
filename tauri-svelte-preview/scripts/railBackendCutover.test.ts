@@ -60,7 +60,11 @@ assert.doesNotMatch(
 assert.doesNotMatch(railStore, /localStorage|owned-sessions|persist/i);
 assert.match(conversationService, /readAgentConversationSnapshotFromTauri\(ownedId, signal\)/);
 assert.doesNotMatch(conversationService, /listAgentConversationEventsFromTauri/);
-assert.match(conversationService, /model: startConfig\?\.model/);
+assert.match(conversationService, /const requestedModel = startConfig\?\.model \?\? null/);
+assert.match(
+  conversationService,
+  /model: requestedModel && state\.agentConfig\.availableModels\.includes\(requestedModel\)/
+);
 assert.match(source, /invoke<AgentConversationSessionRecord\[]>\('list_agent_conversation_sessions'/);
 assert.match(source, /invoke<AgentConversationEvent\[]>\('list_agent_conversation_events'/);
 assert.match(source, /invoke<AgentConversationSessionRecord>\('update_agent_conversation_session_meta'/);

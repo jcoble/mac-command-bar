@@ -404,6 +404,7 @@
 
   function toggleWorktree(key: string): void {
     releaseDetails();
+    expandedKey = null;
     collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
     publishWorkspaceState();
   }
