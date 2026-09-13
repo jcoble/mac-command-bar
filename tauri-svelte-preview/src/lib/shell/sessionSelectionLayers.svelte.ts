@@ -9,6 +9,7 @@ import { sessionWorkspaceRoot } from '../workspacePaths';
 import { validateProjectRootFromTauri } from '../tauriSource';
 import {
   cancelConversationReadWork,
+  loadConversationSessionDraft,
   loadConversationForRead,
   releaseConversationForRead
 } from './conversation/conversationService';
@@ -105,6 +106,11 @@ export class SessionSelectionLayers {
     ensureConversationSession(session.ownedId, provider);
     setConversationMode(session.ownedId, 'structured');
     await loadConversationForRead(session.ownedId, false, owner.signal);
+    if (!this.isCurrent(owner)) {
+      releaseConversationForRead(session.ownedId);
+      return;
+    }
+    await loadConversationSessionDraft(session.ownedId);
     if (!this.isCurrent(owner)) {
       releaseConversationForRead(session.ownedId);
       return;

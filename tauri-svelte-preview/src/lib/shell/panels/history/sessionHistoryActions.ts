@@ -127,6 +127,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
   // specific first — a row with no id at all is a different problem from a row
   // whose agent this app cannot read.
   const canResumeAssembly = sessionTranscriptImport(record) !== null;
+  const resumeLabel = record.ownedId ? 'Open Assembly Session' : 'Resume as Assembly Session';
   const resumeReason = !record.nativeSessionId?.trim()
     ? NO_SESSION_ID
     : !hasLog
@@ -136,7 +137,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
         : UNREADABLE_AGENT;
 
   return [
-    action('resume-assembly', 'Resume as Assembly Session', canResumeAssembly, resumeReason),
+    action('resume-assembly', resumeLabel, Boolean(record.ownedId) || canResumeAssembly, resumeReason),
     action('view-log', 'View Log', hasLog, NO_TRANSCRIPT),
     action(
       'copy-resume-command',
