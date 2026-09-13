@@ -75,7 +75,8 @@
   class:placed
   role="tablist"
   aria-label={label}
-  style="--indicator-left: {frame.left}px; --indicator-width: {frame.width}px"
+  style:--indicator-left={`${frame.left}px`}
+  style:--indicator-width={`${frame.width}px`}
   onkeydown={onKeyDown}
   tabindex={-1}
 >
