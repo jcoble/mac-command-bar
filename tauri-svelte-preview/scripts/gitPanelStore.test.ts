@@ -1,5 +1,5 @@
 /**
- * gitPanelStore.test.mjs — the /next source-control state and its service.
+ * gitPanelStore.test.ts — the source-control state and its service.
  *
  * `gitPanelStore.svelte.ts` calls `$state(...)` at module scope, which the
  * Svelte compiler normally rewrites. Node runs the file as plain JavaScript, so
@@ -436,7 +436,7 @@ function makeBackend(overrides = {}) {
   assert.equal(state.status.branch, 'main', 'the status already on screen survives');
 }
 
-// ── selecting a file loads its diff; a deleted file is answered without one ──
+// ── selecting a file loads its diff, including deleted tracked files ─────────
 {
   const backend = makeBackend();
   const state = createGitPanelState();
@@ -453,12 +453,9 @@ function makeBackend(overrides = {}) {
 
   backend.calls.length = 0;
   await git.selectFile(file('src/gone.ts', '', 'deleted', 'D'));
-  assert.deepEqual(backend.calls, [], 'a deleted file is never sent to the diff command');
-  assert.equal(state.selectedDiff, null);
-  assert.equal(
-    state.diffError,
-    'This file was deleted, so there is nothing on disk to compare.'
-  );
+  assert.deepEqual(backend.calls, [['readDiff', '/repo', '/repo/src/gone.ts']]);
+  assert.equal(state.selectedDiff?.relativePath, '/repo/src/gone.ts');
+  assert.equal(state.diffError, '');
 
   git.clearSelection();
   assert.equal(state.selectedPath, '');

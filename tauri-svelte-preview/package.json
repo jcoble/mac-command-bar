@@ -70,7 +70,7 @@
     "test:csharp-language-client": "node --experimental-strip-types scripts/csharpLanguageClient.test.ts",
     "test:codemirror-language": "node --experimental-strip-types src/lib/shell/editor/codeMirrorLanguage.test.ts",
     "test:workspace-code-lens": "node --experimental-strip-types scripts/workspaceCodeLens.test.ts",
-    "test:git-panel-store": "node --experimental-strip-types scripts/gitPanelStore.test.mjs",
+    "test:git-panel-store": "node --experimental-strip-types scripts/gitPanelStore.test.ts",
     "test:pr-list": "node --experimental-strip-types scripts/prList.test.mjs",
     "test:git-discard-confirm": "node --experimental-strip-types scripts/gitDiscardConfirm.test.mjs",
     "test:git-branch-picker": "node --experimental-strip-types scripts/gitBranchPicker.test.mjs",
