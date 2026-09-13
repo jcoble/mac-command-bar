@@ -408,7 +408,7 @@
     setSessionRoots(sessionRoots);
     const sequence = ++loadSequence;
     void hydrateDraft(owner, sequence);
-    void hydrateRemoteAssembly(owner, sequence);
+    void hydrateRemoteAssembly(owner);
     return () => {
       owner.active = false;
       stopSignal.removeEventListener('abort', stopConnection);
@@ -434,13 +434,13 @@
     composer?.focus();
   }
 
-  async function hydrateRemoteAssembly(owner: { active: boolean }, sequence: number): Promise<void> {
+  async function hydrateRemoteAssembly(owner: { active: boolean }): Promise<void> {
     if (stopSignal.aborted) return;
     try {
       if (stopSignal.aborted) return;
       const environment = await readRemoteAssemblyEnvironmentFromTauri();
       if (stopSignal.aborted) return;
-      if (!owner.active || sequence !== loadSequence) return;
+      if (!owner.active) return;
       remoteAssembly = environment;
       remoteProfile = emptyRemoteProfile();
     } catch {
