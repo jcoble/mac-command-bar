@@ -254,8 +254,8 @@
       {#snippet actions()}
         <HoverActionButton
           label={action('resume-assembly').enabled
-            ? 'Resume as Assembly Session'
-            : (action('resume-assembly').disabledReason ?? 'Resume as Assembly Session')}
+            ? action('resume-assembly').label
+            : (action('resume-assembly').disabledReason ?? action('resume-assembly').label)}
           tone="primary"
           disabled={!action('resume-assembly').enabled}
           onclick={() => run('resume-assembly')}

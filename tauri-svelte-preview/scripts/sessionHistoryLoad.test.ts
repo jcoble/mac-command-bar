@@ -5,6 +5,7 @@ import {
   sessionHistoryLoadOutcome,
   type RepositoryCheckouts
 } from '../src/lib/shell/history/sessionHistoryLoad.ts';
+import { sessionHistoryActions } from '../src/lib/shell/panels/history/sessionHistoryActions.ts';
 import type { SessionLibraryRecord } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
 
 function record(key: string): SessionLibraryRecord {
@@ -91,6 +92,18 @@ run('everything_present_is_ready', () => {
   assert.equal(outcome.state, 'ready');
   assert.deepEqual(outcome.missingKeys, []);
   assert.deepEqual(outcome.checkouts, checkouts);
+});
+
+run('an_owned_history_row_opens_instead_of_importing_a_duplicate', () => {
+  const owned = record('owned-session');
+  owned.source = 'owned';
+  owned.ownedId = 'owned-session';
+  owned.provider = 'codex';
+  owned.logPath = '/tmp/provider-transcript.jsonl';
+  const action = sessionHistoryActions(owned).find((candidate) => candidate.id === 'resume-assembly');
+
+  assert.equal(action?.label, 'Open Assembly Session');
+  assert.equal(action?.enabled, true);
 });
 
 run('project_and_detail_reads_have_independent_lifecycles', () => {

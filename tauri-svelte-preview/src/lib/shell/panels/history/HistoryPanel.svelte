@@ -522,6 +522,11 @@
    * the adapter is the whole runtime here.
    */
   async function resumeAsAssemblySession(record: SessionLibraryRecord): Promise<void> {
+    if (record.ownedId) {
+      await host.service.open(record);
+      showCenterTab('session');
+      return;
+    }
     const request = sessionTranscriptImport(record);
     if (!request) return;
     try {
