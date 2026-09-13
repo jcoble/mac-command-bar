@@ -130,6 +130,7 @@
     languageServerRoot = null,
     externalDiagnostics = [],
     restoredViewStates = {},
+    loading = false,
     targetLine = null,
     targetLineRequestId = 0,
     onContentChange,
@@ -1092,20 +1093,26 @@
     }
   });
 
-  $effect(() => {
-    targetLineRequestId;
-    if (!view || !targetLine || targetLine < 1) return;
+  function revealRequestedLine(): void {
+    if (!view || loading || !targetLine || targetLine < 1) return;
     const position = linePosition(view.state, targetLine);
     view.dispatch({
       selection: { anchor: position },
       effects: EditorView.scrollIntoView(position, { y: 'center' })
     });
+  }
+
+  $effect(() => {
+    targetLineRequestId;
+    loading;
+    revealRequestedLine();
   });
 
   onMount(() => {
     view = new EditorView({ parent: host, state: EditorState.create({ extensions: editorExtensions }) });
     addCodeMirrorEditorView(1);
     showFile();
+    revealRequestedLine();
   });
 
   onDestroy(() => {

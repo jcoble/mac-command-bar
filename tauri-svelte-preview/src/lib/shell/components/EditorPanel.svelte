@@ -1065,6 +1065,12 @@
       const { [record.path]: _wasReadOnly, ...remaining } = readOnlyByPath;
       readOnlyByPath = remaining;
     }
+    // A rendered Markdown document has no source-line coordinates. An explicit
+    // jump (diff hunk, problem, definition) therefore has to reveal the source,
+    // even when this tab was previously left on Preview.
+    if (typeof request.line === 'number' && request.line > 0 && isMarkdownFile(record.fileName)) {
+      markdownViewByPath = { ...markdownViewByPath, [record.path]: 'raw' };
+    }
     // Only once the file is in the strip. The read runs after this and may still
     // fail — the tab is the right place to show that, so it stays in front.
     if (
