@@ -8,7 +8,10 @@
 	import * as Collapsible from "$lib/components/ui/collapsible/index.js";
 	import { IconButton } from "$lib/components/ui/icon-button/index.js";
 	import { ScrollArea } from "$lib/components/ui/scroll-area/index.js";
-	import { createGitPanelState } from "$lib/shell/git/gitPanelStore.svelte";
+	import {
+		createGitPanelState,
+		isNotARepositoryError,
+	} from "$lib/shell/git/gitPanelStore.svelte";
 	import { createGitService } from "$lib/shell/git/gitService";
 	import { formatLastActivity } from "$lib/shell/relativeTime";
 
@@ -109,6 +112,8 @@
 				<p>Select a file to see its history.</p>
 			{:else if panel.historyLoading}
 				<p>Reading the file history…</p>
+			{:else if panel.historyError && isNotARepositoryError(panel.historyError)}
+				<p>This folder’s Git history is unavailable.</p>
 			{:else if panel.historyError}
 				<p class="error">{panel.historyError}</p>
 			{:else if panel.history.length === 0}

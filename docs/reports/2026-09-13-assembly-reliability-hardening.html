@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assembly reliability hardening</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #111214; color: #eceef1; line-height: 1.5; }
+    main { max-width: 1120px; margin: 0 auto; padding: 36px 28px 64px; }
+    h1 { margin: 0 0 8px; font-size: 34px; }
+    h2 { margin-top: 36px; font-size: 22px; }
+    p { max-width: 88ch; color: #c7cbd2; }
+    code { color: #9ce2d1; overflow-wrap: anywhere; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { padding: 11px 13px; border: 1px solid #363a40; text-align: left; vertical-align: top; }
+    th { background: #24272c; }
+    td { background: #191b1f; }
+    th:first-child { width: 21%; }
+    th:nth-child(2) { width: 13%; }
+    .pass { color: #88dbc6; }
+    .pending { color: #d4bd86; }
+    .open { color: #aeb4be; }
+    .receipt { font-size: 13px; color: #9fa6b1; }
+    @media (max-width: 760px) {
+      main { padding: 24px 14px; }
+      table { font-size: 13px; }
+      th, td { padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Assembly reliability hardening</h1>
+  <p>Living evidence checklist started 13 September 2026. A surface is marked passed only after current native-app use, not from source inspection or an old test result. Pending means it has not yet received the required depth of proof.</p>
+
+  <h2>Current checkpoint</h2>
+  <table>
+    <thead><tr><th>Surface</th><th>Status</th><th>Evidence and next action</th></tr></thead>
+    <tbody>
+      <tr><td>Session rail selection</td><td class="pass">Passed</td><td>Selected the 25-day-old <code>session-rulecert</code> conversation from the scrolled rail and restored its transcript and project files. Search-result shortcut selection remains pending a clean manual re-test because an accessibility-driven click dismissed the filter without selecting.</td></tr>
+      <tr><td>Files and editor handoff</td><td class="pass">Passed</td><td>Opened <code>EdiEngine.Cli/CliApp.cs</code> from the surviving files of a removed Git worktree. Editor content, syntax projection, tab, symbol count, and editor-only state appeared.</td></tr>
+      <tr><td>Files: File History</td><td class="pass">Fixed and passed</td><td>Reproduced a raw <code>fatal: not a git repository</code> error from the dangling <code>.git</code> pointer. The rebuilt app now says “This folder’s Git history is unavailable.”</td></tr>
+      <tr><td>Center: Git History</td><td class="pass">Fixed and passed</td><td>Opened the same file through “Open file history in the large view.” The rebuilt center view now gives the same calm unavailable state and does not expose Git stderr.</td></tr>
+      <tr><td>Resource settling</td><td class="open">Observed</td><td>After the stale-session/editor/history cycle, the main process RSS sampled from 229,904 KiB down to 227,552 KiB over ten seconds; CPU ranged from 0% to 2.6%. The app’s own resource summary showed 391 MB aggregate physical footprint and 453 MB RSS after the final large-history check. This is a checkpoint, not leak proof.</td></tr>
+      <tr><td>Conversation import/resume/new session</td><td class="pending">Pending</td><td>Exercise provider imports, new local and remote conversations, suspension/resume, cancellation, and restart recovery.</td></tr>
+      <tr><td>Chat scrolling and loading states</td><td class="pending">Pending</td><td>Exercise short and long transcripts, streamed tool calls, composer anchoring, history pagination, and all finite loading indicators.</td></tr>
+      <tr><td>Diff</td><td class="pending">Pending</td><td>Exercise unified and side-by-side selection, changed-chunk navigation, large-file limits, and mode/theme changes.</td></tr>
+      <tr><td>Source Control</td><td class="pending">Pending</td><td>Exercise status refresh, stage/unstage, commit validation, history/file filtering, branch and stash read paths without mutating user work.</td></tr>
+      <tr><td>Worktrees</td><td class="pending">Pending</td><td>Exercise repository switching, stale/dangling worktrees, protected dirty state, and read-only inspection. Do not delete without explicit approval.</td></tr>
+      <tr><td>Run, Context, Agents</td><td class="pending">Pending</td><td>Exercise every exposed action, repeated open/close, empty/error states, and teardown.</td></tr>
+      <tr><td>Browser</td><td class="pending">Pending</td><td>Exercise local and external navigation, back/close, repeated switching, error recovery, and the former reactive update-loop path.</td></tr>
+      <tr><td>Tasks and integrations</td><td class="pending">Pending</td><td>Exercise Notion loading, paging, detail transitions, status changes, OAuth launch, and disconnected/expired states.</td></tr>
+      <tr><td>Settings</td><td class="pending">Pending</td><td>Exercise every control, persistence across restart, cancel/close behavior, theme/font propagation, and invalid values.</td></tr>
+      <tr><td>Remote machines</td><td class="pending">Pending</td><td>Exercise current supported connection path without interfering with the separately running <code>Assembly Remote Dev</code> worktree instance.</td></tr>
+      <tr><td>Window and panel lifecycle</td><td class="pending">Pending</td><td>Repeat right-panel and center-surface close/open, window restart, selection switching, and state isolation while sampling CPU and memory.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Receipts</h2>
+  <p class="receipt">Checkout: <code>/Users/blackcolours/dev/work/mac-command-bar</code>, branch <code>main</code>. Starting commit: <code>a4e43c85</code>. Native bundle: <code>tauri-svelte-preview/src-tauri/target/debug/bundle/macos/Assembly.app</code>. Checks: <code>pnpm check:svelte</code>, <code>pnpm exec tsc --noEmit</code>, and <code>git diff --check</code> passed. <code>pnpm tauri:build --debug</code> produced the app and updater archive, then returned nonzero only because the updater signing private key is intentionally absent.</p>
+</main>
+</body>
+</html>

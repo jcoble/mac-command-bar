@@ -71,7 +71,8 @@
   import {
     canLoadMoreGitHistory,
     createGitPanelState,
-    describeGitHistoryFooter
+    describeGitHistoryFooter,
+    isNotARepositoryError
   } from '$lib/shell/git/gitPanelStore.svelte';
   import {
     absolutePathWithin,
@@ -440,7 +441,11 @@
     {#if historyPanel.desktopOnly}
       <p class="notice">Source control runs in the desktop app only. Nothing is loaded here.</p>
     {:else if historyPanel.historyError && commits.length === 0}
-      <p class="notice bad">{historyPanel.historyError}</p>
+      <p class:bad={!isNotARepositoryError(historyPanel.historyError)} class="notice">
+        {isNotARepositoryError(historyPanel.historyError)
+          ? "This folder's Git history is unavailable."
+          : historyPanel.historyError}
+      </p>
     {:else if historyPanel.historyLoading && commits.length === 0}
       <p class="notice">Reading the commit history…</p>
     {:else if commits.length === 0}
