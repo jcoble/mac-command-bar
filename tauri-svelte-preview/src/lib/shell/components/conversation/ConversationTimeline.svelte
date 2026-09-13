@@ -1,6 +1,5 @@
 <script lang="ts">
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
     conversationTurnGroups,
@@ -27,8 +26,6 @@
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
-
-  const CONVERSATION_GROUP_BATCH = 6;
 
   interface Props {
     items: readonly ConversationDisplayItem[];
@@ -103,15 +100,12 @@
   let openedConversationId = $state('');
   let foldConversationId = $state('');
   let expandedTurns = $state<Map<string, boolean>>(new Map());
-  let visibleGroupLimit = $state(CONVERSATION_GROUP_BATCH);
   /** Every item the conversation holds. A stored row is drawn, never offered. */
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
   const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
   const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId));
-  const visibleGroups = $derived(renderedGroups.slice(-visibleGroupLimit));
-  const hiddenGroupCount = $derived(Math.max(0, renderedGroups.length - visibleGroups.length));
 
   function countDiffLines(diffText: string): { added: number; removed: number } {
     let added = 0;
@@ -187,7 +181,7 @@
     if (!timelineMounted) return;
     setConversationTimelineDiagnostics(
       renderedGroups.length,
-      visibleGroups.length,
+      renderedGroups.length,
       0,
       0
     );
@@ -213,7 +207,6 @@
   $effect(() => {
     if (openedConversationId === renderWindowId) return;
     openedConversationId = renderWindowId;
-    visibleGroupLimit = CONVERSATION_GROUP_BATCH;
     pageAnchor = null;
     anchoredUserItemId = null;
     foldConversationId = renderWindowId;
@@ -264,7 +257,7 @@
   $effect(() => {
     if (foldConversationId !== renderWindowId) return;
     let next: Map<string, boolean> | null = null;
-    for (const group of visibleGroups) {
+    for (const group of renderedGroups) {
       if (!group.turnId || group.completed || group.workItemIds.length === 0 || expandedTurns.has(group.turnId)) continue;
       next ??= new Map(expandedTurns);
       next.set(group.turnId, true);
@@ -539,13 +532,6 @@
     perform(decision.action);
   }
 
-  function showEarlierGroups(): void {
-    visibleGroupLimit = Math.min(
-      renderedGroups.length,
-      visibleGroupLimit + CONVERSATION_GROUP_BATCH
-    );
-  }
-
   function turnExpanded(group: ConversationTurnGroup): boolean {
     if (!group.turnId || !group.completed || group.workItemIds.length === 0) return true;
     return expandedTurns.get(group.turnId) ?? false;
@@ -602,18 +588,7 @@
       data-testid="conversation-timeline-list"
       bind:this={list}
     >
-      {#if hiddenGroupCount > 0}
-        <button
-          class="show-earlier"
-          data-testid="conversation-show-earlier"
-          type="button"
-          onclick={showEarlierGroups}
-        >
-          <ChevronRight size={14} strokeWidth={2} aria-hidden="true" />
-          Show {Math.min(CONVERSATION_GROUP_BATCH, hiddenGroupCount)} earlier turns
-        </button>
-      {/if}
-      {#each visibleGroups as group, index (rowKey(group, index))}
+      {#each renderedGroups as group, index (rowKey(group, index))}
         {@const expanded = turnExpanded(group)}
         <div
           class="turn-row"
@@ -651,9 +626,6 @@
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:var(--center-head-height, 0px) 28px 0;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
   .timeline-list{position:relative;display:flex;flex-direction:column;gap:26px;width:min(820px,100%);min-height:1px;margin:0 auto}
-  .show-earlier{align-self:center;display:flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-elevated);color:var(--color-text-2);font:inherit;font-size:12px;cursor:pointer}
-  .show-earlier:hover{background:var(--color-hover);color:var(--color-text)}
-  .show-earlier:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
   .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
   .timeline-bottom-spacer.send-anchor-space{height:max(calc(max(var(--composer-height, 0px), 120px) + 60px),100vh)}
   .turn-row{position:relative;display:flex;flex-direction:column;gap:26px;width:100%}

@@ -663,6 +663,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-09-13 · TSK-1164 · “Remove redundant fixed-turn transcript disclosure”</td><td>The conversation timeline no longer hides the front of its already byte-bounded event window behind a six-turn Show earlier button. Scrolling remains the only history-loading interaction: reaching either boundary asks SQLite for the next bounded page, preserves the visible item anchor, and leaves opposite-end trimming and Rust safe-Markdown projection unchanged.</td><td>01, 12, 18</td></tr>
             <tr><td>2026-09-13 · “Open local files in the Assembly Browser”</td><td>The existing Browser accepts explicit <code>file://</code> addresses as well as HTTP and HTTPS. Rust canonicalizes the target, requires an existing regular file, rejects remote file authorities, and asks the existing WKWebView to load it with read access limited to its parent folder. Relative styles, scripts, and images work without Rust retaining another document copy. Restored local pages wait for the child view's first measured placement before loading.</td><td>01, 10, 13, 18</td></tr>
             <tr><td>2026-09-13 · TSK-1159 · Remote workflow completion</td><td>Remote Files/Git use machine-qualified paths at the client boundary and native paths in SQLite. New chats inherit their selected machine. Existing remote selection refreshes provider settings without prompting; first-send settings reads wait for session creation. WebSocket snapshot cancellation belongs to its requesting connection. Saved composite model choices normalize before activation. Folder and transcript projections load concurrently; TCP_NODELAY at both WebSocket endpoints and SSH compression keep remote snapshot delivery within one measured network round trip.</td><td>00, 01, 09, 13</td></tr>
             <tr><td>2026-09-13 · TSK-1159 · Saved connections</td><td>One shared connection manager is accessible from Settings and the new-session surface. Connect does not require a project; Disconnect retains saved metadata while releasing its transport. Remote intent with no selected folder remains remote and cannot silently create a local chat.</td><td>00, 01</td></tr>
@@ -1433,10 +1434,10 @@
         <span class="source"><code>EditorPanel.svelte:223-257,716,739,756,776,800-818,949-988</code> · <code>SourceMarkdownPreview.svelte:1-31</code> · <code>sourceMarkdownPreview.ts:3-129</code></span>
 
         <details>
-          <summary>Why “Load Older” is better than a frontend event cap</summary>
+          <summary>Why scrolling loads history instead of hiding turns</summary>
           <div class="details-body">
-            <p>The old design could simply hide old items after a fixed count. The current design makes SQLite windowing the authority: the UI holds a bounded page and explicitly fetches older pages. If rendering itself becomes expensive, the correct frontend optimization is virtualization, not deleting visible history from the model. A page is one megabyte of stored event (<code>OLDER_PAGE_BYTES</code>): each one keeps the reader where they were, so the page size decides how many scroll gestures reaching the start of a long session costs.</p>
-            <span class="source"><code>conversationTimeline.ts:288-310</code> · <code>conversationService.ts:466-531</code></span>
+            <p>The old design hid older items after a fixed turn count and exposed them through a button. The current design makes SQLite windowing the authority: the UI renders its bounded page and automatically fetches older or newer pages at the scroll boundary. If rendering itself becomes expensive, the correct frontend optimization is virtualization, not deleting visible history from the model. Each fetched page preserves the visible item anchor while the byte-bounded event window trims the opposite end.</p>
+            <span class="source"><code>ConversationTimeline.svelte</code> · <code>conversationStore.svelte.ts</code> · <code>agent_conversation/manager.rs</code> · <code>session_store.rs</code></span>
           </div>
         </details>
       </section>
