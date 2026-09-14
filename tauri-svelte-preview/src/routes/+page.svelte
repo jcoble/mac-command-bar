@@ -126,6 +126,7 @@
 	});
 
 	async function disposeRoute(): Promise<void> {
+		selection.rememberWorkspaceState(workbench.captureSessionState());
 		const selectionDisposal = selection.dispose();
 		stopShell();
 		await selectionDisposal;

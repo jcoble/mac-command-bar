@@ -27,6 +27,11 @@ import {
 import { settings, type ProblemsLocation } from '../../settingsStore.svelte';
 import type { CenterDockSnapshot } from '../layout/centerDock';
 import { writeAssemblySettingFromTauri } from '../../tauriSource';
+import {
+	captureBrowserState,
+	releaseBrowserWorkspace,
+	restoreBrowserState,
+} from '../browser/browserStore.svelte.ts';
 
 const SESSIONS_COLLAPSED_KEY = 'shell.sessions.collapsed';
 
@@ -127,12 +132,14 @@ export class WorkbenchController {
 		return {
 			rightTab: this.rightTab,
 			diffMode: this.diffMode,
+			browser: captureBrowserState(),
 			center: this.frameControls?.captureCenterLayout() ?? undefined,
 		};
 	}
 
 	/** Remove outgoing lazy surfaces while the next session is being restored. */
 	beginSessionSwitch(): void {
+		releaseBrowserWorkspace();
 		this.adoptRightTab(DEFAULT_RIGHT_TAB);
 		this.selectCenterTab(DEFAULT_CENTER_TAB);
 	}
@@ -141,6 +148,7 @@ export class WorkbenchController {
 		this.restoringTabs = true;
 		try {
 			this.diffMode = snapshot?.diffMode ?? DEFAULT_DIFF_MODE;
+			restoreBrowserState(snapshot?.browser);
 			if (snapshot?.center) this.frameControls?.restoreCenterLayout(snapshot.center);
 			const center = snapshot?.center?.activePanelId;
 			this.selectCenterTab(this.isCenterTabId(center ?? '') ? center as CenterTabId : DEFAULT_CENTER_TAB);
