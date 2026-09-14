@@ -268,9 +268,10 @@
 			</div>
 		{/if}
 		{#if selection.activeOwnedId && (!selection.hasChatProjection || selection.chatOwnedId !== selection.activeOwnedId)}
-			<div class="conversation-data-isolation" class:pending-first-send={selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId} aria-label="Loading conversation">
+			<div class="conversation-data-isolation" class:pending-first-send={selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId} aria-label={selection.selectionError ? "Conversation unavailable" : "Loading conversation"}>
                 {#if selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId}
                   <PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} />
+				{:else if selection.selectionError}<p>{selection.selectionError}</p>
                 {:else}<p>Loading conversation…</p>{/if}
 			</div>
 		{:else if !selection.activeOwnedId}

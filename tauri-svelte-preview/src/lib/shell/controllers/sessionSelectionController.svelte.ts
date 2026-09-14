@@ -32,6 +32,7 @@ export class SessionSelectionController {
 	activeRootAvailable = $state(true);
 	activeRootRemote = $state(false);
 	activeWorkspaceSnapshot = $state.raw<SessionWorkspaceSnapshot | null>(null);
+	selectionError = $state<string | null>(null);
 
 	private workspaceWriteQueue: Promise<void> | null = null;
 	private selectionGeneration = 0;
@@ -98,6 +99,7 @@ export class SessionSelectionController {
 	}
 
 	async selectSession(ownedId: string): Promise<void> {
+		this.selectionError = null;
 		this.activeWorkspaceSnapshot = null;
 		this.controlledSelectionOwnedId = ownedId;
 		setActiveOwned(ownedId);
@@ -153,7 +155,19 @@ export class SessionSelectionController {
 			const needsWorkspaceState =
 				rootChanged || !Object.prototype.hasOwnProperty.call(this.expandedPathsByRoot, root);
 			if (rootChanged) this.expandedPathsByRoot = {};
-			await this.materializeSelection(session, root, owner, this.chatOwnedId, needsWorkspaceState);
+			try {
+				await this.materializeSelection(session, root, owner, this.chatOwnedId, needsWorkspaceState);
+			} catch (error) {
+				if (!this.isCurrent(owner)) return;
+				this.sessionSelectionLayers.clearTreeView();
+				this.sessionSelectionLayers.clearChatHistory();
+				this.activeRootAvailable = false;
+				shellPanels.sessionPicked(false);
+				const detail = error instanceof Error ? error.message : String(error);
+				this.selectionError = session.executionEnvironment === 'remote' && detail.toLowerCase().includes('not connected')
+					? 'This remote machine is not connected. Open Settings → Connections to connect it.'
+					: `Conversation could not be loaded. ${detail}`;
+			}
 		} else {
 			this.expandedPathsByRoot = {};
 			this.sessionSelectionLayers.abandonSelection(owner);
