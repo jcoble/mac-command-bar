@@ -240,23 +240,14 @@
             <Search class="size-3.5" aria-hidden="true" />
           </IconButton>
           <DropdownMenu.Root>
-            <Tooltip.Root>
-              <Tooltip.Trigger>
-                {#snippet child({ props })}
-                  <DropdownMenu.Trigger
-                    {...props}
-                    data-testid="my-work-view-options-trigger"
-                    class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), ACTION_CLASS)}
-                    aria-label="View session options"
-                  >
-                    <List aria-hidden="true" />
-                  </DropdownMenu.Trigger>
-                {/snippet}
-              </Tooltip.Trigger>
-              <Tooltip.Content side="bottom" class={TOOLTIP_CLASS} arrowClasses={TOOLTIP_ARROW_CLASS}>
-                View session options
-              </Tooltip.Content>
-            </Tooltip.Root>
+            <DropdownMenu.Trigger
+              data-testid="my-work-view-options-trigger"
+              class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), ACTION_CLASS)}
+              aria-label="View session options"
+              title="View session options"
+            >
+              <List aria-hidden="true" />
+            </DropdownMenu.Trigger>
 
             <!-- The sheet keeps the shared menu surface rather than the popover
                  colour it used to name: that colour is the same grey the rail
