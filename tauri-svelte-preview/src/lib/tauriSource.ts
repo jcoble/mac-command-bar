@@ -1,4 +1,4 @@
-import { parseRemoteWorkspacePath, remoteWorkspacePath, mapWorkspaceSnapshotPaths } from './workspacePaths';
+import { parseRemoteWorkspacePath, remoteWorkspacePath, mapWorkspaceSnapshotPaths } from './workspacePaths.ts';
 import { Channel } from '@tauri-apps/api/core';
 import type {
   ProjectRoot,
@@ -28,7 +28,7 @@ import type {
   SourceTreeSearchPage,
   SourceTextEdit,
   SourceWorkspaceSymbol
-} from './sourceData';
+} from './sourceData.ts';
 import type {
   ImplementationReceipt,
   PlanReceipt,
@@ -37,7 +37,7 @@ import type {
   VerificationReceipt,
   WorkflowDefinitionV1,
   WorkflowRunRecord
-} from './shell/workflows/workflowTypes';
+} from './shell/workflows/workflowTypes.ts';
 import {
   normalizeWorkspaceSnapshot,
   type SessionWorkspaceSnapshot
