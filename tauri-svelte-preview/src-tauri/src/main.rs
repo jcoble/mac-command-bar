@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+static SOURCE_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
 // The counting pass behind the margin reference counts lives in mcb-core, not
 // here, so that it is compiled optimized even when this crate is not — see the
 // module's own note and the `[profile.dev.package."*"]` block in Cargo.toml.
@@ -1401,6 +1403,12 @@ fn write_source_file_sync(
     content: String,
     expected_revision: String,
 ) -> Result<SourcePreview, String> {
+    // Assembly saves are serialized, then checked again immediately before the
+    // atomic replacement so a competing save or ordinary external edit is not
+    // silently replaced while the new bytes are prepared.
+    let _write_guard = SOURCE_WRITE_LOCK
+        .lock()
+        .map_err(|_| "Source write lock is unavailable".to_string())?;
     let path_ref = path.as_path();
     let current = read_source_file_sync(path.clone())?;
     if current.revision != expected_revision {
@@ -1430,6 +1438,17 @@ fn write_source_file_sync(
 
     std::fs::write(&temp_path, content.as_bytes())
         .map_err(|error| format!("Could not write source temp file: {error}"))?;
+    let latest = match read_source_file_sync(path.clone()) {
+        Ok(preview) => preview,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error);
+        }
+    };
+    if latest.revision != expected_revision {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err("Source file changed on disk since it was opened.".to_string());
+    }
     if let Err(error) = std::fs::rename(&temp_path, path_ref) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(format!("Could not replace source file: {error}"));

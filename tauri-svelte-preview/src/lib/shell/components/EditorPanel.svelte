@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { parseRemoteWorkspacePath, remoteWorkspacePath } from '$lib/workspacePaths';
+  import { parseRemoteWorkspacePath, workspaceChangePath } from '$lib/workspacePaths';
   /**
    * EditorPanel.svelte — the /next code-reading panel.
    *
@@ -209,7 +209,8 @@
         language: activeFile.language,
         byteCount: 0,
         content: '',
-        lineCount: 1
+        lineCount: 1,
+        revision: ''
       }
     : null));
   const activeFileMissing = $derived(
@@ -815,7 +816,8 @@
         ? {
             ...record,
             content: '',
-            lineCount: 0
+            lineCount: 0,
+            revision: ''
           }
         : await readSourceFromTauri(record);
       if (stopSignal.aborted) return;
@@ -834,10 +836,12 @@
       }
       if (preview) {
         if (imageMimeType && imageBytes) {
+          const imageBuffer = new Uint8Array(imageBytes.byteLength);
+          imageBuffer.set(imageBytes);
           releaseImagePreview();
           imagePreview = {
             path: record.path,
-            url: URL.createObjectURL(new Blob([imageBytes], { type: imageMimeType }))
+            url: URL.createObjectURL(new Blob([imageBuffer.buffer], { type: imageMimeType }))
           };
           setEditorFilePreview(record.path, preview, null, true);
         } else {
@@ -849,11 +853,12 @@
     } catch (error) {
       if (!stopSignal.aborted && !destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
         const detail = describeError(error);
-        if (externalChange && editorFileFor(record.path)?.preview) {
-          setEditorFileConflict(record.path, `File changed outside Assembly and could not be refreshed: ${detail}`);
-        } else {
-          setEditorFileError(record.path, `Could not read this file: ${detail}`);
-        }
+        setEditorFileError(
+          record.path,
+          externalChange
+            ? `File changed outside Assembly and could not be refreshed: ${detail}`
+            : `Could not read this file: ${detail}`
+        );
       }
     } finally {
       if (readsInFlight.get(record.path)?.token === token) {
@@ -1381,10 +1386,7 @@
     if (!ownedId || change.ownedId !== ownedId) return;
     const root = editorState.projectRoot;
     if (!root) return;
-    const remote = parseRemoteWorkspacePath(root);
-    const path = remote && change.path.startsWith('/')
-      ? remoteWorkspacePath(remote.profileId, change.path)
-      : change.path;
+    const path = workspaceChangePath(root, change.path);
     const paths = change.recursive
       ? editorState.openFiles.map((file) => file.path).filter((filePath) => filePath === path || filePath.startsWith(`${path.replace(/\/+$/, '')}/`))
       : [path];
@@ -1393,10 +1395,22 @@
     }
   }
 
-  function reloadConflictedFile(): void {
+  async function reloadConflictedFile(): Promise<void> {
     const file = activeEditorFile();
     if (!file?.preview) return;
-    discardEditorFileDraft(file.path);
+    const generation = sessionResourceGeneration;
+    markEditorFileLoading(file.path);
+    try {
+      const preview = await readSourceFromTauri(recordForPath(file.path));
+      if (!preview) throw new Error('The file could not be read from here.');
+      if (destroyed || generation !== sessionResourceGeneration || !editorFileFor(file.path)) return;
+      setEditorFilePreview(file.path, preview);
+      discardEditorFileDraft(file.path);
+    } catch (error) {
+      if (!destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
+        setEditorFileError(file.path, `Could not reload this file: ${describeError(error)}`);
+      }
+    }
   }
 
   async function overwriteConflictedFile(): Promise<void> {
@@ -1619,7 +1633,7 @@
       {#if activeFile?.conflict}
         <div class="editor-conflict" role="alert">
           <span>{activeFile.conflict}</span>
-          <button type="button" class="retry" onclick={reloadConflictedFile}>Reload from disk</button>
+          <button type="button" class="retry" onclick={() => void reloadConflictedFile()}>Reload from disk</button>
           <button type="button" class="retry" onclick={() => void overwriteConflictedFile()}>Overwrite</button>
         </div>
       {/if}

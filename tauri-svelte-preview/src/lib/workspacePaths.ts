@@ -10,6 +10,21 @@ export function parseRemoteWorkspacePath(path: string): { profileId: string; pat
   if (slash < 0) throw new Error('Invalid remote workspace path');
   return { profileId: decodeURIComponent(path.slice(remotePrefix.length, slash)), path: path.slice(slash) };
 }
+
+/** Resolve a provider file-edit path against the session folder that owns it. */
+export function workspaceChangePath(root: string, path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed || trimmed.startsWith(remotePrefix)) return trimmed;
+  const remote = parseRemoteWorkspacePath(root);
+  if (remote) {
+    const nativePath = trimmed.startsWith('/')
+      ? trimmed
+      : `${remote.path.replace(/\/+$/, '')}/${trimmed.replace(/^\/+/, '')}`;
+    return remoteWorkspacePath(remote.profileId, nativePath);
+  }
+  if (trimmed.startsWith('/')) return trimmed;
+  return root ? `${root.replace(/\/+$/, '')}/${trimmed.replace(/^\/+/, '')}` : trimmed;
+}
 export function sessionWorkspaceRoot(session: { cwd: string; projectPath?: string | null; executionEnvironment?: string; remoteProfileId?: string | null }): string {
   const path = session.cwd.trim() || session.projectPath?.trim() || '';
   if (session.executionEnvironment !== 'remote') return path;

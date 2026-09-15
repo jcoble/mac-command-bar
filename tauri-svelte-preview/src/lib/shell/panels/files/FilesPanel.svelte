@@ -39,7 +39,7 @@
 		} from "./fileTreeModel.ts";
 	import { watchFileTree } from "./fileTreeWatch.ts";
 	import { onWorkspaceFileChange, publishWorkspaceFileChange } from "$lib/shell/workspaceFileChangeBus.ts";
-	import { parseRemoteWorkspacePath, remoteWorkspacePath } from "$lib/workspacePaths.ts";
+	import { workspaceChangePath } from "$lib/workspacePaths.ts";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
 	import type { SourceTreeSearchMatch } from "$lib/sourceData";
@@ -173,10 +173,7 @@
 	const projectRoot = $derived((inspectedRoot || explorer.root || sessionRoot).trim());
 	const stopWorkspaceFileChanges = onWorkspaceFileChange((change) => {
 		if (!visible || !ownedId || change.ownedId !== ownedId) return;
-		const remote = parseRemoteWorkspacePath(projectRoot);
-		const path = remote && change.path.startsWith("/")
-			? remoteWorkspacePath(remote.profileId, change.path)
-			: change.path;
+		const path = workspaceChangePath(projectRoot, change.path);
 		refreshChangedPath(path);
 	});
 	const readOnlyInspection = $derived(

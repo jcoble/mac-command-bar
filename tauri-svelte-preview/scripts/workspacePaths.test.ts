@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot } from '../src/lib/workspacePaths.ts';
+import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
 
 test('a workspace keeps its machine even when another session is selected', () => {
   const first = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
@@ -8,6 +8,12 @@ test('a workspace keeps its machine even when another session is selected', () =
   assert.notEqual(first, second);
   assert.deepEqual(remoteWorkspaceRequest({ path: first, content: second }), { profileId: 'workbox', args: { path: '/home/me/project/a.ts', content: second } });
   assert.deepEqual(parseRemoteWorkspacePath(first), { profileId: 'workbox', path: '/home/me/project/a.ts' });
+});
+test('file change paths resolve against local and remote session roots', () => {
+  assert.equal(workspaceChangePath('/repo', '/repo/file.ts'), '/repo/file.ts');
+  assert.equal(workspaceChangePath('/repo', 'file.ts'), '/repo/file.ts');
+  assert.equal(workspaceChangePath('assembly-remote://workbox/repo', '/repo/file.ts'), 'assembly-remote://workbox/repo/file.ts');
+  assert.equal(workspaceChangePath('assembly-remote://workbox/repo', 'file.ts'), 'assembly-remote://workbox/repo/file.ts');
 });
 test('cross-machine and mixed local/remote file operations fail before invoking', () => {
   const source = remoteWorkspacePath('workbox', '/a');

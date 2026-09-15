@@ -48,6 +48,7 @@ const codexSessionFileLimit = 512;
  */
 const codexSessionHeadBytes = 256 * 1024;
 const codexSessionTailBytes = 256 * 1024;
+let localSourceWriteTail: Promise<void> = Promise.resolve();
 /**
  * Enough to hold the opening `session_meta` line whole. Measured across 687
  * rollout files: median 27 KB, largest 44 KB.
@@ -1227,7 +1228,17 @@ export async function readLocalSourceFile(filePath: string): Promise<SourcePrevi
   };
 }
 
-export async function writeLocalSourceFile(
+export function writeLocalSourceFile(
+  filePath: string,
+  content: string,
+  expectedRevision: string
+): Promise<SourcePreview> {
+  const write = localSourceWriteTail.then(() => writeLocalSourceFileSerialized(filePath, content, expectedRevision));
+  localSourceWriteTail = write.then(() => undefined, () => undefined);
+  return write;
+}
+
+async function writeLocalSourceFileSerialized(
   filePath: string,
   content: string,
   expectedRevision: string
@@ -1254,6 +1265,10 @@ export async function writeLocalSourceFile(
 
   try {
     await writeFile(tempPath, content, 'utf8');
+    const latest = await readLocalSourceFile(resolvedPath);
+    if (latest.revision !== expectedRevision) {
+      throw new Error('Source file changed on disk since it was opened.');
+    }
     await rename(tempPath, resolvedPath);
   } catch (error) {
     try {
