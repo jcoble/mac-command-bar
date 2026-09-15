@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { parseRemoteWorkspacePath } from '$lib/workspacePaths';
+  import { parseRemoteWorkspacePath, remoteWorkspacePath } from '$lib/workspacePaths';
   /**
    * EditorPanel.svelte — the /next code-reading panel.
    *
@@ -27,6 +27,7 @@
    *    anything starts the editor, and only for a file already on screen.
    */
   import { onMount } from 'svelte';
+  import Save from '@lucide/svelte/icons/save';
   import X from '@lucide/svelte/icons/x';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
 
@@ -53,6 +54,7 @@
     publishLanguageIntelligenceBar
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
+  import { onWorkspaceFileChange } from '$lib/shell/workspaceFileChangeBus.ts';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { setEditorSourceReadDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
@@ -60,7 +62,9 @@
     activateEditor,
     activeEditorFile,
     clearEditorFileLoading,
+    clearEditorFileConflict,
     closeEditorFile,
+    discardEditorFileDraft,
     editorFileFor,
     editorState,
     markEditorFileLoading,
@@ -71,6 +75,7 @@
     setActiveEditorFile,
     setEditorFileDraft,
     setEditorFileError,
+    setEditorFileConflict,
     setEditorFilePreview,
     setEditorFileSaving,
     setEditorSymbols
@@ -118,6 +123,8 @@
    * `ensureCodeEditor`.
    */
   interface Props {
+    /** Session whose live file-edit events may invalidate open documents. */
+    ownedId?: string | null;
     /** Called when an open-file request has become a real open, so the shell can
      * bring this panel's tab to the front. The panel itself stays unaware of the
      * tab area — it just says a file arrived. */
@@ -134,6 +141,7 @@
     onStartWorkspaceCommand?: (request: WorkspaceCommandSessionRequest) => void | Promise<void>;
   }
   let {
+    ownedId = null,
     onFileOpened,
     showing = false,
     rootAvailable = true,
@@ -791,7 +799,8 @@
     generation: number,
     readOnly: boolean,
     projectRoot: string | null,
-    token: object
+    token: object,
+    externalChange: boolean
   ): Promise<void> {
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted) return;
@@ -839,7 +848,12 @@
       }
     } catch (error) {
       if (!stopSignal.aborted && !destroyed && generation === sessionResourceGeneration && editorFileFor(record.path)) {
-        setEditorFileError(record.path, `Could not read this file: ${describeError(error)}`);
+        const detail = describeError(error);
+        if (externalChange && editorFileFor(record.path)?.preview) {
+          setEditorFileConflict(record.path, `File changed outside Assembly and could not be refreshed: ${detail}`);
+        } else {
+          setEditorFileError(record.path, `Could not read this file: ${detail}`);
+        }
       }
     } finally {
       if (readsInFlight.get(record.path)?.token === token) {
@@ -854,7 +868,7 @@
   }
 
   /** EXPLICIT IO: read one file and show it. */
-  async function readFileIntoEditor(record: SourceRecord): Promise<void> {
+  async function readFileIntoEditor(record: SourceRecord, externalChange = false): Promise<void> {
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted || closeActionBusy || !rootAvailable) return;
     const existing = readsInFlight.get(record.path);
@@ -864,7 +878,7 @@
       if (stopSignal.aborted) return;
       const file = editorFileFor(record.path);
       if (!file || !needsRead(file)) return;
-      return readFileIntoEditor(record);
+      return readFileIntoEditor(record, externalChange);
     }
     const generation = sessionResourceGeneration;
     const readOnly = Boolean(readOnlyByPath[record.path]);
@@ -872,7 +886,7 @@
     markEditorFileLoading(record.path);
     if (!readOnly && !rasterImageMimeType(record.fileName)) void warmLanguageServer(editorState.projectRoot);
     const token = {};
-    const work = readFileIntoEditorForOwner(record, generation, readOnly, projectRoot, token);
+    const work = readFileIntoEditorForOwner(record, generation, readOnly, projectRoot, token, externalChange);
     readsInFlight.set(record.path, { byteCount: record.byteCount, generation, token, work });
     publishSourceReadDiagnostics();
     return work;
@@ -962,7 +976,8 @@
     setEditorFileSaving(file.path, true);
     try {
       if (stopSignal.aborted) return false;
-      const saved = await writeSourceToTauri(recordForPath(file.path), content);
+      if (!file.preview) return false;
+      const saved = await writeSourceToTauri(recordForPath(file.path), content, file.preview.revision);
       if (stopSignal.aborted) return false;
       if (!saved) throw new Error('The file could not be written from here.');
       if (destroyed || generation !== sessionResourceGeneration || !editorFileFor(file.path)) return false;
@@ -970,8 +985,14 @@
       return true;
     } catch (error) {
       if (!stopSignal.aborted && !destroyed && generation === sessionResourceGeneration && editorFileFor(file.path)) {
-        setEditorFileSaving(file.path, false);
-        setEditorFileError(file.path, `Could not save this file: ${describeError(error)}`);
+        const detail = describeError(error);
+        if (detail.includes('Source file changed on disk since it was opened.')) {
+          setEditorFileSaving(file.path, false);
+          await readFileIntoEditor(recordForPath(file.path), true);
+        } else {
+          setEditorFileSaving(file.path, false);
+          setEditorFileError(file.path, `Could not save this file: ${detail}`);
+        }
       }
       return false;
     }
@@ -1345,9 +1366,44 @@
     resetEditorState();
   }
 
+  export function refreshOpenFiles(): void {
+    for (const file of editorState.openFiles) {
+      if (!rasterImageMimeType(file.fileName)) void readFileIntoEditor(recordForPath(file.path), true);
+    }
+  }
+
   function retryRead(path: string): void {
     if (closeActionBusy || !rootAvailable) return;
     void readFileIntoEditor(recordForPath(path));
+  }
+
+  function handleWorkspaceFileChange(change: { ownedId: string; path: string; recursive?: boolean }): void {
+    if (!ownedId || change.ownedId !== ownedId) return;
+    const root = editorState.projectRoot;
+    if (!root) return;
+    const remote = parseRemoteWorkspacePath(root);
+    const path = remote && change.path.startsWith('/')
+      ? remoteWorkspacePath(remote.profileId, change.path)
+      : change.path;
+    const paths = change.recursive
+      ? editorState.openFiles.map((file) => file.path).filter((filePath) => filePath === path || filePath.startsWith(`${path.replace(/\/+$/, '')}/`))
+      : [path];
+    for (const changedPath of paths) {
+      if (editorFileFor(changedPath)) void readFileIntoEditor(recordForPath(changedPath), true);
+    }
+  }
+
+  function reloadConflictedFile(): void {
+    const file = activeEditorFile();
+    if (!file?.preview) return;
+    discardEditorFileDraft(file.path);
+  }
+
+  async function overwriteConflictedFile(): Promise<void> {
+    const file = activeEditorFile();
+    if (!file?.preview || !file.dirty || !file.conflict) return;
+    clearEditorFileConflict(file.path);
+    await saveEditorFile(file.path);
   }
 
   /** The code editor followed a definition or a reference into another file. */
@@ -1428,6 +1484,7 @@
     // Subscribing costs nothing and loads nothing; it just means a click in the
     // explorer made before this panel was ever shown still opens its file.
     const unsubscribe = onOpenFile(handleOpenFileRequest);
+    const unsubscribeWorkspaceFileChanges = onWorkspaceFileChange(handleWorkspaceFileChange);
 
     // Listening for status updates is likewise free, and it is the only way the
     // chip ever changes after a file opens — nothing here polls.
@@ -1451,6 +1508,7 @@
       // With no panel there is nothing truthful to show in the top strip.
       clearLanguageIntelligenceBar();
       unsubscribe();
+      unsubscribeWorkspaceFileChanges();
       resetEditorState();
     };
   });
@@ -1474,9 +1532,7 @@
                     type="button"
                     role="tab"
                     aria-selected={file.path === editorState.activePath}
-                    aria-label={readOnlyByPath[file.path]
-                      ? `${file.fileName} (read-only: ${readOnlyByPath[file.path]})`
-                      : file.fileName}
+                    aria-label={`${file.fileName}${file.dirty ? ' (unsaved)' : ''}${readOnlyByPath[file.path] ? ` (read-only: ${readOnlyByPath[file.path]})` : ''}`}
                     class="file-name"
                     title={readOnlyByPath[file.path]
                       ? `Read-only inspection in ${readOnlyByPath[file.path]}\n${file.relativePath}`
@@ -1485,6 +1541,7 @@
                   >
                     <FileIcon fileName={file.fileName} size={13} />
                     {#if file.previewTab}<em>{file.fileName}</em>{:else}{file.fileName}{/if}
+                    {#if file.dirty}<span class="chip-note" aria-hidden="true">*</span>{/if}
                     {#if readOnlyByPath[file.path]}<span class="chip-note">read-only</span>{/if}
                     {#if file.loading}<span class="chip-note">reading</span>{/if}
                     {#if file.error}<span class="chip-note error">failed</span>{/if}
@@ -1530,6 +1587,15 @@
       <!-- Only the open file's own controls belong here. The language-server
            switch sits in this editor's status bar. -->
       <div class="editor-controls">
+        <IconButton
+          label="Save active file"
+          size="sm"
+          side="bottom"
+          disabled={!activeFile?.dirty || Boolean(activeFile?.conflict) || activeFileReadOnly}
+          onclick={() => void saveActiveFile()}
+        >
+          <Save class="size-3.5" aria-hidden="true" />
+        </IconButton>
         <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
           <X class="size-3.5" aria-hidden="true" />
         </IconButton>
@@ -1550,11 +1616,24 @@
     </div>
 
     <div class="editor-canvas">
+      {#if activeFile?.conflict}
+        <div class="editor-conflict" role="alert">
+          <span>{activeFile.conflict}</span>
+          <button type="button" class="retry" onclick={reloadConflictedFile}>Reload from disk</button>
+          <button type="button" class="retry" onclick={() => void overwriteConflictedFile()}>Overwrite</button>
+        </div>
+      {/if}
+      {#if activeFile?.error && activeFile.preview}
+        <div class="editor-conflict" role="alert">
+          <span>{activeFile.error}</span>
+          <button type="button" class="retry" onclick={() => retryRead(activeFile.path)}>Try again</button>
+        </div>
+      {/if}
       {#if editorLoadError}
         <p class="canvas-message error">{editorLoadError}</p>
       {:else if activeFile?.error && activeFileMissing}
         <p class="canvas-message">File no longer exists at {activeFile.path}</p>
-      {:else if activeFile?.error}
+      {:else if activeFile?.error && !activeFile.preview}
         <div class="canvas-message error">
           <p>{activeFile.error}</p>
           <button
@@ -1825,6 +1904,18 @@
     min-height: 0;
     overflow: hidden;
   }
+
+  .editor-conflict {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    color: var(--color-danger);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .editor-conflict span { flex: 1; min-width: 0; }
 
   .canvas-message {
     display: flex;

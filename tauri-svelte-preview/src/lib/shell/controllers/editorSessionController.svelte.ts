@@ -21,6 +21,7 @@ export type EditorPanelLifecycle = {
 	workspaceOwnedPaths(): string[];
 	restoreViewStates(files: readonly { path: string; viewState?: object }[]): void;
 	releaseSessionResources(paths: readonly string[]): void;
+	refreshOpenFiles(): void;
 };
 
 export class EditorSessionController {
@@ -30,6 +31,10 @@ export class EditorSessionController {
 
 	setPanel(panel: EditorPanelLifecycle | null): void {
 		this.panel = panel;
+	}
+
+	refreshActiveFiles(ownedId: string): void {
+		if (this.activeOwnedId === ownedId) this.panel?.refreshOpenFiles();
 	}
 
 	/** One session-selection seam: commenting out this call disables editor switching. */

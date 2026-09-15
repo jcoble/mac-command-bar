@@ -150,7 +150,9 @@ export function setEditorFilePreview(
       ? null
       : committedContent !== null && currentDraft === committedContent
         ? null
-        : currentDraft;
+        : file?.dirty
+          ? currentDraft
+          : null;
   const conflict =
     !readOnly
       && committedContent === null
@@ -196,6 +198,31 @@ export function setEditorFileDraft(path: string, content: string): void {
 /** Mark or clear the save spinner without replacing the draft. */
 export function setEditorFileSaving(path: string, saving: boolean): void {
   editorState.openFiles = patchOpenFile(editorState.openFiles, path, { saving });
+}
+
+/** Keep the draft visible while a newer disk revision waits for a decision. */
+export function setEditorFileConflict(path: string, message: string): void {
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
+    conflict: message,
+    saving: false,
+    error: null
+  });
+}
+
+export function discardEditorFileDraft(path: string): void {
+  const file = editorFileFor(path);
+  if (!file?.preview) return;
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, {
+    draftContent: file.preview.content,
+    dirty: false,
+    conflict: null,
+    error: null
+  });
+  publishOpenTabDocumentBytes();
+}
+
+export function clearEditorFileConflict(path: string): void {
+  editorState.openFiles = patchOpenFile(editorState.openFiles, path, { conflict: null });
 }
 
 /** A read failed: `message` is shown to the user as-is, so keep it plain. */

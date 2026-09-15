@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -248,11 +248,28 @@ try {
   assert.equal(preview.language, 'csharp');
   assert.equal(preview.lineCount, 2);
 
+  const appPath = join(root, 'src', 'App.ts');
+  const openedApp = await readLocalSourceFile(appPath);
   const updatedPreview = await writeLocalSourceFile(
-    join(root, 'src', 'App.ts'),
-    'export const appName = "Updated";\n'
+    appPath,
+    'export const appName = "Updated";\n',
+    openedApp.revision
   );
   assert.match(updatedPreview.content, /Updated/);
+
+  const plainPath = join(root, 'notes.txt');
+  await writeFile(plainPath, 'BASE\n', 'utf8');
+  const openedPlain = await readLocalSourceFile(plainPath);
+  await writeFile(plainPath, 'EXTERNAL\n', 'utf8');
+  await assert.rejects(
+    writeLocalSourceFile(plainPath, 'LOCAL\n', openedPlain.revision),
+    /Source file changed on disk since it was opened/
+  );
+  assert.equal(await readFile(plainPath, 'utf8'), 'EXTERNAL\n');
+  const latestPlain = await readLocalSourceFile(plainPath);
+  const savedPlain = await writeLocalSourceFile(plainPath, 'LOCAL\n', latestPlain.revision);
+  assert.equal(savedPlain.language, 'plain');
+  assert.equal(await readFile(plainPath, 'utf8'), 'LOCAL\n');
 
   const matches = await searchLocalSourceFiles(scan.records, 'FormatResolver', 10);
   assert.equal(matches.length, 1);

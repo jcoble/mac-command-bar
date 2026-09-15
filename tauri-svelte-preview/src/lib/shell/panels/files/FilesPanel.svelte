@@ -38,6 +38,8 @@
 			windowFileTreeNodes,
 		} from "./fileTreeModel.ts";
 	import { watchFileTree } from "./fileTreeWatch.ts";
+	import { onWorkspaceFileChange, publishWorkspaceFileChange } from "$lib/shell/workspaceFileChangeBus.ts";
+	import { parseRemoteWorkspacePath, remoteWorkspacePath } from "$lib/workspacePaths.ts";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
 	import type { SourceTreeSearchMatch } from "$lib/sourceData";
@@ -169,6 +171,14 @@
 		...new Set([sessionRoot, ...checkoutDiscoveryRoots].map(canonicalPath).filter(Boolean)),
 	]);
 	const projectRoot = $derived((inspectedRoot || explorer.root || sessionRoot).trim());
+	const stopWorkspaceFileChanges = onWorkspaceFileChange((change) => {
+		if (!visible || !ownedId || change.ownedId !== ownedId) return;
+		const remote = parseRemoteWorkspacePath(projectRoot);
+		const path = remote && change.path.startsWith("/")
+			? remoteWorkspacePath(remote.profileId, change.path)
+			: change.path;
+		refreshChangedPath(path);
+	});
 	const readOnlyInspection = $derived(
 		Boolean(inspectedRoot) && canonicalPath(inspectedRoot) !== canonicalPath(sessionRoot),
 	);
@@ -401,7 +411,10 @@
 
 	async function ownFileTreeWatch(directories: readonly string[], signal: AbortSignal): Promise<void> {
 		try {
-			await watchFileTree(directories, signal, refreshChangedPaths);
+			await watchFileTree(directories, signal, (paths) => {
+				if (!ownedId) return;
+				for (const path of paths) publishWorkspaceFileChange({ ownedId, path });
+			});
 		} catch (error) {
 			if (dev && !signal.aborted) console.warn("Could not watch the file tree", error);
 		}
@@ -979,7 +992,15 @@
 		contextMenuNode = node;
 	}
 
+	function refreshFiles(): void {
+		refresh();
+		if (ownedId && projectRoot) {
+			publishWorkspaceFileChange({ ownedId, path: projectRoot, recursive: true });
+		}
+	}
+
 	onDestroy(() => {
+		stopWorkspaceFileChanges();
 		inspectionGeneration += 1;
 		searchGeneration += 1;
 		revealGeneration += 1;
@@ -1060,7 +1081,7 @@
 				{#if explorer.scanning}
 					<IconButton label="Stop listing files" onclick={() => stopScan()}><Square /></IconButton>
 				{:else}
-					<IconButton label="List this project's files again" disabled={!explorer.root} onclick={() => refresh()}>
+					<IconButton label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
 						<RefreshCw />
 					</IconButton>
 				{/if}

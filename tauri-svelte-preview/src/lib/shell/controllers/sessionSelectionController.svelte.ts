@@ -15,6 +15,7 @@ import {
 import type { OwnedSession } from '../ownedSessions';
 import { removeOwnedSession } from '../stores/sessionRailStore.svelte';
 import { shellPanels } from '../shellPanels';
+import { refresh as refreshExplorer } from '../explorer/explorerService.ts';
 import { NewSessionController } from './newSessionController.svelte';
 import { EditorSessionController, type EditorPanelLifecycle } from './editorSessionController.svelte';
 import {
@@ -134,6 +135,8 @@ export class SessionSelectionController {
 		this.sessionSelectionLayers.clearTreeView();
 		this.sessionSelectionLayers.clearChatHistory();
 		await this.selectSession(selected.ownedId);
+		refreshExplorer();
+		this.editorSessions.refreshActiveFiles(selected.ownedId);
 	}
 
 	private async drainSelections(): Promise<void> {

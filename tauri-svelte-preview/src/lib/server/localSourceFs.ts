@@ -1,5 +1,6 @@
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { Dirent, Stats } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -1209,10 +1210,6 @@ export async function readLocalSourceFile(filePath: string): Promise<SourcePrevi
     throw new Error('Source path is not a file');
   }
 
-  if (!isSourceFile(resolvedPath)) {
-    throw new Error('Source path is not a supported source file');
-  }
-
   if (fileStats.size > maxPreviewBytes) {
     throw new Error('Source file is too large to preview');
   }
@@ -1224,10 +1221,17 @@ export async function readLocalSourceFile(filePath: string): Promise<SourcePrevi
     throw new Error(`Could not read source file as UTF-8: ${errorMessage(error)}`);
   }
 
-  return previewFromContent(sourceRecordForPath(resolvedPath, fileStats.size), content);
+  return {
+    ...previewFromContent(sourceRecordForPath(resolvedPath, fileStats.size), content),
+    revision: createHash('sha256').update(content).digest('hex')
+  };
 }
 
-export async function writeLocalSourceFile(filePath: string, content: string): Promise<SourcePreview> {
+export async function writeLocalSourceFile(
+  filePath: string,
+  content: string,
+  expectedRevision: string
+): Promise<SourcePreview> {
   const resolvedPath = normalizeFilePath(filePath);
   let fileStats: Stats;
   try {
@@ -1240,8 +1244,9 @@ export async function writeLocalSourceFile(filePath: string, content: string): P
     throw new Error('Source path is not a file');
   }
 
-  if (!isSourceFile(resolvedPath)) {
-    throw new Error('Source path is not a supported source file');
+  const current = await readLocalSourceFile(resolvedPath);
+  if (current.revision !== expectedRevision) {
+    throw new Error('Source file changed on disk since it was opened.');
   }
 
   const tempPath = `${resolvedPath}.mcb-${process.pid}-${Date.now()}.tmp`;

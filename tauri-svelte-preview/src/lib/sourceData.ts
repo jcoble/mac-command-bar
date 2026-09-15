@@ -34,6 +34,8 @@ export type SourceTreeSearchPage = {
 export type SourcePreview = SourceRecord & {
   content: string;
   lineCount: number;
+  /** SHA-256 of the bytes read; a save must present the same revision. */
+  revision: string;
 };
 
 export type SourceSearchMatch = SourceRecord & {
@@ -940,7 +942,8 @@ export function previewFromContent(record: SourceRecord, content: string): Sourc
   return {
     ...record,
     content,
-    lineCount: content.length === 0 ? 0 : content.split(/\r\n|\r|\n/).length
+    lineCount: content.length === 0 ? 0 : content.split(/\r\n|\r|\n/).length,
+    revision: `demo:${content.length}`
   };
 }
 

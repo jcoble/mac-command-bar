@@ -27,6 +27,7 @@ use mcb_core::reference_counts::{
     MAX_REFERENCE_SCAN_BYTES,
 };
 use orchestration::import_legacy_orchestration_events;
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
 use workflow::WorkflowEngine;
@@ -166,7 +167,7 @@ struct SourceScanProgressEvent {
     matched_files: usize,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourcePreview {
     path: String,
@@ -174,6 +175,7 @@ struct SourcePreview {
     file_name: String,
     language: String,
     byte_count: u64,
+    revision: String,
     content: String,
     line_count: usize,
 }
@@ -1365,6 +1367,7 @@ fn read_source_file_sync_while(
     if !keep_reading() {
         return Ok(None);
     }
+    let revision = format!("{:x}", Sha256::digest(&bytes));
     let content = String::from_utf8(bytes)
         .map_err(|error| format!("Could not read source file as UTF-8: {error}"))?;
     let file_name = path_ref
@@ -1379,6 +1382,7 @@ fn read_source_file_sync_while(
         file_name,
         language: detect_language(path_ref),
         byte_count: metadata.len(),
+        revision,
         line_count: content.lines().count(),
         content,
     };
@@ -1392,15 +1396,15 @@ fn read_source_file_sync_while(
     Ok(Some(preview))
 }
 
-fn write_source_file_sync(path: PathBuf, content: String) -> Result<SourcePreview, String> {
+fn write_source_file_sync(
+    path: PathBuf,
+    content: String,
+    expected_revision: String,
+) -> Result<SourcePreview, String> {
     let path_ref = path.as_path();
-    let metadata = std::fs::metadata(path_ref)
-        .map_err(|error| format!("Could not read {}: {error}", path_ref.display()))?;
-    if !metadata.is_file() {
-        return Err("Source path is not a file".to_string());
-    }
-    if !is_source_file(path_ref) {
-        return Err("Source path is not a supported source file".to_string());
+    let current = read_source_file_sync(path.clone())?;
+    if current.revision != expected_revision {
+        return Err("Source file changed on disk since it was opened.".to_string());
     }
 
     let byte_count = content.as_bytes().len() as u64;
@@ -6775,10 +6779,12 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         let file_path = root.join("src/App.ts");
         std::fs::write(&file_path, "export const oldValue = 1;\n").unwrap();
+        let original = read_source_file_sync(file_path.clone()).unwrap();
 
         let preview = write_source_file_sync(
             file_path.clone(),
             "export const newValue = 2;\n".to_string(),
+            original.revision,
         )
         .unwrap();
 
@@ -6791,6 +6797,35 @@ mod tests {
         assert_eq!(preview.language, "typescript");
         assert_eq!(preview.line_count, 1);
         assert_eq!(preview.content, "export const newValue = 2;\n");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_write_accepts_plain_utf8_and_rejects_a_stale_revision() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let file_path = root.join("notes.txt");
+        std::fs::write(&file_path, "BASE\n").unwrap();
+        let opened = read_source_file_sync(file_path.clone()).unwrap();
+
+        std::fs::write(&file_path, "EXTERNAL\n").unwrap();
+        let error = write_source_file_sync(
+            file_path.clone(),
+            "LOCAL\n".to_string(),
+            opened.revision,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Source file changed on disk since it was opened.");
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "EXTERNAL\n");
+
+        let latest = read_source_file_sync(file_path.clone()).unwrap();
+        let saved = write_source_file_sync(file_path.clone(), "LOCAL\n".to_string(), latest.revision)
+            .unwrap();
+        assert_eq!(saved.language, "plain");
+        assert_eq!(saved.content, "LOCAL\n");
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "LOCAL\n");
 
         std::fs::remove_dir_all(root).unwrap();
     }

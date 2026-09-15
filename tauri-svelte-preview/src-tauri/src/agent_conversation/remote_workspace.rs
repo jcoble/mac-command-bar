@@ -81,7 +81,7 @@ pub(super) async fn execute(operation: String, mut args: Value) -> Result<Value,
             "search_source_tree" => json(crate::search_source_tree_sync(path(&args, "root")?, arg(&args, "query")?, arg(&args, "pageSize")?, arg(&args, "cursor")?, arg::<Option<bool>>(&args, "includeExcluded")?.unwrap_or(false), cancellation)?),
             "read_source_file" => json(Some(crate::read_source_file_sync(path(&args, "path")?)?)),
             "read_source_image" => json(crate::read_source_image_sync(path(&args, "path")?)?),
-            "write_source_file" => json(crate::write_source_file_sync(path(&args, "path")?, arg(&args, "content")?)?),
+            "write_source_file" => json(crate::write_source_file_sync(path(&args, "path")?, arg(&args, "content")?, arg(&args, "expectedRevision")?)?),
             "workspace_exists" => json(path(&args, "path")?.try_exists().map_err(|e| e.to_string())?),
             "workspace_mkdir" => { std::fs::create_dir(path(&args, "path")?).map_err(|e| e.to_string())?; json(()) },
             "workspace_rename" => { std::fs::rename(path(&args, "source")?, path(&args, "target")?).map_err(|e| e.to_string())?; json(()) },
@@ -112,6 +112,12 @@ mod tests {
             execute("workspace_write_text".into(), serde_json::json!({"path": file, "content": "remote content"})).await.unwrap();
             let read = execute("read_source_file".into(), serde_json::json!({"path": file})).await.unwrap();
             assert_eq!(read["content"], "remote content");
+            let saved = execute("write_source_file".into(), serde_json::json!({
+                "path": file,
+                "content": "updated remote content",
+                "expectedRevision": read["revision"]
+            })).await.unwrap();
+            assert_eq!(saved["content"], "updated remote content");
             let listing = execute("list_source_directory".into(), serde_json::json!({"root": root, "directory": root})).await.unwrap();
             assert!(listing.as_array().unwrap().iter().any(|entry| entry["path"] == file.to_string_lossy().as_ref()));
             execute("init_project_repository".into(), serde_json::json!({"root": root})).await.unwrap();

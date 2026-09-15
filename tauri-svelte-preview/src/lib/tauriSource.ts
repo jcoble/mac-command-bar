@@ -1267,12 +1267,14 @@ export async function markNativeCsharpLanguageClientReadyFromTauri(root: string)
 
 export async function writeSourceToTauri(
   record: SourceRecord,
-  content: string
+  content: string,
+  expectedRevision: string
 ): Promise<SourcePreview | null> {
   if (!isTauriRuntime()) {
     const preview = await postLocalSourceBridge<SourcePreview>('write', {
       path: record.path,
-      content
+      content,
+      expectedRevision
     });
     return preview
       ? {
@@ -1286,7 +1288,8 @@ export async function writeSourceToTauri(
   const { invoke } = await import('./workspaceInvoke');
   const preview = await invoke<SourcePreview>('write_source_file', {
     path: record.path,
-    content
+    content,
+    expectedRevision
   });
   return {
     ...preview,

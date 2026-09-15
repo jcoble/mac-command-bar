@@ -71,7 +71,7 @@ const provider: IFileSystemProvider = {
     if (!root) throw new Error('C# source path is outside every active workspace root.');
     const current = await readNativeCsharpFileFromTauri(root, path);
     if (!current) throw new Error('C# source file is unavailable outside the desktop app.');
-    const saved = await writeSourceToTauri(current, decoder.decode(content));
+    const saved = await writeSourceToTauri(current, decoder.decode(content), current.revision);
     if (!saved) throw new Error('C# source file could not be saved.');
   },
   async mkdir(_resource: URI) {

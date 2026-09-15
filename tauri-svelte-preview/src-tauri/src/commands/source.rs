@@ -175,9 +175,10 @@ pub(crate) async fn read_native_csharp_file(
 pub(crate) async fn write_source_file(
     path: String,
     content: String,
+    expected_revision: String,
 ) -> Result<SourcePreview, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        write_source_file_sync(PathBuf::from(path), content)
+        write_source_file_sync(PathBuf::from(path), content, expected_revision)
     })
     .await
     .map_err(|error| format!("Source write task failed: {error}"))?

@@ -10,6 +10,7 @@ import { get } from 'svelte/store';
 import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { mergeAgentItem } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { sessionPresenceHistory } from '../src/lib/shell/conversation/sessionPresence.ts';
+import { onWorkspaceFileChange } from '../src/lib/shell/workspaceFileChangeBus.ts';
 
 type ProviderName = 'codex' | 'claude';
 type ConnectionState = 'connected' | 'connecting' | 'reconnecting';
@@ -185,6 +186,29 @@ store.applyAgentConversationEvent({
 });
 assert.equal(store.getConversationSession('owned-a').timeline.length, 2);
 assert.equal(store.getConversationSession('owned-b').timeline.length, 0);
+
+// A completed structured file edit publishes its retained path once, even
+// when the provider's completion update omits the path and diff.
+{
+  const changes: Array<{ ownedId: string; path: string }> = [];
+  const unsubscribe = onWorkspaceFileChange((change) => changes.push(change));
+  const ownedId = 'owned-file-change';
+  store.ensureConversationSession(ownedId, 'codex');
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 110,
+    payload: {
+      kind: 'tool', itemId: 'edit-1', name: 'Editing files', state: 'started',
+      path: '/workspace/new.txt', diff: '@@ -0,0 +1 @@\n+created\n'
+    }
+  });
+  assert.deepEqual(changes, []);
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 120,
+    payload: { kind: 'tool', itemId: 'edit-1', name: 'Tool', state: 'completed' }
+  });
+  assert.deepEqual(changes, [{ ownedId, path: '/workspace/new.txt' }]);
+  unsubscribe();
+}
 
 // Live subagent updates create one durable row, then update that same row
 // without losing the spawn label when a completion update omits it.

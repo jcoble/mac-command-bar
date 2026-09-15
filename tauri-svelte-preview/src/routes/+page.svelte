@@ -295,6 +295,7 @@
 {#snippet editorArea()}
 	<EditorPanel
 		bind:this={editorPanel}
+		ownedId={selection.activeOwnedId}
 		showing={workbench.centerTab === "editor"}
 		rootAvailable={selection.controlledEditorRootAvailable}
 		onCloseAllEditors={() => selection.editorSessions.clearActiveEditors()}

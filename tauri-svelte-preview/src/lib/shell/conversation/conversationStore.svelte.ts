@@ -46,6 +46,7 @@ import {
   type AgentConversationConfigState
 } from './conversationConfig.ts';
 import type { AgentExecutionOwner } from '../ownedSessions.ts';
+import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
 import {
   clearSessionPresence,
   synchronizeSessionPresenceWork
@@ -377,6 +378,15 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
     if (mergeAgentItemInPlace(current, typedItem, conversationEventAppendsItemContent(displayEvent))
       && !['userMessage', 'assistantDelta', 'assistantMessage', 'tool'].includes(event.payload.kind)) {
       current.timelineRevision += 1;
+    }
+    const itemIndex = agentItemIndex(current).get(typedItem.id);
+    const mergedItem = itemIndex === undefined ? null : current.agentItems[itemIndex];
+    const changedPath = mergedItem?.providerMetadata?.path;
+    const changedDiff = mergedItem?.providerMetadata?.diff;
+    if (mergedItem?.providerMetadata?.completed === true
+      && typeof changedPath === 'string'
+      && typeof changedDiff === 'string') {
+      publishWorkspaceFileChange({ ownedId: event.ownedId, path: changedPath });
     }
   }
   applyTypedEventPayload(current, displayEvent);

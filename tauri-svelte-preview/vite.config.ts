@@ -187,7 +187,8 @@ function createLocalSourceBridgeMiddleware() {
             200,
             await writeLocalSourceFile(
               String(body.path ?? ""),
-              String(body.content ?? "")
+              String(body.content ?? ""),
+              String(body.expectedRevision ?? "")
             )
           );
           break;
