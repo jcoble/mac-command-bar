@@ -49,7 +49,7 @@
         <tr><td>Transport</td><td>The Mac copies one versioned archive to a unique remote staging directory over SSH. No destination source checkout is required.</td></tr>
         <tr><td>Integrity</td><td>A manifest names every package file and SHA-256. The deployment verifies the package before changing the installed service. Release publication signs the manifest.</td></tr>
         <tr><td>Bootstrap</td><td>The installer creates wrappers, a new token when absent, <code>server.env</code>, and the user systemd unit. First server startup creates and migrates <code>sessions.db</code>.</td></tr>
-        <tr><td>Readiness</td><td>Success requires the service to be active, loopback-only, authenticated, protocol-compatible, and able to return its empty session list.</td></tr>
+        <tr><td>Readiness</td><td>The deploy command proves the signed package is installed, the service and database exist, the binary hash matches, and every port-7777 listener is exactly <code>127.0.0.1:7777</code>. The existing native Connect path then owns authentication, protocol compatibility and the session-list response; the complete first-use flow succeeds only after both steps pass.</td></tr>
         <tr><td>Ownership</td><td>Saved connection removal, backend uninstall, and session-data deletion remain three distinct operations.</td></tr>
       </tbody>
     </table>
@@ -57,10 +57,10 @@
 
   <section>
     <h2>Delivery sequence</h2>
-    <div class="flow"><span>Linux build</span><b>→</b><span>versioned archive</span><b>→</b><span>Mac deploy command</span><b>→</b><span>SSH staging</span><b>→</b><span>verified install</span><b>→</b><span>protocol readiness</span><b>→</b><span>save and connect</span></div>
+    <div class="flow"><span>Linux build</span><b>→</b><span>signed archive</span><b>→</b><span>Mac deploy command</span><b>→</b><span>SSH staging</span><b>→</b><span>verified install</span><b>→</b><span>native Connect readiness</span><b>→</b><span>save connection</span></div>
     <ol>
       <li><strong>Package checkpoint.</strong> Add the package manifest, Linux packaging command, remote install script, deterministic archive contents, and focused tests. Produce one Workbox package and inspect it without touching the installed service. Commit.</li>
-      <li><strong>Deployment checkpoint.</strong> Add a Mac-side terminal command that probes OS/architecture, uploads the matching package, verifies it, installs it, and reports bounded phases. It must never delete session data implicitly. Commit and request independent review of both checkpoints.</li>
+      <li><strong>Deployment checkpoint.</strong> Add a Mac-side terminal command that requires the release signature, rejects non-file archive entries, probes OS/architecture, uploads the matching package, verifies it, installs it, and reports bounded phases. It must never delete session data implicitly. The existing native Connect remains the sole authenticated protocol/session-list readiness check. Commit and request independent review of both checkpoints.</li>
       <li><strong>Clean acceptance checkpoint.</strong> With exact destructive approval, remove the existing Workbox test service, binaries, configuration, and data. Run the Mac deployment command. Verify schema, zero sessions, loopback listener, authentication, Connect, remote file safety, and the disposable small-project workflow. Commit only fixes discovered by the proof.</li>
       <li><strong>Product checkpoint.</strong> After the observed flow is stable, connect Add Remote Machine to the same native deployment implementation and expose Install/Connect/Update states. Design Uninstall separately. No second installer path.</li>
     </ol>
@@ -72,7 +72,7 @@
       <li>The package installs on Workbox without reading an Assembly source checkout there.</li>
       <li>Package manifest hashes match before installation and the installed executable matches afterward.</li>
       <li>A clean installation creates schema version 13 with zero sessions, zero events, and zero drafts.</li>
-      <li>The service binds only to <code>127.0.0.1:7777</code> and reaches protocol readiness within a bounded wait.</li>
+      <li>The deploy receipt proves the service binds only to <code>127.0.0.1:7777</code>; the immediately following native Connect proves authenticated protocol readiness and an empty session list. Installation makes no firewall, Docker-network, public-listener or Tailscale-listener changes; SSH is the only network entrance.</li>
       <li>Failed installation leaves an actionable phase/error and does not report Connected.</li>
       <li>Remote file refresh/conflict coverage and the end-to-end small-project scenario pass after first install.</li>
       <li>Idle backend and client adapter processes return to their documented quiescent state.</li>

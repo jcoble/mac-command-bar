@@ -49,6 +49,7 @@ test('builds a deterministic remote backend package contract', async () => {
     assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /ASSEMBLY_SERVER_BIND=127\.0\.0\.1:7777/);
     assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /systemctl --user restart assembly-remote\.service/);
     assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /\.assembly-remote-server\.new/);
+    assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /\$4 != "127\.0\.0\.1:7777"/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

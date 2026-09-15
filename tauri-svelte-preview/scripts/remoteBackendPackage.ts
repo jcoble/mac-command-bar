@@ -32,7 +32,7 @@ set -eu
 
 [ "$(uname -s)" = "Linux" ] || { echo "Assembly remote backend requires Linux" >&2; exit 1; }
 [ "$(uname -m)" = "x86_64" ] || { echo "Unsupported Linux architecture: $(uname -m)" >&2; exit 1; }
-for command in node codex sha256sum systemctl openssl install; do
+for command in node codex sha256sum systemctl openssl install ss awk; do
   command -v "$command" >/dev/null 2>&1 || { echo "Required command is missing: $command" >&2; exit 1; }
 done
 claude_path=$(command -v claude-agent-acp 2>/dev/null || true)
@@ -99,7 +99,12 @@ systemctl --user restart assembly-remote.service
 
 attempt=0
 while [ "$attempt" -lt 15 ]; do
-  systemctl --user is-active --quiet assembly-remote.service && exit 0
+  listeners=$(ss -ltnH 'sport = :7777')
+  if systemctl --user is-active --quiet assembly-remote.service \
+    && [ -n "$listeners" ] \
+    && printf '%s\n' "$listeners" | awk '$4 != "127.0.0.1:7777" { exit 1 } END { if (NR == 0) exit 1 }'; then
+    exit 0
+  fi
   attempt=$((attempt + 1))
   sleep 1
 done
@@ -134,9 +139,12 @@ export async function writeRemoteBackendPackage(input: RemoteBackendPackageInput
     const bridge = path.join(payload, 'codex-acp-bridge.mjs');
     await copyFile(input.binaryPath, binary);
     await copyFile(input.bridgePath, bridge);
+    const installScript = path.join(staging, 'install.sh');
+    await writeFile(installScript, REMOTE_BACKEND_INSTALL_SCRIPT, { mode: 0o755 });
     const files: RemoteBackendManifest['files'] = [
       { path: 'payload/assembly-remote-server', sha256: await sha256(binary), mode: '0755' },
-      { path: 'payload/codex-acp-bridge.mjs', sha256: await sha256(bridge), mode: '0644' }
+      { path: 'payload/codex-acp-bridge.mjs', sha256: await sha256(bridge), mode: '0644' },
+      { path: 'install.sh', sha256: await sha256(installScript), mode: '0755' }
     ];
     const manifest: RemoteBackendManifest = {
       schemaVersion: 1,
@@ -151,7 +159,6 @@ export async function writeRemoteBackendPackage(input: RemoteBackendPackageInput
       path.join(staging, 'SHA256SUMS'),
       `${files.map((file) => `${file.sha256}  ${file.path}`).join('\n')}\n`
     );
-    await writeFile(path.join(staging, 'install.sh'), REMOTE_BACKEND_INSTALL_SCRIPT, { mode: 0o755 });
     await execFileAsync('tar', ['-czf', archivePath, '-C', staging, '.']);
     return archivePath;
   } finally {
