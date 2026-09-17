@@ -24,7 +24,12 @@
  * loading flag the newer read owns.
  */
 
-import { bridgeGitBackend, canChangeRepository, hasGitBridge } from './gitBackendExtra.ts';
+import {
+  bridgeGitBackend,
+  canChangeRepository,
+  hasGitBridge,
+  withGitDiffTimeout
+} from './gitBackendExtra.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { setGitSurfaceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 import {
@@ -286,6 +291,7 @@ export interface GitService {
 export interface GitServiceOptions {
   backend?: GitBackend;
   state?: GitPanelState;
+  diffTimeoutMs?: number;
 }
 
 export function createGitService(options: GitServiceOptions = {}): GitService {
@@ -293,6 +299,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     options.backend ??
     (canChangeRepository() || !hasGitBridge() ? tauriGitBackend() : bridgeGitBackend());
   const state = options.state ?? gitPanel;
+  const diffTimeoutMs = options.diffTimeoutMs ?? 20_000;
   const statusGuard = createRequestGuard();
   const historyGuard = createRequestGuard();
   const diffGuard = createRequestGuard();
@@ -505,7 +512,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.diffLoading = true;
 
     try {
-      const diff = await backend.readDiff(root, absolutePathWithin(root, file.relativePath));
+      const diff = await withGitDiffTimeout(
+        backend.readDiff(root, absolutePathWithin(root, file.relativePath)),
+        diffTimeoutMs
+      );
       if (!stillCurrent(diffGuard, id, root)) return;
       if (!diff) {
         state.desktopOnly = true;

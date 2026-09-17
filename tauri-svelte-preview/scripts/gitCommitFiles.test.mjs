@@ -41,6 +41,9 @@ const {
   summarizeCommitFiles
 } = store;
 const { createGitCommitFilesService } = service;
+const { GIT_DIFF_TIMEOUT_MESSAGE } = await import(
+  '../src/lib/shell/git/gitBackendExtra.ts'
+);
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -274,6 +277,28 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
 
   assert.equal(panel.diffLoading, false);
   assert.equal(panel.diffError, COMMIT_FILES_DESKTOP_ONLY_MESSAGE);
+  assert.equal(panel.selectedDiff, null);
+}
+
+// ── a diff read that never answers ends in an error, not a spinner ───────
+{
+  const panel = panelState('/repo');
+  const state = createGitCommitFilesState();
+  const commitFiles = createGitCommitFilesService({
+    state,
+    panel,
+    resolveTop: async () => '/repo',
+    readFiles: async () => [],
+    readDiff: async () => new Promise(() => {}),
+    clearPanelSelection: () => {},
+    diffTimeoutMs: 5
+  });
+
+  commitFiles.activate('/repo');
+  await commitFiles.selectCommitFile('abc', fileChange('src/app.ts'));
+
+  assert.equal(panel.diffLoading, false);
+  assert.equal(panel.diffError, GIT_DIFF_TIMEOUT_MESSAGE);
   assert.equal(panel.selectedDiff, null);
 }
 

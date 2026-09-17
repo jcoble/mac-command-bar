@@ -13,6 +13,9 @@ const assert = (await import('node:assert/strict')).default;
 
 const store = await import('../src/lib/shell/git/gitPanelStore.svelte.ts');
 const service = await import('../src/lib/shell/git/gitService.ts');
+const { GIT_DIFF_TIMEOUT_MESSAGE } = await import(
+  '../src/lib/shell/git/gitBackendExtra.ts'
+);
 
 const {
   buildGitStatusFileGroups,
@@ -460,6 +463,24 @@ function makeBackend(overrides = {}) {
   git.clearSelection();
   assert.equal(state.selectedPath, '');
   assert.equal(state.diffError, '');
+}
+
+// ── a diff read that never answers ends in an error, not a spinner ───────
+{
+  const backend = makeBackend({
+    async readDiff() {
+      return new Promise(() => {});
+    }
+  });
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state, diffTimeoutMs: 5 });
+  git.activate('/repo');
+
+  await git.selectFile(file('src/stuck.ts', '', 'modified', 'M'));
+
+  assert.equal(state.diffLoading, false, 'a stalled diff read ends its spinner');
+  assert.equal(state.diffError, GIT_DIFF_TIMEOUT_MESSAGE);
+  assert.equal(state.selectedDiff, null);
 }
 
 // ── outside the desktop app: say so, load nothing, invent nothing ───────────
