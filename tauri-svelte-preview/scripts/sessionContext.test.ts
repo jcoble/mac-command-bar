@@ -7,8 +7,10 @@ import type {
 import {
   sessionContextFacts,
   sessionContextUsage,
-  sessionFilesTouched
+  sessionFilesTouched,
+  sessionAttachments
 } from '../src/lib/shell/panels/context/sessionContextModel.ts';
+import type { ConversationAttachment } from '../src/lib/shell/conversation/conversationTypes.ts';
 
 const metadata = (overrides: Partial<ConversationMetadata> = {}): ConversationMetadata => ({
   model: null,
@@ -103,6 +105,16 @@ assert.equal(touched[1].path, 'src/one.ts');
 assert.equal(touched[1].count, 3, 'three references to one path collapse into one entry');
 assert.equal(touched[1].lastTouchedMs, 3_000, 'the entry keeps its most recent timestamp');
 
+const normalized = sessionFilesTouched([
+  toolEvent(7, 7_000, { kind: 'tool', itemId: 'legacy', name: 'read', state: 'completed', path: 'src/normalized.ts' }),
+  toolEvent(8, 8_000, { kind: 'turnDiff', turnId: 'turn', path: 'src/changed.ts', diff: '+change' })
+]);
+assert.deepEqual(
+  normalized.map((touch) => touch.path),
+  ['src/changed.ts', 'src/normalized.ts'],
+  'normalized tool paths and structured turn diffs both count as real file touches'
+);
+
 assert.deepEqual(sessionFilesTouched([]), [], 'no events means no files');
 
 // A session that has touched hundreds of files still shows only the most recent 50.
@@ -113,5 +125,22 @@ const capped = sessionFilesTouched(manyEvents);
 assert.equal(capped.length, 50, 'the list stops at 50 files even when more were touched');
 assert.equal(capped[0].path, 'src/file-59.ts', 'the cap keeps the most recently touched files');
 assert.equal(capped[49].path, 'src/file-10.ts', 'the cap drops the oldest touches first');
+
+const attachment = (id: string, name = `${id}.png`): ConversationAttachment => ({
+  id,
+  name,
+  mimeType: 'image/png',
+  path: `/attachments/${name}`,
+  previewUrl: `blob:${id}`
+});
+assert.deepEqual(
+  sessionAttachments(
+    [attachment('draft')],
+    [attachment('moving')],
+    { first: [attachment('sent'), attachment('moving')] }
+  ).map((item) => item.id),
+  ['draft', 'moving', 'sent'],
+  'draft, in-flight, and sent attachments form one de-duplicated session list'
+);
 
 console.log('session context tests passed');

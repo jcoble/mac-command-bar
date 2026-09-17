@@ -17,6 +17,7 @@
 import type {
   AgentConfigValue,
   AgentConversationEvent,
+  ConversationAttachment,
   ConversationMetadata,
   ConversationUsage
 } from '../../conversation/conversationTypes.ts';
@@ -121,7 +122,12 @@ export function sessionContextUsage(
 
 /** Every path a single tool-call payload names, in the order it names them. */
 function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
-  if (payload.kind !== 'toolCall' && payload.kind !== 'toolCallUpdate') return [];
+  if (
+    payload.kind !== 'tool' &&
+    payload.kind !== 'toolCall' &&
+    payload.kind !== 'toolCallUpdate' &&
+    payload.kind !== 'turnDiff'
+  ) return [];
 
   const paths: string[] = [];
   const direct = reportedText(payload.path);
@@ -130,7 +136,7 @@ function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
   // `locations` is whatever the provider chose to send: a list of strings, a
   // list of objects with a path, or a single object. Anything else is skipped
   // rather than guessed at.
-  const locations: AgentConfigValue | undefined = payload.locations;
+  const locations: AgentConfigValue | undefined = 'locations' in payload ? payload.locations : undefined;
   const entries = Array.isArray(locations) ? locations : locations ? [locations] : [];
   for (const entry of entries) {
     const asText = reportedText(entry);
@@ -152,7 +158,8 @@ function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
 const MAX_FILES_TOUCHED = 50;
 
 /**
- * Pulls `path` and `locations` out of toolCall / toolCallUpdate payloads,
+ * Pulls structured paths out of normalized tools, rich tool updates, and turn
+ * diffs. Command text is deliberately not searched for path-looking strings.
  * de-duplicates by path, and sorts by most recently touched.
  *
  * One payload naming the same path twice counts once, so an update that repeats
@@ -180,6 +187,21 @@ export function sessionFilesTouched(
   return [...touches.values()]
     .sort((left, right) => right.lastTouchedMs - left.lastTouchedMs || left.path.localeCompare(right.path))
     .slice(0, MAX_FILES_TOUCHED);
+}
+
+/** Composer drafts and sent screenshots are stored separately. Present one
+ * session-level list without repeating the same saved attachment while a send
+ * is moving from the unclaimed bucket onto its user message. */
+export function sessionAttachments(
+  current: readonly ConversationAttachment[],
+  unclaimed: readonly ConversationAttachment[],
+  sent: Readonly<Record<string, readonly ConversationAttachment[]>>
+): ConversationAttachment[] {
+  const byId = new Map<string, ConversationAttachment>();
+  for (const attachment of [current, unclaimed, ...Object.values(sent)].flat()) {
+    if (!byId.has(attachment.id)) byId.set(attachment.id, attachment);
+  }
+  return [...byId.values()];
 }
 
 /** A token count with thousands separators, for a line a person reads. */

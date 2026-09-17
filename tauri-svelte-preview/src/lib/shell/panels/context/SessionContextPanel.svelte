@@ -41,6 +41,7 @@
     fileNameOf,
     formatTokenCount,
     metadataWithConfigFallback,
+    sessionAttachments,
     sessionContextFacts,
     sessionContextUsage,
     sessionFilesTouched,
@@ -68,7 +69,15 @@
     sessionContextFacts(metadataWithConfigFallback(session?.metadata ?? null, session?.agentConfig))
   );
   const usage = $derived(sessionContextUsage(session?.metadata ?? null, session?.usage));
-  const attachments = $derived(session?.attachments ?? []);
+  const attachments = $derived(
+    session
+      ? sessionAttachments(
+          session.attachments,
+          session.unclaimedSentAttachments,
+          session.sentAttachments
+        )
+      : []
+  );
 
   /** Whoever did not send a figure gets named for it, so "not reported" reads
    * as a fact about the provider rather than as a hole in the panel. */
