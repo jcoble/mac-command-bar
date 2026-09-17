@@ -1,10 +1,8 @@
 <script lang="ts">
 	/**
-	 * ONE DIVERGENCE FROM THE REGISTRY: the recipe below reads `text-[13px]`
-	 * where the registry has `text-sm`. Inside /next, `text-sm` is this app's
-	 * own 12px small text, not Tailwind's 14px, and the shell has a 13px floor
-	 * for body text. These rows are the options the user picks from, so they
-	 * are body text. Everything else here is verbatim from the registry.
+	 * The recipe below keeps the app's 13px body-text floor and uses the shell's
+	 * explicit hover and selected-row tokens. The registry's accent surface is
+	 * too close to the surrounding popover to communicate either state here.
 	 */
 	import { Select as SelectPrimitive } from "bits-ui";
 	import { cn, type WithoutChild } from "$lib/utils.js";
@@ -25,7 +23,7 @@
 	{value}
 	data-slot="select-item"
 	class={cn(
-		"focus:bg-accent focus:text-accent-foreground not-data-[variant=destructive]:focus:**:text-accent-foreground min-h-6 gap-1.5 rounded-md py-1 pr-8 pl-2 text-[13px] [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2 focus:bg-accent data-highlighted:bg-accent data-highlighted:text-accent-foreground focus:text-accent-foreground relative flex w-full cursor-default items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+		"focus:bg-[var(--color-hover)] focus:text-[var(--color-text)] data-highlighted:bg-[var(--color-hover)] data-highlighted:text-[var(--color-text)] data-selected:bg-[var(--color-selected)] data-selected:text-[var(--color-text)] data-selected:[&_svg]:text-[var(--color-accent)] min-h-6 gap-1.5 rounded-md py-1 pr-8 pl-2 text-[13px] [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2 relative flex w-full cursor-default items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
 		className
 	)}
 	{...restProps}
