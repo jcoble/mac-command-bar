@@ -24,8 +24,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: tauri-svelte-preview/pnpm-lock.yaml
 
-      - uses: oven-sh/setup-bun@v2
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
