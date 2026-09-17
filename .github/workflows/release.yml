@@ -63,7 +63,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           TARGET=$(rustc -vV | sed -n 's/^host: //p')
-          pnpm prepare:provider-release-assets -- "$TARGET"
+          pnpm prepare:provider-release-assets "$TARGET"
           MANIFEST="provider-release/$TARGET/provider-manifest-$TARGET.json"
           pnpm exec tauri signer sign "$MANIFEST"
           gh release upload "$GITHUB_REF_NAME" "provider-release/$TARGET/"* --clobber
