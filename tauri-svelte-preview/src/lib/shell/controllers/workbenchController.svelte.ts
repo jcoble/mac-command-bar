@@ -209,9 +209,11 @@ export class WorkbenchController {
 		if (this.restoringTabs) return;
 		const graphVisible = this.centerTab === 'git-history' || (this.rightPanelOpen && this.rightTab === 'source-control');
 		shellPanels.sourceControlVisible(graphVisible);
-		if (graphVisible) return;
-		gitService.releaseHistorySurface();
-		gitCommitFilesService.release();
+		if (!graphVisible) gitService.releaseHistorySurface();
+		// A commit selected from compact File History is owned by the Diff tab.
+		// Releasing it during that tab switch invalidates the read and strands its
+		// loading state even after Git has answered.
+		if (!graphVisible && this.centerTab !== 'diff') gitCommitFilesService.release();
 	}
 
 	private syncRightPanelVisibility(): void {
