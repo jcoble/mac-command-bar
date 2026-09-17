@@ -2,7 +2,7 @@
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
   import GitBranch from '@lucide/svelte/icons/git-branch';
-  import { formatWeekdayTime, formatClockTime } from '$lib/shell/dateFormat.ts';
+  import { formatWeekdayTime } from '$lib/shell/dateFormat.ts';
 
   interface Props {
     /** The text the copy action puts on the clipboard. */
@@ -17,13 +17,7 @@
 
   const time = $derived.by(() => {
     if (timestampMs <= 0) return '';
-    const date = new Date(timestampMs);
-    const now = Date.now();
-    // If within 7 days, show weekday time (e.g. "Friday 1:42 AM"), else clock time
-    if (now - timestampMs < 7 * 24 * 3600 * 1000) {
-      return formatWeekdayTime(date);
-    }
-    return formatClockTime(date);
+    return formatWeekdayTime(new Date(timestampMs));
   });
 
   let copied = $state(false);
