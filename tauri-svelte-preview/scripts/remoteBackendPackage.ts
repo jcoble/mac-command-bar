@@ -9,6 +9,20 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 export const REMOTE_BACKEND_TARGET = 'x86_64-unknown-linux-gnu';
+export const REMOTE_BACKEND_ADAPTER_FILES = [
+  'manifest.json',
+  'codex-acp',
+  'codex-acp-runtime',
+  'claude-agent-acp',
+  'claude-agent-acp-runtime',
+  'agy-acp',
+  'agy-acp-runtime'
+] as const;
+export const REMOTE_BACKEND_PAYLOAD_FILES = [
+  'payload/assembly-remote-server',
+  ...REMOTE_BACKEND_ADAPTER_FILES.map((file) => `payload/adapters/${file}`),
+  'install.sh'
+] as const;
 
 export type RemoteBackendManifest = {
   schemaVersion: 1;
@@ -21,7 +35,7 @@ export type RemoteBackendManifest = {
 
 export type RemoteBackendPackageInput = {
   binaryPath: string;
-  bridgePath: string;
+  adapterDirectory: string;
   outputDirectory: string;
   version: string;
   commit: string;
@@ -32,47 +46,32 @@ set -eu
 
 [ "$(uname -s)" = "Linux" ] || { echo "Assembly remote backend requires Linux" >&2; exit 1; }
 [ "$(uname -m)" = "x86_64" ] || { echo "Unsupported Linux architecture: $(uname -m)" >&2; exit 1; }
-for command in node codex sha256sum systemctl openssl install ss awk; do
+for command in sha256sum systemctl openssl install ss awk; do
   command -v "$command" >/dev/null 2>&1 || { echo "Required command is missing: $command" >&2; exit 1; }
 done
-claude_path=$(command -v claude-agent-acp 2>/dev/null || true)
-[ -n "$claude_path" ] || { echo "Required command is missing: claude-agent-acp" >&2; exit 1; }
 
 sha256sum -c SHA256SUMS
 install -d "$HOME/.local/bin" "$HOME/.local/share/assembly" "$HOME/.config/assembly" "$HOME/.config/systemd/user"
+systemctl --user stop assembly-remote.service >/dev/null 2>&1 || true
 install -m 755 payload/assembly-remote-server "$HOME/.local/bin/.assembly-remote-server.new"
 mv "$HOME/.local/bin/.assembly-remote-server.new" "$HOME/.local/bin/assembly-remote-server"
-install -m 644 payload/codex-acp-bridge.mjs "$HOME/.local/share/assembly/.codex-acp-bridge.mjs.new"
-mv "$HOME/.local/share/assembly/.codex-acp-bridge.mjs.new" "$HOME/.local/share/assembly/codex-acp-bridge.mjs"
-
-codex_path=$(command -v codex)
-node_path=$(command -v node)
-cat >"$HOME/.local/bin/.assembly-codex-acp.new" <<EOF
-#!/bin/sh
-export CODEX_BIN="$codex_path"
-exec "$node_path" "$HOME/.local/share/assembly/codex-acp-bridge.mjs" "\$@"
-EOF
-cat >"$HOME/.local/bin/.assembly-claude-acp.new" <<EOF
-#!/bin/sh
-exec "$claude_path" "\$@"
-EOF
-chmod 755 "$HOME/.local/bin/.assembly-codex-acp.new" "$HOME/.local/bin/.assembly-claude-acp.new"
-mv "$HOME/.local/bin/.assembly-codex-acp.new" "$HOME/.local/bin/assembly-codex-acp"
-mv "$HOME/.local/bin/.assembly-claude-acp.new" "$HOME/.local/bin/assembly-claude-acp"
+adapter_stage="$HOME/.local/bin/.assembly-adapters.new"
+rm -rf "$adapter_stage"
+install -d -m 755 "$adapter_stage"
+install -m 644 payload/adapters/manifest.json "$adapter_stage/manifest.json"
+for adapter in codex-acp codex-acp-runtime claude-agent-acp claude-agent-acp-runtime agy-acp agy-acp-runtime; do
+  install -m 755 "payload/adapters/$adapter" "$adapter_stage/$adapter"
+done
+rm -rf "$HOME/.local/bin/assembly-adapters"
+mv "$adapter_stage" "$HOME/.local/bin/assembly-adapters"
 
 token=$(sed -n 's/^ASSEMBLY_SERVER_TOKEN=//p' "$HOME/.config/assembly/server.env" 2>/dev/null || true)
 [ "\${#token}" -ge 32 ] || token=$(openssl rand -hex 32)
-codex_hash=$(sha256sum "$HOME/.local/bin/assembly-codex-acp" | awk '{print $1}')
-claude_hash=$(sha256sum "$HOME/.local/bin/assembly-claude-acp" | awk '{print $1}')
 cat >"$HOME/.config/assembly/.server.env.new" <<EOF
 ASSEMBLY_SERVER_BIND=127.0.0.1:7777
 ASSEMBLY_SERVER_TOKEN=$token
 ASSEMBLY_SERVER_DATA_DIR=$HOME/.local/share/assembly
-MCB_CODEX_ACP_PATH=$HOME/.local/bin/assembly-codex-acp
-MCB_CODEX_ACP_SHA256=$codex_hash
-MCB_CLAUDE_AGENT_ACP_PATH=$HOME/.local/bin/assembly-claude-acp
-MCB_CLAUDE_AGENT_ACP_SHA256=$claude_hash
-PATH=$(dirname "$node_path"):$(dirname "$codex_path"):$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 EOF
 chmod 600 "$HOME/.config/assembly/.server.env.new"
 mv "$HOME/.config/assembly/.server.env.new" "$HOME/.config/assembly/server.env"
@@ -133,17 +132,23 @@ export async function writeRemoteBackendPackage(input: RemoteBackendPackageInput
   const archiveName = `assembly-remote-backend-${input.version}-${REMOTE_BACKEND_TARGET}.tar.gz`;
   const archivePath = path.join(input.outputDirectory, archiveName);
   try {
-    await mkdir(payload, { recursive: true });
+    const adapters = path.join(payload, 'adapters');
+    await mkdir(adapters, { recursive: true });
     await mkdir(input.outputDirectory, { recursive: true });
     const binary = path.join(payload, 'assembly-remote-server');
-    const bridge = path.join(payload, 'codex-acp-bridge.mjs');
     await copyFile(input.binaryPath, binary);
-    await copyFile(input.bridgePath, bridge);
+    for (const file of REMOTE_BACKEND_ADAPTER_FILES) {
+      await copyFile(path.join(input.adapterDirectory, file), path.join(adapters, file));
+    }
     const installScript = path.join(staging, 'install.sh');
     await writeFile(installScript, REMOTE_BACKEND_INSTALL_SCRIPT, { mode: 0o755 });
     const files: RemoteBackendManifest['files'] = [
       { path: 'payload/assembly-remote-server', sha256: await sha256(binary), mode: '0755' },
-      { path: 'payload/codex-acp-bridge.mjs', sha256: await sha256(bridge), mode: '0644' },
+      ...await Promise.all(REMOTE_BACKEND_ADAPTER_FILES.map(async (file) => ({
+        path: `payload/adapters/${file}`,
+        sha256: await sha256(path.join(adapters, file)),
+        mode: file === 'manifest.json' ? '0644' as const : '0755' as const
+      }))),
       { path: 'install.sh', sha256: await sha256(installScript), mode: '0755' }
     ];
     const manifest: RemoteBackendManifest = {
@@ -176,7 +181,7 @@ async function main(): Promise<void> {
   const { stdout: commitOutput } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot });
   const archivePath = await writeRemoteBackendPackage({
     binaryPath: path.join(projectRoot, 'src-tauri/target/release/mac-command-bar-webview-preview'),
-    bridgePath: path.join(projectRoot, 'tools/codex-acp-bridge/bridge.mjs'),
+    adapterDirectory: path.join(projectRoot, 'src-tauri/adapters'),
     outputDirectory: path.join(projectRoot, 'remote-backend-release'),
     version,
     commit: commitOutput.trim()

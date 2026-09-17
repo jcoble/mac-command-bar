@@ -7,16 +7,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { REMOTE_BACKEND_TARGET, type RemoteBackendManifest } from './remoteBackendPackage.ts';
+import {
+  REMOTE_BACKEND_PAYLOAD_FILES,
+  REMOTE_BACKEND_TARGET,
+  type RemoteBackendManifest
+} from './remoteBackendPackage.ts';
 
 const execFileAsync = promisify(execFile);
 const archiveEntries = new Set([
   'manifest.json',
   'SHA256SUMS',
-  'install.sh',
-  'payload/assembly-remote-server',
-  'payload/codex-acp-bridge.mjs'
+  ...REMOTE_BACKEND_PAYLOAD_FILES
 ]);
+const archiveDirectories = new Set(['payload', 'payload/adapters']);
 
 export type RemoteBackendPackageInspection = {
   manifest: RemoteBackendManifest;
@@ -108,11 +111,11 @@ function validateManifest(value: unknown): RemoteBackendManifest {
   if (!/^[0-9a-f]{7,40}$/.test(manifest.commit ?? '')) {
     throw new Error('Remote backend manifest has an invalid commit');
   }
-  if (!Array.isArray(manifest.files) || manifest.files.length !== 3) {
+  if (!Array.isArray(manifest.files) || manifest.files.length !== REMOTE_BACKEND_PAYLOAD_FILES.length) {
     throw new Error('Remote backend manifest has an invalid file list');
   }
   const paths = new Set(manifest.files.map((file) => file.path));
-  for (const expected of ['payload/assembly-remote-server', 'payload/codex-acp-bridge.mjs', 'install.sh']) {
+  for (const expected of REMOTE_BACKEND_PAYLOAD_FILES) {
     if (!paths.has(expected)) throw new Error(`Remote backend manifest is missing ${expected}`);
   }
   for (const file of manifest.files) {
@@ -133,7 +136,7 @@ export async function inspectRemoteBackendPackage(
   await verifyRemoteBackendSignature(resolved, path.resolve(signaturePath), encodedPublicKey);
   const { stdout: listing } = await execFileAsync('tar', ['-tzf', resolved]);
   const entries = listing.split('\n').map(normalizedArchiveEntry).filter(Boolean);
-  const files = entries.filter((entry) => entry !== 'payload');
+  const files = entries.filter((entry) => !archiveDirectories.has(entry));
   if (files.length !== archiveEntries.size || files.some((entry) => !archiveEntries.has(entry))) {
     throw new Error('Remote backend package contains unexpected paths');
   }

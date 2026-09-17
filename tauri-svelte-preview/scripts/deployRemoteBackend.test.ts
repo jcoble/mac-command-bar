@@ -8,9 +8,20 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 
 import { inspectRemoteBackendPackage, validateSshTarget, verifyRemoteBackendSignature } from './deployRemoteBackend.ts';
-import { REMOTE_BACKEND_INSTALL_SCRIPT, writeRemoteBackendPackage } from './remoteBackendPackage.ts';
+import {
+  REMOTE_BACKEND_ADAPTER_FILES,
+  REMOTE_BACKEND_INSTALL_SCRIPT,
+  writeRemoteBackendPackage
+} from './remoteBackendPackage.ts';
 
 const execFileAsync = promisify(execFile);
+
+async function writeAdapterFixture(directory: string): Promise<void> {
+  await mkdir(directory);
+  for (const file of REMOTE_BACKEND_ADAPTER_FILES) {
+    await writeFile(path.join(directory, file), `${file}-bytes`);
+  }
+}
 
 async function signFixture(filePath: string, signaturePath: string): Promise<string> {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -53,10 +64,10 @@ test('inspects the exact package layout and verifies every payload hash', async 
     const input = path.join(root, 'input');
     await mkdir(input);
     await writeFile(path.join(input, 'server'), 'server-bytes');
-    await writeFile(path.join(input, 'bridge.mjs'), 'bridge-bytes');
+    await writeAdapterFixture(path.join(input, 'adapters'));
     const archive = await writeRemoteBackendPackage({
       binaryPath: path.join(input, 'server'),
-      bridgePath: path.join(input, 'bridge.mjs'),
+      adapterDirectory: path.join(input, 'adapters'),
       outputDirectory: path.join(root, 'output'),
       version: '1.2.3',
       commit: '0123456789abcdef0123456789abcdef01234567'
@@ -66,7 +77,7 @@ test('inspects the exact package layout and verifies every payload hash', async 
     await verifyRemoteBackendSignature(archive, signature, publicKey);
     const inspected = await inspectRemoteBackendPackage(archive, signature, publicKey);
     assert.equal(inspected.manifest.version, '1.2.3');
-    assert.equal(inspected.manifest.files.length, 3);
+    assert.equal(inspected.manifest.files.length, 9);
 
     await writeFile(archive, Buffer.concat([await readFile(archive), Buffer.from('tampered')]));
     await assert.rejects(
@@ -88,7 +99,10 @@ test('inspects the exact package layout and verifies every payload hash', async 
     await writeFile(path.join(linkedRoot, 'manifest.json'), '{}');
     await writeFile(path.join(linkedRoot, 'SHA256SUMS'), '');
     await writeFile(path.join(linkedRoot, 'payload/assembly-remote-server'), 'server');
-    await writeFile(path.join(linkedRoot, 'payload/codex-acp-bridge.mjs'), 'bridge');
+    await mkdir(path.join(linkedRoot, 'payload/adapters'));
+    for (const file of REMOTE_BACKEND_ADAPTER_FILES) {
+      await writeFile(path.join(linkedRoot, 'payload/adapters', file), file);
+    }
     await symlink('manifest.json', path.join(linkedRoot, 'install.sh'));
     const linkedArchive = path.join(root, 'linked.tar.gz');
     await execFileAsync('tar', ['-czf', linkedArchive, '-C', linkedRoot, '.']);

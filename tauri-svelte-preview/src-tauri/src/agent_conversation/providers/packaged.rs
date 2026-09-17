@@ -52,6 +52,7 @@ pub(super) fn discover() -> Result<AdapterPairs, String> {
     let candidates = [
         executable_dir.join("../Resources/adapters"),
         executable_dir.join("../resources/adapters"),
+        executable_dir.join("assembly-adapters"),
         executable_dir.join("adapters"),
     ];
     let Some(directory) = candidates
