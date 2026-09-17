@@ -135,7 +135,12 @@
 					<ol>
 						{#each panel.history as commit (commit.sha)}
 							<li title={`${commit.subject}\n${commit.author} · ${commit.shortSha}`}>
-								<button type="button" onclick={() => void openCommitDiff(commit.sha)}>
+								<button
+									type="button"
+									class:selected={gitCommitFilesService.state.selectedCommitSha === commit.sha &&
+										gitCommitFilesService.state.selectedRelativePath === relativePath}
+									onclick={() => void openCommitDiff(commit.sha)}
+								>
 									<span class="commit-mark" aria-hidden="true"></span>
 									<span class="commit-subject">{commit.subject}</span>
 									<time datetime={commit.committedAt}>
@@ -274,7 +279,16 @@
 
 	li > button:hover,
 	li > button:focus-visible {
-		background: var(--color-elevated);
+		background: var(--color-hover);
+	}
+
+	li > button.selected,
+	li > button.selected:hover,
+	li > button.selected:focus-visible {
+		background: var(--color-selected);
+	}
+
+	li > button:focus-visible {
 		outline: var(--focus-ring);
 	}
 
