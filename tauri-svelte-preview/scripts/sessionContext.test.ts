@@ -55,11 +55,23 @@ assert.equal(windowOnly.percentUsed, null, 'a window alone cannot make a percent
 
 const bothReported = sessionContextUsage(metadata({ usedTokens: 50_000, contextWindow: 200_000 }), {
   inputTokens: 40_000,
-  outputTokens: 10_000
+  outputTokens: 10_000,
+  totalTokens: 950_000
 });
 assert.equal(bothReported.percentUsed, 25, 'both numbers real gives a real percentage');
 assert.equal(bothReported.inputTokens, 40_000);
 assert.equal(bothReported.outputTokens, 10_000);
+assert.equal(bothReported.totalTokens, 950_000);
+
+const legacyCumulative = sessionContextUsage(null, {
+  usedTokens: 2_091_674,
+  contextWindow: 237_500,
+  inputTokens: 81_896,
+  outputTokens: 418
+});
+assert.equal(legacyCumulative.usedTokens, 82_314);
+assert.equal(legacyCumulative.totalTokens, 2_091_674);
+assert.equal(legacyCumulative.percentUsed, 35);
 
 const emptyUsage = sessionContextUsage(null, null);
 assert.deepEqual(emptyUsage, {
@@ -67,7 +79,8 @@ assert.deepEqual(emptyUsage, {
   contextWindow: null,
   percentUsed: null,
   inputTokens: null,
-  outputTokens: null
+  outputTokens: null,
+  totalTokens: null
 });
 
 // Files touched, derived from whatever the provider happened to put on its tool calls.

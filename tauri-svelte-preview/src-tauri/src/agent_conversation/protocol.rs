@@ -530,6 +530,8 @@ pub enum AgentConversationPayload {
         used_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         context_window: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_tokens: Option<u64>,
     },
     /// The agent threw away the older part of the conversation to make room.
     /// The provider says so outright, or the reported occupancy falls far

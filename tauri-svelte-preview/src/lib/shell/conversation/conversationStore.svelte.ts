@@ -638,7 +638,8 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
         inputTokens: payload.inputTokens ?? current.usage?.inputTokens,
         outputTokens: payload.outputTokens ?? current.usage?.outputTokens,
         usedTokens: payload.usedTokens ?? current.usage?.usedTokens,
-        contextWindow: payload.contextWindow ?? current.usage?.contextWindow
+        contextWindow: payload.contextWindow ?? current.usage?.contextWindow,
+        totalTokens: payload.totalTokens ?? current.usage?.totalTokens
       };
       break;
     }
@@ -1345,11 +1346,14 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
       ? payload.usedTokens : undefined;
     const contextWindow = typeof payload.contextWindow === 'number' && Number.isFinite(payload.contextWindow)
       ? payload.contextWindow : undefined;
+    const totalTokens = typeof payload.totalTokens === 'number' && Number.isFinite(payload.totalTokens)
+      ? payload.totalTokens : undefined;
     current.usage = {
       inputTokens: inputTokens ?? current.usage?.inputTokens,
       outputTokens: outputTokens ?? current.usage?.outputTokens,
       usedTokens: usedTokens ?? current.usage?.usedTokens,
-      contextWindow: contextWindow ?? current.usage?.contextWindow
+      contextWindow: contextWindow ?? current.usage?.contextWindow,
+      totalTokens: totalTokens ?? current.usage?.totalTokens
     };
     if (usedTokens !== undefined || contextWindow !== undefined) {
       current.metadata = {

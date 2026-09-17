@@ -186,8 +186,8 @@
               <div class="flex items-baseline gap-2">
                 <span class="text-[13px] leading-tight">
                   {usage.usedTokens === null
-                    ? `Tokens used ${notReported}`
-                    : `${formatTokenCount(usage.usedTokens)} tokens used`}
+                    ? `Current context ${notReported}`
+                    : `Current context: ${formatTokenCount(usage.usedTokens)}`}
                 </span>
                 <span class="min-w-0 flex-1 truncate text-right text-sm text-muted-foreground">
                   {usage.contextWindow === null
@@ -211,6 +211,15 @@
                   <span class="shrink-0 text-sm text-muted-foreground">{usage.percentUsed}%</span>
                 </div>
               {/if}
+
+              <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                <span>Session total</span>
+                <span class="min-w-0 flex-1 truncate text-right">
+                  {usage.totalTokens === null
+                    ? notReported
+                    : `${formatTokenCount(usage.totalTokens)} tokens`}
+                </span>
+              </div>
 
               <div class="flex items-center gap-2 text-sm text-muted-foreground">
                 <span class="min-w-0 flex-1 truncate">

@@ -39,6 +39,7 @@ export interface SessionContextUsage {
   percentUsed: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  totalTokens: number | null;
 }
 
 export interface SessionFileTouch {
@@ -104,9 +105,23 @@ export function sessionContextUsage(
   metadata: ConversationMetadata | null,
   usage: ConversationUsage | null | undefined
 ): SessionContextUsage {
-  const usedTokens = reportedNumber(usage?.usedTokens) ?? reportedNumber(metadata?.usedTokens);
+  const reportedUsedTokens =
+    reportedNumber(usage?.usedTokens) ?? reportedNumber(metadata?.usedTokens);
   const contextWindow =
     reportedNumber(usage?.contextWindow) ?? reportedNumber(metadata?.contextWindow);
+  const inputTokens = reportedNumber(usage?.inputTokens);
+  const outputTokens = reportedNumber(usage?.outputTokens);
+  const explicitTotalTokens = reportedNumber(usage?.totalTokens);
+  const requestTokens =
+    inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null;
+  const legacyCumulativeUsage =
+    explicitTotalTokens === null &&
+    reportedUsedTokens !== null &&
+    contextWindow !== null &&
+    reportedUsedTokens > contextWindow &&
+    requestTokens !== null &&
+    requestTokens <= contextWindow;
+  const usedTokens = legacyCumulativeUsage ? requestTokens : reportedUsedTokens;
   const percentUsed =
     usedTokens !== null && contextWindow !== null && contextWindow > 0
       ? Math.min(100, Math.round((usedTokens / contextWindow) * 100))
@@ -116,8 +131,9 @@ export function sessionContextUsage(
     usedTokens,
     contextWindow,
     percentUsed,
-    inputTokens: reportedNumber(usage?.inputTokens),
-    outputTokens: reportedNumber(usage?.outputTokens)
+    inputTokens,
+    outputTokens,
+    totalTokens: legacyCumulativeUsage ? reportedUsedTokens : explicitTotalTokens
   };
 }
 
