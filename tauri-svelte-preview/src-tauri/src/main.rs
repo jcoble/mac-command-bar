@@ -5401,9 +5401,6 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
 
-    #[cfg(debug_assertions)]
-    let builder = builder.plugin(tauri_plugin_devtools::init());
-
     let app = builder
         .setup(|app| {
             let app_data_dir = app
@@ -5553,7 +5550,6 @@ fn main() {
             find_source_references,
             find_source_references_in_root,
             count_source_references,
-            open_main_devtools,
             read_source_lsp_status,
             list_source_lsp_statuses,
             warm_source_lsp_for_root,

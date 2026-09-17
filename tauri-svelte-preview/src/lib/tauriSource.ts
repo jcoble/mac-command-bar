@@ -2450,17 +2450,6 @@ export async function readSourceLspReadinessFromTauri(
  * and a no-op in the backend when no server is running for that root's languages. Returns
  * the count of running servers that were re-pointed.
  */
-/**
- * Open the web inspector on the shell's own window.
- *
- * A no-op in a browser tab, which has the browser's own inspector already.
- */
-export async function openMainDevtoolsFromTauri(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
-  await invoke('open_main_devtools');
-}
-
 export async function warmSourceLspForRootFromTauri(root: string): Promise<number | null> {
   if (!isTauriRuntime() || !root.trim()) {
     return null;
