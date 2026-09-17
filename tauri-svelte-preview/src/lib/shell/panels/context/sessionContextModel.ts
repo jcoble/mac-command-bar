@@ -22,6 +22,7 @@ import type {
   ConversationUsage
 } from '../../conversation/conversationTypes.ts';
 import type { AgentConversationConfigState } from '../../conversation/conversationConfig.ts';
+import { workspaceChangePath } from '../../../workspacePaths.ts';
 
 export interface SessionContextFact {
   label: string;
@@ -120,6 +121,16 @@ export function sessionContextUsage(
   };
 }
 
+function legacyToolReportsFiles(payload: AgentConversationEvent['payload']): boolean {
+  if (payload.kind !== 'tool') return true;
+  if (reportedText(payload.diff) !== null) return true;
+
+  const name = reportedText(payload.name)?.toLowerCase() ?? '';
+  return name === 'apply file changes'
+    || name === 'view_file'
+    || /^(read|edit|write)(?:\s|$)/.test(name);
+}
+
 /** Every path a single tool-call payload names, in the order it names them. */
 function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
   if (
@@ -128,10 +139,11 @@ function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
     payload.kind !== 'toolCallUpdate' &&
     payload.kind !== 'turnDiff'
   ) return [];
+  if (!legacyToolReportsFiles(payload)) return [];
 
   const paths: string[] = [];
   const direct = reportedText(payload.path);
-  if (direct !== null) paths.push(direct);
+  if (direct !== null) paths.push(...direct.split(/\r?\n/).map((path) => path.trim()).filter(Boolean));
 
   // `locations` is whatever the provider chose to send: a list of strings, a
   // list of objects with a path, or a single object. Anything else is skipped
@@ -167,13 +179,18 @@ const MAX_FILES_TOUCHED = 50;
  * count twice, because that is two touches.
  */
 export function sessionFilesTouched(
-  events: readonly AgentConversationEvent[]
+  events: readonly AgentConversationEvent[],
+  root = ''
 ): SessionFileTouch[] {
   const touches = new Map<string, SessionFileTouch>();
+  const workspaceRoot = root.replace(/\/+$/, '');
 
   for (const event of events) {
     const timestampMs = reportedNumber(event.timestampMs) ?? 0;
-    for (const path of new Set(pathsInPayload(event.payload))) {
+    const resolvedPaths = pathsInPayload(event.payload)
+      .map((path) => workspaceChangePath(root, path))
+      .filter((path) => path.length > 0 && path.replace(/\/+$/, '') !== workspaceRoot);
+    for (const path of new Set(resolvedPaths)) {
       const existing = touches.get(path);
       if (existing) {
         existing.count += 1;

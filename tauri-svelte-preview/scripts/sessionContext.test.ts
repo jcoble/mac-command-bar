@@ -95,24 +95,32 @@ const touched = sessionFilesTouched([
     toolCallId: 'd',
     locations: [{ path: 'src/two.ts', line: 12 }]
   })
-]);
+], '/workspace');
 
 assert.equal(touched.length, 2, 'only the two real paths survive');
-assert.equal(touched[0].path, 'src/two.ts', 'the most recently touched path sorts first');
+assert.equal(touched[0].path, '/workspace/src/two.ts', 'the most recently touched path resolves against the workspace');
 assert.equal(touched[0].count, 1);
 assert.equal(touched[0].lastTouchedMs, 6_000);
-assert.equal(touched[1].path, 'src/one.ts');
+assert.equal(touched[1].path, '/workspace/src/one.ts');
 assert.equal(touched[1].count, 3, 'three references to one path collapse into one entry');
 assert.equal(touched[1].lastTouchedMs, 3_000, 'the entry keeps its most recent timestamp');
 
 const normalized = sessionFilesTouched([
   toolEvent(7, 7_000, { kind: 'tool', itemId: 'legacy', name: 'read', state: 'completed', path: 'src/normalized.ts' }),
-  toolEvent(8, 8_000, { kind: 'turnDiff', turnId: 'turn', path: 'src/changed.ts', diff: '+change' })
-]);
+  toolEvent(8, 8_000, { kind: 'turnDiff', turnId: 'turn', path: 'src/changed.ts', diff: '+change' }),
+  toolEvent(9, 9_000, { kind: 'tool', itemId: 'command', name: '/bin/zsh -lc pwd', state: 'completed', path: '/workspace' }),
+  toolEvent(10, 10_000, {
+    kind: 'tool',
+    itemId: 'patch',
+    name: 'Apply file changes',
+    state: 'completed',
+    path: '/workspace/src/first.ts\n/workspace/src/second.ts'
+  })
+], '/workspace');
 assert.deepEqual(
   normalized.map((touch) => touch.path),
-  ['src/changed.ts', 'src/normalized.ts'],
-  'normalized tool paths and structured turn diffs both count as real file touches'
+  ['/workspace/src/first.ts', '/workspace/src/second.ts', '/workspace/src/changed.ts', '/workspace/src/normalized.ts'],
+  'workspace directories are excluded and multi-file tool paths become separate absolute files'
 );
 
 assert.deepEqual(sessionFilesTouched([]), [], 'no events means no files');

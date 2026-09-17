@@ -96,6 +96,7 @@
    */
   $effect(() => {
     const forSession = ownedId;
+    const forRoot = root.trim();
     if (!visible || !forSession) {
       filesLoaded = false;
       filesTouched = [];
@@ -103,21 +104,25 @@
     }
 
     const owner = { active: true };
-    void loadTouchedFiles(owner, forSession);
+    void loadTouchedFiles(owner, forSession, forRoot);
 
     return () => {
       owner.active = false;
     };
   });
 
-  async function loadTouchedFiles(owner: { active: boolean }, forSession: string): Promise<void> {
+  async function loadTouchedFiles(
+    owner: { active: boolean },
+    forSession: string,
+    forRoot: string
+  ): Promise<void> {
     try {
       const events = await listAgentConversationEventsFromTauri(forSession, 0);
-      if (!owner.active || ownedId !== forSession) return;
-      filesTouched = sessionFilesTouched(events ?? []);
+      if (!owner.active || ownedId !== forSession || root.trim() !== forRoot) return;
+      filesTouched = sessionFilesTouched(events ?? [], forRoot);
       filesLoaded = true;
     } catch {
-      if (!owner.active || ownedId !== forSession) return;
+      if (!owner.active || ownedId !== forSession || root.trim() !== forRoot) return;
       filesTouched = [];
       filesLoaded = true;
     }
