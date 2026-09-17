@@ -134,6 +134,16 @@
                 <pre class="min-w-0 max-w-full overflow-x-auto rounded-md bg-muted p-3 text-xs [overflow-wrap:normal]"><code>{block.text}</code></pre>
               {:else if block.kind === 'divider'}
                 <hr class="border-border" />
+              {:else if block.kind === 'image' && block.url}
+                <figure class="min-w-0">
+                  <img
+                    src={block.url}
+                    alt={block.text || 'Task attachment'}
+                    loading="lazy"
+                    class="h-auto max-h-[32rem] w-full rounded-md border border-border object-contain"
+                  />
+                  {#if block.text}<figcaption class="mt-2 text-sm text-muted-foreground">{block.text}</figcaption>{/if}
+                </figure>
               {:else}
                 <p class="whitespace-pre-wrap">{block.text}</p>
               {/if}

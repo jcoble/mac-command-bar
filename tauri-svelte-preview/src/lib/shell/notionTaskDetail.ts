@@ -4,6 +4,7 @@ export interface NotionTaskDetailBlock {
   kind: string;
   text: string;
   checked: boolean | null;
+  url: string | null;
 }
 
 export interface NotionTaskDetail {
