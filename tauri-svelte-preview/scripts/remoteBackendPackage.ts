@@ -170,15 +170,15 @@ async function main(): Promise<void> {
   if (process.platform !== 'linux' || process.arch !== 'x64') {
     throw new Error('Remote backend release packages must be built on Linux x86_64');
   }
+  const version = process.argv[2];
+  if (!version) throw new Error('Remote backend version argument is required');
   const projectRoot = fileURLToPath(new URL('../', import.meta.url));
   const { stdout: commitOutput } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot });
-  const packageJson = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8')) as { version?: unknown };
-  if (typeof packageJson.version !== 'string') throw new Error('package.json has no version');
   const archivePath = await writeRemoteBackendPackage({
     binaryPath: path.join(projectRoot, 'src-tauri/target/release/mac-command-bar-webview-preview'),
     bridgePath: path.join(projectRoot, 'tools/codex-acp-bridge/bridge.mjs'),
     outputDirectory: path.join(projectRoot, 'remote-backend-release'),
-    version: packageJson.version,
+    version,
     commit: commitOutput.trim()
   });
   console.log(`Prepared ${archivePath}`);

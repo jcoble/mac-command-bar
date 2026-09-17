@@ -1,0 +1,69 @@
+name: Release Assembly Remote Backend
+
+on:
+  push:
+    tags:
+      - 'assembly-backend-v*'
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: tauri-svelte-preview/pnpm-lock.yaml
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-svelte-preview/src-tauri
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: tauri-svelte-preview
+
+      - name: Build remote backend package
+        working-directory: tauri-svelte-preview
+        run: |
+          VERSION="${GITHUB_REF_NAME#assembly-backend-v}"
+          test -n "$VERSION"
+          test "$VERSION" != "$GITHUB_REF_NAME"
+          pnpm prepare:release-adapters
+          pnpm build
+          cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin mac-command-bar-webview-preview
+          pnpm prepare:remote-backend-package "$VERSION"
+
+      - name: Publish signed remote backend package
+        working-directory: tauri-svelte-preview
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#assembly-backend-v}"
+          ARCHIVE=$(find remote-backend-release -type f -name '*.tar.gz' -print -quit)
+          test -n "$ARCHIVE"
+          pnpm exec tauri signer sign "$ARCHIVE"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Assembly Remote Backend v$VERSION" \
+            --notes "Download the signed Assembly remote backend package for Linux x86-64."
+          gh release upload "$GITHUB_REF_NAME" remote-backend-release/*
