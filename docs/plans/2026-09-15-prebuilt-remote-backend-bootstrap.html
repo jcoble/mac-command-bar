@@ -31,11 +31,11 @@
   <h1>Restore first-use remote installation with a prebuilt backend package</h1>
   <p class="lead">A new remote machine should not need an Assembly source checkout or Rust toolchain. Assembly should select a prebuilt Linux package, copy it over SSH, install one per-user backend, prove readiness, then save and connect the machine.</p>
 
-  <div class="decision"><strong>Owner decision, 2026-09-15.</strong> The original first-use deployment behavior was required and must not have been removed. Prove the package and installation lifecycle through a visible terminal-driven Workbox run first. Add product UI only after that real run establishes the correct states and failure messages.</div>
+  <div class="decision"><strong>Implemented, 2026-09-17.</strong> The signed package and clean Workbox installation were proved first. Settings → Connections now uses one native deployment path for explicit Install and Update, followed by the existing authenticated Connect path.</div>
 
   <section>
-    <h2>Current failure</h2>
-    <p>Commit <code>d80e1306</code> originally exposed “Save, deploy, and connect,” but built from an Assembly checkout already present on the destination. Commit <code>00215d7a</code> removed deployment entirely. Current <code>RemoteConnections.svelte</code> therefore calls Connect, which reads an installed token and fails when no backend exists; Remove deletes only the Mac-side profile.</p>
+    <h2>Resolved gap</h2>
+    <p>Commit <code>d80e1306</code> originally exposed “Save, deploy, and connect,” but built from an Assembly checkout already present on the destination. Commit <code>00215d7a</code> removed deployment entirely. The implemented flow restores first-use installation without a destination checkout: Install and Update deploy the newest signed backend release, while Connect remains the fast installed-backend path. Remove still deletes only the Mac-side profile.</p>
   </section>
 
   <section>
@@ -46,7 +46,7 @@
         <tr><td>Build</td><td>Build Linux packages before installation. Release CI is the production producer. The Workbox may produce the same package for the first acceptance proof.</td></tr>
         <tr><td>Supported target</td><td>Start with Linux x86_64, the evidenced Workbox target. Reject unsupported OS/architecture explicitly.</td></tr>
         <tr><td>Destination</td><td>One per-user installation: executable and wrappers under <code>~/.local/bin</code>, configuration under <code>~/.config/assembly</code>, durable data under <code>~/.local/share/assembly</code>. No custom prefix in this wave.</td></tr>
-        <tr><td>Transport</td><td>The Mac copies one versioned archive to a unique remote staging directory over SSH. No destination source checkout is required.</td></tr>
+        <tr><td>Transport</td><td>The Mac's signed-in GitHub CLI streams the private release archive and signature without exposing its token to Assembly. The Mac copies the verified archive to a unique remote staging directory over SSH. No destination source checkout is required.</td></tr>
         <tr><td>Integrity</td><td>A manifest names every package file and SHA-256. The deployment verifies the package before changing the installed service. Release publication signs the manifest.</td></tr>
         <tr><td>Bootstrap</td><td>The installer creates wrappers, a new token when absent, <code>server.env</code>, and the user systemd unit. First server startup creates and migrates <code>sessions.db</code>.</td></tr>
         <tr><td>Readiness</td><td>The deploy command proves the signed package is installed, the service and database exist, the binary hash matches, and every port-7777 listener is exactly <code>127.0.0.1:7777</code>. The existing native Connect path then owns authentication, protocol compatibility and the session-list response; the complete first-use flow succeeds only after both steps pass.</td></tr>
@@ -57,12 +57,12 @@
 
   <section>
     <h2>Delivery sequence</h2>
-    <div class="flow"><span>Linux build</span><b>→</b><span>signed archive</span><b>→</b><span>Mac deploy command</span><b>→</b><span>SSH staging</span><b>→</b><span>verified install</span><b>→</b><span>native Connect readiness</span><b>→</b><span>save connection</span></div>
+    <div class="flow"><span>Linux release build</span><b>→</b><span>signed archive</span><b>→</b><span>explicit Install or Update</span><b>→</b><span>SSH staging</span><b>→</b><span>verified install</span><b>→</b><span>native Connect readiness</span><b>→</b><span>save connection</span></div>
     <ol>
-      <li><strong>Package checkpoint.</strong> Add the package manifest, Linux packaging command, remote install script, deterministic archive contents, and focused tests. Produce one Workbox package and inspect it without touching the installed service. Commit.</li>
-      <li><strong>Deployment checkpoint.</strong> Add a Mac-side terminal command that requires the release signature, rejects non-file archive entries, probes OS/architecture, uploads the matching package, verifies it, installs it, and reports bounded phases. It must never delete session data implicitly. The existing native Connect remains the sole authenticated protocol/session-list readiness check. Commit and request independent review of both checkpoints.</li>
-      <li><strong>Clean acceptance checkpoint.</strong> With exact destructive approval, remove the existing Workbox test service, binaries, configuration, and data. Run the Mac deployment command. Verify schema, zero sessions, loopback listener, authentication, Connect, remote file safety, and the disposable small-project workflow. Commit only fixes discovered by the proof.</li>
-      <li><strong>Product checkpoint.</strong> After the observed flow is stable, connect Add Remote Machine to the same native deployment implementation and expose Install/Connect/Update states. Design Uninstall separately. No second installer path.</li>
+      <li><strong>Package checkpoint — complete.</strong> The release package has a versioned manifest, deterministic contents, file hashes, release signature, one per-user installer, and focused contract tests.</li>
+      <li><strong>Deployment checkpoint — complete.</strong> The terminal proof verified the signature and package before SSH, installed through one private staging directory, proved the installed service, database, executable hash and loopback listener, and then used the existing Connect readiness path.</li>
+      <li><strong>Clean acceptance checkpoint — complete.</strong> After explicit destructive approval, the Workbox backend was removed and reinstalled from the signed release with zero initial conversations. Remote file safety and a disposable small-project workflow then passed.</li>
+      <li><strong>Product checkpoint — complete.</strong> Settings → Connections separates saved machines from first-time installation. Explicit Install and Update use the same native implementation and then call Connect. The superseded TypeScript deploy command is removed, so there is no second installer path. Uninstall remains a separate future action.</li>
     </ol>
   </section>
 
@@ -77,7 +77,7 @@
       <li>Remote file refresh/conflict coverage and the end-to-end small-project scenario pass after first install.</li>
       <li>Idle backend and client adapter processes return to their documented quiescent state.</li>
     </ul>
-    <p class="warning">The existing Workbox backend and its data are not removed during the implementation/review checkpoints. That destructive clean-slate step waits at its explicit approval boundary.</p>
+    <p class="warning">The clean-slate Workbox removal occurred only after the owner's explicit approval. Normal Install and Update replace package-owned files without deleting the remote database, configuration token, provider sessions, or project files.</p>
   </section>
 
   <section>

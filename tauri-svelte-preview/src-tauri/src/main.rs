@@ -5667,6 +5667,7 @@ fn main() {
             agent_conversation::ensure_agent_conversation,
             agent_conversation::remote::read_remote_assembly_environment,
             agent_conversation::remote::connect_remote_assembly,
+            agent_conversation::remote::install_remote_assembly,
             agent_conversation::remote::cancel_remote_connection,
             agent_conversation::remote::disconnect_remote_assembly,
             agent_conversation::remote::remote_workspace,

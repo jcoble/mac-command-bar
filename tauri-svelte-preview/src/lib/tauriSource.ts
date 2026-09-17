@@ -1907,6 +1907,32 @@ export async function connectRemoteAssemblyFromTauri(
   }
 }
 
+export async function installRemoteAssemblyFromTauri(
+  profile: RemoteAssemblyProfile,
+  signal: AbortSignal,
+  onStatus: (status: string) => void
+): Promise<{ profile: RemoteAssemblyProfile; sessions: AgentConversationSessionRecord[] }> {
+  if (!isTauriRuntime()) throw new Error('Remote installation is available in the desktop app.');
+  if (signal.aborted) throw new Error('Installation cancelled');
+  const { invoke, Channel } = await import('@tauri-apps/api/core');
+  const operationId = crypto.randomUUID();
+  let registered = false;
+  const cancel = () => {
+    if (registered) void invoke('cancel_remote_connection', { operationId }).catch(() => {});
+  };
+  const status = new Channel<string>((message) => {
+    registered = true;
+    if (signal.aborted) cancel();
+    else onStatus(message);
+  });
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    return await invoke('install_remote_assembly', { profile, operationId, status });
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
+}
+
 export async function changeAgentConversationCheckoutFromTauri(input: {
   ownedId: string;
   generation: number;

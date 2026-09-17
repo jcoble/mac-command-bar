@@ -11,6 +11,7 @@ pub mod protocol;
 pub mod providers;
 pub mod reaper;
 pub mod remote;
+mod remote_install;
 mod remote_workspace;
 pub mod safe_markdown;
 pub mod terminal_projection;
