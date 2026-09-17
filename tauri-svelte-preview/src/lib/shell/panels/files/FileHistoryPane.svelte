@@ -12,7 +12,9 @@
 		createGitPanelState,
 		isNotARepositoryError,
 	} from "$lib/shell/git/gitPanelStore.svelte";
+	import { gitCommitFilesService } from "$lib/shell/git/gitCommitFilesService";
 	import { createGitService } from "$lib/shell/git/gitService";
+	import { showCenterTab } from "$lib/shell/workbenchNavigation";
 	import { formatLastActivity } from "$lib/shell/relativeTime";
 
 	interface Props {
@@ -83,6 +85,16 @@
 		) return;
 		await service.loadMoreHistory();
 	}
+
+	async function openCommitDiff(sha: string): Promise<void> {
+		gitCommitFilesService.activate(root);
+		showCenterTab("diff");
+		await gitCommitFilesService.selectCommitFile(sha, {
+			relativePath,
+			status: "",
+			badge: "",
+		});
+	}
 </script>
 
 <Collapsible.Root bind:open class="file-history-pane">
@@ -123,11 +135,13 @@
 					<ol>
 						{#each panel.history as commit (commit.sha)}
 							<li title={`${commit.subject}\n${commit.author} · ${commit.shortSha}`}>
-								<span class="commit-mark" aria-hidden="true"></span>
-								<span class="commit-subject">{commit.subject}</span>
-								<time datetime={commit.committedAt}>
-									{formatLastActivity(commit.committedAt, new Date())}
-								</time>
+								<button type="button" onclick={() => void openCommitDiff(commit.sha)}>
+									<span class="commit-mark" aria-hidden="true"></span>
+									<span class="commit-subject">{commit.subject}</span>
+									<time datetime={commit.committedAt}>
+										{formatLastActivity(commit.committedAt, new Date())}
+									</time>
+								</button>
 							</li>
 						{/each}
 						{#if panel.historyLoadingMore}
@@ -237,20 +251,31 @@
 	}
 
 	li {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 28px;
+	}
+
+	li > button {
 		display: grid;
+		width: 100%;
 		min-width: 0;
 		min-height: 28px;
 		grid-template-columns: 14px minmax(0, 1fr) auto;
 		align-items: center;
 		gap: 5px;
 		padding: 3px 6px;
+		border: 0;
 		border-radius: var(--radius-sm);
-		content-visibility: auto;
-		contain-intrinsic-size: auto 28px;
+		background: transparent;
+		color: inherit;
+		text-align: left;
+		cursor: pointer;
 	}
 
-	li:hover {
+	li > button:hover,
+	li > button:focus-visible {
 		background: var(--color-elevated);
+		outline: var(--focus-ring);
 	}
 
 	.commit-mark {
