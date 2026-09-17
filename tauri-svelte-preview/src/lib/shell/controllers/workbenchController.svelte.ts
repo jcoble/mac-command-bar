@@ -138,7 +138,7 @@ export class WorkbenchController {
 		// A center-tab round trip keeps the diff ready to return to. A session
 		// switch is the ownership boundary where that selection must be released.
 		gitService.clearSelection();
-		gitCommitFilesService.clearSelection();
+		gitCommitFilesService.release();
 		this.adoptRightTab(DEFAULT_RIGHT_TAB);
 		this.selectCenterTab(DEFAULT_CENTER_TAB);
 	}
@@ -210,10 +210,8 @@ export class WorkbenchController {
 		const graphVisible = this.centerTab === 'git-history' || (this.rightPanelOpen && this.rightTab === 'source-control');
 		shellPanels.sourceControlVisible(graphVisible);
 		if (!graphVisible) gitService.releaseHistorySurface();
-		// A commit selected from compact File History is owned by the Diff tab.
-		// Releasing it during that tab switch invalidates the read and strands its
-		// loading state even after Git has answered.
-		if (!graphVisible && this.centerTab !== 'diff') gitCommitFilesService.release();
+		// Commit expansion and selection belong to the current session, not to the
+		// panel that happens to be visible. beginSessionSwitch releases them.
 	}
 
 	private syncRightPanelVisibility(): void {
