@@ -71,8 +71,8 @@
 </div>
 
 <style>
-  .session-context-menu { position: fixed; z-index: 1000; display: flex; min-width: 216px; flex-direction: column; gap: 2px; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 5px; background: var(--color-surface); box-shadow: var(--shadow-lg); }
-  .menu-item { width: 100%; border-radius: var(--radius-sm); padding: 8px 9px; color: var(--color-text); font-size: 13px; text-align: left; }
-  .menu-item:hover:not(:disabled), .menu-item:focus-visible:not(:disabled) { background: var(--color-elevated); outline: none; box-shadow: var(--focus-ring); }
+  .session-context-menu { position: fixed; z-index: 1000; display: flex; min-width: 216px; flex-direction: column; gap: 2px; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 5px; background: var(--color-bg); box-shadow: var(--shadow-lg); }
+  .menu-item { width: 100%; border-radius: var(--radius-sm); padding: 8px 9px; color: var(--color-text-2); font-size: 13px; font-weight: var(--weight-medium); text-align: left; }
+  .menu-item:hover:not(:disabled), .menu-item:focus-visible:not(:disabled) { background: var(--color-surface); color: var(--color-text); outline: none; }
   .menu-item.disabled { cursor: not-allowed; color: var(--color-disabled-text); }
 </style>
