@@ -45,6 +45,7 @@
      * announcements too — see the note in `centerDock.ts`. */
     onCenterPanelShown?: (id: string) => void;
     onSessionsWidthChange?: (width: number) => void;
+    onToolsWidthChange?: (width: number) => void;
     onReady?: (controls: {
       resetLayout: () => void;
       showCenterPanel: (id: string) => void;
@@ -80,6 +81,7 @@
     onSessionPanelLayout,
     onCenterPanelShown,
     onSessionsWidthChange,
+    onToolsWidthChange,
     onReady,
     onError
   }: Props = $props();
@@ -137,12 +139,14 @@
         // still at 0×0 leaves always-rendered panels with stale overlay bounds
         // until the next activation.
         layoutFrame();
-        const reportSessionsWidth = (): void => {
-          const width = frame?.regionWidth('sessions');
-          if (width !== null && width !== undefined) onSessionsWidthChange?.(width);
+        const reportRegionWidths = (): void => {
+          const sessionsWidth = frame?.regionWidth('sessions');
+          if (sessionsWidth !== null && sessionsWidth !== undefined) onSessionsWidthChange?.(sessionsWidth);
+          const toolsWidth = frame?.regionWidth('tools');
+          onToolsWidthChange?.(toolsWidth ?? 0);
         };
-        frameLayoutListener = frame.api.onDidLayoutChange(reportSessionsWidth);
-        reportSessionsWidth();
+        frameLayoutListener = frame.api.onDidLayoutChange(reportRegionWidths);
+        reportRegionWidths();
         centerDock = createCenterDock(centerSlot, {
           readLayout: () => readAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY),
           writeLayout: (layout) => writeAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY, layout),

@@ -64,6 +64,7 @@
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
 	let sessionsRailWidth = $state(360);
+	let toolsRailWidth = $state(320);
 
 	$effect(() => {
 		selection.setEditorPanel(editorPanel);
@@ -335,7 +336,7 @@
 
 <main
 	class="next-shell"
-	style={`--sessions-rail-width:${sessionsRailWidth}px`}
+	style={`--sessions-rail-width:${sessionsRailWidth}px;--tools-rail-width:${toolsRailWidth}px`}
 	oncontextmenu={(event) => {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, [contenteditable="true"]')) return;
@@ -344,15 +345,13 @@
 >
 	<div class="window-chrome" data-tauri-drag-region>
 		<div class="window-sessions-cap" data-tauri-drag-region></div>
-		<div class="window-workspace-chrome" data-tauri-drag-region>
-			<div class="window-center-tabs">
-				{@render centerTabsArea()}
-			</div>
-			<div class="window-right-tabs">
-				{#if workbench.rightPanelOpen}
-					<RightPanelTabs activeId={workbench.rightTab} onSelect={selectRightTab} />
-				{/if}
-			</div>
+		<div class="window-center-tabs" data-tauri-drag-region>
+			{@render centerTabsArea()}
+		</div>
+		<div class="window-right-tabs" class:open={workbench.rightPanelOpen} data-tauri-drag-region>
+			{#if workbench.rightPanelOpen}
+				<RightPanelTabs activeId={workbench.rightTab} onSelect={selectRightTab} />
+			{/if}
 		</div>
 	</div>
 	<div class="frame-area">
@@ -367,6 +366,7 @@
 				gitHistory: gitHistoryArea,
 			}}
 			onSessionsWidthChange={(width) => (sessionsRailWidth = width)}
+			onToolsWidthChange={(width) => (toolsRailWidth = width)}
 			onReady={(controls) => workbench.onFrameReady(controls)}
 			onCenterPanelShown={(id) => workbench.handleCenterPanelShown(id)}
 		/>
@@ -410,7 +410,7 @@
 
 	.window-chrome {
 		display: grid;
-		grid-template-columns: var(--sessions-rail-width) minmax(0, 1fr);
+		grid-template-columns: var(--sessions-rail-width) minmax(0, 1fr) var(--tools-rail-width);
 		flex: 0 0 calc(var(--center-head-row-height) + 6px);
 		align-items: center;
 		min-height: 0;
@@ -423,24 +423,19 @@
 		border-right: 1px solid var(--color-border);
 	}
 
-	.window-workspace-chrome {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-		align-items: center;
-		min-width: 0;
-	}
-
 	.window-center-tabs {
-		grid-column: 2;
 		min-width: 0;
+		justify-self: center;
 	}
 
 	.window-right-tabs {
 		display: flex;
-		grid-column: 3;
-		width: min(100%, 470px);
+		width: 100%;
 		min-width: 0;
-		justify-self: end;
+	}
+
+	.window-right-tabs.open {
+		border-left: 1px solid var(--color-border);
 	}
 
 	.sessions-region {
