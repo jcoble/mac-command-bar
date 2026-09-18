@@ -6,11 +6,12 @@
 	 * active paint and calls no session, panel, persistence, or native service.
 	 *
 	 * The rail passes one shared timestamp into every row. This row mounts no
-	 * timer, clock subscription, animated spinner, or visibility observer.
+	 * timer or clock subscription. Its seeded activity glyph exists only during
+	 * real work and pauses itself when the row is offscreen.
 	 */
-	import LoaderCircle from "@lucide/svelte/icons/loader-circle";
 	import Server from "@lucide/svelte/icons/server";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
+	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 	import {
 		deriveSessionPresence,
 		EMPTY_SESSION_PRESENCE_HISTORY,
@@ -94,6 +95,7 @@
 							? "working"
 							: "idle",
 	);
+	const finishedUnread = $derived(!needsYou && presenceSignals === "needs-attention");
 	const presenceLabel = $derived(
 		{
 			working: "Working",
@@ -182,7 +184,7 @@
 					<span class="age-text">{ageText ?? ""}</span>
 					{#if presence === "working"}
 						<span class="working-mark" role="img" aria-label="Working">
-							<LoaderCircle aria-hidden="true" />
+							<WorkingSpinner seed={activeTurnId ?? session.ownedId} size={14} />
 						</span>
 					{/if}
 				</span>
@@ -202,6 +204,11 @@
 					<span data-testid="worktree-agent-needs-you" class="needs-you">
 						<span class="attention-dot" aria-hidden="true"></span>
 						Needs you
+					</span>
+				{:else if finishedUnread}
+					<span data-testid="worktree-agent-unread" class="unread">
+						<span class="unread-dot" aria-hidden="true"></span>
+						Unread
 					</span>
 				{:else if presence === "failed"}
 					<span data-testid="worktree-agent-status" class="failed">{presentedError?.summary ?? presenceLabel}</span>
@@ -357,7 +364,8 @@
 	}
 
 	.failed,
-	.needs-you {
+	.needs-you,
+	.unread {
 		margin-left: auto;
 	}
 
@@ -391,12 +399,6 @@
 		color: var(--color-accent);
 	}
 
-	.working-mark :global(svg) {
-		width: 14px;
-		height: 14px;
-		animation: none;
-	}
-
 	.row[data-presence="working"] .age {
 		color: var(--color-text-2);
 	}
@@ -418,6 +420,25 @@
 		flex: 0 0 auto;
 		border-radius: 50%;
 		background: var(--color-attention);
+	}
+
+	.unread {
+		display: inline-flex;
+		flex: 0 0 auto;
+		align-items: center;
+		gap: 5px;
+		color: var(--color-accent);
+		font-size: 11.5px;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+
+	.unread-dot {
+		width: 7px;
+		height: 7px;
+		flex: 0 0 auto;
+		border-radius: 2px;
+		background: var(--color-accent);
 	}
 
 	.failed {
