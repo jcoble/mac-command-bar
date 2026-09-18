@@ -68,7 +68,7 @@
   /* The turn container owns the spacing. Items add only the small distinctions
      needed inside it, so a run of tools reads as one compact sequence while a
      prompt and its answer still remain separate. */
-  .timeline-item{display:block;min-width:0}
+  .timeline-item{display:block;min-width:0;content-visibility:auto;contain-intrinsic-size:auto 48px}
   .timeline-item[data-kind='tool'],
   .timeline-item[data-kind='reasoning'],
   .timeline-item[data-kind='subagent'],
