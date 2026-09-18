@@ -246,6 +246,14 @@ pub struct RemoteAssemblyEnvironment {
     pub ready_profile_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteBackendProfileStatus {
+    pub profile_id: String,
+    #[serde(flatten)]
+    pub backend: super::remote_install::BackendStatus,
+}
+
 impl RemoteConnectionManager {
     pub fn from_environment(
         event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
@@ -383,6 +391,52 @@ impl RemoteConnectionManager {
         }
     }
 
+    pub async fn install_and_connect_profile(&self, profile: RemoteAssemblyProfile, operation_id: String,
+        status: tauri::ipc::Channel<String>) -> Result<RemoteConnectionResult, String> {
+        validate_profile(&profile)?;
+        let manager = self.clone();
+        let progress = status.clone();
+        let mut task = {
+            let mut attempts = self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if attempts.contains_key(&operation_id) { return Err("Connection attempt already exists".into()); }
+            let task = tokio::spawn(async move {
+                let _owner = manager.connection_lock.lock().await;
+                let (profile, _) = manager.resolve_profile_identity(profile).await?;
+                manager.disconnect_profile(&profile.id);
+                let receipt = super::remote_install::install_latest(&profile.ssh_target, progress.clone()).await?;
+                let _ = progress.send(format!("Installed backend {} from {}. Connecting…",
+                    receipt.version, &receipt.commit[..12]));
+                manager.connect_profile_inner_locked(profile, progress).await
+            });
+            attempts.insert(operation_id.clone(), task.abort_handle());
+            task
+        };
+        let _ = status.send("Preparing installation…".into());
+        let result = match tokio::time::timeout(Duration::from_secs(360), &mut task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("Installation cancelled".into()),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                Err("Installation timed out after 6 minutes".into())
+            }
+        };
+        self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&operation_id);
+        result
+    }
+
+    pub async fn uninstall_profile(
+        &self,
+        profile: RemoteAssemblyProfile,
+        delete_data: bool,
+    ) -> Result<(), String> {
+        validate_profile(&profile)?;
+        let _owner = self.connection_lock.lock().await;
+        let (profile, _) = self.resolve_profile_identity(profile).await?;
+        self.disconnect_profile(&profile.id);
+        super::remote_install::uninstall(&profile.ssh_target, delete_data).await
+    }
+
     pub async fn connect_profile(&self, profile: RemoteAssemblyProfile, operation_id: String,
         status: tauri::ipc::Channel<String>) -> Result<RemoteConnectionResult, String> {
         validate_profile(&profile)?;
@@ -410,20 +464,16 @@ impl RemoteConnectionManager {
         result
     }
 
-    async fn connect_profile_inner(&self, mut profile: RemoteAssemblyProfile,
+    async fn connect_profile_inner(&self, profile: RemoteAssemblyProfile,
         status: tauri::ipc::Channel<String>) -> Result<RemoteConnectionResult, String> {
         let _owner = self.connection_lock.lock().await;
+        self.connect_profile_inner_locked(profile, status).await
+    }
+
+    async fn connect_profile_inner_locked(&self, profile: RemoteAssemblyProfile,
+        status: tauri::ipc::Channel<String>) -> Result<RemoteConnectionResult, String> {
         let _ = status.send("Resolving SSH configuration…".into());
-        let target_key = resolve_ssh_target(&profile.ssh_target).await?;
-        let saved = self.environment().profiles;
-        for existing in saved {
-            let key = if existing.ssh_target == profile.ssh_target { Some(target_key.clone()) }
-                else { resolve_ssh_target(&existing.ssh_target).await.ok() };
-            if key.as_ref() != Some(&target_key) { continue; }
-            // Alias and address forms of the same host keep the original profile/session IDs.
-            if existing.id != profile.id { profile = existing; }
-            break;
-        }
+        let (profile, target_key) = self.resolve_profile_identity(profile).await?;
         let reusable = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .clients.get(&profile.id).is_some_and(|client| client.target_key.as_ref() == Some(&target_key)
                 && client.requests.as_ref().is_some_and(|sender| !sender.is_closed()));
@@ -454,6 +504,21 @@ impl RemoteConnectionManager {
             client.profile = Some(profile.clone());
         }
         Ok(RemoteConnectionResult { profile, sessions })
+    }
+
+    async fn resolve_profile_identity(&self, mut profile: RemoteAssemblyProfile)
+        -> Result<(RemoteAssemblyProfile, String), String> {
+        let target_key = resolve_ssh_target(&profile.ssh_target).await?;
+        let saved = self.environment().profiles;
+        for existing in saved {
+            let key = if existing.ssh_target == profile.ssh_target { Some(target_key.clone()) }
+                else { resolve_ssh_target(&existing.ssh_target).await.ok() };
+            if key.as_ref() != Some(&target_key) { continue; }
+            // Alias and address forms of the same host keep the original profile/session IDs.
+            if existing.id != profile.id { profile = existing; }
+            break;
+        }
+        Ok((profile, target_key))
     }
 
     pub fn disconnect_profile(&self, profile_id: &str) {
@@ -1024,6 +1089,61 @@ pub async fn connect_remote_assembly(
     manager.write_app_setting(REMOTE_ASSEMBLY_PROFILES_SETTING_KEY, &profiles_json)
         .map_err(super::protocol::CommandError::from)?;
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn install_remote_assembly(
+    manager: tauri::State<'_, AgentRuntimeManager>, remote: tauri::State<'_, RemoteConnectionManager>,
+    profile: RemoteAssemblyProfile, operation_id: String, status: tauri::ipc::Channel<String>,
+) -> Result<RemoteConnectionResult, super::protocol::CommandError> {
+    let result = remote.install_and_connect_profile(profile, operation_id, status).await
+        .map_err(super::protocol::CommandError::from)?;
+    let profiles_json = serde_json::to_string(&remote.environment().profiles)
+        .map_err(|error| super::protocol::CommandError::from(error.to_string()))?;
+    manager.write_app_setting(REMOTE_ASSEMBLY_PROFILES_SETTING_KEY, &profiles_json)
+        .map_err(super::protocol::CommandError::from)?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn read_remote_backend_statuses(
+    profiles: Vec<RemoteAssemblyProfile>,
+) -> Result<Vec<RemoteBackendProfileStatus>, super::protocol::CommandError> {
+    for profile in &profiles {
+        validate_profile(profile).map_err(super::protocol::CommandError::from)?;
+    }
+    let latest_version = super::remote_install::latest_version()
+        .await
+        .map_err(super::protocol::CommandError::from)?;
+    let statuses = join_all(profiles.into_iter().map(|profile| {
+        let latest_version = latest_version.clone();
+        async move {
+            let backend = super::remote_install::read_status(&profile.ssh_target, &latest_version)
+                .await?;
+            Ok::<_, String>(RemoteBackendProfileStatus {
+                profile_id: profile.id,
+                backend,
+            })
+        }
+    }))
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(super::protocol::CommandError::from)?;
+    Ok(statuses)
+}
+
+#[tauri::command]
+pub async fn uninstall_remote_assembly(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile: RemoteAssemblyProfile,
+    delete_data: bool,
+) -> Result<RemoteAssemblyEnvironment, super::protocol::CommandError> {
+    remote
+        .uninstall_profile(profile, delete_data)
+        .await
+        .map_err(super::protocol::CommandError::from)?;
+    Ok(remote.environment())
 }
 
 #[tauri::command]
@@ -1800,7 +1920,7 @@ async fn execute_remote_command(
     }
 }
 
-fn validate_ssh_target(target: &str) -> Result<(), String> {
+pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
     if target.is_empty() || target.starts_with('-')
         || !target.bytes().all(|value| value.is_ascii_alphanumeric() || b"._@-".contains(&value)) {
         return Err("SSH destination may contain only letters, numbers, '.', '_', '@', and '-'".into());

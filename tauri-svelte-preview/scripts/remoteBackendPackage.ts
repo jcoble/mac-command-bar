@@ -102,6 +102,8 @@ while [ "$attempt" -lt 15 ]; do
   if systemctl --user is-active --quiet assembly-remote.service \
     && [ -n "$listeners" ] \
     && printf '%s\n' "$listeners" | awk '$4 != "127.0.0.1:7777" { exit 1 } END { if (NR == 0) exit 1 }'; then
+    install -m 644 manifest.json "$HOME/.local/share/assembly/.backend-manifest.new"
+    mv "$HOME/.local/share/assembly/.backend-manifest.new" "$HOME/.local/share/assembly/backend-manifest.json"
     exit 0
   fi
   attempt=$((attempt + 1))

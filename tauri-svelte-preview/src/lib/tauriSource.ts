@@ -423,6 +423,14 @@ export type RemoteAssemblyEnvironment = {
   readyProfileIds: string[];
 };
 
+export type RemoteBackendProfileStatus = {
+  profileId: string;
+  installed: boolean;
+  installedVersion: string | null;
+  latestVersion: string;
+  updateAvailable: boolean | null;
+};
+
 export type RemoteAssemblyProfile = {
   id: string;
   name: string;
@@ -1868,6 +1876,14 @@ export async function readRemoteAssemblyEnvironmentFromTauri(): Promise<RemoteAs
   return invoke<RemoteAssemblyEnvironment>('read_remote_assembly_environment');
 }
 
+export async function readRemoteBackendStatusesFromTauri(
+  profiles: RemoteAssemblyProfile[]
+): Promise<RemoteBackendProfileStatus[]> {
+  if (!isTauriRuntime() || profiles.length === 0) return [];
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<RemoteBackendProfileStatus[]>('read_remote_backend_statuses', { profiles });
+}
+
 export async function removeRemoteAssemblyProfileFromTauri(
   profileId: string
 ): Promise<RemoteAssemblyEnvironment> {
@@ -1905,6 +1921,41 @@ export async function connectRemoteAssemblyFromTauri(
   } finally {
     signal.removeEventListener('abort', cancel);
   }
+}
+
+export async function installRemoteAssemblyFromTauri(
+  profile: RemoteAssemblyProfile,
+  signal: AbortSignal,
+  onStatus: (status: string) => void
+): Promise<{ profile: RemoteAssemblyProfile; sessions: AgentConversationSessionRecord[] }> {
+  if (!isTauriRuntime()) throw new Error('Remote installation is available in the desktop app.');
+  if (signal.aborted) throw new Error('Installation cancelled');
+  const { invoke, Channel } = await import('@tauri-apps/api/core');
+  const operationId = crypto.randomUUID();
+  let registered = false;
+  const cancel = () => {
+    if (registered) void invoke('cancel_remote_connection', { operationId }).catch(() => {});
+  };
+  const status = new Channel<string>((message) => {
+    registered = true;
+    if (signal.aborted) cancel();
+    else onStatus(message);
+  });
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    return await invoke('install_remote_assembly', { profile, operationId, status });
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
+}
+
+export async function uninstallRemoteAssemblyFromTauri(
+  profile: RemoteAssemblyProfile,
+  deleteData: boolean
+): Promise<RemoteAssemblyEnvironment> {
+  if (!isTauriRuntime()) throw new Error('Remote uninstall is available in the desktop app.');
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<RemoteAssemblyEnvironment>('uninstall_remote_assembly', { profile, deleteData });
 }
 
 export async function changeAgentConversationCheckoutFromTauri(input: {
