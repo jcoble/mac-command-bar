@@ -336,7 +336,7 @@
                       class={cn(
                         'min-w-0 gap-1 px-1 text-[13px] font-normal',
                         pressed
-                          ? 'bg-[var(--menu-row-active)] text-[var(--color-text)] ring-1 ring-inset ring-[var(--color-accent)]'
+                          ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)] hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]'
                           : 'text-[var(--color-text-3)]'
                       )}
                       aria-pressed={pressed}
