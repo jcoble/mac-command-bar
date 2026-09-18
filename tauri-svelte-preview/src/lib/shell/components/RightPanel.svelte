@@ -20,6 +20,7 @@
   import type {
     CheckoutScope,
     SessionHistoryWorkspace,
+    SessionBrowserWorkspace,
     SessionSourceControlWorkspace
   } from '$lib/shell/sessionWorkspaces';
 
@@ -61,6 +62,7 @@
     historyWorkspace?: SessionHistoryWorkspace;
     onSourceControlWorkspaceChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
     onHistoryWorkspaceChange?(ownedId: string | null, state: SessionHistoryWorkspace): void;
+    onBrowserWorkspaceChange?(ownedId: string, state: SessionBrowserWorkspace): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
@@ -84,6 +86,7 @@
     historyWorkspace,
     onSourceControlWorkspaceChange,
     onHistoryWorkspaceChange,
+    onBrowserWorkspaceChange,
     onUseSessionCheckout
   }: Props = $props();
 </script>
@@ -113,7 +116,13 @@
       class:showing={visible && activeId === 'browser'}
       aria-hidden={!visible || activeId !== 'browser'}
     >
-      <BrowserPanel visible={visible && activeId === 'browser'} panelOpen={visible} {root} {ownedId} />
+      <BrowserPanel
+        visible={visible && activeId === 'browser'}
+        panelOpen={visible}
+        {root}
+        {ownedId}
+        onWorkspaceChange={onBrowserWorkspaceChange}
+      />
     </div>
     {#if visible && activeId === 'source-control'}
       <div class="panel-body showing">
