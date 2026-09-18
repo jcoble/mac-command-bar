@@ -76,6 +76,18 @@
     onChange(items[target].id);
     segments[target]?.focus();
   }
+
+  /** A mouse wheel has no horizontal axis. Use its vertical movement on this
+   *  one-axis strip; trackpad sideways gestures keep their native behavior. */
+  function onWheel(event: WheelEvent): void {
+    if (!strip || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+    const limit = strip.scrollWidth - strip.clientWidth;
+    if (limit <= 0) return;
+    const next = Math.max(0, Math.min(limit, strip.scrollLeft + event.deltaY));
+    if (next === strip.scrollLeft) return;
+    event.preventDefault();
+    strip.scrollLeft = next;
+  }
 </script>
 
 <div
@@ -87,6 +99,7 @@
   style:--indicator-left={`${frame.left}px`}
   style:--indicator-width={`${frame.width}px`}
   onkeydown={onKeyDown}
+  onwheel={onWheel}
   tabindex={-1}
 >
   <span class="indicator" aria-hidden="true"></span>

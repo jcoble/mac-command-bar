@@ -54,10 +54,28 @@
       track?.querySelector<HTMLElement>(`[data-browser-tab-id="${CSS.escape(tab.id)}"]`)?.focus();
     });
   }
+
+  /** A mouse wheel has no horizontal axis. Use its vertical movement on this
+   *  one-axis strip; trackpad sideways gestures keep their native behavior. */
+  function scrollTabs(event: WheelEvent): void {
+    if (!track || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+    const limit = track.scrollWidth - track.clientWidth;
+    if (limit <= 0) return;
+    const next = Math.max(0, Math.min(limit, track.scrollLeft + event.deltaY));
+    if (next === track.scrollLeft) return;
+    event.preventDefault();
+    track.scrollLeft = next;
+  }
 </script>
 
 <div class="browser-tabs" aria-label="Browser pages">
-  <div class="tab-track" bind:this={track} role="tablist" aria-label="Open browser pages">
+  <div
+    class="tab-track"
+    bind:this={track}
+    role="tablist"
+    aria-label="Open browser pages"
+    onwheel={scrollTabs}
+  >
     {#each tabs as tab (tab.id)}
       <div class="tab-shell" class:active={tab.id === activeTabId}>
         <button
