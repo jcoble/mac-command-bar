@@ -494,6 +494,37 @@ impl RemoteConnectionManager {
         Ok(())
     }
 
+    fn reassign_cached_profile_sessions(
+        &self,
+        from_profile_id: &str,
+        to_profile_id: &str,
+    ) -> Result<(), String> {
+        if from_profile_id == to_profile_id {
+            return Ok(());
+        }
+        let mut next = self.cached_sessions();
+        let mut changed = false;
+        for session in &mut next {
+            if session.remote_profile_id.as_deref() == Some(from_profile_id) {
+                session.remote_profile_id = Some(to_profile_id.to_string());
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
+        }
+        self.save_cached_sessions(next)?;
+        let mut routing = self
+            .remote_sessions
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for profile_id in routing.values_mut() {
+            if profile_id == from_profile_id {
+                *profile_id = to_profile_id.to_string();
+            }
+        }
+        Ok(())
+    }
+
     fn cache_session(&self, mut session: AgentConversationSessionRecord) -> Result<(), String> {
         session.execution_environment = ExecutionEnvironment::Remote;
         let owned_id = session.owned_id.clone();
@@ -781,6 +812,22 @@ impl RemoteConnectionManager {
             // Alias and address forms of the same host keep the original profile/session IDs.
             if existing.id != profile.id { profile = existing; }
             break;
+        }
+        if profile.id != "agent-workbox" {
+            if let Some(json) = self.store.get_app_setting(REMOTE_ASSEMBLY_PROFILE_SETTING_KEY)
+                .map_err(|error| error.to_string())?
+            {
+                if let Ok(legacy) = serde_json::from_str::<LegacyRemoteAssemblyProfile>(&json) {
+                    let legacy_key = if legacy.ssh_target == profile.ssh_target {
+                        Some(target_key.clone())
+                    } else {
+                        resolve_ssh_target(&legacy.ssh_target).await.ok()
+                    };
+                    if legacy_key.as_ref() == Some(&target_key) {
+                        self.reassign_cached_profile_sessions("agent-workbox", &profile.id)?;
+                    }
+                }
+            }
         }
         Ok((profile, target_key))
     }
@@ -2359,6 +2406,34 @@ mod connection_tests {
             vec!["keep"]
         );
         assert!(!manager.owns("new"));
+        assert!(manager.owns("keep"));
+    }
+
+    #[test]
+    fn legacy_cached_rows_move_to_the_current_profile_before_reconciliation() {
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), store(),
+        ).unwrap();
+        manager.replace_cached_profile_sessions(
+            "agent-workbox", &[session("legacy", "agent-workbox", 2)],
+        ).unwrap();
+        manager.replace_cached_profile_sessions(
+            "other", &[session("keep", "other", 1)],
+        ).unwrap();
+
+        manager.reassign_cached_profile_sessions("agent-workbox", "current").unwrap();
+
+        let sessions = manager.cached_sessions();
+        assert_eq!(sessions[0].remote_profile_id.as_deref(), Some("current"));
+        assert_eq!(sessions[1].remote_profile_id.as_deref(), Some("other"));
+        assert_eq!(manager.profile_for_owned_id("legacy").unwrap(), "current");
+
+        manager.replace_cached_profile_sessions("current", &[]).unwrap();
+
+        let sessions = manager.cached_sessions();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].owned_id, "keep");
+        assert!(!manager.owns("legacy"));
         assert!(manager.owns("keep"));
     }
 
