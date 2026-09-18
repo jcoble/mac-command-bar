@@ -332,8 +332,13 @@
                     {@const pressed = viewOptions.visibleStatuses.includes(control.value)}
                     <Button
                       size="sm"
-                      variant={pressed ? 'secondary' : 'ghost'}
-                      class="min-w-0 gap-1 px-1 text-[13px] font-normal"
+                      variant="ghost"
+                      class={cn(
+                        'min-w-0 gap-1 px-1 text-[13px] font-normal',
+                        pressed
+                          ? 'bg-[var(--menu-row-active)] text-[var(--color-text)] ring-1 ring-inset ring-[var(--color-accent)]'
+                          : 'text-[var(--color-text-3)]'
+                      )}
                       aria-pressed={pressed}
                       onclick={() => toggleStatus(control.value)}
                     >
