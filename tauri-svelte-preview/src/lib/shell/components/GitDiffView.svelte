@@ -155,6 +155,13 @@
       {#if diff}
         <span class="summary">{diff.status} · {summary}</span>
       {/if}
+      <button
+        type="button"
+        class="go-to-file"
+        disabled={!gitPanel.root}
+        title="Open this file as source"
+        onclick={() => openAtLine(null)}
+      >Go to File</button>
     </header>
 
     {#if gitPanel.diffLoading}
@@ -266,6 +273,8 @@
   }
 
   .path {
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -279,6 +288,27 @@
     color: #6d6d7d;
     font-size: 12px;
     white-space: nowrap;
+  }
+
+  .go-to-file {
+    flex: 0 0 auto;
+    padding: 3px 8px;
+    border: 1px solid #30303c;
+    border-radius: 4px;
+    background: transparent;
+    color: #b8b8c6;
+    cursor: pointer;
+    font: inherit;
+  }
+
+  .go-to-file:hover:not(:disabled) {
+    border-color: #6666a0;
+    color: #e6e6ee;
+  }
+
+  .go-to-file:disabled {
+    cursor: default;
+    opacity: 0.45;
   }
 
   .mode-row {

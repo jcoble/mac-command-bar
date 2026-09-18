@@ -315,13 +315,12 @@
 {/snippet}
 
 {#snippet gitHistoryArea()}
-	{#if workbench.centerTab === "git-history"}
-		<GitHistoryView
-			root={selection.activeRootAvailable ? selection.durableSessionRoot : ""}
-			rootAvailable={selection.activeRootAvailable}
-			historyPath={gitPanel.historyPath}
-		/>
-	{/if}
+	<GitHistoryView
+		root={selection.activeRootAvailable ? selection.durableSessionRoot : ""}
+		rootAvailable={selection.activeRootAvailable}
+		historyPath={gitPanel.historyPath}
+		showing={workbench.centerTab === "git-history"}
+	/>
 {/snippet}
 
 <main

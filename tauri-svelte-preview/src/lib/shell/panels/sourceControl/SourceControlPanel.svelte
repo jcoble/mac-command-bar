@@ -278,7 +278,6 @@
     if (historyRoot === '') return;
     historyRoot = '';
     service.releaseHistorySurface();
-    commitFiles.release();
   }
 
   $effect(() => {
