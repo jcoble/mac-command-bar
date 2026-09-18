@@ -10,6 +10,7 @@ import {
 } from '../sessionWorkspaces';
 import { gitService } from '../git/gitService';
 import { gitCommitFilesService } from '../git/gitCommitFilesService';
+import { gitPanel } from '../git/gitPanelStore.svelte';
 import { shellPanels } from '../shellPanels';
 import {
 	CENTER_MIN_WIDTH,
@@ -127,6 +128,8 @@ export class WorkbenchController {
 		return {
 			rightTab: this.rightTab,
 			diffMode: this.diffMode,
+			diffPath: gitPanel.selectedPath || null,
+			diffRoot: gitPanel.selectedPath ? gitPanel.root : null,
 			browser: captureBrowserState(),
 			center: this.frameControls?.captureCenterLayout() ?? undefined,
 		};

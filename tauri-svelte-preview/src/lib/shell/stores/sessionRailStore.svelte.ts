@@ -10,6 +10,9 @@ import type { ConversationWorkspaceState } from '../conversation/conversationSto
 import type { OwnedSession } from '../ownedSessions.ts';
 import type { SessionWorkspaceSnapshot } from '../sessionWorkspaces.ts';
 
+/** SQLite setting naming the rail row the owner last had selected. */
+export const ACTIVE_OWNED_SESSION_SETTING_KEY = 'shell.active-owned-session';
+
 /**
  * What one saved remote machine's transport is doing, as the backend reports it.
  * Rows start disconnected and only the native lifecycle event changes it.

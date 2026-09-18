@@ -41,6 +41,7 @@
 	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
+	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
@@ -154,17 +155,23 @@
 		await selection.selectSession(ownedId);
 		if (selection.activeOwnedId === ownedId) {
 			workbench.restoreSessionState(selection.activeWorkspaceSnapshot);
+			const storedDiffPath = diffPathFor(selection.activeWorkspaceSnapshot, selection.durableSessionRoot);
+			if (storedDiffPath && selection.activeWorkspaceSnapshot?.center?.activePanelId === 'diff') {
+				await gitService.showStoredDiff(selection.durableSessionRoot, storedDiffPath);
+			}
 		}
 	}
 
 	function selectCenterTab(id: Parameters<WorkbenchController["selectCenterTab"]>[0]): void {
 		workbench.selectCenterTab(id);
-		selection.rememberWorkspaceState(workbench.captureSessionState());
+		const ownedId = selection.activeOwnedId;
+		if (ownedId) selection.persistWorkspaceState(ownedId, workbench.captureSessionState());
 	}
 
 	function selectRightTab(id: Parameters<WorkbenchController["selectRightTab"]>[0]): void {
 		workbench.selectRightTab(id);
-		selection.rememberWorkspaceState(workbench.captureSessionState());
+		const ownedId = selection.activeOwnedId;
+		if (ownedId) selection.persistWorkspaceState(ownedId, workbench.captureSessionState());
 	}
 
 	function openNewSession(): void {

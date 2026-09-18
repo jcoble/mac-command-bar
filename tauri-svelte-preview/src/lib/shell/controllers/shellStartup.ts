@@ -1,10 +1,15 @@
 import { hydrateSettings } from '$lib/settingsStore.svelte';
 import { applyStoredFonts, clearFonts } from '../themes/fontService';
 import { applyStoredTheme, clearTheme } from '../themes/themeService';
-import { hydrateOwned, rail } from '../stores/sessionRailStore.svelte';
+import {
+	ACTIVE_OWNED_SESSION_SETTING_KEY,
+	hydrateOwned,
+	rail
+} from '../stores/sessionRailStore.svelte';
 import {
 	listAgentConversationSessionsFromTauri,
-	listRemoteAgentConversationSessionsFromTauri
+	listRemoteAgentConversationSessionsFromTauri,
+	readAssemblySettingFromTauri
 } from '$lib/tauriSource';
 import { ownedSessionFromBackend } from '../ownedSessions';
 import { startConversationEvents, stopConversationEvents } from '../conversation/conversationService';
@@ -30,13 +35,21 @@ export async function startShell(options: ShellStartupOptions): Promise<void> {
 
 	try {
 		if (!shellActive(generation, controller.signal)) return;
-		const storedSessions = (await listAgentConversationSessionsFromTauri()) ?? [];
+		const [storedSessions, storedRemoteSessions, storedActiveOwnedId] = await Promise.all([
+			listAgentConversationSessionsFromTauri(),
+			listRemoteAgentConversationSessionsFromTauri(controller.signal).catch(() => []),
+			readAssemblySettingFromTauri(ACTIVE_OWNED_SESSION_SETTING_KEY).catch(() => null)
+		]);
 		if (!shellActive(generation, controller.signal)) return;
-		const projected = storedSessions.map(ownedSessionFromBackend);
+		const projected = (storedSessions ?? []).map(ownedSessionFromBackend);
+		const projectedRemote = (storedRemoteSessions ?? []).map(ownedSessionFromBackend);
+		const remoteIds = new Set(projectedRemote.map((session) => session.ownedId));
+		const combined = [...projected.filter((session) => !remoteIds.has(session.ownedId)), ...projectedRemote];
 
-		hydrateOwned(projected);
+		hydrateOwned(combined);
 
-		const initial = projected[0] ?? null;
+		const rememberedOwnedId = typeof storedActiveOwnedId === 'string' ? storedActiveOwnedId : null;
+		const initial = combined.find((session) => session.ownedId === rememberedOwnedId) ?? combined[0] ?? null;
 		if (initial) {
 			if (!shellActive(generation, controller.signal)) return;
 			await options.onSelectInitial(initial.ownedId, controller.signal);
@@ -44,7 +57,6 @@ export async function startShell(options: ShellStartupOptions): Promise<void> {
 		}
 
 		void startConversationEventsForOwner(generation, controller.signal);
-		void hydrateRemoteSessionsForOwner(generation, controller.signal);
 	} catch (error) {
 		if (!shellActive(generation, controller.signal)) return;
 		rail.error = `shell start-up failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -87,19 +99,5 @@ async function startConversationEventsForOwner(generation: number, stopSignal: A
 	} catch (error) {
 		if (!shellActive(generation, stopSignal)) return;
 		rail.error = `shell event setup failed: ${error instanceof Error ? error.message : String(error)}`;
-	}
-}
-
-async function hydrateRemoteSessionsForOwner(generation: number, stopSignal: AbortSignal): Promise<void> {
-	try {
-		if (!shellActive(generation, stopSignal)) return;
-		const storedSessions = (await listRemoteAgentConversationSessionsFromTauri(stopSignal)) ?? [];
-		if (!shellActive(generation, stopSignal) || storedSessions.length === 0) return;
-		const projected = storedSessions.map(ownedSessionFromBackend);
-		const remoteIds = new Set(projected.map((session) => session.ownedId));
-		hydrateOwned([...rail.owned.filter((session) => !remoteIds.has(session.ownedId)), ...projected]);
-	} catch (error) {
-		if (!shellActive(generation, stopSignal)) return;
-		rail.error = `remote session refresh failed: ${error instanceof Error ? error.message : String(error)}`;
 	}
 }

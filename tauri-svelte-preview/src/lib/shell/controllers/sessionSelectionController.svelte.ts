@@ -2,13 +2,18 @@ import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspaceP
 /**
  * Controller for session selection, filesystem projections, and workspace expansion.
  */
-import { rail, setActiveOwned } from '../stores/sessionRailStore.svelte';
+import {
+	ACTIVE_OWNED_SESSION_SETTING_KEY,
+	rail,
+	setActiveOwned
+} from '../stores/sessionRailStore.svelte';
 import { SessionSelectionLayers, type SessionSelectionOwner } from '../sessionSelectionLayers.svelte';
 import { canonicalPath } from '../explorer/explorerStore.svelte';
 import { countInvoke } from '../devInvokeCounter.svelte';
 import {
 	readAgentConversationWorkspaceExpandedPathsFromTauri,
 	writeAgentConversationWorkspaceExpandedPathsFromTauri,
+	writeAssemblySettingFromTauri,
 	deleteAgentConversationSessionFromTauri,
 	validateProjectRootFromTauri,
 } from '../../tauriSource';
@@ -104,6 +109,7 @@ export class SessionSelectionController {
 		this.activeWorkspaceSnapshot = null;
 		this.controlledSelectionOwnedId = ownedId;
 		setActiveOwned(ownedId);
+		void writeAssemblySettingFromTauri(ACTIVE_OWNED_SESSION_SETTING_KEY, ownedId).catch(() => undefined);
 		this.pendingSelectionOwnedId = ownedId;
 		const requestedSession = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		this.activeRootRemote = requestedSession?.executionEnvironment === "remote";
