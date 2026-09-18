@@ -32,9 +32,13 @@ function sessionSnapshot(name, mode, panel) {
       futureWorkspaceField: { owner: name }
     },
     browser: {
-      url: `http://${name}.localhost:5177/`,
-      inputUrl: `${name}.localhost:5177`,
-      activated: true
+      tabs: [{
+        id: `browser-${name}`,
+        url: `http://${name}.localhost:5177/`,
+        inputUrl: `${name}.localhost:5177`,
+        title: name
+      }],
+      activeTabId: `browser-${name}`
     },
     center: {
       activePanelId: panel,
@@ -60,7 +64,8 @@ assert.equal('draft' in restored['owned-a'].conversation, false);
 assert.equal(restored['owned-b'].conversation.mode, 'raw');
 assert.equal(restored['owned-a'].conversation.selectedChildId, 'child-alpha');
 assert.equal(restored['owned-b'].conversation.scrollTop, 500);
-assert.equal(restored['owned-c'].browser.url, 'http://charlie.localhost:5177/');
+assert.equal(restored['owned-c'].browser.tabs[0].url, 'http://charlie.localhost:5177/');
+assert.equal(restored['owned-c'].browser.activeTabId, 'browser-charlie');
 assert.equal(restored['owned-a'].center.activePanelId, 'session');
 assert.equal(restored['owned-b'].center.activePanelId, 'browser');
 assert.equal(restored['owned-c'].center.activePanelId, 'diff');

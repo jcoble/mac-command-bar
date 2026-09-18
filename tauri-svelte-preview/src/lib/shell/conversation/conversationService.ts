@@ -21,7 +21,8 @@ import {
   trackTauriListener
 } from '../resourceDiagnostics.svelte.ts';
 import { sessionTitleFromPrompt } from '../sessionStrip.ts';
-import { rail, updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import { rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import type { RemoteConnectionState } from '../stores/sessionRailStore.svelte';
 import {
   decideConversationActivation,
   generationForSend,
@@ -86,6 +87,7 @@ import {
 
 let conversationStream: ProjectionStreamRegistration | null = null;
 let unlistenTitles: (() => void) | null = null;
+let unlistenRemoteConnections: (() => void) | null = null;
 let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
 let conversationEventsGeneration = 0;
@@ -952,23 +954,38 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
   // its first turn is done the app writes a short summary over that, and this
   // is how the rail row hears about it.
   let stopTitles: (() => void) | null = null;
+  // A remote machine's transport connects, starts attempting, or stops. This is
+  // the app's one listener for it; rail rows read the store it writes.
+  let stopRemoteConnections: (() => void) | null = null;
   try {
     const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
       'session-title-changed',
       ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
     );
     stopTitles = trackTauriListener(stopTitleEvents);
+    const stopRemoteConnectionEvents = await listen<{
+      profileId: string;
+      state: RemoteConnectionState;
+    }>('remote-connection-changed', ({ payload }) =>
+      setRemoteConnection(payload.profileId, payload.state)
+    );
+    stopRemoteConnections = trackTauriListener(stopRemoteConnectionEvents);
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
       await registration?.unregister();
       stopTitles();
       stopTitles = null;
+      stopRemoteConnections();
+      stopRemoteConnections = null;
       return;
     }
     conversationStream = registration;
     unlistenTitles = stopTitles;
     stopTitles = null;
+    unlistenRemoteConnections = stopRemoteConnections;
+    stopRemoteConnections = null;
   } catch (error) {
     stopTitles?.();
+    stopRemoteConnections?.();
     await registration?.unregister();
     throw error;
   }
@@ -1018,6 +1035,8 @@ export function stopConversationEvents(): void {
   conversationStream = null;
   unlistenTitles?.();
   unlistenTitles = null;
+  unlistenRemoteConnections?.();
+  unlistenRemoteConnections = null;
   for (const ownedId of [...terminalProjections.keys()]) stopConversationTerminalProjection(ownedId);
 }
 

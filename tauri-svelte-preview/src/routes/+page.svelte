@@ -28,6 +28,7 @@
 	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
 	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
 	import RightPanel from "$lib/shell/components/RightPanel.svelte";
+	import RightPanelTabs from "$lib/shell/components/RightPanelTabs.svelte";
 	import SessionsColumn from "$lib/shell/components/SessionsColumn.svelte";
 	import ShellFrame from "$lib/shell/components/ShellFrame.svelte";
 	import ShellOverlays from "$lib/shell/components/ShellOverlays.svelte";
@@ -204,7 +205,6 @@
 	<RightPanel
 		visible={workbench.rightPanelOpen}
 		activeId={workbench.rightTab}
-		onSelect={selectRightTab}
 		root={selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
@@ -333,7 +333,14 @@
 	}}
 >
 	<div class="window-chrome" data-tauri-drag-region>
-		{@render centerTabsArea()}
+		<div class="window-center-tabs">
+			{@render centerTabsArea()}
+		</div>
+		<div class="window-right-tabs">
+			{#if workbench.rightPanelOpen}
+				<RightPanelTabs activeId={workbench.rightTab} onSelect={selectRightTab} />
+			{/if}
+		</div>
 	</div>
 	<div class="frame-area">
 		<ShellFrame
@@ -388,13 +395,26 @@
 	}
 
 	.window-chrome {
-		display: flex;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
 		flex: 0 0 calc(var(--center-head-row-height) + 6px);
 		align-items: center;
-		justify-content: center;
 		min-height: 0;
 		border-bottom: 1px solid var(--color-border);
 		background: var(--color-bg);
+	}
+
+	.window-center-tabs {
+		grid-column: 2;
+		min-width: 0;
+	}
+
+	.window-right-tabs {
+		display: flex;
+		grid-column: 3;
+		width: min(100%, 470px);
+		min-width: 0;
+		justify-self: end;
 	}
 
 	.sessions-region {

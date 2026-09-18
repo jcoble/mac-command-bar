@@ -55,6 +55,15 @@
     placed = true;
   });
 
+  // A narrow strip keeps the same tabs and the same hit targets. Selection is
+  // what brings an off-screen item back, matching direct trackpad scrolling.
+  $effect(() => {
+    value;
+    const target = segments[selected];
+    if (!target || !placed) return;
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+
   /** Left and right walk the strip and choose as they go, wrapping at the ends. */
   function onKeyDown(event: KeyboardEvent): void {
     const last = items.length - 1;
@@ -67,6 +76,18 @@
     onChange(items[target].id);
     segments[target]?.focus();
   }
+
+  /** A mouse wheel has no horizontal axis. Use its vertical movement on this
+   *  one-axis strip; trackpad sideways gestures keep their native behavior. */
+  function onWheel(event: WheelEvent): void {
+    if (!strip || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+    const limit = strip.scrollWidth - strip.clientWidth;
+    if (limit <= 0) return;
+    const next = Math.max(0, Math.min(limit, strip.scrollLeft + event.deltaY));
+    if (next === strip.scrollLeft) return;
+    event.preventDefault();
+    strip.scrollLeft = next;
+  }
 </script>
 
 <div
@@ -78,6 +99,7 @@
   style:--indicator-left={`${frame.left}px`}
   style:--indicator-width={`${frame.width}px`}
   onkeydown={onKeyDown}
+  onwheel={onWheel}
   tabindex={-1}
 >
   <span class="indicator" aria-hidden="true"></span>
@@ -121,6 +143,7 @@
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
+    scroll-behavior: smooth;
     user-select: none;
   }
 
@@ -192,6 +215,10 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .segmented-tabs {
+      scroll-behavior: auto;
+    }
+
     .placed .indicator {
       transition: none;
     }

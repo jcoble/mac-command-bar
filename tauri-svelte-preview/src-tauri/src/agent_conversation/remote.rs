@@ -191,8 +191,15 @@ pub struct RemoteConnectionManager {
     remote_sessions: Arc<Mutex<HashMap<String, String>>>,
     next_request_id: Arc<AtomicU64>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
+    status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
     connection_lock: Arc<tokio::sync::Mutex<()>>,
     attempts: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
+    /// The attempt token of each profile whose connection attempt is running
+    /// before any client exists. Removing the profile drops its token, which
+    /// both answers disconnected at once and tells the running attempt that it
+    /// no longer owns the profile.
+    connecting: Arc<Mutex<HashMap<String, u64>>>,
+    next_attempt_token: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -254,9 +261,86 @@ pub struct RemoteBackendProfileStatus {
     pub backend: super::remote_install::BackendStatus,
 }
 
+/// What one saved machine's transport is doing. The manager derives it from the
+/// live client only: a session row, a saved record, or a transcript read never
+/// implies it.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteConnectionState {
+    /// The socket answered the readiness session list.
+    Connected,
+    /// A requested client or tunnel is attempting or retrying.
+    Reconnecting,
+    /// Stopped on request, or no retry remains and the client is gone.
+    Disconnected,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteConnectionStatus {
+    pub profile_id: String,
+    pub state: RemoteConnectionState,
+}
+
+/// Holds one profile in Reconnecting for as long as its attempt runs, including
+/// the cancelled and timed-out attempts, which drop it.
+struct ConnectingAttempt {
+    manager: RemoteConnectionManager,
+    profile_id: String,
+    token: u64,
+}
+
+impl ConnectingAttempt {
+    fn start(manager: &RemoteConnectionManager, profile_id: &str) -> Self {
+        let token = manager.next_attempt_token.fetch_add(1, Ordering::Relaxed);
+        manager
+            .connecting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(profile_id.to_string(), token);
+        manager.publish_status(profile_id);
+        Self { manager: manager.clone(), profile_id: profile_id.to_string(), token }
+    }
+}
+
+impl Drop for ConnectingAttempt {
+    fn drop(&mut self) {
+        {
+            let mut connecting = self
+                .manager
+                .connecting
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // The profile was removed, or a later attempt took it over: this
+            // attempt owns nothing and must not report for it.
+            if connecting.get(&self.profile_id) != Some(&self.token) {
+                return;
+            }
+            connecting.remove(&self.profile_id);
+        }
+        self.manager.publish_status(&self.profile_id);
+    }
+}
+
+/// Reports the end of a live connection once, however the actor ends: normal
+/// exit, error return, or an aborted task.
+struct ConnectionEnd {
+    ready: Arc<AtomicBool>,
+    status: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Drop for ConnectionEnd {
+    fn drop(&mut self) {
+        if self.ready.swap(false, Ordering::AcqRel) {
+            (self.status)();
+        }
+    }
+}
+
 impl RemoteConnectionManager {
     pub fn from_environment(
         event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
+        status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
     ) -> Result<Self, String> {
         let manager = Self {
             client: Arc::new(Mutex::new(RemoteClientState::default())),
@@ -264,8 +348,11 @@ impl RemoteConnectionManager {
             remote_sessions: Arc::new(Mutex::new(HashMap::new())),
             next_request_id: Arc::new(AtomicU64::new(1)),
             event_sink,
+            status_sink,
             connection_lock: Arc::new(tokio::sync::Mutex::new(())),
             attempts: Arc::new(Mutex::new(HashMap::new())),
+            connecting: Arc::new(Mutex::new(HashMap::new())),
+            next_attempt_token: Arc::new(AtomicU64::new(1)),
         };
         let Some(url) = std::env::var("ASSEMBLY_REMOTE_WS_URL").ok() else {
             return Ok(manager);
@@ -299,7 +386,11 @@ impl RemoteConnectionManager {
                 },
             );
         tauri::async_runtime::spawn(async move {
-            client_loop(url, token, &mut request_rx, event_sink, None, actor_ready, &mut None).await;
+            // The development environment client has no saved profile, so no rail
+            // row maps to it and its transitions have nobody to tell.
+            let status: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+            client_loop(url, token, &mut request_rx, event_sink, None, actor_ready, &mut None, status)
+                .await;
         });
         Ok(manager)
     }
@@ -328,6 +419,39 @@ impl RemoteConnectionManager {
                 && client.requests.as_ref().is_some_and(|sender| !sender.is_closed()))
             .map(|(id, _)| id.clone()).collect();
         RemoteAssemblyEnvironment { profiles, ready_profile_ids }
+    }
+
+    /// The one answer the rail paints, read from the live client each time so a
+    /// stale actor's report cannot contradict it.
+    fn connection_state(&self, profile_id: &str) -> RemoteConnectionState {
+        if self
+            .connecting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(profile_id)
+        {
+            return RemoteConnectionState::Reconnecting;
+        }
+        let state = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match state.clients.get(profile_id) {
+            Some(client)
+                if client.requests.as_ref().is_some_and(|sender| !sender.is_closed()) =>
+            {
+                if client.ready.load(Ordering::Acquire) {
+                    RemoteConnectionState::Connected
+                } else {
+                    RemoteConnectionState::Reconnecting
+                }
+            }
+            _ => RemoteConnectionState::Disconnected,
+        }
+    }
+
+    fn publish_status(&self, profile_id: &str) {
+        (self.status_sink)(RemoteConnectionStatus {
+            profile_id: profile_id.to_string(),
+            state: self.connection_state(profile_id),
+        });
     }
 
     pub fn shutdown(&self) {
@@ -474,28 +598,35 @@ impl RemoteConnectionManager {
         status: tauri::ipc::Channel<String>) -> Result<RemoteConnectionResult, String> {
         let _ = status.send("Resolving SSH configuration…".into());
         let (profile, target_key) = self.resolve_profile_identity(profile).await?;
+        let attempt = ConnectingAttempt::start(self, &profile.id);
         let reusable = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .clients.get(&profile.id).is_some_and(|client| client.target_key.as_ref() == Some(&target_key)
                 && client.requests.as_ref().is_some_and(|sender| !sender.is_closed()));
-        let mut sessions = if reusable {
+        let (mut sessions, candidate) = if reusable {
             let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
             let RemoteResponse::Sessions(sessions) = self.request_with_id(&profile.id, id, RemoteCommand::ListSessions).await?
                 else { return Err("Backend returned an invalid session list".into()); };
-            sessions
+            (sessions, None)
         } else {
             let _ = status.send("Checking the installed backend…".into());
             let (requests, receiver) = mpsc::channel(32);
             let (ready_tx, ready_rx) = oneshot::channel();
             let ready = Arc::new(AtomicBool::new(false));
+            let manager = self.clone();
+            let reported_id = profile.id.clone();
+            let report: Arc<dyn Fn() + Send + Sync> =
+                Arc::new(move || manager.publish_status(&reported_id));
             let task = tokio::spawn(profile_client_loop(profile.clone(), receiver, self.event_sink.clone(),
-                self.tunnel_processes.clone(), ready.clone(), Some(ready_tx)));
+                self.tunnel_processes.clone(), ready.clone(), Some(ready_tx), report));
             // Dropping a failed/cancelled candidate aborts only its own actor and tunnel.
             let candidate = RemoteClient { requests: Some(requests), profile: Some(profile.clone()),
                 target_key: Some(target_key), task: Some(task.abort_handle()), ready };
             let sessions = ready_rx.await.map_err(|_| "Backend connection ended before readiness".to_string())??;
-            self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.insert(profile.id.clone(), candidate);
-            sessions
+            (sessions, Some(candidate))
         };
+        // A removal while this attempt was in flight wins: the profile neither
+        // gets its client back nor any report or session from this attempt.
+        self.adopt_client(&attempt, candidate)?;
         for session in &mut sessions {
             session.remote_profile_id = Some(profile.id.clone());
             self.remember(session.owned_id.clone(), profile.id.clone());
@@ -522,21 +653,64 @@ impl RemoteConnectionManager {
     }
 
     pub fn disconnect_profile(&self, profile_id: &str) {
-        let mut state = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(client) = state.clients.get_mut(profile_id) {
-            if let Some(task) = client.task.take() { task.abort(); }
-            client.requests = None;
-            client.target_key = None;
-            client.ready.store(false, Ordering::Release);
+        {
+            let mut state = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(client) = state.clients.get_mut(profile_id) {
+                if let Some(task) = client.task.take() { task.abort(); }
+                client.requests = None;
+                client.target_key = None;
+                client.ready.store(false, Ordering::Release);
+            }
         }
+        self.publish_status(profile_id);
     }
 
     pub fn remove_profile(&self, profile_id: &str) {
+        // Dropping the attempt token first makes removal authoritative: the
+        // state derived below is disconnected even mid-attempt, and the running
+        // attempt can no longer install a client for this profile. A later
+        // connect starts a fresh attempt with a new token, so nothing is
+        // permanently blocked.
+        self.connecting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(profile_id);
+        // Dropping the client aborts its own actor and tunnel.
         self.client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clients
             .remove(profile_id);
+        self.publish_status(profile_id);
+    }
+
+    /// Installs a freshly connected client only while this attempt still owns
+    /// the profile, holding the attempt token while it writes so a concurrent
+    /// removal cannot be overtaken. A dropped candidate aborts its own actor
+    /// and tunnel.
+    fn adopt_client(
+        &self,
+        attempt: &ConnectingAttempt,
+        candidate: Option<RemoteClient>,
+    ) -> Result<(), String> {
+        let connecting = self
+            .connecting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if connecting.get(&attempt.profile_id) != Some(&attempt.token) {
+            return Err(format!(
+                "Remote machine {} was removed during the connection attempt",
+                attempt.profile_id
+            ));
+        }
+        if let Some(candidate) = candidate {
+            self.client
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clients
+                .insert(attempt.profile_id.clone(), candidate);
+        }
+        Ok(())
     }
 
     pub fn owns(&self, owned_id: &str) -> bool {
@@ -1200,6 +1374,7 @@ async fn profile_client_loop(
     tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
     ready: Arc<AtomicBool>,
     mut initial_ready: Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
+    status: Arc<dyn Fn() + Send + Sync>,
 ) {
     while !requests.is_closed() {
         let target = profile.ssh_target.clone();
@@ -1215,7 +1390,8 @@ async fn profile_client_loop(
         };
         let url = format!("ws://127.0.0.1:{}/assembly", tunnel.local_port);
         let token = tunnel.token.clone();
-        client_loop(url, token, &mut requests, event_sink.clone(), Some(4), ready.clone(), &mut initial_ready).await;
+        client_loop(url, token, &mut requests, event_sink.clone(), Some(4), ready.clone(),
+            &mut initial_ready, status.clone()).await;
         drop(tunnel);
     }
 }
@@ -1356,7 +1532,9 @@ async fn client_loop(
     reconnect_tunnel_after_failures: Option<u8>,
     ready: Arc<AtomicBool>,
     initial_ready: &mut Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
+    status: Arc<dyn Fn() + Send + Sync>,
 ) {
+    let _end = ConnectionEnd { ready: ready.clone(), status: status.clone() };
     let cursors = Arc::new(Mutex::new(BTreeMap::<String, i64>::new()));
     let mut failed_connections = 0_u8;
     loop {
@@ -1470,6 +1648,7 @@ async fn client_loop(
                                 return;
                             };
                             ready.store(true, Ordering::Release);
+                            status();
                             if let Some(reply) = initial_ready.take() { let _ = reply.send(Ok(sessions)); }
                         }
                         ServerFrame::Response { id, response } => {
@@ -1504,7 +1683,7 @@ async fn client_loop(
                 }
             }
         }
-        ready.store(false, Ordering::Release);
+        if ready.swap(false, Ordering::AcqRel) { status(); }
         if let Some(reply) = initial_ready.take() {
             let _ = reply.send(Err("Backend disconnected before readiness".into()));
             return;
@@ -1938,7 +2117,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn disconnect_keeps_profile_and_session_ownership_but_stops_transport() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
         manager.register_profile(profile("saved")).unwrap();
         manager.remember("conversation", "saved");
         let task = tokio::spawn(std::future::pending::<()>());
@@ -1957,7 +2136,7 @@ mod connection_tests {
         assert!(manager.environment().ready_profile_ids.is_empty());
         assert!(manager.owns("conversation"));
         assert!(manager.request_for_profile("saved", RemoteCommand::ListSessions).await.unwrap_err().contains("not connected"));
-        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
         restarted.restore_profiles(&serde_json::to_string(&manager.environment().profiles).unwrap()).unwrap();
         assert_eq!(restarted.environment().profiles, vec![profile("saved")]);
         assert!(restarted.environment().ready_profile_ids.is_empty());
@@ -1965,7 +2144,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn restored_profiles_are_dormant_and_cancellation_releases_attempt() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
         manager.restore_profiles(&serde_json::to_string(&vec![profile("original")]).unwrap()).unwrap();
         assert!(!manager.is_configured());
         assert!(manager.environment().ready_profile_ids.is_empty());
@@ -2012,7 +2191,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn connection_timeout_releases_attempt() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
         let _guard = manager.connection_lock.lock().await;
         let result = manager.connect_profile(profile("timeout"), "timeout-test".into(), tauri::ipc::Channel::new(|_| Ok(()))).await;
         assert_eq!(result.err().unwrap(), "Connection timed out after 30 seconds");
@@ -2034,6 +2213,110 @@ mod connection_tests {
             assert!(parse_server_frame(TungsteniteMessage::Text(frame.to_string().into())).unwrap().is_some());
         }
         assert!(parse_server_frame(TungsteniteMessage::Text("{invalid".into())).unwrap_err().contains("incompatible"));
+    }
+
+    #[tokio::test]
+    async fn connection_state_reports_connected_reconnecting_and_disconnected() {
+        let reports: Arc<Mutex<Vec<RemoteConnectionStatus>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = reports.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}),
+            Arc::new(move |status| sink.lock().unwrap().push(status)),
+        )
+        .unwrap();
+        manager.register_profile(profile("saved")).unwrap();
+        // A saved machine nobody connected is disconnected, not reconnecting.
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
+        assert_eq!(manager.connection_state("never-saved"), RemoteConnectionState::Disconnected);
+
+        let (sender, _receiver) = mpsc::channel(1);
+        {
+            let mut state = manager.client.lock().unwrap();
+            let client = state.clients.get_mut("saved").unwrap();
+            client.requests = Some(sender);
+        }
+        // A live client that has not answered the readiness list is attempting.
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Reconnecting);
+        manager.client.lock().unwrap().clients["saved"].ready.store(true, Ordering::Release);
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Connected);
+
+        manager.disconnect_profile("saved");
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
+        {
+            let attempt = ConnectingAttempt::start(&manager, "saved");
+            assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Reconnecting);
+            drop(attempt);
+        }
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
+        let sent = reports.lock().unwrap().clone();
+        assert_eq!(
+            sent,
+            vec![
+                RemoteConnectionStatus { profile_id: "saved".into(), state: RemoteConnectionState::Disconnected },
+                RemoteConnectionStatus { profile_id: "saved".into(), state: RemoteConnectionState::Reconnecting },
+                RemoteConnectionStatus { profile_id: "saved".into(), state: RemoteConnectionState::Disconnected },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_profile_mid_attempt_disconnects_and_refuses_the_stale_client() {
+        let reports: Arc<Mutex<Vec<RemoteConnectionStatus>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = reports.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}),
+            Arc::new(move |status| sink.lock().unwrap().push(status)),
+        )
+        .unwrap();
+        manager.register_profile(profile("saved")).unwrap();
+        let attempt = ConnectingAttempt::start(&manager, "saved");
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Reconnecting);
+
+        // Removal during the attempt answers disconnected immediately.
+        manager.remove_profile("saved");
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
+
+        // The pre-removal attempt finishes late: its client is refused, its own
+        // actor is aborted, and the removed profile is not resurrected.
+        let stale_actor = tokio::spawn(std::future::pending::<()>());
+        let (stale_sender, _stale_receiver) = mpsc::channel(1);
+        let stale = RemoteClient {
+            requests: Some(stale_sender), profile: Some(profile("saved")),
+            target_key: Some("owner@box:22".into()), task: Some(stale_actor.abort_handle()),
+            ready: Arc::new(AtomicBool::new(true)),
+        };
+        let refused = manager.adopt_client(&attempt, Some(stale)).unwrap_err();
+        assert!(refused.contains("was removed during the connection attempt"), "{refused}");
+        assert!(stale_actor.await.unwrap_err().is_cancelled());
+        assert!(!manager.client.lock().unwrap().clients.contains_key("saved"));
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
+        drop(attempt);
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
+
+        // The id is not tombstoned: a later add and connect works normally.
+        manager.register_profile(profile("saved")).unwrap();
+        let next = ConnectingAttempt::start(&manager, "saved");
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Reconnecting);
+        let (sender, _receiver) = mpsc::channel(1);
+        manager
+            .adopt_client(&next, Some(RemoteClient {
+                requests: Some(sender), profile: Some(profile("saved")), target_key: None,
+                task: None, ready: Arc::new(AtomicBool::new(true)),
+            }))
+            .unwrap();
+        drop(next);
+        assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Connected);
+
+        let status = |state| RemoteConnectionStatus { profile_id: "saved".into(), state };
+        assert_eq!(
+            reports.lock().unwrap().clone(),
+            vec![
+                status(RemoteConnectionState::Reconnecting),
+                status(RemoteConnectionState::Disconnected),
+                status(RemoteConnectionState::Reconnecting),
+                status(RemoteConnectionState::Connected),
+            ]
+        );
     }
 
     #[test]
@@ -2067,7 +2350,7 @@ mod connection_tests {
             let (reply, mut result) = oneshot::channel();
             let ready = Arc::new(AtomicBool::new(false));
             let actor_ready = ready.clone();
-            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| {}), Some(1), actor_ready, &mut Some(reply)).await });
+            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| {}), Some(1), actor_ready, &mut Some(reply), Arc::new(|| {})).await });
             if version == PROTOCOL_VERSION {
                 probe_rx.await.unwrap();
                 assert!(!ready.load(Ordering::Acquire));
@@ -2089,7 +2372,7 @@ mod connection_tests {
     #[tokio::test]
     #[ignore = "read-only proof against the owner's installed backend"]
     async fn live_existing_workbox_connection() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {})).unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
         let result = manager.connect_profile(profile("stage1-proof"), "live-proof".into(), tauri::ipc::Channel::new(|_| Ok(()))).await.unwrap();
         for session in &result.sessions {
             let workspace = manager.request_for_profile(&result.profile.id, RemoteCommand::Workspace {

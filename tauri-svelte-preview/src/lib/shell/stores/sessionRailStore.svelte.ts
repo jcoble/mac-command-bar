@@ -10,6 +10,12 @@ import type { ConversationWorkspaceState } from '../conversation/conversationSto
 import type { OwnedSession } from '../ownedSessions.ts';
 import type { SessionWorkspaceSnapshot } from '../sessionWorkspaces.ts';
 
+/**
+ * What one saved remote machine's transport is doing, as the backend reports it.
+ * Rows start disconnected and only the native lifecycle event changes it.
+ */
+export type RemoteConnectionState = 'connected' | 'disconnected' | 'reconnecting';
+
 /** The rail stays compact while SQLite hydrates only the selected session. */
 export interface SessionProjection {
   activeOwnedId: string | null;
@@ -24,13 +30,21 @@ export const rail = $state<{
   activeOwnedId: string | null;
   scanning: boolean;
   error: string | null;
+  remoteConnections: Record<string, RemoteConnectionState>;
 }>({
   owned: [],
   available: [],
   activeOwnedId: null,
   scanning: false,
-  error: null
+  error: null,
+  remoteConnections: {}
 });
+
+/** One machine's state, keyed by the profile id a remote session carries. */
+export function setRemoteConnection(profileId: string, state: RemoteConnectionState): void {
+  if (rail.remoteConnections[profileId] === state) return;
+  rail.remoteConnections[profileId] = state;
+}
 
 export function hydrateOwned(sessions: OwnedSession[]): void {
   rail.owned = sessions;
