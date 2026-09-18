@@ -431,7 +431,10 @@
 	.window-right-tabs {
 		display: flex;
 		width: 100%;
+		height: 100%;
 		min-width: 0;
+		align-items: center;
+		box-sizing: border-box;
 	}
 
 	.window-right-tabs.open {
