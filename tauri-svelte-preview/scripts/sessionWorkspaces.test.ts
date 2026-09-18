@@ -121,6 +121,58 @@ test('workspace_record_round_trips_bounded_git_and_history_view_state', () => {
   });
 });
 
+test('workspace_record_round_trips_ordered_browser_tabs and active tab', () => {
+  const snapshot = normalizeWorkspaceSnapshot(captureWorkspace({
+    openFiles: [],
+    activePath: null,
+    selectedPath: null,
+    scrollTop: 0,
+    rightTab: 'browser',
+    browser: {
+      tabs: [
+        { id: 'one', url: 'https://one.example/', inputUrl: 'one.example', title: 'One' },
+        { id: 'two', url: 'https://two.example/', inputUrl: 'two.example', title: 'Two' }
+      ],
+      activeTabId: 'one'
+    }
+  }));
+
+  assert.deepEqual(snapshot?.browser, {
+    tabs: [
+      { id: 'one', url: 'https://one.example/', inputUrl: 'one.example', title: 'One' },
+      { id: 'two', url: 'https://two.example/', inputUrl: 'two.example', title: 'Two' }
+    ],
+    activeTabId: 'one'
+  });
+});
+
+test('legacy single-page browser record becomes one restorable tab', () => {
+  const snapshot = normalizeWorkspaceSnapshot({
+    openPaths: [],
+    activePath: null,
+    selectedPath: null,
+    scrollTop: 0,
+    diffPath: null,
+    diffRoot: null,
+    rightTab: 'browser',
+    browser: {
+      url: 'https://legacy.example/',
+      inputUrl: 'legacy.example',
+      activated: true
+    }
+  });
+
+  assert.deepEqual(snapshot?.browser, {
+    tabs: [{
+      id: 'restored-browser-tab',
+      url: 'https://legacy.example/',
+      inputUrl: 'legacy.example',
+      title: 'https://legacy.example/'
+    }],
+    activeTabId: 'restored-browser-tab'
+  });
+});
+
 // A capture is exactly what was on screen: the strip in order, the file showing,
 // the highlighted file, the scroll offset, and the file the Diff tab was
 // showing. A capture that says nothing about a diff still carries both diff

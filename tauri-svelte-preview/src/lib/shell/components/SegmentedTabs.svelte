@@ -55,6 +55,15 @@
     placed = true;
   });
 
+  // A narrow strip keeps the same tabs and the same hit targets. Selection is
+  // what brings an off-screen item back, matching direct trackpad scrolling.
+  $effect(() => {
+    value;
+    const target = segments[selected];
+    if (!target || !placed) return;
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+
   /** Left and right walk the strip and choose as they go, wrapping at the ends. */
   function onKeyDown(event: KeyboardEvent): void {
     const last = items.length - 1;
@@ -121,6 +130,7 @@
     overflow-x: auto;
     overflow-y: hidden;
     scrollbar-width: none;
+    scroll-behavior: smooth;
     user-select: none;
   }
 
@@ -192,6 +202,10 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .segmented-tabs {
+      scroll-behavior: auto;
+    }
+
     .placed .indicator {
       transition: none;
     }

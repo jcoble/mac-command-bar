@@ -64,10 +64,14 @@
     activateBrowser,
     browser,
     browserModelContext,
+    closeBrowserPageTab,
+    createBrowserPageTab,
+    hasRestoredBrowserTabs,
     reloadBrowserFrame,
     releaseBrowserWorkspace,
     setBrowserUrl,
-    syncBrowserNavigation
+    syncBrowserNavigation,
+    syncBrowserTab
   } from '$lib/shell/browser/browserStore.svelte.ts';
   import { subscribeToBrowserNavigation } from '$lib/shell/browser/browserBackend.ts';
   import {
@@ -87,6 +91,7 @@
   import AnnotationBadges from './AnnotationBadges.svelte';
   import AnnotationCanvas from './AnnotationCanvas.svelte';
   import BrowserMiniComposer from './BrowserMiniComposer.svelte';
+  import BrowserTabs from './BrowserTabs.svelte';
   import BrowserToolbar from './BrowserToolbar.svelte';
   import { compositeAnnotations, liveShapes, type AnnotationShape, type PlacedAnnotationShape } from './annotationComposite.ts';
   import {
@@ -167,6 +172,14 @@
   const activeTab = $derived<BrowserTabState | null>(
     browser.workspace.activeTabId ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null : null
   );
+  const browserTabs = $derived.by(() => {
+    const tabs: BrowserTabState[] = [];
+    for (const id of browser.workspace.tabOrder) {
+      const tab = browser.workspace.tabs[id];
+      if (tab) tabs.push(tab);
+    }
+    return tabs;
+  });
   const marks = $derived(liveShapes(composeMarks(annotations, strokes), NOTHING_ERASED));
   const numbered = $derived(numberAnnotations(annotations));
   /**
@@ -357,6 +370,37 @@
   }
 
   onMount(() => registerBrowserUrlNavigation(openRequestedUrl));
+
+  function openPageTab(): void {
+    if (!root) return;
+    failure = '';
+    if (ownedId) browser.workspace.ownedId = ownedId;
+    placeBeforeOpening();
+    if (!createBrowserPageTab()) return;
+    address = '';
+    addressEdited = false;
+    dropStill();
+    layoutTick += 1;
+  }
+
+  function selectPageTab(tabId: string): void {
+    if (tabId === browser.workspace.activeTabId) return;
+    failure = '';
+    syncBrowserTab(tabId);
+    address = '';
+    addressEdited = false;
+    dropStill();
+    layoutTick += 1;
+  }
+
+  function closePageTab(tabId: string): void {
+    failure = '';
+    closeBrowserPageTab(tabId);
+    address = '';
+    addressEdited = false;
+    dropStill();
+    layoutTick += 1;
+  }
 
   function step(direction: 'back' | 'forward'): void {
     if (!activeTab) return;
@@ -707,7 +751,10 @@
    * the saved page.
    */
   $effect(() => {
-    const wanted = visible && Boolean(root) && Boolean(browser.url) && !browser.workspace.activeTabId;
+    const wanted = visible
+      && Boolean(root)
+      && (Boolean(browser.url) || hasRestoredBrowserTabs())
+      && !browser.workspace.activeTabId;
     if (!wanted) return;
     untrack(() => {
       placeBeforeOpening();
@@ -764,6 +811,14 @@
   data-testid="browser-panel"
 >
   <div class="chrome" bind:this={chromeHost} data-testid="browser-panel-chrome">
+    <BrowserTabs
+      tabs={browserTabs}
+      activeTabId={browser.workspace.activeTabId}
+      disabled={!root}
+      onSelect={selectPageTab}
+      onClose={closePageTab}
+      onNew={openPageTab}
+    />
     <BrowserToolbar
       address={addressValue}
       {tool}

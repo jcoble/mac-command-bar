@@ -7,7 +7,10 @@
  * the pure browser model underneath. Durable restoration belongs to the active
  * session's SQLite workspace snapshot, not browser storage.
  */
-import type { SessionBrowserWorkspace } from '../sessionWorkspaces.ts';
+import type {
+  SessionBrowserTabWorkspace,
+  SessionBrowserWorkspace
+} from '../sessionWorkspaces.ts';
 import {
   saveConversationClipboardImage
 } from '../conversation/conversationService.ts';
@@ -64,6 +67,8 @@ export interface BrowserCompatibilityState {
 
 const workspace = createBrowserWorkspace({ workspaceId: 'next-browser' });
 const backend = createBrowserBackend();
+let restoredTabs: SessionBrowserTabWorkspace[] = [];
+let restoredActiveTabId: string | null = null;
 
 const conversationBridge = {
   read(ownedId: string) {
@@ -120,41 +125,31 @@ function syncLegacy(nextUrl?: string, bumpFrame = false): void {
 }
 
 export function captureBrowserState(): SessionBrowserWorkspace {
+  const tabs = browser.workspace.tabOrder
+    .map((id) => browser.workspace.tabs[id])
+    .filter((tab) => Boolean(tab))
+    .map((tab) => ({
+      id: tab.id,
+      url: tab.url,
+      inputUrl: tab.inputUrl,
+      title: tab.title
+    }));
   return {
-    url: browser.url,
-    inputUrl: browser.inputUrl,
-    activated: browser.activated
+    tabs: tabs.length > 0 ? tabs : restoredTabs.map((tab) => ({ ...tab })),
+    activeTabId: browser.workspace.activeTabId ?? restoredActiveTabId
   };
 }
 
 export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | undefined): void {
-  const nextUrl = normalizeBrowserUrl(snapshot?.url ?? '');
-  browser.workspace.activated = snapshot?.activated === true && nextUrl.length > 0;
+  restoredTabs = snapshot?.tabs.map((tab) => ({ ...tab })) ?? [];
+  restoredActiveTabId = snapshot?.activeTabId ?? restoredTabs.at(-1)?.id ?? null;
+  const restoredActive = restoredTabs.find((tab) => tab.id === restoredActiveTabId) ?? null;
+  browser.workspace.activated = false;
   browser.workspace.error = null;
-  const current = browser.workspace.activeTabId
-    ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null
-    : null;
-  try {
-    if (nextUrl && !current) {
-      // Creating a native tab here would surface its webview over the shell
-      // before the browser panel is open; persist the url instead and let
-      // activateBrowser() create the tab when the panel is actually shown.
-      browser.workspace.activated = false;
-    } else if (nextUrl && current && current.url !== nextUrl) {
-      navigateActiveBrowserTab(modelContext(), nextUrl);
-    }
-    if (!nextUrl && current) {
-      closeBrowserTab(modelContext(), current.id);
-    }
-  } catch (error) {
-    browser.workspace.error = error instanceof Error ? error.message : String(error);
-  }
-  if (snapshot?.inputUrl && browser.workspace.activeTabId) {
-    const active = browser.workspace.tabs[browser.workspace.activeTabId];
-    if (active) active.inputUrl = snapshot.inputUrl;
-  }
-  if (snapshot?.activated !== true) browser.workspace.activated = false;
-  syncLegacy(nextUrl);
+  browser.url = restoredActive?.url ?? '';
+  browser.inputUrl = restoredActive?.inputUrl ?? browser.url;
+  browser.activated = false;
+  browser.error = '';
 }
 
 export function activateBrowser(): void {
@@ -162,7 +157,22 @@ export function activateBrowser(): void {
   const savedUrl = normalizeBrowserUrl(browser.url);
   try {
     activateBrowserWorkspace(modelContext());
-    if (savedUrl && !browser.workspace.activeTabId) {
+    if (restoredTabs.length > 0 && !browser.workspace.activeTabId) {
+      for (const restored of restoredTabs) {
+        createBrowserTab(modelContext(), {
+          tabId: restored.id,
+          url: restored.url,
+          title: restored.title
+        });
+        const created = browser.workspace.tabs[restored.id];
+        if (created) created.inputUrl = restored.inputUrl;
+      }
+      if (restoredActiveTabId && browser.workspace.tabs[restoredActiveTabId]) {
+        selectBrowserTab(modelContext(), restoredActiveTabId);
+      }
+      restoredTabs = [];
+      restoredActiveTabId = null;
+    } else if (savedUrl && !browser.workspace.activeTabId) {
       createBrowserTab(modelContext(), { url: savedUrl });
     }
     syncLegacy();
@@ -186,6 +196,19 @@ export function deactivateBrowserWorkspace(): void {
 export function releaseBrowserWorkspace(): void {
   const url = browser.url;
   const inputUrl = browser.inputUrl;
+  const liveTabs = browser.workspace.tabOrder
+    .map((id) => browser.workspace.tabs[id])
+    .filter((tab) => Boolean(tab))
+    .map((tab) => ({
+      id: tab.id,
+      url: tab.url,
+      inputUrl: tab.inputUrl,
+      title: tab.title
+    }));
+  if (liveTabs.length > 0) {
+    restoredTabs = liveTabs;
+    restoredActiveTabId = browser.workspace.activeTabId;
+  }
   const lastGeneration = Math.max(
     browser.workspace.activeGeneration,
     ...Object.values(browser.workspace.tabs).map((tab) => tab.generation)
@@ -216,6 +239,10 @@ export function releaseBrowserWorkspace(): void {
   browser.inputUrl = inputUrl;
   browser.activated = false;
   browser.error = '';
+}
+
+export function hasRestoredBrowserTabs(): boolean {
+  return restoredTabs.length > 0;
 }
 
 export function setBrowserUrl(value: string): boolean {
@@ -273,6 +300,32 @@ export function clearBrowserUrl(): void {
 export function clearBrowserError(): void {
   browser.error = '';
   browser.workspace.error = null;
+}
+
+export function createBrowserPageTab(): string | null {
+  try {
+    activateBrowser();
+    const tab = createBrowserTab(modelContext());
+    syncLegacy();
+    return tab.id;
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+    syncLegacy();
+    return null;
+  }
+}
+
+export function closeBrowserPageTab(tabId: string): void {
+  try {
+    closeBrowserTab(modelContext(), tabId);
+    if (browser.workspace.activeTabId) {
+      selectBrowserTab(modelContext(), browser.workspace.activeTabId);
+    }
+    syncLegacy();
+  } catch (error) {
+    browser.workspace.error = error instanceof Error ? error.message : String(error);
+    syncLegacy();
+  }
 }
 
 // Small explicit adapters used by the new browser components.  They keep the

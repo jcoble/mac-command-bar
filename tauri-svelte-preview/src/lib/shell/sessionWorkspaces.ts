@@ -55,10 +55,16 @@ export interface SessionConversationWorkspace {
   [key: string]: unknown;
 }
 
-export interface SessionBrowserWorkspace {
+export interface SessionBrowserTabWorkspace {
+  id: string;
   url: string;
   inputUrl: string;
-  activated: boolean;
+  title: string;
+}
+
+export interface SessionBrowserWorkspace {
+  tabs: SessionBrowserTabWorkspace[];
+  activeTabId: string | null;
 }
 
 export interface SessionCenterWorkspace {
@@ -384,10 +390,40 @@ function normalizeBrowser(value: unknown): SessionBrowserWorkspace {
   const entry = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+  const seen = new Set<string>();
+  const tabs = Array.isArray(entry.tabs)
+    ? entry.tabs.flatMap((value): SessionBrowserTabWorkspace[] => {
+        if (!isRecord(value)) return [];
+        const id = typeof value.id === 'string' ? value.id.trim() : '';
+        if (!id || seen.has(id)) return [];
+        seen.add(id);
+        return [{
+          id,
+          url: typeof value.url === 'string' ? value.url : '',
+          inputUrl: typeof value.inputUrl === 'string' ? value.inputUrl : '',
+          title: typeof value.title === 'string' && value.title.trim()
+            ? value.title.trim()
+            : 'New browser tab'
+        }];
+      })
+    : [];
+
+  // Records written by the single-page Browser become the one tab in the new
+  // shape as they are read. New captures write only `tabs` and `activeTabId`.
+  if (tabs.length === 0 && typeof entry.url === 'string' && entry.url) {
+    tabs.push({
+      id: 'restored-browser-tab',
+      url: entry.url,
+      inputUrl: typeof entry.inputUrl === 'string' ? entry.inputUrl : entry.url,
+      title: entry.url
+    });
+  }
+  const requestedActive = typeof entry.activeTabId === 'string' ? entry.activeTabId : null;
   return {
-    url: typeof entry.url === 'string' ? entry.url : '',
-    inputUrl: typeof entry.inputUrl === 'string' ? entry.inputUrl : '',
-    activated: entry.activated === true
+    tabs,
+    activeTabId: requestedActive && tabs.some((tab) => tab.id === requestedActive)
+      ? requestedActive
+      : tabs.at(-1)?.id ?? null
   };
 }
 

@@ -2,8 +2,9 @@
   /**
    * RightPanel.svelte — the right column of the workbench.
    *
-   * Two rows: the icon tab strip along the top and one panel body filling the
-   * rest. The Resources/Usage strip now runs the full width of the window as
+   * One panel body fills this region. Its icon tab strip lives in the global
+   * window chrome, where it remains available without consuming panel height.
+   * The Resources/Usage strip now runs the full width of the window as
    * the shell's status bar, so it no longer lives here. Files keeps one bounded
    * panel instance for the active session because repeatedly reconstructing the
    * virtual tree makes WebKit retain allocator pages. Browser also keeps one
@@ -32,14 +33,11 @@
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
   import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
 
-  import RightPanelTabs from './RightPanelTabs.svelte';
-
   interface Props {
     /** False while the whole right grid region is closed. */
     visible: boolean;
     /** The tab on screen. */
     activeId: RightTabId;
-    onSelect(id: RightTabId): void;
     /** The active session's working folder, or '' when nothing is selected. */
     root: string;
     /** False when the active session's checkout has disappeared. */
@@ -68,7 +66,6 @@
   let {
     visible,
     activeId,
-    onSelect,
     root,
     rootAvailable = true,
     checkoutScope,
@@ -92,8 +89,6 @@
 </script>
 
 <div class="right-panel">
-  <RightPanelTabs {activeId} {onSelect} />
-
   <div class="panel-bodies">
     <div
       class="panel-body"
@@ -166,7 +161,7 @@
     width: 100%;
     min-width: 0;
     min-height: 0;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     overflow: hidden;
     /* The card behind this paints the surface and its gradient. */
     background: transparent;
