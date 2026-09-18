@@ -684,7 +684,11 @@ impl RemoteConnectionManager {
         let _owner = self.connection_lock.lock().await;
         let (profile, _) = self.resolve_profile_identity(profile).await?;
         self.disconnect_profile(&profile.id);
-        super::remote_install::uninstall(&profile.ssh_target, delete_data).await
+        super::remote_install::uninstall(&profile.ssh_target, delete_data).await?;
+        if delete_data {
+            self.replace_cached_profile_sessions(&profile.id, &[])?;
+        }
+        Ok(())
     }
 
     pub async fn connect_profile(&self, profile: RemoteAssemblyProfile, operation_id: String,
@@ -2343,6 +2347,18 @@ mod connection_tests {
         );
         assert!(!manager.owns("old"));
         assert!(manager.owns("new"));
+        assert!(manager.owns("keep"));
+
+        manager.replace_cached_profile_sessions("one", &[]).unwrap();
+        assert_eq!(
+            manager
+                .cached_sessions()
+                .into_iter()
+                .map(|session| session.owned_id)
+                .collect::<Vec<_>>(),
+            vec!["keep"]
+        );
+        assert!(!manager.owns("new"));
         assert!(manager.owns("keep"));
     }
 

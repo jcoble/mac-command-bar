@@ -132,6 +132,9 @@
     try {
       const next = await uninstallRemoteAssemblyFromTauri(selected, deleteData);
       if (!mounted) return;
+      if (deleteData) {
+        hydrateOwned(rail.owned.filter((session) => session.remoteProfileId !== selected.id));
+      }
       apply(next);
       confirmingUninstallId = null;
       status = deleteData
