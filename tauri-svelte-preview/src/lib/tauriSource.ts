@@ -423,6 +423,14 @@ export type RemoteAssemblyEnvironment = {
   readyProfileIds: string[];
 };
 
+export type RemoteBackendProfileStatus = {
+  profileId: string;
+  installed: boolean;
+  installedVersion: string | null;
+  latestVersion: string;
+  updateAvailable: boolean | null;
+};
+
 export type RemoteAssemblyProfile = {
   id: string;
   name: string;
@@ -1868,6 +1876,14 @@ export async function readRemoteAssemblyEnvironmentFromTauri(): Promise<RemoteAs
   return invoke<RemoteAssemblyEnvironment>('read_remote_assembly_environment');
 }
 
+export async function readRemoteBackendStatusesFromTauri(
+  profiles: RemoteAssemblyProfile[]
+): Promise<RemoteBackendProfileStatus[]> {
+  if (!isTauriRuntime() || profiles.length === 0) return [];
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<RemoteBackendProfileStatus[]>('read_remote_backend_statuses', { profiles });
+}
+
 export async function removeRemoteAssemblyProfileFromTauri(
   profileId: string
 ): Promise<RemoteAssemblyEnvironment> {
@@ -1931,6 +1947,15 @@ export async function installRemoteAssemblyFromTauri(
   } finally {
     signal.removeEventListener('abort', cancel);
   }
+}
+
+export async function uninstallRemoteAssemblyFromTauri(
+  profile: RemoteAssemblyProfile,
+  deleteData: boolean
+): Promise<RemoteAssemblyEnvironment> {
+  if (!isTauriRuntime()) throw new Error('Remote uninstall is available in the desktop app.');
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<RemoteAssemblyEnvironment>('uninstall_remote_assembly', { profile, deleteData });
 }
 
 export async function changeAgentConversationCheckoutFromTauri(input: {

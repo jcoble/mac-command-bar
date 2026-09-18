@@ -8,7 +8,7 @@ use std::process::Stdio;
 use base64::Engine;
 use flate2::read::GzDecoder;
 use minisign_verify::{PublicKey, Signature};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::ipc::Channel;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -67,6 +67,15 @@ struct ManifestFile {
 pub struct InstallReceipt {
     pub version: String,
     pub commit: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendStatus {
+    pub installed: bool,
+    pub installed_version: Option<String>,
+    pub latest_version: String,
+    pub update_available: Option<bool>,
 }
 
 struct LocalStage(PathBuf);
@@ -202,7 +211,84 @@ pub async fn install_latest(
     })
 }
 
+pub async fn latest_version() -> Result<String, String> {
+    let release = latest_release().await?;
+    release_version(&release.tag_name)
+}
+
+pub async fn read_status(
+    ssh_target: &str,
+    latest_version: &str,
+) -> Result<BackendStatus, String> {
+    super::remote::validate_ssh_target(ssh_target)?;
+    let home = remote_home(ssh_target).await?;
+    let binary = shell_quote(&format!("{home}/.local/bin/assembly-remote-server"));
+    let manifest = shell_quote(&format!(
+        "{home}/.local/share/assembly/backend-manifest.json"
+    ));
+    let output = ssh_output(
+        ssh_target,
+        &format!(
+            "if test -x {binary}; then printf 'installed\\n'; test ! -f {manifest} || sed -n 's/.*\"version\": \"\\([^\"]*\\)\".*/\\1/p' {manifest} | head -n 1; else printf 'not-installed\\n'; fi"
+        ),
+    )
+    .await?;
+    let mut lines = output.lines();
+    let installed = lines.next() == Some("installed");
+    let installed_version = installed
+        .then(|| lines.next().unwrap_or_default().trim().to_string())
+        .filter(|value| !value.is_empty());
+    let latest = semver::Version::parse(latest_version)
+        .map_err(|_| format!("Invalid latest backend version: {latest_version}"))?;
+    let update_available = installed_version.as_deref().and_then(|version| {
+        semver::Version::parse(version)
+            .ok()
+            .map(|installed| installed < latest)
+    });
+    Ok(BackendStatus {
+        installed,
+        installed_version,
+        latest_version: latest_version.to_string(),
+        update_available,
+    })
+}
+
+pub async fn uninstall(ssh_target: &str, delete_data: bool) -> Result<(), String> {
+    super::remote::validate_ssh_target(ssh_target)?;
+    let home = remote_home(ssh_target).await?;
+    let service = shell_quote(&format!(
+        "{home}/.config/systemd/user/assembly-remote.service"
+    ));
+    let binary = shell_quote(&format!("{home}/.local/bin/assembly-remote-server"));
+    let adapters = shell_quote(&format!("{home}/.local/bin/assembly-adapters"));
+    let manifest = shell_quote(&format!(
+        "{home}/.local/share/assembly/backend-manifest.json"
+    ));
+    let mut command = format!(
+        "set -eu; systemctl --user disable --now assembly-remote.service >/dev/null 2>&1 || true; rm -f {service} {binary} {manifest}; rm -rf {adapters}; systemctl --user daemon-reload"
+    );
+    if delete_data {
+        let config = shell_quote(&format!("{home}/.config/assembly"));
+        let data = shell_quote(&format!("{home}/.local/share/assembly"));
+        command.push_str(&format!("; rm -rf {config} {data}"));
+    }
+    command.push_str(&format!(
+        "; test ! -e {service}; test ! -e {binary}; test ! -e {adapters}; test -z \"$(ss -ltnH 'sport = :7777')\""
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        ssh_output(ssh_target, &command),
+    )
+    .await
+    .map_err(|_| "Remote backend uninstall timed out after 30 seconds".to_string())??;
+    Ok(())
+}
+
 async fn latest_assets() -> Result<(GithubAsset, GithubAsset), String> {
+    release_assets(latest_release().await?)
+}
+
+async fn latest_release() -> Result<GithubRelease, String> {
     let metadata = command_output(
         tokio::process::Command::new("gh").args(["api", RELEASES_ENDPOINT]),
         "GitHub release lookup",
@@ -215,15 +301,23 @@ async fn latest_assets() -> Result<(GithubAsset, GithubAsset), String> {
     })?;
     let releases = serde_json::from_str::<Vec<GithubRelease>>(&metadata)
         .map_err(|error| format!("Backend release metadata is invalid: {error}"))?;
-    let release = releases
+    releases
         .into_iter()
         .find(|release| {
             !release.draft
                 && !release.prerelease
                 && release.tag_name.starts_with(RELEASE_TAG_PREFIX)
         })
-        .ok_or_else(|| "No published Assembly backend release is available".to_string())?;
-    release_assets(release)
+        .ok_or_else(|| "No published Assembly backend release is available".to_string())
+}
+
+fn release_version(tag_name: &str) -> Result<String, String> {
+    let version = tag_name
+        .strip_prefix(RELEASE_TAG_PREFIX)
+        .ok_or_else(|| format!("Invalid Assembly backend release tag: {tag_name}"))?;
+    semver::Version::parse(version)
+        .map_err(|_| format!("Invalid Assembly backend release tag: {tag_name}"))?;
+    Ok(version.to_string())
 }
 
 fn release_assets(mut release: GithubRelease) -> Result<(GithubAsset, GithubAsset), String> {
@@ -489,6 +583,19 @@ fn file_sha256(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+async fn remote_home(target: &str) -> Result<String, String> {
+    let home = ssh_output(target, "printf '%s' \"$HOME\"").await?;
+    let path = Path::new(&home);
+    if !path.is_absolute() || home == "/" || home.contains('\n') || home.contains('\r') {
+        return Err("Remote home directory is invalid".to_string());
+    }
+    Ok(home)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 async fn ssh_output(target: &str, remote_command: &str) -> Result<String, String> {
     command_output(
         tokio::process::Command::new("ssh").args([
@@ -635,6 +742,19 @@ mod tests {
         let (archive, signature) = release_assets(release).unwrap();
         assert_eq!(archive.id, 1);
         assert_eq!(signature.id, 2);
+    }
+
+    #[test]
+    fn release_version_requires_the_backend_tag_prefix_and_semver() {
+        assert_eq!(release_version("assembly-backend-v1.2.3").unwrap(), "1.2.3");
+        assert!(release_version("assembly-v1.2.3").is_err());
+        assert!(release_version("assembly-backend-vnext").is_err());
+    }
+
+    #[test]
+    fn shell_quote_keeps_remote_paths_as_one_argument() {
+        assert_eq!(shell_quote("/home/person/app"), "'/home/person/app'");
+        assert_eq!(shell_quote("/home/o'neil/app"), "'/home/o'\\''neil/app'");
     }
 
     #[test]

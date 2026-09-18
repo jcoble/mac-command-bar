@@ -7,8 +7,9 @@
   import {
     connectRemoteAssemblyFromTauri, disconnectRemoteAssemblyFromTauri,
     installRemoteAssemblyFromTauri, readRemoteAssemblyEnvironmentFromTauri,
-    removeRemoteAssemblyProfileFromTauri,
-    type RemoteAssemblyEnvironment, type RemoteAssemblyProfile
+    readRemoteBackendStatusesFromTauri, removeRemoteAssemblyProfileFromTauri,
+    uninstallRemoteAssemblyFromTauri,
+    type RemoteAssemblyEnvironment, type RemoteAssemblyProfile, type RemoteBackendProfileStatus
   } from '$lib/tauriSource';
 
   let { initialProfile = null, onConnected, onChange, onClose }: {
@@ -28,6 +29,8 @@
   let error = $state('');
   let operationArea = $state<'saved' | 'install'>('saved');
   let owner = $state<AbortController | null>(null);
+  let backends = $state<Record<string, RemoteBackendProfileStatus>>({});
+  let confirmingUninstallId = $state<string | null>(null);
   let mounted = false;
 
   function apply(next: RemoteAssemblyEnvironment) {
@@ -35,11 +38,33 @@
     onChange?.(next);
   }
 
+  async function readBackends(profiles: RemoteAssemblyProfile[]) {
+    try {
+      const statuses = await readRemoteBackendStatusesFromTauri(profiles);
+      if (mounted) backends = Object.fromEntries(statuses.map((entry) => [entry.profileId, entry]));
+    } catch {
+      if (mounted) backends = {};
+    }
+  }
+
+  function backendLabel(profileId: string): string {
+    const backend = backends[profileId];
+    if (!backend) return 'Backend version unknown';
+    if (!backend.installed) return 'Backend not installed';
+    const installed = backend.installedVersion ?? 'unknown version';
+    if (backend.updateAvailable === null) return `Backend ${installed}`;
+    return backend.updateAvailable
+      ? `Backend ${installed} · update to ${backend.latestVersion} available`
+      : `Backend ${installed} · up to date`;
+  }
+
   onMount(() => {
     mounted = true;
     if (initialProfile) editing = { ...initialProfile };
-    void readRemoteAssemblyEnvironmentFromTauri().then((next) => {
-      if (mounted) apply(next);
+    void readRemoteAssemblyEnvironmentFromTauri().then(async (next) => {
+      if (!mounted) return;
+      apply(next);
+      await readBackends(next.profiles);
     }).catch((reason: unknown) => { if (mounted) error = String(reason); });
     return () => { mounted = false; owner?.abort(); };
   });
@@ -64,6 +89,7 @@
       const next = await readRemoteAssemblyEnvironmentFromTauri();
       if (!mounted || attempt.signal.aborted) return;
       apply(next);
+      await readBackends(next.profiles);
       if (editing?.id === result.profile.id) editing = null;
       if (profile.id === result.profile.id) profile = emptyProfile();
       status = install
@@ -97,6 +123,25 @@
     } catch (reason) { if (mounted) error = String(reason); }
     finally { if (mounted) busy = false; }
   }
+
+  async function uninstallBackend(selected: RemoteAssemblyProfile, deleteData: boolean) {
+    if (busy) return;
+    busy = true;
+    operationArea = 'saved';
+    status = deleteData ? 'Uninstalling and deleting data…' : 'Uninstalling…';
+    error = '';
+    try {
+      const next = await uninstallRemoteAssemblyFromTauri(selected, deleteData);
+      if (!mounted) return;
+      apply(next);
+      confirmingUninstallId = null;
+      status = deleteData
+        ? `Backend uninstalled from ${selected.name} and its stored data deleted. The saved connection is kept, and project files were left alone.`
+        : `Backend uninstalled from ${selected.name}. Its stored data was kept, and the saved connection is kept.`;
+      await readBackends(next.profiles);
+    } catch (reason) { if (mounted) { status = ''; error = String(reason); } }
+    finally { if (mounted) busy = false; }
+  }
 </script>
 
 <div class="remote-connections">
@@ -104,17 +149,35 @@
     <div class="section-heading"><strong>Saved machines</strong><small>Connect to an installed backend or update it from the latest signed release.</small></div>
     {#if environment.profiles.length === 0}<p>No remote machines saved yet.</p>{/if}
     {#each environment.profiles as saved (saved.id)}
+      {@const backend = backends[saved.id]}
       <div class="connection-row">
-        <span><strong>{saved.name}</strong><small><span class="status-dot" class:connected={environment.readyProfileIds.includes(saved.id)} aria-hidden="true"></span>{saved.sshTarget} · {environment.readyProfileIds.includes(saved.id) ? 'Connected' : 'Disconnected'}</small></span>
+        <span><strong>{saved.name}</strong><small><span class="status-dot" class:connected={environment.readyProfileIds.includes(saved.id)} aria-hidden="true"></span>{saved.sshTarget} · {environment.readyProfileIds.includes(saved.id) ? 'Connected' : 'Disconnected'} · {backendLabel(saved.id)}</small></span>
         {#if environment.readyProfileIds.includes(saved.id)}
           <Button variant="secondary" size="sm" disabled={busy} onclick={() => void changeConnection(saved)}>Disconnect</Button>
         {:else}
           <Button variant="secondary" size="sm" disabled={busy} onclick={() => void runConnection(saved)}>Connect</Button>
         {/if}
-        <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Update</Button>
+        {#if backend && !backend.installed}
+          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install</Button>
+        {:else if backend?.updateAvailable === true}
+          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Update</Button>
+        {/if}
         <Button variant="ghost" size="xs" disabled={busy} onclick={() => { editing = { ...saved }; status = ''; error = ''; }}>Edit</Button>
+        <Button variant="ghost" size="xs" disabled={busy} onclick={() => { confirmingUninstallId = saved.id; status = ''; error = ''; }}>Uninstall</Button>
         <Button variant="ghost" size="xs" disabled={busy} onclick={() => void changeConnection(saved, true)}>Remove</Button>
       </div>
+      {#if confirmingUninstallId === saved.id}
+        <div class="uninstall-confirm">
+          <strong>Uninstall the backend from {saved.name}?</strong>
+          <p>This stops and removes the backend service and its programs on {saved.name}. Any remote work running there right now is interrupted immediately.</p>
+          <p>Keeping data leaves the backend's own stored data on the machine — its conversation history, sessions and settings — so reinstalling later picks up where you left off. Deleting that data erases it permanently and cannot be undone. Your project files and code checkouts on the machine are never deleted either way, and the saved connection stays in this list.</p>
+          <div class="connection-actions">
+            <Button variant="secondary" size="sm" disabled={busy} onclick={() => void uninstallBackend(saved, false)}>Uninstall and keep data</Button>
+            <Button variant="destructive" size="sm" disabled={busy} onclick={() => void uninstallBackend(saved, true)}>Uninstall and delete data</Button>
+            <Button variant="ghost" size="sm" disabled={busy} onclick={() => confirmingUninstallId = null}>Cancel</Button>
+          </div>
+        </div>
+      {/if}
     {/each}
     {#if editing}
       <div class="edit-form">
@@ -154,6 +217,8 @@
   .status-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--color-text-3); }
   .status-dot.connected { background: var(--color-accent); }
   .connection-heading { justify-content: space-between; }
+  .uninstall-confirm { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
+  .uninstall-confirm strong { font-size: 13px; }
   .edit-form { display: flex; flex-direction: column; gap: 10px; padding: 12px 0 4px; }
   label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--color-text-3); }
   .connection-actions { justify-content: flex-end; }

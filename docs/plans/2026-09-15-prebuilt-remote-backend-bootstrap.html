@@ -50,7 +50,7 @@
         <tr><td>Integrity</td><td>A manifest names every package file and SHA-256. The deployment verifies the package before changing the installed service. Release publication signs the manifest.</td></tr>
         <tr><td>Bootstrap</td><td>The installer creates wrappers, a new token when absent, <code>server.env</code>, and the user systemd unit. First server startup creates and migrates <code>sessions.db</code>.</td></tr>
         <tr><td>Readiness</td><td>The deploy command proves the signed package is installed, the service and database exist, the binary hash matches, and every port-7777 listener is exactly <code>127.0.0.1:7777</code>. The existing native Connect path then owns authentication, protocol compatibility and the session-list response; the complete first-use flow succeeds only after both steps pass.</td></tr>
-        <tr><td>Ownership</td><td>Saved connection removal, backend uninstall, and session-data deletion remain three distinct operations.</td></tr>
+        <tr><td>Ownership</td><td>Saved connection removal, backend uninstall while retaining data, and backend uninstall with Assembly data deletion are distinct, explicit operations. Project directories are never removed.</td></tr>
       </tbody>
     </table>
   </section>
@@ -62,7 +62,7 @@
       <li><strong>Package checkpoint — complete.</strong> The release package has a versioned manifest, deterministic contents, file hashes, release signature, one per-user installer, and focused contract tests.</li>
       <li><strong>Deployment checkpoint — complete.</strong> The terminal proof verified the signature and package before SSH, installed through one private staging directory, proved the installed service, database, executable hash and loopback listener, and then used the existing Connect readiness path.</li>
       <li><strong>Clean acceptance checkpoint — complete.</strong> After explicit destructive approval, the Workbox backend was removed and reinstalled from the signed release with zero initial conversations. Remote file safety and a disposable small-project workflow then passed.</li>
-      <li><strong>Product checkpoint — complete.</strong> Settings → Connections separates saved machines from first-time installation. Explicit Install and Update use the same native implementation and then call Connect. The superseded TypeScript deploy command is removed, so there is no second installer path. Uninstall remains a separate future action.</li>
+      <li><strong>Product checkpoint — complete.</strong> Settings → Connections separates saved machines from first-time installation. Explicit Install and Update use the same native implementation and then call Connect. The superseded TypeScript deploy command is removed, so there is no second installer path. Saved machines report their installed and latest backend versions, and an explicit uninstall confirmation either preserves Assembly data or deletes it while always leaving project directories untouched.</li>
     </ol>
   </section>
 
@@ -74,6 +74,8 @@
       <li>A clean installation creates schema version 13 with zero sessions, zero events, and zero drafts.</li>
       <li>The deploy receipt proves the service binds only to <code>127.0.0.1:7777</code>; the immediately following native Connect proves authenticated protocol readiness and an empty session list. Installation makes no firewall, Docker-network, public-listener or Tailscale-listener changes; SSH is the only network entrance.</li>
       <li>Failed installation leaves an actionable phase/error and does not report Connected.</li>
+      <li>The connection row reports whether the backend is absent, current, unknown-version, or has a newer signed backend release available.</li>
+      <li>Uninstall stops and removes only the per-user Assembly service and package-owned files. Its destructive option additionally removes Assembly configuration and data only after explicit confirmation; neither option deletes project directories.</li>
       <li>Remote file refresh/conflict coverage and the end-to-end small-project scenario pass after first install.</li>
       <li>Idle backend and client adapter processes return to their documented quiescent state.</li>
     </ul>

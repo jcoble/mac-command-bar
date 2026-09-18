@@ -246,6 +246,14 @@ pub struct RemoteAssemblyEnvironment {
     pub ready_profile_ids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteBackendProfileStatus {
+    pub profile_id: String,
+    #[serde(flatten)]
+    pub backend: super::remote_install::BackendStatus,
+}
+
 impl RemoteConnectionManager {
     pub fn from_environment(
         event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
@@ -415,6 +423,18 @@ impl RemoteConnectionManager {
         };
         self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&operation_id);
         result
+    }
+
+    pub async fn uninstall_profile(
+        &self,
+        profile: RemoteAssemblyProfile,
+        delete_data: bool,
+    ) -> Result<(), String> {
+        validate_profile(&profile)?;
+        let _owner = self.connection_lock.lock().await;
+        let (profile, _) = self.resolve_profile_identity(profile).await?;
+        self.disconnect_profile(&profile.id);
+        super::remote_install::uninstall(&profile.ssh_target, delete_data).await
     }
 
     pub async fn connect_profile(&self, profile: RemoteAssemblyProfile, operation_id: String,
@@ -1083,6 +1103,47 @@ pub async fn install_remote_assembly(
     manager.write_app_setting(REMOTE_ASSEMBLY_PROFILES_SETTING_KEY, &profiles_json)
         .map_err(super::protocol::CommandError::from)?;
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn read_remote_backend_statuses(
+    profiles: Vec<RemoteAssemblyProfile>,
+) -> Result<Vec<RemoteBackendProfileStatus>, super::protocol::CommandError> {
+    for profile in &profiles {
+        validate_profile(profile).map_err(super::protocol::CommandError::from)?;
+    }
+    let latest_version = super::remote_install::latest_version()
+        .await
+        .map_err(super::protocol::CommandError::from)?;
+    let statuses = join_all(profiles.into_iter().map(|profile| {
+        let latest_version = latest_version.clone();
+        async move {
+            let backend = super::remote_install::read_status(&profile.ssh_target, &latest_version)
+                .await?;
+            Ok::<_, String>(RemoteBackendProfileStatus {
+                profile_id: profile.id,
+                backend,
+            })
+        }
+    }))
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(super::protocol::CommandError::from)?;
+    Ok(statuses)
+}
+
+#[tauri::command]
+pub async fn uninstall_remote_assembly(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile: RemoteAssemblyProfile,
+    delete_data: bool,
+) -> Result<RemoteAssemblyEnvironment, super::protocol::CommandError> {
+    remote
+        .uninstall_profile(profile, delete_data)
+        .await
+        .map_err(super::protocol::CommandError::from)?;
+    Ok(remote.environment())
 }
 
 #[tauri::command]
