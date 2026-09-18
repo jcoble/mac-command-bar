@@ -167,11 +167,20 @@
 		workbench.beginSessionSwitch();
 		await selection.selectSession(ownedId);
 		if (selection.activeOwnedId === ownedId) {
-			workbench.restoreSessionState(selection.activeWorkspaceSnapshot);
-			const storedDiffPath = diffPathFor(selection.activeWorkspaceSnapshot, selection.durableSessionRoot);
-			if (storedDiffPath && selection.activeWorkspaceSnapshot?.center?.activePanelId === 'diff') {
-				await gitService.showStoredDiff(selection.durableSessionRoot, storedDiffPath);
-			}
+			await restoreSelectedWorkbench();
+		}
+	}
+
+	async function refreshRemoteConnection(profileId: string): Promise<void> {
+		if (!(await selection.refreshRemoteConnection(profileId))) return;
+		await restoreSelectedWorkbench();
+	}
+
+	async function restoreSelectedWorkbench(): Promise<void> {
+		workbench.restoreSessionState(selection.activeWorkspaceSnapshot);
+		const storedDiffPath = diffPathFor(selection.activeWorkspaceSnapshot, selection.durableSessionRoot);
+		if (storedDiffPath && selection.activeWorkspaceSnapshot?.center?.activePanelId === 'diff') {
+			await gitService.showStoredDiff(selection.durableSessionRoot, storedDiffPath);
 		}
 	}
 
@@ -400,7 +409,7 @@
 
 	<ShellOverlays
 		bind:this={overlays}
-		onRemoteConnected={(profileId) => void selection.refreshRemoteConnection(profileId)}
+		onRemoteConnected={(profileId) => void refreshRemoteConnection(profileId)}
 		onResetLayout={() => workbench.resetLayout()}
 		message={null}
 		onProblemsLocationChange={(location) => workbench.applyProblemsLocation(location)}

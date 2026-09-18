@@ -134,15 +134,16 @@ export class SessionSelectionController {
 		}
 	}
 
-	async refreshRemoteConnection(profileId: string): Promise<void> {
+	async refreshRemoteConnection(profileId: string): Promise<boolean> {
 		const selected = rail.owned.find((session) => session.ownedId === this.activeOwnedId);
-		if (selected?.executionEnvironment !== 'remote' || selected.remoteProfileId !== profileId) return;
+		if (selected?.executionEnvironment !== 'remote' || selected.remoteProfileId !== profileId) return false;
 		await flushConversationSessionDraft(selected.ownedId);
 		this.sessionSelectionLayers.clearTreeView();
 		this.sessionSelectionLayers.clearChatHistory();
 		await this.selectSession(selected.ownedId);
 		refreshExplorer();
 		this.editorSessions.refreshActiveFiles(selected.ownedId);
+		return this.activeWorkspaceSnapshot !== null;
 	}
 
 	private async drainSelections(): Promise<void> {
