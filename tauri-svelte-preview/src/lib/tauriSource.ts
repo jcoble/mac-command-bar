@@ -1901,7 +1901,7 @@ export async function connectRemoteAssemblyFromTauri(
   profile: RemoteAssemblyProfile,
   signal: AbortSignal,
   onStatus: (status: string) => void
-): Promise<{ profile: RemoteAssemblyProfile; sessions: AgentConversationSessionRecord[] }> {
+): Promise<{ profile: RemoteAssemblyProfile; sessions: AgentConversationSessionRecord[]; replacedProfileId: string | null }> {
   if (!isTauriRuntime()) throw new Error('Remote setup is available in the desktop app.');
   if (signal.aborted) throw new Error('Connection cancelled');
   const { invoke, Channel } = await import('@tauri-apps/api/core');
@@ -1927,7 +1927,7 @@ export async function installRemoteAssemblyFromTauri(
   profile: RemoteAssemblyProfile,
   signal: AbortSignal,
   onStatus: (status: string) => void
-): Promise<{ profile: RemoteAssemblyProfile; sessions: AgentConversationSessionRecord[] }> {
+): Promise<{ profile: RemoteAssemblyProfile; sessions: AgentConversationSessionRecord[]; replacedProfileId: string | null }> {
   if (!isTauriRuntime()) throw new Error('Remote installation is available in the desktop app.');
   if (signal.aborted) throw new Error('Installation cancelled');
   const { invoke, Channel } = await import('@tauri-apps/api/core');
@@ -1952,10 +1952,13 @@ export async function installRemoteAssemblyFromTauri(
 export async function uninstallRemoteAssemblyFromTauri(
   profile: RemoteAssemblyProfile,
   deleteData: boolean
-): Promise<RemoteAssemblyEnvironment> {
+): Promise<{ environment: RemoteAssemblyEnvironment; replacedProfileId: string | null }> {
   if (!isTauriRuntime()) throw new Error('Remote uninstall is available in the desktop app.');
   const { invoke } = await import('./workspaceInvoke');
-  return invoke<RemoteAssemblyEnvironment>('uninstall_remote_assembly', { profile, deleteData });
+  return invoke<{ environment: RemoteAssemblyEnvironment; replacedProfileId: string | null }>(
+    'uninstall_remote_assembly',
+    { profile, deleteData }
+  );
 }
 
 export async function changeAgentConversationCheckoutFromTauri(input: {

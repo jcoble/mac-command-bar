@@ -83,7 +83,8 @@
         if (mounted && !attempt.signal.aborted) status = message;
       });
       if (!mounted || attempt.signal.aborted) return;
-      hydrateOwned([...rail.owned.filter((session) => session.remoteProfileId !== result.profile.id),
+      const replacedProfileIds = new Set([result.profile.id, result.replacedProfileId]);
+      hydrateOwned([...rail.owned.filter((session) => !replacedProfileIds.has(session.remoteProfileId ?? '')),
         ...result.sessions.map(ownedSessionFromBackend)]);
       const next = await readRemoteAssemblyEnvironmentFromTauri();
       if (!mounted || attempt.signal.aborted) return;
@@ -130,17 +131,18 @@
     status = deleteData ? 'Uninstalling and deleting data…' : 'Uninstalling…';
     error = '';
     try {
-      const next = await uninstallRemoteAssemblyFromTauri(selected, deleteData);
+      const result = await uninstallRemoteAssemblyFromTauri(selected, deleteData);
       if (!mounted) return;
       if (deleteData) {
-        hydrateOwned(rail.owned.filter((session) => session.remoteProfileId !== selected.id));
+        const replacedProfileIds = new Set([selected.id, result.replacedProfileId]);
+        hydrateOwned(rail.owned.filter((session) => !replacedProfileIds.has(session.remoteProfileId ?? '')));
       }
-      apply(next);
+      apply(result.environment);
       confirmingUninstallId = null;
       status = deleteData
         ? `Backend uninstalled from ${selected.name} and its stored data deleted. The saved connection is kept, and project files were left alone.`
         : `Backend uninstalled from ${selected.name}. Its stored data was kept, and the saved connection is kept.`;
-      await readBackends(next.profiles);
+      await readBackends(result.environment.profiles);
     } catch (reason) { if (mounted) { status = ''; error = String(reason); } }
     finally { if (mounted) busy = false; }
   }

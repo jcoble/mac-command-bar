@@ -230,6 +230,14 @@ impl Drop for RemoteClient {
 pub struct RemoteConnectionResult {
     profile: RemoteAssemblyProfile,
     sessions: Vec<AgentConversationSessionRecord>,
+    replaced_profile_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteUninstallResult {
+    environment: RemoteAssemblyEnvironment,
+    replaced_profile_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -682,7 +690,7 @@ impl RemoteConnectionManager {
             if attempts.contains_key(&operation_id) { return Err("Connection attempt already exists".into()); }
             let task = tokio::spawn(async move {
                 let _owner = manager.connection_lock.lock().await;
-                let (profile, _) = manager.resolve_profile_identity(profile).await?;
+                let (profile, _, _) = manager.resolve_profile_identity(profile).await?;
                 manager.disconnect_profile(&profile.id);
                 let receipt = super::remote_install::install_latest(&profile.ssh_target, progress.clone()).await?;
                 let _ = progress.send(format!("Installed backend {} from {}. Connecting…",
@@ -710,16 +718,16 @@ impl RemoteConnectionManager {
         &self,
         profile: RemoteAssemblyProfile,
         delete_data: bool,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         validate_profile(&profile)?;
         let _owner = self.connection_lock.lock().await;
-        let (profile, _) = self.resolve_profile_identity(profile).await?;
+        let (profile, _, replaced_profile_id) = self.resolve_profile_identity(profile).await?;
         self.disconnect_profile(&profile.id);
         super::remote_install::uninstall(&profile.ssh_target, delete_data).await?;
         if delete_data {
             self.replace_cached_profile_sessions(&profile.id, &[])?;
         }
-        Ok(())
+        Ok(replaced_profile_id)
     }
 
     pub async fn connect_profile(&self, profile: RemoteAssemblyProfile, operation_id: String,
@@ -758,7 +766,7 @@ impl RemoteConnectionManager {
     async fn connect_profile_inner_locked(&self, profile: RemoteAssemblyProfile,
         status: tauri::ipc::Channel<String>) -> Result<RemoteConnectionResult, String> {
         let _ = status.send("Resolving SSH configuration…".into());
-        let (profile, target_key) = self.resolve_profile_identity(profile).await?;
+        let (profile, target_key, replaced_profile_id) = self.resolve_profile_identity(profile).await?;
         let attempt = ConnectingAttempt::start(self, &profile.id);
         let reusable = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .clients.get(&profile.id).is_some_and(|client| client.target_key.as_ref() == Some(&target_key)
@@ -798,12 +806,13 @@ impl RemoteConnectionManager {
         if let Some(client) = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get_mut(&profile.id) {
             client.profile = Some(profile.clone());
         }
-        Ok(RemoteConnectionResult { profile, sessions })
+        Ok(RemoteConnectionResult { profile, sessions, replaced_profile_id })
     }
 
     async fn resolve_profile_identity(&self, mut profile: RemoteAssemblyProfile)
-        -> Result<(RemoteAssemblyProfile, String), String> {
+        -> Result<(RemoteAssemblyProfile, String, Option<String>), String> {
         let target_key = resolve_ssh_target(&profile.ssh_target).await?;
+        let mut replaced_profile_id = None;
         let saved = self.environment().profiles;
         for existing in saved {
             let key = if existing.ssh_target == profile.ssh_target { Some(target_key.clone()) }
@@ -825,11 +834,12 @@ impl RemoteConnectionManager {
                     };
                     if legacy_key.as_ref() == Some(&target_key) {
                         self.reassign_cached_profile_sessions("agent-workbox", &profile.id)?;
+                        replaced_profile_id = Some("agent-workbox".to_string());
                     }
                 }
             }
         }
-        Ok((profile, target_key))
+        Ok((profile, target_key, replaced_profile_id))
     }
 
     pub fn disconnect_profile(&self, profile_id: &str) {
@@ -1511,12 +1521,15 @@ pub async fn uninstall_remote_assembly(
     remote: tauri::State<'_, RemoteConnectionManager>,
     profile: RemoteAssemblyProfile,
     delete_data: bool,
-) -> Result<RemoteAssemblyEnvironment, super::protocol::CommandError> {
-    remote
+) -> Result<RemoteUninstallResult, super::protocol::CommandError> {
+    let replaced_profile_id = remote
         .uninstall_profile(profile, delete_data)
         .await
         .map_err(super::protocol::CommandError::from)?;
-    Ok(remote.environment())
+    Ok(RemoteUninstallResult {
+        environment: remote.environment(),
+        replaced_profile_id,
+    })
 }
 
 #[tauri::command]
