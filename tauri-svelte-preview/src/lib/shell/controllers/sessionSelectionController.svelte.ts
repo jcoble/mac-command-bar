@@ -195,6 +195,12 @@ export class SessionSelectionController {
 		this.activeWorkspaceSnapshot = this.editorSessions.rememberWorkspaceState(patch);
 	}
 
+	persistWorkspaceState(ownedId: string, patch: Partial<SessionWorkspaceSnapshot>): void {
+		if (this.activeOwnedId !== ownedId) return;
+		this.rememberWorkspaceState(patch);
+		void this.editorSessions.persistWorkspaceState(ownedId).catch(() => undefined);
+	}
+
 	/** One removable seam for changing every checkout-backed session surface. */
 	async useSessionCheckout(requestedRoot: string): Promise<boolean> {
 		const ownedId = this.activeOwnedId;

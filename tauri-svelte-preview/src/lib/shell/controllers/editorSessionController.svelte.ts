@@ -28,6 +28,7 @@ export class EditorSessionController {
 	private panel: EditorPanelLifecycle | null = null;
 	private activeOwnedId: string | null = null;
 	private activeSnapshot: SessionWorkspaceSnapshot | null = null;
+	private checkpointQueue: Promise<void> = Promise.resolve();
 
 	setPanel(panel: EditorPanelLifecycle | null): void {
 		this.panel = panel;
@@ -87,6 +88,16 @@ export class EditorSessionController {
 		});
 		this.activeSnapshot = { ...(this.activeSnapshot ?? fallback), ...patch };
 		return this.activeSnapshot;
+	}
+
+	persistWorkspaceState(ownedId: string): Promise<void> {
+		this.checkpointQueue = this.checkpointQueue
+			.catch(() => undefined)
+			.then(async () => {
+				if (this.activeOwnedId !== ownedId) return;
+				await this.checkpointActiveWorkspace(new AbortController().signal);
+			});
+		return this.checkpointQueue;
 	}
 
 	async dispose(): Promise<void> {
