@@ -302,6 +302,35 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
   assert.equal(panel.selectedDiff, null);
 }
 
+// ── leaving the owning surface cannot strand the shared diff spinner ─────
+{
+  const panel = panelState('/repo');
+  const state = createGitCommitFilesState();
+  const commitFiles = createGitCommitFilesService({
+    state,
+    panel,
+    resolveTop: async () => '/repo',
+    readFiles: async () => [],
+    readDiff: async () => new Promise(() => {}),
+    clearPanelSelection: () => {
+      panel.selectedPath = '';
+      panel.selectedDiff = null;
+      panel.diffLoading = false;
+      panel.diffError = '';
+    },
+    diffTimeoutMs: 5
+  });
+
+  commitFiles.activate('/repo');
+  const pending = commitFiles.selectCommitFile('abc', fileChange('src/app.ts'));
+  assert.equal(panel.diffLoading, true);
+  commitFiles.release();
+  assert.equal(panel.diffLoading, false, 'release clears an invalidated read immediately');
+  assert.equal(panel.selectedPath, '');
+  await pending;
+  assert.equal(panel.diffLoading, false, 'the stale timeout cannot restore the spinner');
+}
+
 // ── pointing the panel at another repository forgets the old one ────────────
 {
   const state = createGitCommitFilesState();

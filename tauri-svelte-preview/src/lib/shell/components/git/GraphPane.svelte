@@ -160,10 +160,11 @@
     void commitFiles.toggleCommit(row.sha, row.isMerge);
   }
 
-  function pickFile(sha: string, file: GitCommitFileChange): void {
+  async function pickFile(sha: string, file: GitCommitFileChange): Promise<void> {
     commitFiles.activate(panel.root);
-    void commitFiles.selectCommitFile(sha, file);
+    const read = commitFiles.selectCommitFile(sha, file);
     onShowDiff?.();
+    await read;
   }
 
   /**
