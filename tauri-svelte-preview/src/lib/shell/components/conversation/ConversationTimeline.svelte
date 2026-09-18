@@ -625,10 +625,10 @@
   @keyframes older-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:var(--center-head-height, 0px) 28px 0;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
-  .timeline-list{position:relative;display:flex;flex-direction:column;gap:26px;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .timeline-list{position:relative;display:flex;flex-direction:column;gap:18px;width:min(820px,100%);min-height:1px;margin:0 auto}
   .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
   .timeline-bottom-spacer.send-anchor-space{height:max(calc(max(var(--composer-height, 0px), 120px) + 60px),100vh)}
-  .turn-row{position:relative;display:flex;flex-direction:column;gap:26px;width:100%}
+  .turn-row{position:relative;display:flex;flex-direction:column;gap:12px;width:100%}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{display:flex;align-items:center;gap:8px;min-height:24px;color:var(--color-text-3);font-size:13px}
   /* A disc under the middle of the transcript, holding one arrow. It sits over

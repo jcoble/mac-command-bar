@@ -15,6 +15,7 @@ assert.equal(blocks[2].kind, 'code');
 assert.equal(blocks[2].complete, false, 'partial fences remain code, not executable HTML');
 assert.equal(sanitizeConversationHref('javascript:alert(1)'), null);
 assert.equal(sanitizeConversationHref('https://example.test'), 'https://example.test');
+assert.equal(parseSafeMarkdown('Visit https://example.test/docs')[0].parts[1].kind, 'link');
 assert.match(sanitizeConversationMarkdown('<script>alert(1)</script>'), /&lt;script&gt;/);
 assert.doesNotMatch(sanitizeConversationMarkdown('<script>alert(1)</script>'), /<script>/);
 
@@ -94,4 +95,4 @@ const quoted = parseSafeMarkdown('> a note\n>\n> - one\n> - two');
 assert.equal(quoted[0].kind, 'quote');
 assert.deepEqual(quoted[0].blocks.map((block) => block.kind), ['paragraph', 'list']);
 
-console.log('conversationMessageSafety.test.mjs passed');
+console.log('conversationMessageSafety.test.ts passed');

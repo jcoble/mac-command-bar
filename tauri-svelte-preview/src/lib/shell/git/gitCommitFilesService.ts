@@ -26,6 +26,7 @@ import {
   readCommitFileDiff,
   readCommitFiles,
   resolveRepositoryTop,
+  withGitDiffTimeout,
   type GitCommitFileChange
 } from './gitBackendExtra.ts';
 import {
@@ -65,6 +66,7 @@ export interface GitCommitFilesServiceOptions {
   ): Promise<SourceGitDiff | null>;
   /** Let go of the working-copy diff on screen before showing a commit's one. */
   clearPanelSelection?(): void;
+  diffTimeoutMs?: number;
 }
 
 export interface GitCommitFilesService {
@@ -97,6 +99,7 @@ export function createGitCommitFilesService(
   const readFiles = options.readFiles ?? readCommitFiles;
   const readDiff = options.readDiff ?? readCommitFileDiff;
   const clearPanelSelection = options.clearPanelSelection ?? (() => gitService.clearSelection());
+  const diffTimeoutMs = options.diffTimeoutMs ?? 20_000;
 
   /** The one in-flight look-up of the repository top, shared by every caller. */
   let topRequest: Promise<string> | null = null;
@@ -198,8 +201,10 @@ export function createGitCommitFilesService(
       diffRequest === id && state.root === root && state.revision === revision;
 
     try {
-      const top = await repositoryTopFor(root);
-      const diff = await readDiff(top, sha, file.relativePath);
+      const diff = await withGitDiffTimeout(
+        repositoryTopFor(root).then((top) => readDiff(top, sha, file.relativePath)),
+        diffTimeoutMs
+      );
       if (!stillCurrent()) return;
       if (!diff) {
         panel.diffError = COMMIT_FILES_DESKTOP_ONLY_MESSAGE;

@@ -66,6 +66,7 @@ pub struct NotionTaskDetailBlock {
     kind: String,
     text: String,
     checked: Option<bool>,
+    url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -548,9 +549,31 @@ fn detail_block(block: &Value) -> Option<NotionTaskDetailBlock> {
             kind: kind.to_string(),
             text: String::new(),
             checked: None,
+            url: None,
         });
     }
     let value = block.get(kind)?;
+    if kind == "image" {
+        let image_type = value.get("type")?.as_str()?;
+        let url = value
+            .get(image_type)?
+            .get("url")?
+            .as_str()?
+            .trim()
+            .to_string();
+        if !url.starts_with("https://") {
+            return None;
+        }
+        return Some(NotionTaskDetailBlock {
+            kind: kind.to_string(),
+            text: value
+                .get("caption")
+                .and_then(rich_text)
+                .unwrap_or_default(),
+            checked: None,
+            url: Some(url),
+        });
+    }
     let text = rich_text(value.get("rich_text")?).unwrap_or_default();
     if text.is_empty() && kind != "to_do" {
         return None;
@@ -560,6 +583,7 @@ fn detail_block(block: &Value) -> Option<NotionTaskDetailBlock> {
         text,
         checked: (kind == "to_do")
             .then(|| value.get("checked").and_then(Value::as_bool).unwrap_or(false)),
+        url: None,
     })
 }
 
@@ -861,8 +885,38 @@ mod tests {
         assert_eq!(paragraph.kind, "paragraph");
         assert_eq!(paragraph.text, "First note");
         assert_eq!(paragraph.checked, None);
+        assert_eq!(paragraph.url, None);
         assert_eq!(checkbox.text, "Verify it");
         assert_eq!(checkbox.checked, Some(true));
+    }
+
+    #[test]
+    fn task_detail_projects_https_images_and_captions() {
+        let image = detail_block(&json!({
+            "type": "image",
+            "image": {
+                "type": "file",
+                "file": { "url": "https://files.notion.example/screenshot.png" },
+                "caption": [{ "plain_text": "Expected result" }]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(image.kind, "image");
+        assert_eq!(image.text, "Expected result");
+        assert_eq!(image.checked, None);
+        assert_eq!(
+            image.url.as_deref(),
+            Some("https://files.notion.example/screenshot.png")
+        );
+        assert!(detail_block(&json!({
+            "type": "image",
+            "image": {
+                "type": "external",
+                "external": { "url": "file:///tmp/private.png" }
+            }
+        }))
+        .is_none());
     }
 
     #[test]

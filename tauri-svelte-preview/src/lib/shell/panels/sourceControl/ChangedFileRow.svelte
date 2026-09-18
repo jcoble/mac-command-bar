@@ -20,6 +20,7 @@
   import { HoverActionButton } from '$lib/components/ui/hover-actions/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+  import FileIcon from '$lib/shell/components/explorer/FileIcon.svelte';
   import FileSymlink from '@lucide/svelte/icons/file-symlink';
   import Minus from '@lucide/svelte/icons/minus';
   import Plus from '@lucide/svelte/icons/plus';
@@ -158,6 +159,7 @@
             class={`w-3 shrink-0 text-center font-mono text-sm leading-none ${badgeTone}`}
             aria-hidden="true">{file.badge}</span
           >
+          <FileIcon fileName={parts.name} size={14} />
           <span class="min-w-0 flex-1 truncate" title={gitFileTitle(file)}>
             {parts.name}
             {#if parts.folder !== ''}

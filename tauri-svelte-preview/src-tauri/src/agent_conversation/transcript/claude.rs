@@ -305,6 +305,7 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
                     output_tokens: None,
                     used_tokens: Some(used),
                     context_window: None,
+                    total_tokens: None,
                 }),
             });
         }

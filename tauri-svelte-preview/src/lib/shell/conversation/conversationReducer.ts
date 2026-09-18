@@ -312,7 +312,8 @@ export function applyConversationEvent(
           inputTokens: payload.inputTokens ?? next.usage?.inputTokens,
           outputTokens: payload.outputTokens ?? next.usage?.outputTokens,
           usedTokens: payload.usedTokens ?? next.usage?.usedTokens,
-          contextWindow: payload.contextWindow ?? next.usage?.contextWindow
+          contextWindow: payload.contextWindow ?? next.usage?.contextWindow,
+          totalTokens: payload.totalTokens ?? next.usage?.totalTokens
         }
       };
     }

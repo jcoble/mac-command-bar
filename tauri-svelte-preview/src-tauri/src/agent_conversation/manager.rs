@@ -5611,15 +5611,26 @@ fn parse_usage_payload(update: &Value) -> Option<AgentConversationPayload> {
         .or_else(|| first_u64(usage, &[&["inputTokens"], &["input_tokens"]]));
     let output_tokens = first_u64(update, &[&["outputTokens"], &["output_tokens"]])
         .or_else(|| first_u64(usage, &[&["outputTokens"], &["output_tokens"]]));
+    let total_tokens = first_u64(
+        update,
+        &[
+            &["totalUsage"],
+            &["total_usage"],
+            &["info", "total_token_usage", "total_tokens"],
+        ],
+    )
+    .or_else(|| first_u64(usage, &[&["totalUsage"], &["total_usage"]]));
     (used_tokens.is_some()
         || context_window.is_some()
         || input_tokens.is_some()
-        || output_tokens.is_some())
+        || output_tokens.is_some()
+        || total_tokens.is_some())
     .then_some(AgentConversationPayload::Usage {
         input_tokens,
         output_tokens,
         used_tokens,
         context_window,
+        total_tokens,
     })
 }
 
@@ -7069,6 +7080,7 @@ mod tests {
                 output_tokens: None,
                 used_tokens: Some(41_233),
                 context_window: Some(237_500),
+                total_tokens: Some(15_908_466),
             })
         );
 
@@ -7083,6 +7095,7 @@ mod tests {
                 output_tokens: Some(20),
                 used_tokens: Some(120),
                 context_window: Some(4096),
+                total_tokens: None,
             })
         );
         // The bridge reports a compaction outright, because nothing else in a

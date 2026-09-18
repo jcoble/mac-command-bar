@@ -58,6 +58,28 @@ export const READ_ONLY_IN_BROWSER_MESSAGE =
 export const MISSING_COMMAND_MESSAGE =
   'This desktop app was built before per-commit file lists existed. Restart it after the next update.';
 
+export const GIT_DIFF_TIMEOUT_MESSAGE =
+  'Reading these changes took too long. Try refreshing Source Control.';
+
+/** A selected diff must always leave its loading state, even if an IPC read
+ * never settles. The timer exists only while that user-triggered read is live. */
+export async function withGitDiffTimeout<T>(
+  read: Promise<T>,
+  timeoutMs = 20_000
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(GIT_DIFF_TIMEOUT_MESSAGE)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }

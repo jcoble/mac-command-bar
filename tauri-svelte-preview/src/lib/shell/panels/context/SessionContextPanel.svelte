@@ -41,6 +41,7 @@
     fileNameOf,
     formatTokenCount,
     metadataWithConfigFallback,
+    sessionAttachments,
     sessionContextFacts,
     sessionContextUsage,
     sessionFilesTouched,
@@ -68,7 +69,15 @@
     sessionContextFacts(metadataWithConfigFallback(session?.metadata ?? null, session?.agentConfig))
   );
   const usage = $derived(sessionContextUsage(session?.metadata ?? null, session?.usage));
-  const attachments = $derived(session?.attachments ?? []);
+  const attachments = $derived(
+    session
+      ? sessionAttachments(
+          session.attachments,
+          session.unclaimedSentAttachments,
+          session.sentAttachments
+        )
+      : []
+  );
 
   /** Whoever did not send a figure gets named for it, so "not reported" reads
    * as a fact about the provider rather than as a hole in the panel. */
@@ -87,6 +96,7 @@
    */
   $effect(() => {
     const forSession = ownedId;
+    const forRoot = root.trim();
     if (!visible || !forSession) {
       filesLoaded = false;
       filesTouched = [];
@@ -94,21 +104,25 @@
     }
 
     const owner = { active: true };
-    void loadTouchedFiles(owner, forSession);
+    void loadTouchedFiles(owner, forSession, forRoot);
 
     return () => {
       owner.active = false;
     };
   });
 
-  async function loadTouchedFiles(owner: { active: boolean }, forSession: string): Promise<void> {
+  async function loadTouchedFiles(
+    owner: { active: boolean },
+    forSession: string,
+    forRoot: string
+  ): Promise<void> {
     try {
       const events = await listAgentConversationEventsFromTauri(forSession, 0);
-      if (!owner.active || ownedId !== forSession) return;
-      filesTouched = sessionFilesTouched(events ?? []);
+      if (!owner.active || ownedId !== forSession || root.trim() !== forRoot) return;
+      filesTouched = sessionFilesTouched(events ?? [], forRoot);
       filesLoaded = true;
     } catch {
-      if (!owner.active || ownedId !== forSession) return;
+      if (!owner.active || ownedId !== forSession || root.trim() !== forRoot) return;
       filesTouched = [];
       filesLoaded = true;
     }
@@ -172,8 +186,8 @@
               <div class="flex items-baseline gap-2">
                 <span class="text-[13px] leading-tight">
                   {usage.usedTokens === null
-                    ? `Tokens used ${notReported}`
-                    : `${formatTokenCount(usage.usedTokens)} tokens used`}
+                    ? `Current context ${notReported}`
+                    : `Current context: ${formatTokenCount(usage.usedTokens)}`}
                 </span>
                 <span class="min-w-0 flex-1 truncate text-right text-sm text-muted-foreground">
                   {usage.contextWindow === null
@@ -197,6 +211,15 @@
                   <span class="shrink-0 text-sm text-muted-foreground">{usage.percentUsed}%</span>
                 </div>
               {/if}
+
+              <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                <span>Session total</span>
+                <span class="min-w-0 flex-1 truncate text-right">
+                  {usage.totalTokens === null
+                    ? notReported
+                    : `${formatTokenCount(usage.totalTokens)} tokens`}
+                </span>
+              </div>
 
               <div class="flex items-center gap-2 text-sm text-muted-foreground">
                 <span class="min-w-0 flex-1 truncate">

@@ -14,6 +14,8 @@
   import ReasoningItem from './ReasoningItem.svelte';
   import SubagentSection from './SubagentSection.svelte';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { sanitizeConversationHref } from '$lib/shell/conversation/conversationMessageSafety.ts';
+  import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
 
   interface Props {
     item: Extract<ConversationDisplayItem, { kind: 'toolRun' }>;
@@ -247,6 +249,7 @@
     query: string;
     path: string;
     isWeb: boolean;
+    url: string;
   } {
     if (actionItem.kind === 'tool') {
       const meta = actionItem.metadata as Record<string, unknown> | undefined;
@@ -271,9 +274,11 @@
         : (typeof rawArgs?.path === 'string' ? rawArgs.path
         : ''))));
       const isWeb = isWebSearchTool(actionItem);
-      return { query, path: path ? getFileName(path) : '', isWeb };
+      const safeUrl = isWeb ? sanitizeConversationHref(query) : null;
+      const url = safeUrl && /^https?:/i.test(safeUrl) ? safeUrl : '';
+      return { query, path: path ? getFileName(path) : '', isWeb, url };
     }
-    return { query: '', path: '', isWeb: false };
+    return { query: '', path: '', isWeb: false, url: '' };
   }
 
   function synthesizeDiff(target: string, replacement: string, path: string): string {
@@ -533,7 +538,16 @@
             <div class="sub-item-header non-clickable">
               <Globe size={13} class="item-icon" />
               <span class="item-label">
-                Searched the web for <span class="search-query">{info.query || 'information'}</span>
+                Searched the web for
+                {#if info.url}
+                  <a
+                    class="search-query target-link"
+                    href={info.url}
+                    onclick={(event) => { event.stopPropagation(); event.preventDefault(); void openUrlInBrowser({ url: info.url }); }}
+                  >{info.query}</a>
+                {:else}
+                  <span class="search-query">{info.query || 'information'}</span>
+                {/if}
               </span>
             </div>
           </div>
@@ -594,15 +608,15 @@
   .tool-run-item {
     display: flex;
     flex-direction: column;
-    margin: 4px 0;
+    margin: 2px 0;
   }
 
   .run-header {
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 32px;
-    padding: 4px 6px;
+    min-height: 30px;
+    padding: 3px 6px;
     border: 0;
     border-radius: 8px;
     background: transparent;
@@ -637,6 +651,12 @@
     white-space: nowrap;
   }
 
+  .target-link {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
   .chevron-wrap {
     display: grid;
     place-items: center;
@@ -655,7 +675,7 @@
     gap: 2px;
     padding-left: 8px;
     padding-right: 6px;
-    margin: 2px 0 6px;
+    margin: 0 0 4px;
     max-height: 240px;
     overflow-y: auto;
     overflow-x: hidden;
@@ -672,8 +692,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 28px;
-    padding: 3px 6px;
+    min-height: 26px;
+    padding: 2px 6px;
     border: 0;
     border-radius: 6px;
     background: transparent;

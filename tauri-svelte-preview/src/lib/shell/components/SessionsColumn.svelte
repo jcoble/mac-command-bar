@@ -20,7 +20,6 @@
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
-  import { Switch } from '$lib/components/ui/switch/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
@@ -268,16 +267,6 @@
               sideOffset={7}
               class="flex w-[304px]! flex-col gap-[var(--space-3)] p-[var(--space-4)] text-foreground"
             >
-              <div class="flex min-h-8 items-center justify-between gap-3">
-                <span class="text-[13px] text-foreground">Show: Projects</span>
-                <Switch
-                  size="sm"
-                  checked={viewOptions.groupBy === 'project'}
-                  aria-label="Show projects"
-                  onCheckedChange={(checked) => setViewOptions({ groupBy: checked ? 'project' : 'none' })}
-                />
-              </div>
-
               <div class="flex flex-col gap-[var(--space-2)]">
                 <span class="text-[13px] text-foreground">Group by</span>
                 <SegmentedTabs

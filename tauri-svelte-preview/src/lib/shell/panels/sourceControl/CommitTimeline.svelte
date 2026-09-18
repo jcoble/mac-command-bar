@@ -26,6 +26,7 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+  import FileIcon from '$lib/shell/components/explorer/FileIcon.svelte';
   import SourceControlContextMenu from '$lib/shell/components/git/SourceControlContextMenu.svelte';
   import {
     snapshotSourceControlCommitFileMenu,
@@ -279,6 +280,7 @@
                       class="w-3 shrink-0 text-center font-mono text-sm leading-none text-muted-foreground"
                       aria-hidden="true">{file.badge}</span
                     >
+                    <FileIcon fileName={parts.name} size={14} />
                     <span class="min-w-0 flex-1 truncate" title={file.relativePath}>
                       {parts.name}
                       {#if parts.folder !== ''}

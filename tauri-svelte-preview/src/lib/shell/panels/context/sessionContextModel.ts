@@ -17,10 +17,12 @@
 import type {
   AgentConfigValue,
   AgentConversationEvent,
+  ConversationAttachment,
   ConversationMetadata,
   ConversationUsage
 } from '../../conversation/conversationTypes.ts';
 import type { AgentConversationConfigState } from '../../conversation/conversationConfig.ts';
+import { workspaceChangePath } from '../../../workspacePaths.ts';
 
 export interface SessionContextFact {
   label: string;
@@ -37,6 +39,7 @@ export interface SessionContextUsage {
   percentUsed: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
+  totalTokens: number | null;
 }
 
 export interface SessionFileTouch {
@@ -102,9 +105,23 @@ export function sessionContextUsage(
   metadata: ConversationMetadata | null,
   usage: ConversationUsage | null | undefined
 ): SessionContextUsage {
-  const usedTokens = reportedNumber(usage?.usedTokens) ?? reportedNumber(metadata?.usedTokens);
+  const reportedUsedTokens =
+    reportedNumber(usage?.usedTokens) ?? reportedNumber(metadata?.usedTokens);
   const contextWindow =
     reportedNumber(usage?.contextWindow) ?? reportedNumber(metadata?.contextWindow);
+  const inputTokens = reportedNumber(usage?.inputTokens);
+  const outputTokens = reportedNumber(usage?.outputTokens);
+  const explicitTotalTokens = reportedNumber(usage?.totalTokens);
+  const requestTokens =
+    inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null;
+  const legacyCumulativeUsage =
+    explicitTotalTokens === null &&
+    reportedUsedTokens !== null &&
+    contextWindow !== null &&
+    reportedUsedTokens > contextWindow &&
+    requestTokens !== null &&
+    requestTokens <= contextWindow;
+  const usedTokens = legacyCumulativeUsage ? requestTokens : reportedUsedTokens;
   const percentUsed =
     usedTokens !== null && contextWindow !== null && contextWindow > 0
       ? Math.min(100, Math.round((usedTokens / contextWindow) * 100))
@@ -114,23 +131,40 @@ export function sessionContextUsage(
     usedTokens,
     contextWindow,
     percentUsed,
-    inputTokens: reportedNumber(usage?.inputTokens),
-    outputTokens: reportedNumber(usage?.outputTokens)
+    inputTokens,
+    outputTokens,
+    totalTokens: legacyCumulativeUsage ? reportedUsedTokens : explicitTotalTokens
   };
+}
+
+function legacyToolReportsFiles(payload: AgentConversationEvent['payload']): boolean {
+  if (payload.kind !== 'tool') return true;
+  if (reportedText(payload.diff) !== null) return true;
+
+  const name = reportedText(payload.name)?.toLowerCase() ?? '';
+  return name === 'apply file changes'
+    || name === 'view_file'
+    || /^(read|edit|write)(?:\s|$)/.test(name);
 }
 
 /** Every path a single tool-call payload names, in the order it names them. */
 function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
-  if (payload.kind !== 'toolCall' && payload.kind !== 'toolCallUpdate') return [];
+  if (
+    payload.kind !== 'tool' &&
+    payload.kind !== 'toolCall' &&
+    payload.kind !== 'toolCallUpdate' &&
+    payload.kind !== 'turnDiff'
+  ) return [];
+  if (!legacyToolReportsFiles(payload)) return [];
 
   const paths: string[] = [];
   const direct = reportedText(payload.path);
-  if (direct !== null) paths.push(direct);
+  if (direct !== null) paths.push(...direct.split(/\r?\n/).map((path) => path.trim()).filter(Boolean));
 
   // `locations` is whatever the provider chose to send: a list of strings, a
   // list of objects with a path, or a single object. Anything else is skipped
   // rather than guessed at.
-  const locations: AgentConfigValue | undefined = payload.locations;
+  const locations: AgentConfigValue | undefined = 'locations' in payload ? payload.locations : undefined;
   const entries = Array.isArray(locations) ? locations : locations ? [locations] : [];
   for (const entry of entries) {
     const asText = reportedText(entry);
@@ -152,7 +186,8 @@ function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
 const MAX_FILES_TOUCHED = 50;
 
 /**
- * Pulls `path` and `locations` out of toolCall / toolCallUpdate payloads,
+ * Pulls structured paths out of normalized tools, rich tool updates, and turn
+ * diffs. Command text is deliberately not searched for path-looking strings.
  * de-duplicates by path, and sorts by most recently touched.
  *
  * One payload naming the same path twice counts once, so an update that repeats
@@ -160,13 +195,18 @@ const MAX_FILES_TOUCHED = 50;
  * count twice, because that is two touches.
  */
 export function sessionFilesTouched(
-  events: readonly AgentConversationEvent[]
+  events: readonly AgentConversationEvent[],
+  root = ''
 ): SessionFileTouch[] {
   const touches = new Map<string, SessionFileTouch>();
+  const workspaceRoot = root.replace(/\/+$/, '');
 
   for (const event of events) {
     const timestampMs = reportedNumber(event.timestampMs) ?? 0;
-    for (const path of new Set(pathsInPayload(event.payload))) {
+    const resolvedPaths = pathsInPayload(event.payload)
+      .map((path) => workspaceChangePath(root, path))
+      .filter((path) => path.length > 0 && path.replace(/\/+$/, '') !== workspaceRoot);
+    for (const path of new Set(resolvedPaths)) {
       const existing = touches.get(path);
       if (existing) {
         existing.count += 1;
@@ -180,6 +220,21 @@ export function sessionFilesTouched(
   return [...touches.values()]
     .sort((left, right) => right.lastTouchedMs - left.lastTouchedMs || left.path.localeCompare(right.path))
     .slice(0, MAX_FILES_TOUCHED);
+}
+
+/** Composer drafts and sent screenshots are stored separately. Present one
+ * session-level list without repeating the same saved attachment while a send
+ * is moving from the unclaimed bucket onto its user message. */
+export function sessionAttachments(
+  current: readonly ConversationAttachment[],
+  unclaimed: readonly ConversationAttachment[],
+  sent: Readonly<Record<string, readonly ConversationAttachment[]>>
+): ConversationAttachment[] {
+  const byId = new Map<string, ConversationAttachment>();
+  for (const attachment of [current, unclaimed, ...Object.values(sent)].flat()) {
+    if (!byId.has(attachment.id)) byId.set(attachment.id, attachment);
+  }
+  return [...byId.values()];
 }
 
 /** A token count with thousands separators, for a line a person reads. */

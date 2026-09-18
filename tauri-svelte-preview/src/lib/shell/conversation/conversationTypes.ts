@@ -453,6 +453,7 @@ export type AgentConversationPayload =
       outputTokens?: number;
       usedTokens?: number;
       contextWindow?: number;
+      totalTokens?: number;
     }
   /** The agent threw away the older part of the conversation to make room.
    * The sizes are absent when the provider does not say what it cost. */
@@ -622,6 +623,7 @@ export interface ConversationUsage {
   outputTokens?: number;
   usedTokens?: number;
   contextWindow?: number;
+  totalTokens?: number;
 }
 
 export interface ConversationMetadata {

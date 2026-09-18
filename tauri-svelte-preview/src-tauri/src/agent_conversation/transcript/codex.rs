@@ -336,6 +336,9 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
         }
         (Some("event_msg"), Some("token_count")) => {
             let used_tokens = value
+                .pointer("/payload/info/last_token_usage/total_tokens")
+                .and_then(Value::as_u64);
+            let total_tokens = value
                 .pointer("/payload/info/total_token_usage/total_tokens")
                 .and_then(Value::as_u64);
             let context_window = value
@@ -351,11 +354,19 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                     output_tokens: None,
                     used_tokens,
                     context_window,
+                    total_tokens,
                 }),
                 payload: BTreeMap::from([
                     ("historical".into(), json!(true)),
                     (
                         "usedTokens".into(),
+                        value
+                            .pointer("/payload/info/last_token_usage/total_tokens")
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    ),
+                    (
+                        "totalTokens".into(),
                         value
                             .pointer("/payload/info/total_token_usage/total_tokens")
                             .cloned()
@@ -455,7 +466,7 @@ pub(super) fn read_snapshot(
         }
         if value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count") {
             metadata.used_tokens = value
-                .pointer("/payload/info/total_token_usage/total_tokens")
+                .pointer("/payload/info/last_token_usage/total_tokens")
                 .and_then(Value::as_u64);
             metadata.context_window = value
                 .pointer("/payload/info/model_context_window")

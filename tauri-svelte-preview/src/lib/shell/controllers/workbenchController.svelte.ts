@@ -116,12 +116,7 @@ export class WorkbenchController {
 	}
 
 	adoptCenterTab(id: CenterTabId): void {
-		const previous = this.centerTab;
 		this.centerTab = id;
-		if (previous === 'diff' && id !== 'diff') {
-			gitService.clearSelection();
-			gitCommitFilesService.clearSelection();
-		}
 	}
 
 	setDiffMode(mode: DiffMode): void {
@@ -140,6 +135,10 @@ export class WorkbenchController {
 	/** Remove outgoing lazy surfaces while the next session is being restored. */
 	beginSessionSwitch(): void {
 		releaseBrowserWorkspace();
+		// A center-tab round trip keeps the diff ready to return to. A session
+		// switch is the ownership boundary where that selection must be released.
+		gitService.clearSelection();
+		gitCommitFilesService.release();
 		this.adoptRightTab(DEFAULT_RIGHT_TAB);
 		this.selectCenterTab(DEFAULT_CENTER_TAB);
 	}
@@ -210,10 +209,9 @@ export class WorkbenchController {
 		if (this.restoringTabs) return;
 		const graphVisible = this.centerTab === 'git-history' || (this.rightPanelOpen && this.rightTab === 'source-control');
 		shellPanels.sourceControlVisible(graphVisible);
-		if (graphVisible) return;
-		gitService.releaseHistorySurface();
-		gitCommitFilesService.release();
-		if (this.centerTab !== 'diff') gitService.clearSelection();
+		if (!graphVisible) gitService.releaseHistorySurface();
+		// Commit expansion and selection belong to the current session, not to the
+		// panel that happens to be visible. beginSessionSwitch releases them.
 	}
 
 	private syncRightPanelVisibility(): void {

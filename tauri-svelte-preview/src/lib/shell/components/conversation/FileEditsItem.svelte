@@ -114,8 +114,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 36px;
-    padding: 6px 10px;
+    min-height: 32px;
+    padding: 4px 8px;
     border-radius: 10px;
     color: var(--color-text-2);
     font-size: 13px;

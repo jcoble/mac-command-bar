@@ -7,8 +7,10 @@ import type {
 import {
   sessionContextFacts,
   sessionContextUsage,
-  sessionFilesTouched
+  sessionFilesTouched,
+  sessionAttachments
 } from '../src/lib/shell/panels/context/sessionContextModel.ts';
+import type { ConversationAttachment } from '../src/lib/shell/conversation/conversationTypes.ts';
 
 const metadata = (overrides: Partial<ConversationMetadata> = {}): ConversationMetadata => ({
   model: null,
@@ -53,11 +55,23 @@ assert.equal(windowOnly.percentUsed, null, 'a window alone cannot make a percent
 
 const bothReported = sessionContextUsage(metadata({ usedTokens: 50_000, contextWindow: 200_000 }), {
   inputTokens: 40_000,
-  outputTokens: 10_000
+  outputTokens: 10_000,
+  totalTokens: 950_000
 });
 assert.equal(bothReported.percentUsed, 25, 'both numbers real gives a real percentage');
 assert.equal(bothReported.inputTokens, 40_000);
 assert.equal(bothReported.outputTokens, 10_000);
+assert.equal(bothReported.totalTokens, 950_000);
+
+const legacyCumulative = sessionContextUsage(null, {
+  usedTokens: 2_091_674,
+  contextWindow: 237_500,
+  inputTokens: 81_896,
+  outputTokens: 418
+});
+assert.equal(legacyCumulative.usedTokens, 82_314);
+assert.equal(legacyCumulative.totalTokens, 2_091_674);
+assert.equal(legacyCumulative.percentUsed, 35);
 
 const emptyUsage = sessionContextUsage(null, null);
 assert.deepEqual(emptyUsage, {
@@ -65,7 +79,8 @@ assert.deepEqual(emptyUsage, {
   contextWindow: null,
   percentUsed: null,
   inputTokens: null,
-  outputTokens: null
+  outputTokens: null,
+  totalTokens: null
 });
 
 // Files touched, derived from whatever the provider happened to put on its tool calls.
@@ -93,15 +108,33 @@ const touched = sessionFilesTouched([
     toolCallId: 'd',
     locations: [{ path: 'src/two.ts', line: 12 }]
   })
-]);
+], '/workspace');
 
 assert.equal(touched.length, 2, 'only the two real paths survive');
-assert.equal(touched[0].path, 'src/two.ts', 'the most recently touched path sorts first');
+assert.equal(touched[0].path, '/workspace/src/two.ts', 'the most recently touched path resolves against the workspace');
 assert.equal(touched[0].count, 1);
 assert.equal(touched[0].lastTouchedMs, 6_000);
-assert.equal(touched[1].path, 'src/one.ts');
+assert.equal(touched[1].path, '/workspace/src/one.ts');
 assert.equal(touched[1].count, 3, 'three references to one path collapse into one entry');
 assert.equal(touched[1].lastTouchedMs, 3_000, 'the entry keeps its most recent timestamp');
+
+const normalized = sessionFilesTouched([
+  toolEvent(7, 7_000, { kind: 'tool', itemId: 'legacy', name: 'read', state: 'completed', path: 'src/normalized.ts' }),
+  toolEvent(8, 8_000, { kind: 'turnDiff', turnId: 'turn', path: 'src/changed.ts', diff: '+change' }),
+  toolEvent(9, 9_000, { kind: 'tool', itemId: 'command', name: '/bin/zsh -lc pwd', state: 'completed', path: '/workspace' }),
+  toolEvent(10, 10_000, {
+    kind: 'tool',
+    itemId: 'patch',
+    name: 'Apply file changes',
+    state: 'completed',
+    path: '/workspace/src/first.ts\n/workspace/src/second.ts'
+  })
+], '/workspace');
+assert.deepEqual(
+  normalized.map((touch) => touch.path),
+  ['/workspace/src/first.ts', '/workspace/src/second.ts', '/workspace/src/changed.ts', '/workspace/src/normalized.ts'],
+  'workspace directories are excluded and multi-file tool paths become separate absolute files'
+);
 
 assert.deepEqual(sessionFilesTouched([]), [], 'no events means no files');
 
@@ -113,5 +146,22 @@ const capped = sessionFilesTouched(manyEvents);
 assert.equal(capped.length, 50, 'the list stops at 50 files even when more were touched');
 assert.equal(capped[0].path, 'src/file-59.ts', 'the cap keeps the most recently touched files');
 assert.equal(capped[49].path, 'src/file-10.ts', 'the cap drops the oldest touches first');
+
+const attachment = (id: string, name = `${id}.png`): ConversationAttachment => ({
+  id,
+  name,
+  mimeType: 'image/png',
+  path: `/attachments/${name}`,
+  previewUrl: `blob:${id}`
+});
+assert.deepEqual(
+  sessionAttachments(
+    [attachment('draft')],
+    [attachment('moving')],
+    { first: [attachment('sent'), attachment('moving')] }
+  ).map((item) => item.id),
+  ['draft', 'moving', 'sent'],
+  'draft, in-flight, and sent attachments form one de-duplicated session list'
+);
 
 console.log('session context tests passed');

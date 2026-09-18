@@ -705,7 +705,7 @@ mod tests {
     fn parses_codex_metadata_messages_and_child_activity() {
         let input = r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol","effort":"medium","approval_policy":"never"}}
 {"type":"response_item","payload":{"type":"message","id":"u1","role":"user","content":[{"type":"input_text","text":"Review this"}]}}
-{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1000},"model_context_window":258400}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1000},"last_token_usage":{"total_tokens":122},"model_context_window":258400}}}
 {"type":"event_msg","payload":{"type":"sub_agent_activity","agent_thread_id":"child-1","agent_path":"/root/reviewer","kind":"started","occurred_at_ms":50}}"#;
         let records = input
             .lines()
@@ -729,7 +729,8 @@ mod tests {
             .iter()
             .find(|record| record.event_type == AgentEventType::UsageUpdated)
             .unwrap();
-        assert_eq!(usage.payload["usedTokens"], 1000);
+        assert_eq!(usage.payload["usedTokens"], 122);
+        assert_eq!(usage.payload["totalTokens"], 1000);
         let children = records
             .iter()
             .find(|record| record.event_type == AgentEventType::ChildrenUpdated)

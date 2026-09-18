@@ -11,6 +11,8 @@
   import X from '@lucide/svelte/icons/x';
   import FileChangeItem from './FileChangeItem.svelte';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { sanitizeConversationHref } from '$lib/shell/conversation/conversationMessageSafety.ts';
+  import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
   import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
 
   let { item, onFileLink }: {
@@ -55,6 +57,10 @@
   const preview = $derived(
     (item.summary || output.split('\n', 1)[0] || item.path || '').replace(/\s+/g, ' ').trim()
   );
+  const targetUrl = $derived.by(() => {
+    const href = item.path ? sanitizeConversationHref(item.path) : null;
+    return href && /^https?:/i.test(href) ? href : '';
+  });
 
   function fileDisplayItem(tool: Extract<ConversationDisplayItem, { kind: 'tool' }>): Extract<ConversationDisplayItem, { kind: 'file' }> {
     return {
@@ -85,7 +91,15 @@
       {:else}<Wrench size={14} strokeWidth={1.8} />{/if}
     </span>
     <strong title={item.title}>{item.title}</strong>
-    {#if preview}<span class="preview">{preview}</span>{/if}
+    {#if preview}
+      {#if targetUrl}
+        <a class="preview target-link" href={targetUrl} onclick={(event) => { event.stopPropagation(); event.preventDefault(); void openUrlInBrowser({ url: targetUrl }); }}>{preview}</a>
+      {:else if item.path && onFileLink && (item.toolKind === 'file-edit' || item.toolKind === 'fetch')}
+        <button class="preview target-link" type="button" title={item.path} onclick={(event) => { event.stopPropagation(); onFileLink?.(item.path ?? ''); }}>{preview}</button>
+      {:else}
+        <span class="preview">{preview}</span>
+      {/if}
+    {/if}
     <!-- How the call ended, as one mark: done, failed, or still owed an answer. -->
     <span class="status-mark" title={statusLabel} aria-label={statusLabel} data-testid="timeline-tool-status">
       {#if item.state === 'completed'}<Check size={13} strokeWidth={2.2} />
@@ -121,7 +135,7 @@
      is opened and its output needs a container. */
   .tool-item{border:1px solid transparent;border-radius:10px}
   .tool-item[open]{border-color:color-mix(in srgb,var(--color-border) 62%,transparent);background:color-mix(in srgb,var(--color-surface) 45%,var(--color-bg) 55%)}
-  summary{display:flex;align-items:center;gap:10px;min-height:36px;padding:6px 10px;border-radius:10px;cursor:pointer;list-style:none}
+  summary{display:flex;align-items:center;gap:9px;min-height:32px;padding:4px 8px;border-radius:10px;cursor:pointer;list-style:none}
   summary::-webkit-details-marker{display:none}
   summary:hover{background:color-mix(in srgb,var(--color-hover) 55%,transparent)}
   summary:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
@@ -130,6 +144,7 @@
   details[open] .chevron{transform:rotate(90deg)}
   strong{flex:none;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 13px/22px var(--font-mono)}
   .preview{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-3);font-size:13px;line-height:22px}
+  .target-link{padding:0;border:0;background:transparent;color:var(--color-accent);font:inherit;text-align:left;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
   .status-mark{display:grid;place-items:center;flex:none;margin-left:auto;color:var(--color-text-3)}
 
   /* One accent family per state: a finished call is success, a broken one is
@@ -145,7 +160,7 @@
   .failed pre{border-color:color-mix(in srgb,var(--color-bad) 38%,transparent);background:color-mix(in srgb,var(--color-bad) 7%,var(--color-bg))}
   .running .status-mark,.running .tool-icon{color:var(--color-accent)}
 
-  .tool-body{display:grid;gap:8px;padding:0 12px 12px 38px;max-height:240px;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
+  .tool-body{display:grid;gap:7px;padding:0 10px 10px 34px;max-height:240px;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
   /* The output box used to be a fixed 16rem window on however much there was,
      which told a reader nothing about the size of what they were scrolling and
      put a second scroll region in the middle of the page. It now shows a

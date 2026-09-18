@@ -3,6 +3,7 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
   import { Button } from '$lib/components/ui/button/index.js';
+  import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
   import { userMessageOverflowsFold } from '$lib/shell/conversation/conversationTimeline.ts';
   import { parseSafeMarkdown, type SafeInlinePart, type SafeMarkdownBlock } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { trackConversationMessageRenderer } from '$lib/shell/resourceDiagnostics.svelte.ts';
@@ -103,7 +104,7 @@
   {:else if part.kind === 'emphasis'}<em>{#each part.parts as inner}{@render inline(inner)}{/each}</em>
   {:else if part.kind === 'strike'}<del>{#each part.parts as inner}{@render inline(inner)}{/each}</del>
   {:else if part.kind === 'code'}<code class="inline-code">{part.value}</code>
-  {:else if part.kind === 'link'}<a href={part.href} target="_blank" rel="noreferrer">{#each part.parts as inner}{@render inline(inner)}{/each}</a>
+  {:else if part.kind === 'link'}<a href={part.href} onclick={(event) => { event.preventDefault(); void openUrlInBrowser({ url: part.href }); }}>{#each part.parts as inner}{@render inline(inner)}{/each}</a>
   {:else if part.kind === 'file-link'}<button class="file-link" data-testid="conversation-file-link" type="button" title={part.path} onclick={() => onFileLink?.(part.path)}><FileText size={13} strokeWidth={1.8} aria-hidden="true" />{#each part.parts as inner}{@render inline(inner)}{/each}</button>
   {:else}{part.value}{/if}
 {/snippet}
@@ -113,18 +114,18 @@
      768px measure with no box around it, a prompt is a narrow bubble on the
      right. That asymmetry is the only role marking in the transcript. */
   article{max-width:768px;user-select:text;-webkit-user-select:text}
-  .turn-body{font-size:14px;line-height:1.68}
+  .turn-body{font-size:14px;line-height:1.58}
 
-  /* The transcript's scale, inside a message: 14px between blocks, 8px between
-     the rows of a list, and 18px above a heading so it reads as owning the
+  /* The transcript's scale, inside a message: 10px between blocks, 5px between
+     the rows of a list, and 14px above a heading so it reads as owning the
      section under it rather than floating between two. */
-  .turn-body p{margin:0 0 14px;white-space:pre-wrap}
+  .turn-body p{margin:0 0 10px;white-space:pre-wrap}
   .turn-body p:last-child,
   .turn-body ul:last-child,
   .turn-body ol:last-child,
   .turn-body blockquote:last-child,
   .turn-body .table-scroll:last-child{margin-bottom:0}
-  .heading{margin:18px 0 10px;font-weight:640;line-height:1.4;letter-spacing:-.01em}
+  .heading{margin:14px 0 8px;font-weight:640;line-height:1.4;letter-spacing:-.01em}
   .heading:first-child{margin-top:0}
   .heading.level-1{font-size:18px}
   .heading.level-2{font-size:16px}
@@ -133,9 +134,9 @@
 
   /* A quote is marked by the rule down its side and the quieter text, and by
      nothing else. */
-  .turn-body blockquote{margin:0 0 14px;padding:4px 0 4px 16px;border-left:2px solid color-mix(in srgb,var(--color-accent) 42%,var(--color-border));color:var(--color-text-2)}
-  .turn-body ul,.turn-body ol{margin:0 0 14px;padding-left:24px}
-  .turn-body li{margin-bottom:8px;padding-left:4px}
+  .turn-body blockquote{margin:0 0 10px;padding:3px 0 3px 14px;border-left:2px solid color-mix(in srgb,var(--color-accent) 42%,var(--color-border));color:var(--color-text-2)}
+  .turn-body ul,.turn-body ol{margin:0 0 10px;padding-left:24px}
+  .turn-body li{margin-bottom:5px;padding-left:4px}
   .turn-body li:last-child{margin-bottom:0}
   .turn-body li::marker{color:var(--color-text-3)}
   .turn-body li.task-row{list-style:none;margin-left:-18px;padding-left:0}
@@ -144,13 +145,13 @@
   .file-link :global(svg){align-self:center;flex:none}
   .inline-code{padding:2px 6px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.4 var(--font-mono)}
 
-  .turn-body.folded{max-height:calc(10 * 1.68em);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent)}
+  .turn-body.folded{max-height:calc(10 * 1.58em);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent)}
   .fold-row{display:flex;margin-top:6px}
   .fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .fold-chevron.open{transform:rotate(90deg)}
   @media (prefers-reduced-motion:no-preference){.fold-chevron{transition:transform .14s ease}}
 
-  .user{width:fit-content;max-width:80%;margin-left:auto;padding:12px 18px;border-radius:18px;background:var(--color-elevated);font-size:14px;line-height:1.6}
+  .user{width:fit-content;max-width:80%;margin-left:auto;padding:10px 16px;border-radius:18px;background:var(--color-elevated);font-size:14px;line-height:1.55}
 
   .table-scroll{overflow:auto;margin-bottom:12px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:8px}
   .table-scroll table{border-collapse:collapse;min-width:100%;font-size:13px}
