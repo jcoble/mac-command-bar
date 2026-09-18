@@ -57,7 +57,7 @@
 </div>
 
 <style>
-  .menu{position:fixed;z-index:1000;display:flex;width:224px;box-sizing:border-box;flex-direction:column;padding:5px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-bg);box-shadow:var(--shadow-lg);outline:none}
-  button{width:100%;padding:7px 9px;border:0;border-radius:var(--radius-sm);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;font-weight:var(--weight-medium);text-align:left;cursor:pointer}
-  button:hover:not(:disabled),button:focus-visible:not(:disabled){background:var(--color-surface);color:var(--color-text);outline:none}button:disabled{color:var(--color-disabled-text);cursor:not-allowed}.destructive{color:var(--color-bad)}.separator{height:1px;margin:4px;background:var(--color-border)}
+  .menu{position:fixed;z-index:1000;display:flex;width:224px;box-sizing:border-box;flex-direction:column;padding:4px;border:0;border-radius:4px;background:var(--menu-surface);box-shadow:0 16px 24px rgb(0 0 0 / 32%),0 6px 8px rgb(0 0 0 / 20%);outline:none}
+  button{width:100%;min-height:32px;padding:4px 12px;border:0;border-radius:2px;background:transparent;color:var(--color-text);font:inherit;font-size:13px;font-weight:var(--weight-normal);text-align:left;cursor:pointer}
+  button:hover:not(:disabled),button:focus-visible:not(:disabled){background:color-mix(in srgb,var(--color-text) 10%,transparent);outline:none}button:disabled{color:var(--color-disabled-text);cursor:not-allowed}.destructive{color:var(--color-bad)}.separator{height:1px;margin:4px;background:var(--color-border)}
 </style>
