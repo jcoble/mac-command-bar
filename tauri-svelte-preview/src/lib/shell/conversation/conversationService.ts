@@ -958,6 +958,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
   // A remote machine's transport connects, starts attempting, or stops. This is
   // the app's one listener for it; rail rows read the store it writes.
   let stopRemoteConnections: (() => void) | null = null;
+  const remoteConnectionEventsSeen = new Set<string>();
   try {
     const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
       'session-title-changed',
@@ -967,13 +968,15 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
     const stopRemoteConnectionEvents = await listen<{
       profileId: string;
       state: RemoteConnectionState;
-    }>('remote-connection-changed', ({ payload }) =>
-      setRemoteConnection(payload.profileId, payload.state)
-    );
+    }>('remote-connection-changed', ({ payload }) => {
+      remoteConnectionEventsSeen.add(payload.profileId);
+      setRemoteConnection(payload.profileId, payload.state);
+    });
     stopRemoteConnections = trackTauriListener(stopRemoteConnectionEvents);
     const remoteEnvironment = await readRemoteAssemblyEnvironmentFromTauri();
     const readyRemoteProfiles = new Set(remoteEnvironment.readyProfileIds);
     for (const profile of remoteEnvironment.profiles) {
+      if (remoteConnectionEventsSeen.has(profile.id)) continue;
       setRemoteConnection(profile.id, readyRemoteProfiles.has(profile.id) ? 'connected' : 'disconnected');
     }
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
