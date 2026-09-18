@@ -66,6 +66,13 @@
 	let openUtility = $state<UtilityId | null>(null);
 	let sessionsRailWidth = $state(360);
 	let toolsRailWidth = $state(320);
+	let routeDisposal: Promise<void> | null = null;
+
+	if (import.meta.hot) {
+		import.meta.hot.dispose(() => {
+			void disposeRoute();
+		});
+	}
 
 	$effect(() => {
 		selection.setEditorPanel(editorPanel);
@@ -135,7 +142,13 @@
 		};
 	});
 
-	async function disposeRoute(): Promise<void> {
+	function disposeRoute(): Promise<void> {
+		if (routeDisposal) return routeDisposal;
+		routeDisposal = disposeRouteOnce();
+		return routeDisposal;
+	}
+
+	async function disposeRouteOnce(): Promise<void> {
 		selection.rememberWorkspaceState(workbench.captureSessionState());
 		const selectionDisposal = selection.dispose();
 		stopShell();
