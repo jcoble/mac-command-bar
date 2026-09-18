@@ -4,10 +4,14 @@
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import House from '@lucide/svelte/icons/house';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Plus from '@lucide/svelte/icons/plus';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { listRemoteDirectoriesFromTauri, type RemoteDirectoryListing } from '$lib/tauriSource';
+  import { exists, mkdir } from '$lib/workspaceFs';
+  import { invoke } from '$lib/workspaceInvoke';
+  import { remoteWorkspacePath } from '$lib/workspacePaths';
 
   let { label, profileId, sshTarget, disabled = false, value = $bindable(''), onChange }: {
     label: string; profileId: string; sshTarget: string; disabled?: boolean; value?: string; onChange?: (path: string) => void;
@@ -17,13 +21,18 @@
   let listing = $state<RemoteDirectoryListing | null>(null);
   let loading = $state(false);
   let error = $state('');
+  let projectName = $state('');
+  let projectError = $state('');
+  let creatingProject = $state(false);
   let sequence = 0;
   let requestedDirectory = '';
-  const matchingDirectories = $derived(listing?.directories.filter((name) => {
-    const prefix = listing.path === '/' ? '/' : `${listing.path}/`;
-    const query = path === listing.path ? '' : path.startsWith(prefix) ? path.slice(prefix.length) : path;
-    return name.toLowerCase().startsWith(query.toLowerCase());
-  }) ?? []);
+  const matchingDirectories = $derived.by(() => {
+    const current = listing;
+    if (!current) return [];
+    const prefix = current.path === '/' ? '/' : `${current.path}/`;
+    const query = path === current.path ? '' : path.startsWith(prefix) ? path.slice(prefix.length) : path;
+    return current.directories.filter((name) => name.toLowerCase().startsWith(query.toLowerCase()));
+  });
   const parent = $derived(listing?.path.replace(/\/[^/]+\/?$/, '') || '/');
   const currentFolderSelected = $derived((path.replace(/\/+$/, '') || '/') === listing?.path);
 
@@ -32,6 +41,9 @@
     listing = null;
     error = '';
     loading = false;
+    projectName = '';
+    projectError = '';
+    creatingProject = false;
     sequence += 1;
     requestedDirectory = '';
   }
@@ -49,6 +61,7 @@
     loading = true;
     listing = null;
     error = '';
+    projectError = '';
     if (replaceInput) path = resolved;
     const inputAtRequest = path;
     try {
@@ -76,6 +89,54 @@
     value = listing.path;
     onChange?.(value);
     close();
+  }
+
+  function describeError(reason: unknown): string {
+    return reason instanceof Error ? reason.message
+      : typeof reason === 'object' && reason !== null && 'message' in reason ? String(reason.message)
+      : String(reason);
+  }
+
+  async function createProject() {
+    if (!listing || loading || creatingProject) return;
+    const name = projectName.trim();
+    if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+      projectError = 'Enter one folder name without slashes.';
+      return;
+    }
+
+    const parentPath = listing.path;
+    const projectPath = `${parentPath === '/' ? '' : parentPath}/${name}`;
+    const targetProfile = profileId;
+    const workspacePath = remoteWorkspacePath(targetProfile, projectPath);
+    const request = ++sequence;
+    creatingProject = true;
+    projectError = '';
+    try {
+      if (await exists(workspacePath)) {
+        if (request !== sequence || targetProfile !== profileId || !open) return;
+        projectError = `A folder named ${name} already exists.`;
+        return;
+      }
+      if (request !== sequence || targetProfile !== profileId || !open) return;
+      await mkdir(workspacePath);
+      try {
+        await invoke('init_project_repository', { root: workspacePath });
+      } catch (reason) {
+        if (request !== sequence || targetProfile !== profileId || !open) return;
+        await navigate(parentPath);
+        projectError = `The folder was created, but Git could not be initialized: ${describeError(reason)}`;
+        return;
+      }
+      if (request !== sequence || targetProfile !== profileId || !open) return;
+      value = projectPath;
+      onChange?.(value);
+      close();
+    } catch (reason) {
+      projectError = `The project folder could not be created: ${describeError(reason)}`;
+    } finally {
+      creatingProject = false;
+    }
   }
 </script>
 
@@ -117,6 +178,13 @@
       {/if}
     </div>
     {#if listing?.truncated}<p class="directory-limit">Showing the first 500 folders. Type a path to open another folder.</p>{/if}
+    <form class="new-project" aria-label="Create a remote project" onsubmit={(event) => { event.preventDefault(); void createProject(); }}>
+      <Input aria-label="New project folder name" placeholder="New project folder" bind:value={projectName} autocomplete="off" disabled={loading || creatingProject || !listing} />
+      <Button type="submit" variant="ghost" size="icon-sm" disabled={loading || creatingProject || !listing || !projectName.trim()} aria-label="Create project folder">
+        <Plus aria-hidden="true" class="size-4" />
+      </Button>
+    </form>
+    {#if projectError}<p class="project-error" role="alert">{projectError}</p>{/if}
     <Dialog.Footer>
       <Button variant="ghost" size="sm" onclick={close}>Cancel</Button>
       <Button size="sm" disabled={loading || !listing || !currentFolderSelected} onclick={choose}>Choose this folder</Button>
@@ -127,6 +195,8 @@
 <style>
   .directory-navigation { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .directory-navigation :global(input) { min-width: 0; flex: 1; }
+  .new-project { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .new-project :global(input) { min-width: 0; flex: 1; }
   :global(.remote-directory-dialog) { width: 560px; max-width: calc(100vw - 32px); gap: 16px; border-radius: 8px; animation: none; }
   .directory-list { height: min(300px, 45vh); overflow: auto; }
   .directory-list p, .directory-limit { padding: 12px; color: var(--color-text-2); font-size: 13px; overflow-wrap: anywhere; }
@@ -134,4 +204,5 @@
   .directory-row:hover, .directory-row:focus-visible { background: var(--menu-row-hover); outline: none; }
   .directory-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .directory-row :global(svg) { flex: none; color: var(--color-text-2); }
+  .project-error { color: var(--destructive); font-size: 13px; overflow-wrap: anywhere; }
 </style>
