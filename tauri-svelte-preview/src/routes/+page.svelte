@@ -224,6 +224,9 @@
 		onHistoryWorkspaceChange={(ownedId, history) => {
 			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ history });
 		}}
+		onBrowserWorkspaceChange={(ownedId, browser) => {
+			selection.persistWorkspaceState(ownedId, { browser });
+		}}
 		checkoutDiscoveryRoots={selection.durableSessionRoot ? [selection.durableSessionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.agent === "codex" && selection.controlledSession.origin === "app"
 			? async (root) => {

@@ -64,6 +64,7 @@
     activateBrowser,
     browser,
     browserModelContext,
+    captureBrowserState,
     closeBrowserPageTab,
     createBrowserPageTab,
     hasRestoredBrowserTabs,
@@ -86,6 +87,7 @@
     BrowserRect,
     BrowserTabState
   } from '$lib/shell/browser/browserTypes.ts';
+  import type { SessionBrowserWorkspace } from '$lib/shell/sessionWorkspaces.ts';
   import { normalizeBrowserUrl } from '$lib/shell/browser/normalizeBrowserUrl.ts';
 
   import AnnotationBadges from './AnnotationBadges.svelte';
@@ -120,8 +122,9 @@
     root: string;
     /** The session whose browser this is. */
     ownedId: string | null;
+    onWorkspaceChange?(ownedId: string, state: SessionBrowserWorkspace): void;
   }
-  let { visible, panelOpen, root, ownedId }: Props = $props();
+  let { visible, panelOpen, root, ownedId, onWorkspaceChange }: Props = $props();
 
   let pageHost = $state<HTMLDivElement | null>(null);
   /** The panel's own rows above the page — measured, never assumed. */
@@ -346,6 +349,10 @@
 
   // ── The page ───────────────────────────────────────────────────────────────
 
+  function persistWorkspace(): void {
+    if (ownedId) onWorkspaceChange?.(ownedId, captureBrowserState());
+  }
+
   function navigate(): void {
     if (!root) return;
     const next = normalizeBrowserUrl(addressValue);
@@ -358,6 +365,7 @@
     placeBeforeOpening();
     activateBrowser();
     setBrowserUrl(next);
+    persistWorkspace();
     addressEdited = false;
     dropStill();
     layoutTick += 1;
@@ -377,6 +385,7 @@
     if (ownedId) browser.workspace.ownedId = ownedId;
     placeBeforeOpening();
     if (!createBrowserPageTab()) return;
+    persistWorkspace();
     address = '';
     addressEdited = false;
     dropStill();
@@ -387,6 +396,7 @@
     if (tabId === browser.workspace.activeTabId) return;
     failure = '';
     syncBrowserTab(tabId);
+    persistWorkspace();
     address = '';
     addressEdited = false;
     dropStill();
@@ -396,6 +406,7 @@
   function closePageTab(tabId: string): void {
     failure = '';
     closeBrowserPageTab(tabId);
+    persistWorkspace();
     address = '';
     addressEdited = false;
     dropStill();
@@ -793,7 +804,10 @@
     // The diagnostics wrapper increments a reactive counter while subscribing.
     // Keep that bookkeeping outside this effect's dependencies or the counter
     // invalidates the effect that just changed it.
-    const stopNavigation = untrack(() => subscribeToBrowserNavigation(syncBrowserNavigation));
+    const stopNavigation = untrack(() => subscribeToBrowserNavigation((event) => {
+      syncBrowserNavigation(event);
+      persistWorkspace();
+    }));
     return () => stopNavigation();
   });
 
