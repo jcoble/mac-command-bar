@@ -1164,6 +1164,28 @@
     background: var(--color-surface, #17191e);
   }
 
+  .codemirror-host :global(.cm-scroller) {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(238 240 249 / 30%) transparent;
+    scrollbar-gutter: stable;
+  }
+
+  .codemirror-host :global(.cm-scroller::-webkit-scrollbar) {
+    width: 8px !important;
+    height: 8px !important;
+  }
+
+  .codemirror-host :global(.cm-scroller::-webkit-scrollbar-thumb) {
+    background-color: rgb(238 240 249 / 30%) !important;
+    background-clip: padding-box;
+    border: 2px solid transparent;
+    border-radius: var(--radius-pill);
+  }
+
+  .codemirror-host :global(.cm-scroller::-webkit-scrollbar-thumb:hover) {
+    background-color: rgb(238 240 249 / 48%) !important;
+  }
+
   :global(.cm-source-hover) {
     max-width: min(680px, 70vw);
     padding: 7px 9px;
