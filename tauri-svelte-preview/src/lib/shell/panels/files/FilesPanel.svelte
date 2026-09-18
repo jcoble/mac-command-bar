@@ -1174,7 +1174,7 @@
 			onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
 		>
 				{#if renderedRows.length === 0}
-					<p class="tree-empty">Nothing matches that search.</p>
+					<p class="tree-empty">{searchLoading ? "Searching files…" : "Nothing matches that search."}</p>
 				{:else}
 					<!-- One canvas whose height never changes as you scroll, with each row
 					     transformed into place. Resizing spacer divs on every scroll instead
