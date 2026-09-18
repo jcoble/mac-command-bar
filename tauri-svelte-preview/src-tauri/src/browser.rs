@@ -1555,6 +1555,7 @@ impl BrowserProfile {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn store_directory_name(&self) -> String {
         self.store_identifier
             .iter()
@@ -1978,13 +1979,22 @@ impl BrowserViewFactory for TauriBrowserViewFactory {
                 title_changed(title_generation.load(Ordering::Acquire), title);
             });
 
-        let profile_directory = app
-            .path()
-            .app_data_dir()
-            .map_err(native_error)?
-            .join("browser-profiles")
-            .join(profile.store_directory_name());
-        builder = builder.data_directory(profile_directory);
+        #[cfg(target_os = "macos")]
+        {
+            // WKWebView ignores `data_directory`; its persistent website data
+            // store is selected by identifier instead.
+            builder = builder.data_store_identifier(profile.store_identifier);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let profile_directory = app
+                .path()
+                .app_data_dir()
+                .map_err(native_error)?
+                .join("browser-profiles")
+                .join(profile.store_directory_name());
+            builder = builder.data_directory(profile_directory);
+        }
 
         let bounds = input
             .bounds

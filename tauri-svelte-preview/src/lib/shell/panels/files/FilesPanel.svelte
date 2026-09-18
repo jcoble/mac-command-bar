@@ -1259,6 +1259,17 @@
 		relativePath={selectedFile?.relativePath ?? ""}
 		fileName={selectedFile?.name ?? ""}
 		bind:open={fileHistoryOpen}
+		onOpenFile={() => {
+			const projectRoot = projectRootForView();
+			if (projectRoot && selectedFile) {
+				openFileInEditor({
+					path: selectedFile.path,
+					projectRoot,
+					readOnly: readOnlyInspection,
+					preview: true,
+				});
+			}
+		}}
 		onOpenLarge={() => {
 			const projectRoot = projectRootForView();
 			if (projectRoot && selectedFile) {
