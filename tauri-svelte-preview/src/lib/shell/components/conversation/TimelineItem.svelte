@@ -65,19 +65,9 @@
 {/if}
 
 <style>
-  /* One spacing scale runs the whole transcript: 8px between rows of a run,
-     12px between blocks inside a message, 16px between the steps of a turn,
-     28px between turns. The list supplies the 16px; the two rules below are
-     the other two ends of it.
-
-     A work row — a tool, thinking, a plan, a child agent — belongs to the row
-     above it, so it pulls itself up to 16px and the run reads as one block. The
-     pull is on the top, not the bottom, so the reply that follows the work
-     still gets its full 16px and is not glued to the tools that produced it.
-
-     A user message is the opposite: it starts a new turn, so it pushes down to
-     38px. That gap is the widest thing in the transcript, which is what makes
-     a turn boundary visible without a rule or a heading. */
+  /* The turn container owns the spacing. Items add only the small distinctions
+     needed inside it, so a run of tools reads as one compact sequence while a
+     prompt and its answer still remain separate. */
   .timeline-item{display:block;min-width:0}
   .timeline-item[data-kind='tool'],
   .timeline-item[data-kind='reasoning'],
@@ -86,9 +76,9 @@
   .timeline-item[data-kind='file'],
   .timeline-item[data-kind='fileEdits'],
   .timeline-item[data-kind='plan'],
-  .timeline-item[data-kind='tasks']{margin-top:4px}
-  .timeline-item[data-kind='user']{margin-top:24px;margin-bottom:8px}
-  .timeline-item[data-kind='assistant']{margin-top:8px}
+  .timeline-item[data-kind='tasks']{margin-top:0}
+  .timeline-item[data-kind='user']{margin-bottom:4px}
+  .timeline-item[data-kind='assistant']{margin-top:2px}
   .timeline-item:first-child{margin-top:0}
   /* The plan is drawn once, in the chip above the composer. All the transcript
      owes the reader is that it moved, and a way back to it. */
