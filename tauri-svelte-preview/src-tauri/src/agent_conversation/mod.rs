@@ -575,13 +575,29 @@ pub async fn cancel_agent_conversation_snapshot(
 }
 
 #[tauri::command]
-/// Lists durable conversation sessions with typed storage failures.
+/// Lists local sessions plus the compact cached references for remote sessions.
+/// Remote transcripts and events remain exclusively on their remote backend.
 pub async fn list_agent_conversation_sessions(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
 ) -> CommandResult<Vec<AgentConversationSessionRecord>> {
-    manager
+    let mut sessions = manager
         .list_sessions()
-        .map_err(protocol::CommandError::from)
+        .map_err(protocol::CommandError::from)?;
+    let cached_remote = remote.cached_sessions();
+    let cached_ids = cached_remote
+        .iter()
+        .map(|session| session.owned_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    sessions.retain(|session| !cached_ids.contains(session.owned_id.as_str()));
+    sessions.extend(cached_remote);
+    sessions.sort_by(|left, right| {
+        right
+            .last_activity_at_ms
+            .cmp(&left.last_activity_at_ms)
+            .then_with(|| left.owned_id.cmp(&right.owned_id))
+    });
+    Ok(sessions)
 }
 
 #[tauri::command]

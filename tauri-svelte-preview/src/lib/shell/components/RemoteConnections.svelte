@@ -83,8 +83,7 @@
         if (mounted && !attempt.signal.aborted) status = message;
       });
       if (!mounted || attempt.signal.aborted) return;
-      const ids = new Set(result.sessions.map((session) => session.ownedId));
-      hydrateOwned([...rail.owned.filter((session) => !ids.has(session.ownedId)),
+      hydrateOwned([...rail.owned.filter((session) => session.remoteProfileId !== result.profile.id),
         ...result.sessions.map(ownedSessionFromBackend)]);
       const next = await readRemoteAssemblyEnvironmentFromTauri();
       if (!mounted || attempt.signal.aborted) return;

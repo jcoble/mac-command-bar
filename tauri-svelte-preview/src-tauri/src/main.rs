@@ -5436,6 +5436,7 @@ fn main() {
             // frontend activation can observe the manager.
             agent_runtime.list_sessions()?;
             let workflow_store = agent_runtime.store_handle();
+            let remote_session_store = Arc::clone(&workflow_store);
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
             let live_session_ids = agent_runtime
                 .resource_roots()
@@ -5455,6 +5456,7 @@ fn main() {
                     Arc::new(move |status| {
                         let _ = remote_status_handle.emit(REMOTE_CONNECTION_CHANGED_EVENT, status);
                     }),
+                    remote_session_store,
                 )?;
             if !remote_connection.is_configured() {
                 if let Some(profiles) = agent_runtime.read_app_setting(

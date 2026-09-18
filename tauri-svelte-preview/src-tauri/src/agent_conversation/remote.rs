@@ -15,6 +15,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use futures_util::{future::join_all, SinkExt, StreamExt};
+use mcb_core::session_store::SessionStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
@@ -39,6 +40,7 @@ const OUTBOUND_FRAME_CAPACITY: usize = 8;
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
 pub const REMOTE_ASSEMBLY_PROFILE_SETTING_KEY: &str = "remote-assembly.profile.v1";
 pub const REMOTE_ASSEMBLY_PROFILES_SETTING_KEY: &str = "remote-assembly.profiles.v1";
+const REMOTE_SESSION_PROJECTIONS_SETTING_KEY: &str = "remote-assembly.session-projections.v1";
 const REMOTE_SERVER_PORT: u16 = 7777;
 const READINESS_REQUEST_ID: u64 = u64::MAX;
 
@@ -189,6 +191,8 @@ pub struct RemoteConnectionManager {
     client: Arc<Mutex<RemoteClientState>>,
     tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
     remote_sessions: Arc<Mutex<HashMap<String, String>>>,
+    cached_sessions: Arc<Mutex<Vec<AgentConversationSessionRecord>>>,
+    store: Arc<SessionStore>,
     next_request_id: Arc<AtomicU64>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
     status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
@@ -337,15 +341,46 @@ impl Drop for ConnectionEnd {
     }
 }
 
+fn read_cached_sessions(store: &SessionStore) -> Result<Vec<AgentConversationSessionRecord>, String> {
+    let Some(json) = store
+        .get_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(Vec::new());
+    };
+    let sessions: Vec<AgentConversationSessionRecord> = serde_json::from_str(&json)
+        .map_err(|error| format!("Invalid cached remote sessions: {error}"))?;
+    Ok(sessions
+        .into_iter()
+        .filter(|session| {
+            session.execution_environment == ExecutionEnvironment::Remote
+                && session.remote_profile_id.as_deref().is_some_and(|id| !id.is_empty())
+        })
+        .collect())
+}
+
 impl RemoteConnectionManager {
     pub fn from_environment(
         event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
         status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
+        store: Arc<SessionStore>,
     ) -> Result<Self, String> {
+        let cached_sessions = read_cached_sessions(&store)?;
+        let remote_sessions = cached_sessions
+            .iter()
+            .filter_map(|session| {
+                session
+                    .remote_profile_id
+                    .as_ref()
+                    .map(|profile_id| (session.owned_id.clone(), profile_id.clone()))
+            })
+            .collect();
         let manager = Self {
             client: Arc::new(Mutex::new(RemoteClientState::default())),
             tunnel_processes: Arc::new(Mutex::new(HashMap::new())),
-            remote_sessions: Arc::new(Mutex::new(HashMap::new())),
+            remote_sessions: Arc::new(Mutex::new(remote_sessions)),
+            cached_sessions: Arc::new(Mutex::new(cached_sessions)),
+            store,
             next_request_id: Arc::new(AtomicU64::new(1)),
             event_sink,
             status_sink,
@@ -393,6 +428,97 @@ impl RemoteConnectionManager {
                 .await;
         });
         Ok(manager)
+    }
+
+    /// The compact local rail projection. Conversation events and transcripts
+    /// remain exclusively in the remote backend's database.
+    pub fn cached_sessions(&self) -> Vec<AgentConversationSessionRecord> {
+        self.cached_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn save_cached_sessions(
+        &self,
+        next: Vec<AgentConversationSessionRecord>,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string(&next)
+            .map_err(|error| format!("Could not encode cached remote sessions: {error}"))?;
+        self.store
+            .upsert_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY, &json)
+            .map_err(|error| error.to_string())?;
+        *self
+            .cached_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+        Ok(())
+    }
+
+    fn replace_cached_profile_sessions(
+        &self,
+        profile_id: &str,
+        sessions: &[AgentConversationSessionRecord],
+    ) -> Result<(), String> {
+        let incoming_ids = sessions
+            .iter()
+            .map(|session| session.owned_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let mut next = self.cached_sessions();
+        next.retain(|session| {
+            session.remote_profile_id.as_deref() != Some(profile_id)
+                && !incoming_ids.contains(session.owned_id.as_str())
+        });
+        next.extend(sessions.iter().cloned().map(|mut session| {
+            session.execution_environment = ExecutionEnvironment::Remote;
+            session.remote_profile_id = Some(profile_id.to_string());
+            session
+        }));
+        next.sort_by(|left, right| {
+            right
+                .last_activity_at_ms
+                .cmp(&left.last_activity_at_ms)
+                .then_with(|| left.owned_id.cmp(&right.owned_id))
+        });
+        self.save_cached_sessions(next)?;
+        let mut routing = self
+            .remote_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        routing.retain(|_, stored_profile_id| stored_profile_id != profile_id);
+        routing.extend(
+            sessions
+                .iter()
+                .map(|session| (session.owned_id.clone(), profile_id.to_string())),
+        );
+        Ok(())
+    }
+
+    fn cache_session(&self, mut session: AgentConversationSessionRecord) -> Result<(), String> {
+        session.execution_environment = ExecutionEnvironment::Remote;
+        let owned_id = session.owned_id.clone();
+        let profile_id = session
+            .remote_profile_id
+            .clone()
+            .ok_or_else(|| "Remote session did not identify its machine".to_string())?;
+        let mut next = self.cached_sessions();
+        next.retain(|stored| stored.owned_id != session.owned_id);
+        next.push(session);
+        next.sort_by(|left, right| {
+            right
+                .last_activity_at_ms
+                .cmp(&left.last_activity_at_ms)
+                .then_with(|| left.owned_id.cmp(&right.owned_id))
+        });
+        self.save_cached_sessions(next)?;
+        self.remember(owned_id, profile_id);
+        Ok(())
+    }
+
+    fn forget_cached_session(&self, owned_id: &str) -> Result<(), String> {
+        let mut next = self.cached_sessions();
+        next.retain(|session| session.owned_id != owned_id);
+        self.save_cached_sessions(next)
     }
 
     pub fn is_configured(&self) -> bool {
@@ -624,11 +750,14 @@ impl RemoteConnectionManager {
             let sessions = ready_rx.await.map_err(|_| "Backend connection ended before readiness".to_string())??;
             (sessions, Some(candidate))
         };
+        for session in &mut sessions {
+            session.remote_profile_id = Some(profile.id.clone());
+        }
+        self.replace_cached_profile_sessions(&profile.id, &sessions)?;
         // A removal while this attempt was in flight wins: the profile neither
         // gets its client back nor any report or session from this attempt.
         self.adopt_client(&attempt, candidate)?;
-        for session in &mut sessions {
-            session.remote_profile_id = Some(profile.id.clone());
+        for session in &sessions {
             self.remember(session.owned_id.clone(), profile.id.clone());
         }
         if let Some(client) = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get_mut(&profile.id) {
@@ -828,6 +957,9 @@ impl RemoteConnectionManager {
             };
             for session in &mut sessions {
                 session.remote_profile_id = Some(profile_id.clone());
+            }
+            self.replace_cached_profile_sessions(&profile_id, &sessions)?;
+            for session in &sessions {
                 self.remember(session.owned_id.clone(), profile_id.clone());
             }
             all_sessions.extend(sessions);
@@ -861,6 +993,19 @@ impl RemoteConnectionManager {
         else {
             return Err("Remote Assembly returned the wrong ensure response".to_string());
         };
+        let RemoteResponse::Sessions(mut sessions) = self
+            .request_for_profile(&profile_id, RemoteCommand::ListSessions)
+            .await?
+        else {
+            return Err("Remote Assembly returned the wrong list response".to_string());
+        };
+        for session in &mut sessions {
+            session.remote_profile_id = Some(profile_id.clone());
+        }
+        if !sessions.iter().any(|session| session.owned_id == owned_id) {
+            return Err(format!("Ensured session {owned_id} was not stored"));
+        }
+        self.replace_cached_profile_sessions(&profile_id, &sessions)?;
         self.remember(owned_id, profile_id);
         Ok(connection)
     }
@@ -1139,6 +1284,7 @@ impl RemoteConnectionManager {
             return Err("Remote Assembly returned the wrong session response".to_string());
         };
         session.remote_profile_id = Some(profile_id);
+        self.cache_session(session.clone())?;
         Ok(session)
     }
 
@@ -1155,6 +1301,7 @@ impl RemoteConnectionManager {
             return Err("Remote Assembly returned the wrong session response".to_string());
         };
         session.remote_profile_id = Some(profile_id);
+        self.cache_session(session.clone())?;
         Ok(session)
     }
 
@@ -1189,6 +1336,7 @@ impl RemoteConnectionManager {
             return Err("Remote Assembly returned the wrong delete response".to_string());
         };
         if deleted {
+            self.forget_cached_session(&owned_id)?;
             self.remote_sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2111,13 +2259,96 @@ pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
 mod connection_tests {
     use super::*;
 
+    fn store() -> Arc<SessionStore> {
+        Arc::new(SessionStore::open_in_memory().unwrap())
+    }
+
     fn profile(id: &str) -> RemoteAssemblyProfile {
         RemoteAssemblyProfile { id: id.into(), name: "Workbox".into(), ssh_target: "agent-workbox".into(), source_root: String::new(), default_cwd: String::new() }
     }
 
+    fn session(owned_id: &str, profile_id: &str, last_activity_at_ms: i64) -> AgentConversationSessionRecord {
+        AgentConversationSessionRecord {
+            owned_id: owned_id.into(),
+            execution_environment: ExecutionEnvironment::Remote,
+            remote_profile_id: Some(profile_id.into()),
+            provider: super::super::protocol::AgentConversationProvider::Codex,
+            model: Some("gpt-test".into()),
+            effort: None,
+            cwd: "/work/project".into(),
+            state: super::super::protocol::AgentRuntimeState::Suspended,
+            suspended: true,
+            created_at_ms: 1,
+            last_activity_at_ms,
+            active_turn_id: None,
+            pending_permission: false,
+            pending_input: false,
+            native_session_id: Some(format!("native-{owned_id}")),
+            meta: super::super::protocol::AgentConversationSessionMeta {
+                title: Some(format!("Session {owned_id}")),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn cached_remote_rows_survive_restart_and_retain_routing() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            shared.clone(),
+        )
+        .unwrap();
+        manager
+            .replace_cached_profile_sessions("workbox", &[session("remote-1", "workbox", 10)])
+            .unwrap();
+
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            shared,
+        )
+        .unwrap();
+        assert_eq!(restarted.cached_sessions(), vec![session("remote-1", "workbox", 10)]);
+        assert!(restarted.owns("remote-1"));
+        assert_eq!(restarted.connection_state("workbox"), RemoteConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn successful_profile_refresh_reconciles_only_that_machines_rows() {
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            store(),
+        )
+        .unwrap();
+        manager
+            .replace_cached_profile_sessions("one", &[session("old", "one", 1)])
+            .unwrap();
+        manager
+            .replace_cached_profile_sessions("two", &[session("keep", "two", 2)])
+            .unwrap();
+        manager
+            .replace_cached_profile_sessions("one", &[session("new", "one", 3)])
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .cached_sessions()
+                .into_iter()
+                .map(|session| session.owned_id)
+                .collect::<Vec<_>>(),
+            vec!["new", "keep"]
+        );
+        assert!(!manager.owns("old"));
+        assert!(manager.owns("new"));
+        assert!(manager.owns("keep"));
+    }
+
     #[tokio::test]
     async fn disconnect_keeps_profile_and_session_ownership_but_stops_transport() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         manager.register_profile(profile("saved")).unwrap();
         manager.remember("conversation", "saved");
         let task = tokio::spawn(std::future::pending::<()>());
@@ -2136,7 +2367,7 @@ mod connection_tests {
         assert!(manager.environment().ready_profile_ids.is_empty());
         assert!(manager.owns("conversation"));
         assert!(manager.request_for_profile("saved", RemoteCommand::ListSessions).await.unwrap_err().contains("not connected"));
-        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         restarted.restore_profiles(&serde_json::to_string(&manager.environment().profiles).unwrap()).unwrap();
         assert_eq!(restarted.environment().profiles, vec![profile("saved")]);
         assert!(restarted.environment().ready_profile_ids.is_empty());
@@ -2144,7 +2375,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn restored_profiles_are_dormant_and_cancellation_releases_attempt() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         manager.restore_profiles(&serde_json::to_string(&vec![profile("original")]).unwrap()).unwrap();
         assert!(!manager.is_configured());
         assert!(manager.environment().ready_profile_ids.is_empty());
@@ -2191,7 +2422,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn connection_timeout_releases_attempt() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         let _guard = manager.connection_lock.lock().await;
         let result = manager.connect_profile(profile("timeout"), "timeout-test".into(), tauri::ipc::Channel::new(|_| Ok(()))).await;
         assert_eq!(result.err().unwrap(), "Connection timed out after 30 seconds");
@@ -2222,6 +2453,7 @@ mod connection_tests {
         let manager = RemoteConnectionManager::from_environment(
             Arc::new(|_| {}),
             Arc::new(move |status| sink.lock().unwrap().push(status)),
+            store(),
         )
         .unwrap();
         manager.register_profile(profile("saved")).unwrap();
@@ -2266,6 +2498,7 @@ mod connection_tests {
         let manager = RemoteConnectionManager::from_environment(
             Arc::new(|_| {}),
             Arc::new(move |status| sink.lock().unwrap().push(status)),
+            store(),
         )
         .unwrap();
         manager.register_profile(profile("saved")).unwrap();
@@ -2372,7 +2605,7 @@ mod connection_tests {
     #[tokio::test]
     #[ignore = "read-only proof against the owner's installed backend"]
     async fn live_existing_workbox_connection() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {})).unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         let result = manager.connect_profile(profile("stage1-proof"), "live-proof".into(), tauri::ipc::Channel::new(|_| Ok(()))).await.unwrap();
         for session in &result.sessions {
             let workspace = manager.request_for_profile(&result.profile.id, RemoteCommand::Workspace {
