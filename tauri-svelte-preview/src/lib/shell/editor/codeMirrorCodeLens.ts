@@ -323,6 +323,17 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
     return { widgets: widgetBuilder.finish(), gutters: gutterBuilder.finish() };
   }
 
+  const initialRows: LensRow[] = [];
+  if (options.preview.language.toLowerCase() === 'csharp' && options.onDotnetAction) {
+    initialRows.push(
+      { key: 'dotnet-build', action: 'build', line: 1, title: dotnetWorkspaceLensTitles.build, state: 'ready' },
+      { key: 'dotnet-test', action: 'test', line: 1, title: dotnetWorkspaceLensTitles.test, state: 'ready' }
+    );
+  }
+  if (options.enabled && options.onAnchorLookup && options.onCount) {
+    initialRows.push({ key: 'reference-anchors', line: 1, title: 'Loading references…', state: 'loading' });
+  }
+
   function runLensRow(row: LensRow): void {
     if (row.action) {
       void options.onDotnetAction?.(row.action);
@@ -435,7 +446,7 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
   });
 
   const lensState = StateField.define<LensDecorations>({
-    create: () => ({ widgets: Decoration.none, gutters: RangeSet.empty }),
+    create: (state) => lensDecorations(state, initialRows),
     update(value, transaction) {
       if (transaction.docChanged) value = { widgets: Decoration.none, gutters: RangeSet.empty };
       for (const effect of transaction.effects) {
@@ -453,26 +464,12 @@ export function codeMirrorCodeLens(options: CodeMirrorCodeLensOptions): Extensio
     peekState,
     lensState,
     ViewPlugin.fromClass(class {
-      private rows: LensRow[] = [];
+      private rows: LensRow[] = [...initialRows];
       private alive = true;
       private loadGeneration = 0;
 
       constructor(readonly view: EditorView) {
         activeView = view;
-        if (options.preview.language.toLowerCase() === 'csharp' && options.onDotnetAction) {
-          this.rows.push(
-            { key: 'dotnet-build', action: 'build', line: 1, title: dotnetWorkspaceLensTitles.build, state: 'ready' },
-            { key: 'dotnet-test', action: 'test', line: 1, title: dotnetWorkspaceLensTitles.test, state: 'ready' }
-          );
-        }
-        if (options.enabled && options.onAnchorLookup && options.onCount) {
-          this.rows.push({ key: 'reference-anchors', line: 1, title: 'Loading references…', state: 'loading' });
-        }
-        this.view.requestMeasure({
-          read: () => null,
-          write: () => this.paint(),
-          key: this
-        });
         if (options.enabled && options.onAnchorLookup && options.onCount) void this.loadReferences(generation);
       }
 

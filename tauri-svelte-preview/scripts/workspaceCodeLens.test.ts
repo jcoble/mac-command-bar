@@ -101,6 +101,16 @@ assert.match(
 );
 assert.match(
   codeMirrorLensSource,
+  /create: \(state\) => lensDecorations\(state, initialRows\)/,
+  'initial CodeLens rows must be created with editor state instead of dispatching during view construction'
+);
+assert.doesNotMatch(
+  codeMirrorLensSource,
+  /requestMeasure\([\s\S]{0,300}?this\.paint\(\)/,
+  'CodeLens must not dispatch an editor update from a CodeMirror measurement callback'
+);
+assert.match(
+  codeMirrorLensSource,
   /effect\.is\(showCodeMirrorReferences\)[\s\S]*?if \(this\.alive\) void this\.openReferences\(request\)/,
   'Peek References must hand the captured request to its owned view plugin'
 );
