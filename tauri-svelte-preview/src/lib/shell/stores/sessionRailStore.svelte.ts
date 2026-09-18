@@ -15,7 +15,7 @@ export const ACTIVE_OWNED_SESSION_SETTING_KEY = 'shell.active-owned-session';
 
 /**
  * What one saved remote machine's transport is doing, as the backend reports it.
- * Rows start disconnected and only the native lifecycle event changes it.
+ * Startup seeds the current native state, then lifecycle events keep it current.
  */
 export type RemoteConnectionState = 'connected' | 'disconnected' | 'reconnecting';
 

@@ -5,6 +5,7 @@ import {
   listAgentConversationEventsBeforeFromTauri,
   readAgentConversationCapabilitiesFromTauri,
   readAgentConversationSnapshotFromTauri,
+  readRemoteAssemblyEnvironmentFromTauri,
   registerAgentConversationStream,
   writeTerminalSessionFromTauri,
   type AgentConversationSessionRecord,
@@ -970,6 +971,11 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
       setRemoteConnection(payload.profileId, payload.state)
     );
     stopRemoteConnections = trackTauriListener(stopRemoteConnectionEvents);
+    const remoteEnvironment = await readRemoteAssemblyEnvironmentFromTauri();
+    const readyRemoteProfiles = new Set(remoteEnvironment.readyProfileIds);
+    for (const profile of remoteEnvironment.profiles) {
+      setRemoteConnection(profile.id, readyRemoteProfiles.has(profile.id) ? 'connected' : 'disconnected');
+    }
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
       await registration?.unregister();
       stopTitles();
