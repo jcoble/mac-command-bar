@@ -179,6 +179,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   let disposed = false;
   let layoutVersion = 0;
   let rememberedToolsWidth = TOOLS_WIDTH;
+  let toolsTransitionVersion = 0;
 
   const adopt = (id: string, host: HTMLElement): void => {
     const region = options.regions[id as ShellRegionId];
@@ -420,23 +421,51 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   };
 
   const setToolsPresent = (present: boolean): void => {
+    const transitionVersion = ++toolsTransitionVersion;
     try {
-      const panel = api.getPanel('tools');
-      if (present === Boolean(panel)) return;
-      const sessions = regionWidth('sessions');
-      if (panel) rememberedToolsWidth = panel.api.width;
-      runSynchronized(() => {
-        if (present) {
-          addTools();
-          setRegionWidth('tools', rememberedToolsWidth);
-        } else if (panel) {
-          api.removePanel(panel);
-        }
-        if (sessions !== null) setRegionWidth('sessions', sessions);
-      });
+      if (present === Boolean(api.getPanel('tools'))) {
+        options.regions.center.style.visibility = '';
+        return;
+      }
     } catch {
-      // nothing to do — the arrangement is still usable
+      options.regions.center.style.visibility = '';
+      return;
     }
+    // WebKit otherwise retains the center surface's old backing-store pages
+    // when Gridview changes its width. Separate the visibility invalidation
+    // from the grid mutation by one frame boundary, then reveal only the newest
+    // requested arrangement.
+    options.regions.center.style.visibility = 'hidden';
+    requestAnimationFrame(() => {
+      if (disposed || transitionVersion !== toolsTransitionVersion) return;
+      try {
+        const panel = api.getPanel('tools');
+        if (present === Boolean(panel)) {
+          options.regions.center.style.visibility = '';
+          return;
+        }
+        const sessions = regionWidth('sessions');
+        if (panel) rememberedToolsWidth = panel.api.width;
+        runSynchronized(() => {
+          if (present) {
+            addTools();
+            setRegionWidth('tools', rememberedToolsWidth);
+          } else if (panel) {
+            api.removePanel(panel);
+          }
+          if (sessions !== null) setRegionWidth('sessions', sessions);
+        });
+        requestAnimationFrame(() => {
+          if (!disposed && transitionVersion === toolsTransitionVersion) {
+            options.regions.center.style.visibility = '';
+          }
+        });
+      } catch {
+        if (transitionVersion === toolsTransitionVersion) {
+          options.regions.center.style.visibility = '';
+        }
+      }
+    });
   };
 
   return {
