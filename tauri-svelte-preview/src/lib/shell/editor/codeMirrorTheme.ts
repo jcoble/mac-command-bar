@@ -49,9 +49,25 @@ export function codeMirrorThemeForAppearance(
       },
       '.cm-scroller': {
         overflow: 'auto',
+        scrollbarWidth: 'thin',
+        scrollbarColor: 'var(--scrollbar-thumb, rgba(238, 240, 249, 0.18)) transparent',
         fontFamily: editorFontFamily,
         fontVariantLigatures: appearance.fontLigatures ? 'normal' : 'none',
         lineHeight: `${appearance.lineHeight}px`
+      },
+      '.cm-scroller::-webkit-scrollbar': {
+        width: 'var(--scrollbar-size, 8px)',
+        height: 'var(--scrollbar-size, 8px)'
+      },
+      '.cm-scroller::-webkit-scrollbar-thumb': {
+        background: 'var(--scrollbar-thumb, rgba(238, 240, 249, 0.18))',
+        backgroundClip: 'padding-box',
+        border: '2px solid transparent',
+        borderRadius: '999px'
+      },
+      '.cm-scroller::-webkit-scrollbar-thumb:hover': {
+        background: 'var(--scrollbar-thumb-hover, rgba(238, 240, 249, 0.3))',
+        backgroundClip: 'padding-box'
       },
       '.cm-content': { caretColor: 'var(--color-accent, #82aaff)' },
       '.cm-cursor, .cm-dropCursor': {
