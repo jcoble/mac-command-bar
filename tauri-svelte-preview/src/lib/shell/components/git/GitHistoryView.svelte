@@ -26,7 +26,6 @@
    * row only reads.
    */
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import { onMount } from 'svelte';
   import X from '@lucide/svelte/icons/x';
 
   import { Chip } from '$lib/components/ui/chip/index.js';
@@ -60,24 +59,24 @@
   } from '$lib/shell/git/gitHistoryFilters';
   import {
     commitFilesEntry,
-    createGitCommitFilesState,
+    gitCommitFiles,
     describeCommitFiles,
     isCommitExpanded,
     isUnreadableGitPath,
     splitRepositoryPath,
     summarizeCommitFiles
   } from '$lib/shell/git/gitCommitFilesStore.svelte';
-  import { createGitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
+  import { gitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
   import {
     canLoadMoreGitHistory,
-    createGitPanelState,
     describeGitHistoryFooter,
+    gitPanel,
     isNotARepositoryError
   } from '$lib/shell/git/gitPanelStore.svelte';
   import {
     absolutePathWithin,
     COMMIT_HISTORY_LIMIT,
-    createGitService
+    gitService
   } from '$lib/shell/git/gitService';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
   import { formatLastActivity } from '$lib/shell/relativeTime';
@@ -88,29 +87,26 @@
     root?: string;
     rootAvailable?: boolean;
     historyPath?: string;
+    showing?: boolean;
   }
-  let { root = '', rootAvailable = true, historyPath = '' }: Props = $props();
+  let { root = '', rootAvailable = true, historyPath = '', showing = false }: Props = $props();
   let requestedHistory = '';
   let contextMenu = $state.raw<SourceControlMenuSnapshot | null>(null);
 
-  const historyPanel = $state(createGitPanelState());
-  const historyService = createGitService({ state: historyPanel });
-  const historyCommitFiles = $state(createGitCommitFilesState());
-  const historyCommitFilesService = createGitCommitFilesService({ state: historyCommitFiles });
-
-  onMount(() => {
-    historyService.ensureHistorySurface();
-    return () => {
-      historyService.releaseHistorySurface();
-      historyCommitFilesService.release();
-    };
-  });
+  const historyPanel = gitPanel;
+  const historyService = gitService;
+  const historyCommitFiles = gitCommitFiles;
+  const historyCommitFilesService = gitCommitFilesService;
 
   $effect(() => {
+    if (!showing) return;
     const targetRoot = rootAvailable ? root.trim() : '';
     const targetPath = historyPath.trim();
     const requestKey = `${targetRoot}\u0000${targetPath}`;
-    if (requestKey === requestedHistory) return;
+    if (requestKey === requestedHistory) {
+      if (targetRoot) historyService.ensureHistorySurface();
+      return;
+    }
     requestedHistory = requestKey;
     if (!targetRoot) {
       historyService.releaseHistorySurface();
@@ -235,8 +231,9 @@
   async function pickFile(sha: string, file: GitCommitFileChange): Promise<void> {
     if (!rootAvailable) return;
     historyCommitFilesService.activate(historyPanel.root);
+    const read = historyCommitFilesService.selectCommitFile(sha, file);
     showCenterTab('diff');
-    await historyCommitFilesService.selectCommitFile(sha, file);
+    await read;
   }
 
   function openCommitMenu(

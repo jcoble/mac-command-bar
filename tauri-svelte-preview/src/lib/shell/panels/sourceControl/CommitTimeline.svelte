@@ -108,8 +108,9 @@
 
   async function pickFile(sha: string, file: GitCommitFileChange): Promise<void> {
     commitFiles.activate(panel.root);
+    const read = commitFiles.selectCommitFile(sha, file);
     showCenterTab('diff');
-    await commitFiles.selectCommitFile(sha, file);
+    await read;
   }
 
   function openCommitMenu(
