@@ -44,6 +44,7 @@
     /** A center surface came to the front. Fires for Dockview's own start-up
      * announcements too — see the note in `centerDock.ts`. */
     onCenterPanelShown?: (id: string) => void;
+    onSessionsWidthChange?: (width: number) => void;
     onReady?: (controls: {
       resetLayout: () => void;
       showCenterPanel: (id: string) => void;
@@ -78,6 +79,7 @@
     dock,
     onSessionPanelLayout,
     onCenterPanelShown,
+    onSessionsWidthChange,
     onReady,
     onError
   }: Props = $props();
@@ -95,6 +97,7 @@
 
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
+  let frameLayoutListener: { dispose(): void } | null = null;
   let ready = $state(false);
 
   onMount(() => {
@@ -134,6 +137,12 @@
         // still at 0×0 leaves always-rendered panels with stale overlay bounds
         // until the next activation.
         layoutFrame();
+        const reportSessionsWidth = (): void => {
+          const width = frame?.regionWidth('sessions');
+          if (width !== null && width !== undefined) onSessionsWidthChange?.(width);
+        };
+        frameLayoutListener = frame.api.onDidLayoutChange(reportSessionsWidth);
+        reportSessionsWidth();
         centerDock = createCenterDock(centerSlot, {
           readLayout: () => readAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY),
           writeLayout: (layout) => writeAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY, layout),
@@ -194,6 +203,8 @@
     return () => {
       owner.active = false;
       observer?.disconnect();
+      frameLayoutListener?.dispose();
+      frameLayoutListener = null;
       centerDock?.dispose();
       centerDock = null;
       frame?.dispose();

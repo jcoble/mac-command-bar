@@ -198,31 +198,6 @@
   /** Lying over the workspace. Only while this tab is the one in front: a
    * panel that is not showing must not be found lying over everything else. */
   const fillsWindow = $derived(expanded && visible);
-  /**
-   * The rectangle a filled panel lies in: everything right of the sessions
-   * rail, out to the right edge of the tool column. The rail stays where it
-   * is — a page filling the window used to cover it, and the sessions list is
-   * how the reader gets anywhere else.
-   *
-   * Both edges are measured rather than assumed: the rail can be dragged to
-   * any width and folded to a strip, and the tool column's right edge is where
-   * the shell's own gutter puts it.
-   */
-  const fillInset = $derived.by(() => {
-    layoutTick;
-    if (!fillsWindow || typeof document === 'undefined') return null;
-    const rail = document.querySelector('.shell-region-host-sessions');
-    const tools = document.querySelector('.shell-region-host-tools');
-    if (!rail || !tools) return null;
-    const railRect = rail.getBoundingClientRect();
-    const toolsRect = tools.getBoundingClientRect();
-    return {
-      top: railRect.top,
-      left: railRect.right,
-      right: Math.max(0, window.innerWidth - toolsRect.right),
-      bottom: Math.max(0, window.innerHeight - railRect.bottom)
-    };
-  });
   const markupBounds = $derived.by(() => {
     layoutTick;
     const placement = wantedPlacement(true);
@@ -265,17 +240,28 @@
    * back to the place in the column it came from when it stops. The column
    * clips what it contains, so lying over the shell means leaving the column.
    */
-  function fillWindow(node: HTMLElement, fills: boolean): { update(fills: boolean): void } {
+  function fillWindow(
+    node: HTMLElement,
+    fills: boolean
+  ): { update(fills: boolean): void; destroy(): void } {
     const home = node.parentElement;
+    let measureFrame = 0;
     const place = (out: boolean): void => {
       if (out) {
         if (node.parentElement !== document.body) document.body.appendChild(node);
       } else if (home && node.parentElement !== home) {
         home.appendChild(node);
       }
+      cancelAnimationFrame(measureFrame);
+      measureFrame = requestAnimationFrame(() => {
+        layoutTick += 1;
+      });
     };
     place(fills);
-    return { update: place };
+    return {
+      update: place,
+      destroy: () => cancelAnimationFrame(measureFrame)
+    };
   }
 
   // ── Where the native view goes ─────────────────────────────────────────────
@@ -757,13 +743,6 @@
     // The rows above move the page host and set the floor the expanded view is
     // held to, so a row appearing has to be a re-measure in its own right.
     if (chromeHost) observer.observe(chromeHost);
-    // While the panel lies over the workspace its left edge is the sessions
-    // rail's right edge, so dragging or folding the rail moves the panel — and
-    // nothing else would notice, since the panel is out of the grid by then.
-    if (fillsWindow) {
-      const rail = document.querySelector('.shell-region-host-sessions');
-      if (rail) observer.observe(rail);
-    }
     return () => observer.disconnect();
   });
 
@@ -856,9 +835,6 @@
   class="browser-panel"
   class:fills-window={fillsWindow}
   use:fillWindow={fillsWindow}
-  style={fillInset
-    ? `--fill-top:${fillInset.top}px;--fill-right:${fillInset.right}px;--fill-bottom:${fillInset.bottom}px;--fill-left:${fillInset.left}px`
-    : undefined}
   data-testid="browser-panel"
 >
   <div class="chrome" bind:this={chromeHost} data-testid="browser-panel-chrome">
@@ -981,17 +957,17 @@
   }
 
   /* Over the workspace right of the sessions rail — the rail stays readable.
-     The four edges come from the measured rectangle above; the zeroes are only
-     what a pass with nothing to measure falls back to. Under the markup layer,
-     which is the next thing up in the document body; the page host is measured
-     wherever it is, so the native view and the still follow the panel out here
-     on their own. */
+     The route keeps the shared rail-width property current as its divider is
+     dragged. The utility strip remains visible below, just as it does for the
+     ordinary three-column shell. */
   .browser-panel.fills-window {
     position: fixed;
-    top: var(--fill-top, 0);
-    right: var(--fill-right, 0);
-    bottom: var(--fill-bottom, 0);
-    left: var(--fill-left, 0);
+    top: 0;
+    right: 0;
+    bottom: 28px;
+    left: var(--sessions-rail-width, 360px);
+    height: auto;
+    width: auto;
     z-index: 1;
   }
 
