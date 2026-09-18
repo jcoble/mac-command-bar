@@ -57,8 +57,14 @@
 
   function stopConfirmedSession(): void {
     const group = confirmingGroup;
+    confirmSessionOpen = false;
     confirmingGroup = null;
     if (group) void stopSession(group.pgid);
+  }
+
+  function stopConfirmedAll(): void {
+    confirmAllOpen = false;
+    void stopAll();
   }
 
   /** "3 processes" — used in both dialogs so the counts read the same way. */
@@ -250,7 +256,7 @@
         size="sm"
         variant="destructive"
         class="text-[13px]"
-        onclick={() => void stopAll()}
+        onclick={stopConfirmedAll}
       >
         Stop all
       </AlertDialog.Action>

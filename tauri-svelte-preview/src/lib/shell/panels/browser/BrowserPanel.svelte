@@ -787,11 +787,10 @@
     });
   });
 
-  // Switching right-side tabs only hides the native view through placement.
-  // Release it when the whole right region closes or this controller is handed
-  // to another session/root.
+  // A hidden Browser must not leave its pages running offscreen. Keep only the
+  // compact tab metadata; returning recreates the native views from it.
   $effect(() => {
-    const ownsResources = panelOpen;
+    const ownsResources = panelOpen && visible;
     ownedId;
     root;
     if (!ownsResources) return;
