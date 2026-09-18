@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
+	import FileUp from "@lucide/svelte/icons/file-up";
 	import History from "@lucide/svelte/icons/history";
 	import Maximize2 from "@lucide/svelte/icons/maximize-2";
 	import RefreshCw from "@lucide/svelte/icons/refresh-cw";
@@ -24,6 +25,7 @@
 		fileName: string;
 		open?: boolean;
 		onOpenLarge?(): void;
+		onOpenFile?(): void;
 	}
 
 	let {
@@ -33,6 +35,7 @@
 		fileName,
 		open = $bindable(false),
 		onOpenLarge,
+		onOpenFile,
 	}: Props = $props();
 
 	const panel = $state(createGitPanelState());
@@ -107,6 +110,9 @@
 		</Collapsible.Trigger>
 		{#if open && relativePath}
 			<div class="file-history-actions">
+				<IconButton label="Go to File" onclick={onOpenFile}>
+					<FileUp />
+				</IconButton>
 				<IconButton label="Refresh file history" onclick={() => void service.refreshHistory()}>
 					<RefreshCw />
 				</IconButton>
