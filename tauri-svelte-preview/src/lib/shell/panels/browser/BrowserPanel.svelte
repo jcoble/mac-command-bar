@@ -12,10 +12,12 @@
    *
    * The page has no width of its own. It is the right column's content, so the
    * column's width IS the page's width: dragging the seam between the center
-   * and this column resizes the page. Filling the window is the one exception:
-   * marking up wants the biggest picture the window can give, so the whole
-   * panel — its rows and its page — moves out of the column and lies over the
-   * shell from edge to edge until it is put back. It moves out of the document
+   * and this column resizes the page. Filling the workspace is the one
+   * exception: marking up wants the biggest picture the window can give, so
+   * the whole panel — its rows and its page — moves out of the column and lies
+   * over everything right of the sessions rail until it is put back. The rail
+   * keeps its place, because it is how the reader gets to another session
+   * without first putting the page away. It moves out of the document
    * position it had, not just out of the column: the column paints its panels
    * inside its own box (`contain: paint`), so a panel that only positioned
    * itself over the shell would still be clipped to the column.
@@ -193,9 +195,34 @@
    * and typed off the screen.
    */
   const showsStill = $derived(backdrop !== null);
-  /** Lying over the whole shell. Only while this tab is the one in front: a
+  /** Lying over the workspace. Only while this tab is the one in front: a
    * panel that is not showing must not be found lying over everything else. */
   const fillsWindow = $derived(expanded && visible);
+  /**
+   * The rectangle a filled panel lies in: everything right of the sessions
+   * rail, out to the right edge of the tool column. The rail stays where it
+   * is — a page filling the window used to cover it, and the sessions list is
+   * how the reader gets anywhere else.
+   *
+   * Both edges are measured rather than assumed: the rail can be dragged to
+   * any width and folded to a strip, and the tool column's right edge is where
+   * the shell's own gutter puts it.
+   */
+  const fillInset = $derived.by(() => {
+    layoutTick;
+    if (!fillsWindow || typeof document === 'undefined') return null;
+    const rail = document.querySelector('.shell-region-host-sessions');
+    const tools = document.querySelector('.shell-region-host-tools');
+    if (!rail || !tools) return null;
+    const railRect = rail.getBoundingClientRect();
+    const toolsRect = tools.getBoundingClientRect();
+    return {
+      top: railRect.top,
+      left: railRect.right,
+      right: Math.max(0, window.innerWidth - toolsRect.right),
+      bottom: Math.max(0, window.innerHeight - railRect.bottom)
+    };
+  });
   const markupBounds = $derived.by(() => {
     layoutTick;
     const placement = wantedPlacement(true);
@@ -730,6 +757,13 @@
     // The rows above move the page host and set the floor the expanded view is
     // held to, so a row appearing has to be a re-measure in its own right.
     if (chromeHost) observer.observe(chromeHost);
+    // While the panel lies over the workspace its left edge is the sessions
+    // rail's right edge, so dragging or folding the rail moves the panel — and
+    // nothing else would notice, since the panel is out of the grid by then.
+    if (fillsWindow) {
+      const rail = document.querySelector('.shell-region-host-sessions');
+      if (rail) observer.observe(rail);
+    }
     return () => observer.disconnect();
   });
 
@@ -822,6 +856,9 @@
   class="browser-panel"
   class:fills-window={fillsWindow}
   use:fillWindow={fillsWindow}
+  style={fillInset
+    ? `--fill-top:${fillInset.top}px;--fill-right:${fillInset.right}px;--fill-bottom:${fillInset.bottom}px;--fill-left:${fillInset.left}px`
+    : undefined}
   data-testid="browser-panel"
 >
   <div class="chrome" bind:this={chromeHost} data-testid="browser-panel-chrome">
@@ -943,12 +980,18 @@
     background: var(--color-surface);
   }
 
-  /* Edge to edge over the shell. Under the markup layer, which is the next
-     thing up in the document body; the page host is measured wherever it is,
-     so the native view and the still follow the panel out here on their own. */
+  /* Over the workspace right of the sessions rail — the rail stays readable.
+     The four edges come from the measured rectangle above; the zeroes are only
+     what a pass with nothing to measure falls back to. Under the markup layer,
+     which is the next thing up in the document body; the page host is measured
+     wherever it is, so the native view and the still follow the panel out here
+     on their own. */
   .browser-panel.fills-window {
     position: fixed;
-    inset: 0;
+    top: var(--fill-top, 0);
+    right: var(--fill-right, 0);
+    bottom: var(--fill-bottom, 0);
+    left: var(--fill-left, 0);
     z-index: 1;
   }
 
