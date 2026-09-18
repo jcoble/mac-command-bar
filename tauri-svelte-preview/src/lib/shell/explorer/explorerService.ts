@@ -225,7 +225,8 @@ export function refreshChangedPath(path: string): void {
   refreshChangedPaths([path]);
 }
 
-export function stopScan(): void {
+export function stopScan(ownerSignal?: AbortSignal): void {
+  if (ownerSignal && activeExplorerSignal !== ownerSignal) return;
   cancelDirectoryRequests();
   activeExplorerSignal = undefined;
   endScan();

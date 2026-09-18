@@ -300,7 +300,7 @@
 		return () => {
 			controller.abort();
 			if (filesOwnerSignal === controller.signal) filesOwnerSignal = undefined;
-			stopScan();
+			stopScan(controller.signal);
 		};
 	});
 
