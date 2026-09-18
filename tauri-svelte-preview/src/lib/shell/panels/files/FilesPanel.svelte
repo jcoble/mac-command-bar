@@ -65,7 +65,7 @@
 	import RefreshCw from "@lucide/svelte/icons/refresh-cw";
 	import Square from "@lucide/svelte/icons/square";
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-	import { onDestroy, untrack } from "svelte";
+	import { onDestroy, tick, untrack } from "svelte";
 
 	interface Props {
 		visible: boolean;
@@ -302,6 +302,13 @@
 			if (filesOwnerSignal === controller.signal) filesOwnerSignal = undefined;
 			stopScan();
 		};
+	});
+
+	$effect(() => {
+		if (!visible) return;
+		void tick().then(() => {
+			if (visible) refreshFiles();
+		});
 	});
 
 	async function loadCheckouts(
