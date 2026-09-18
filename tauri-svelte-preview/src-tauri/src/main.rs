@@ -971,6 +971,10 @@ const BACKEND_CAPABILITIES: [&str; 29] = [
 const SOURCE_LSP_STATUS_CHANGED_EVENT: &str = "source-lsp-status-changed";
 const SESSION_TITLE_CHANGED_EVENT: &str = "session-title-changed";
 
+/// The event the app sends when one saved remote machine's transport connects,
+/// starts attempting, or stops. The rail's remote rows read nothing else.
+const REMOTE_CONNECTION_CHANGED_EVENT: &str = "remote-connection-changed";
+
 /// A session that has just been given a better name than the one taken from
 /// its first prompt, so the rail can show it without asking.
 #[derive(Clone, serde::Serialize)]
@@ -5444,10 +5448,14 @@ fn main() {
                 .inner()
                 .clone();
             let remote_projection_streams = projection_streams.clone();
+            let remote_status_handle = app.handle().clone();
             let remote_connection =
-                agent_conversation::remote::RemoteConnectionManager::from_environment(Arc::new(
-                    move |event| remote_projection_streams.publish_agent_event(event),
-                ))?;
+                agent_conversation::remote::RemoteConnectionManager::from_environment(
+                    Arc::new(move |event| remote_projection_streams.publish_agent_event(event)),
+                    Arc::new(move |status| {
+                        let _ = remote_status_handle.emit(REMOTE_CONNECTION_CHANGED_EVENT, status);
+                    }),
+                )?;
             if !remote_connection.is_configured() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,

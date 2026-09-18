@@ -9,6 +9,7 @@
 	 * timer, clock subscription, animated spinner, or visibility observer.
 	 */
 	import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+	import Server from "@lucide/svelte/icons/server";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
 	import {
 		deriveSessionPresence,
@@ -19,6 +20,7 @@
 	import { resolveOwnedSessionProject, type OwnedSession } from "$lib/shell/ownedSessions";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import { sessionLabel } from "$lib/shell/sessionStrip";
+	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
 	import { formatRailElapsed } from "./railElapsedTicker.ts";
 	import SessionRowVisual from "./SessionRowVisual.svelte";
 
@@ -103,6 +105,17 @@
 	);
 	const ProviderIcon = $derived(AGENT_ICONS[session.agent]);
 	const providerName = $derived(agentDisplayName(session.agent, session.viaCmux));
+	/** Whose machine runs this session. The saved record answers it. */
+	const remote = $derived(session.executionEnvironment === "remote");
+	/**
+	 * What that machine's connection is doing, from the backend's own lifecycle
+	 * event and nothing else. A saved row starts disconnected until the event
+	 * says otherwise; presence, a loading transcript, or the row simply existing
+	 * never implies it. No read, no timer, no animation.
+	 */
+	const remoteState = $derived(
+		remote ? (rail.remoteConnections[session.remoteProfileId ?? ""] ?? "disconnected") : null,
+	);
 
 	// ── The age, and the working indicator in the rail ─────────────────────────
 	/**
@@ -143,9 +156,18 @@
 			class="thumb"
 			data-agent={session.agent}
 			role="img"
-			aria-label={providerName}
+			aria-label={remote ? `${providerName}, on a remote machine, ${remoteState}` : providerName}
+			title={remote ? `This session runs on a remote machine — ${remoteState}` : undefined}
 		>
 			<ProviderIcon class="thumb-mark" aria-hidden="true" />
+			<!-- The machine, in the mark's corner rather than in a third line: a
+                 remote session is told apart at a glance and the row keeps its
+                 two lines and its height. The label above carries it in words. -->
+			{#if remote}
+				<span class="remote-mark" data-state={remoteState} aria-hidden="true">
+					<Server />
+				</span>
+			{/if}
 		</span>
 
 		<span class="lines">
@@ -228,6 +250,40 @@
 		width: 22px;
 		height: 22px;
 		flex: 0 0 auto;
+	}
+
+	/* The remote badge sits inside the mark's square — the row clips its own
+     overflow, and a badge hanging off the corner would be cut. Static: its
+     colour changes only when the machine's state does, and it never animates. */
+	.remote-mark {
+		position: absolute;
+		right: 1px;
+		bottom: 1px;
+		display: grid;
+		width: 15px;
+		height: 15px;
+		place-items: center;
+		border-radius: 50%;
+		background: var(--color-surface);
+		color: var(--color-text-2);
+	}
+
+	.remote-mark :global(svg) {
+		width: 10px;
+		height: 10px;
+	}
+
+	/* One state, told in colour as well as in the label and tooltip above. */
+	.remote-mark[data-state="connected"] {
+		color: var(--color-good);
+	}
+
+	.remote-mark[data-state="reconnecting"] {
+		color: var(--color-attention);
+	}
+
+	.remote-mark[data-state="disconnected"] {
+		color: var(--color-idle);
 	}
 
 	/* The two marks their vendors publish in a colour wear it here. The rest
