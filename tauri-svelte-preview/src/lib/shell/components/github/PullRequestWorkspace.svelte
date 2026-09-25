@@ -1,6 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { hydrate, knownRoots } from '$lib/shell/newSession/projectRootsStore.svelte';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
+  import { parseRemoteWorkspacePath, sessionWorkspaceRoot } from '$lib/workspacePaths';
   import {
     listGithubPullRequestsFromTauri,
     mergeGithubPullRequestFromTauri,
@@ -69,6 +71,8 @@
   let fileGeneration = 0;
 
   const roots = $derived(knownRoots());
+  // Remote projects come from the rail's sessions; each one is searched on its own machine.
+  const remoteRoots = $derived([...new Set(rail.owned.filter((session) => session.executionEnvironment === 'remote').map(sessionWorkspaceRoot).filter(Boolean))]);
   const selectedFile = $derived(detail?.files.find((file) => file.path === selectedFilePath) ?? null);
   const parsedFile = $derived(selectedFile?.patch ? parseUnifiedDiff(selectedFile.patch) : null);
   const headerState = $derived(prState(detail ?? selected));
@@ -211,7 +215,7 @@
     try {
       await hydrate();
       const page = await listGithubPullRequestsFromTauri({
-        roots: knownRoots().map((root) => root.path),
+        roots: parseRemoteWorkspacePath(projectFilter) ? [projectFilter] : knownRoots().map((root) => root.path),
         mode,
         projectFilter: projectFilter || null,
         search: search || null,
@@ -434,8 +438,9 @@
     </div>
     <form onsubmit={applySearch}><input aria-label="Search pull requests" placeholder="Search pull requests" bind:value={searchInput}><button type="submit">Search</button></form>
     <select aria-label="Filter by project" bind:value={projectFilter} onchange={() => void load(true)}>
-      <option value="">All projects</option>
+      <option value="">All local projects</option>
       {#each roots as root (root.path)}<option value={root.path}>{root.name}</option>{/each}
+      {#each remoteRoots as root (root)}<option value={root}>{root.split('/').filter(Boolean).at(-1)} (remote)</option>{/each}
     </select>
     {#if error}<p class="notice error" role="alert">{error}</p>{/if}
     {#if loading && items.length === 0}<p class="notice">Loading pull requests…</p>{/if}

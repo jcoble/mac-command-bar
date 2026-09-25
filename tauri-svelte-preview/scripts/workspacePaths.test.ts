@@ -38,3 +38,20 @@ test('saved workspace paths round trip without retaining a client profile or rew
   assert.equal((projected as typeof stored).activePath, 'assembly-remote://workbox/home/me/a.txt');
   assert.deepEqual(mapWorkspaceSnapshotPaths(projected, null), stored);
 });
+test('hosted PR requests route their nested roots to the owning machine', () => {
+  const root = remoteWorkspacePath('workbox', '/home/me/repo');
+  assert.deepEqual(remoteWorkspaceRequest({ query: { roots: [root], mode: 'open', projectFilter: root } }, 'list_github_pull_requests'), {
+    profileId: 'workbox', args: { query: { roots: ['/home/me/repo'], mode: 'open', projectFilter: '/home/me/repo' } }
+  });
+  assert.deepEqual(remoteWorkspaceRequest({ request: { root, number: 3, expectedHeadSha: 'a' } }, 'merge_github_pull_request'), {
+    profileId: 'workbox', args: { request: { root: '/home/me/repo', number: 3, expectedHeadSha: 'a' } }
+  });
+  assert.deepEqual(remoteWorkspaceRequest({ query: { root, path: 'src/a.ts' } }, 'read_github_pull_request_file')?.args, { query: { root: '/home/me/repo', path: 'src/a.ts' } });
+  assert.equal(remoteWorkspaceRequest({ request: { root } }, 'set_active_source_root'), null);
+  assert.equal(remoteWorkspaceRequest({ query: { roots: ['/Users/me/repo'], mode: 'open' } }, 'list_github_pull_requests'), null);
+});
+test('hosted PR results keep their machine for follow-up reads and writes', () => {
+  assert.deepEqual(qualifyWorkspaceResult({ items: [{ localRoot: '/home/me/repo', url: 'https://github.com/o/r/pull/1' }] }, 'workbox'), {
+    items: [{ localRoot: 'assembly-remote://workbox/home/me/repo', url: 'https://github.com/o/r/pull/1' }]
+  });
+});
