@@ -100,7 +100,7 @@ pub(crate) async fn check_at(
     providers: &ProviderRegistry,
 ) -> Result<ProviderUpdateStatus, String> {
     let (_, manifest) = fetch_signed_manifest().await?;
-    status_for(app_data_dir, &manifest, &running_versions(providers)?)
+    status_for(app_data_dir, &manifest, &running_versions(providers)?).await
 }
 
 pub(crate) async fn install_at(
@@ -113,13 +113,13 @@ pub(crate) async fn install_at(
         .map_err(|_| "A provider adapter installation is already running".to_string())?;
     let (manifest_bytes, manifest) = fetch_signed_manifest().await?;
     let running = running_versions(providers)?;
-    let before = status_for(app_data_dir, &manifest, &running)?;
+    let before = status_for(app_data_dir, &manifest, &running).await?;
     if !before.update_available {
         return Ok(before);
     }
     ensure_no_downgrades(&before)?;
     install_manifest(app_data_dir, &manifest_bytes, &manifest).await?;
-    status_for(app_data_dir, &manifest, &running)
+    status_for(app_data_dir, &manifest, &running).await
 }
 
 #[tauri::command]
@@ -259,26 +259,32 @@ fn validate_remote_manifest(manifest: &RemoteManifest) -> Result<(), String> {
     Ok(())
 }
 
-fn status_for(
+async fn status_for(
     app_data_dir: &Path,
     manifest: &RemoteManifest,
-    running: &[(String, String)],
+    running: &[(String, String, PathBuf)],
 ) -> Result<ProviderUpdateStatus, String> {
-    let current = active_versions(app_data_dir)?;
-    let restart_required = current.iter().any(|(provider, version)| {
-        running.iter().find(|(name, _)| name == provider).map(|(_, active)| active) != Some(version)
+    // Hashing large adapter files must not block an async runtime worker.
+    let directory = app_data_dir.to_path_buf();
+    let (current, damaged) = tokio::task::spawn_blocking(move || {
+        let damaged = discover_active(&directory).is_err();
+        (active_versions(&directory).unwrap_or_default(), damaged)
+    }).await.map_err(|error| format!("Could not inspect installed provider adapters: {error}"))?;
+    let restart_required = !damaged && current.iter().any(|(provider, version, executable)| {
+        running.iter().find(|(name, _, _)| name == provider)
+            .map(|(_, active, path)| (active, path)) != Some((version, executable))
     });
     let mut providers = Vec::with_capacity(manifest.adapters.len());
     for adapter in &manifest.adapters {
-        let running_version = running.iter().find(|(provider, _)| provider == &adapter.provider)
-            .map(|(_, version)| version.as_str())
+        let running_version = running.iter().find(|(provider, _, _)| provider == &adapter.provider)
+            .map(|(_, version, _)| version.as_str())
             .ok_or_else(|| format!("No running adapter version for {}", adapter.provider))?;
         let current_version = current
             .iter()
-            .find(|(provider, _)| provider == &adapter.provider)
-            .map(|(_, version)| version.as_str())
+            .find(|(provider, _, _)| provider == &adapter.provider)
+            .map(|(_, version, _)| version.as_str())
             .unwrap_or(running_version);
-        let update_available = Version::parse(&adapter.version)
+        let update_available = damaged || Version::parse(&adapter.version)
             .map_err(|error| error.to_string())?
             > Version::parse(current_version).map_err(|error| error.to_string())?;
         providers.push(ProviderUpdateVersion {
@@ -296,7 +302,7 @@ fn status_for(
     })
 }
 
-fn active_versions(app_data_dir: &Path) -> Result<Vec<(String, String)>, String> {
+fn active_versions(app_data_dir: &Path) -> Result<Vec<(String, String, PathBuf)>, String> {
     let root = app_data_dir.join("provider-adapters");
     let pointer_path = root.join("active.json");
     if !pointer_path.is_file() {
@@ -311,14 +317,14 @@ fn active_versions(app_data_dir: &Path) -> Result<Vec<(String, String)>, String>
         return Err("Active provider adapter directory is invalid".to_string());
     }
     let manifest: packaged::PackagedManifest = serde_json::from_slice(
-        &std::fs::read(root.join(pointer.directory).join("manifest.json"))
+        &std::fs::read(root.join(&pointer.directory).join("manifest.json"))
             .map_err(|error| format!("Could not read active provider manifest: {error}"))?,
     )
     .map_err(|error| format!("Active provider manifest is invalid: {error}"))?;
     Ok(manifest
         .adapters
         .into_iter()
-        .map(|adapter| (adapter.provider, adapter.version))
+        .map(|adapter| (adapter.provider, adapter.version, root.join(&pointer.directory).join(adapter.executable)))
         .collect())
 }
 
@@ -456,13 +462,13 @@ async fn download_file(
     Ok(())
 }
 
-fn running_versions(registry: &ProviderRegistry) -> Result<Vec<(String, String)>, String> {
+fn running_versions(registry: &ProviderRegistry) -> Result<Vec<(String, String, PathBuf)>, String> {
     [
         ("codex", AgentConversationProvider::Codex),
         ("claude", AgentConversationProvider::Claude),
         ("antigravity", AgentConversationProvider::Antigravity),
     ].into_iter().map(|(name, provider)| {
-        registry.manifest(provider).map(|manifest| (name.to_string(), manifest.version))
+        registry.manifest(provider).map(|manifest| (name.to_string(), manifest.version, manifest.executable))
     }).collect()
 }
 
@@ -539,8 +545,8 @@ mod tests {
         assert!(!safe_file_name("nested/value"));
     }
 
-    #[test]
-    fn update_status_only_accepts_newer_versions() {
+    #[tokio::test]
+    async fn update_status_only_accepts_newer_versions() {
         let manifest = RemoteManifest {
             schema_version: 1,
             target: release_target().unwrap(),
@@ -560,30 +566,64 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let running = vec![("codex".into(), "1.0.0".into())];
-        let status = status_for(&directory, &manifest, &running).unwrap();
+        let running = vec![("codex".into(), "1.0.0".into(), PathBuf::from("/bundled/codex-acp"))];
+        let status = status_for(&directory, &manifest, &running).await.unwrap();
         assert!(status.update_available);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
-    #[test]
-    fn installed_update_keeps_restart_required_until_runtime_uses_it() {
+    #[tokio::test]
+    async fn installed_update_keeps_restart_required_until_runtime_uses_it() {
         let directory = std::env::temp_dir().join(format!("mcb-provider-restart-{}", uuid::Uuid::new_v4()));
         let root = directory.join("provider-adapters");
         std::fs::create_dir_all(root.join("installed")).unwrap();
         std::fs::write(root.join("active.json"), r#"{"directory":"installed"}"#).unwrap();
         let bytes = serde_json::json!({"schemaVersion":1,"target":release_target().unwrap(),"adapters":[{
-            "provider":"codex","id":"codex-acp","version":"2.0.0","executable":"codex-acp","files":[]
+            "provider":"codex","id":"codex-acp","version":"2.0.0","executable":"codex-acp","files":[{"path":"codex-acp","sha256":format!("{:x}", Sha256::digest(b"adapter"))}]
         }]}).to_string();
         std::fs::write(root.join("installed/manifest.json"), &bytes).unwrap();
+        std::fs::write(root.join("installed/codex-acp"), b"adapter").unwrap();
         let manifest = serde_json::from_str(&bytes).unwrap();
-        let before = status_for(&directory, &manifest, &[("codex".into(), "1.0.0".into())]).unwrap();
+        let before = status_for(&directory, &manifest, &[("codex".into(), "1.0.0".into(), PathBuf::from("/bundled/codex-acp"))]).await.unwrap();
         assert!(before.restart_required);
         assert!(!before.update_available);
         assert_eq!(before.providers[0].current_version, "2.0.0");
-        let after = status_for(&directory, &manifest, &[("codex".into(), "2.0.0".into())]).unwrap();
+        let after = status_for(&directory, &manifest, &[("codex".into(), "2.0.0".into(), root.join("installed/codex-acp"))]).await.unwrap();
         assert!(!after.restart_required);
         assert!(!after.update_available);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn damaged_current_bundle_is_offered_again_without_changing_the_pointer() {
+        let directory = std::env::temp_dir().join(format!("mcb-provider-repair-{}", uuid::Uuid::new_v4()));
+        let root = directory.join("provider-adapters");
+        let installed = root.join("installed");
+        std::fs::create_dir_all(&installed).unwrap();
+        let pointer = br#"{"directory":"installed"}"#;
+        std::fs::write(root.join("active.json"), pointer).unwrap();
+        let payload = b"verified adapter";
+        let bytes = serde_json::json!({"schemaVersion":1,"target":release_target().unwrap(),"adapters":[{
+            "provider":"codex","id":"codex-acp","version":"2.0.0","executable":"codex-acp",
+            "files":[{"path":"codex-acp","sha256":format!("{:x}", Sha256::digest(payload))}]
+        }]}).to_string();
+        std::fs::write(installed.join("manifest.json"), &bytes).unwrap();
+        let manifest = serde_json::from_str(&bytes).unwrap();
+        let running = vec![("codex".into(), "2.0.0".into(), installed.join("codex-acp"))];
+        for contents in [None, Some(b"damaged".as_slice()), Some(payload.as_slice())] {
+            if let Some(contents) = contents {
+                std::fs::write(installed.join("codex-acp"), contents).unwrap();
+            }
+            let status = status_for(&directory, &manifest, &running).await.unwrap();
+            assert_eq!(status.update_available, contents != Some(payload.as_slice()));
+            assert!(!status.restart_required);
+            assert_eq!(std::fs::read(root.join("active.json")).unwrap(), pointer);
+        }
+        // Repair installs a new directory even when the version is unchanged.
+        let old_runtime = vec![("codex".into(), "2.0.0".into(), root.join("previous/codex-acp"))];
+        let repaired = status_for(&directory, &manifest, &old_runtime).await.unwrap();
+        assert!(repaired.restart_required);
+        assert!(!repaired.update_available);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
