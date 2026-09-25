@@ -44,7 +44,7 @@ function humanSummary(raw: string): string {
     || normalized.includes('auth_required')
     || normalized.includes('please run /login')
   ) {
-    return 'Agent login required. Run `claude /login` in a terminal, then try again.';
+    return 'This agent requires sign-in before it can continue.';
   }
 
   if (code === 'invalid-response' || normalized.includes('did not include sessionid')) {
