@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
     conversationTurnGroups,
@@ -37,7 +39,6 @@
     localTurnActive?: boolean;
     composerHeight?: number;
     assistantLabel?: string;
-    savedScrollTop?: number;
     emptyText?: string;
     pendingFirstMessage?: string | null;
     /** Older history exists behind the first row on screen. */
@@ -67,7 +68,6 @@
     localTurnActive = false,
     composerHeight = 0,
     assistantLabel = 'Assistant',
-    savedScrollTop = 0,
     emptyText = 'Start the conversation below.',
     pendingFirstMessage = null,
     hasOlder = false,
@@ -84,8 +84,6 @@
     onPlanOpen
   }: Props = $props();
 
-  /** Where an already-read conversation is waiting to be put back to. */
-  let restoringScrollTop = $state<number | null>(null);
   let host = $state<HTMLDivElement | null>(null);
   let list = $state<HTMLDivElement | null>(null);
   let follow = $state(true);
@@ -98,7 +96,6 @@
   let turnWasActive = false;
   let userItemIds = $state<string[]>([]);
   let openedConversationId = $state('');
-  let foldConversationId = $state('');
   let expandedTurns = $state<Map<string, boolean>>(new Map());
   /** Every item the conversation holds. A stored row is drawn, never offered. */
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
@@ -209,60 +206,33 @@
     openedConversationId = renderWindowId;
     pageAnchor = null;
     anchoredUserItemId = null;
-    foldConversationId = renderWindowId;
     expandedTurns = new Map();
-    // Coming back to a conversation returns to the place it was left. Only one
-    // being opened for the first time lands on its newest turn — and that is
-    // the only case with nowhere else to land. Both wait for messages to be on
-    // screen before anything moves.
-    if (savedScrollTop > 0) {
-      restoringScrollTop = savedScrollTop;
-    } else {
-      scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
-    }
+    // Every open starts at the newest message; the reader controls scrolling
+    // after that, including while new writing arrives.
+    follow = true;
+    scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
   });
 
   $effect(() => {
-    // Put the view back where it was. Rows are measured as they draw, so the
-    // page is still growing under this: it is set once the rows exist and again
-    // on the next frame, by which point the heights above the reader are real.
-    if (restoringScrollTop === null || renderedItems.length === 0) return;
-    const target = restoringScrollTop;
-    restoringScrollTop = null;
-    if (!host) return;
-    const maxScroll = latestWritingScrollTop();
-    if (target >= maxScroll - 150) {
-      host.scrollTop = maxScroll;
-      follow = true;
-    } else {
-      host.scrollTop = target;
-      follow = false;
-    }
-  });
-
-  $effect(() => {
-    // Land on the newest writing once the messages are actually on screen. Stored
-    // messages arrive in batches, so this runs again on each batch and keeps the
-    // view at the end until the reader scrolls, types or sends, any of which drops
-    // the opening state and hands the view back to them. The move is immediate
-    // rather than animated: nobody asked to watch a transcript they have not read
-    // scroll past.
+    // Wait for the rows to draw, then for content-visibility to measure them.
+    // The first frame can still report a scroll height equal to the viewport;
+    // the second lands on the actual newest row without an animated trip there.
     if (renderedItems.length === 0 || !scrollState.openingToLatest) return;
     if (!host) return;
-    host.scrollTop = latestWritingScrollTop();
-    follow = true;
-    scrollState = { ...scrollState, openingToLatest: false, pinnedToBottom: true };
-  });
-
-  $effect(() => {
-    if (foldConversationId !== renderWindowId) return;
-    let next: Map<string, boolean> | null = null;
-    for (const group of renderedGroups) {
-      if (!group.turnId || group.completed || group.workItemIds.length === 0 || expandedTurns.has(group.turnId)) continue;
-      next ??= new Map(expandedTurns);
-      next.set(group.turnId, true);
-    }
-    if (next) expandedTurns = next;
+    const openingId = renderWindowId;
+    void tick().then(() => {
+      if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
+      requestAnimationFrame(() => {
+        if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
+        host.scrollTop = host.scrollHeight - host.clientHeight;
+        requestAnimationFrame(() => {
+          if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
+          host.scrollTop = host.scrollHeight - host.clientHeight;
+          follow = true;
+          scrollState = { ...scrollState, openingToLatest: false, pinnedToBottom: true };
+        });
+      });
+    });
   });
 
   $effect(() => {
@@ -590,22 +560,33 @@
     >
       {#each renderedGroups as group, index (rowKey(group, index))}
         {@const expanded = turnExpanded(group)}
+        {@const foldedItems = foldToolRuns(foldFileEdits(group.items))}
+        {@const firstWorkItemId = foldedItems.find((item) => item.kind === 'toolRun' || item.kind === 'fileEdits' || group.workItemIds.includes(item.itemId))?.itemId}
         <div
           class="turn-row"
           data-index={index}
           data-turn-id={group.turnId}
           data-testid="conversation-timeline-row"
         >
-          {#each foldToolRuns(foldFileEdits(group.items)) as item (item.itemId)}
-            <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
-            {#if showWorking && item.itemId === anchoredUserItemId}
-              <div class="working-row" data-testid="conversation-working-indicator" role="status">
-                <WorkingSpinner seed={group.turnId ?? item.itemId} />
-                <span>Working…</span>
-              </div>
+          {#each foldedItems as item (item.itemId)}
+            {@const workItem = item.kind === 'toolRun' || item.kind === 'fileEdits' || group.workItemIds.includes(item.itemId)}
+            {#if group.completed && item.itemId === firstWorkItemId}
+              <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={expanded} onclick={() => toggleTurn(group)}>
+                <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
+                <span class="turn-fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
+              </button>
+            {/if}
+            {#if !workItem || expanded}
+              <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
+              {#if showWorking && item.itemId === anchoredUserItemId}
+                <div class="working-row" data-testid="conversation-working-indicator" role="status">
+                  <WorkingSpinner seed={group.turnId ?? item.itemId} />
+                  <span>Working…</span>
+                </div>
+              {/if}
             {/if}
           {/each}
-          {#if group.completed}
+          {#if group.completed && expanded}
             {#each getTurnFileEdits(group) as edit (edit.path)}
               <TurnFileCard path={edit.path} added={edit.added} removed={edit.removed} onReview={onFileLink} />
             {/each}
@@ -629,6 +610,11 @@
   .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
   .timeline-bottom-spacer.send-anchor-space{height:max(calc(max(var(--composer-height, 0px), 120px) + 60px),100vh)}
   .turn-row{position:relative;display:flex;flex-direction:column;gap:12px;width:100%;content-visibility:auto;contain-intrinsic-size:auto 120px}
+  .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
+  .turn-fold:hover{color:var(--color-text)}
+  .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
+  .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
+  .turn-fold-chevron.open{transform:rotate(90deg)}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{display:flex;align-items:center;gap:8px;min-height:24px;color:var(--color-text-3);font-size:13px}
   /* A disc under the middle of the transcript, holding one arrow. It sits over
@@ -637,5 +623,5 @@
   .jump-latest{position:absolute;left:50%;bottom:calc(max(var(--composer-height, 0px), 120px) + 20px);display:grid;place-items:center;width:32px;height:32px;padding:0;transform:translateX(-50%);border:1px solid color-mix(in srgb,var(--color-border) 68%,transparent);border-radius:999px;background:color-mix(in srgb,var(--color-elevated) 94%,var(--color-accent) 6%);color:var(--color-text);box-shadow:var(--shadow-sm);cursor:pointer}
   .jump-latest:hover{background:var(--color-hover)}
   .jump-latest:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
-  @media (prefers-reduced-motion:no-preference){.jump-latest{transition:background .14s ease,box-shadow .14s ease}}
+  @media (prefers-reduced-motion:no-preference){.turn-fold-chevron{transition:transform .14s ease}.jump-latest{transition:background .14s ease,box-shadow .14s ease}}
 </style>
