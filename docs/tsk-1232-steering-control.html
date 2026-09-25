@@ -37,5 +37,16 @@
 
 <div class="row"><div class="label"><b>Working, has text, provider cannot steer</b>: Stop square</div>
   <div class="bar"><span class="draft">ifa</span><span class="round">🎙</span><span class="working">◌ Reviewing…</span><span class="round stop">■</span></div></div>
+<h2>Native verification — 2026-09-25</h2>
+<p>Mac Assembly connected to the existing Workbox, using the installed signed Codex 1.13.1 and Claude 0.81.2 ACP adapters. No direct CLI chat or manual path correction was used for these passing runs.</p>
+<ul>
+<li>Both providers exposed Steer during their first active turn without reselecting the session. Empty draft showed Stop; typing showed Steer; clearing restored Stop. Successful steering cleared the draft and restored Stop.</li>
+<li>Codex native session <code>01a0d9ca-9427-7051-a5b3-0df38b7c8a29</code> recorded <code>gpt-6-sol</code>, medium. Its first-turn correction changed three sentences to one beginning MAPLE. Cancellation recorded <code>turn_aborted</code>; resuming the same native session returned MAPLE.</li>
+<li>Claude native session <code>f8e0b57a-dbb2-4376-89ef-9a2fb7b24528</code> recorded <code>claude-opus-5-5</code>. First-turn button changes passed; a correction during the next reading turn changed eight bullets to three beginning WILLOW. Cancellation stopped a later reading turn; resuming the same native session returned WILLOW.</li>
+<li>Read-only Claude approvals disabled the composer until resolved. The earlier sleep-based Claude attempt ended before injection and is not counted as steering proof.</li>
+<li>Test-owned Workbox ACP process trees returned to zero after completed and cancelled turns. Five Mac samples over ten seconds measured app CPU 0–0.2%, WebContent 0–0.5%; RSS decreased from 95,552 to 94,944 KiB and 73,440 to 71,456 KiB respectively. These bounded samples do not establish a long-duration leak guarantee.</li>
+<li>Focused steering protocol tests passed 3/3; manager suite previously passed 109/109. TypeScript compilation and send-recovery checks passed. No UI structure tests were added.</li>
+<li>Native text and screenshots: <code>/Users/blackcolours/dev/work/reports/tsk-1232-steering/</code>. The unsupported-provider button condition preserves Stop; official AGY does not advertise steering and is not presented as supporting it.</li>
+</ul>
 </body>
 </html>
