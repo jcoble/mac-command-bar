@@ -167,7 +167,7 @@ export class SessionSelectionController {
 				...result.sessions.map(ownedSessionFromBackend)]);
 			return result.profile.id;
 		} catch (error) {
-			if (!attempt.signal.aborted) this.selectionError = `Could not connect. ${String(error)}`;
+			if (!attempt.signal.aborted) this.selectionError = `Could not connect. ${error instanceof Error ? error.message : typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error)}`;
 			return null;
 		} finally {
 			if (this.remoteConnectAbort === attempt) {
