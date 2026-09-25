@@ -22,6 +22,7 @@ export type SafeInlinePart =
   | { kind: 'emphasis'; parts: SafeInlinePart[] }
   | { kind: 'strike'; parts: SafeInlinePart[] }
   | { kind: 'link'; href: string; parts: SafeInlinePart[] }
+  | { kind: 'image'; href: string; alt: string }
   | { kind: 'file-link'; path: string; parts: SafeInlinePart[] };
 
 /** A row of a list, with whatever blocks are nested underneath it. */
@@ -105,6 +106,7 @@ function filePath(href: string): string | null {
 
 /** The writing a part holds, with its marks dropped. */
 function partText(part: SafeInlinePart): string {
+  if (part.kind === 'image') return part.alt;
   return part.kind === 'text' || part.kind === 'code'
     ? part.value
     : part.parts.map(partText).join('');
@@ -153,10 +155,13 @@ function inlineParts(tokens: Token[] | undefined, raw = ''): SafeInlinePart[] {
         break;
       }
       case 'image': {
-        // An image is shown as the link it is. Nothing in a transcript loads a
-        // remote resource on the reader's behalf.
         const image = token as Tokens.Image;
-        parts.push(linkPart(image.href, [text(image.text || image.href)]));
+        const href = sanitizeConversationHref(image.href);
+        // The PR reader can opt into loading HTTPS images. Agent transcripts
+        // and file previews continue to show the link without loading it.
+        parts.push(href && /^https:\/\//i.test(href)
+          ? { kind: 'image', href, alt: image.text || 'PR image' }
+          : linkPart(image.href, [text(image.text || image.href)]));
         break;
       }
       case 'br':

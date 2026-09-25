@@ -428,15 +428,15 @@
       {#if detail}
         {#if detailTab === 'conversation'}
           <div class="conversation">
-            <section class="entry"><div class="entry-head"><strong>{detail.author}</strong><span>opened this pull request</span></div><div class="body-text"><ConversationMessage text={detail.body || 'No description.'} role="assistant" /></div></section>
+            <section class="entry"><div class="entry-head"><strong>{detail.author}</strong><span>opened this pull request</span></div><div class="body-text"><ConversationMessage text={detail.body || 'No description.'} role="assistant" showImages /></div></section>
             {#each detail.comments as comment (comment.id)}
-              <section class="entry"><div class="entry-head"><strong>{comment.author}</strong><span>{comment.path ? 'commented on' : 'commented'}</span>{#if comment.path}<code>{comment.path}{comment.line ? `:${comment.line}` : ''}</code>{/if}<span class="entry-meta">{formatTime(comment.createdAt)}</span></div><div class="body-text"><ConversationMessage text={comment.body} role="assistant" /></div>{#if comment.path && comment.replyToId === null && detail.state === 'OPEN'}<button type="button" class="reply-button" onclick={() => { replyTarget = comment; replyBody = ''; }}>Reply</button>{/if}</section>
+              <section class="entry"><div class="entry-head"><strong>{comment.author}</strong><span>{comment.path ? 'commented on' : 'commented'}</span>{#if comment.path}<code>{comment.path}{comment.line ? `:${comment.line}` : ''}</code>{/if}<span class="entry-meta">{formatTime(comment.createdAt)}</span></div><div class="body-text"><ConversationMessage text={comment.body} role="assistant" showImages /></div>{#if comment.path && comment.replyToId === null && detail.state === 'OPEN'}<button type="button" class="reply-button" onclick={() => { replyTarget = comment; replyBody = ''; }}>Reply</button>{/if}</section>
             {/each}
             {#if replyTarget}
               <section class="review-draft"><h3>Reply to {replyTarget.author} on {replyTarget.path}:{replyTarget.line}</h3><textarea aria-label="Review reply" rows="3" bind:value={replyBody}></textarea><div class="draft-actions"><button type="button" onclick={() => { replyTarget = null; replyBody = ''; }}>Cancel</button><button type="button" disabled={!replyBody.trim() || posting || postUncertain} onclick={previewReply}>Review reply…</button></div></section>
             {/if}
             {#each detail.reviews as review, index (index)}
-              <section class="entry"><div class="entry-head"><strong>{review.author}</strong><span>reviewed</span><span class="review-state">{review.state.replaceAll('_', ' ').toLowerCase()}</span><span class="entry-meta">{formatTime(review.submittedAt)}</span></div><div class="body-text"><ConversationMessage text={review.body || 'No review summary.'} role="assistant" /></div></section>
+              <section class="entry"><div class="entry-head"><strong>{review.author}</strong><span>reviewed</span><span class="review-state">{review.state.replaceAll('_', ' ').toLowerCase()}</span><span class="entry-meta">{formatTime(review.submittedAt)}</span></div><div class="body-text"><ConversationMessage text={review.body || 'No review summary.'} role="assistant" showImages /></div></section>
             {/each}
           </div>
         {:else if detailTab === 'checks'}
