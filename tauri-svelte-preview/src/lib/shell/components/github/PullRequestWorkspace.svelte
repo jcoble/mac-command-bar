@@ -3,6 +3,7 @@
   import { hydrate, knownRoots } from '$lib/shell/newSession/projectRootsStore.svelte';
   import {
     listGithubPullRequestsFromTauri,
+    mergeGithubPullRequestFromTauri,
     readGithubPullRequestFromTauri,
     readGithubPullRequestFileFromTauri,
     replyGithubPullRequestCommentFromTauri,
@@ -10,6 +11,7 @@
     submitGithubPullRequestReviewFromTauri,
     type GithubFileVersions,
     type GithubReviewSubmission,
+    type GithubMergeRequest,
     type GithubPullRequestDetail,
     type GithubPullRequestSummary,
     type GithubPullRequestQuery
@@ -51,6 +53,12 @@
   let replyTarget = $state<GithubPullRequestDetail['comments'][number] | null>(null);
   let replyBody = $state('');
   let pendingReply = $state<{ commentId: number; body: string; headSha: string } | null>(null);
+  let mergeMethod = $state<GithubMergeRequest['method']>('merge');
+  let pendingMerge = $state<(GithubMergeRequest & { repository: string; title: string; baseBranch: string; headBranch: string }) | null>(null);
+  let merging = $state(false);
+  let mergeUncertain = $state(false);
+  let mergeError = $state('');
+  let mergedUrl = $state('');
   let cursor = $state<string | null>(null);
   let totalCount = $state(0);
   let loading = $state(false);
@@ -64,6 +72,11 @@
   const selectedFile = $derived(detail?.files.find((file) => file.path === selectedFilePath) ?? null);
   const parsedFile = $derived(selectedFile?.patch ? parseUnifiedDiff(selectedFile.patch) : null);
   const headerState = $derived(prState(detail ?? selected));
+  const canMerge = $derived(detail?.state === 'OPEN' && !detail.isDraft && detail.mergeable === 'MERGEABLE' && !detailLoading && !posting && !merging && !mergeUncertain);
+
+  function mergeMethodLabel(method: GithubMergeRequest['method']): string {
+    return method === 'squash' ? 'Squash and merge' : method === 'rebase' ? 'Rebase and merge' : 'Create merge commit';
+  }
 
   function prState(pr: { isDraft: boolean; state: string } | null): { label: string; tone: string } {
     if (!pr) return { label: '', tone: 'idle' };
@@ -166,6 +179,8 @@
     detailError = null;
     detailLoading = true;
     postUncertain = false;
+    mergeUncertain = false;
+    mergeError = '';
     selectedFilePath = '';
     try {
       const result = await readGithubPullRequestFromTauri(root, number);
@@ -240,6 +255,10 @@
     replyTarget = null;
     replyBody = '';
     pendingReply = null;
+    pendingMerge = null;
+    mergedUrl = '';
+    mergeError = '';
+    mergeMethod = 'merge';
     detailTab = 'conversation';
     selected = item;
   }
@@ -354,6 +373,41 @@
     }
   }
 
+  function previewMerge(): void {
+    if (!detail || !canMerge) return;
+    pendingMerge = {
+      root: detail.localRoot,
+      repository: detail.repository,
+      number: detail.number,
+      title: detail.title,
+      headBranch: detail.headBranch,
+      baseBranch: detail.baseBranch,
+      expectedHeadSha: detail.headSha,
+      expectedBaseSha: detail.baseSha,
+      method: mergeMethod
+    };
+  }
+
+  async function confirmMerge(): Promise<void> {
+    if (!pendingMerge || merging || posting) return;
+    const request = pendingMerge;
+    pendingMerge = null;
+    merging = true;
+    mergeError = '';
+    mergedUrl = '';
+    try {
+      mergedUrl = await mergeGithubPullRequestFromTauri(request);
+      cancelDrafts();
+      items = items.filter((item) => item.repository !== request.repository || item.number !== request.number);
+      if (selected?.repository === request.repository && selected.number === request.number) await loadDetail(request.root, request.number);
+    } catch (reason) {
+      mergeError = reason instanceof Error ? reason.message : String(reason);
+      mergeUncertain = /uncertain/i.test(mergeError);
+    } finally {
+      merging = false;
+    }
+  }
+
   $effect(() => {
     if (showing && !loaded && !loading && !error) void load(true);
   });
@@ -425,6 +479,7 @@
       {#if detailLoading}<p class="notice">Loading pull request details…</p>{/if}
       {#if detailError}<p class="notice error" role="alert">{detailError}</p>{/if}
       {#if postedUrl}<p class="notice" role="status">Review posted. <a href={postedUrl} target="_blank" rel="noreferrer">View it on GitHub</a></p>{/if}
+      {#if mergedUrl}<p class="notice" role="status">Pull request merged. <a href={mergedUrl} target="_blank" rel="noreferrer">View it on GitHub</a></p>{/if}
       {#if detail}
         {#if detailTab === 'conversation'}
           <div class="conversation">
@@ -491,6 +546,7 @@
             </div>
           </div>
         {/if}
+        {#if detail.state === 'OPEN'}
         <section class="review-draft" aria-label="Review draft">
           <h3>Review draft</h3>
           <p>Comments stay here until you review and confirm the exact text and target.</p>
@@ -501,6 +557,33 @@
             <div class="draft-line"><strong>{line.path}:{line.line} · {line.side === 'LEFT' ? 'before' : 'after'}</strong><textarea rows="3" aria-label={`Draft comment on ${line.path} line ${line.line}`} bind:value={line.body}></textarea><button type="button" onclick={() => draftLines = draftLines.filter((_, row) => row !== index)}>Remove</button></div>
           {/each}
           <div class="draft-actions"><button type="button" disabled={!draftSummary.trim() && draftLines.length === 0 && !lineTarget} onclick={cancelDrafts}>Discard draft</button><button type="button" disabled={!draftSummary.trim() || posting || postUncertain} onclick={previewReview}>Review and post…</button></div>
+        </section>
+        {/if}
+        <section class="merge-card" aria-label="Merge pull request">
+          {#if detail.state === 'MERGED'}
+            <p class="merge-fact">This pull request was merged into <code>{detail.baseBranch}</code>.</p>
+          {:else if detail.state === 'OPEN'}
+            <div class="merge-fact">
+              <span class:merge-good={detail.checks.length > 0 && detail.checks.every((check) => checkTone(check) === 'good')} aria-hidden="true">{detail.checks.length > 0 && detail.checks.every((check) => checkTone(check) === 'good') ? '✓' : '•'}</span>
+              {detail.checks.length === 0 ? 'No checks reported' : `${detail.checks.filter((check) => checkTone(check) === 'good').length} of ${detail.checks.length} checks successful`}
+            </div>
+            <div class="merge-fact">
+              <span class:merge-good={detail.mergeable === 'MERGEABLE'} aria-hidden="true">{detail.mergeable === 'MERGEABLE' ? '✓' : '•'}</span>
+              {detail.mergeable === 'MERGEABLE' ? 'This branch has no conflicts with the base branch.' : detail.mergeable === 'CONFLICTING' ? 'This branch has conflicts with the base branch.' : 'GitHub is still checking whether this branch can merge.'}
+            </div>
+            <div class="merge-controls">
+              <button type="button" class="merge-button" disabled={!canMerge} onclick={previewMerge}>{merging ? 'Merging…' : 'Merge Pull Request'}</button>
+              <label for="pr-merge-method">using method</label>
+              <select id="pr-merge-method" bind:value={mergeMethod} disabled={merging}>
+                <option value="merge">Create merge commit</option>
+                <option value="squash">Squash and merge</option>
+                <option value="rebase">Rebase and merge</option>
+              </select>
+            </div>
+            {#if detail.isDraft}<p class="merge-note">Mark this draft ready for review on GitHub before merging.</p>{/if}
+            {#if mergeUncertain}<p class="merge-note">Refresh this PR to check whether the merge completed before trying again.</p>{/if}
+            {#if mergeError}<p class="merge-note error" role="alert">{mergeError}</p>{/if}
+          {/if}
         </section>
       {/if}
       {#if pendingReview}
@@ -519,6 +602,19 @@
       {/if}
       {#if pendingReply}
         <div class="confirm-backdrop" role="presentation"><div class="confirm-review" role="dialog" aria-modal="true" aria-label="Confirm review reply"><h3>Post this reply?</h3><p><strong>{selected.repository} #{selected.number}</strong> · comment {pendingReply.commentId}</p><pre>{pendingReply.body}</pre><p>GitHub will notify participants. Assembly will check the PR head again before submitting.</p><div class="draft-actions"><button type="button" onclick={() => pendingReply = null}>Cancel</button><button type="button" class="confirm-submit" onclick={() => void confirmReply()}>Post reply to GitHub</button></div></div></div>
+      {/if}
+      {#if pendingMerge}
+        <div class="confirm-backdrop" role="presentation">
+          <div class="confirm-review" role="dialog" aria-modal="true" aria-label="Confirm pull request merge">
+            <h3>Merge this pull request?</h3>
+            <p><strong>{pendingMerge.repository} #{pendingMerge.number}</strong> · {pendingMerge.title}</p>
+            <p><code>{pendingMerge.headBranch}</code> into <code>{pendingMerge.baseBranch}</code> using {mergeMethodLabel(pendingMerge.method)}.</p>
+            <p>Head {pendingMerge.expectedHeadSha.slice(0, 10)} · base {pendingMerge.expectedBaseSha.slice(0, 10)}</p>
+            {#if draftSummary.trim() || draftLines.length > 0}<p>Your unposted review draft will be cleared if the merge succeeds.</p>{/if}
+            <p>Assembly checks the PR again before asking GitHub to merge it. GitHub enforces the repository's merge rules.</p>
+            <div class="draft-actions"><button type="button" onclick={() => pendingMerge = null}>Cancel</button><button type="button" class="confirm-submit" onclick={() => void confirmMerge()}>Merge on GitHub</button></div>
+          </div>
+        </div>
       {/if}
     {:else}<p class="notice">Choose a pull request to review.</p>{/if}
   </section>
@@ -549,6 +645,12 @@
   .diff-line .add-comment{width:24px;flex:none;border:0;background:transparent;color:var(--color-text-3);opacity:0;cursor:pointer}.diff-line:hover .add-comment,.diff-line .add-comment:focus-visible{opacity:1}.diff-line .add-comment:disabled{visibility:hidden}
   .review-draft{border-radius:12px;background:var(--color-surface);margin-top:24px;padding:18px 20px}.review-draft h3{font-size:14px;margin:0}.review-draft p{font-size:12px;color:var(--color-text-3);margin:6px 0 16px}.review-draft label,.line-compose strong,.draft-line strong{display:block;font-size:12px;margin-bottom:8px}.review-draft textarea{display:block;width:100%;resize:vertical;min-height:64px;background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;color:var(--color-text);padding:9px;font:12px/1.5 inherit}.line-compose,.draft-line{margin-top:14px;padding:12px;border:1px solid var(--color-border);border-radius:6px}.draft-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.draft-actions button,.draft-line button{border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface);padding:7px 10px;font-size:12px;cursor:pointer}.draft-actions button:disabled{opacity:.5;cursor:default}.draft-line button{margin-top:8px}
   .helper-button,.reply-button{border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface);padding:6px 9px;font-size:11px;cursor:pointer;margin-top:8px}
+  .merge-card{max-width:1100px;margin-top:16px;border:1px solid var(--color-border);border-radius:8px;background:var(--color-surface);overflow:hidden;font-size:12px}
+  .merge-fact{display:flex;align-items:center;gap:10px;margin:0;padding:11px 16px;border-bottom:1px solid var(--color-border)}
+  .merge-fact span{color:var(--color-text-3);font-size:15px}.merge-fact span.merge-good{color:var(--color-good)}
+  .merge-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:14px 16px}.merge-controls label{color:var(--color-text-2)}.merge-controls select{width:auto;margin:0;padding:6px 8px}
+  .merge-button{border:1px solid var(--color-accent);border-radius:6px;background:var(--color-accent);color:var(--color-on-accent);padding:7px 12px;font-weight:600;cursor:pointer}.merge-button:disabled{opacity:.5;cursor:default}
+  .merge-note{margin:0;padding:0 16px 14px;color:var(--color-text-3)}.merge-note.error{color:var(--color-bad)}
   .confirm-backdrop{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;background:rgba(0,0,0,.72)}.confirm-review{width:min(680px,calc(100vw - 40px));max-height:calc(100vh - 40px);overflow:auto;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);box-shadow:0 20px 70px rgba(0,0,0,.45);padding:22px}.confirm-review h3{font-size:18px;margin:0 0 12px}.confirm-review h4{font-size:12px;margin:20px 0 6px}.confirm-review p{font-size:12px;color:var(--color-text-3)}.confirm-review pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace;border:1px solid var(--color-border);border-radius:6px;padding:10px;max-height:250px;overflow:auto}.confirm-submit{background:var(--color-accent)!important;color:var(--color-bg)!important}
   @media(max-width:700px){.workspace{grid-template-columns:minmax(180px,35%) minmax(0,1fr)}.queue{padding:10px 6px}.detail{padding:14px}}
 </style>

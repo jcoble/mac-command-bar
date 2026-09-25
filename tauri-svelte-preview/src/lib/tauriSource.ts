@@ -303,6 +303,14 @@ export type GithubReviewReply = {
   body: string;
 };
 
+export type GithubMergeRequest = {
+  root: string;
+  number: number;
+  expectedHeadSha: string;
+  expectedBaseSha: string;
+  method: 'merge' | 'squash' | 'rebase';
+};
+
 export type GitBranchSummary = {
   name: string;
   isCurrent: boolean;
@@ -1719,6 +1727,14 @@ export async function replyGithubPullRequestCommentFromTauri(
   if (!isTauriRuntime()) throw new Error('Review replies can only be submitted from the desktop app.');
   const { invoke } = await import('./workspaceInvoke');
   return invoke<string>('reply_github_pull_request_comment', { reply });
+}
+
+export async function mergeGithubPullRequestFromTauri(
+  request: GithubMergeRequest
+): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('Pull requests can only be merged from the desktop app.');
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<string>('merge_github_pull_request', { request });
 }
 
 export async function generateCommitMessageFromTauri(

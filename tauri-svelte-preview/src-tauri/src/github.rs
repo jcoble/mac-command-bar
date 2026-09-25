@@ -165,6 +165,16 @@ pub struct GithubReviewReply {
     body: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubMergeRequest {
+    root: String,
+    number: u64,
+    expected_head_sha: String,
+    expected_base_sha: String,
+    method: String,
+}
+
 #[tauri::command]
 pub async fn list_github_pull_requests(
     query: GithubPullRequestQuery,
@@ -200,6 +210,44 @@ pub async fn reply_github_pull_request_comment(reply: GithubReviewReply) -> Resu
     tauri::async_runtime::spawn_blocking(move || reply_comment_sync(reply))
         .await
         .map_err(|error| format!("Pull request reply task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn merge_github_pull_request(request: GithubMergeRequest) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || merge_sync(request))
+        .await
+        .map_err(|error| format!("Pull request merge task failed: {error}"))?
+}
+
+fn merge_sync(request: GithubMergeRequest) -> Result<String, String> {
+    if request.number == 0
+        || ![&request.expected_head_sha, &request.expected_base_sha].iter().all(|sha| sha.len() == 40 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        || !matches!(request.method.as_str(), "merge" | "squash" | "rebase")
+    {
+        return Err("Invalid pull request merge target or method".to_string());
+    }
+    let (repository, root) = repository_for_root(Path::new(&request.root))?;
+    let detail = read_detail_sync(&root, request.number)?;
+    if detail.state != "OPEN" || detail.is_draft || detail.head_sha != request.expected_head_sha || detail.base_sha != request.expected_base_sha {
+        return Err("This pull request changed, closed, or is still a draft. Refresh it before merging.".to_string());
+    }
+    if detail.mergeable != "MERGEABLE" {
+        return Err("GitHub does not report this pull request as mergeable. Refresh it before trying again.".to_string());
+    }
+    let endpoint = format!("repos/{repository}/pulls/{}/merge", request.number);
+    let bytes = serde_json::to_vec(&json!({"sha": request.expected_head_sha, "merge_method": request.method})).map_err(|error| error.to_string())?;
+    let output = bounded_process::output_with_input(
+        Command::new("gh").current_dir(&root).args(["api", "--method", "PUT", &endpoint, "--input", "-"]),
+        "Merge GitHub pull request",
+        bounded_process::NETWORK_COMMAND_TIMEOUT,
+        Some(&bytes),
+    ).map_err(|error| format!("Merge outcome is uncertain: {error}. Refresh the PR before trying again."))?;
+    if !output.status.success() { return Err(format!("Merge failed: {}", brief_stderr(&output.stderr))); }
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|_| "Merge outcome is uncertain. Refresh the PR before trying again.".to_string())?;
+    if value.get("merged").and_then(Value::as_bool) != Some(true) {
+        return Err("Merge outcome is uncertain. Refresh the PR before trying again.".to_string());
+    }
+    Ok(detail.url)
 }
 
 fn reply_comment_sync(reply: GithubReviewReply) -> Result<String, String> {
@@ -569,5 +617,17 @@ mod tests {
         assert_eq!(encode_file_path("src/hello world#1.ts").unwrap(), "src/hello%20world%231.ts");
         assert!(encode_file_path("../secret").is_err());
         assert!(encode_file_path("/absolute").is_err());
+    }
+
+    #[test]
+    fn merge_rejects_invalid_target_before_accessing_github() {
+        let request = GithubMergeRequest {
+            root: "/nonexistent".to_string(),
+            number: 1,
+            expected_head_sha: "a".repeat(40),
+            expected_base_sha: "b".repeat(40),
+            method: "delete".to_string(),
+        };
+        assert_eq!(merge_sync(request).unwrap_err(), "Invalid pull request merge target or method");
     }
 }
